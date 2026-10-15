@@ -33,7 +33,7 @@ git worktree add ../gg-codex  -b task/W1-X1-kong-image
 
 Ordem de merge na semana 3: W2-C2 → W3-X1 → W3-C1 → W3-X2. Quem mergeia depois faz rebase; `src/db/schema.ts` e `drizzle/` são alterados por uma frente por vez.
 
-Ordem de merge: semana 4 → W4-C1 antes de W4-X1 (W4-X1 faz rebase em `router.tsx`); W4-C2 mergeia antes de começar a semana 5. Semana 5 → W5-C0 → W5-C1 → W5-X1. Semana 6 → W6-X1 → W6-C0 → W6-C1.
+Ordem de merge: semana 4 → W4-C1 antes de W4-X1 (W4-X1 faz rebase em `router.tsx`); W4-C2 mergeia antes de começar a semana 5. Semana 5 → W5-C0 → W5-C1 → W5-X1, todos na branch `integration/w5-auth` (criada da `main`), que entra na `main` num único merge quando a CI inteira estiver verde; a `main` é mergeada nela, nunca o contrário. Semana 6 → W6-X1 → W6-C0 → W6-C1.
 
 ---
 
@@ -169,6 +169,10 @@ Aceite: (a) `GET` nunca contém o segredo; (b) editar outro campo do plugin sem 
 - CRUD de usuários (admin) conforme contrato; não permitir remover/rebaixar o último admin.
 - **Remover `AUTH_MODE=dev` por completo** (código, compose e CI passam a usar o bootstrap admin).
 - Audit: `auth.login` (sucesso e falha, sem senha), `auth.logout`, `user.*`.
+- Novo id de sessão a cada login (anti-fixation); a sessão anterior é invalidada.
+- Login não revela se o e-mail existe: mesma resposta 401 e tempo equivalente (rodar argon2 contra um hash fictício quando o usuário não existir).
+- Atributo `Secure` do cookie controlado por `COOKIE_SECURE` (default `true`); só o compose de desenvolvimento usa `false`.
+- Desativar usuário ou mudar o papel revoga as sessões dele imediatamente.
 
 Aceite: teste de matriz RBAC gerado do contrato — para **cada** `operationId` com `x-required-role`, os três papéis recebem 2xx/403 conforme esperado; sem cookie → 401; mutação sem CSRF → 403; último admin protegido; 6ª tentativa de login errada → 429.
 
