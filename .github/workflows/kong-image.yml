@@ -1,0 +1,116 @@
+name: kong-image
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["kong-v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kong-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-test-publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      packages: write
+    defaults:
+      run:
+        shell: bash
+    env:
+      COMPOSE_FILE: deploy/compose/docker-compose.yml
+      COMPOSE_PROJECT_NAME: gromesh-kong-image
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: Image tag
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "KONG_IMAGE=ghcr.io/${owner}/gromesh-kong:3.9.4-${GITHUB_SHA}" >> "$GITHUB_ENV"
+
+      - name: Set up Buildx
+        id: buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+        with:
+          version: v0.25.0
+          driver-opts: image=moby/buildkit:v0.23.2@sha256:ddd1ca44b21eda906e81ab14a3d467fa6c39cd73b9a39df1196210edcb8db59e
+
+      - name: Restore Bazel cache
+        id: bazel-cache
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ${{ runner.temp }}/kong-bazel-cache
+          key: kong-bazel-${{ runner.os }}-${{ runner.arch }}-3.9.4-${{ hashFiles('images/kong/Dockerfile') }}
+          restore-keys: kong-bazel-${{ runner.os }}-${{ runner.arch }}-3.9.4-
+
+      # BuildKit's layer cache does not export RUN cache mounts.
+      - name: Restore and persist Bazel cache mount
+        uses: reproducible-containers/buildkit-cache-dance@5b81f4d29dc8397a7d341dba3aeecc7ec54d6361 # v3.3.0
+        with:
+          builder: ${{ steps.buildx.outputs.name }}
+          cache-map: '{"${{ runner.temp }}/kong-bazel-cache": {"target": "/root/.cache/bazel", "sharing": "locked"}}'
+          skip-extraction: ${{ steps.bazel-cache.outputs.cache-hit == 'true' }}
+          utility-image: busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
+
+      - name: Build and load image for acceptance tests
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: images/kong
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ${{ env.KONG_IMAGE }}
+          cache-from: type=gha,scope=kong-3.9.4-amd64
+          cache-to: type=gha,mode=max,scope=kong-3.9.4-amd64
+
+      - name: Verify Kong version and non-root user
+        run: |
+          version="$(docker run --rm "$KONG_IMAGE" kong version)"
+          printf '%s\n' "$version"
+          test "$version" = 3.9.4
+          uid="$(docker run --rm "$KONG_IMAGE" id -u)"
+          test "$uid" -ne 0
+
+      - name: Compose acceptance test with the built image
+        run: |
+          KONG_IMAGE="$KONG_IMAGE" docker compose up -d --wait kong echo
+          node scripts/smoke.mjs
+
+      - name: Scan image (block CRITICAL vulnerabilities)
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:0.69.3@sha256:bcc376de8d77cfe086a917230e818dc9f8528e3c852f7b1aff648949b6258d1c \
+            image --scanners vuln --severity CRITICAL --exit-code 1 "$KONG_IMAGE"
+
+      - name: Login to GHCR
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Push the exact local image that passed version, smoke and vulnerability checks.
+      - name: Publish tested image
+        run: docker push "$KONG_IMAGE"
+
+      - name: Compose logs
+        if: failure()
+        run: docker compose logs --no-color kong echo
+
+      - name: Clean up acceptance stack
+        if: always()
+        run: docker compose down --volumes --remove-orphans
