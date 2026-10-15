@@ -115,7 +115,7 @@ services:
   # (the data-plane Admin API only listens on 127.0.0.1).
   smoke:
     profiles: [tools]
-    image: node:22-alpine
+    image: node:24-alpine
     network_mode: "service:kong"
     volumes:
       - ../../scripts:/repo/scripts:ro

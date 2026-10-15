@@ -1,6 +1,6 @@
 # Build context: repository root.  docker build -f apps/control-plane/Dockerfile .
 # Dev-grade image (keeps the workspace layout); a slim production image comes in week 8.
-FROM node:22-alpine
+FROM node:24-alpine
 RUN corepack enable
 WORKDIR /app
 
