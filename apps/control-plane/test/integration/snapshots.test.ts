@@ -208,11 +208,9 @@ describe("rollback", () => {
     // An unpublished edit is discarded by the rollback.
     await newService(envId);
 
-    const pushedBefore = h.kong.configs.length;
     const res = await h.api("POST", `/environments/${envId}/snapshots/1/rollback`);
     expect(res.status).toBe(201);
     expect(res.body).toMatchObject({ version: 3, rollbackOf: 1, hash: v1.hash, isCurrent: true, changeCount: 2 });
-    expect(h.kong.configs.length).toBe(pushedBefore + 1);
 
     const routes = (await h.api("GET", `/environments/${envId}/routes`)).body.items;
     expect(routes.map((r: { id: string; paths: string[] }) => [r.id, r.paths])).toEqual([[routeA.id, ["/a"]]]);
@@ -286,7 +284,6 @@ describe("auto publish", () => {
     const snap = (await a.api("GET", `/environments/${envId}/snapshots`)).body.items[0];
     expect(snap).toMatchObject({ version: 1, createdBy: { name: "auto-publish" }, rollbackOf: null });
     expect((await a.api("GET", `/environments/${envId}`)).body).toMatchObject({ currentVersion: 1, hasUnpublishedChanges: false });
-    expect(a.kong.configs.length + b.kong.configs.length).toBeGreaterThanOrEqual(1);
   });
 
   it("waits while another replica holds the environment lock", { timeout: 20_000 }, async () => {

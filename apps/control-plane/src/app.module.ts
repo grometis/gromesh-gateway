@@ -1,5 +1,7 @@
 import { type DynamicModule, Module } from "@nestjs/common";
 import { APP_FILTER, APP_GUARD } from "@nestjs/core";
+import { AgentGatewayModule } from "./agent-gateway/agent-gateway.js";
+import { ClustersModule } from "./clusters/clusters.js";
 import { AuthGuard } from "./auth/auth.js";
 import { ProblemFilter } from "./common/problem.filter.js";
 import { APP_CONFIG, type AppConfig } from "./config.js";
@@ -18,7 +20,18 @@ export class AppModule {
     return {
       module: AppModule,
       global: true,
-      imports: [DbModule, HealthModule, EnvironmentsModule, GatewayModule, ConsumersModule, PluginsModule, PluginCatalogModule, SnapshotsModule],
+      imports: [
+        DbModule,
+        AgentGatewayModule,
+        ClustersModule,
+        HealthModule,
+        EnvironmentsModule,
+        GatewayModule,
+        ConsumersModule,
+        PluginsModule,
+        PluginCatalogModule,
+        SnapshotsModule,
+      ],
       providers: [
         { provide: APP_CONFIG, useValue: config },
         { provide: APP_GUARD, useClass: AuthGuard },
