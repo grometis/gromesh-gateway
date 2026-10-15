@@ -948,7 +948,8 @@ paths:
       x-required-role: viewer
       description: |
         Request explorer over the same `requests` table, newest first. Credentials never reach the table (the
-        pipeline strips them), so a record carries no header or query values: only the path.
+        pipeline strips them), so a record carries no header or query values: only the path. `clientIp` is
+        masked for every role but admin.
       parameters:
         - { $ref: "#/components/parameters/AnalyticsFrom" }
         - { $ref: "#/components/parameters/AnalyticsTo" }
@@ -985,7 +986,7 @@ paths:
                     latencyKongMs: 1
                     latencyUpstreamMs: 11
                     latencyTotalMs: 12
-                    clientIp: "203.0.113.10"
+                    clientIp: "203.0.113.0"
                     requestSize: 312
                     responseSize: 1804
                 nextCursor: null
@@ -1492,7 +1493,11 @@ components:
         latencyKongMs: { type: integer, minimum: 0 }
         latencyUpstreamMs: { type: [integer, "null"], minimum: 0, description: Null when the request never reached an upstream }
         latencyTotalMs: { type: integer, minimum: 0 }
-        clientIp: { type: string }
+        clientIp:
+          type: string
+          description: |
+            Full address for admins only. Viewers and editors get it masked: IPv4 with the last octet zeroed
+            (203.0.113.10 → 203.0.113.0), IPv6 truncated to its /48 (2001:db8:1234:5678::1 → 2001:db8:1234::).
         requestSize: { type: integer, minimum: 0, description: Bytes }
         responseSize: { type: integer, minimum: 0, description: Bytes }
     RequestPage:

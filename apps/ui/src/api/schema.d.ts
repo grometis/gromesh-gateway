@@ -582,7 +582,8 @@ export interface paths {
         };
         /**
          * @description Request explorer over the same `requests` table, newest first. Credentials never reach the table (the
-         *     pipeline strips them), so a record carries no header or query values: only the path.
+         *     pipeline strips them), so a record carries no header or query values: only the path. `clientIp` is
+         *     masked for every role but admin.
          */
         get: operations["listRequests"];
         put?: never;
@@ -943,6 +944,10 @@ export interface components {
             /** @description Null when the request never reached an upstream */
             latencyUpstreamMs: number | null;
             latencyTotalMs: number;
+            /**
+             * @description Full address for admins only. Viewers and editors get it masked: IPv4 with the last octet zeroed
+             *     (203.0.113.10 → 203.0.113.0), IPv6 truncated to its /48 (2001:db8:1234:5678::1 → 2001:db8:1234::).
+             */
             clientIp: string;
             /** @description Bytes */
             requestSize: number;
@@ -2862,7 +2867,7 @@ export interface operations {
                      *           "latencyKongMs": 1,
                      *           "latencyUpstreamMs": 11,
                      *           "latencyTotalMs": 12,
-                     *           "clientIp": "203.0.113.10",
+                     *           "clientIp": "203.0.113.0",
                      *           "requestSize": 312,
                      *           "responseSize": 1804
                      *         }
