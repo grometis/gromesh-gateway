@@ -57,6 +57,7 @@ paths:
                   accessToken: { type: string }
                   expiresIn: { type: integer, description: seconds }
                   user: { $ref: "#/components/schemas/User" }
+              example: {"accessToken": "eyJhbGciOiJIUzI1NiJ9.example.signature", "expiresIn": 3600, "user": {"id": "3c2b1a09-8f7e-4d6c-9b5a-4f3e2d1c0b9a", "email": "editor@gromesh.dev", "name": "Ana Editora", "role": "editor", "active": true, "createdAt": "2026-10-15T12:00:00Z", "updatedAt": "2026-10-15T12:00:00Z"}}
         "401": { $ref: "#/components/responses/Unauthorized" }
   /me:
     get:
@@ -69,6 +70,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/User" }
+              example: {"id": "3c2b1a09-8f7e-4d6c-9b5a-4f3e2d1c0b9a", "email": "editor@gromesh.dev", "name": "Ana Editora", "role": "editor", "active": true, "createdAt": "2026-10-15T12:00:00Z", "updatedAt": "2026-10-15T12:00:00Z"}
         "401": { $ref: "#/components/responses/Unauthorized" }
 
   /users:
@@ -148,6 +150,7 @@ paths:
                   items:
                     type: array
                     items: { $ref: "#/components/schemas/Environment" }
+              example: {"items": [{"id": "0b3c6b5e-8d1f-4a51-9c64-2f0f6d1f8a11", "name": "producao", "description": "Tráfego de produção", "publishMode": "manual", "currentVersion": 3, "hasUnpublishedChanges": true, "createdAt": "2026-10-15T12:00:00Z", "updatedAt": "2026-10-15T12:00:00Z"}]}
     post:
       tags: [environments]
       operationId: createEnvironment
@@ -177,6 +180,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Environment" }
+              example: {"id": "0b3c6b5e-8d1f-4a51-9c64-2f0f6d1f8a11", "name": "producao", "description": "Tráfego de produção", "publishMode": "manual", "currentVersion": 3, "hasUnpublishedChanges": true, "createdAt": "2026-10-15T12:00:00Z", "updatedAt": "2026-10-15T12:00:00Z"}
         "404": { $ref: "#/components/responses/NotFound" }
     patch:
       tags: [environments]
@@ -221,6 +225,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ServicePage" }
+              example: {"items": [{"id": "6f1d2c3b-4a5e-4f60-8b7c-1d2e3f4a5b6c", "name": "orders", "protocol": "http", "host": "orders.internal", "port": 8080, "path": null, "enabled": true, "tags": [], "createdAt": "2026-10-15T12:00:00Z", "updatedAt": "2026-10-15T12:00:00Z"}], "nextCursor": null}
     post:
       tags: [services]
       operationId: createService
@@ -236,6 +241,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Service" }
+              example: {"id": "6f1d2c3b-4a5e-4f60-8b7c-1d2e3f4a5b6c", "name": "orders", "protocol": "http", "host": "orders.internal", "port": 8080, "path": null, "enabled": true, "tags": [], "createdAt": "2026-10-15T12:00:00Z", "updatedAt": "2026-10-15T12:00:00Z"}
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/ValidationError" }
   /environments/{envId}/services/{serviceId}:
@@ -250,6 +256,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Service" }
+              example: {"id": "6f1d2c3b-4a5e-4f60-8b7c-1d2e3f4a5b6c", "name": "orders", "protocol": "http", "host": "orders.internal", "port": 8080, "path": null, "enabled": true, "tags": [], "createdAt": "2026-10-15T12:00:00Z", "updatedAt": "2026-10-15T12:00:00Z"}
         "404": { $ref: "#/components/responses/NotFound" }
     put:
       tags: [services]
@@ -266,6 +273,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Service" }
+              example: {"id": "6f1d2c3b-4a5e-4f60-8b7c-1d2e3f4a5b6c", "name": "orders", "protocol": "http", "host": "orders.internal", "port": 8080, "path": null, "enabled": true, "tags": [], "createdAt": "2026-10-15T12:00:00Z", "updatedAt": "2026-10-15T12:00:00Z"}
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/ValidationError" }
@@ -298,6 +306,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/RoutePage" }
+              example: {"items": [{"id": "9a8b7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d", "name": "orders-api", "serviceId": "6f1d2c3b-4a5e-4f60-8b7c-1d2e3f4a5b6c", "protocols": ["http", "https"], "paths": ["/orders"], "stripPath": true, "preserveHost": false, "tags": [], "createdAt": "2026-10-15T12:00:00Z", "updatedAt": "2026-10-15T12:00:00Z"}], "nextCursor": null}
     post:
       tags: [routes]
       operationId: createRoute
@@ -313,6 +322,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Route" }
+              example: {"id": "9a8b7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d", "name": "orders-api", "serviceId": "6f1d2c3b-4a5e-4f60-8b7c-1d2e3f4a5b6c", "protocols": ["http", "https"], "paths": ["/orders"], "stripPath": true, "preserveHost": false, "tags": [], "createdAt": "2026-10-15T12:00:00Z", "updatedAt": "2026-10-15T12:00:00Z"}
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/ValidationError" }
   /environments/{envId}/routes/{routeId}:
@@ -327,6 +337,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Route" }
+              example: {"id": "9a8b7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d", "name": "orders-api", "serviceId": "6f1d2c3b-4a5e-4f60-8b7c-1d2e3f4a5b6c", "protocols": ["http", "https"], "paths": ["/orders"], "stripPath": true, "preserveHost": false, "tags": [], "createdAt": "2026-10-15T12:00:00Z", "updatedAt": "2026-10-15T12:00:00Z"}
         "404": { $ref: "#/components/responses/NotFound" }
     put:
       tags: [routes]
@@ -343,6 +354,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Route" }
+              example: {"id": "9a8b7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d", "name": "orders-api", "serviceId": "6f1d2c3b-4a5e-4f60-8b7c-1d2e3f4a5b6c", "protocols": ["http", "https"], "paths": ["/orders"], "stripPath": true, "preserveHost": false, "tags": [], "createdAt": "2026-10-15T12:00:00Z", "updatedAt": "2026-10-15T12:00:00Z"}
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/ValidationError" }
@@ -618,6 +630,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/PublishPreview" }
+              example: {"currentVersion": 3, "draftHash": "sha256:4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f", "hasChanges": true, "changes": [{"kind": "services", "id": "6f1d2c3b-4a5e-4f60-8b7c-1d2e3f4a5b6c", "label": "orders", "change": "added", "after": {"id": "6f1d2c3b-4a5e-4f60-8b7c-1d2e3f4a5b6c", "name": "orders", "protocol": "http", "host": "orders.internal", "port": 8080}}, {"kind": "routes", "id": "9a8b7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d", "label": "orders-api", "change": "added", "after": {"id": "9a8b7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d", "name": "orders-api", "service": "6f1d2c3b-4a5e-4f60-8b7c-1d2e3f4a5b6c", "paths": ["/orders"]}}]}
         "422": { $ref: "#/components/responses/ValidationError" }
   /environments/{envId}/snapshots:
     parameters: [{ $ref: "#/components/parameters/EnvId" }]
@@ -651,6 +664,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SnapshotSummary" }
+              example: {"version": 4, "hash": "sha256:4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f", "message": "Adiciona orders", "createdAt": "2026-10-15T12:00:00Z", "createdBy": {"id": "3c2b1a09-8f7e-4d6c-9b5a-4f3e2d1c0b9a", "name": "Ana Editora"}, "rollbackOf": null, "isCurrent": true}
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/ValidationError" }
   /environments/{envId}/snapshots/{version}:
