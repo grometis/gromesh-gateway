@@ -2,7 +2,9 @@
   "name": "gromesh-gateway",
   "private": true,
   "packageManager": "pnpm@10.28.0",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "build": "turbo run build",
     "test": "turbo run test",
@@ -16,5 +18,15 @@
     "@redocly/cli": "1.25.11",
     "turbo": "2.3.3",
     "typescript": "5.7.2"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@swc/core",
+      "esbuild"
+    ],
+    "ignoredBuiltDependencies": [
+      "@nestjs/core",
+      "core-js"
+    ]
   }
 }

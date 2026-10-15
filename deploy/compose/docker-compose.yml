@@ -1,5 +1,5 @@
 # Gromesh Gateway — local development stack.
-# Week 1 adds `control-plane` and `ui`; week 2 adds `agent` (sidecar sharing the kong-config volume).
+# W3-C1 adds `ui`; W3-X1 adds `agent` (sidecar sharing the kong-config volume).
 name: gromesh
 
 services:
@@ -48,6 +48,23 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
+
+  control-plane:
+    build:
+      context: ../..
+      dockerfile: apps/control-plane/Dockerfile
+    environment:
+      DATABASE_URL: postgres://gromesh:gromesh@postgres:5432/gromesh
+      MIGRATE_ON_START: "true"
+      # Week 1 only: direct push to Kong. Removed by W3-X1 (the agent applies snapshots).
+      KONG_ADMIN_URL: http://kong:8001
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kong:
+        condition: service_healthy
 
   # Sample upstream used by fixtures and e2e tests (service host "echo", port 80).
   echo:

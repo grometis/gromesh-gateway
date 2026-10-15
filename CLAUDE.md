@@ -16,7 +16,7 @@
 | --- | --- | --- |
 | `contracts/` | Contratos: API do control plane, protocolo do agente, schema do snapshot | OpenAPI 3.1, JSON Schema |
 | `packages/compiler/` | Modelo de domínio → config declarativa do Kong, hash, diff | TypeScript, Vitest |
-| `apps/control-plane/` | API REST, auth/RBAC, audit log, snapshots, endpoints do agente | NestJS, Prisma, Postgres |
+| `apps/control-plane/` | API REST, auth/RBAC, audit log, snapshots, endpoints do agente | NestJS (ESM), Drizzle ORM, Postgres |
 | `apps/ui/` | Interface web | React, Vite, TanStack Query, cliente gerado do OpenAPI |
 | `apps/agent/` | Sidecar do Kong | Go (binário estático) |
 | `deploy/compose/` | Ambiente local | Docker Compose |
@@ -36,7 +36,12 @@ pnpm lint:contracts       # valida os OpenAPI
 pnpm dev:up               # Postgres + Kong DB-less + backend echo
 pnpm smoke                # aplica contracts/examples/snapshot.example.json no Kong real e testa
 pnpm --filter @gromesh/compiler example   # regenera o exemplo do contrato
+pnpm --filter @gromesh/control-plane db:generate -- --name <nome>   # nova migração a partir de src/db/schema.ts
+pnpm --filter @gromesh/control-plane test:e2e                      # contra a stack do compose
 ```
+
+Os testes de integração do control plane usam um Postgres real: suba o do compose (`pnpm dev:up`) ou aponte `TEST_DATABASE_URL`.
+Cada execução cria e apaga um banco próprio.
 
 Go: `cd apps/agent && go test ./... && go vet ./...`
 
@@ -55,7 +60,9 @@ Go: `cd apps/agent && go test ./... && go vet ./...`
 ## Convenções
 
 - Identificadores, commits e mensagens de erro da API em inglês. Texto da UI em pt-BR.
-- TypeScript `strict`, ESM, sem `any` (use `unknown` + validação). Validação de entrada com o schema do contrato.
+- TypeScript `strict`, ESM, sem `any` (use `unknown` + validação). Corpos de requisição são validados pelo próprio contrato: `@Body(contractBody("ServiceWrite"))`. Regra que o JSON Schema não expressa vai no service, com erro 422 e `path`.
+- Banco: Drizzle, migrações SQL geradas em `apps/control-plane/drizzle/` (nunca editar uma migração já mergeada). Toda mutação roda em `db.transaction` e chama `audit(tx, ctx, …)` e, se mexer no gateway, `markDraftChanged(tx, envId)`.
+- Todo handler tem `@RequiredRole(...)` (ou `@Public()`); o guard global recusa handler sem papel.
 - API: JSON camelCase, ids UUID gerados pelo control plane, paginação por cursor `{ items, nextCursor }`, erros RFC 9457 (`application/problem+json` com `errors[].path`).
 - Commits: Conventional Commits (`feat(compiler): …`, `fix(agent): …`). PRs pequenos, um por tarefa.
 - Branch por tarefa: `task/<ID>-<slug>` (ex.: `task/W1-C1-control-plane-skeleton`). Trabalhe em git worktree próprio.

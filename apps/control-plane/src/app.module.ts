@@ -1,0 +1,27 @@
+import { type DynamicModule, Module } from "@nestjs/common";
+import { APP_FILTER, APP_GUARD } from "@nestjs/core";
+import { AuthGuard } from "./auth/auth.js";
+import { ProblemFilter } from "./common/problem.filter.js";
+import { APP_CONFIG, type AppConfig } from "./config.js";
+import { DbModule } from "./db/db.module.js";
+import { EnvironmentsModule } from "./environments/environments.js";
+import { GatewayModule } from "./gateway/gateway.js";
+import { HealthModule } from "./health.js";
+import { SnapshotsModule } from "./snapshots/snapshots.js";
+
+@Module({})
+export class AppModule {
+  static forRoot(config: AppConfig): DynamicModule {
+    return {
+      module: AppModule,
+      global: true,
+      imports: [DbModule, HealthModule, EnvironmentsModule, GatewayModule, SnapshotsModule],
+      providers: [
+        { provide: APP_CONFIG, useValue: config },
+        { provide: APP_GUARD, useClass: AuthGuard },
+        { provide: APP_FILTER, useClass: ProblemFilter },
+      ],
+      exports: [APP_CONFIG],
+    };
+  }
+}
