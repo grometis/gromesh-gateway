@@ -15,10 +15,18 @@ import (
 const maxSnapshotBytes = 64 << 20
 
 type client struct {
-	config Config
-	http   *http.Client
-	token  string
+	config    Config
+	http      *http.Client
+	applyHTTP *http.Client
+	token     string
 }
+
+type applyError struct {
+	statusCode int
+	message    string
+}
+
+func (e *applyError) Error() string { return e.message }
 
 func (c *client) request(ctx context.Context, method, endpoint, token string, body []byte, headers map[string]string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, method, endpoint, bytes.NewReader(body))
@@ -113,9 +121,13 @@ func (c *client) snapshot(ctx context.Context, hash string) (*Snapshot, error) {
 }
 
 func (c *client) apply(ctx context.Context, config []byte) error {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	res, err := c.request(ctx, "POST", endpoint(c.config.KongAdminURL, "/config"), "", config, nil)
+	applyClient := *c
+	if c.applyHTTP != nil {
+		applyClient.http = c.applyHTTP
+	}
+	res, err := applyClient.request(ctx, "POST", endpoint(c.config.KongAdminURL, "/config"), "", config, nil)
 	if err != nil {
 		return err
 	}
@@ -141,7 +153,7 @@ func (c *client) apply(ctx context.Context, config []byte) error {
 	if message == "" {
 		message = fmt.Sprintf("Kong returned HTTP %d", res.StatusCode)
 	}
-	return fmt.Errorf("%s", message)
+	return &applyError{statusCode: res.StatusCode, message: message}
 }
 
 func (c *client) report(ctx context.Context, status StatusReport) error {

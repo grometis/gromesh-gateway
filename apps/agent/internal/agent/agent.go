@@ -2,8 +2,10 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -19,6 +21,10 @@ type Agent struct {
 	statusMu     sync.RWMutex
 	applied      *Snapshot
 	failedHash   string
+	retryHash    string
+	applyAttempt int
+	nextApply    time.Time
+	applyRetry   func(int) time.Duration
 	streamIdle   time.Duration
 	poll         time.Duration
 	heartbeat    time.Duration
@@ -39,12 +45,28 @@ func New(config Config, logger *slog.Logger) (*Agent, error) {
 	transport.ResponseHeaderTimeout = 10 * time.Second
 	// Never forward bearer tokens (or config credentials) through redirects.
 	httpClient := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	applyTransport := transport.Clone()
+	applyTransport.ResponseHeaderTimeout = 60 * time.Second
+	applyHTTP := *httpClient
+	applyHTTP.Transport = applyTransport
 	return &Agent{
-		config: config, client: &client{config: config, http: httpClient},
+		config: config, client: &client{config: config, http: httpClient, applyHTTP: &applyHTTP},
 		store: store{path: config.SnapshotPath}, log: logger,
 		status:     StatusReport{NodeID: config.NodeID, State: "idle"},
-		streamIdle: 45 * time.Second, retry: retryDelay,
+		streamIdle: 45 * time.Second, retry: retryDelay, applyRetry: applyRetryDelay,
 	}, nil
+}
+
+func applyRetryDelay(attempt int) time.Duration {
+	ceiling := min(time.Second*time.Duration(1<<min(attempt, 6)), 60*time.Second)
+	return time.Duration(float64(ceiling) * (0.5 + 0.5*rand.Float64()))
+}
+
+func (a *Agent) resetApplyRetry(hash string) {
+	a.retryHash = hash
+	a.failedHash = ""
+	a.applyAttempt = 0
+	a.nextApply = time.Time{}
 }
 
 func (a *Agent) Run(ctx context.Context) error {
@@ -90,7 +112,13 @@ func (a *Agent) Run(ctx context.Context) error {
 		defer close(done)
 		a.events(ctx, wake)
 	}()
-	defer func() { cancel(); <-done; <-heartbeatDone; a.client.http.CloseIdleConnections() }()
+	defer func() {
+		cancel()
+		<-done
+		<-heartbeatDone
+		a.client.http.CloseIdleConnections()
+		a.client.applyHTTP.CloseIdleConnections()
+	}()
 	poll := time.NewTicker(a.poll)
 	defer poll.Stop()
 	go func() {
@@ -136,15 +164,20 @@ func (a *Agent) accept(snapshot *Snapshot, success bool) {
 	a.status.AppliedHash = &snapshot.Hash
 	a.status.FailedVersion, a.status.Error = nil, nil
 	a.statusMu.Unlock()
-	a.failedHash = ""
+	a.resetApplyRetry(snapshot.Hash)
 	a.appliedGauge.Store(snapshot.Version)
 	if success {
 		a.lastSuccess.Store(time.Now().Unix())
 	}
 }
 
-func (a *Agent) fail(ctx context.Context, snapshot *Snapshot, message string) {
-	a.failedHash = snapshot.Hash
+func (a *Agent) fail(ctx context.Context, snapshot *Snapshot, message string, permanent bool) {
+	if permanent {
+		a.failedHash = snapshot.Hash
+	} else {
+		a.nextApply = time.Now().Add(a.applyRetry(a.applyAttempt))
+		a.applyAttempt++
+	}
 	a.statusMu.Lock()
 	a.status.State = "failed"
 	a.status.FailedVersion = &snapshot.Version
@@ -167,11 +200,17 @@ func (a *Agent) refresh(ctx context.Context, environmentID string) {
 		}
 		return
 	}
-	if snapshot == nil || snapshot.Hash == a.failedHash {
+	if snapshot == nil {
 		return
 	}
 	if snapshot.EnvironmentID != environmentID {
 		a.log.Warn("snapshot environment mismatch")
+		return
+	}
+	if snapshot.Hash != a.retryHash {
+		a.resetApplyRetry(snapshot.Hash)
+	}
+	if snapshot.Hash == a.failedHash || time.Now().Before(a.nextApply) {
 		return
 	}
 	if a.applied != nil && snapshot.Version <= a.applied.Version {
@@ -179,7 +218,7 @@ func (a *Agent) refresh(ctx context.Context, environmentID string) {
 	}
 	pending, err := a.store.stage(snapshot)
 	if err != nil {
-		a.fail(ctx, snapshot, "cannot stage snapshot on disk")
+		a.fail(ctx, snapshot, "cannot stage snapshot on disk", false)
 		return
 	}
 	committed := false
@@ -195,14 +234,16 @@ func (a *Agent) refresh(ctx context.Context, environmentID string) {
 		a.statusMu.Unlock()
 		a.report(ctx)
 		if err := a.client.apply(ctx, snapshot.Config); err != nil {
-			a.fail(ctx, snapshot, err.Error())
+			var responseErr *applyError
+			permanent := errors.As(err, &responseErr) && (responseErr.statusCode == http.StatusBadRequest || responseErr.statusCode == http.StatusRequestEntityTooLarge)
+			a.fail(ctx, snapshot, err.Error(), permanent)
 			return
 		}
 	}
 	if err := pending.commit(); err != nil {
 		if pending.published {
 			a.accept(snapshot, true)
-			a.fail(ctx, snapshot, "snapshot applied but directory durability could not be confirmed")
+			a.fail(ctx, snapshot, "snapshot applied but directory durability could not be confirmed", false)
 			return
 		}
 		// Restore the running config when the durable commit cannot be completed.
@@ -211,7 +252,7 @@ func (a *Agent) refresh(ctx context.Context, environmentID string) {
 				a.log.Error("failed to restore running config after persistence failure")
 			}
 		}
-		a.fail(ctx, snapshot, "cannot commit snapshot on disk")
+		a.fail(ctx, snapshot, "cannot commit snapshot on disk", false)
 		return
 	}
 	committed = true

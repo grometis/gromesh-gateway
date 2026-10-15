@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -74,17 +75,19 @@ func receive[T any](t *testing.T, ch <-chan T, match func(T) bool) T {
 }
 
 type kongMock struct {
-	server  *httptest.Server
-	calls   atomic.Int64
-	failed  atomic.Bool
-	healthy atomic.Bool
-	bodies  chan []byte
-	onApply func(http.ResponseWriter, *http.Request, []byte)
+	server        *httptest.Server
+	calls         atomic.Int64
+	failed        atomic.Bool
+	failureStatus atomic.Int64
+	healthy       atomic.Bool
+	bodies        chan []byte
+	onApply       func(http.ResponseWriter, *http.Request, []byte)
 }
 
 func newKong(t *testing.T) *kongMock {
 	t.Helper()
 	k := &kongMock{bodies: make(chan []byte, 64)}
+	k.failureStatus.Store(http.StatusBadRequest)
 	k.healthy.Store(true)
 	k.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "" {
@@ -109,7 +112,7 @@ func newKong(t *testing.T) *kongMock {
 				return
 			}
 			if k.failed.Load() {
-				w.WriteHeader(http.StatusBadRequest)
+				w.WriteHeader(int(k.failureStatus.Load()))
 				fmt.Fprint(w, "Kong validation failed: "+strings.Repeat("x", 9<<10))
 				return
 			}
@@ -133,6 +136,7 @@ func newTestAgent(t *testing.T, cp *cpmock.Server, k *kongMock, path string) *Ag
 		t.Fatal(err)
 	}
 	a.retry = func(int) time.Duration { return 5 * time.Millisecond }
+	a.applyRetry = func(int) time.Duration { return 80 * time.Millisecond }
 	a.poll = 20 * time.Millisecond
 	a.heartbeat = 25 * time.Millisecond
 	return a
@@ -301,15 +305,17 @@ func TestRunRecoversFromUnusablePersistedSnapshot(t *testing.T) {
 	}
 }
 
-func TestFailedKongKeepsGoodSnapshotAndSuppressesSameHash(t *testing.T) {
+func TestHTTP400KeepsGoodSnapshotAndSuppressesSameHash(t *testing.T) {
 	cp := cpmock.New()
 	t.Cleanup(cp.Close)
 	cp.SetSSEDown(true)
 	k := newKong(t)
+	k.failureStatus.Store(http.StatusBadRequest)
 	path := filepath.Join(t.TempDir(), "kong.json")
 	s1 := example(t, 1)
 	cp.SetSnapshot(encoded(t, s1))
 	a := newTestAgent(t, cp, k, path)
+	a.applyRetry = func(int) time.Duration { return 0 }
 	start(t, a)
 	waitState(t, cp, "applied", 1)
 	k.failed.Store(true)
@@ -348,6 +354,173 @@ func TestFailedKongKeepsGoodSnapshotAndSuppressesSameHash(t *testing.T) {
 	}
 	if a.lastSuccess.Load() == 0 {
 		t.Fatal("last success timestamp was not recorded")
+	}
+}
+
+func TestTransientApplyFailureRecoversWithoutNewSnapshot(t *testing.T) {
+	for _, code := range []int{http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusServiceUnavailable, http.StatusGatewayTimeout, 0} {
+		t.Run(fmt.Sprintf("status-%d", code), func(t *testing.T) {
+			cp := cpmock.New()
+			t.Cleanup(cp.Close)
+			k := newKong(t)
+			var failing atomic.Bool
+			failing.Store(true)
+			attempts := make(chan time.Time, 16)
+			k.onApply = func(w http.ResponseWriter, _ *http.Request, _ []byte) {
+				attempts <- time.Now()
+				if !failing.Load() {
+					w.WriteHeader(http.StatusCreated)
+					return
+				}
+				if code == 0 {
+					conn, _, err := w.(http.Hijacker).Hijack()
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					conn.Close()
+					return
+				}
+				w.WriteHeader(code)
+				fmt.Fprint(w, cpmock.RegistrationToken+" "+cpmock.NodeToken+" "+strings.Repeat("x", 9<<10))
+			}
+			current := example(t, 1)
+			cp.SetSnapshot(encoded(t, current))
+			a := newTestAgent(t, cp, k, filepath.Join(t.TempDir(), "kong.json"))
+			a.poll = 10 * time.Millisecond
+			stop := start(t, a)
+			receive(t, cp.EventConnections, nil)
+			failed := waitState(t, cp, "failed", 1)
+			if failed.Error == nil || *failed.Error == "" || len(*failed.Error) > 8<<10 || strings.Contains(*failed.Error, cpmock.RegistrationToken) || strings.Contains(*failed.Error, cpmock.NodeToken) {
+				t.Fatal("transient failure was not reported with a bounded, redacted error")
+			}
+			failing.Store(false)
+			for range 5 {
+				cp.Emit(fmt.Sprintf("event: snapshot.published\ndata: {\"version\":1,\"hash\":%q}\n\n", current.Hash))
+			}
+			waitState(t, cp, "applied", 1)
+			stop()
+			first, second := receive(t, attempts, nil), receive(t, attempts, nil)
+			if second.Sub(first) < 80*time.Millisecond {
+				t.Fatal("polls or SSE events reapplied the snapshot inside the backoff window")
+			}
+			if k.calls.Load() != 2 {
+				t.Fatalf("expected one failed and one successful apply, got %d", k.calls.Load())
+			}
+		})
+	}
+}
+
+func TestHTTP413SuppressesSameHashUntilAnotherArrives(t *testing.T) {
+	cp := cpmock.New()
+	t.Cleanup(cp.Close)
+	k := newKong(t)
+	k.failureStatus.Store(http.StatusRequestEntityTooLarge)
+	k.failed.Store(true)
+	cp.SetSnapshot(encoded(t, example(t, 1)))
+	a := newTestAgent(t, cp, k, filepath.Join(t.TempDir(), "kong.json"))
+	a.applyRetry = func(int) time.Duration { return 0 }
+	stop := start(t, a)
+	waitState(t, cp, "failed", 1)
+	k.failed.Store(false)
+	for range 5 {
+		receive(t, cp.SnapshotRequests, nil)
+	}
+	if k.calls.Load() != 1 {
+		t.Fatal("HTTP 413 did not park the rejected hash")
+	}
+	cp.SetSnapshot(encoded(t, example(t, 2)))
+	waitState(t, cp, "applied", 2)
+	stop()
+	if k.calls.Load() != 2 {
+		t.Fatal("a new hash did not clear the HTTP 413 rejection")
+	}
+}
+
+func TestApplyBackoffResetsForNewHashAndSuccess(t *testing.T) {
+	cp := cpmock.New()
+	t.Cleanup(cp.Close)
+	k := newKong(t)
+	k.failureStatus.Store(http.StatusServiceUnavailable)
+	k.failed.Store(true)
+	a := newTestAgent(t, cp, k, filepath.Join(t.TempDir(), "kong.json"))
+	if _, err := a.client.register(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	var attempts []int
+	a.applyRetry = func(attempt int) time.Duration {
+		attempts = append(attempts, attempt)
+		if len(attempts) == 1 {
+			return time.Hour
+		}
+		return 0
+	}
+	cp.SetSnapshot(encoded(t, example(t, 1)))
+	a.refresh(t.Context(), cpmock.EnvironmentID)
+	a.refresh(t.Context(), cpmock.EnvironmentID)
+	if k.calls.Load() != 1 {
+		t.Fatal("same hash was retried before its backoff expired")
+	}
+	cp.SetSnapshot(encoded(t, example(t, 2)))
+	a.refresh(t.Context(), cpmock.EnvironmentID)
+	a.refresh(t.Context(), cpmock.EnvironmentID)
+	if k.calls.Load() != 3 {
+		t.Fatal("new hash did not bypass the old backoff or retry after expiry")
+	}
+	k.failed.Store(false)
+	a.refresh(t.Context(), cpmock.EnvironmentID)
+	waitState(t, cp, "applied", 2)
+	if a.applyAttempt != 0 || !a.nextApply.IsZero() {
+		t.Fatal("successful apply did not reset the retry backoff")
+	}
+	k.failed.Store(true)
+	cp.SetSnapshot(encoded(t, example(t, 3)))
+	a.refresh(t.Context(), cpmock.EnvironmentID)
+	if !slices.Equal(attempts, []int{0, 0, 1, 0}) {
+		t.Fatalf("unexpected backoff attempts across hashes and success: %v", attempts)
+	}
+}
+
+func TestApplyBackoffIsExponentialWithJitterCappedAt60Seconds(t *testing.T) {
+	for attempt := range 20 {
+		seen := make(map[time.Duration]bool)
+		ceiling := min(time.Second*time.Duration(1<<min(attempt, 6)), 60*time.Second)
+		for range 20 {
+			delay := applyRetryDelay(attempt)
+			if delay < ceiling/2 || delay > ceiling {
+				t.Fatalf("apply backoff outside exponential bounds: attempt %d, delay %v", attempt, delay)
+			}
+			seen[delay] = true
+		}
+		if len(seen) < 2 {
+			t.Fatal("apply backoff has no jitter")
+		}
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestApplyAllows60SecondsForKongResponse(t *testing.T) {
+	cp := cpmock.New()
+	t.Cleanup(cp.Close)
+	k := newKong(t)
+	a := newTestAgent(t, cp, k, filepath.Join(t.TempDir(), "kong.json"))
+	transport := a.client.applyHTTP.Transport.(*http.Transport)
+	defer transport.CloseIdleConnections()
+	if transport.ResponseHeaderTimeout != 60*time.Second {
+		t.Fatal("Kong response headers are still limited by a shorter timeout")
+	}
+	a.client.applyHTTP.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		deadline, ok := r.Context().Deadline()
+		if !ok || time.Until(deadline) < 59*time.Second || time.Until(deadline) > 60*time.Second {
+			t.Error("Kong apply request does not have a 60 second deadline")
+		}
+		return transport.RoundTrip(r)
+	})
+	if err := a.client.apply(t.Context(), example(t, 1).Config); err != nil {
+		t.Fatal(err)
 	}
 }
 
