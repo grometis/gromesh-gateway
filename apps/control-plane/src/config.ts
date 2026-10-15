@@ -9,6 +9,8 @@ export interface AppConfig {
   databaseUrl: string;
   /** Week 1 only: the control plane pushes snapshots straight to Kong. Removed when the agent lands (W3-X1). */
   kongAdminUrl: string | null;
+  /** A Kong (DB-less, no traffic) whose Admin API validates plugin configs: POST /schemas/plugins/validate. */
+  kongValidatorUrl: string | null;
   contractsDir: string;
   migrateOnStart: boolean;
   /** Auto-publish environments fire this long after their last draft edit (debounce). */
@@ -24,6 +26,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     port: Number(env.PORT ?? 3000),
     databaseUrl,
     kongAdminUrl: env.KONG_ADMIN_URL || null,
+    kongValidatorUrl: env.KONG_VALIDATOR_URL || null,
     contractsDir: env.CONTRACTS_DIR ?? resolve(PACKAGE_ROOT, "../../contracts"),
     migrateOnStart: env.MIGRATE_ON_START === "true",
     autoPublishDelayMs: Number(env.AUTO_PUBLISH_DELAY_MS ?? 3000),

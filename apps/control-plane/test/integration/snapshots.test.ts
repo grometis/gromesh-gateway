@@ -177,7 +177,7 @@ describe("snapshots read API", () => {
 });
 
 describe("credential masking", () => {
-  // No credentials exist before W2-C2 and the dev user is admin, so this is checked on the mapper itself.
+  // The dev user is admin, so the non-admin view is checked on the mapper itself.
   const config = {
     _format_version: "3.0" as const,
     _transform: true as const,
@@ -185,14 +185,20 @@ describe("credential masking", () => {
     routes: [],
     consumers: [],
     keyauth_credentials: [{ id: crypto.randomUUID(), consumer: crypto.randomUUID(), key: "s3cr3t", tags: [] }],
-    plugins: [],
+    plugins: [{ id: crypto.randomUUID(), name: "session", enabled: true, config: { secret: "p4ss", cookie_name: "s" }, tags: [] }],
   };
+  const redact = (_name: string, c: Record<string, unknown>) => ({ ...c, secret: "REDACTED" });
 
   it("hides key-auth keys from non-admins only", () => {
     expect(maskConfigFor("admin", config).keyauth_credentials[0]!.key).toBe("s3cr3t");
     expect(maskConfigFor("editor", config).keyauth_credentials[0]!.key).toBe("REDACTED");
     expect(maskConfigFor("viewer", config).keyauth_credentials[0]!.key).toBe("REDACTED");
     expect(config.keyauth_credentials[0]!.key).toBe("s3cr3t");
+  });
+
+  it("hides plugin secrets from non-admins only", () => {
+    expect(maskConfigFor("admin", config, redact).plugins[0]!.config).toEqual({ secret: "p4ss", cookie_name: "s" });
+    expect(maskConfigFor("viewer", config, redact).plugins[0]!.config).toEqual({ secret: "REDACTED", cookie_name: "s" });
   });
 });
 

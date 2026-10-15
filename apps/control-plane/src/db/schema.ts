@@ -8,6 +8,7 @@ import {
   primaryKey,
   text,
   timestamp,
+  unique,
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
@@ -91,6 +92,64 @@ export const routes = pgTable(
   ],
 );
 
+export const consumers = pgTable(
+  "consumers",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    environmentId: uuid("environment_id")
+      .notNull()
+      .references(() => environments.id, { onDelete: "cascade" }),
+    username: text("username"),
+    customId: text("custom_id"),
+    tags: text("tags").array().notNull().default(sql`'{}'::text[]`),
+    ...timestamps,
+  },
+  (t) => [
+    uniqueIndex("consumers_env_username_uq").on(t.environmentId, t.username),
+    uniqueIndex("consumers_env_custom_id_uq").on(t.environmentId, t.customId),
+  ],
+);
+
+export const keyAuthCredentials = pgTable(
+  "keyauth_credentials",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    environmentId: uuid("environment_id")
+      .notNull()
+      .references(() => environments.id, { onDelete: "cascade" }),
+    consumerId: uuid("consumer_id")
+      .notNull()
+      .references(() => consumers.id, { onDelete: "cascade" }),
+    // Kong needs the clear key in the declarative config, so it cannot be stored hashed.
+    key: text("key").notNull(),
+    tags: text("tags").array().notNull().default(sql`'{}'::text[]`),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("keyauth_env_key_uq").on(t.environmentId, t.key), index("keyauth_consumer_idx").on(t.consumerId)],
+);
+
+export const plugins = pgTable(
+  "plugins",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    environmentId: uuid("environment_id")
+      .notNull()
+      .references(() => environments.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    enabled: boolean("enabled").notNull().default(true),
+    // A scoped plugin goes away with the entity it is attached to.
+    serviceId: uuid("service_id").references(() => services.id, { onDelete: "cascade" }),
+    routeId: uuid("route_id").references(() => routes.id, { onDelete: "cascade" }),
+    consumerId: uuid("consumer_id").references(() => consumers.id, { onDelete: "cascade" }),
+    config: jsonb("config").$type<Record<string, unknown>>().notNull(),
+    protocols: text("protocols").array(),
+    tags: text("tags").array().notNull().default(sql`'{}'::text[]`),
+    ...timestamps,
+  },
+  // Kong allows one instance of a plugin per (name, service, route, consumer); NULL counts as a value.
+  (t) => [unique("plugins_env_scope_uq").on(t.environmentId, t.name, t.serviceId, t.routeId, t.consumerId).nullsNotDistinct()],
+);
+
 export const snapshots = pgTable(
   "snapshots",
   {
@@ -130,4 +189,7 @@ export const auditEvents = pgTable(
 export type EnvironmentRow = typeof environments.$inferSelect;
 export type ServiceRow = typeof services.$inferSelect;
 export type RouteRow = typeof routes.$inferSelect;
+export type ConsumerRow = typeof consumers.$inferSelect;
+export type KeyAuthCredentialRow = typeof keyAuthCredentials.$inferSelect;
+export type PluginRow = typeof plugins.$inferSelect;
 export type SnapshotRow = typeof snapshots.$inferSelect;

@@ -9,7 +9,9 @@ import { contractBody } from "../common/contract.js";
 import { decodeCursor, parseLimit, toPage } from "../common/pagination.js";
 import { conflict, notFound, unprocessable } from "../common/problem.js";
 import { DB, type Db, type Executor } from "../db/db.js";
-import { routes, services, type RouteRow, type ServiceRow } from "../db/schema.js";
+import { consumerValues, keyAuthValues } from "../consumers/consumers.js";
+import { consumers, keyAuthCredentials, plugins, routes, services, type RouteRow, type ServiceRow } from "../db/schema.js";
+import { pluginValues } from "../plugins/plugins.js";
 import { markDraftChanged, requireEnvironment, uuidParam } from "../environments/environments.js";
 
 /* ---------------- mapping ---------------- */
@@ -100,9 +102,12 @@ function listFilter(envCol: PgColumn, nameCol: PgColumn, idCol: PgColumn, envId:
 
 /** Everything in the environment's draft that affects traffic, in the compiler's domain model. */
 export async function loadGatewayState(tx: Executor, envId: string): Promise<GatewayState> {
-  const [svcRows, routeRows] = await Promise.all([
+  const [svcRows, routeRows, consumerRows, keyRows, pluginRows] = await Promise.all([
     tx.select().from(services).where(eq(services.environmentId, envId)),
     tx.select().from(routes).where(eq(routes.environmentId, envId)),
+    tx.select().from(consumers).where(eq(consumers.environmentId, envId)),
+    tx.select().from(keyAuthCredentials).where(eq(keyAuthCredentials.environmentId, envId)),
+    tx.select().from(plugins).where(eq(plugins.environmentId, envId)),
   ]);
   return {
     services: svcRows.map((s) => {
@@ -113,23 +118,44 @@ export async function loadGatewayState(tx: Executor, envId: string): Promise<Gat
       const { createdAt: _c, updatedAt: _u, ...route } = toRoute(r);
       return route;
     }),
-    // W2-C2 adds consumers, key-auth credentials and plugins (here and in restoreGatewayState).
-    consumers: [],
-    keyAuthCredentials: [],
-    plugins: [],
+    consumers: consumerRows.map((c) => ({ id: c.id, username: c.username, customId: c.customId, tags: c.tags })),
+    keyAuthCredentials: keyRows.map((k) => ({ id: k.id, consumerId: k.consumerId, key: k.key, tags: k.tags })),
+    plugins: pluginRows.map((p) => ({
+      id: p.id,
+      name: p.name,
+      enabled: p.enabled,
+      scope: { serviceId: p.serviceId, routeId: p.routeId, consumerId: p.consumerId },
+      config: p.config,
+      protocols: optional(p.protocols),
+      tags: p.tags,
+    })),
   };
 }
 
 /** Replaces the environment's draft with `state`, keeping entity ids (rollback). */
 export async function restoreGatewayState(tx: Executor, envId: string, state: GatewayState): Promise<void> {
-  // Routes first: they reference services with ON DELETE RESTRICT.
+  // Dependents first: plugins and credentials reference the rest, routes reference services (ON DELETE RESTRICT).
+  await tx.delete(plugins).where(eq(plugins.environmentId, envId));
+  await tx.delete(keyAuthCredentials).where(eq(keyAuthCredentials.environmentId, envId));
   await tx.delete(routes).where(eq(routes.environmentId, envId));
+  await tx.delete(consumers).where(eq(consumers.environmentId, envId));
   await tx.delete(services).where(eq(services.environmentId, envId));
   if (state.services.length > 0) {
     await tx.insert(services).values(state.services.map((s) => ({ id: s.id, environmentId: envId, ...serviceValues(s) })));
   }
   if (state.routes.length > 0) {
     await tx.insert(routes).values(state.routes.map((r) => ({ id: r.id, environmentId: envId, ...routeValues(r) })));
+  }
+  if (state.consumers.length > 0) {
+    await tx.insert(consumers).values(state.consumers.map((c) => ({ id: c.id, environmentId: envId, ...consumerValues(c) })));
+  }
+  if (state.keyAuthCredentials.length > 0) {
+    await tx
+      .insert(keyAuthCredentials)
+      .values(state.keyAuthCredentials.map((k) => ({ id: k.id, environmentId: envId, ...keyAuthValues(k) })));
+  }
+  if (state.plugins.length > 0) {
+    await tx.insert(plugins).values(state.plugins.map((p) => ({ id: p.id, environmentId: envId, ...pluginValues(p) })));
   }
 }
 

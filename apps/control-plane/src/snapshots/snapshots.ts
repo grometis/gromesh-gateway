@@ -18,6 +18,7 @@ import {
   buildSnapshot,
   CompileError,
   diffConfigs,
+  type EntityChange,
   type GatewayState,
   type KongDeclarativeConfig,
   type SnapshotEnvelope,
@@ -35,6 +36,7 @@ import { environments, snapshots, type EnvironmentRow, type SnapshotRow } from "
 import { requireEnvironment, uuidParam } from "../environments/environments.js";
 import { loadGatewayState, restoreGatewayState } from "../gateway/gateway.js";
 import { KongPusher } from "../kong/kong-pusher.js";
+import { PluginCatalog, PluginCatalogModule } from "../plugin-catalog/catalog.js";
 
 type SnapshotSummaryRow = Pick<SnapshotRow, "version" | "hash" | "message" | "createdAt" | "createdBy" | "rollbackOf">;
 
@@ -51,10 +53,26 @@ export function toSnapshotSummary(r: SnapshotSummaryRow, isCurrent: boolean, cha
   };
 }
 
-/** Credential keys are only readable by admins (contract: getSnapshot). */
-export function maskConfigFor(role: Role, config: KongDeclarativeConfig): KongDeclarativeConfig {
+type RedactPluginConfig = (name: string, config: Record<string, unknown>) => Record<string, unknown>;
+
+/** Credential keys and plugin secrets are only readable by admins (contract: getSnapshot). */
+export function maskConfigFor(role: Role, config: KongDeclarativeConfig, redact: RedactPluginConfig = (_n, c) => c): KongDeclarativeConfig {
   if (role === "admin") return config;
-  return { ...config, keyauth_credentials: config.keyauth_credentials.map((c) => ({ ...c, key: "REDACTED" })) };
+  return {
+    ...config,
+    keyauth_credentials: config.keyauth_credentials.map((c) => ({ ...c, key: "REDACTED" })),
+    plugins: config.plugins.map((p) => ({ ...p, config: redact(p.name, p.config) })),
+  };
+}
+
+/** Diffs never carry plugin secrets (the compiler already redacts credential keys). */
+function redactChanges(changes: EntityChange[], redact: RedactPluginConfig): EntityChange[] {
+  const plugin = (e: unknown) => {
+    if (!e || typeof e !== "object") return e;
+    const { name, config } = e as { name?: unknown; config?: unknown };
+    return typeof name === "string" && config && typeof config === "object" ? { ...e, config: redact(name, config as Record<string, unknown>) } : e;
+  };
+  return changes.map((c) => (c.kind === "plugins" ? { ...c, before: plugin(c.before), after: plugin(c.after) } : c));
 }
 
 const versionParam = () => new ParseIntPipe({ errorHttpStatusCode: 404 });
@@ -84,7 +102,10 @@ export class SnapshotsService {
   constructor(
     @Inject(DB) private readonly db: Db,
     private readonly kong: KongPusher,
+    private readonly catalog: PluginCatalog,
   ) {}
+
+  private readonly redact: RedactPluginConfig = (name, config) => this.catalog.redactConfig(name, config);
 
   /** Compiles the draft into version N+1. The environment row lock serialises concurrent publishes. */
   async publish(ctx: RequestContext, envId: string, body: PublishRequest) {
@@ -169,7 +190,7 @@ export class SnapshotsService {
           currentVersion: env.currentVersion,
           draftHash: envelope.hash,
           hasChanges: current?.hash !== envelope.hash,
-          changes: diffConfigs(current?.config ?? null, envelope.config),
+          changes: redactChanges(diffConfigs(current?.config ?? null, envelope.config), this.redact),
         };
       },
       { isolationLevel: "repeatable read", accessMode: "read only" },
@@ -213,7 +234,7 @@ export class SnapshotsService {
       hash: row.hash,
       environmentId: row.environmentId,
       createdAt: row.createdAt.toISOString(),
-      config: maskConfigFor(ctx.role, row.config),
+      config: maskConfigFor(ctx.role, row.config, this.redact),
     };
   }
 
@@ -228,7 +249,7 @@ export class SnapshotsService {
     }
     const target = await this.requireSnapshot(this.db, envId, version);
     const before = base === null ? null : await this.requireSnapshot(this.db, envId, base);
-    return { items: diffConfigs(before?.config ?? null, target.config) };
+    return { items: redactChanges(diffConfigs(before?.config ?? null, target.config), this.redact) };
   }
 
   private async prepare(tx: Executor, env: EnvironmentRow): Promise<PreparedPublish> {
@@ -397,5 +418,5 @@ export class SnapshotsController {
   }
 }
 
-@Module({ controllers: [SnapshotsController], providers: [SnapshotsService, AutoPublisher, KongPusher] })
+@Module({ imports: [PluginCatalogModule], controllers: [SnapshotsController], providers: [SnapshotsService, AutoPublisher, KongPusher] })
 export class SnapshotsModule {}

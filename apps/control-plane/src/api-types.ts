@@ -36,3 +36,29 @@ export interface PublishRequest {
   message?: string;
   expectedCurrentVersion?: number | null;
 }
+
+export interface ConsumerWrite {
+  username?: string | null;
+  customId?: string | null;
+  tags?: string[];
+}
+
+export interface KeyAuthCredentialWrite {
+  key?: string;
+  tags?: string[];
+}
+
+export interface PluginScope {
+  serviceId?: string | null;
+  routeId?: string | null;
+  consumerId?: string | null;
+}
+
+export interface PluginWrite {
+  name: string;
+  enabled?: boolean;
+  scope?: PluginScope;
+  config: Record<string, unknown>;
+  protocols?: string[];
+  tags?: string[];
+}

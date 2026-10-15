@@ -1,0 +1,275 @@
+{
+  "kongVersion": "3.9.3",
+  "items": [
+    {
+      "name": "acl",
+      "category": "security",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "acme",
+      "category": "security",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "ai-prompt-decorator",
+      "category": "ai",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "ai-prompt-guard",
+      "category": "ai",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "ai-prompt-template",
+      "category": "ai",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "ai-proxy",
+      "category": "ai",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "ai-request-transformer",
+      "category": "ai",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "ai-response-transformer",
+      "category": "ai",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "aws-lambda",
+      "category": "serverless",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "azure-functions",
+      "category": "serverless",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "basic-auth",
+      "category": "authentication",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "bot-detection",
+      "category": "security",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "correlation-id",
+      "category": "transformation",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "cors",
+      "category": "security",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "datadog",
+      "category": "observability",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "file-log",
+      "category": "logging",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "grpc-gateway",
+      "category": "transformation",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "grpc-web",
+      "category": "transformation",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "hmac-auth",
+      "category": "authentication",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "http-log",
+      "category": "logging",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "ip-restriction",
+      "category": "security",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "jwt",
+      "category": "authentication",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "key-auth",
+      "category": "authentication",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "ldap-auth",
+      "category": "authentication",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "loggly",
+      "category": "logging",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "oauth2",
+      "category": "authentication",
+      "source": "bundled",
+      "supportedInDbless": false
+    },
+    {
+      "name": "opentelemetry",
+      "category": "observability",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "post-function",
+      "category": "serverless",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "pre-function",
+      "category": "serverless",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "prometheus",
+      "category": "observability",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "proxy-cache",
+      "category": "traffic-control",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "rate-limiting",
+      "category": "traffic-control",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "redirect",
+      "category": "traffic-control",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "request-size-limiting",
+      "category": "traffic-control",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "request-termination",
+      "category": "traffic-control",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "request-transformer",
+      "category": "transformation",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "response-ratelimiting",
+      "category": "traffic-control",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "response-transformer",
+      "category": "transformation",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "session",
+      "category": "authentication",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "standard-webhooks",
+      "category": "transformation",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "statsd",
+      "category": "observability",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "syslog",
+      "category": "logging",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "tcp-log",
+      "category": "logging",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "udp-log",
+      "category": "logging",
+      "source": "bundled",
+      "supportedInDbless": true
+    },
+    {
+      "name": "zipkin",
+      "category": "observability",
+      "source": "bundled",
+      "supportedInDbless": true
+    }
+  ]
+}
