@@ -113,22 +113,19 @@ describe("services and routes", () => {
 });
 
 describe("publish", () => {
-  it("compiles the draft, versions it and pushes it to Kong", async () => {
+  it("compiles and durably versions the draft for agents", async () => {
     const envId = await newEnv();
     const svc = await newService(envId);
     const route = await newRoute(envId, svc.id);
     expect((await h.api("GET", `/environments/${envId}`)).body.hasUnpublishedChanges).toBe(true);
 
-    const pushedBefore = h.kong.configs.length;
     const v1 = await h.api("POST", `/environments/${envId}/snapshots`, { message: "first" });
     expect(v1.status).toBe(201);
     expect(v1.body).toMatchObject({ version: 1, isCurrent: true, changeCount: 2, message: "first", createdBy: { name: "Dev Admin" } });
     expect(v1.body.hash).toMatch(/^sha256:[0-9a-f]{64}$/);
 
-    const pushed = h.kong.configs.at(-1) as any;
-    expect(h.kong.configs.length).toBe(pushedBefore + 1);
-    expect(pushed._format_version).toBe("3.0");
-    expect(pushed.routes[0]).toMatchObject({ id: route.id, service: svc.id, paths: ["/echo"] });
+    const saved = await h.api("GET", `/environments/${envId}/snapshots/1`);
+    expect(saved.body.config.routes[0]).toMatchObject({ id: route.id, service: svc.id, paths: ["/echo"] });
 
     const env = (await h.api("GET", `/environments/${envId}`)).body;
     expect(env).toMatchObject({ currentVersion: 1, hasUnpublishedChanges: false });
@@ -144,18 +141,12 @@ describe("publish", () => {
     expect(v2.body).toMatchObject({ version: 2, changeCount: 1 });
   });
 
-  it("keeps the version when Kong rejects it and reports 502", async () => {
+  it("publishes without any Kong data plane connected", async () => {
     const envId = await newEnv();
     const svc = await newService(envId);
     await newRoute(envId, svc.id);
-    h.kong.status = 400;
-    try {
-      const res = await h.api("POST", `/environments/${envId}/snapshots`, {});
-      expect(res.status).toBe(502);
-      expect(res.body.detail).toContain("Published version 1");
-    } finally {
-      h.kong.status = 201;
-    }
+    const res = await h.api("POST", `/environments/${envId}/snapshots`, {});
+    expect(res.status).toBe(201);
     expect((await h.api("GET", `/environments/${envId}`)).body.currentVersion).toBe(1);
   });
 

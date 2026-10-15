@@ -1,2 +1,1 @@
-# Boot config: empty. Real config arrives as a published snapshot (POST /config).
-_format_version: "3.0"
+{"_format_version":"3.0"}

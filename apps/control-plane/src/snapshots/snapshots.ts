@@ -35,7 +35,7 @@ import { DB, type Db, type Executor, type Tx } from "../db/db.js";
 import { environments, snapshots, type EnvironmentRow, type SnapshotRow } from "../db/schema.js";
 import { requireEnvironment, uuidParam } from "../environments/environments.js";
 import { loadGatewayState, restoreGatewayState } from "../gateway/gateway.js";
-import { KongPusher } from "../kong/kong-pusher.js";
+import { AGENT_CHANNEL } from "../clusters/clusters.js";
 import { PluginCatalog, PluginCatalogModule } from "../plugin-catalog/catalog.js";
 
 type SnapshotSummaryRow = Pick<SnapshotRow, "version" | "hash" | "message" | "createdAt" | "createdBy" | "rollbackOf">;
@@ -101,7 +101,6 @@ export class SnapshotsService {
 
   constructor(
     @Inject(DB) private readonly db: Db,
-    private readonly kong: KongPusher,
     private readonly catalog: PluginCatalog,
   ) {}
 
@@ -109,7 +108,7 @@ export class SnapshotsService {
 
   /** Compiles the draft into version N+1. The environment row lock serialises concurrent publishes. */
   async publish(ctx: RequestContext, envId: string, body: PublishRequest) {
-    const { row, changeCount, envelope } = await this.db.transaction(async (tx) => {
+    const { row, changeCount } = await this.db.transaction(async (tx) => {
       const env = await requireEnvironment(tx, envId, true);
       if (body.expectedCurrentVersion !== undefined && body.expectedCurrentVersion !== env.currentVersion) {
         throw conflict(`Current version is ${env.currentVersion ?? "none"}, expected ${body.expectedCurrentVersion ?? "none"}`);
@@ -118,13 +117,12 @@ export class SnapshotsService {
       if (prepared.current?.hash === prepared.envelope.hash) throw conflict("Nothing to publish: the draft equals the current version");
       return this.commit(tx, ctx, env, prepared, { message: body.message ?? null, rollbackOf: null });
     });
-    await this.kong.push(envelope);
     return toSnapshotSummary(row, true, changeCount);
   }
 
   /** Restores the draft to `version` and publishes it as a new version (unpublished edits are discarded). */
   async rollback(ctx: RequestContext, envId: string, version: number) {
-    const { row, changeCount, envelope } = await this.db.transaction(async (tx) => {
+    const { row, changeCount } = await this.db.transaction(async (tx) => {
       const env = await requireEnvironment(tx, envId, true);
       const target = await this.requireSnapshot(tx, envId, version);
       await restoreGatewayState(tx, envId, target.state);
@@ -134,7 +132,6 @@ export class SnapshotsService {
       }
       return this.commit(tx, ctx, env, prepared, { message: `Rollback to version ${version}`, rollbackOf: version });
     });
-    await this.kong.push(envelope);
     return toSnapshotSummary(row, true, changeCount);
   }
 
@@ -144,7 +141,6 @@ export class SnapshotsService {
    * Returns false when the draft does not compile, so the caller stops retrying until the next edit.
    */
   async autoPublish(envId: string, delayMs: number): Promise<boolean> {
-    let envelope: SnapshotEnvelope | null = null;
     const compiled = await this.db.transaction(async (tx) => {
       const [env] = await tx
         .select()
@@ -174,10 +170,9 @@ export class SnapshotsService {
         await tx.update(environments).set({ hasUnpublishedChanges: false }).where(eq(environments.id, envId));
         return true;
       }
-      ({ envelope } = await this.commit(tx, AUTO_PUBLISH_CTX, env, prepared, { message: "Auto-publish", rollbackOf: null }));
+      await this.commit(tx, AUTO_PUBLISH_CTX, env, prepared, { message: "Auto-publish", rollbackOf: null });
       return true;
     });
-    if (envelope) await this.kong.push(envelope).catch((err: unknown) => this.logger.error(String(err)));
     return compiled;
   }
 
@@ -298,7 +293,8 @@ export class SnapshotsService {
       environmentId: env.id,
       after: { version: envelope.version, hash: envelope.hash, message: opts.message, rollbackOf: opts.rollbackOf, changeCount },
     });
-    // The push to Kong happens after commit: the publish is durable even if Kong is down (the agent catches up later).
+    // Postgres delivers the notification on commit, atomically with the snapshot (all replicas LISTEN).
+    await tx.execute(sql`select pg_notify(${AGENT_CHANNEL}, ${JSON.stringify({ environmentId: env.id, version: envelope.version, hash: envelope.hash })})`);
     return { row: row!, changeCount, envelope };
   }
 
@@ -418,5 +414,5 @@ export class SnapshotsController {
   }
 }
 
-@Module({ imports: [PluginCatalogModule], controllers: [SnapshotsController], providers: [SnapshotsService, AutoPublisher, KongPusher] })
+@Module({ imports: [PluginCatalogModule], controllers: [SnapshotsController], providers: [SnapshotsService, AutoPublisher] })
 export class SnapshotsModule {}

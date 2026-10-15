@@ -193,3 +193,32 @@ export type ConsumerRow = typeof consumers.$inferSelect;
 export type KeyAuthCredentialRow = typeof keyAuthCredentials.$inferSelect;
 export type PluginRow = typeof plugins.$inferSelect;
 export type SnapshotRow = typeof snapshots.$inferSelect;
+
+export const clusters = pgTable("clusters", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  environmentId: uuid("environment_id").notNull().references(() => environments.id, { onDelete: "restrict" }),
+  name: text("name").notNull(),
+  registrationTokenHash: text("registration_token_hash").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [uniqueIndex("clusters_env_name_uq").on(t.environmentId, t.name), uniqueIndex("clusters_token_uq").on(t.registrationTokenHash)]);
+
+export const clusterNodes = pgTable("cluster_nodes", {
+  clusterId: uuid("cluster_id").notNull().references(() => clusters.id, { onDelete: "cascade" }),
+  nodeId: text("node_id").notNull(),
+  tokenHash: text("token_hash").notNull(),
+  hostname: text("hostname").notNull(),
+  kongVersion: text("kong_version").notNull(),
+  agentVersion: text("agent_version").notNull(),
+  labels: jsonb("labels").$type<Record<string, string>>().notNull().default({}),
+  state: text("state", { enum: ["applying", "applied", "failed", "idle"] }).notNull().default("idle"),
+  appliedVersion: integer("applied_version"),
+  appliedHash: text("applied_hash"),
+  failedVersion: integer("failed_version"),
+  error: text("error"),
+  kongHealthy: boolean("kong_healthy").notNull().default(false),
+  reportedAt: timestamp("reported_at", { withTimezone: true }),
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [primaryKey({ columns: [t.clusterId, t.nodeId] }), uniqueIndex("cluster_nodes_token_uq").on(t.tokenHash)]);
+
+export type ClusterRow = typeof clusters.$inferSelect;
+export type ClusterNodeRow = typeof clusterNodes.$inferSelect;

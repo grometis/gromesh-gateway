@@ -4,9 +4,9 @@ import type { EnvironmentWrite } from "../api-types.js";
 import { audit } from "../audit/audit.js";
 import { Ctx, RequiredRole, type RequestContext } from "../auth/auth.js";
 import { contractBody } from "../common/contract.js";
-import { notFound } from "../common/problem.js";
+import { conflict, notFound } from "../common/problem.js";
 import { DB, type Db, type Executor } from "../db/db.js";
-import { environments, type EnvironmentRow } from "../db/schema.js";
+import { clusters, environments, type EnvironmentRow } from "../db/schema.js";
 
 export const uuidParam = () => new ParseUUIDPipe({ errorHttpStatusCode: 404 });
 
@@ -86,7 +86,8 @@ export class EnvironmentsService {
   async remove(ctx: RequestContext, envId: string) {
     await this.db.transaction(async (tx) => {
       const before = toEnvironment(await requireEnvironment(tx, envId, true));
-      // TODO(W3-X1): 409 while clusters are registered (contract).
+      const [cluster] = await tx.select({ id: clusters.id }).from(clusters).where(eq(clusters.environmentId, envId)).limit(1);
+      if (cluster) throw conflict("Environment still has registered clusters");
       await tx.delete(environments).where(eq(environments.id, envId));
       await audit(tx, ctx, { action: "environment.delete", entityType: "environment", entityId: envId, environmentId: envId, before });
     });

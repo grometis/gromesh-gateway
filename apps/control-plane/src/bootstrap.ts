@@ -1,5 +1,5 @@
 import "reflect-metadata";
-import { type INestApplication, Logger } from "@nestjs/common";
+import { type INestApplication, Logger, RequestMethod } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { AppModule } from "./app.module.js";
 import type { AppConfig } from "./config.js";
@@ -14,7 +14,9 @@ export async function createApp(config: AppConfig, opts: { logger?: false } = {}
   const app = await NestFactory.create(AppModule.forRoot(config), {
     ...(opts.logger === false ? { logger: false } : {}),
   });
-  app.setGlobalPrefix("api/v1", { exclude: ["healthz"] });
+  app.setGlobalPrefix("api/v1", {
+    exclude: ["healthz", { path: "agent/v1/(.*)", method: RequestMethod.ALL }],
+  });
   app.enableShutdownHooks();
   return app;
 }

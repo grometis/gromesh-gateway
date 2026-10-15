@@ -1,5 +1,5 @@
 # Gromesh Gateway — local development stack.
-# W3-C1 adds `ui`; W3-X1 adds `agent` (sidecar sharing the kong-config volume).
+# The agent shares the data plane network namespace and persistent boot configuration.
 name: gromesh
 
 services:
@@ -20,16 +20,32 @@ services:
       timeout: 3s
       retries: 20
 
+  # One-time volume ownership and empty boot config. Never overwrite the last good snapshot.
+  kong-config-init:
+    image: ${KONG_IMAGE:-kong:3.9.3}
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        chown 1001:1001 /kong/declarative
+        chmod 755 /kong/declarative
+        if [ ! -e /kong/declarative/kong.json ]; then
+          cp /seed/kong.yml /kong/declarative/kong.json
+          chown 1001:1001 /kong/declarative/kong.json
+          chmod 644 /kong/declarative/kong.json
+        fi
+    volumes:
+      - kong-config:/kong/declarative
+      - ./kong:/seed:ro
+
   # Kong OSS data plane in DB-less mode. Swap the image for the in-house 3.9.4 build (images/kong) when ready.
   kong:
     image: ${KONG_IMAGE:-kong:3.9.3}
     environment:
       KONG_DATABASE: "off"
-      KONG_DECLARATIVE_CONFIG: /kong/declarative/kong.yml
+      KONG_DECLARATIVE_CONFIG: /kong/declarative/kong.json
       KONG_PROXY_LISTEN: "0.0.0.0:8000, 0.0.0.0:8443 ssl"
-      # Exposed on the compose network only for week 1 (control plane pushes directly).
-      # From week 2 the agent runs as a sidecar and this goes back to 127.0.0.1:8001.
-      KONG_ADMIN_LISTEN: "0.0.0.0:8001"
+      KONG_ADMIN_LISTEN: "127.0.0.1:8001"
       KONG_STATUS_LISTEN: "0.0.0.0:8100"
       KONG_PROXY_ACCESS_LOG: /dev/stdout
       KONG_PROXY_ERROR_LOG: /dev/stderr
@@ -40,15 +56,75 @@ services:
     ports:
       - "127.0.0.1:8000:8000"
       - "127.0.0.1:8443:8443"
-      - "127.0.0.1:8001:8001"
       - "127.0.0.1:8100:8100"
     volumes:
-      - ./kong:/kong/declarative:ro
+      - kong-config:/kong/declarative:ro
+    depends_on:
+      kong-config-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "kong", "health"]
       interval: 5s
       timeout: 5s
       retries: 20
+
+  # No proxy listener or proxy traffic: plugin validation only.
+  kong-validator:
+    image: ${KONG_IMAGE:-kong:3.9.3}
+    environment:
+      KONG_DATABASE: "off"
+      KONG_PROXY_LISTEN: "off"
+      KONG_ADMIN_LISTEN: "0.0.0.0:8001"
+      KONG_STATUS_LISTEN: "0.0.0.0:8100"
+      KONG_ADMIN_ACCESS_LOG: "off"
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+      KONG_NGINX_WORKER_PROCESSES: "1"
+    ports:
+      # Existing host-based plugin validation/catalog tooling still uses :8001.
+      - "127.0.0.1:8001:8001"
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # Started per cluster with its registration token (see the control-plane e2e):
+  # GROMESH_REGISTRATION_TOKEN=… docker compose up -d agent
+  agent:
+    profiles: [agent]
+    build:
+      context: ../..
+      dockerfile: apps/agent/Dockerfile
+    network_mode: "service:kong"
+    environment:
+      GROMESH_CP_URL: http://control-plane:3000
+      GROMESH_REGISTRATION_TOKEN: ${GROMESH_REGISTRATION_TOKEN:-}
+      GROMESH_NODE_ID: ${GROMESH_NODE_ID:-compose-node}
+      KONG_ADMIN_URL: http://127.0.0.1:8001
+      KONG_STATUS_URL: http://127.0.0.1:8100
+      SNAPSHOT_PATH: /kong/declarative/kong.json
+    volumes:
+      - kong-config:/kong/declarative
+    depends_on:
+      kong:
+        condition: service_healthy
+      control-plane:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # `pnpm smoke`: the contract example against the real Kong, from inside its network namespace
+  # (the data-plane Admin API only listens on 127.0.0.1).
+  smoke:
+    profiles: [tools]
+    image: node:22-alpine
+    network_mode: "service:kong"
+    volumes:
+      - ../../scripts:/repo/scripts:ro
+      - ../../contracts:/repo/contracts:ro
+    command: ["node", "/repo/scripts/smoke.mjs"]
+    depends_on:
+      kong:
+        condition: service_healthy
 
   control-plane:
     build:
@@ -57,16 +133,14 @@ services:
     environment:
       DATABASE_URL: postgres://gromesh:gromesh@postgres:5432/gromesh
       MIGRATE_ON_START: "true"
-      # Week 1 only: direct push to Kong. Removed by W3-X1 (the agent applies snapshots).
-      KONG_ADMIN_URL: http://kong:8001
       # Plugin configs are validated by Kong itself (POST /schemas/plugins/validate).
-      KONG_VALIDATOR_URL: http://kong:8001
+      KONG_VALIDATOR_URL: http://kong-validator:8001
     ports:
       - "127.0.0.1:3000:3000"
     depends_on:
       postgres:
         condition: service_healthy
-      kong:
+      kong-validator:
         condition: service_healthy
 
   # Sample upstream used by fixtures and e2e tests (service host "echo", port 80).
@@ -77,3 +151,4 @@ services:
 
 volumes:
   pg-data:
+  kong-config:
