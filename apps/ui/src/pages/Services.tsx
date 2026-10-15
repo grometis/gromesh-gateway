@@ -6,6 +6,7 @@ import { useCanEdit } from "../auth";
 import { Field, FormErrorList } from "../components/Field";
 import { ConfirmDialog, Modal } from "../components/Modal";
 import { useEnvId } from "../components/Shell";
+import { ScopedPlugins } from "./Plugins";
 
 const PROTOCOLS: ServiceWrite["protocol"][] = ["http", "https", "grpc", "grpcs", "tcp", "tls"];
 const FIELDS = ["name", "protocol", "host", "port", "path", "enabled", "tags"] as const;
@@ -42,6 +43,7 @@ export function ServicesPage() {
   const services = useServices(envId, q);
   const [editing, setEditing] = useState<Service | "new" | null>(null);
   const [deleting, setDeleting] = useState<Service | null>(null);
+  const [plugins, setPlugins] = useState<Service | null>(null);
   const items = services.data?.pages.flatMap((p) => p.items) ?? [];
 
   return (
@@ -65,7 +67,7 @@ export function ServicesPage() {
               <th>Nome</th>
               <th>Destino</th>
               <th>Ativo</th>
-              {canEdit && <th aria-label="Ações" />}
+              <th aria-label="Ações" />
             </tr>
           </thead>
           <tbody>
@@ -77,16 +79,21 @@ export function ServicesPage() {
                   {s.path ?? ""}
                 </td>
                 <td>{s.enabled === false ? "Não" : "Sim"}</td>
-                {canEdit && (
-                  <td className="actions">
-                    <button type="button" onClick={() => setEditing(s)}>
-                      Editar
-                    </button>
-                    <button type="button" className="danger" onClick={() => setDeleting(s)}>
-                      Excluir
-                    </button>
-                  </td>
-                )}
+                <td className="actions">
+                  <button type="button" onClick={() => setPlugins(s)}>
+                    Plugins
+                  </button>
+                  {canEdit && (
+                    <>
+                      <button type="button" onClick={() => setEditing(s)}>
+                        Editar
+                      </button>
+                      <button type="button" className="danger" onClick={() => setDeleting(s)}>
+                        Excluir
+                      </button>
+                    </>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -99,6 +106,11 @@ export function ServicesPage() {
       )}
       {editing && <ServiceForm envId={envId} service={editing === "new" ? null : editing} onClose={() => setEditing(null)} />}
       {deleting && <DeleteService envId={envId} service={deleting} onClose={() => setDeleting(null)} />}
+      {plugins && (
+        <Modal title={`Plugins de ${plugins.name}`} onClose={() => setPlugins(null)} wide>
+          <ScopedPlugins envId={envId} scope={{ kind: "service", id: plugins.id }} title="Plugins aplicados" />
+        </Modal>
+      )}
     </section>
   );
 }

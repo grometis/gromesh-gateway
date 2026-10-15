@@ -100,3 +100,18 @@ td.actions button + button { margin-left: 6px; }
   .filters { flex-direction: column; }
   .filters select { width: 100%; }
 }
+
+.modal.wide { width: min(820px, 100%); }
+.stack { display: flex; flex-direction: column; gap: 16px; }
+.props { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; }
+.props dt { color: var(--muted); }
+.props dd { margin: 0; }
+.record { border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px 12px; display: flex; flex-direction: column; gap: 10px; }
+.record legend { font-weight: 600; padding: 0 4px; }
+.catalog-group h3 { font-size: 13px; color: var(--muted); margin: 12px 0 6px; }
+.catalog { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 6px; }
+.catalog button { text-align: left; display: flex; flex-direction: column; gap: 2px; }
+.catalog .unsupported { font-size: 12px; }
+.warn { background: var(--warn-bg); border-radius: 6px; padding: 8px 12px; margin-top: 0; }
+.secret { display: flex; gap: 8px; align-items: center; }
+.secret code { flex: 1; padding: 8px; border: 1px solid var(--border); border-radius: 6px; word-break: break-all; user-select: all; }
