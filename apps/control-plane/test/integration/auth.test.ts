@@ -1,8 +1,15 @@
 import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { parse } from "yaml";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import * as argon2 from "@node-rs/argon2";
 import { loadConfig } from "../../src/config.js";
+
+// Spied, not replaced: the login must run a real verification even for unknown e-mails (see the decoy hash).
+vi.mock("@node-rs/argon2", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@node-rs/argon2")>();
+  return { ...actual, verify: vi.fn(actual.verify) };
+});
 import { BOOTSTRAP_ADMIN, startHarness, uniq, type ApiClient, type Harness } from "./harness.js";
 
 let h: Harness;
@@ -61,6 +68,15 @@ describe("login", () => {
       expect(res.body).toEqual(answers[0]!.body);
       expect(res.headers.get("set-cookie")).toBeNull();
     }
+  });
+
+  it("verifies a decoy hash when the e-mail is unknown, so the miss costs the same time", async () => {
+    const verify = vi.mocked(argon2.verify);
+    verify.mockClear();
+    expect((await h.anonymous("POST", "/auth/login", { email: `${uniq("ghost")}@example.test`, password: "wrong-password-123" })).status).toBe(401);
+    expect(verify).toHaveBeenCalledTimes(1);
+    expect(verify.mock.calls[0]![0]).toMatch(/^\$argon2id\$/);
+    expect(verify.mock.calls[0]![1]).toBe("wrong-password-123");
   });
 
   it("is case-insensitive on the e-mail and validates the body with the contract", async () => {
