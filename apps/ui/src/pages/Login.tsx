@@ -4,13 +4,14 @@ import { ApiError } from "../api/client";
 import { useAuth } from "../auth";
 
 export function LoginPage() {
-  const { user, login } = useAuth();
+  const { user, loading, login } = useAuth();
   const location = useLocation();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  if (loading) return <p className="center muted">Carregando…</p>;
   if (user) return <Navigate to={(location.state as { from?: string } | null)?.from ?? "/"} replace />;
 
   const submit = async (e: FormEvent) => {
@@ -20,7 +21,13 @@ export function LoginPage() {
     try {
       await login(email, password);
     } catch (err) {
-      setError(err instanceof ApiError && err.status === 401 ? "E-mail ou senha inválidos." : "Não foi possível entrar. Tente de novo.");
+      setError(err instanceof ApiError && err.status === 401
+        ? "E-mail ou senha inválidos."
+        : err instanceof ApiError && err.status === 429
+          ? "Muitas tentativas de login. Aguarde e tente novamente."
+          : err instanceof ApiError && err.status === 403
+            ? "Você não tem permissão para esta ação."
+            : "Não foi possível entrar. Tente de novo.");
     } finally {
       setBusy(false);
     }

@@ -1,4 +1,5 @@
-import { expect, test, type Page } from "@playwright/test";
+import type { Page } from "@playwright/test";
+import { expect, mockSession, test } from "./fixtures";
 
 const envId = "11111111-1111-4111-8111-111111111111";
 const clusterId = "22222222-2222-4222-8222-222222222222";
@@ -12,7 +13,7 @@ const changes = [
 const cluster = { id: clusterId, environmentId: envId, name: "edge-prod", status: "degraded", createdAt: "2026-10-15T12:00:00Z", nodes: [{ nodeId: "node-1", hostname: "edge-1", state: "failed", appliedVersion: 1, kongHealthy: false, lastSeenAt: "2026-10-15T12:00:00Z", online: true, error: "Invalid configuration: key=REDACTED" }] };
 
 async function login(page: Page, role: "admin" | "editor" | "viewer" = "admin") {
-  await page.route("**/api/v1/auth/login", (route) => route.fulfill({ json: { accessToken: "test-session", user: { ...actor, email: "ana@gromesh.dev", role } } }));
+  await mockSession(page, { ...actor, email: "ana@gromesh.dev", role, active: true, createdAt: "2026-10-15T12:00:00Z", updatedAt: "2026-10-15T12:00:00Z" });
   const environment = { id: envId, name: "Produção", publishMode: "manual", currentVersion: 2, hasUnpublishedChanges: false };
   await page.route("**/api/v1/environments", (route) => route.fulfill({ json: { items: [environment] } }));
   await page.route(`**/api/v1/environments/${envId}`, (route) => route.fulfill({ json: environment }));
