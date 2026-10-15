@@ -210,6 +210,7 @@ Aceite: testes de integração com ClickHouse real e dados de fixture conhecidos
 
 ## Backlog
 
+- Analytics: o `path` das requisições pode conter dado pessoal (ex.: CPF em `/clientes/{cpf}`); avaliar retenção menor ou máscara de path por rota.
 - Cifrar em repouso, no Postgres, as chaves key-auth e os campos `encrypted` da config de plugins.
 - Semana 5 (auth): token em cookie httpOnly + SameSite + proteção CSRF, no lugar do `sessionStorage` da UI.
 - Semana 8 (Helm/produção): `TRUST_PROXY` em produção é o IP/CIDR exato do ingress, nunca `uniquelocal` (só o compose de desenvolvimento usa isso).
