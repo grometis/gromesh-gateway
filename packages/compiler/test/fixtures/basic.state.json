@@ -1,0 +1,51 @@
+{
+  "services": [
+    {
+      "id": "6a1f3c2e-0b7d-4c1a-9f10-000000000001",
+      "name": "echo",
+      "protocol": "http",
+      "host": "echo",
+      "port": 80,
+      "path": "/",
+      "tags": ["team:platform"]
+    }
+  ],
+  "routes": [
+    {
+      "id": "6a1f3c2e-0b7d-4c1a-9f10-000000000002",
+      "name": "echo-public",
+      "serviceId": "6a1f3c2e-0b7d-4c1a-9f10-000000000001",
+      "protocols": ["http", "https"],
+      "methods": ["get", "POST"],
+      "paths": ["/echo"],
+      "stripPath": true
+    }
+  ],
+  "consumers": [
+    {
+      "id": "6a1f3c2e-0b7d-4c1a-9f10-000000000003",
+      "username": "demo-app"
+    }
+  ],
+  "keyAuthCredentials": [
+    {
+      "id": "6a1f3c2e-0b7d-4c1a-9f10-000000000004",
+      "consumerId": "6a1f3c2e-0b7d-4c1a-9f10-000000000003",
+      "key": "demo-key-123"
+    }
+  ],
+  "plugins": [
+    {
+      "id": "6a1f3c2e-0b7d-4c1a-9f10-000000000005",
+      "name": "key-auth",
+      "scope": { "routeId": "6a1f3c2e-0b7d-4c1a-9f10-000000000002" },
+      "config": { "key_names": ["apikey"] }
+    },
+    {
+      "id": "6a1f3c2e-0b7d-4c1a-9f10-000000000006",
+      "name": "rate-limiting",
+      "scope": { "serviceId": "6a1f3c2e-0b7d-4c1a-9f10-000000000001" },
+      "config": { "minute": 60, "policy": "local" }
+    }
+  ]
+}

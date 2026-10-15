@@ -1,0 +1,8 @@
+extends:
+  - recommended
+rules:
+  operation-summary: off
+  tag-description: off
+  info-license: off
+  no-server-example.com: off
+  no-unused-components: off

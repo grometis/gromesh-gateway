@@ -1,0 +1,215 @@
+openapi: 3.1.0
+info:
+  title: Gromesh Gateway — Agent protocol
+  version: 0.1.0
+  description: |
+    Contract between the control plane and the agent that runs as a sidecar next to each Kong data plane.
+
+    Lifecycle:
+      1. The agent starts and calls POST /agent/v1/register with the cluster registration token.
+      2. It keeps GET /agent/v1/events open (SSE) to learn about new versions immediately.
+      3. Independently, it polls GET /agent/v1/snapshots/current every `pollIntervalSeconds`
+         with If-None-Match: <hash> as a fallback for missed events.
+      4. When the hash changes it downloads the snapshot, writes it to its volume
+         (so Kong can boot from it via KONG_DECLARATIVE_CONFIG), applies it with
+         POST http://127.0.0.1:8001/config and reports the outcome to POST /agent/v1/status.
+      5. It sends a status report at least every `heartbeatIntervalSeconds`, even with no change.
+
+    The agent never talks to Postgres and the control plane never talks to Kong directly.
+servers:
+  - url: http://localhost:3000
+tags:
+  - name: agent
+security:
+  - nodeToken: []
+paths:
+  /agent/v1/register:
+    post:
+      tags: [agent]
+      operationId: registerNode
+      summary: Register a data plane node and obtain a node token
+      security:
+        - registrationToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "200":
+          description: Node registered (idempotent per nodeId)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RegisterResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /agent/v1/snapshots/current:
+    get:
+      tags: [agent]
+      operationId: getCurrentSnapshot
+      summary: Current published snapshot for the node's cluster
+      parameters:
+        - name: If-None-Match
+          in: header
+          required: false
+          description: Hash of the snapshot the agent already applied.
+          schema:
+            type: string
+            example: "sha256:69c1eb7fdd08fa3ba3c2e0c732a0abb5786bd2be662f1fdc2ddec8a9e72cae13"
+      responses:
+        "200":
+          description: Snapshot to apply
+          headers:
+            ETag:
+              description: Snapshot hash
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "./snapshot.schema.json"
+        "204":
+          description: Nothing has been published for this environment yet
+        "304":
+          description: The agent already has the current snapshot
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /agent/v1/events:
+    get:
+      tags: [agent]
+      operationId: streamEvents
+      summary: Server-sent events stream
+      description: |
+        `text/event-stream`. Events:
+          - `snapshot.published` — data: SnapshotPublishedEvent (JSON). The agent then fetches /snapshots/current.
+          - `ping` — every 15s, no data; the agent reconnects with backoff if none arrives for 45s.
+        Reconnect honours `Last-Event-ID`.
+      parameters:
+        - name: Last-Event-ID
+          in: header
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+              example: |
+                id: 42
+                event: snapshot.published
+                data: {"version":42,"hash":"sha256:69c1…"}
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /agent/v1/status:
+    post:
+      tags: [agent]
+      operationId: reportStatus
+      summary: Report applied version and health (also the heartbeat)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StatusReport"
+      responses:
+        "204":
+          description: Accepted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+components:
+  securitySchemes:
+    registrationToken:
+      type: http
+      scheme: bearer
+      description: One-time-visible token created when a cluster is added in the UI (reusable by every node of the cluster, revocable).
+    nodeToken:
+      type: http
+      scheme: bearer
+      description: Token returned by /register, scoped to one node.
+  responses:
+    Unauthorized:
+      description: Missing, invalid or revoked token
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    ValidationError:
+      description: Invalid payload
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+  schemas:
+    Problem:
+      type: object
+      description: RFC 9457 problem details
+      required: [type, title, status]
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        errors:
+          type: array
+          items:
+            type: object
+            required: [path, message]
+            properties:
+              path: { type: string }
+              message: { type: string }
+    RegisterRequest:
+      type: object
+      required: [nodeId, hostname, kongVersion, agentVersion]
+      properties:
+        nodeId:
+          type: string
+          description: Stable per node (e.g. pod name or a UUID persisted in the agent volume).
+        hostname: { type: string }
+        kongVersion: { type: string, example: "3.9.4" }
+        agentVersion: { type: string, example: "0.1.0" }
+        labels:
+          type: object
+          additionalProperties: { type: string }
+    RegisterResponse:
+      type: object
+      required: [nodeToken, clusterId, environmentId, pollIntervalSeconds, heartbeatIntervalSeconds]
+      properties:
+        nodeToken: { type: string }
+        clusterId: { type: string, format: uuid }
+        environmentId: { type: string, format: uuid }
+        pollIntervalSeconds: { type: integer, minimum: 5, default: 30 }
+        heartbeatIntervalSeconds: { type: integer, minimum: 5, default: 15 }
+    SnapshotPublishedEvent:
+      type: object
+      required: [version, hash]
+      properties:
+        version: { type: integer, minimum: 1 }
+        hash: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+    StatusReport:
+      type: object
+      required: [nodeId, state, kongHealthy, reportedAt]
+      properties:
+        nodeId: { type: string }
+        state:
+          type: string
+          enum: [applying, applied, failed, idle]
+          description: "`idle` = nothing published yet."
+        appliedVersion: { type: [integer, "null"], minimum: 1 }
+        appliedHash: { type: [string, "null"] }
+        failedVersion: { type: [integer, "null"], minimum: 1 }
+        error:
+          type: [string, "null"]
+          description: Kong's error body (truncated to 8 KiB) when state = failed.
+        kongHealthy:
+          type: boolean
+          description: Result of Kong's status endpoint (GET :8100/status).
+        reportedAt: { type: string, format: date-time }
