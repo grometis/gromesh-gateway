@@ -110,6 +110,7 @@ Aceite: e2e — cria cluster → sobe o agente com o token → publica → `GET 
 - Pasta `e2e/` com Playwright contra a stack real do compose (postgres, control-plane, ui, kong, agent, echo).
 - Cenário: login → service + route + plugin key-auth → consumer + chave → publicar → requisição sem chave 401 e com chave 200 → rollback → rota some (404).
 - Job no CI que sobe a stack e roda o cenário; artefatos (trace, vídeo) em falha.
+- O CI também (a) roda o aceite Playwright da UI contra o Prism (`pnpm --filter @gromesh/ui test:e2e`) e (b) regera `apps/ui/src/api/schema.d.ts` a partir do contrato e falha com `git diff --exit-code` se mudar.
 
 Aceite: o próprio job verde no CI.
 
@@ -118,3 +119,4 @@ Aceite: o próprio job verde no CI.
 ## Backlog
 
 - Cifrar em repouso, no Postgres, as chaves key-auth e os campos `encrypted` da config de plugins.
+- Semana 5 (auth): token em cookie httpOnly + SameSite + proteção CSRF, no lugar do `sessionStorage` da UI.
