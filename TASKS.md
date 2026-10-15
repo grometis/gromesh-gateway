@@ -161,6 +161,7 @@ Aceite: (a) `GET` nunca contém o segredo; (b) editar outro campo do plugin sem 
 - `POST /auth/login` → 200 com `user` e cookie de sessão `httpOnly; Secure; SameSite=Strict`; sem `accessToken` no corpo.
 - `POST /auth/logout`; `GET /auth/csrf` (ou cookie legível) + header `X-CSRF-Token` obrigatório em toda mutação; 429 no login por excesso de tentativas.
 - `securitySchemes`: `cookieAuth` substitui `bearerAuth` para a UI (agentes continuam com bearer próprio).
+- `GET /environments/{envId}/snapshots/{version}`: credenciais key-auth e campos `encrypted` de plugins sempre `"REDACTED"`, para todos os papéis (coerente com a W4-C2). Só o endpoint do agente (`/agent/v1/snapshots/current`) entrega o snapshot completo.
 
 ### W5-C1 [Claude] Autenticação e usuários no control plane
 - Tabela `users`; senha com argon2id; primeiro admin criado na subida a partir de `BOOTSTRAP_ADMIN_EMAIL`/`BOOTSTRAP_ADMIN_PASSWORD` só se não existir nenhum usuário.
@@ -175,6 +176,7 @@ Aceite: teste de matriz RBAC gerado do contrato — para **cada** `operationId` 
 - Control plane: `GET /audit-events` (filtros do contrato, cursor, só admin).
 - UI: login por cookie + CSRF (remover `sessionStorage`), tela de Usuários (admin), tela de Audit log com filtros e before/after, menu e botões conforme papel (a API continua sendo quem decide).
 - `apps/ui/nginx.conf`: CSP restritiva, `X-Frame-Options: DENY`, `Referrer-Policy`, `X-Content-Type-Options`, HSTS quando atrás de TLS.
+- Apagar `apps/ui/src/pages/Placeholder.tsx`, sem uso desde a W4-X1.
 
 Aceite: e2e completo da W3-X2 adaptado ao login real; viewer não vê botões de edição e recebe 403 se forçar; audit mostra a publicação com autor.
 
