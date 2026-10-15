@@ -35,7 +35,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(async (email: string, password: string) => {
     const res = await unwrap(api.POST("/auth/login", { body: { email, password } }));
-    tokenStore.set(res.accessToken);
+    // Until W5-X1 moves the UI to the session cookie, the control plane still answers with a bearer token.
+    const { accessToken } = res as { accessToken?: string };
+    if (accessToken) tokenStore.set(accessToken);
     setUser(res.user);
   }, []);
 
