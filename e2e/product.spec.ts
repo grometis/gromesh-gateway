@@ -2,12 +2,14 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { expect, test, type APIRequestContext } from "@playwright/test";
+import { expect, test, type APIRequestContext, type Browser } from "@playwright/test";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const COMPOSE = fileURLToPath(new URL("../deploy/compose/docker-compose.yml", import.meta.url));
 const CP = process.env.CP_URL ?? "http://127.0.0.1:3000/api/v1";
 const PROXY = process.env.KONG_PROXY_URL ?? "http://127.0.0.1:8000";
+// The stack's bootstrap admin (deploy/compose/docker-compose.yml) unless overridden.
+const ADMIN = { email: process.env.BOOTSTRAP_ADMIN_EMAIL ?? "admin@gromesh.dev", password: process.env.BOOTSTRAP_ADMIN_PASSWORD ?? "gromesh-dev-admin" };
 const exec = promisify(execFile);
 
 interface Entity { id: string }
@@ -17,12 +19,22 @@ interface Cluster extends Entity {
   nodes: { appliedVersion: number | null }[];
 }
 interface Publication { version: number; rollbackOf: number | null }
+interface AuditEvent { action: string; entityId: string | null; environmentId: string | null; actor: { id: string; name?: string } }
 
-async function api<T>(request: APIRequestContext, method: string, path: string, status: number, data?: unknown): Promise<T> {
-  const response = await request.fetch(CP + path, { method, data, timeout: 5000 });
-  // Do not include response bodies: creation responses can contain credentials.
-  expect(response.status(), `${method} ${path}`).toBe(status);
-  return (status === 204 ? undefined : await response.json()) as T;
+/** An API client logged in as `credentials`: the session cookie lives in the context, the CSRF token here. */
+async function login(browser: Browser, credentials: { email: string; password: string }) {
+  const context = await browser.newContext({ baseURL: CP });
+  const request = context.request;
+  const res = await request.post(`${CP}/auth/login`, { data: credentials });
+  expect(res.status(), `login as ${credentials.email}`).toBe(200);
+  const csrf = ((await (await request.get(`${CP}/auth/csrf`)).json()) as { csrfToken: string }).csrfToken;
+  const api = async <T>(method: string, path: string, status: number, data?: unknown): Promise<T> => {
+    const response = await request.fetch(CP + path, { method, data, timeout: 5000, headers: { "x-csrf-token": csrf } });
+    // Do not include response bodies: creation responses can contain credentials.
+    expect(response.status(), `${method} ${path}`).toBe(status);
+    return (status === 204 ? undefined : await response.json()) as T;
+  };
+  return { api, request, close: () => context.close() };
 }
 
 async function compose(args: string[], registrationToken?: string) {
@@ -34,38 +46,45 @@ async function compose(args: string[], registrationToken?: string) {
   });
 }
 
-async function converge(request: APIRequestContext, clusterId: string, version: number) {
+async function converge(api: <T>(method: string, path: string, status: number) => Promise<T>, clusterId: string, version: number) {
   await expect.poll(async () => {
-    const cluster = await api<Cluster>(request, "GET", `/clusters/${clusterId}`, 200);
+    const cluster = await api<Cluster>("GET", `/clusters/${clusterId}`, 200);
     return cluster.status === "converged" && cluster.nodes.length > 0 && cluster.nodes.every((node) => node.appliedVersion === version);
   }, { timeout: 10_000, intervals: [100, 200, 500], message: `Cluster must converge to version ${version}` }).toBe(true);
 }
 
-test("UI publication, key-auth traffic and rollback on the real compose stack", async ({ page, request }) => {
+/** Gateway traffic goes through a context without the admin cookie. */
+const proxy = (request: APIRequestContext, path: string, headers?: Record<string, string>) => request.get(PROXY + path, { headers });
+
+test("UI publication, key-auth traffic, viewer limits, audit and rollback on the real compose stack", async ({ page, browser, playwright }) => {
   const name = `e2e-${randomUUID()}`;
   const path = `/${name}`;
-  const env = await api<Entity>(request, "POST", "/environments", 201, { name, publishMode: "manual" });
+  const admin = await login(browser, ADMIN);
+  const { api } = admin;
+  const traffic = await playwright.request.newContext();
+  const env = await api<Entity>("POST", "/environments", 201, { name, publishMode: "manual" });
   let clusterId: string | undefined;
+  let viewerId: string | undefined;
   let agentStarted = false;
   try {
-    const cluster = await api<Cluster>(request, "POST", `/environments/${env.id}/clusters`, 201, { name: "product-edge" });
+    const cluster = await api<Cluster>("POST", `/environments/${env.id}/clusters`, 201, { name: "product-edge" });
     clusterId = cluster.id;
     expect(Boolean(cluster.registrationToken)).toBe(true);
     // The first version must be empty so rollback removes the route created through the UI.
-    const baseline = await api<Publication>(request, "POST", `/environments/${env.id}/snapshots`, 201, { message: "Empty baseline" });
+    const baseline = await api<Publication>("POST", `/environments/${env.id}/snapshots`, 201, { message: "Empty baseline" });
     agentStarted = true;
     await compose(["up", "-d", "--no-deps", "--force-recreate", "agent"], cluster.registrationToken);
-    await converge(request, cluster.id, baseline.version);
-    expect((await request.get(PROXY + path)).status()).toBe(404);
+    await converge(api, cluster.id, baseline.version);
+    expect((await proxy(traffic, path)).status()).toBe(404);
 
     await page.goto("/");
     await expect(page).toHaveURL(/\/login$/);
-    await page.getByLabel("E-mail").fill("product-e2e@gromesh.dev");
-    await page.getByLabel("Senha").fill("dev-only-e2e");
+    await page.getByLabel("E-mail").fill(ADMIN.email);
+    await page.getByLabel("Senha").fill(ADMIN.password);
     await page.getByRole("button", { name: "Entrar" }).click();
     await page.getByLabel("Environment", { exact: true }).selectOption(env.id);
     await expect(page.getByRole("heading", { name: "Services", exact: true })).toBeVisible();
-    // Also exercise /me and SPA fallback against the production static server.
+    // Also exercise /me with the cookie and SPA fallback against the production static server.
     await page.reload();
     await expect(page.getByLabel("Environment", { exact: true })).toHaveValue(env.id);
 
@@ -101,36 +120,72 @@ test("UI publication, key-auth traffic and rollback on the real compose stack", 
     expect(publicationResponse.status()).toBe(201);
     const uiVersion = await publicationResponse.json() as Publication;
     await expect(publish).toBeHidden();
-    await converge(request, cluster.id, uiVersion.version);
-    expect((await request.get(PROXY + path)).status()).toBe(200);
+    await converge(api, cluster.id, uiVersion.version);
+    expect((await proxy(traffic, path)).status()).toBe(200);
 
-    await api(request, "POST", `/environments/${env.id}/plugins`, 201, {
+    // The publication made through the UI is in the audit log, with its author.
+    const me = await api<Entity & { name: string }>("GET", "/me", 200);
+    const audit = await api<{ items: AuditEvent[] }>("GET", `/audit-events?environmentId=${env.id}&entityType=snapshot`, 200);
+    expect(audit.items).toContainEqual(expect.objectContaining({
+      action: "snapshot.publish", entityId: String(uiVersion.version), environmentId: env.id, actor: expect.objectContaining({ id: me.id, name: me.name }),
+    }));
+
+    // A viewer sees no edit buttons and gets 403 when it forces a mutation, even with a valid CSRF token.
+    const viewerPassword = `viewer-${randomUUID()}`;
+    const viewerUser = await api<Entity>("POST", "/users", 201, { email: `${name}@viewer.test`, name: "Viewer", role: "viewer", password: viewerPassword });
+    viewerId = viewerUser.id;
+    const viewer = await login(browser, { email: `${name}@viewer.test`, password: viewerPassword });
+    try {
+      await viewer.api("POST", `/environments/${env.id}/services`, 403, { name: `${name}-forced`, protocol: "http", host: "echo", port: 80 });
+      const viewerPage = await (await browser.newContext()).newPage();
+      await viewerPage.goto("/");
+      await viewerPage.getByLabel("E-mail").fill(`${name}@viewer.test`);
+      await viewerPage.getByLabel("Senha").fill(viewerPassword);
+      await viewerPage.getByRole("button", { name: "Entrar" }).click();
+      await viewerPage.getByLabel("Environment", { exact: true }).selectOption(env.id);
+      await expect(viewerPage.getByRole("heading", { name: "Services", exact: true })).toBeVisible();
+      await expect(viewerPage.getByText(name, { exact: true })).toBeVisible();
+      await expect(viewerPage.getByRole("button", { name: /Novo service|Editar|Excluir|Publicar/ })).toHaveCount(0);
+      await expect(viewerPage.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: /Usuários|Auditoria/ })).toHaveCount(0);
+      await viewerPage.context().close();
+    } finally {
+      await viewer.close();
+    }
+
+    await api("POST", `/environments/${env.id}/plugins`, 201, {
       name: "key-auth", scope: { routeId: createdRoute.id }, config: { key_names: ["apikey"] },
     });
-    const consumer = await api<Entity>(request, "POST", `/environments/${env.id}/consumers`, 201, { username: name });
-    const credential = await api<{ key: string }>(request, "POST", `/environments/${env.id}/consumers/${consumer.id}/key-auth`, 201, {});
+    const consumer = await api<Entity>("POST", `/environments/${env.id}/consumers`, 201, { username: name });
+    const credential = await api<{ key: string }>("POST", `/environments/${env.id}/consumers/${consumer.id}/key-auth`, 201, {});
     expect(Boolean(credential.key)).toBe(true);
-    const secured = await api<Publication>(request, "POST", `/environments/${env.id}/snapshots`, 201, { expectedCurrentVersion: uiVersion.version });
-    await converge(request, cluster.id, secured.version);
-    expect((await request.get(PROXY + path)).status()).toBe(401);
-    const authorized = await request.get(PROXY + path, { headers: { apikey: credential.key } });
+    const secured = await api<Publication>("POST", `/environments/${env.id}/snapshots`, 201, { expectedCurrentVersion: uiVersion.version });
+    await converge(api, cluster.id, secured.version);
+    expect((await proxy(traffic, path)).status()).toBe(401);
+    const authorized = await proxy(traffic, path, { apikey: credential.key });
     expect(authorized.status()).toBe(200);
     expect(await authorized.text()).toContain("Hostname");
 
-    const rollback = await api<Publication>(request, "POST", `/environments/${env.id}/snapshots/${baseline.version}/rollback`, 201);
+    const rollback = await api<Publication>("POST", `/environments/${env.id}/snapshots/${baseline.version}/rollback`, 201);
     expect(rollback.rollbackOf).toBe(baseline.version);
     expect(rollback.version).toBeGreaterThan(secured.version);
-    await converge(request, cluster.id, rollback.version);
-    expect((await request.get(PROXY + path)).status()).toBe(404);
-    expect((await request.get(PROXY + path, { headers: { apikey: credential.key } })).status()).toBe(404);
+    await converge(api, cluster.id, rollback.version);
+    expect((await proxy(traffic, path)).status()).toBe(404);
+    expect((await proxy(traffic, path, { apikey: credential.key })).status()).toBe(404);
   } finally {
     try {
       if (agentStarted) await compose(["stop", "agent"]);
     } finally {
       try {
-        if (clusterId) await api(request, "DELETE", `/clusters/${clusterId}`, 204);
+        if (clusterId) await api("DELETE", `/clusters/${clusterId}`, 204);
       } finally {
-        await api(request, "DELETE", `/environments/${env.id}`, 204);
+        try {
+          if (viewerId) await api("DELETE", `/users/${viewerId}`, 204);
+        } finally {
+          await api("DELETE", `/environments/${env.id}`, 204);
+          await api("POST", "/auth/logout", 204);
+          await traffic.dispose();
+          await admin.close();
+        }
       }
     }
   }

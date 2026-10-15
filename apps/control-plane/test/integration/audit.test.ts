@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { DEV_USER } from "../../src/auth/auth.js";
 import { startHarness, uniq, type Harness } from "./harness.js";
 
 interface AuditEvent {
@@ -90,27 +89,24 @@ describe("audit events", () => {
 
   it("shows a real publication with its author", async () => {
     const env = await h.api<{ id: string }>("POST", "/environments", { name: uniq("audit"), publishMode: "manual" });
+    const me = (await h.api<{ id: string; name: string }>("GET", "/me")).body;
     try {
       const publication = await h.api<{ version: number }>("POST", `/environments/${env.body.id}/snapshots`, { message: "Audit acceptance" });
       expect(publication.status).toBe(201);
-      const response = await h.api<Page>("GET", `/audit-events?environmentId=${env.body.id}&entityType=snapshot&actorId=${DEV_USER.id}`);
+      const response = await h.api<Page>("GET", `/audit-events?environmentId=${env.body.id}&entityType=snapshot&actorId=${me.id}`);
       expect(response.status).toBe(200);
       expect(response.body.items).toHaveLength(1);
       expect(response.body.items[0]).toMatchObject({
         action: "snapshot.publish", entityId: String(publication.body.version),
-        actor: { id: DEV_USER.id, name: DEV_USER.name }, after: { version: publication.body.version, message: "Audit acceptance" },
+        actor: { id: me.id, name: me.name }, after: { version: publication.body.version, message: "Audit acceptance" },
       });
     } finally {
       await h.api("DELETE", `/environments/${env.body.id}`);
     }
   });
 
-  it("requires authentication", async () => {
-    const anonymous = await startHarness({ authMode: "disabled" });
-    try {
-      expect((await anonymous.api("GET", "/audit-events")).status).toBe(401);
-    } finally {
-      await anonymous.close();
-    }
+  it("requires authentication and the admin role", async () => {
+    expect((await h.anonymous("GET", "/audit-events")).status).toBe(401);
+    expect(((await (await h.as("editor")).api("GET", "/audit-events")).status)).toBe(403);
   });
 });
