@@ -10,7 +10,8 @@ services:
       POSTGRES_PASSWORD: gromesh
       POSTGRES_DB: gromesh
     ports:
-      - "127.0.0.1:5432:5432"
+      # Override when the host already runs Postgres on 5432 (then set TEST_DATABASE_URL to match).
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pg-data:/var/lib/postgresql/data
     healthcheck:
