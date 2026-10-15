@@ -29,6 +29,13 @@
       "when": 1792072517066,
       "tag": "0003_agent_clusters",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1792103734310,
+      "tag": "0004_auth_users",
+      "breakpoints": true
     }
   ]
 }

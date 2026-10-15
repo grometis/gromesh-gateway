@@ -62,3 +62,17 @@ export interface PluginWrite {
   protocols?: string[];
   tags?: string[];
 }
+
+export interface UserCreate {
+  email: string;
+  name: string;
+  role: "viewer" | "editor" | "admin";
+  password: string;
+}
+
+export interface UserUpdate {
+  name?: string;
+  role?: "viewer" | "editor" | "admin";
+  active?: boolean;
+  password?: string;
+}

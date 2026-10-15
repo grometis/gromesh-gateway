@@ -4,6 +4,7 @@ import { NestFactory } from "@nestjs/core";
 import { AppModule } from "./app.module.js";
 import type { AppConfig } from "./config.js";
 import { runMigrations } from "./db/migrate.js";
+import { UsersService } from "./users/users.js";
 
 /** Shared by main.ts and the integration tests, so tests run the real app wiring. */
 export async function createApp(config: AppConfig, opts: { logger?: false } = {}): Promise<INestApplication> {
@@ -18,5 +19,10 @@ export async function createApp(config: AppConfig, opts: { logger?: false } = {}
     exclude: ["healthz", { path: "agent/v1/(.*)", method: RequestMethod.ALL }],
   });
   app.enableShutdownHooks();
+  if (config.trustProxy !== false) (app.getHttpAdapter().getInstance() as import("express").Express).set("trust proxy", config.trustProxy);
+  if (config.bootstrapAdmin) {
+    await app.init();
+    if (await app.get(UsersService).bootstrapAdmin(config.bootstrapAdmin)) Logger.log(`Bootstrap admin ${config.bootstrapAdmin.email} created`, "Bootstrap");
+  }
   return app;
 }

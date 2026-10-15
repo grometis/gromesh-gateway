@@ -13,7 +13,48 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /**
+         * @description Starts a session. The session id travels only in the `gromesh_session` cookie; the body never carries a token.
+         *     Repeated failures for the same e-mail or client address answer 429 with `Retry-After`.
+         */
         post: operations["login"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Ends the session and clears the cookie. Idempotent. */
+        post: operations["logout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/csrf": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * @description Token bound to the current session, to send as `X-CSRF-Token` on every mutation. Stable for the session's
+         *     lifetime; the client keeps it in memory, never in storage.
+         */
+        get: operations["getCsrfToken"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -383,7 +424,10 @@ export interface paths {
             };
             cookie?: never;
         };
-        /** @description Full envelope. Credential keys are masked for non-admin roles. */
+        /**
+         * @description Full envelope with credential keys and `encrypted` plugin fields replaced by `"REDACTED"`, for every role
+         *     including admin. Only the agent endpoint (`GET /agent/v1/snapshots/current`) delivers the real values.
+         */
         get: operations["getSnapshot"];
         put?: never;
         post?: never;
@@ -955,9 +999,20 @@ export interface components {
                 "application/problem+json": components["schemas"]["Problem"];
             };
         };
-        /** @description Role too low */
+        /** @description Role too low, or missing/invalid `X-CSRF-Token` on a mutation */
         Forbidden: {
             headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["Problem"];
+            };
+        };
+        /** @description Too many attempts; retry after the given number of seconds */
+        TooManyRequests: {
+            headers: {
+                /** @example 60 */
+                "Retry-After"?: number;
                 [name: string]: unknown;
             };
             content: {
@@ -1033,13 +1088,16 @@ export interface operations {
             /** @description Logged in */
             200: {
                 headers: {
+                    /**
+                     * @description `gromesh_session=<opaque>; Path=/; HttpOnly; Secure; SameSite=Strict`
+                     * @example gromesh_session=example-session-id; Path=/; HttpOnly; SameSite=Strict
+                     */
+                    "Set-Cookie"?: string;
                     [name: string]: unknown;
                 };
                 content: {
                     /**
                      * @example {
-                     *       "accessToken": "eyJhbGciOiJIUzI1NiJ9.example.signature",
-                     *       "expiresIn": 3600,
                      *       "user": {
                      *         "id": "3c2b1a09-8f7e-4d6c-9b5a-4f3e2d1c0b9a",
                      *         "email": "editor@gromesh.dev",
@@ -1052,10 +1110,60 @@ export interface operations {
                      *     }
                      */
                     "application/json": {
-                        accessToken: string;
-                        /** @description seconds */
-                        expiresIn: number;
                         user: components["schemas"]["User"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    logout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Logged out */
+            204: {
+                headers: {
+                    /**
+                     * @description Expires the session cookie
+                     * @example gromesh_session=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0
+                     */
+                    "Set-Cookie"?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    getCsrfToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description CSRF token */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "csrfToken": "example-csrf-token"
+                     *     }
+                     */
+                    "application/json": {
+                        csrfToken: string;
                     };
                 };
             };

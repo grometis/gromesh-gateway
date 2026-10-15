@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 
 // W3-C1 acceptance, against the contract mock: login → create service → create route → publish shows 2 "added".
 test("login, create a service and a route, then preview the publication", async ({ page }) => {

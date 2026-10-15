@@ -24,24 +24,7 @@ export function Diff({ changes, from, to }: { changes: EntityChange[]; from: num
             <p>
               <span className={`badge ${change.change}`}>{CHANGE_LABEL[change.change]}</span> {KIND_LABEL[change.kind]} <strong>{change.label}</strong>
             </p>
-            <table className="diff-table">
-              <thead>
-                <tr>
-                  <th>Antes</th>
-                  <th>Depois</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td>
-                    <pre className="mono">{format(change.before)}</pre>
-                  </td>
-                  <td>
-                    <pre className="mono">{format(change.after)}</pre>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
+            <BeforeAfter before={change.before} after={change.after} />
           </li>
         ))}
       </ul>
@@ -49,7 +32,30 @@ export function Diff({ changes, from, to }: { changes: EntityChange[]; from: num
   );
 }
 
+export function BeforeAfter({ before, after }: { before: unknown; after: unknown }) {
+  return (
+    <table className="diff-table">
+      <thead>
+        <tr>
+          <th>Antes</th>
+          <th>Depois</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>
+            <pre className="mono">{format(before)}</pre>
+          </td>
+          <td>
+            <pre className="mono">{format(after)}</pre>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  );
+}
+
 // The API already redacts credentials; keep its values intact, including REDACTED.
-function format(value: EntityChange["before"]): string {
-  return value === undefined ? "—" : JSON.stringify(value, null, 2);
+function format(value: unknown): string {
+  return value === undefined || value === null ? "—" : JSON.stringify(value, null, 2);
 }

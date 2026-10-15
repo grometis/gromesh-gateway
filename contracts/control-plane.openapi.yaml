@@ -14,10 +14,15 @@ info:
       - Every mutation is written to the audit log in the same transaction.
       - Edits change the environment's draft state. Traffic only changes after a publish
         (or automatically when the environment has `publishMode: auto`).
+      - Authentication is a session cookie set by `POST /auth/login` (`httpOnly; Secure; SameSite=Strict`).
+        Every mutation also needs the `X-CSRF-Token` header, obtained from `GET /auth/csrf`; a missing or
+        wrong token is a 403. Agents authenticate differently (see agent-protocol.openapi.yaml).
+      - Secrets are write-only: credential keys and `encrypted` plugin fields read back as `"REDACTED"`
+        for every role. Only the agent endpoint delivers the real values.
 servers:
   - url: http://localhost:3000/api/v1
 security:
-  - bearerAuth: []
+  - cookieAuth: []
 tags:
   - name: auth
   - name: users
@@ -45,19 +50,62 @@ paths:
               properties:
                 email: { type: string, format: email }
                 password: { type: string, format: password }
+      description: |
+        Starts a session. The session id travels only in the `gromesh_session` cookie; the body never carries a token.
+        Repeated failures for the same e-mail or client address answer 429 with `Retry-After`.
       responses:
         "200":
           description: Logged in
+          headers:
+            Set-Cookie:
+              description: "`gromesh_session=<opaque>; Path=/; HttpOnly; Secure; SameSite=Strict`"
+              schema: { type: string }
+              example: "gromesh_session=example-session-id; Path=/; HttpOnly; SameSite=Strict"
           content:
             application/json:
               schema:
                 type: object
-                required: [accessToken, expiresIn, user]
+                required: [user]
                 properties:
-                  accessToken: { type: string }
-                  expiresIn: { type: integer, description: seconds }
                   user: { $ref: "#/components/schemas/User" }
-              example: {"accessToken": "eyJhbGciOiJIUzI1NiJ9.example.signature", "expiresIn": 3600, "user": {"id": "3c2b1a09-8f7e-4d6c-9b5a-4f3e2d1c0b9a", "email": "editor@gromesh.dev", "name": "Ana Editora", "role": "editor", "active": true, "createdAt": "2026-10-15T12:00:00Z", "updatedAt": "2026-10-15T12:00:00Z"}}
+              example: {"user": {"id": "3c2b1a09-8f7e-4d6c-9b5a-4f3e2d1c0b9a", "email": "editor@gromesh.dev", "name": "Ana Editora", "role": "editor", "active": true, "createdAt": "2026-10-15T12:00:00Z", "updatedAt": "2026-10-15T12:00:00Z"}}
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+  /auth/logout:
+    post:
+      tags: [auth]
+      operationId: logout
+      security: [{ cookieAuth: [], csrfToken: [] }]
+      x-required-role: viewer
+      description: Ends the session and clears the cookie. Idempotent.
+      responses:
+        "204":
+          description: Logged out
+          headers:
+            Set-Cookie:
+              description: Expires the session cookie
+              schema: { type: string }
+              example: "gromesh_session=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /auth/csrf:
+    get:
+      tags: [auth]
+      operationId: getCsrfToken
+      x-required-role: viewer
+      description: |
+        Token bound to the current session, to send as `X-CSRF-Token` on every mutation. Stable for the session's
+        lifetime; the client keeps it in memory, never in storage.
+      responses:
+        "200":
+          description: CSRF token
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [csrfToken]
+                properties:
+                  csrfToken: { type: string }
+              example: {"csrfToken": "example-csrf-token"}
         "401": { $ref: "#/components/responses/Unauthorized" }
   /me:
     get:
@@ -89,6 +137,7 @@ paths:
     post:
       tags: [users]
       operationId: createUser
+      security: [{ cookieAuth: [], csrfToken: [] }]
       x-required-role: admin
       requestBody:
         required: true
@@ -109,6 +158,7 @@ paths:
     patch:
       tags: [users]
       operationId: updateUser
+      security: [{ cookieAuth: [], csrfToken: [] }]
       x-required-role: admin
       requestBody:
         required: true
@@ -127,6 +177,7 @@ paths:
     delete:
       tags: [users]
       operationId: deleteUser
+      security: [{ cookieAuth: [], csrfToken: [] }]
       x-required-role: admin
       responses:
         "204": { description: Deleted }
@@ -154,6 +205,7 @@ paths:
     post:
       tags: [environments]
       operationId: createEnvironment
+      security: [{ cookieAuth: [], csrfToken: [] }]
       x-required-role: admin
       requestBody:
         required: true
@@ -185,6 +237,7 @@ paths:
     patch:
       tags: [environments]
       operationId: updateEnvironment
+      security: [{ cookieAuth: [], csrfToken: [] }]
       x-required-role: admin
       requestBody:
         required: true
@@ -202,6 +255,7 @@ paths:
     delete:
       tags: [environments]
       operationId: deleteEnvironment
+      security: [{ cookieAuth: [], csrfToken: [] }]
       x-required-role: admin
       description: Refused with 409 while clusters are registered.
       responses:
@@ -229,6 +283,7 @@ paths:
     post:
       tags: [services]
       operationId: createService
+      security: [{ cookieAuth: [], csrfToken: [] }]
       x-required-role: editor
       requestBody:
         required: true
@@ -261,6 +316,7 @@ paths:
     put:
       tags: [services]
       operationId: replaceService
+      security: [{ cookieAuth: [], csrfToken: [] }]
       x-required-role: editor
       requestBody:
         required: true
@@ -280,6 +336,7 @@ paths:
     delete:
       tags: [services]
       operationId: deleteService
+      security: [{ cookieAuth: [], csrfToken: [] }]
       x-required-role: editor
       description: Refused with 409 while routes or plugins reference the service.
       responses:
@@ -310,6 +367,7 @@ paths:
     post:
       tags: [routes]
       operationId: createRoute
+      security: [{ cookieAuth: [], csrfToken: [] }]
       x-required-role: editor
       requestBody:
         required: true
@@ -342,6 +400,7 @@ paths:
     put:
       tags: [routes]
       operationId: replaceRoute
+      security: [{ cookieAuth: [], csrfToken: [] }]
       x-required-role: editor
       requestBody:
         required: true
@@ -361,6 +420,7 @@ paths:
     delete:
       tags: [routes]
       operationId: deleteRoute
+      security: [{ cookieAuth: [], csrfToken: [] }]
       x-required-role: editor
       responses:
         "204": { description: Deleted (route-scoped plugins are deleted with it) }
@@ -385,6 +445,7 @@ paths:
     post:
       tags: [consumers]
       operationId: createConsumer
+      security: [{ cookieAuth: [], csrfToken: [] }]
       x-required-role: editor
       requestBody:
         required: true
@@ -415,6 +476,7 @@ paths:
     put:
       tags: [consumers]
       operationId: replaceConsumer
+      security: [{ cookieAuth: [], csrfToken: [] }]
       x-required-role: editor
       requestBody:
         required: true
@@ -433,6 +495,7 @@ paths:
     delete:
       tags: [consumers]
       operationId: deleteConsumer
+      security: [{ cookieAuth: [], csrfToken: [] }]
       x-required-role: editor
       responses:
         "204": { description: Deleted (credentials and consumer-scoped plugins are deleted with it) }
@@ -458,6 +521,7 @@ paths:
     post:
       tags: [consumers]
       operationId: createKeyAuthCredential
+      security: [{ cookieAuth: [], csrfToken: [] }]
       x-required-role: editor
       description: If `key` is omitted a random 32-byte key is generated. The full key is returned only in this response.
       requestBody:
@@ -493,6 +557,7 @@ paths:
     delete:
       tags: [consumers]
       operationId: deleteKeyAuthCredential
+      security: [{ cookieAuth: [], csrfToken: [] }]
       x-required-role: editor
       responses:
         "204": { description: Deleted }
@@ -520,6 +585,7 @@ paths:
     post:
       tags: [plugins]
       operationId: createPlugin
+      security: [{ cookieAuth: [], csrfToken: [] }]
       x-required-role: editor
       description: "`config` is validated against the plugin schema of the Kong version pinned by the platform."
       requestBody:
@@ -551,6 +617,7 @@ paths:
     put:
       tags: [plugins]
       operationId: replacePlugin
+      security: [{ cookieAuth: [], csrfToken: [] }]
       x-required-role: editor
       requestBody:
         required: true
@@ -569,6 +636,7 @@ paths:
     delete:
       tags: [plugins]
       operationId: deletePlugin
+      security: [{ cookieAuth: [], csrfToken: [] }]
       x-required-role: editor
       responses:
         "204": { description: Deleted }
@@ -648,6 +716,7 @@ paths:
     post:
       tags: [snapshots]
       operationId: publish
+      security: [{ cookieAuth: [], csrfToken: [] }]
       x-required-role: editor
       description: |
         Compiles the draft, stores it as version N+1 and notifies agents.
@@ -673,7 +742,9 @@ paths:
       tags: [snapshots]
       operationId: getSnapshot
       x-required-role: viewer
-      description: Full envelope. Credential keys are masked for non-admin roles.
+      description: |
+        Full envelope with credential keys and `encrypted` plugin fields replaced by `"REDACTED"`, for every role
+        including admin. Only the agent endpoint (`GET /agent/v1/snapshots/current`) delivers the real values.
       responses:
         "200":
           description: Snapshot
@@ -710,6 +781,7 @@ paths:
     post:
       tags: [snapshots]
       operationId: rollback
+      security: [{ cookieAuth: [], csrfToken: [] }]
       x-required-role: editor
       description: Restores the draft to this version's state and publishes it as a NEW version.
       responses:
@@ -744,6 +816,7 @@ paths:
     post:
       tags: [clusters]
       operationId: createCluster
+      security: [{ cookieAuth: [], csrfToken: [] }]
       x-required-role: admin
       requestBody:
         required: true
@@ -783,6 +856,7 @@ paths:
     delete:
       tags: [clusters]
       operationId: deleteCluster
+      security: [{ cookieAuth: [], csrfToken: [] }]
       x-required-role: admin
       description: Revokes registration and node tokens.
       responses:
@@ -793,6 +867,7 @@ paths:
     post:
       tags: [clusters]
       operationId: rotateClusterToken
+      security: [{ cookieAuth: [], csrfToken: [] }]
       x-required-role: admin
       description: New registration token; already-registered nodes keep working.
       responses:
@@ -830,10 +905,16 @@ paths:
 
 components:
   securitySchemes:
-    bearerAuth:
-      type: http
-      scheme: bearer
-      bearerFormat: JWT
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: gromesh_session
+      description: Session cookie set by `POST /auth/login`.
+    csrfToken:
+      type: apiKey
+      in: header
+      name: X-CSRF-Token
+      description: Value of `GET /auth/csrf`, required together with the session cookie on every mutation.
   parameters:
     Limit:
       name: limit
@@ -895,7 +976,16 @@ components:
         application/problem+json:
           schema: { $ref: "#/components/schemas/Problem" }
     Forbidden:
-      description: Role too low
+      description: Role too low, or missing/invalid `X-CSRF-Token` on a mutation
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    TooManyRequests:
+      description: Too many attempts; retry after the given number of seconds
+      headers:
+        Retry-After:
+          schema: { type: integer, minimum: 1 }
+          example: 60
       content:
         application/problem+json:
           schema: { $ref: "#/components/schemas/Problem" }

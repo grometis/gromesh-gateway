@@ -121,7 +121,7 @@ describe("publish", () => {
 
     const v1 = await h.api("POST", `/environments/${envId}/snapshots`, { message: "first" });
     expect(v1.status).toBe(201);
-    expect(v1.body).toMatchObject({ version: 1, isCurrent: true, changeCount: 2, message: "first", createdBy: { name: "Dev Admin" } });
+    expect(v1.body).toMatchObject({ version: 1, isCurrent: true, changeCount: 2, message: "first", createdBy: { name: "Admin" } });
     expect(v1.body.hash).toMatch(/^sha256:[0-9a-f]{64}$/);
 
     const saved = await h.api("GET", `/environments/${envId}/snapshots/1`);
@@ -160,7 +160,7 @@ describe("publish", () => {
       [envId],
     );
     expect(rows.map((r) => r.action)).toEqual(["environment.create", "service.create", "route.create", "snapshot.publish"]);
-    expect(rows.every((r) => r.actor.name === "Dev Admin")).toBe(true);
+    expect(rows.every((r) => r.actor.name === "Admin")).toBe(true);
   });
 
   it("publishes an empty draft as a valid, empty Kong config", async () => {

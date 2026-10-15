@@ -25,6 +25,48 @@ export interface Actor {
   name?: string;
 }
 
+export const users = pgTable(
+  "users",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    // Stored lowercase; the unique index makes the e-mail case-insensitive.
+    email: text("email").notNull(),
+    name: text("name").notNull(),
+    role: text("role", { enum: ["viewer", "editor", "admin"] }).notNull(),
+    active: boolean("active").notNull().default(true),
+    passwordHash: text("password_hash").notNull(),
+    ...timestamps,
+  },
+  (t) => [uniqueIndex("users_email_uq").on(t.email)],
+);
+
+export const sessions = pgTable(
+  "sessions",
+  {
+    // sha256 of the cookie value: a database read never yields a usable session id.
+    idHash: text("id_hash").primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    csrfToken: text("csrf_token").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [index("sessions_user_idx").on(t.userId), index("sessions_expires_idx").on(t.expiresAt)],
+);
+
+/** Failed logins per key ("ip:<addr>" or "email:<addr>"), shared by every replica. */
+export const loginAttempts = pgTable("login_attempts", {
+  key: text("key").primaryKey(),
+  failures: integer("failures").notNull().default(0),
+  windowStartedAt: timestamp("window_started_at", { withTimezone: true }).notNull().defaultNow(),
+  lockedUntil: timestamp("locked_until", { withTimezone: true }),
+});
+
+export type UserRow = typeof users.$inferSelect;
+export type SessionRow = typeof sessions.$inferSelect;
+
 export const environments = pgTable(
   "environments",
   {
