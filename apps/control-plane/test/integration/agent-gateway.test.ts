@@ -1,10 +1,6 @@
 import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { ExecutionContext } from "@nestjs/common";
 import { Reflector } from "@nestjs/core";
-import { AuthGuard, type Role } from "../../src/auth/auth.js";
-import { ProblemException } from "../../src/common/problem.js";
-import { loadConfig } from "../../src/config.js";
 import { ClustersController } from "../../src/clusters/clusters.js";
 import { startHarness, uniq, type Harness } from "./harness.js";
 
@@ -34,29 +30,21 @@ const report = (extra: Record<string, unknown> = {}) => ({ nodeId: "node-1", sta
 
 // These endpoints bypass user RBAC only: registration/node bearer authentication is mandatory.
 describe("agent bearer authentication and cluster lifecycle", () => {
-  it("enforces the cluster roles declared in the control-plane contract", () => {
+  it("enforces the cluster roles declared in the control-plane contract", async () => {
     const required = { list: "viewer", get: "viewer", create: "admin", remove: "admin", rotate: "admin" } as const;
     const reflector = new Reflector();
     for (const [method, role] of Object.entries(required)) {
-      const handler = ClustersController.prototype[method as keyof typeof required];
-      expect(reflector.get("gromesh:required-role", handler)).toBe(role);
-      const context = { getHandler: () => handler, getClass: () => ClustersController,
-        switchToHttp: () => ({ getRequest: () => ({}) }) } as unknown as ExecutionContext;
-      for (const caller of ["viewer", "editor", "admin"] satisfies Role[]) {
-        const guard = new AuthGuard(reflector, loadConfig({ DATABASE_URL: "unused" }));
-        Object.defineProperty(guard, "resolveUser", { value: () => ({ id: "test-user", name: "Test", role: caller }) });
-        if (role === "admin" && caller !== "admin") {
-          try { guard.canActivate(context); throw new Error("Expected role rejection"); }
-          catch (error) {
-            expect(error).toBeInstanceOf(ProblemException);
-            expect((error as ProblemException).getStatus()).toBe(403);
-            expect((error as ProblemException).getResponse()).toMatchObject({ detail: "Requires role admin" });
-          }
-        } else expect(guard.canActivate(context)).toBe(true);
-      }
+      expect(reflector.get("gromesh:required-role", ClustersController.prototype[method as keyof typeof required])).toBe(role);
     }
+    // The guard itself is exercised end to end: an editor may read clusters but not manage them.
+    const env = await h.api("POST", "/environments", { name: uniq("roles") });
+    const editor = await h.as("editor");
+    expect((await editor.api("GET", `/environments/${env.body.id}/clusters`)).status).toBe(200);
+    const refused = await editor.api("POST", `/environments/${env.body.id}/clusters`, { name: "edge" });
+    expect(refused.status).toBe(403);
+    expect(refused.body).toMatchObject({ detail: "Requires role admin" });
   });
-  it("requires agent tokens even with the built-in dev admin, and validates the protocol contract", async () => {
+  it("requires agent tokens even for a logged-in admin, and validates the protocol contract", async () => {
     for (const [path, body] of [["register", registration()], ["snapshots/current", undefined], ["events", undefined], ["status", report()]] as const) {
       for (const token of [undefined, "invalid"]) expect((await agent(path, token, body)).status).toBe(401);
     }

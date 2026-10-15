@@ -16,13 +16,29 @@ interface Environment { id: string }
 interface Service { id: string }
 interface Cluster { id: string; registrationToken?: string; status: string; nodes: { appliedVersion: number | null }[] }
 interface Publication { version: number }
+// The stack's bootstrap admin (deploy/compose/docker-compose.yml) unless overridden.
+const ADMIN = { email: process.env.BOOTSTRAP_ADMIN_EMAIL ?? "admin@gromesh.dev", password: process.env.BOOTSTRAP_ADMIN_PASSWORD ?? "gromesh-dev-admin" };
+let session: { cookie: string; csrf: string } | null = null;
+
 async function api<T>(method: string, path: string, body?: unknown): Promise<{ status: number; body: T }> {
+  if (!session && path !== "/auth/login") session = await login();
   const res = await fetch(CP + path, {
-    method, headers: body === undefined ? {} : { "content-type": "application/json" },
+    method,
+    headers: {
+      ...(body === undefined ? {} : { "content-type": "application/json" }),
+      ...(session ? { cookie: session.cookie, "x-csrf-token": session.csrf } : {}),
+    },
     body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(5000),
   });
   const text = await res.text();
   return { status: res.status, body: (text ? JSON.parse(text) : undefined) as T };
+}
+async function login(): Promise<{ cookie: string; csrf: string }> {
+  const res = await fetch(`${CP}/auth/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(ADMIN), signal: AbortSignal.timeout(5000) });
+  const cookie = res.headers.get("set-cookie")?.split(";")[0];
+  if (res.status !== 200 || !cookie) throw new Error(`login as ${ADMIN.email} failed: HTTP ${res.status}`);
+  const csrf = await fetch(`${CP}/auth/csrf`, { headers: { cookie }, signal: AbortSignal.timeout(5000) });
+  return { cookie, csrf: ((await csrf.json()) as { csrfToken: string }).csrfToken };
 }
 async function compose(args: string[], registrationToken?: string) {
   await exec("docker", ["compose", ...(process.env.COMPOSE_FILE ? [] : ["-f", COMPOSE]), ...args], {

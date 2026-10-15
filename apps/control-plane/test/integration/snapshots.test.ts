@@ -101,7 +101,7 @@ describe("publish", () => {
   it("keeps versions monotonic and records message and author", async () => {
     const { envId, v1, v2 } = await twoVersions();
     expect([v1.version, v2.version]).toEqual([1, 2]);
-    expect(v2).toMatchObject({ message: "v2", createdBy: { name: "Dev Admin" }, rollbackOf: null, isCurrent: true });
+    expect(v2).toMatchObject({ message: "v2", createdBy: { name: "Admin" }, rollbackOf: null, isCurrent: true });
     const nothing = await h.api("POST", `/environments/${envId}/snapshots`, {});
     expect(nothing.status).toBe(409);
     expect(nothing.body.detail).toMatch(/nothing to publish/i);
