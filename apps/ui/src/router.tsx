@@ -5,7 +5,8 @@ import { ServicesPage } from "./pages/Services";
 import { RoutesPage } from "./pages/Routes";
 import { ConsumerDetailPage, ConsumersPage } from "./pages/Consumers";
 import { PluginsPage } from "./pages/Plugins";
-import { Placeholder } from "./pages/Placeholder";
+import { SnapshotsPage, SnapshotDetailPage } from "./pages/Snapshots";
+import { ClustersPage } from "./pages/Clusters";
 
 export const router = createBrowserRouter([
   { path: "/login", element: <LoginPage /> },
@@ -23,8 +24,9 @@ export const router = createBrowserRouter([
           { path: "consumers", element: <ConsumersPage /> },
           { path: "consumers/:consumerId", element: <ConsumerDetailPage /> },
           { path: "plugins", element: <PluginsPage /> },
-          { path: "publications", element: <Placeholder title="Publicações" /> },
-          { path: "clusters", element: <Placeholder title="Clusters" /> },
+          { path: "publications", element: <SnapshotsPage /> },
+          { path: "publications/:version", element: <SnapshotDetailPage /> },
+          { path: "clusters", element: <ClustersPage /> },
         ],
       },
     ],
