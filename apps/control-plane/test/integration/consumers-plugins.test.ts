@@ -5,7 +5,7 @@ import { KONG_VALIDATOR_URL, startHarness, uniq, type Harness } from "./harness.
 let h: Harness;
 beforeAll(async () => {
   const kong = await fetch(`${KONG_VALIDATOR_URL}/status`).catch(() => null);
-  if (!kong?.ok) throw new Error(`These tests validate plugins against a real Kong at ${KONG_VALIDATOR_URL}: run \`pnpm dev:up\` or set KONG_VALIDATOR_URL`);
+  if (!kong?.ok) throw new Error(`These tests validate plugins against a real Kong at ${KONG_VALIDATOR_URL}: run \`pnpm dev:up\` (validator on 127.0.0.1:8011) or set KONG_VALIDATOR_URL`);
   h = await startHarness();
 });
 afterAll(async () => {

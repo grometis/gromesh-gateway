@@ -80,8 +80,7 @@ services:
       KONG_ADMIN_ERROR_LOG: /dev/stderr
       KONG_NGINX_WORKER_PROCESSES: "1"
     ports:
-      # Existing host-based plugin validation/catalog tooling still uses :8001.
-      - "127.0.0.1:8001:8001"
+      - "127.0.0.1:8011:8001"
     healthcheck:
       test: ["CMD", "kong", "health"]
       interval: 5s
@@ -133,6 +132,8 @@ services:
     environment:
       DATABASE_URL: postgres://gromesh:gromesh@postgres:5432/gromesh
       MIGRATE_ON_START: "true"
+      # Temporary login for this development stack only, until week 5 real auth.
+      AUTH_MODE: dev
       # Plugin configs are validated by Kong itself (POST /schemas/plugins/validate).
       KONG_VALIDATOR_URL: http://kong-validator:8001
     ports:
@@ -141,6 +142,17 @@ services:
       postgres:
         condition: service_healthy
       kong-validator:
+        condition: service_healthy
+
+  ui:
+    build:
+      context: ../..
+      dockerfile: apps/ui/Dockerfile
+    ports:
+      # Separate from Vite/Prism acceptance, which uses 5173 on the host.
+      - "127.0.0.1:${UI_PORT:-5174}:8080"
+    depends_on:
+      control-plane:
         condition: service_healthy
 
   # Sample upstream used by fixtures and e2e tests (service host "echo", port 80).
