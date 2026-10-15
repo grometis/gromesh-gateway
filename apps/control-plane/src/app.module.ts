@@ -1,5 +1,6 @@
 import { type DynamicModule, Module } from "@nestjs/common";
 import { APP_FILTER, APP_GUARD } from "@nestjs/core";
+import { AuditModule } from "./audit/audit.module.js";
 import { AgentGatewayModule } from "./agent-gateway/agent-gateway.js";
 import { ClustersModule } from "./clusters/clusters.js";
 import { AuthGuard } from "./auth/auth.js";
@@ -23,6 +24,7 @@ export class AppModule {
       global: true,
       imports: [
         AuthModule,
+        AuditModule,
         DbModule,
         AgentGatewayModule,
         ClustersModule,
