@@ -144,7 +144,7 @@ test("UI publication, key-auth traffic, viewer limits, audit and rollback on the
       await viewerPage.getByRole("button", { name: "Entrar" }).click();
       await viewerPage.getByLabel("Environment", { exact: true }).selectOption(env.id);
       await expect(viewerPage.getByRole("heading", { name: "Services", exact: true })).toBeVisible();
-      await expect(viewerPage.getByText(name, { exact: true })).toBeVisible();
+      await expect(viewerPage.getByRole("cell", { name, exact: true })).toBeVisible();
       await expect(viewerPage.getByRole("button", { name: /Novo service|Editar|Excluir|Publicar/ })).toHaveCount(0);
       await expect(viewerPage.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: /Usuários|Auditoria/ })).toHaveCount(0);
       await viewerPage.context().close();
