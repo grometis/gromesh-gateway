@@ -1,5 +1,5 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { maskConfigFor } from "../../src/snapshots/snapshots.js";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { AutoPublisher, maskConfigFor, SnapshotsService } from "../../src/snapshots/snapshots.js";
 import { startHarness, uniq, type Harness } from "./harness.js";
 
 let h: Harness;
@@ -318,5 +318,59 @@ describe("auto publish", () => {
     await newService(envId, {}, a.api);
     await sleep(4_000);
     expect(await versions(envId)).toEqual([]);
+  });
+});
+
+describe("auto publish failures", () => {
+  // One replica with the poller off and no debounce, so the test drives each tick.
+  let r: Harness;
+  let service: SnapshotsService;
+  let publisher: AutoPublisher;
+  beforeAll(async () => {
+    r = await startHarness({ autoPublishPollMs: 0, autoPublishDelayMs: 0 });
+    service = r.app.get(SnapshotsService);
+    publisher = r.app.get(AutoPublisher);
+  });
+  afterAll(async () => {
+    vi.restoreAllMocks();
+    await r?.close();
+  });
+
+  const currentVersion = async (envId: string) => (await r.api("GET", `/environments/${envId}`)).body.currentVersion as number | null;
+
+  it("parks a draft that does not compile until the next edit", async () => {
+    const envId = await newEnv(r.api, { publishMode: "auto" });
+    const svc = await newService(envId, { protocol: "tcp", path: "/not-for-tcp" }, r.api);
+    const spy = vi.spyOn(service, "autoPublish");
+    await expect(service.autoPublish(envId, 0)).resolves.toBe(false);
+
+    spy.mockClear();
+    await publisher.tick();
+    await publisher.tick();
+    expect(spy.mock.calls.filter(([id]) => id === envId)).toHaveLength(1);
+
+    await r.api("PUT", `/environments/${envId}/services/${svc.id}`, { name: svc.name, protocol: "http", host: "echo", port: 80 });
+    await publisher.tick();
+    expect(await currentVersion(envId)).toBe(1);
+    spy.mockRestore();
+  });
+
+  it("rethrows other failures and retries them on the next tick", async () => {
+    const envId = await newEnv(r.api, { publishMode: "auto" });
+    await newService(envId, {}, r.api);
+    const transient = new Error("Connection terminated unexpectedly");
+    // prepare is private; the spy stands in for a database hiccup while compiling the draft.
+    const prepare = vi.spyOn(service as unknown as { prepare: () => Promise<unknown> }, "prepare");
+
+    prepare.mockRejectedValueOnce(transient);
+    await expect(service.autoPublish(envId, 0)).rejects.toBe(transient);
+
+    prepare.mockRejectedValueOnce(transient);
+    await publisher.tick();
+    expect(await currentVersion(envId)).toBeNull();
+
+    await publisher.tick();
+    expect(await currentVersion(envId)).toBe(1);
+    prepare.mockRestore();
   });
 });

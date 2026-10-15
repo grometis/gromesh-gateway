@@ -28,7 +28,7 @@ import { audit } from "../audit/audit.js";
 import { Ctx, RequiredRole, type RequestContext, type Role } from "../auth/auth.js";
 import { contractBody } from "../common/contract.js";
 import { decodeCursor, encodeCursor, parseLimit } from "../common/pagination.js";
-import { conflict, notFound, unprocessable } from "../common/problem.js";
+import { conflict, notFound, ProblemException, unprocessable } from "../common/problem.js";
 import { APP_CONFIG, type AppConfig } from "../config.js";
 import { DB, type Db, type Executor, type Tx } from "../db/db.js";
 import { environments, snapshots, type EnvironmentRow, type SnapshotRow } from "../db/schema.js";
@@ -143,7 +143,9 @@ export class SnapshotsService {
       try {
         prepared = await this.prepare(tx, env);
       } catch (err) {
-        this.logger.warn(`Auto-publish of environment ${envId} skipped: ${err instanceof Error ? err.message : String(err)}`);
+        // Only a draft that does not compile is "broken"; anything else (e.g. a dropped connection) must be retried.
+        if (!(err instanceof ProblemException) || err.getStatus() !== 422) throw err;
+        this.logger.warn(`Auto-publish of environment ${envId} skipped: ${err.message}`);
         return false;
       }
       if (prepared.current?.hash === prepared.envelope.hash) {
@@ -341,8 +343,13 @@ export class AutoPublisher implements OnApplicationBootstrap, OnModuleDestroy {
     for (const env of due) {
       const editedAt = env.draftChangedAt?.getTime() ?? 0;
       if (this.broken.get(env.id) === editedAt) continue;
-      if (await this.snapshotsService.autoPublish(env.id, delay)) this.broken.delete(env.id);
-      else this.broken.set(env.id, editedAt);
+      try {
+        if (await this.snapshotsService.autoPublish(env.id, delay)) this.broken.delete(env.id);
+        else this.broken.set(env.id, editedAt);
+      } catch (err) {
+        // A transient failure on one environment must not hold back the others; the next tick retries it.
+        this.logger.error(err instanceof Error ? err.stack : String(err));
+      }
     }
   }
 }

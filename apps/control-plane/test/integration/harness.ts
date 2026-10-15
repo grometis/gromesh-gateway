@@ -37,6 +37,7 @@ export class FakeKong {
 }
 
 export interface Harness {
+  app: INestApplication;
   api: <T = any>(method: string, path: string, body?: unknown) => Promise<{ status: number; body: T; contentType: string | null }>;
   kong: FakeKong;
   sql: pg.Pool;
@@ -57,6 +58,7 @@ export async function startHarness(overrides: Partial<AppConfig> = {}): Promise<
   const sql = new pg.Pool({ connectionString: databaseUrl, max: 2 });
 
   return {
+    app,
     kong,
     sql,
     api: async (method, path, body) => {
