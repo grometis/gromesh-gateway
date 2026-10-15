@@ -23,6 +23,7 @@ git worktree add ../gg-codex  -b task/W1-X1-kong-image
 | W3-X2 | Codex | W3-C1, W3-X1 | `e2e/`, `.github/workflows/` |
 | W4-C1 | Claude | — | `apps/ui/` (exceto `pages/Snapshots*`, `pages/Clusters*`) |
 | W4-X1 | Codex | — | `apps/ui/src/pages/Snapshots*`, `apps/ui/src/pages/Clusters*`, `apps/ui/src/components/Diff*`, `apps/ui/e2e/`, entradas dessas páginas em `router.tsx` |
+| W4-C2 | Claude | W4-C1 | `apps/control-plane/src/plugins/`, `apps/control-plane/src/plugin-catalog/`, `apps/ui/src/schema-form/`, testes |
 | W5-C0 | Claude | — | `contracts/` (PR de contrato, antes de W5-C1/W5-X1) |
 | W5-C1 | Claude | W5-C0 | `apps/control-plane/` (exceto `src/audit/`) |
 | W5-X1 | Codex | W5-C0 | `apps/control-plane/src/audit/`, `apps/ui/`, `apps/ui/nginx.conf` |
@@ -32,7 +33,7 @@ git worktree add ../gg-codex  -b task/W1-X1-kong-image
 
 Ordem de merge na semana 3: W2-C2 → W3-X1 → W3-C1 → W3-X2. Quem mergeia depois faz rebase; `src/db/schema.ts` e `drizzle/` são alterados por uma frente por vez.
 
-Ordem de merge: semana 4 → W4-C1 antes de W4-X1 (W4-X1 faz rebase em `router.tsx`). Semana 5 → W5-C0 → W5-C1 → W5-X1. Semana 6 → W6-X1 → W6-C0 → W6-C1.
+Ordem de merge: semana 4 → W4-C1 antes de W4-X1 (W4-X1 faz rebase em `router.tsx`); W4-C2 mergeia antes de começar a semana 5. Semana 5 → W5-C0 → W5-C1 → W5-X1. Semana 6 → W6-X1 → W6-C0 → W6-C1.
 
 ---
 
@@ -143,6 +144,14 @@ Aceite: (1) teste unitário que renderiza o formulário de **todos os 45** schem
 - Atualização periódica da lista de clusters (10 s) só com a aba visível.
 
 Aceite: Playwright contra o Prism: abrir histórico → diff entre v1 e v2 → rollback confirma; criar cluster → token aparece uma vez; nó `failed` mostra o erro.
+
+### W4-C2 [Claude] Segredos de plugin são somente escrita
+- `GET /plugins`, `GET /plugins/{id}` e qualquer outra resposta da API devolvem os campos `encrypted` do schema como `"REDACTED"` para **todos** os papéis, inclusive admin. Só o snapshot enviado ao agente leva o valor real.
+- `PUT`/`POST` de plugin: campo `encrypted` com valor `"REDACTED"` = manter o valor atual gravado; campo ausente = remover (comportamento normal do `PUT`). Em `POST` (plugin novo), `"REDACTED"` é 422.
+- O validador do Kong recebe o valor real mesclado, nunca `"REDACTED"`.
+- UI (`schema-form`): campo `encrypted` não alterado é enviado como `"REDACTED"` (hoje é omitido, o que apagaria o segredo no `PUT`). Dica do campo: "Valor atual mantido; digite para trocar."
+
+Aceite: (a) `GET` nunca contém o segredo; (b) editar outro campo do plugin sem redigitar o segredo o mantém, conferido no snapshot publicado; (c) trocar o segredo funciona; (d) `POST` com `"REDACTED"` → 422; (e) teste da UI cobre o envio do sentinel.
 
 ---
 
