@@ -75,7 +75,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: docker compose -f deploy/compose/docker-compose.yml up -d --build --wait
       - name: Kong accepts the compiler output (contract example)
-        run: node scripts/smoke.mjs
+        run: pnpm smoke
       - name: Walking skeleton (API → compiler → Kong → upstream)
         run: pnpm --filter @gromesh/control-plane test:e2e
       - if: failure()

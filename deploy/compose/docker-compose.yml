@@ -88,7 +88,10 @@ services:
       timeout: 5s
       retries: 20
 
+  # Started per cluster with its registration token (see the control-plane e2e):
+  # GROMESH_REGISTRATION_TOKEN=… docker compose up -d agent
   agent:
+    profiles: [agent]
     build:
       context: ../..
       dockerfile: apps/agent/Dockerfile
@@ -108,6 +111,20 @@ services:
       control-plane:
         condition: service_healthy
     restart: unless-stopped
+
+  # `pnpm smoke`: the contract example against the real Kong, from inside its network namespace
+  # (the data-plane Admin API only listens on 127.0.0.1).
+  smoke:
+    profiles: [tools]
+    image: node:22-alpine
+    network_mode: "service:kong"
+    volumes:
+      - ../../scripts:/repo/scripts:ro
+      - ../../contracts:/repo/contracts:ro
+    command: ["node", "/repo/scripts/smoke.mjs"]
+    depends_on:
+      kong:
+        condition: service_healthy
 
   control-plane:
     build:
