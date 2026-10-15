@@ -11,7 +11,8 @@
     "test": "vitest run --config vitest.config.ts",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "node dist/db/migrate-cli.js"
+    "db:migrate": "node dist/db/migrate-cli.js",
+    "catalog:generate": "node scripts/generate-plugin-catalog.mjs"
   },
   "dependencies": {
     "@gromesh/compiler": "workspace:*",

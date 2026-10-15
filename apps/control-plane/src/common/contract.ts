@@ -17,10 +17,12 @@ class ContractRegistry {
   private ajv: Ajv.default | null = null;
   private readonly cache = new Map<string, ValidateFunction>();
 
+  /** `schemaName` is a component name, or a JSON pointer ("#/paths/…") for request bodies defined inline. */
   validator(schemaName: string): ValidateFunction {
     const hit = this.cache.get(schemaName);
     if (hit) return hit;
-    const fn = this.load().getSchema(`${CONTRACT_ID}#/components/schemas/${schemaName}`);
+    const pointer = schemaName.startsWith("#") ? encodeURI(schemaName) : `#/components/schemas/${schemaName}`;
+    const fn = this.load().getSchema(`${CONTRACT_ID}${pointer}`);
     if (!fn) throw new Error(`Schema ${schemaName} not found in the control-plane contract`);
     this.cache.set(schemaName, fn);
     return fn;
@@ -73,3 +75,7 @@ export class ContractBodyPipe implements PipeTransform {
 
 /** Usage: `@Body(contractBody("ServiceWrite")) body: ServiceWrite` */
 export const contractBody = (schemaName: string) => new ContractBodyPipe(schemaName);
+
+/** JSON pointer to an operation's inline JSON request body schema, e.g. inlineBody("/environments/{envId}/…", "post"). */
+export const inlineBody = (path: string, method: string) =>
+  `#/paths/${path.replace(/~/g, "~0").replace(/\//g, "~1")}/${method}/requestBody/content/application~1json/schema`;

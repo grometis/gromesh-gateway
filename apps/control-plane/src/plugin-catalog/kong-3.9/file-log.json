@@ -1,0 +1,71 @@
+{
+  "fields": [
+    {
+      "protocols": {
+        "default": [
+          "grpc",
+          "grpcs",
+          "http",
+          "https"
+        ],
+        "elements": {
+          "one_of": [
+            "grpc",
+            "grpcs",
+            "http",
+            "https",
+            "tcp",
+            "tls",
+            "tls_passthrough",
+            "udp"
+          ],
+          "type": "string",
+          "description": "A string representing a protocol, such as HTTP or HTTPS."
+        },
+        "required": true,
+        "type": "set",
+        "description": "A set of strings representing protocols."
+      }
+    },
+    {
+      "config": {
+        "required": true,
+        "type": "record",
+        "fields": [
+          {
+            "path": {
+              "required": true,
+              "type": "string",
+              "match": "^[^*&%%\\`]+$",
+              "err": "not a valid filename",
+              "description": "The file path of the output log file. The plugin creates the log file if it doesn't exist yet."
+            }
+          },
+          {
+            "reopen": {
+              "default": false,
+              "required": true,
+              "type": "boolean",
+              "description": "Determines whether the log file is closed and reopened on every request."
+            }
+          },
+          {
+            "custom_fields_by_lua": {
+              "values": {
+                "type": "string",
+                "len_min": 1
+              },
+              "type": "map",
+              "keys": {
+                "type": "string",
+                "len_min": 1
+              },
+              "description": "Lua code as a key-value map"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "entity_checks": []
+}

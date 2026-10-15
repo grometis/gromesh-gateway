@@ -44,13 +44,16 @@ export interface Harness {
   close: () => Promise<void>;
 }
 
+/** Plugin configs are validated by a real Kong: the compose one unless overridden. */
+export const KONG_VALIDATOR_URL = process.env.KONG_VALIDATOR_URL ?? "http://127.0.0.1:8001";
+
 /** Each call is one more control-plane replica on the shared test database. */
 export async function startHarness(overrides: Partial<AppConfig> = {}): Promise<Harness> {
   const kong = new FakeKong();
   await kong.start();
   const databaseUrl = inject("databaseUrl");
   const app: INestApplication = await createApp(
-    { ...loadConfig({ ...process.env, DATABASE_URL: databaseUrl }), kongAdminUrl: kong.url, migrateOnStart: false, ...overrides },
+    { ...loadConfig({ ...process.env, DATABASE_URL: databaseUrl }), kongAdminUrl: kong.url, kongValidatorUrl: KONG_VALIDATOR_URL, migrateOnStart: false, ...overrides },
     { logger: false },
   );
   await app.listen(0, "127.0.0.1");
