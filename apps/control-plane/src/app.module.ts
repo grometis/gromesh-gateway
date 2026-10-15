@@ -3,6 +3,7 @@ import { APP_FILTER, APP_GUARD } from "@nestjs/core";
 import { AgentGatewayModule } from "./agent-gateway/agent-gateway.js";
 import { ClustersModule } from "./clusters/clusters.js";
 import { AuthGuard } from "./auth/auth.js";
+import { AuthModule } from "./auth/auth.module.js";
 import { ProblemFilter } from "./common/problem.filter.js";
 import { APP_CONFIG, type AppConfig } from "./config.js";
 import { ConsumersModule } from "./consumers/consumers.js";
@@ -21,6 +22,7 @@ export class AppModule {
       module: AppModule,
       global: true,
       imports: [
+        AuthModule,
         DbModule,
         AgentGatewayModule,
         ClustersModule,

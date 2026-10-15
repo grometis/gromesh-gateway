@@ -3,6 +3,7 @@ import {
   createParamDecorator,
   type ExecutionContext,
   HttpStatus,
+  Inject,
   Injectable,
   SetMetadata,
 } from "@nestjs/common";
@@ -10,6 +11,7 @@ import { Reflector } from "@nestjs/core";
 import type { Request } from "express";
 import type { Actor } from "../db/schema.js";
 import { ProblemException } from "../common/problem.js";
+import { APP_CONFIG, type AppConfig } from "../config.js";
 
 export type Role = "viewer" | "editor" | "admin";
 const RANK: Record<Role, number> = { viewer: 1, editor: 2, admin: 3 };
@@ -35,14 +37,18 @@ export const RequiredRole = (role: Role) => SetMetadata(ROLE_KEY, role);
 export const Public = () => SetMetadata(ROLE_KEY, "public");
 
 /**
- * Week 1: every request runs as a built-in dev admin.
+ * Temporary until week 5: AUTH_MODE=dev runs requests as a built-in admin.
  * W5 replaces `resolveUser` with real authentication; the role check below stays as is.
  */
-export const DEV_USER: AuthUser = { id: "00000000-0000-4000-8000-000000000001", name: "Dev Admin", role: "admin" };
+export const DEV_USER = {
+  id: "00000000-0000-4000-8000-000000000001", name: "Dev Admin", role: "admin" as const,
+  email: "admin@gromesh.dev", active: true,
+  createdAt: "2026-10-15T00:00:00.000Z", updatedAt: "2026-10-15T00:00:00.000Z",
+};
 
 @Injectable()
 export class AuthGuard implements CanActivate {
-  constructor(private readonly reflector: Reflector) {}
+  constructor(private readonly reflector: Reflector, @Inject(APP_CONFIG) private readonly config: AppConfig) {}
 
   canActivate(context: ExecutionContext): boolean {
     const required = this.reflector.getAllAndOverride<Role | "public" | undefined>(ROLE_KEY, [context.getHandler(), context.getClass()]);
@@ -60,7 +66,7 @@ export class AuthGuard implements CanActivate {
   }
 
   private resolveUser(_req: Request): AuthUser | null {
-    return DEV_USER;
+    return this.config.authMode === "dev" ? DEV_USER : null;
   }
 }
 

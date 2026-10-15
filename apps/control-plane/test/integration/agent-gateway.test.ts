@@ -4,6 +4,7 @@ import type { ExecutionContext } from "@nestjs/common";
 import { Reflector } from "@nestjs/core";
 import { AuthGuard, type Role } from "../../src/auth/auth.js";
 import { ProblemException } from "../../src/common/problem.js";
+import { loadConfig } from "../../src/config.js";
 import { ClustersController } from "../../src/clusters/clusters.js";
 import { startHarness, uniq, type Harness } from "./harness.js";
 
@@ -42,7 +43,7 @@ describe("agent bearer authentication and cluster lifecycle", () => {
       const context = { getHandler: () => handler, getClass: () => ClustersController,
         switchToHttp: () => ({ getRequest: () => ({}) }) } as unknown as ExecutionContext;
       for (const caller of ["viewer", "editor", "admin"] satisfies Role[]) {
-        const guard = new AuthGuard(reflector);
+        const guard = new AuthGuard(reflector, loadConfig({ DATABASE_URL: "unused" }));
         Object.defineProperty(guard, "resolveUser", { value: () => ({ id: "test-user", name: "Test", role: caller }) });
         if (role === "admin" && caller !== "admin") {
           try { guard.canActivate(context); throw new Error("Expected role rejection"); }

@@ -4,7 +4,7 @@ import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const adminUrl = (process.argv[2] ?? process.env.KONG_VALIDATOR_URL ?? "http://127.0.0.1:8001").replace(/\/$/, "");
+const adminUrl = (process.argv[2] ?? process.env.KONG_VALIDATOR_URL ?? "http://127.0.0.1:8011").replace(/\/$/, "");
 
 const CATEGORIES = {
   authentication: ["basic-auth", "hmac-auth", "jwt", "key-auth", "ldap-auth", "oauth2", "session"],
