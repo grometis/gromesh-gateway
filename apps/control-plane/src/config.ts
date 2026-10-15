@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 export const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export interface AppConfig {
+  /** Temporary until week 5: the built-in admin is available only with AUTH_MODE=dev. */
+  authMode: "dev" | "disabled";
   port: number;
   databaseUrl: string;
   /** A Kong (DB-less, no traffic) whose Admin API validates plugin configs: POST /schemas/plugins/validate. */
@@ -21,6 +23,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const databaseUrl = env.DATABASE_URL;
   if (!databaseUrl) throw new Error("DATABASE_URL is required");
   return {
+    authMode: env.AUTH_MODE === "dev" ? "dev" : "disabled",
     port: Number(env.PORT ?? 3000),
     databaseUrl,
     kongValidatorUrl: env.KONG_VALIDATOR_URL || null,
