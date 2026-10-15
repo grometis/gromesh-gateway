@@ -1,6 +1,6 @@
 import { ArgumentsHost, Catch, type ExceptionFilter, HttpException, Logger } from "@nestjs/common";
 import type { Response } from "express";
-import type { Problem } from "./problem.js";
+import { ProblemException, type Problem } from "./problem.js";
 
 interface PgError {
   code?: string;
@@ -17,6 +17,7 @@ export class ProblemFilter implements ExceptionFilter {
     const res = host.switchToHttp().getResponse<Response>();
     const problem = this.toProblem(exception);
     if (problem.status >= 500) this.logger.error(exception instanceof Error ? exception.stack : String(exception));
+    if (exception instanceof ProblemException) for (const [name, value] of Object.entries(exception.headers)) res.setHeader(name, value);
     res.status(problem.status).type("application/problem+json").json(problem);
   }
 

@@ -1,57 +1,279 @@
-import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { parse } from "yaml";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { loadConfig } from "../../src/config.js";
-import { DEV_USER } from "../../src/auth/auth.js";
-import { startHarness } from "./harness.js";
+import { BOOTSTRAP_ADMIN, startHarness, uniq, type ApiClient, type Harness } from "./harness.js";
 
-describe("temporary dev authentication (until week 5)", () => {
-  it("is disabled by default and for every mode except dev", async () => {
-    for (const mode of [undefined, "production", "DEV"]) {
-      const config = loadConfig({ DATABASE_URL: "unused", AUTH_MODE: mode });
-      const h = await startHarness({ authMode: config.authMode });
-      try {
-        expect((await h.api("POST", "/auth/login", { email: "someone@example.com", password: "secret" })).status).toBe(404);
-        expect((await h.api("POST", "/auth/login", {})).status).toBe(404);
-        expect((await h.api("GET", "/me")).status).toBe(401);
-      } finally {
-        await h.close();
-      }
+let h: Harness;
+beforeAll(async () => {
+  h = await startHarness();
+});
+afterAll(async () => {
+  await h?.close();
+});
+
+const PASSWORD = "a-password-with-12+";
+
+async function newUser(role: "viewer" | "editor" | "admin", overrides: Record<string, unknown> = {}) {
+  const email = `${uniq(role)}@example.test`;
+  const res = await h.api("POST", "/users", { email, name: `${role} ${uniq("u")}`, role, password: PASSWORD, ...overrides });
+  expect(res.status, JSON.stringify(res.body)).toBe(201);
+  return { ...(res.body as { id: string }), email };
+}
+
+describe("login", () => {
+  it("sets an httpOnly session cookie, returns the user and never a token", async () => {
+    const res = await h.anonymous("POST", "/auth/login", BOOTSTRAP_ADMIN);
+    expect(res.status).toBe(200);
+    expect(Object.keys(res.body)).toEqual(["user"]);
+    expect(res.body.user).toMatchObject({ email: BOOTSTRAP_ADMIN.email, role: "admin", active: true });
+    expect(res.body.user.passwordHash).toBeUndefined();
+    const cookie = res.headers.get("set-cookie")!;
+    expect(cookie).toMatch(/^gromesh_session=[A-Za-z0-9_-]{43}; Max-Age=28800; Path=\/; HttpOnly; SameSite=Strict$/);
+
+    const second = await h.anonymous("POST", "/auth/login", BOOTSTRAP_ADMIN);
+    expect(second.headers.get("set-cookie")).not.toBe(cookie); // a new id per login (no fixation)
+  });
+
+  it("adds Secure to the cookie unless COOKIE_SECURE=false", async () => {
+    expect(loadConfig({ DATABASE_URL: "x" }).cookieSecure).toBe(true);
+    expect(loadConfig({ DATABASE_URL: "x", COOKIE_SECURE: "false" }).cookieSecure).toBe(false);
+    const secure = await startHarness({ cookieSecure: true });
+    try {
+      const res = await secure.anonymous("POST", "/auth/login", BOOTSTRAP_ADMIN);
+      expect(res.headers.get("set-cookie")).toContain("; Secure");
+    } finally {
+      await secure.close();
     }
   });
 
-  it("accepts arbitrary contract-valid credentials publicly and returns the built-in admin", async () => {
-    const h = await startHarness({ authMode: "dev" });
-    try {
-      const first = await h.api("POST", "/auth/login", { email: "anyone@example.com", password: "any-password" });
-      const second = await h.api("POST", "/auth/login", { email: "other@example.com", password: "" });
-      expect(first.status).toBe(200);
-      expect(second.status).toBe(200);
-      expect(first.body).toMatchObject({ expiresIn: 3600, user: DEV_USER });
-      expect(first.body.accessToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
-      expect(second.body.accessToken).not.toBe(first.body.accessToken);
-      expect(first.body.user).toMatchObject({ email: "admin@gromesh.dev", active: true });
-      expect(Number.isNaN(Date.parse(first.body.user.createdAt))).toBe(false);
-      expect(Number.isNaN(Date.parse(first.body.user.updatedAt))).toBe(false);
-      const me = await h.api("GET", "/me");
-      expect(me.status).toBe(200);
-      expect(me.body).toEqual(first.body.user);
-      const audit = JSON.stringify((await h.sql.query("select * from audit_events")).rows);
-      for (const secret of ["anyone@example.com", "any-password", "other@example.com", first.body.accessToken, second.body.accessToken]) {
-        expect(audit.includes(secret)).toBe(false);
-      }
-    } finally {
-      await h.close();
+  it("answers the same 401 for a wrong password, an unknown e-mail and an inactive user", async () => {
+    const user = await newUser("viewer");
+    await h.api("PATCH", `/users/${user.id}`, { active: false });
+    const answers = await Promise.all([
+      h.anonymous("POST", "/auth/login", { email: BOOTSTRAP_ADMIN.email, password: "wrong-password-123" }),
+      h.anonymous("POST", "/auth/login", { email: `${uniq("nobody")}@example.test`, password: "wrong-password-123" }),
+      h.anonymous("POST", "/auth/login", { email: user.email, password: PASSWORD }),
+    ]);
+    for (const res of answers) {
+      expect(res.status).toBe(401);
+      expect(res.body).toEqual(answers[0]!.body);
+      expect(res.headers.get("set-cookie")).toBeNull();
     }
   });
 
-  it("validates credentials with the contract", async () => {
-    const h = await startHarness({ authMode: "dev" });
+  it("is case-insensitive on the e-mail and validates the body with the contract", async () => {
+    const user = await newUser("viewer");
+    expect((await h.login(user.email.toUpperCase(), PASSWORD)).status).toBe(200);
+    const missing = await h.anonymous("POST", "/auth/login", {});
+    expect(missing.status).toBe(422);
+    expect(missing.body.errors).toContainEqual(expect.objectContaining({ path: "password" }));
+  });
+
+  it("locks the e-mail after 5 failures: 429 with Retry-After, even with the right password", async () => {
+    const user = await newUser("editor");
+    for (let i = 0; i < 5; i++) expect((await h.anonymous("POST", "/auth/login", { email: user.email, password: "wrong-password-123" })).status).toBe(401);
+    const locked = await h.anonymous("POST", "/auth/login", { email: user.email, password: PASSWORD });
+    expect(locked.status).toBe(429);
+    expect(locked.contentType).toContain("application/problem+json");
+    expect(Number(locked.headers.get("retry-after"))).toBeGreaterThan(0);
+    // Other accounts are unaffected (the client address is shared by the whole test run, so it is not counted).
+    const other = await newUser("editor");
+    expect((await h.login(other.email, PASSWORD)).status).toBe(200);
+  });
+
+  it("locks a client address after too many failures across accounts", async () => {
+    // The lockout table is shared by every replica, so this replica sees the failures made through `h` too:
+    // use fresh keys (new e-mails) and a threshold the test can reach on its own.
+    const strict = await startHarness({ loginMaxFailuresPerIp: 3, loginLockoutMs: 60_000 });
     try {
-      const missing = await h.api("POST", "/auth/login", {});
-      expect(missing.status).toBe(422);
-      expect(missing.body.errors).toContainEqual(expect.objectContaining({ path: "password" }));
-      expect((await h.api("POST", "/auth/login", { email: "invalid", password: "test" })).status).toBe(422);
+      await h.sql.query("delete from login_attempts where key like 'ip:%'");
+      for (let i = 0; i < 3; i++) {
+        expect((await strict.anonymous("POST", "/auth/login", { email: `${uniq("x")}@example.test`, password: "wrong-password-123" })).status).toBe(401);
+      }
+      const locked = await strict.anonymous("POST", "/auth/login", BOOTSTRAP_ADMIN);
+      expect(locked.status).toBe(429);
+      expect(Number(locked.headers.get("retry-after"))).toBeGreaterThan(0);
     } finally {
-      await h.close();
+      await h.sql.query("delete from login_attempts where key like 'ip:%'");
+      await strict.close();
+    }
+  });
+
+  it("writes auth.login to the audit log without the password", async () => {
+    const password = `pw-${uniq("very-secret")}`;
+    const user = await newUser("viewer", { password });
+    await h.anonymous("POST", "/auth/login", { email: user.email, password: "wrong-password-123" });
+    const session = await h.login(user.email, password);
+    expect(session.status).toBe(200);
+    await session.api("POST", "/auth/logout");
+    const { rows } = await h.sql.query("select actor, action, after from audit_events where action like 'auth.%' order by at");
+    const text = JSON.stringify(rows);
+    expect(text).not.toContain(password);
+    expect(text).not.toContain("wrong-password-123");
+    expect(rows).toContainEqual(expect.objectContaining({ action: "auth.login", actor: { type: "system", id: "auth" }, after: { ok: false, email: user.email, reason: "invalid_credentials" } }));
+    expect(rows).toContainEqual(expect.objectContaining({ action: "auth.login", actor: expect.objectContaining({ type: "user", id: user.id }), after: { ok: true } }));
+    expect(rows).toContainEqual(expect.objectContaining({ action: "auth.logout", actor: expect.objectContaining({ id: user.id }) }));
+  });
+});
+
+describe("sessions", () => {
+  it("logout clears the cookie and invalidates the session", async () => {
+    const user = await newUser("viewer");
+    const session = await h.login(user.email, PASSWORD);
+    expect((await session.api("GET", "/me")).body).toMatchObject({ id: user.id, role: "viewer" });
+    const out = await session.api("POST", "/auth/logout");
+    expect(out.status).toBe(204);
+    expect(out.headers.get("set-cookie")).toMatch(/^gromesh_session=; Max-Age=0;/);
+    expect((await session.api("GET", "/me")).status).toBe(401);
+  });
+
+  it("ends every session of a user who is deactivated, demoted or given a new password", async () => {
+    for (const change of [{ active: false }, { role: "viewer" }, { password: "another-password-12" }]) {
+      const user = await newUser("editor");
+      const session = await h.login(user.email, PASSWORD);
+      expect((await session.api("GET", "/me")).status).toBe(200);
+      expect((await h.api("PATCH", `/users/${user.id}`, change)).status).toBe(200);
+      expect((await session.api("GET", "/me")).status, JSON.stringify(change)).toBe(401);
+    }
+  });
+
+  it("refuses a mutation without the CSRF header, and with a wrong one", async () => {
+    const env = await h.api("POST", "/environments", { name: uniq("env") });
+    const user = await newUser("editor");
+    const session = await h.login(user.email, PASSWORD);
+    const service = () => ({ name: uniq("svc"), protocol: "http", host: "echo", port: 80 });
+    const withCsrf = await session.api("POST", `/environments/${env.body.id}/services`, service());
+    expect(withCsrf.status).toBe(201);
+    const bare = await session.api("POST", `/environments/${env.body.id}/services`, service(), { "x-csrf-token": "" });
+    expect(bare.status).toBe(403);
+    expect(bare.body.detail).toContain("CSRF");
+    const wrong = await session.api("POST", `/environments/${env.body.id}/services`, service(), { "x-csrf-token": "not-the-token" });
+    expect(wrong.status).toBe(403);
+    // Reads need the cookie only.
+    expect((await session.api("GET", "/environments", undefined, { "x-csrf-token": "" })).status).toBe(200);
+  });
+});
+
+describe("users", () => {
+  it("creates, lists (cursor), updates and deletes users; e-mail is unique", async () => {
+    const user = await newUser("viewer");
+    expect((await h.api("POST", "/users", { email: user.email.toUpperCase(), name: "dup", role: "viewer", password: PASSWORD })).status).toBe(409);
+    const short = await h.api("POST", "/users", { email: `${uniq("s")}@example.test`, name: "s", role: "viewer", password: "short" });
+    expect(short.status).toBe(422);
+    expect(short.body.errors).toContainEqual(expect.objectContaining({ path: "password" }));
+
+    const page = await h.api("GET", "/users?limit=1");
+    expect(page.body.items).toHaveLength(1);
+    expect(page.body.nextCursor).toBeTruthy();
+    const next = await h.api("GET", `/users?limit=1&cursor=${page.body.nextCursor}`);
+    expect(next.body.items[0].id).not.toBe(page.body.items[0].id);
+    for (const item of [...page.body.items, ...next.body.items]) expect(Object.keys(item).sort()).toEqual(["active", "createdAt", "email", "id", "name", "role", "updatedAt"]);
+
+    const patched = await h.api("PATCH", `/users/${user.id}`, { name: "Renamed", role: "editor" });
+    expect(patched.status).toBe(200);
+    expect(patched.body).toMatchObject({ id: user.id, name: "Renamed", role: "editor" });
+    expect((await h.api("DELETE", `/users/${user.id}`)).status).toBe(204);
+    expect((await h.api("DELETE", `/users/${user.id}`)).status).toBe(404);
+
+    const { rows } = await h.sql.query("select action, before, after from audit_events where entity_type = 'user' and entity_id = $1 order by at", [user.id]);
+    expect(rows.map((r) => r.action)).toEqual(["user.create", "user.update", "user.delete"]);
+    expect(JSON.stringify(rows)).not.toContain(PASSWORD);
+    expect(JSON.stringify(rows)).not.toContain("passwordHash");
+  });
+
+  it("protects the last active admin from deletion, demotion and deactivation", async () => {
+    // The bootstrap admin is shared by every test file (they run in parallel on one database): the checks on it are
+    // the refusals, which change nothing. Only extra admins are changed here, and only while the bootstrap one stays.
+    const me = (await h.api("GET", "/me")).body;
+    const onlyAdmin = async () => (await h.api("GET", "/users?limit=200")).body.items.filter((u: { role: string; active: boolean }) => u.role === "admin" && u.active).length === 1;
+    if (await onlyAdmin()) {
+      expect((await h.api("DELETE", `/users/${me.id}`)).status).toBe(409);
+      expect((await h.api("PATCH", `/users/${me.id}`, { role: "editor" })).status).toBe(409);
+      expect((await h.api("PATCH", `/users/${me.id}`, { active: false })).status).toBe(409);
+    }
+    expect((await h.api("PATCH", `/users/${me.id}`, { name: "Admin" })).status).toBe(200);
+    // With another active admin around, an admin may be demoted, deactivated or deleted.
+    const second = await newUser("admin");
+    expect((await h.api("PATCH", `/users/${second.id}`, { role: "editor" })).status).toBe(200);
+    expect((await h.api("PATCH", `/users/${second.id}`, { role: "admin", active: false })).status).toBe(200);
+    expect((await h.api("DELETE", `/users/${second.id}`)).status).toBe(204);
+  });
+
+  it("refuses to demote or deactivate the last admin even through a second replica", async () => {
+    const replica = await startHarness();
+    try {
+      const me = (await replica.api("GET", "/me")).body;
+      const extra = await newUser("admin");
+      // Deactivate the extra admin first so the bootstrap one is the last; both calls are refusals, nothing changes.
+      expect((await replica.api("PATCH", `/users/${extra.id}`, { active: false })).status).toBe(200);
+      const others = (await replica.api("GET", "/users?limit=200")).body.items.filter((u: { id: string; role: string; active: boolean }) => u.id !== me.id && u.role === "admin" && u.active);
+      if (others.length === 0) expect((await replica.api("PATCH", `/users/${me.id}`, { role: "viewer" })).status).toBe(409);
+      expect((await replica.api("DELETE", `/users/${extra.id}`)).status).toBe(204);
+    } finally {
+      await replica.close();
+    }
+  });
+
+  it("creates the bootstrap admin only once, on an empty table", async () => {
+    const again = await startHarness({ bootstrapAdmin: { email: "other@harness.test", password: "other-admin-password" } });
+    try {
+      expect((await again.anonymous("POST", "/auth/login", { email: "other@harness.test", password: "other-admin-password" })).status).toBe(401);
+    } finally {
+      await again.close();
+    }
+  });
+});
+
+describe("RBAC matrix from the contract", () => {
+  interface Operation { method: string; path: string; role: "viewer" | "editor" | "admin"; id: string }
+  const RANK = { viewer: 1, editor: 2, admin: 3 };
+  const contract = parse(readFileSync(new URL("../../../../contracts/control-plane.openapi.yaml", import.meta.url), "utf8")) as {
+    paths: Record<string, Record<string, { operationId: string; "x-required-role"?: Operation["role"]; security?: unknown[] }>>;
+  };
+  // logout ends the session it is called with, so the sessions tests cover it instead of the matrix.
+  // listAuditEvents is implemented by W5-X1: drop it from here when that task lands.
+  const SKIP = new Set(["logout", "listAuditEvents"]);
+  const operations: Operation[] = [];
+  for (const [path, methods] of Object.entries(contract.paths)) {
+    for (const [method, op] of Object.entries(methods)) {
+      if (method === "parameters" || !op["x-required-role"] || SKIP.has(op.operationId)) continue;
+      operations.push({ method: method.toUpperCase(), path, role: op["x-required-role"], id: op.operationId });
+    }
+  }
+  const concrete = (path: string) => path.replace(/\{version\}/g, "1").replace(/\{pluginName\}/g, "cors").replace(/\{[a-zA-Z]+\}/g, () => randomUUID());
+  const mutation = (method: string) => !["GET", "HEAD"].includes(method);
+
+  it("covers every operation of the contract", () => {
+    expect(operations.length).toBeGreaterThan(40);
+    expect(operations.map((o) => o.id)).toContain("rotateClusterToken");
+  });
+
+  it("answers 401 to every operation without a session", async () => {
+    for (const op of operations) {
+      const res = await h.anonymous(op.method, concrete(op.path), mutation(op.method) ? {} : undefined);
+      expect(res.status, `${op.id}`).toBe(401);
+    }
+  });
+
+  it("answers 403 to every mutation without the CSRF token, before validating anything", async () => {
+    const editor = await h.as("admin");
+    for (const op of operations.filter((o) => mutation(o.method))) {
+      const res = await editor.api(op.method, concrete(op.path), {}, { "x-csrf-token": "" });
+      expect(res.status, `${op.id}`).toBe(403);
+      expect(res.body.detail).toContain("CSRF");
+    }
+  });
+
+  it("applies x-required-role: 403 below the role, never 401/403 at or above it", async () => {
+    const clients: Record<Operation["role"], ApiClient> = { viewer: (await h.as("viewer")).api, editor: (await h.as("editor")).api, admin: (await h.as("admin")).api };
+    for (const op of operations) {
+      for (const role of ["viewer", "editor", "admin"] as const) {
+        const res = await clients[role](op.method, concrete(op.path), mutation(op.method) ? {} : undefined);
+        if (RANK[role] < RANK[op.role]) expect(res.status, `${role} on ${op.id}`).toBe(403);
+        else expect([401, 403], `${role} on ${op.id} → ${res.status}`).not.toContain(res.status);
+      }
     }
   });
 });

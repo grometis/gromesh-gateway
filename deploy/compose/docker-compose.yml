@@ -132,8 +132,10 @@ services:
     environment:
       DATABASE_URL: postgres://gromesh:gromesh@postgres:5432/gromesh
       MIGRATE_ON_START: "true"
-      # Temporary login for this development stack only, until week 5 real auth.
-      AUTH_MODE: dev
+      # First admin of this development stack; the cookie is not Secure because the stack has no TLS.
+      BOOTSTRAP_ADMIN_EMAIL: admin@gromesh.dev
+      BOOTSTRAP_ADMIN_PASSWORD: gromesh-dev-admin
+      COOKIE_SECURE: "false"
       # Plugin configs are validated by Kong itself (POST /schemas/plugins/validate).
       KONG_VALIDATOR_URL: http://kong-validator:8001
     ports:

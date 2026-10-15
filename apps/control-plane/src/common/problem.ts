@@ -21,12 +21,16 @@ const TITLES: Record<number, string> = {
   404: "Not Found",
   409: "Conflict",
   422: "Unprocessable Content",
+  429: "Too Many Requests",
   500: "Internal Server Error",
   502: "Bad Gateway",
 };
 
 export class ProblemException extends HttpException {
-  constructor(status: number, detail?: string, errors?: FieldError[], type?: string) {
+  /** Extra response headers (e.g. `Retry-After` on a 429). */
+  readonly headers: Record<string, string>;
+
+  constructor(status: number, detail?: string, errors?: FieldError[], type?: string, headers: Record<string, string> = {}) {
     const problem: Problem = {
       type: type ?? `https://gromesh.dev/problems/${status}`,
       title: TITLES[status] ?? "Error",
@@ -35,6 +39,7 @@ export class ProblemException extends HttpException {
       ...(errors?.length ? { errors } : {}),
     };
     super(problem, status);
+    this.headers = headers;
   }
 }
 

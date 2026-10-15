@@ -5,10 +5,19 @@ import { fileURLToPath } from "node:url";
 export const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export interface AppConfig {
-  /** Temporary until week 5: the built-in admin is available only with AUTH_MODE=dev. */
-  authMode: "dev" | "disabled";
   port: number;
   databaseUrl: string;
+  /** Created on start-up when the users table is empty (BOOTSTRAP_ADMIN_EMAIL / BOOTSTRAP_ADMIN_PASSWORD). */
+  bootstrapAdmin: { email: string; password: string } | null;
+  /** `Secure` attribute of the session cookie; only the development compose turns it off. */
+  cookieSecure: boolean;
+  /** Sliding session lifetime. */
+  sessionTtlMs: number;
+  /** Failed logins per e-mail before a lockout of `loginLockoutMs`. */
+  loginMaxFailures: number;
+  /** Same per client address; higher, because many users can share one address (NAT, proxies). */
+  loginMaxFailuresPerIp: number;
+  loginLockoutMs: number;
   /** A Kong (DB-less, no traffic) whose Admin API validates plugin configs: POST /schemas/plugins/validate. */
   kongValidatorUrl: string | null;
   contractsDir: string;
@@ -22,10 +31,20 @@ export interface AppConfig {
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const databaseUrl = env.DATABASE_URL;
   if (!databaseUrl) throw new Error("DATABASE_URL is required");
+  const bootstrapEmail = env.BOOTSTRAP_ADMIN_EMAIL;
+  const bootstrapPassword = env.BOOTSTRAP_ADMIN_PASSWORD;
+  if (Boolean(bootstrapEmail) !== Boolean(bootstrapPassword)) {
+    throw new Error("BOOTSTRAP_ADMIN_EMAIL and BOOTSTRAP_ADMIN_PASSWORD must be set together");
+  }
   return {
-    authMode: env.AUTH_MODE === "dev" ? "dev" : "disabled",
     port: Number(env.PORT ?? 3000),
     databaseUrl,
+    bootstrapAdmin: bootstrapEmail && bootstrapPassword ? { email: bootstrapEmail, password: bootstrapPassword } : null,
+    cookieSecure: env.COOKIE_SECURE !== "false",
+    sessionTtlMs: Number(env.SESSION_TTL_MS ?? 8 * 60 * 60 * 1000),
+    loginMaxFailures: Number(env.LOGIN_MAX_FAILURES ?? 5),
+    loginMaxFailuresPerIp: Number(env.LOGIN_MAX_FAILURES_PER_IP ?? 50),
+    loginLockoutMs: Number(env.LOGIN_LOCKOUT_MS ?? 15 * 60 * 1000),
     kongValidatorUrl: env.KONG_VALIDATOR_URL || null,
     contractsDir: env.CONTRACTS_DIR ?? resolve(PACKAGE_ROOT, "../../contracts"),
     migrateOnStart: env.MIGRATE_ON_START === "true",
