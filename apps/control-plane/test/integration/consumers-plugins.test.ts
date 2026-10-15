@@ -231,12 +231,51 @@ describe("publishing consumers, credentials and plugins", () => {
 });
 
 describe("plugin secrets", () => {
-  it("never reach the audit log or diffs, and only admins read them in snapshots", async () => {
+  const redis = (password: string, minute = 5) => ({ minute, policy: "redis", redis: { host: "redis.internal", password } });
+
+  it("are write-only: every read shows REDACTED, which a PUT may send back to keep the stored value", async () => {
     const { envId, svc } = await fixture();
     const password = `redis-${uniq("pw")}`;
-    const config = { minute: 5, policy: "redis", redis: { host: "redis.internal", password } };
+    const p = await create(`/environments/${envId}/plugins`, { name: "rate-limiting", scope: { serviceId: svc.id }, config: redis(password) });
+    expect(p.config.redis.password).toBe("REDACTED");
+    expect(JSON.stringify((await h.api("GET", `/environments/${envId}/plugins/${p.id}`)).body)).not.toContain(password);
+    expect(JSON.stringify((await h.api("GET", `/environments/${envId}/plugins?serviceId=${svc.id}`)).body)).not.toContain(password);
+
+    // Editing another field without retyping the secret keeps it: the published snapshot carries the real value.
+    const keep = await h.api("PUT", `/environments/${envId}/plugins/${p.id}`, { name: "rate-limiting", scope: { serviceId: svc.id }, config: redis("REDACTED", 6) });
+    expect(keep.status, JSON.stringify(keep.body)).toBe(200);
+    expect(keep.body.config).toEqual(redis("REDACTED", 6));
+    const v1 = await create(`/environments/${envId}/snapshots`, {});
+    const published = (await h.api("GET", `/environments/${envId}/snapshots/${v1.version}`)).body;
+    expect(published.config.plugins).toEqual([expect.objectContaining({ id: p.id, config: expect.objectContaining({ minute: 6, redis: { host: "redis.internal", password } }) })]);
+
+    // Typing a new secret replaces it.
+    const rotated = `redis-${uniq("pw2")}`;
+    expect((await h.api("PUT", `/environments/${envId}/plugins/${p.id}`, { name: "rate-limiting", scope: { serviceId: svc.id }, config: redis(rotated) })).status).toBe(200);
+    const { rows } = await h.sql.query("select config from plugins where id = $1", [p.id]);
+    expect(rows[0].config.redis.password).toBe(rotated);
+
+    // Leaving the field out removes the secret, as any other field in a PUT.
+    const without = await h.api("PUT", `/environments/${envId}/plugins/${p.id}`, { name: "rate-limiting", scope: { serviceId: svc.id }, config: { minute: 5, policy: "redis", redis: { host: "redis.internal" } } });
+    expect(without.status, JSON.stringify(without.body)).toBe(200);
+    expect(without.body.config.redis).toEqual({ host: "redis.internal" });
+    const gone = await h.api("PUT", `/environments/${envId}/plugins/${p.id}`, { name: "rate-limiting", scope: { serviceId: svc.id }, config: redis("REDACTED") });
+    expect(gone.status).toBe(422);
+    expect(gone.body.errors).toEqual([{ path: "config.redis.password", message: expect.stringContaining("placeholder") }]);
+  });
+
+  it("refuse the placeholder on a new plugin, before asking Kong", async () => {
+    const { envId } = await fixture();
+    const res = await h.api("POST", `/environments/${envId}/plugins`, { name: "rate-limiting", config: redis("REDACTED") });
+    expect(res.status).toBe(422);
+    expect(res.body.errors).toEqual([{ path: "config.redis.password", message: expect.stringContaining("placeholder") }]);
+  });
+
+  it("never reach the audit log or diffs", async () => {
+    const { envId, svc } = await fixture();
+    const password = `redis-${uniq("pw")}`;
+    const config = redis(password);
     const p = await create(`/environments/${envId}/plugins`, { name: "rate-limiting", scope: { serviceId: svc.id }, config });
-    expect(p.config.redis.password).toBe(password); // editors need it back to round-trip a PUT
 
     const put = await h.api("PUT", `/environments/${envId}/plugins/${p.id}`, { name: "rate-limiting", scope: { serviceId: svc.id }, config: { ...config, minute: 6 } });
     expect(put.status).toBe(200);
