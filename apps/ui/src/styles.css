@@ -128,3 +128,14 @@ td.actions button + button { margin-left: 6px; }
 .diff-table { table-layout: fixed; }
 .diff-table td { vertical-align: top; }
 .diff-table pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
+
+.user-active { width: auto; align-self: flex-start; }
+.audit-filters { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.audit-filter-actions { grid-column: 1 / -1; }
+.audit-event { padding: 16px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); }
+.audit-event-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.audit-event time { color: var(--muted); }
+@media (max-width: 720px) {
+  .audit-filters { grid-template-columns: 1fr; }
+  .audit-event .props { grid-template-columns: 1fr; }
+}

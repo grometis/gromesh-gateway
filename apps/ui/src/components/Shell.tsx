@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { Navigate, NavLink, Outlet, useLocation, useNavigate, useParams } from "react-router";
 import { api, unwrap } from "../api/client";
 import { statusMessage } from "../api/errors";
@@ -21,19 +21,29 @@ export function useEnvironment(envId: string) {
 }
 
 export function RequireAuth() {
-  const { user, loading } = useAuth();
+  const { user, loading, error } = useAuth();
   const location = useLocation();
   if (loading) return <p className="center muted">Carregando…</p>;
+  if (error) return <p className="center error" role="alert">{error}</p>;
   if (!user) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
   return <Outlet />;
 }
 
+export function RequireAdmin() {
+  const { user } = useAuth();
+  if (user?.role !== "admin") return <p className="error" role="alert">Você não tem permissão para acessar esta página.</p>;
+  return <Outlet />;
+}
+
 export function FirstEnvironment() {
+  const { user } = useAuth();
   const envs = useQuery(environmentsQuery);
   if (envs.isPending) return <p className="center muted">Carregando environments…</p>;
   if (envs.isError) return <p className="center error">{statusMessage(envs.error)}</p>;
   const first = envs.data.items[0];
-  if (!first) return <p className="center muted">Nenhum environment cadastrado. Peça a um administrador para criar um.</p>;
+  if (!first) return user?.role === "admin"
+    ? <Navigate to="/users" replace />
+    : <p className="center muted">Nenhum environment cadastrado. Peça a um administrador para criar um.</p>;
   return <Navigate to={`/e/${first.id}/services`} replace />;
 }
 
@@ -47,15 +57,17 @@ const MENU = [
 ] as const;
 
 export function Shell() {
-  const envId = useEnvId();
+  const { envId: routeEnvId } = useParams();
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const envs = useQuery(environmentsQuery);
+  const envId = routeEnvId ?? envs.data?.items[0]?.id ?? "";
+  const signOut = useMutation({ mutationFn: logout });
 
   const switchEnv = (id: string) => {
     // Keep the current section when switching environments.
-    const section = location.pathname.split("/")[3] ?? "services";
+    const section = routeEnvId ? location.pathname.split("/")[3] ?? "services" : "services";
     navigate(`/e/${id}/${section}`);
   };
 
@@ -77,19 +89,26 @@ export function Shell() {
         <span className="muted">
           {user?.name} ({user?.role})
         </span>
-        <button type="button" onClick={logout}>
-          Sair
+        <button type="button" disabled={signOut.isPending} onClick={() => signOut.mutate()}>
+          {signOut.isPending ? "Saindo…" : "Sair"}
         </button>
+        {signOut.isError && <p className="error" role="alert">{statusMessage(signOut.error)}</p>}
       </header>
       <nav className="sidebar" aria-label="Menu principal">
-        {MENU.map(([path, label]) => (
-          <NavLink key={path} to={path}>
+        {envId && MENU.map(([path, label]) => (
+          <NavLink key={path} to={`/e/${envId}/${path}`}>
             {label}
           </NavLink>
         ))}
+        {user?.role === "admin" && (
+          <>
+            <NavLink to="/users">Usuários</NavLink>
+            <NavLink to="/audit">Auditoria</NavLink>
+          </>
+        )}
       </nav>
       <main className="content">
-        <UnpublishedBar envId={envId} />
+        {routeEnvId && <UnpublishedBar envId={routeEnvId} />}
         <Outlet />
       </main>
     </div>

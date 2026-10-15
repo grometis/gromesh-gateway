@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { expect, test, type Page, type Route } from "@playwright/test";
+import type { Page, Route } from "@playwright/test";
+import { expect, test } from "./fixtures";
 
 // W4-C1 acceptance, against the contract mock. The contract has no examples for the plugin catalog, so the real
 // catalog files the control plane serves are pinned here; Prism still answers everything else.
