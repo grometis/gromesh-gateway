@@ -157,7 +157,10 @@ function unusedOptionalRecord(field: SchemaField, value: unknown): boolean {
   return field.type === "record" && !field.required && hasRequiredWithoutDefault(field.fields ?? []) && deepEqual(value, defaultFor(field));
 }
 
-/** The config the form sends: no empty strings, nulls, blank list items or untouched placeholder secrets. */
+/**
+ * The config the form sends: no empty strings, nulls or blank list items. A secret still showing the placeholder is
+ * sent as the placeholder: the API keeps the stored value (leaving it out would remove it, as in any PUT).
+ */
 export function configToSubmit(fields: NamedField[], value: Config): Config {
   const out: Config = {};
   const known = new Map(fields.map((f) => [f.name, f.field]));
@@ -174,8 +177,6 @@ function clean(field: SchemaField, v: unknown): unknown {
   if (v === undefined || v === null) return undefined;
   // A cleared text field is left to the gateway's default, unless the default itself is the empty string.
   if (v === "" && field.default !== "") return undefined;
-  // A secret read back as the placeholder was never typed again: sending it would store the placeholder.
-  if (field.encrypted && v === SECRET_PLACEHOLDER) return undefined;
   if (field.type === "record" && isObject(v)) return configToSubmit(field.fields ?? [], v);
   if ((field.type === "array" || field.type === "set") && Array.isArray(v)) return v.filter((x) => x !== "" && x !== null && x !== undefined);
   return v;
@@ -198,7 +199,8 @@ export function validateConfig(fields: NamedField[], value: Config, path = "conf
         if (isObject(v) && !unusedOptionalRecord(field, v)) walk(field.fields ?? [], v, p);
         continue;
       }
-      const empty = v === undefined || v === null || v === "" || (field.encrypted && v === SECRET_PLACEHOLDER);
+      // The placeholder stands for a stored secret: not empty.
+      const empty = v === undefined || v === null || v === "";
       if (empty) {
         if (field.required) add(p, "Campo obrigatório.");
         continue;

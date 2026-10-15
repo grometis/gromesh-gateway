@@ -11,7 +11,7 @@ import { notFound, unprocessable, type FieldError } from "../common/problem.js";
 import { DB, type Db, type Executor } from "../db/db.js";
 import { consumers, plugins, routes, services, type PluginRow } from "../db/schema.js";
 import { markDraftChanged, requireEnvironment, uuidParam } from "../environments/environments.js";
-import { PluginCatalog, PluginCatalogModule } from "../plugin-catalog/catalog.js";
+import { PluginCatalog, PluginCatalogModule, SECRET_PLACEHOLDER } from "../plugin-catalog/catalog.js";
 import { KongValidator } from "./kong-validator.js";
 
 /* ---------------- mapping ---------------- */
@@ -53,6 +53,11 @@ export class PluginsService {
     private readonly validator: KongValidator,
   ) {}
 
+  /** Every plugin the API returns has its secrets redacted, whatever the caller's role: they are write-only. */
+  private publicPlugin(row: PluginRow) {
+    return this.redacted(toPlugin(row));
+  }
+
   async list(envId: string, query: Record<string, unknown>) {
     await requireEnvironment(this.db, envId);
     const limit = parseLimit(query.limit);
@@ -69,49 +74,62 @@ export class PluginsService {
       .where(and(...parts))
       .orderBy(asc(plugins.name), asc(plugins.id))
       .limit(limit + 1);
-    return toPage(rows, limit, (r) => r.name, toPlugin);
+    return toPage(rows, limit, (r) => r.name, (r) => this.publicPlugin(r));
   }
 
   async get(envId: string, pluginId: string) {
-    return toPlugin(await this.requirePlugin(this.db, envId, pluginId));
+    return this.publicPlugin(await this.requirePlugin(this.db, envId, pluginId));
   }
 
   async create(ctx: RequestContext, envId: string, body: PluginWrite) {
     const id = randomUUID();
-    await this.validate(id, body);
+    const merged = this.withSecrets(body, null);
+    await this.validate(id, merged);
     return this.db.transaction(async (tx) => {
       await requireEnvironment(tx, envId);
-      await this.checkScope(tx, envId, body);
-      const [row] = await tx.insert(plugins).values({ id, environmentId: envId, ...pluginValues(body) }).returning();
-      const after = toPlugin(row!);
+      await this.checkScope(tx, envId, merged);
+      const [row] = await tx.insert(plugins).values({ id, environmentId: envId, ...pluginValues(merged) }).returning();
+      const after = this.publicPlugin(row!);
       await markDraftChanged(tx, envId);
-      await audit(tx, ctx, { action: "plugin.create", entityType: "plugin", entityId: id, environmentId: envId, after: this.redacted(after) });
+      await audit(tx, ctx, { action: "plugin.create", entityType: "plugin", entityId: id, environmentId: envId, after });
       return after;
     });
   }
 
   async replace(ctx: RequestContext, envId: string, pluginId: string, body: PluginWrite) {
-    await this.validate(pluginId, body);
+    // The stored secrets are read before validation, which runs outside the transaction (it calls Kong).
+    const current = await this.requirePlugin(this.db, envId, pluginId);
+    const merged = this.withSecrets(body, current);
+    await this.validate(pluginId, merged);
     return this.db.transaction(async (tx) => {
-      const before = toPlugin(await this.requirePlugin(tx, envId, pluginId));
-      await this.checkScope(tx, envId, body);
+      const before = this.publicPlugin(await this.requirePlugin(tx, envId, pluginId));
+      await this.checkScope(tx, envId, merged);
       const [row] = await tx
         .update(plugins)
-        .set({ ...pluginValues(body), updatedAt: sql`now()` })
+        .set({ ...pluginValues(merged), updatedAt: sql`now()` })
         .where(eq(plugins.id, pluginId))
         .returning();
-      const after = toPlugin(row!);
+      const after = this.publicPlugin(row!);
       await markDraftChanged(tx, envId);
-      await audit(tx, ctx, {
-        action: "plugin.update",
-        entityType: "plugin",
-        entityId: pluginId,
-        environmentId: envId,
-        before: this.redacted(before),
-        after: this.redacted(after),
-      });
+      await audit(tx, ctx, { action: "plugin.update", entityType: "plugin", entityId: pluginId, environmentId: envId, before, after });
       return after;
     });
+  }
+
+  /**
+   * "REDACTED" in a secret field means "keep what is stored": the body is completed from `current` before Kong
+   * validates it. A new plugin, a renamed one or a secret never set has nothing to keep: 422 on that field.
+   */
+  private withSecrets(body: PluginWrite, current: PluginRow | null): PluginWrite {
+    const stored = current && current.name === body.name ? current.config : null;
+    const { config, missing } = this.catalog.mergeSecrets(body.name, body.config ?? {}, stored);
+    if (missing.length > 0) {
+      throw unprocessable(
+        "Invalid plugin",
+        missing.map((path) => ({ path, message: `"${SECRET_PLACEHOLDER}" is a placeholder: send the secret itself` })),
+      );
+    }
+    return { ...body, config };
   }
 
   async remove(ctx: RequestContext, envId: string, pluginId: string) {
