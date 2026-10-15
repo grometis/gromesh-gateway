@@ -111,6 +111,7 @@ Aceite: e2e — cria cluster → sobe o agente com o token → publica → `GET 
 - Cenário: login → service + route + plugin key-auth → consumer + chave → publicar → requisição sem chave 401 e com chave 200 → rollback → rota some (404).
 - Job no CI que sobe a stack e roda o cenário; artefatos (trace, vídeo) em falha.
 - O CI também (a) roda o aceite Playwright da UI contra o Prism (`pnpm --filter @gromesh/ui test:e2e`) e (b) regera `apps/ui/src/api/schema.d.ts` a partir do contrato e falha com `git diff --exit-code` se mudar.
+- Mover o `kong-validator` do compose para `127.0.0.1:8011` no host (`8001` não deve parecer o Kong de dados) e ajustar `KONG_VALIDATOR_URL` onde for preciso (CI, harness dos testes, script do catálogo).
 
 Aceite: o próprio job verde no CI.
 
@@ -120,3 +121,4 @@ Aceite: o próprio job verde no CI.
 
 - Cifrar em repouso, no Postgres, as chaves key-auth e os campos `encrypted` da config de plugins.
 - Semana 5 (auth): token em cookie httpOnly + SameSite + proteção CSRF, no lugar do `sessionStorage` da UI.
+- Semana 8 (Helm/produção): o `LISTEN` do control plane usa conexão direta ao Postgres, nunca via PgBouncer em modo transação; o LB/ingress na frente do SSE do agente precisa de idle timeout acima de 15 s e buffering desligado.
