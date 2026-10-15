@@ -115,3 +115,16 @@ td.actions button + button { margin-left: 6px; }
 .warn { background: var(--warn-bg); border-radius: 6px; padding: 8px 12px; margin-top: 0; }
 .secret { display: flex; gap: 8px; align-items: center; }
 .secret code { flex: 1; padding: 8px; border: 1px solid var(--border); border-radius: 6px; word-break: break-all; user-select: all; }
+.scroll-x { overflow-x: auto; }
+.wrap { overflow-wrap: anywhere; }
+.block { margin-top: 20px; }
+.badge.converged { color: var(--added); }
+.badge.converging { color: var(--modified); }
+.badge.degraded { color: var(--removed); }
+.badge.no-nodes { color: var(--muted); }
+.cluster-actions { margin-bottom: 12px; }
+.state-failed { color: var(--removed); }
+.node-error { min-width: 160px; max-width: 360px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.diff-table { table-layout: fixed; }
+.diff-table td { vertical-align: top; }
+.diff-table pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
