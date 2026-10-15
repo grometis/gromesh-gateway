@@ -11,6 +11,11 @@ export interface AppConfig {
   bootstrapAdmin: { email: string; password: string } | null;
   /** `Secure` attribute of the session cookie; only the development compose turns it off. */
   cookieSecure: boolean;
+  /**
+   * Express `trust proxy` setting (TRUST_PROXY): which upstream proxies may set X-Forwarded-For, so the login lockout
+   * per client address sees the real client behind the UI's nginx instead of the proxy. Off by default.
+   */
+  trustProxy: boolean | string;
   /** Sliding session lifetime. */
   sessionTtlMs: number;
   /** Failed logins per e-mail before a lockout of `loginLockoutMs`. */
@@ -41,6 +46,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     databaseUrl,
     bootstrapAdmin: bootstrapEmail && bootstrapPassword ? { email: bootstrapEmail, password: bootstrapPassword } : null,
     cookieSecure: env.COOKIE_SECURE !== "false",
+    trustProxy: env.TRUST_PROXY === undefined || env.TRUST_PROXY === "false" ? false : env.TRUST_PROXY === "true" ? true : env.TRUST_PROXY,
     sessionTtlMs: Number(env.SESSION_TTL_MS ?? 8 * 60 * 60 * 1000),
     loginMaxFailures: Number(env.LOGIN_MAX_FAILURES ?? 5),
     loginMaxFailuresPerIp: Number(env.LOGIN_MAX_FAILURES_PER_IP ?? 50),

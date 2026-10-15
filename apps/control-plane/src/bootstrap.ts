@@ -19,6 +19,7 @@ export async function createApp(config: AppConfig, opts: { logger?: false } = {}
     exclude: ["healthz", { path: "agent/v1/(.*)", method: RequestMethod.ALL }],
   });
   app.enableShutdownHooks();
+  if (config.trustProxy !== false) (app.getHttpAdapter().getInstance() as import("express").Express).set("trust proxy", config.trustProxy);
   if (config.bootstrapAdmin) {
     await app.init();
     if (await app.get(UsersService).bootstrapAdmin(config.bootstrapAdmin)) Logger.log(`Bootstrap admin ${config.bootstrapAdmin.email} created`, "Bootstrap");

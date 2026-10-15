@@ -136,6 +136,8 @@ services:
       BOOTSTRAP_ADMIN_EMAIL: admin@gromesh.dev
       BOOTSTRAP_ADMIN_PASSWORD: gromesh-dev-admin
       COOKIE_SECURE: "false"
+      # The UI's nginx proxies /api/v1 from the compose network: take the client address from X-Forwarded-For.
+      TRUST_PROXY: uniquelocal
       # Plugin configs are validated by Kong itself (POST /schemas/plugins/validate).
       KONG_VALIDATOR_URL: http://kong-validator:8001
     ports:
