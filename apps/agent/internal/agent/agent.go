@@ -1,0 +1,232 @@
+package agent
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"sync"
+	"sync/atomic"
+	"time"
+)
+
+type Agent struct {
+	config       Config
+	client       *client
+	store        store
+	log          *slog.Logger
+	status       StatusReport
+	statusMu     sync.RWMutex
+	applied      *Snapshot
+	failedHash   string
+	streamIdle   time.Duration
+	poll         time.Duration
+	heartbeat    time.Duration
+	retry        func(int) time.Duration
+	appliedGauge atomic.Int64
+	failures     atomic.Uint64
+	lastSuccess  atomic.Int64
+}
+
+func New(config Config, logger *slog.Logger) (*Agent, error) {
+	if err := config.validate(); err != nil {
+		return nil, err
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = 10 * time.Second
+	// Never forward bearer tokens (or config credentials) through redirects.
+	httpClient := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	return &Agent{
+		config: config, client: &client{config: config, http: httpClient},
+		store: store{path: config.SnapshotPath}, log: logger,
+		status:     StatusReport{NodeID: config.NodeID, State: "idle"},
+		streamIdle: 45 * time.Second, retry: retryDelay,
+	}, nil
+}
+
+func (a *Agent) Run(ctx context.Context) error {
+	saved, err := a.store.load()
+	if err != nil {
+		a.log.Warn("ignoring unusable persisted snapshot", "error", err)
+		saved = nil
+	}
+	var registration Registration
+	for attempt := 0; ; attempt++ {
+		if ctx.Err() != nil {
+			return nil
+		}
+		registration, err = a.client.register(ctx)
+		if err == nil {
+			break
+		}
+		a.log.Warn("registration failed; retrying", "error", err)
+		if !wait(ctx, a.retry(attempt)) {
+			return nil
+		}
+	}
+	if saved != nil && saved.EnvironmentID != registration.EnvironmentID {
+		a.log.Warn("ignoring persisted snapshot from another environment")
+		saved = nil
+	}
+	if saved != nil {
+		a.accept(saved, false)
+	}
+	if a.poll == 0 {
+		a.poll = time.Duration(registration.PollIntervalSeconds) * time.Second
+	}
+	if a.heartbeat == 0 {
+		a.heartbeat = time.Duration(registration.HeartbeatIntervalSeconds) * time.Second
+	}
+	a.log.Info("node registered", "nodeId", a.config.NodeID)
+	a.report(ctx)
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	heartbeatDone := make(chan struct{})
+	wake := make(chan struct{}, 1)
+	go func() {
+		defer close(done)
+		a.events(ctx, wake)
+	}()
+	defer func() { cancel(); <-done; <-heartbeatDone; a.client.http.CloseIdleConnections() }()
+	poll := time.NewTicker(a.poll)
+	defer poll.Stop()
+	go func() {
+		defer close(heartbeatDone)
+		ticker := time.NewTicker(a.heartbeat)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				a.report(ctx)
+			}
+		}
+	}()
+	a.refresh(ctx, registration.EnvironmentID)
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-wake:
+			a.refresh(ctx, registration.EnvironmentID)
+		case <-poll.C:
+			a.refresh(ctx, registration.EnvironmentID)
+		}
+	}
+}
+
+func (a *Agent) report(ctx context.Context) {
+	a.statusMu.RLock()
+	status := a.status
+	a.statusMu.RUnlock()
+	if err := a.client.report(ctx, status); err != nil && ctx.Err() == nil {
+		a.log.Warn("status report failed", "error", err)
+	}
+}
+
+func (a *Agent) accept(snapshot *Snapshot, success bool) {
+	a.applied = snapshot
+	a.statusMu.Lock()
+	a.status.State = "applied"
+	a.status.AppliedVersion = &snapshot.Version
+	a.status.AppliedHash = &snapshot.Hash
+	a.status.FailedVersion, a.status.Error = nil, nil
+	a.statusMu.Unlock()
+	a.failedHash = ""
+	a.appliedGauge.Store(snapshot.Version)
+	if success {
+		a.lastSuccess.Store(time.Now().Unix())
+	}
+}
+
+func (a *Agent) fail(ctx context.Context, snapshot *Snapshot, message string) {
+	a.failedHash = snapshot.Hash
+	a.statusMu.Lock()
+	a.status.State = "failed"
+	a.status.FailedVersion = &snapshot.Version
+	a.status.Error = &message
+	a.statusMu.Unlock()
+	a.failures.Add(1)
+	a.log.Error("snapshot application failed", "version", snapshot.Version)
+	a.report(ctx)
+}
+
+func (a *Agent) refresh(ctx context.Context, environmentID string) {
+	hash := ""
+	if a.applied != nil {
+		hash = a.applied.Hash
+	}
+	snapshot, err := a.client.snapshot(ctx, hash)
+	if err != nil {
+		if ctx.Err() == nil {
+			a.log.Warn("snapshot fetch failed", "error", err)
+		}
+		return
+	}
+	if snapshot == nil || snapshot.Hash == a.failedHash {
+		return
+	}
+	if snapshot.EnvironmentID != environmentID {
+		a.log.Warn("snapshot environment mismatch")
+		return
+	}
+	if a.applied != nil && snapshot.Version <= a.applied.Version {
+		return
+	}
+	pending, err := a.store.stage(snapshot)
+	if err != nil {
+		a.fail(ctx, snapshot, "cannot stage snapshot on disk")
+		return
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			pending.discard()
+		}
+	}()
+	if snapshot.Hash != hash {
+		a.statusMu.Lock()
+		a.status.State = "applying"
+		a.status.FailedVersion, a.status.Error = nil, nil
+		a.statusMu.Unlock()
+		a.report(ctx)
+		if err := a.client.apply(ctx, snapshot.Config); err != nil {
+			a.fail(ctx, snapshot, err.Error())
+			return
+		}
+	}
+	if err := pending.commit(); err != nil {
+		if pending.published {
+			a.accept(snapshot, true)
+			a.fail(ctx, snapshot, "snapshot applied but directory durability could not be confirmed")
+			return
+		}
+		// Restore the running config when the durable commit cannot be completed.
+		if a.applied != nil && ctx.Err() == nil {
+			if rollbackErr := a.client.apply(ctx, a.applied.Config); rollbackErr != nil {
+				a.log.Error("failed to restore running config after persistence failure")
+			}
+		}
+		a.fail(ctx, snapshot, "cannot commit snapshot on disk")
+		return
+	}
+	committed = true
+	a.accept(snapshot, true)
+	a.log.Info("snapshot applied", "version", snapshot.Version)
+	a.report(ctx)
+}
+
+func (a *Agent) MetricsHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/metrics" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+		fmt.Fprintf(w, "# TYPE gromesh_agent_applied_version gauge\ngromesh_agent_applied_version %d\n# TYPE gromesh_agent_apply_failures_total counter\ngromesh_agent_apply_failures_total %d\n# TYPE gromesh_agent_last_success_timestamp_seconds gauge\ngromesh_agent_last_success_timestamp_seconds %d\n", a.appliedGauge.Load(), a.failures.Load(), a.lastSuccess.Load())
+	})
+}
