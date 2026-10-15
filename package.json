@@ -9,6 +9,7 @@
     "build": "turbo run build",
     "test": "turbo run test",
     "typecheck": "turbo run typecheck",
+    "test:e2e": "pnpm --filter @gromesh/e2e test:e2e",
     "lint:contracts": "redocly lint contracts/control-plane.openapi.yaml contracts/agent-protocol.openapi.yaml",
     "dev:up": "docker compose -f deploy/compose/docker-compose.yml up -d",
     "dev:down": "docker compose -f deploy/compose/docker-compose.yml down",
