@@ -6,8 +6,9 @@ import {
   Injectable,
   SetMetadata,
 } from "@nestjs/common";
+import { timingSafeEqual } from "node:crypto";
 import { Reflector } from "@nestjs/core";
-import type { Request } from "express";
+import type { Request, Response } from "express";
 import type { Actor, UserRow } from "../db/schema.js";
 import { ProblemException } from "../common/problem.js";
 import { sessionCookie, SessionService } from "./sessions.js";
@@ -59,14 +60,24 @@ export class AuthGuard implements CanActivate {
     const id = sessionCookie(req.headers.cookie);
     const session = id ? await this.sessions.resolve(id) : null;
     if (!session) throw new ProblemException(HttpStatus.UNAUTHORIZED, "Authentication required");
-    if (!SAFE_METHODS.has(req.method) && req.header(CSRF_HEADER) !== session.csrfToken) {
+    if (!SAFE_METHODS.has(req.method) && !sameToken(req.header(CSRF_HEADER), session.csrfToken)) {
       throw new ProblemException(HttpStatus.FORBIDDEN, "CSRF token missing or invalid");
     }
     if (RANK[session.user.role] < RANK[required]) throw new ProblemException(HttpStatus.FORBIDDEN, `Requires role ${required}`);
+    // A slid expiry goes back to the browser, so the cookie's own Max-Age slides with it.
+    if (session.renewed && id) context.switchToHttp().getResponse<Response>().setHeader("Set-Cookie", this.sessions.cookie(id));
     req.user = session.user;
     req.session = { idHash: session.idHash, csrfToken: session.csrfToken };
     return true;
   }
+}
+
+/** Constant-time comparison; a missing header or a different length is simply invalid. */
+function sameToken(given: string | undefined, expected: string): boolean {
+  if (given === undefined) return false;
+  const a = Buffer.from(given);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
 }
 
 /** Who did it and from where — passed to services for the audit log. */

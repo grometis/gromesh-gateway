@@ -18,8 +18,11 @@ export interface AppConfig {
   trustProxy: boolean | string;
   /** Sliding session lifetime. */
   sessionTtlMs: number;
-  /** Failed logins per e-mail before a lockout of `loginLockoutMs`. */
+  /** Failed logins per e-mail+client address before a lockout of `loginLockoutMs`. */
   loginMaxFailures: number;
+  /** Failures on the e-mail alone (from anywhere) only delay the next attempt: base × 2^(n-1), capped. */
+  loginDelayBaseMs: number;
+  loginDelayMaxMs: number;
   /** Same per client address; higher, because many users can share one address (NAT, proxies). */
   loginMaxFailuresPerIp: number;
   loginLockoutMs: number;
@@ -49,6 +52,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     trustProxy: env.TRUST_PROXY === undefined || env.TRUST_PROXY === "false" ? false : env.TRUST_PROXY === "true" ? true : env.TRUST_PROXY,
     sessionTtlMs: Number(env.SESSION_TTL_MS ?? 8 * 60 * 60 * 1000),
     loginMaxFailures: Number(env.LOGIN_MAX_FAILURES ?? 5),
+    loginDelayBaseMs: Number(env.LOGIN_DELAY_BASE_MS ?? 250),
+    loginDelayMaxMs: Number(env.LOGIN_DELAY_MAX_MS ?? 5000),
     loginMaxFailuresPerIp: Number(env.LOGIN_MAX_FAILURES_PER_IP ?? 50),
     loginLockoutMs: Number(env.LOGIN_LOCKOUT_MS ?? 15 * 60 * 1000),
     kongValidatorUrl: env.KONG_VALIDATOR_URL || null,

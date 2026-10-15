@@ -52,8 +52,10 @@ export async function startHarness(overrides: Partial<AppConfig> = {}): Promise<
       ...loadConfig(env),
       bootstrapAdmin: BOOTSTRAP_ADMIN,
       cookieSecure: false,
-      // Every test shares 127.0.0.1: the per-address lockout is exercised by its own test with a low threshold.
+      // Every test shares 127.0.0.1: the per-address lockout is exercised by its own test with a low threshold,
+      // and the progressive delay by its own test with a non-zero base.
       loginMaxFailuresPerIp: 1_000_000,
+      loginDelayBaseMs: 0,
       kongValidatorUrl: KONG_VALIDATOR_URL,
       migrateOnStart: false,
       ...overrides,

@@ -10,18 +10,20 @@ import { DB, type Db, type Executor } from "../db/db.js";
 import { loginAttempts, users, type UserRow } from "../db/schema.js";
 import { normalizeEmail, toUser } from "../users/users.js";
 import { type AuthenticatedRequest, Public, RequiredRole, type RequestContext } from "./auth.js";
-import { SessionService } from "./sessions.js";
+import { sessionCookie, SessionService } from "./sessions.js";
 
 interface LoginBody {
   email: string;
   password: string;
 }
 
-/** A lockout counter and its threshold. */
+/** A failure counter: `max` failures lock it for `loginLockoutMs`; without `max` it only slows the next attempt. */
 interface Limit {
   key: string;
-  max: number;
+  max?: number;
 }
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 @Injectable()
 export class AuthService {
@@ -34,15 +36,20 @@ export class AuthService {
     private readonly sessions: SessionService,
   ) {}
 
-  async login(body: LoginBody, ip: string | null): Promise<{ user: UserRow; sessionId: string }> {
+  /**
+   * Lockouts are keyed by e-mail+address and by address alone, so nobody can lock another user's account (the last
+   * admin's, say) from elsewhere. Failures on the e-mail alone only delay the next attempt, from any address.
+   */
+  async login(body: LoginBody, ip: string | null, presentedSessionId: string | null): Promise<{ user: UserRow; sessionId: string }> {
     const email = normalizeEmail(body.email);
-    const keys: Limit[] = [{ key: `email:${email}`, max: this.config.loginMaxFailures }];
-    if (ip) keys.push({ key: `ip:${ip}`, max: this.config.loginMaxFailuresPerIp });
-    const lockedFor = await this.lockedFor(keys);
+    const keys: Limit[] = [{ key: `email:${email}` }];
+    if (ip) keys.push({ key: `email_ip:${email}|${ip}`, max: this.config.loginMaxFailures }, { key: `ip:${ip}`, max: this.config.loginMaxFailuresPerIp });
+    const { lockedFor, emailFailures } = await this.state(keys);
     if (lockedFor > 0) {
       await this.db.transaction((tx) => this.auditFailure(tx, email, ip, "rate_limited"));
       throw new ProblemException(HttpStatus.TOO_MANY_REQUESTS, "Too many login attempts", undefined, undefined, { "Retry-After": String(lockedFor) });
     }
+    if (emailFailures > 0) await sleep(Math.min(this.config.loginDelayMaxMs, this.config.loginDelayBaseMs * 2 ** (emailFailures - 1)));
     const [user] = await this.db.select().from(users).where(eq(users.email, email));
     const ok = await verify(user?.passwordHash ?? (await this.decoy), body.password);
     if (!user || !ok || !user.active) {
@@ -56,6 +63,8 @@ export class AuthService {
     return this.db.transaction(async (tx) => {
       await tx.delete(loginAttempts).where(inArray(loginAttempts.key, keys.map((k) => k.key)));
       await this.sessions.purgeExpired(tx);
+      // A login from a browser that still holds a session replaces it: one session per login, never two.
+      if (presentedSessionId) await this.sessions.revoke(tx, this.sessions.hashOf(presentedSessionId));
       const session = await this.sessions.create(tx, user.id);
       const ctx: RequestContext = { actor: { type: "user", id: user.id, name: user.name }, ip, role: user.role };
       await audit(tx, ctx, { action: "auth.login", entityType: "user", entityId: user.id, after: { ok: true } });
@@ -70,11 +79,14 @@ export class AuthService {
     });
   }
 
-  /** Seconds left on the longest active lockout among `keys`, 0 when none. */
-  private async lockedFor(keys: Limit[]): Promise<number> {
+  /** Seconds left on the longest active lockout among `keys` (0 when none) and the e-mail's failures in the window. */
+  private async state(keys: Limit[]): Promise<{ lockedFor: number; emailFailures: number }> {
     const rows = await this.db.select().from(loginAttempts).where(inArray(loginAttempts.key, keys.map((k) => k.key)));
+    const now = Date.now();
     const until = Math.max(0, ...rows.map((r) => r.lockedUntil?.getTime() ?? 0));
-    return Math.ceil(Math.max(0, until - Date.now()) / 1000);
+    const email = rows.find((r) => r.key.startsWith("email:"));
+    const emailFailures = email && now - email.windowStartedAt.getTime() < this.config.loginLockoutMs ? email.failures : 0;
+    return { lockedFor: Math.ceil(Math.max(0, until - now) / 1000), emailFailures };
   }
 
   private async recordFailure(tx: Executor, keys: Limit[]): Promise<void> {
@@ -87,7 +99,7 @@ export class AuthService {
       const values = {
         failures,
         windowStartedAt: inWindow ? row.windowStartedAt : now,
-        lockedUntil: failures >= max ? new Date(now.getTime() + lockout) : null,
+        lockedUntil: max !== undefined && failures >= max ? new Date(now.getTime() + lockout) : null,
       };
       await tx.insert(loginAttempts).values({ key, ...values }).onConflictDoUpdate({ target: loginAttempts.key, set: values });
     }
@@ -110,7 +122,7 @@ class AuthController {
   @HttpCode(HttpStatus.OK)
   @Public()
   async login(@Body(contractBody(inlineBody("/auth/login", "post"))) body: LoginBody, @Req() req: AuthenticatedRequest, @Res({ passthrough: true }) res: Response) {
-    const { user, sessionId } = await this.auth.login(body, req.ip ?? null);
+    const { user, sessionId } = await this.auth.login(body, req.ip ?? null, sessionCookie(req.headers.cookie));
     res.setHeader("Set-Cookie", this.sessions.cookie(sessionId));
     return { user: toUser(user) };
   }

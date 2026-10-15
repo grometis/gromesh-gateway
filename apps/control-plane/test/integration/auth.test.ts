@@ -71,16 +71,59 @@ describe("login", () => {
     expect(missing.body.errors).toContainEqual(expect.objectContaining({ path: "password" }));
   });
 
-  it("locks the e-mail after 5 failures: 429 with Retry-After, even with the right password", async () => {
+  it("locks the e-mail+address pair after 5 failures: 429 with Retry-After, even with the right password", async () => {
     const user = await newUser("editor");
     for (let i = 0; i < 5; i++) expect((await h.anonymous("POST", "/auth/login", { email: user.email, password: "wrong-password-123" })).status).toBe(401);
     const locked = await h.anonymous("POST", "/auth/login", { email: user.email, password: PASSWORD });
     expect(locked.status).toBe(429);
     expect(locked.contentType).toContain("application/problem+json");
     expect(Number(locked.headers.get("retry-after"))).toBeGreaterThan(0);
-    // Other accounts are unaffected (the client address is shared by the whole test run, so it is not counted).
+    // Other accounts from the same address are unaffected.
     const other = await newUser("editor");
     expect((await h.login(other.email, PASSWORD)).status).toBe(200);
+  });
+
+  it("never lets one address lock an account for another: 10 failures from A, the admin still logs in from B", async () => {
+    // trust proxy on, so X-Forwarded-For stands for the client address.
+    const proxied = await startHarness({ trustProxy: true });
+    try {
+      const fromA = { "x-forwarded-for": "203.0.113.10" };
+      const fromB = { "x-forwarded-for": "203.0.113.20" };
+      for (let i = 0; i < 10; i++) {
+        const res = await proxied.anonymous("POST", "/auth/login", { email: BOOTSTRAP_ADMIN.email, password: "wrong-password-123" }, fromA);
+        expect(res.status, `attempt ${i + 1}`).toBe(i < 5 ? 401 : 429);
+      }
+      const fromElsewhere = await proxied.anonymous("POST", "/auth/login", BOOTSTRAP_ADMIN, fromB);
+      expect(fromElsewhere.status).toBe(200);
+      const { rows } = await h.sql.query("select key, locked_until from login_attempts where key like $1", [`%${BOOTSTRAP_ADMIN.email}%`]);
+      expect(rows.map((r) => r.key).sort()).toEqual([`email_ip:${BOOTSTRAP_ADMIN.email}|203.0.113.10`]);
+    } finally {
+      await h.sql.query("delete from login_attempts where key like $1 or key like 'ip:203.%'", [`%${BOOTSTRAP_ADMIN.email}%`]);
+      await proxied.close();
+    }
+  });
+
+  it("slows repeated failures on an e-mail progressively, without ever locking it", async () => {
+    const slow = await startHarness({ loginDelayBaseMs: 60, loginDelayMaxMs: 200 });
+    try {
+      const user = await newUser("viewer");
+      const timings: number[] = [];
+      for (let i = 0; i < 4; i++) {
+        const started = Date.now();
+        expect((await slow.anonymous("POST", "/auth/login", { email: user.email, password: "wrong-password-123" }, { "x-forwarded-for": `198.51.100.${i}` })).status).toBe(401);
+        timings.push(Date.now() - started);
+      }
+      // 0, 60, 120, 200 ms of delay before the 1st..4th attempts (the first has nothing to wait for).
+      expect(timings[1]).toBeGreaterThanOrEqual(55);
+      expect(timings[2]).toBeGreaterThanOrEqual(110);
+      expect(timings[3]).toBeGreaterThanOrEqual(190);
+      const started = Date.now();
+      expect((await slow.login(user.email, PASSWORD)).status).toBe(200);
+      expect(Date.now() - started).toBeGreaterThanOrEqual(190); // the delay applies to the right password too
+      expect((await slow.login(user.email, PASSWORD)).status).toBe(200); // ...and clears on success
+    } finally {
+      await slow.close();
+    }
   });
 
   it("locks a client address after too many failures across accounts", async () => {
@@ -129,6 +172,28 @@ describe("sessions", () => {
     expect((await session.api("GET", "/me")).status).toBe(401);
   });
 
+  it("renews the cookie when the sliding expiry moves", async () => {
+    const user = await newUser("viewer");
+    const session = await h.login(user.email, PASSWORD);
+    expect((await session.api("GET", "/me")).headers.get("set-cookie")).toBeNull(); // nothing slid yet
+    await h.sql.query("update sessions set last_seen_at = now() - interval '2 minutes' where user_id = $1", [user.id]);
+    const slid = await session.api("GET", "/me");
+    expect(slid.status).toBe(200);
+    expect(slid.headers.get("set-cookie")).toBe(`${session.cookie}; Max-Age=28800; Path=/; HttpOnly; SameSite=Strict`);
+    const { rows } = await h.sql.query("select expires_at > now() + interval '7 hours 59 minutes' as slid from sessions where user_id = $1", [user.id]);
+    expect(rows[0].slid).toBe(true);
+  });
+
+  it("revokes the session a browser still presents when it logs in again", async () => {
+    const user = await newUser("viewer");
+    const first = await h.login(user.email, PASSWORD);
+    expect((await first.api("GET", "/me")).status).toBe(200);
+    const again = await h.anonymous("POST", "/auth/login", { email: user.email, password: PASSWORD }, { cookie: first.cookie! });
+    expect(again.status).toBe(200);
+    expect(again.headers.get("set-cookie")).not.toContain(first.cookie);
+    expect((await first.api("GET", "/me")).status).toBe(401);
+  });
+
   it("ends every session of a user who is deactivated, demoted or given a new password", async () => {
     for (const change of [{ active: false }, { role: "viewer" }, { password: "another-password-12" }]) {
       const user = await newUser("editor");
@@ -151,6 +216,8 @@ describe("sessions", () => {
     expect(bare.body.detail).toContain("CSRF");
     const wrong = await session.api("POST", `/environments/${env.body.id}/services`, service(), { "x-csrf-token": "not-the-token" });
     expect(wrong.status).toBe(403);
+    // A token of another length (would make a naive timing-safe compare throw) is just invalid.
+    expect((await session.api("POST", `/environments/${env.body.id}/services`, service(), { "x-csrf-token": "x" })).status).toBe(403);
     // Reads need the cookie only.
     expect((await session.api("GET", "/environments", undefined, { "x-csrf-token": "" })).status).toBe(200);
   });
@@ -233,8 +300,7 @@ describe("RBAC matrix from the contract", () => {
     paths: Record<string, Record<string, { operationId: string; "x-required-role"?: Operation["role"]; security?: unknown[] }>>;
   };
   // logout ends the session it is called with, so the sessions tests cover it instead of the matrix.
-  // listAuditEvents is implemented by W5-X1: drop it from here when that task lands.
-  const SKIP = new Set(["logout", "listAuditEvents"]);
+  const SKIP = new Set(["logout"]);
   const operations: Operation[] = [];
   for (const [path, methods] of Object.entries(contract.paths)) {
     for (const [method, op] of Object.entries(methods)) {

@@ -23,8 +23,8 @@ export class SessionService {
     return { id, csrfToken };
   }
 
-  /** The live session behind a cookie value, with its user; slides the expiry on activity. */
-  async resolve(id: string): Promise<{ user: UserRow; csrfToken: string; idHash: string } | null> {
+  /** The live session behind a cookie value, with its user; slides the expiry on activity (`renewed`). */
+  async resolve(id: string): Promise<{ user: UserRow; csrfToken: string; idHash: string; renewed: boolean } | null> {
     const idHash = hash(id);
     const now = new Date();
     const [row] = await this.db
@@ -34,13 +34,19 @@ export class SessionService {
       .where(and(eq(sessions.idHash, idHash), gt(sessions.expiresAt, now)));
     if (!row || !row.user.active) return null;
     // One write per minute at most: enough for a sliding 8 h expiry.
-    if (now.getTime() - row.session.lastSeenAt.getTime() > 60_000) {
+    const renewed = now.getTime() - row.session.lastSeenAt.getTime() > 60_000;
+    if (renewed) {
       await this.db
         .update(sessions)
         .set({ lastSeenAt: now, expiresAt: new Date(now.getTime() + this.config.sessionTtlMs) })
         .where(eq(sessions.idHash, idHash));
     }
-    return { user: row.user, csrfToken: row.session.csrfToken, idHash };
+    return { user: row.user, csrfToken: row.session.csrfToken, idHash, renewed };
+  }
+
+  /** Hash of a cookie value, for revoking a session presented by the client. */
+  hashOf(id: string): string {
+    return hash(id);
   }
 
   async revoke(tx: Executor, idHash: string): Promise<void> {
