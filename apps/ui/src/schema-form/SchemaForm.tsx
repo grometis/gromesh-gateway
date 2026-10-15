@@ -48,6 +48,8 @@ interface InputProps {
   onJsonError: (path: string, invalid: boolean) => void;
 }
 
+const KEPT_SECRET_HINT = "Valor atual mantido; digite para trocar.";
+
 function label(name: string, field: SchemaField): string {
   return `${name}${field.required && field.default === undefined ? " *" : ""}${field.deprecated ? " (obsoleto)" : ""}`;
 }
@@ -56,6 +58,8 @@ function SchemaInput(props: InputProps) {
   const { name, field, path, value, onChange, errors } = props;
   const fieldErrors = errors[path];
   const hint = field.description;
+  // Whether this secret exists on the server (the API shows the placeholder instead of the value).
+  const [stored] = useState(() => field.encrypted && value === SECRET_PLACEHOLDER);
 
   switch (field.type) {
     case "record":
@@ -106,7 +110,7 @@ function SchemaInput(props: InputProps) {
 
     case "string":
       return (
-        <Field label={label(name, field)} errors={fieldErrors} hint={field.encrypted && value === SECRET_PLACEHOLDER ? "Valor atual oculto: digite de novo para salvar." : hint}>
+        <Field label={label(name, field)} errors={fieldErrors} hint={field.encrypted && value === SECRET_PLACEHOLDER ? KEPT_SECRET_HINT : hint}>
           {(id, invalid) =>
             field.oneOf ? (
               <select id={id} aria-invalid={invalid} value={typeof value === "string" ? value : ""} onChange={(e) => onChange(e.target.value || undefined)}>
@@ -118,8 +122,16 @@ function SchemaInput(props: InputProps) {
                 ))}
               </select>
             ) : field.encrypted ? (
-              // Secrets are typed, never pre-filled with the placeholder the API returns.
-              <input id={id} type="password" autoComplete="new-password" aria-invalid={invalid} value={typeof value === "string" && value !== SECRET_PLACEHOLDER ? value : ""} onChange={(e) => onChange(e.target.value)} />
+              // Secrets are typed, never pre-filled with the placeholder the API returns. Clearing the input goes
+              // back to the placeholder: a stored secret can be replaced here, not removed.
+              <input
+                id={id}
+                type="password"
+                autoComplete="new-password"
+                aria-invalid={invalid}
+                value={typeof value === "string" && value !== SECRET_PLACEHOLDER ? value : ""}
+                onChange={(e) => onChange(e.target.value === "" && stored ? SECRET_PLACEHOLDER : e.target.value)}
+              />
             ) : (
               <input id={id} aria-invalid={invalid} value={typeof value === "string" ? value : ""} onChange={(e) => onChange(e.target.value)} />
             )

@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { SchemaFields } from "./SchemaForm";
-import { configToSubmit, initialConfig, parsePluginSchema, placeErrors, fieldPaths, validateConfig, type NamedField } from "./schema";
+import { configToSubmit, initialConfig, parseField, parsePluginSchema, placeErrors, fieldPaths, validateConfig, type NamedField } from "./schema";
 
 // The same files the control plane serves on GET /plugin-schemas/{name}.
 const CATALOG = new URL("../../../control-plane/src/plugin-catalog/kong-3.9/", import.meta.url);
@@ -105,15 +105,32 @@ describe("rate-limiting", () => {
 describe("secrets", () => {
   const fields: NamedField[] = parsePluginSchema(load("rate-limiting")).config;
 
-  it("never sends the placeholder back and never pre-fills it", () => {
+  it("sends an untouched secret back as the placeholder, which the API reads as 'keep the stored value'", () => {
     const saved = { minute: 5, redis: { host: "redis", password: "REDACTED" } };
     const value = initialConfig(fields, saved);
     const sent = configToSubmit(fields, value) as { redis: Record<string, unknown> };
-    expect(sent.redis.password).toBeUndefined();
-    expect(sent.redis.host).toBe("redis");
+    expect(sent.redis).toEqual(expect.objectContaining({ host: "redis", password: "REDACTED" }));
+    expect(validateConfig(fields, value)).toEqual({});
+  });
+
+  it("sends a typed secret as is", () => {
+    const value = initialConfig(fields, { minute: 5, redis: { host: "redis", password: "REDACTED" } });
+    const typed = { ...value, redis: { ...(value.redis as Record<string, unknown>), password: "new-secret" } };
+    expect((configToSubmit(fields, typed) as { redis: Record<string, unknown> }).redis.password).toBe("new-secret");
+  });
+
+  it("never pre-fills the placeholder and says the stored value is kept", () => {
+    const value = initialConfig(fields, { minute: 5, redis: { host: "redis", password: "REDACTED" } });
     const html = renderToStaticMarkup(<SchemaFields fields={fields} value={value} onChange={() => {}} errors={{}} onJsonError={() => {}} />);
     expect(html).not.toContain("REDACTED");
     expect(html).toContain('type="password"');
+    expect(html).toContain("Valor atual mantido; digite para trocar.");
+  });
+
+  it("treats the placeholder as a value for required secrets", () => {
+    const required: NamedField[] = [{ name: "secret", field: parseField({ type: "string", required: true, encrypted: true }) }];
+    expect(validateConfig(required, { secret: "REDACTED" })).toEqual({});
+    expect(validateConfig(required, {})).toEqual({ "config.secret": ["Campo obrigatório."] });
   });
 });
 
