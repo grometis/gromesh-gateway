@@ -644,11 +644,7 @@ paths:
         required: false
         content:
           application/json:
-            schema:
-              type: object
-              properties:
-                message: { type: string, maxLength: 500 }
-                expectedCurrentVersion: { type: [integer, "null"] }
+            schema: { $ref: "#/components/schemas/PublishRequest" }
       responses:
         "201":
           description: Published
@@ -1140,6 +1136,13 @@ components:
         draftHash: { type: string }
         hasChanges: { type: boolean }
         changes: { type: array, items: { $ref: "#/components/schemas/EntityChange" } }
+    PublishRequest:
+      type: object
+      properties:
+        message: { type: string, maxLength: 500 }
+        expectedCurrentVersion:
+          type: [integer, "null"]
+          description: Optimistic check; omit to skip it, null means "nothing published yet".
     SnapshotSummary:
       type: object
       required: [version, hash, createdAt, createdBy, isCurrent]

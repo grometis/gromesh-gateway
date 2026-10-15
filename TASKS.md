@@ -19,19 +19,19 @@ git worktree add ../gg-codex  -b task/W1-X1-kong-image
 | W2-C2 | Claude | W2-C1 | `apps/control-plane/` |
 | W2-X1 | Codex | — | `apps/agent/` |
 | W3-C1 | Claude | — (usa mock do contrato) | `apps/ui/` |
-| W3-X1 | Codex | W2-C1, W2-X1 | `apps/control-plane/src/agent-gateway/`, `apps/control-plane/src/clusters/`, `apps/control-plane/prisma/migrations/`, `deploy/compose/` |
+| W3-X1 | Codex | W2-C1, W2-X1 | `apps/control-plane/src/agent-gateway/`, `apps/control-plane/src/clusters/`, `apps/control-plane/drizzle/`, `apps/control-plane/src/db/schema.ts`, `deploy/compose/` |
 | W3-X2 | Codex | W3-C1, W3-X1 | `e2e/`, `.github/workflows/` |
 
-Ordem de merge na semana 3: W2-C2 → W3-X1 → W3-C1 → W3-X2. Quem mergeia depois faz rebase; `schema.prisma` é alterado por uma frente por vez.
+Ordem de merge na semana 3: W2-C2 → W3-X1 → W3-C1 → W3-X2. Quem mergeia depois faz rebase; `src/db/schema.ts` e `drizzle/` são alterados por uma frente por vez.
 
 ---
 
 ## Semana 1
 
-### W1-C1 [Claude] Esqueleto do control plane ponta a ponta
+### W1-C1 [Claude] Esqueleto do control plane ponta a ponta — FEITO (branch `task/W1-C1-control-plane-skeleton`)
 Objetivo: uma rota criada pela API chega ao Kong e uma requisição atravessa até o backend `echo`.
 
-- NestJS em `apps/control-plane` (pacote `@gromesh/control-plane`), Prisma + Postgres do compose, porta 3000, prefixo `/api/v1`.
+- NestJS em `apps/control-plane` (pacote `@gromesh/control-plane`), Drizzle + Postgres do compose, porta 3000, prefixo `/api/v1`.
 - Tabelas: `environments`, `services`, `routes`, `snapshots` (version, hash, config jsonb, createdAt, createdBy), `audit_events`.
 - Endpoints do contrato: environments, services, routes e `POST /environments/{envId}/snapshots` (publicar).
 - Publicar = ler o estado → `buildSnapshot()` do `@gromesh/compiler` → gravar → **temporário**: `POST {KONG_ADMIN_URL}/config` direto (removido em W3-X1).
