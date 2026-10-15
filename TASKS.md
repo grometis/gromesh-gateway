@@ -1,4 +1,4 @@
-# Tarefas — semanas 1 a 3
+# Tarefas — semanas 1 a 6
 
 Duas frentes em paralelo: **[Claude]** = Claude Code, **[Codex]** = Codex. Cada tarefa = 1 branch + 1 PR + 1 worktree.
 Pronto = teste de aceite verde no CI + checklist de `CLAUDE.md`. Revisão cruzada: o PR do Claude é revisado pelo Codex e vice-versa.
@@ -21,8 +21,18 @@ git worktree add ../gg-codex  -b task/W1-X1-kong-image
 | W3-C1 | Claude | — (usa mock do contrato) | `apps/ui/` |
 | W3-X1 | Codex | W2-C1, W2-X1 | `apps/control-plane/src/agent-gateway/`, `apps/control-plane/src/clusters/`, `apps/control-plane/drizzle/`, `apps/control-plane/src/db/schema.ts`, `deploy/compose/` |
 | W3-X2 | Codex | W3-C1, W3-X1 | `e2e/`, `.github/workflows/` |
+| W4-C1 | Claude | — | `apps/ui/` (exceto `pages/Snapshots*`, `pages/Clusters*`) |
+| W4-X1 | Codex | — | `apps/ui/src/pages/Snapshots*`, `apps/ui/src/pages/Clusters*`, `apps/ui/src/components/Diff*`, `apps/ui/e2e/`, entradas dessas páginas em `router.tsx` |
+| W5-C0 | Claude | — | `contracts/` (PR de contrato, antes de W5-C1/W5-X1) |
+| W5-C1 | Claude | W5-C0 | `apps/control-plane/` (exceto `src/audit/`) |
+| W5-X1 | Codex | W5-C0 | `apps/control-plane/src/audit/`, `apps/ui/`, `apps/ui/nginx.conf` |
+| W6-X1 | Codex | — | `packages/compiler/` (só opções de plugins de plataforma), `deploy/compose/`, `deploy/observability/` |
+| W6-C0 | Claude | W6-X1 (schema da tabela) | `contracts/` |
+| W6-C1 | Claude | W6-C0 | `apps/control-plane/src/analytics/`, `apps/ui/` |
 
 Ordem de merge na semana 3: W2-C2 → W3-X1 → W3-C1 → W3-X2. Quem mergeia depois faz rebase; `src/db/schema.ts` e `drizzle/` são alterados por uma frente por vez.
+
+Ordem de merge: semana 4 → W4-C1 antes de W4-X1 (W4-X1 faz rebase em `router.tsx`). Semana 5 → W5-C0 → W5-C1 → W5-X1. Semana 6 → W6-X1 → W6-C0 → W6-C1.
 
 ---
 
@@ -114,6 +124,72 @@ Aceite: e2e — cria cluster → sobe o agente com o token → publica → `GET 
 - Mover o `kong-validator` do compose para `127.0.0.1:8011` no host (`8001` não deve parecer o Kong de dados) e ajustar `KONG_VALIDATOR_URL` onde for preciso (CI, harness dos testes, script do catálogo).
 
 Aceite: o próprio job verde no CI.
+
+---
+
+## Semana 4 — UI completa do gateway
+
+### W4-C1 [Claude] Consumers e Plugins com formulário gerado pelo schema
+- Consumers: lista, busca, criar, editar, excluir; credenciais key-auth com a chave mostrada **uma única vez** num modal com "copiar" e aviso; depois só `keyHint`.
+- Plugins: catálogo por categoria (`/plugin-schemas`), plugins com `supportedInDbless: false` aparecem desabilitados com motivo; escolha de escopo (global, service, route, consumer); lista de plugins por escopo também dentro das telas de Service, Route e Consumer.
+- Gerador de formulário a partir do schema do Kong (`fields`): string, number, integer, boolean, array/set de string, map, record aninhado, `one_of` → select, `default`, `required`, `between`/`len_min` como validação local, campos `encrypted` como input de senha (nunca pré-preenchidos com `REDACTED` no envio). Modo "JSON avançado" para o que o gerador não cobrir.
+- Erros 422 do validador (`config.minute`, `scope.consumerId`) no campo certo.
+
+Aceite: (1) teste unitário que renderiza o formulário de **todos os 45** schemas de `apps/control-plane/src/plugin-catalog/kong-3.9/` sem erro e envia os defaults; (2) Playwright contra o Prism: criar consumer → chave aparece uma vez e some ao fechar; criar `rate-limiting` em uma route pelo formulário; 422 em `config.minute` aparece no campo.
+
+### W4-X1 [Codex] Publicações e Clusters na UI
+- Publicações: histórico (cursor), detalhe da versão, diff entre duas versões quaisquer (added/removed/modified, before/after lado a lado, chaves sempre `REDACTED`), rollback com confirmação mostrando o diff que será aplicado; 409 "mesma configuração" tratado.
+- Clusters: criar cluster → modal com o `registrationToken` mostrado uma vez + comandos prontos (`docker run` do agente e `--set agent.token=…` do Helm futuro); tabela de nós (versão aplicada, estado, `kongHealthy`, `lastSeenAt`, online), status agregado com cor, rotate-token, excluir com confirmação.
+- Atualização periódica da lista de clusters (10 s) só com a aba visível.
+
+Aceite: Playwright contra o Prism: abrir histórico → diff entre v1 e v2 → rollback confirma; criar cluster → token aparece uma vez; nó `failed` mostra o erro.
+
+---
+
+## Semana 5 — Autenticação real e RBAC
+
+### W5-C0 [Claude] PR de contrato: sessão por cookie
+- `POST /auth/login` → 200 com `user` e cookie de sessão `httpOnly; Secure; SameSite=Strict`; sem `accessToken` no corpo.
+- `POST /auth/logout`; `GET /auth/csrf` (ou cookie legível) + header `X-CSRF-Token` obrigatório em toda mutação; 429 no login por excesso de tentativas.
+- `securitySchemes`: `cookieAuth` substitui `bearerAuth` para a UI (agentes continuam com bearer próprio).
+
+### W5-C1 [Claude] Autenticação e usuários no control plane
+- Tabela `users`; senha com argon2id; primeiro admin criado na subida a partir de `BOOTSTRAP_ADMIN_EMAIL`/`BOOTSTRAP_ADMIN_PASSWORD` só se não existir nenhum usuário.
+- Sessões no Postgres (id aleatório, expiração deslizante de 8 h, revogação no logout e ao desativar o usuário); CSRF double-submit; limite de tentativas de login por IP + e-mail.
+- CRUD de usuários (admin) conforme contrato; não permitir remover/rebaixar o último admin.
+- **Remover `AUTH_MODE=dev` por completo** (código, compose e CI passam a usar o bootstrap admin).
+- Audit: `auth.login` (sucesso e falha, sem senha), `auth.logout`, `user.*`.
+
+Aceite: teste de matriz RBAC gerado do contrato — para **cada** `operationId` com `x-required-role`, os três papéis recebem 2xx/403 conforme esperado; sem cookie → 401; mutação sem CSRF → 403; último admin protegido; 6ª tentativa de login errada → 429.
+
+### W5-X1 [Codex] Audit log, telas de usuários e endurecimento da UI
+- Control plane: `GET /audit-events` (filtros do contrato, cursor, só admin).
+- UI: login por cookie + CSRF (remover `sessionStorage`), tela de Usuários (admin), tela de Audit log com filtros e before/after, menu e botões conforme papel (a API continua sendo quem decide).
+- `apps/ui/nginx.conf`: CSP restritiva, `X-Frame-Options: DENY`, `Referrer-Policy`, `X-Content-Type-Options`, HSTS quando atrás de TLS.
+
+Aceite: e2e completo da W3-X2 adaptado ao login real; viewer não vê botões de edição e recebe 403 se forçar; audit mostra a publicação com autor.
+
+---
+
+## Semana 6 — Observabilidade
+
+### W6-X1 [Codex] Pipeline de logs e métricas
+- Compilador: `platformPlugins` vindos da configuração do control plane — `prometheus` global e `http-log` global apontando para o coletor do cluster (batch via `queue`).
+- `deploy/observability/`: Vector (versão fixa) recebendo o http-log, **removendo headers e query params de credencial** (`apikey` e os `key_names` configurados, `authorization`, `cookie`) e gravando no ClickHouse (versão fixa).
+- Tabela `requests` com TTL de 7 dias: ts, environment_id, cluster_id, service_id, route_id, consumer_id, method, path, status, latency_kong_ms, latency_upstream_ms, latency_total_ms, client_ip, request_size, response_size.
+- Compose: perfis `observability` com Vector, ClickHouse e Prometheus.
+
+Aceite: requisição via Kong aparece no ClickHouse em até 10 s; teste prova que a chave `apikey` enviada no header e na query **não** aparece em nenhuma coluna nem no log do Vector.
+
+### W6-C0 [Claude] PR de contrato: analytics
+- `GET /environments/{envId}/analytics/summary?from&to&routeId&serviceId` → séries por intervalo: requisições, taxa de erro (4xx, 5xx), p50/p95/p99.
+- `GET /environments/{envId}/requests` → explorador com filtros (status, route, service, consumer, período) e cursor.
+
+### W6-C1 [Claude] Analytics no control plane e dashboards na UI
+- Módulo `analytics` lendo do ClickHouse (`@clickhouse/client`), consultas parametrizadas, limite de período (30 dias) e de linhas.
+- UI: dashboard do environment (requisições, erros e latência p95 ao longo do tempo, top rotas por volume e por erro) e explorador de requisições com filtros e detalhe.
+
+Aceite: testes de integração com ClickHouse real e dados de fixture conhecidos (números conferidos); Playwright contra o Prism: dashboard renderiza séries e o explorador filtra por status.
 
 ---
 
