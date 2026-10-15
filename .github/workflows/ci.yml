@@ -22,8 +22,19 @@ jobs:
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U gromesh" --health-interval 5s --health-timeout 3s --health-retries 20
+      # Plugin configs are validated by a real Kong (control-plane integration tests).
+      kong:
+        image: kong:3.9.3
+        env:
+          KONG_DATABASE: "off"
+          KONG_ADMIN_LISTEN: "0.0.0.0:8001"
+          KONG_PLUGINS: bundled
+        ports: ["8001:8001"]
+        options: >-
+          --health-cmd "kong health" --health-interval 5s --health-timeout 5s --health-retries 20
     env:
       TEST_DATABASE_URL: postgres://gromesh:gromesh@127.0.0.1:5432/gromesh
+      KONG_VALIDATOR_URL: http://127.0.0.1:8001
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -35,6 +46,21 @@ jobs:
       - run: pnpm lint:contracts
       - run: pnpm typecheck
       - run: pnpm test
+
+  agent:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/agent/go.mod
+          # Standard library only: there is no go.sum to key a module cache on.
+          cache: false
+      - run: go vet ./...
+      - run: go test -race ./...
 
   e2e:
     runs-on: ubuntu-latest

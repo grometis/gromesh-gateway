@@ -101,6 +101,8 @@ Aceite: Playwright contra o mock: login → criar service → criar route → ab
 - Tokens guardados só como hash; node token por nó; revogação ao apagar cluster.
 - Publicar (W2-C1) emite evento para os agentes do environment via `LISTEN/NOTIFY` do Postgres (funciona com várias réplicas).
 - Remover o push direto ao Kong da W1-C1. No compose: serviço `agent` com `network_mode: "service:kong"`, volume compartilhado `kong-config` montado em `/kong/declarative`, `KONG_DECLARATIVE_CONFIG=/kong/declarative/kong.json` e Admin API do Kong de volta para `127.0.0.1:8001`.
+- O campo `error` do status recebido do agente pode ecoar valores da config (ex.: chaves key-auth): o control plane redige antes de gravar.
+- Com a Admin API do Kong de volta ao `127.0.0.1`, `KONG_VALIDATOR_URL` (W2-C2) não pode mais apontar para `http://kong:8001`: no compose, um Kong DB-less só para validação (sem tráfego), com a Admin API na rede do compose.
 
 Aceite: e2e — cria cluster → sobe o agente com o token → publica → `GET /clusters/{id}` mostra `converged` com a versão nova em até 10 s → `GET :8000/echo` responde 200. Reiniciar o Kong mantém a rota (subiu do arquivo).
 
@@ -110,3 +112,9 @@ Aceite: e2e — cria cluster → sobe o agente com o token → publica → `GET 
 - Job no CI que sobe a stack e roda o cenário; artefatos (trace, vídeo) em falha.
 
 Aceite: o próprio job verde no CI.
+
+---
+
+## Backlog
+
+- Cifrar em repouso, no Postgres, as chaves key-auth e os campos `encrypted` da config de plugins.

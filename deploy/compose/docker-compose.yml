@@ -59,6 +59,8 @@ services:
       MIGRATE_ON_START: "true"
       # Week 1 only: direct push to Kong. Removed by W3-X1 (the agent applies snapshots).
       KONG_ADMIN_URL: http://kong:8001
+      # Plugin configs are validated by Kong itself (POST /schemas/plugins/validate).
+      KONG_VALIDATOR_URL: http://kong:8001
     ports:
       - "127.0.0.1:3000:3000"
     depends_on:
