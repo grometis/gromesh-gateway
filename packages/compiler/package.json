@@ -21,7 +21,7 @@
     "example": "tsc -p tsconfig.build.json && node dist/cli.js test/fixtures/basic.state.json --envelope --version 1 --environment-id 00000000-0000-4000-8000-0000000000e1 --created-at 2026-01-01T00:00:00.000Z > ../../contracts/examples/snapshot.example.json"
   },
   "devDependencies": {
-    "@types/node": "22.10.2",
+    "@types/node": "24.19.2",
     "ajv": "8.17.1",
     "ajv-formats": "3.0.1",
     "typescript": "5.7.2",
