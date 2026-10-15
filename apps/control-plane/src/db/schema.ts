@@ -33,6 +33,8 @@ export const environments = pgTable(
     publishMode: text("publish_mode", { enum: ["manual", "auto"] }).notNull().default("manual"),
     currentVersion: integer("current_version"),
     hasUnpublishedChanges: boolean("has_unpublished_changes").notNull().default(false),
+    // Last draft edit; auto-publish fires once it is older than the debounce delay.
+    draftChangedAt: timestamp("draft_changed_at", { withTimezone: true }),
     ...timestamps,
   },
   (t) => [uniqueIndex("environments_name_uq").on(t.name)],

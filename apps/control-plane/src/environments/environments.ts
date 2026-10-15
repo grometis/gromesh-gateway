@@ -33,7 +33,10 @@ export async function requireEnvironment(tx: Executor, envId: string, lock = fal
 
 /** Every edit of gateway entities flags the draft as different from what is published. */
 export async function markDraftChanged(tx: Executor, envId: string): Promise<void> {
-  await tx.update(environments).set({ hasUnpublishedChanges: true, updatedAt: sql`now()` }).where(eq(environments.id, envId));
+  await tx
+    .update(environments)
+    .set({ hasUnpublishedChanges: true, draftChangedAt: sql`now()`, updatedAt: sql`now()` })
+    .where(eq(environments.id, envId));
 }
 
 @Injectable()

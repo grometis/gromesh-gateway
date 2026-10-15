@@ -4,7 +4,7 @@ import type { INestApplication } from "@nestjs/common";
 import { inject } from "vitest";
 import pg from "pg";
 import { createApp } from "../../src/bootstrap.js";
-import { loadConfig } from "../../src/config.js";
+import { loadConfig, type AppConfig } from "../../src/config.js";
 
 /** Stand-in for Kong's Admin API: records every POST /config and answers with a configurable status. */
 export class FakeKong {
@@ -37,18 +37,20 @@ export class FakeKong {
 }
 
 export interface Harness {
+  app: INestApplication;
   api: <T = any>(method: string, path: string, body?: unknown) => Promise<{ status: number; body: T; contentType: string | null }>;
   kong: FakeKong;
   sql: pg.Pool;
   close: () => Promise<void>;
 }
 
-export async function startHarness(): Promise<Harness> {
+/** Each call is one more control-plane replica on the shared test database. */
+export async function startHarness(overrides: Partial<AppConfig> = {}): Promise<Harness> {
   const kong = new FakeKong();
   await kong.start();
   const databaseUrl = inject("databaseUrl");
   const app: INestApplication = await createApp(
-    { ...loadConfig({ ...process.env, DATABASE_URL: databaseUrl }), kongAdminUrl: kong.url, migrateOnStart: false },
+    { ...loadConfig({ ...process.env, DATABASE_URL: databaseUrl }), kongAdminUrl: kong.url, migrateOnStart: false, ...overrides },
     { logger: false },
   );
   await app.listen(0, "127.0.0.1");
@@ -56,6 +58,7 @@ export async function startHarness(): Promise<Harness> {
   const sql = new pg.Pool({ connectionString: databaseUrl, max: 2 });
 
   return {
+    app,
     kong,
     sql,
     api: async (method, path, body) => {

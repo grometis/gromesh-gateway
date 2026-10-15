@@ -1,5 +1,5 @@
 import { Body, Controller, Delete, Get, HttpCode, Inject, Injectable, Module, Param, Post, Put, Query } from "@nestjs/common";
-import type { GatewayState } from "@gromesh/compiler";
+import type { GatewayState, Route, Service } from "@gromesh/compiler";
 import { and, asc, count, eq, gt, ilike, or, sql, type SQL } from "drizzle-orm";
 import type { PgColumn } from "drizzle-orm/pg-core";
 import type { RouteWrite, ServiceWrite } from "../api-types.js";
@@ -55,7 +55,7 @@ export function toRoute(r: RouteRow) {
   });
 }
 
-function serviceValues(body: ServiceWrite) {
+function serviceValues(body: ServiceWrite | Service) {
   return {
     name: body.name,
     protocol: body.protocol,
@@ -71,7 +71,7 @@ function serviceValues(body: ServiceWrite) {
   };
 }
 
-function routeValues(body: RouteWrite) {
+function routeValues(body: RouteWrite | Route) {
   const list = (v: string[] | undefined) => (v && v.length > 0 ? v : null);
   return {
     name: body.name,
@@ -113,11 +113,24 @@ export async function loadGatewayState(tx: Executor, envId: string): Promise<Gat
       const { createdAt: _c, updatedAt: _u, ...route } = toRoute(r);
       return route;
     }),
-    // W2-C2 adds consumers, key-auth credentials and plugins.
+    // W2-C2 adds consumers, key-auth credentials and plugins (here and in restoreGatewayState).
     consumers: [],
     keyAuthCredentials: [],
     plugins: [],
   };
+}
+
+/** Replaces the environment's draft with `state`, keeping entity ids (rollback). */
+export async function restoreGatewayState(tx: Executor, envId: string, state: GatewayState): Promise<void> {
+  // Routes first: they reference services with ON DELETE RESTRICT.
+  await tx.delete(routes).where(eq(routes.environmentId, envId));
+  await tx.delete(services).where(eq(services.environmentId, envId));
+  if (state.services.length > 0) {
+    await tx.insert(services).values(state.services.map((s) => ({ id: s.id, environmentId: envId, ...serviceValues(s) })));
+  }
+  if (state.routes.length > 0) {
+    await tx.insert(routes).values(state.routes.map((r) => ({ id: r.id, environmentId: envId, ...routeValues(r) })));
+  }
 }
 
 /* ---------------- service ---------------- */

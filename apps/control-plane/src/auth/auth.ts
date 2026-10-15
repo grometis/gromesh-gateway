@@ -23,6 +23,7 @@ export interface AuthUser {
 export interface RequestContext {
   actor: Actor;
   ip: string | null;
+  role: Role;
 }
 
 const ROLE_KEY = "gromesh:required-role";
@@ -67,5 +68,5 @@ export class AuthGuard implements CanActivate {
 export const Ctx = createParamDecorator((_data: unknown, context: ExecutionContext): RequestContext => {
   const req = context.switchToHttp().getRequest<Request & { user?: AuthUser }>();
   const user = req.user ?? DEV_USER;
-  return { actor: { type: "user", id: user.id, name: user.name }, ip: req.ip ?? null };
+  return { actor: { type: "user", id: user.id, name: user.name }, ip: req.ip ?? null, role: user.role };
 });

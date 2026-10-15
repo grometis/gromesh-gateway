@@ -11,6 +11,10 @@ export interface AppConfig {
   kongAdminUrl: string | null;
   contractsDir: string;
   migrateOnStart: boolean;
+  /** Auto-publish environments fire this long after their last draft edit (debounce). */
+  autoPublishDelayMs: number;
+  /** How often each replica looks for due auto-publish environments; 0 disables the poller. */
+  autoPublishPollMs: number;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -22,6 +26,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     kongAdminUrl: env.KONG_ADMIN_URL || null,
     contractsDir: env.CONTRACTS_DIR ?? resolve(PACKAGE_ROOT, "../../contracts"),
     migrateOnStart: env.MIGRATE_ON_START === "true",
+    autoPublishDelayMs: Number(env.AUTO_PUBLISH_DELAY_MS ?? 3000),
+    autoPublishPollMs: Number(env.AUTO_PUBLISH_POLL_MS ?? 1000),
   };
 }
 
