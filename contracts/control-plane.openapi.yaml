@@ -705,6 +705,9 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/SnapshotSummary" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          $ref: "#/components/responses/Conflict"
+          description: Target has the same configuration as the current version
 
   /environments/{envId}/clusters:
     parameters: [{ $ref: "#/components/parameters/EnvId" }]
