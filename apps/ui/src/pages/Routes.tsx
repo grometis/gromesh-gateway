@@ -7,6 +7,7 @@ import { useCanEdit } from "../auth";
 import { Field, FormErrorList } from "../components/Field";
 import { ConfirmDialog, Modal } from "../components/Modal";
 import { useEnvId } from "../components/Shell";
+import { ScopedPlugins } from "./Plugins";
 import { splitList, useInvalidateDraft, useServices } from "./Services";
 
 const FIELDS = ["name", "serviceId", "paths", "hosts", "methods", "protocols", "stripPath", "preserveHost", "tags"] as const;
@@ -40,6 +41,7 @@ export function RoutesPage() {
   });
   const [editing, setEditing] = useState<Route | "new" | null>(null);
   const [deleting, setDeleting] = useState<Route | null>(null);
+  const [plugins, setPlugins] = useState<Route | null>(null);
   const items = routes.data?.pages.flatMap((p) => p.items) ?? [];
 
   return (
@@ -74,7 +76,7 @@ export function RoutesPage() {
               <th>Service</th>
               <th>Paths / hosts</th>
               <th>Métodos</th>
-              {canEdit && <th aria-label="Ações" />}
+              <th aria-label="Ações" />
             </tr>
           </thead>
           <tbody>
@@ -84,16 +86,21 @@ export function RoutesPage() {
                 <td>{serviceName(r.serviceId)}</td>
                 <td className="mono">{[...(r.paths ?? []), ...(r.hosts ?? [])].join(", ") || "—"}</td>
                 <td>{r.methods?.join(", ") ?? "todos"}</td>
-                {canEdit && (
-                  <td className="actions">
-                    <button type="button" onClick={() => setEditing(r)}>
-                      Editar
-                    </button>
-                    <button type="button" className="danger" onClick={() => setDeleting(r)}>
-                      Excluir
-                    </button>
-                  </td>
-                )}
+                <td className="actions">
+                  <button type="button" onClick={() => setPlugins(r)}>
+                    Plugins
+                  </button>
+                  {canEdit && (
+                    <>
+                      <button type="button" onClick={() => setEditing(r)}>
+                        Editar
+                      </button>
+                      <button type="button" className="danger" onClick={() => setDeleting(r)}>
+                        Excluir
+                      </button>
+                    </>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -114,6 +121,11 @@ export function RoutesPage() {
         />
       )}
       {deleting && <DeleteRoute envId={envId} route={deleting} onClose={() => setDeleting(null)} />}
+      {plugins && (
+        <Modal title={`Plugins de ${plugins.name}`} onClose={() => setPlugins(null)} wide>
+          <ScopedPlugins envId={envId} scope={{ kind: "route", id: plugins.id }} title="Plugins aplicados" />
+        </Modal>
+      )}
     </section>
   );
 }
