@@ -548,6 +548,52 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/environments/{envId}/analytics/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+            };
+            cookie?: never;
+        };
+        /**
+         * @description Traffic of the environment as seen by its gateways, from the `requests` table fed by the observability
+         *     pipeline (7 days of retention). Totals for the period plus one point per `interval`; a bucket with no
+         *     traffic is present with zero requests and null latencies. Latencies are total request time in ms.
+         */
+        get: operations["getAnalyticsSummary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/environments/{envId}/requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+            };
+            cookie?: never;
+        };
+        /**
+         * @description Request explorer over the same `requests` table, newest first. Credentials never reach the table (the
+         *     pipeline strips them), so a record carries no header or query values: only the path. `clientIp` is
+         *     masked for every role but admin.
+         */
+        get: operations["listRequests"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -838,6 +884,80 @@ export interface components {
             items: components["schemas"]["AuditEvent"][];
             nextCursor: string | null;
         };
+        TrafficStats: {
+            requests: number;
+            errors4xx: number;
+            errors5xx: number;
+            /** @description (errors4xx + errors5xx) / requests; 0 without traffic */
+            errorRate: number;
+            /** @description Null without traffic */
+            p50Ms: number | null;
+            p95Ms: number | null;
+            p99Ms: number | null;
+        };
+        AnalyticsSummary: {
+            /** Format: date-time */
+            from: string;
+            /** Format: date-time */
+            to: string;
+            /** @enum {string} */
+            interval: "1m" | "5m" | "15m" | "1h" | "1d";
+            totals: components["schemas"]["TrafficStats"];
+            /** @description One point per bucket from `from` (inclusive) to `to` (exclusive), oldest first */
+            series: ({
+                /**
+                 * Format: date-time
+                 * @description Start of the bucket
+                 */
+                ts: string;
+            } & components["schemas"]["TrafficStats"])[];
+        };
+        RequestRecord: {
+            /**
+             * Format: uuid
+             * @description Assigned by the pipeline; makes the cursor stable
+             */
+            id: string;
+            /** Format: date-time */
+            ts: string;
+            /** Format: uuid */
+            environmentId: string;
+            /** Format: uuid */
+            clusterId: string;
+            /**
+             * Format: uuid
+             * @description Null when no route matched
+             */
+            serviceId: string | null;
+            /** Format: uuid */
+            routeId: string | null;
+            /**
+             * Format: uuid
+             * @description Null for anonymous traffic
+             */
+            consumerId: string | null;
+            method: string;
+            /** @description Request path without the query string */
+            path: string;
+            status: number;
+            latencyKongMs: number;
+            /** @description Null when the request never reached an upstream */
+            latencyUpstreamMs: number | null;
+            latencyTotalMs: number;
+            /**
+             * @description Full address for admins only. Viewers and editors get it masked: IPv4 with the last octet zeroed
+             *     (203.0.113.10 → 203.0.113.0), IPv6 truncated to its /48 (2001:db8:1234:5678::1 → 2001:db8:1234::).
+             */
+            clientIp: string;
+            /** @description Bytes */
+            requestSize: number;
+            /** @description Bytes */
+            responseSize: number;
+        };
+        RequestPage: {
+            items: components["schemas"]["RequestRecord"][];
+            nextCursor: string | null;
+        };
         uuid: string;
         tags: string[];
         service: {
@@ -1008,6 +1128,15 @@ export interface components {
                 "application/problem+json": components["schemas"]["Problem"];
             };
         };
+        /** @description The analytics store (ClickHouse) is unreachable or not configured */
+        AnalyticsUnavailable: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["Problem"];
+            };
+        };
         /** @description Too many attempts; retry after the given number of seconds */
         TooManyRequests: {
             headers: {
@@ -1053,6 +1182,12 @@ export interface components {
         /** @description Case-insensitive match on name (and paths/hosts for routes) */
         Search: string;
         EnvId: string;
+        /** @description Start of the period (inclusive). The period may span at most 7 days, the table's retention. */
+        AnalyticsFrom: string;
+        /** @description End of the period (exclusive); must be after `from`. */
+        AnalyticsTo: string;
+        RouteFilter: string;
+        ServiceFilter: string;
         UserId: string;
         ServiceId: string;
         RouteId: string;
@@ -2611,6 +2746,141 @@ export interface operations {
                 };
             };
             403: components["responses"]["Forbidden"];
+        };
+    };
+    getAnalyticsSummary: {
+        parameters: {
+            query: {
+                /** @description Start of the period (inclusive). The period may span at most 7 days, the table's retention. */
+                from: components["parameters"]["AnalyticsFrom"];
+                /** @description End of the period (exclusive); must be after `from`. */
+                to: components["parameters"]["AnalyticsTo"];
+                /** @description Bucket size; the period may hold at most 2000 buckets. */
+                interval?: "1m" | "5m" | "15m" | "1h" | "1d";
+                routeId?: components["parameters"]["RouteFilter"];
+                serviceId?: components["parameters"]["ServiceFilter"];
+            };
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Summary */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "from": "2026-10-15T12:00:00Z",
+                     *       "to": "2026-10-15T12:10:00Z",
+                     *       "interval": "5m",
+                     *       "totals": {
+                     *         "requests": 1250,
+                     *         "errors4xx": 40,
+                     *         "errors5xx": 3,
+                     *         "errorRate": 0.0344,
+                     *         "p50Ms": 12.4,
+                     *         "p95Ms": 48.9,
+                     *         "p99Ms": 120
+                     *       },
+                     *       "series": [
+                     *         {
+                     *           "ts": "2026-10-15T12:00:00Z",
+                     *           "requests": 600,
+                     *           "errors4xx": 18,
+                     *           "errors5xx": 1,
+                     *           "errorRate": 0.0317,
+                     *           "p50Ms": 11.8,
+                     *           "p95Ms": 45.2,
+                     *           "p99Ms": 98
+                     *         },
+                     *         {
+                     *           "ts": "2026-10-15T12:05:00Z",
+                     *           "requests": 650,
+                     *           "errors4xx": 22,
+                     *           "errors5xx": 2,
+                     *           "errorRate": 0.0369,
+                     *           "p50Ms": 13,
+                     *           "p95Ms": 52.1,
+                     *           "p99Ms": 131.5
+                     *         }
+                     *       ]
+                     *     }
+                     */
+                    "application/json": components["schemas"]["AnalyticsSummary"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+            502: components["responses"]["AnalyticsUnavailable"];
+        };
+    };
+    listRequests: {
+        parameters: {
+            query: {
+                /** @description Start of the period (inclusive). The period may span at most 7 days, the table's retention. */
+                from: components["parameters"]["AnalyticsFrom"];
+                /** @description End of the period (exclusive); must be after `from`. */
+                to: components["parameters"]["AnalyticsTo"];
+                limit?: components["parameters"]["Limit"];
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Exact status code; mutually exclusive with `statusClass`. */
+                status?: number;
+                statusClass?: "2xx" | "3xx" | "4xx" | "5xx";
+                routeId?: components["parameters"]["RouteFilter"];
+                serviceId?: components["parameters"]["ServiceFilter"];
+                consumerId?: string;
+            };
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Requests, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "items": [
+                     *         {
+                     *           "id": "7a1d0c2e-5b3f-4e6a-9c8d-0f1e2d3c4b5a",
+                     *           "ts": "2026-10-15T12:04:58.123Z",
+                     *           "environmentId": "0b3c6b5e-8d1f-4a51-9c64-2f0f6d1f8a11",
+                     *           "clusterId": "9d7c5a3b-1e2f-4a6b-8c9d-0e1f2a3b4c5d",
+                     *           "serviceId": "6f1d2c3b-4a5e-4f60-8b7c-1d2e3f4a5b6c",
+                     *           "routeId": "2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f",
+                     *           "consumerId": "0b7c3c1e-1f2a-4f7e-9c41-0d3c1b2a9e11",
+                     *           "method": "GET",
+                     *           "path": "/orders/42",
+                     *           "status": 200,
+                     *           "latencyKongMs": 1,
+                     *           "latencyUpstreamMs": 11,
+                     *           "latencyTotalMs": 12,
+                     *           "clientIp": "203.0.113.0",
+                     *           "requestSize": 312,
+                     *           "responseSize": 1804
+                     *         }
+                     *       ],
+                     *       "nextCursor": null
+                     *     }
+                     */
+                    "application/json": components["schemas"]["RequestPage"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+            502: components["responses"]["AnalyticsUnavailable"];
         };
     };
 }

@@ -34,6 +34,7 @@ tags:
   - name: snapshots
   - name: clusters
   - name: audit
+  - name: analytics
 paths:
   /auth/login:
     post:
@@ -903,6 +904,96 @@ paths:
               schema: { $ref: "#/components/schemas/AuditEventPage" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /environments/{envId}/analytics/summary:
+    parameters: [{ $ref: "#/components/parameters/EnvId" }]
+    get:
+      tags: [analytics]
+      operationId: getAnalyticsSummary
+      x-required-role: viewer
+      description: |
+        Traffic of the environment as seen by its gateways, from the `requests` table fed by the observability
+        pipeline (7 days of retention). Totals for the period plus one point per `interval`; a bucket with no
+        traffic is present with zero requests and null latencies. Latencies are total request time in ms.
+      parameters:
+        - { $ref: "#/components/parameters/AnalyticsFrom" }
+        - { $ref: "#/components/parameters/AnalyticsTo" }
+        - name: interval
+          in: query
+          schema: { type: string, enum: [1m, 5m, 15m, 1h, 1d], default: 5m }
+          description: Bucket size; the period may hold at most 2000 buckets.
+        - { $ref: "#/components/parameters/RouteFilter" }
+        - { $ref: "#/components/parameters/ServiceFilter" }
+      responses:
+        "200":
+          description: Summary
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AnalyticsSummary" }
+              example:
+                from: "2026-10-15T12:00:00Z"
+                to: "2026-10-15T12:10:00Z"
+                interval: 5m
+                totals: { requests: 1250, errors4xx: 40, errors5xx: 3, errorRate: 0.0344, p50Ms: 12.4, p95Ms: 48.9, p99Ms: 120.0 }
+                series:
+                  - { ts: "2026-10-15T12:00:00Z", requests: 600, errors4xx: 18, errors5xx: 1, errorRate: 0.0317, p50Ms: 11.8, p95Ms: 45.2, p99Ms: 98.0 }
+                  - { ts: "2026-10-15T12:05:00Z", requests: 650, errors4xx: 22, errors5xx: 2, errorRate: 0.0369, p50Ms: 13.0, p95Ms: 52.1, p99Ms: 131.5 }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "502": { $ref: "#/components/responses/AnalyticsUnavailable" }
+  /environments/{envId}/requests:
+    parameters: [{ $ref: "#/components/parameters/EnvId" }]
+    get:
+      tags: [analytics]
+      operationId: listRequests
+      x-required-role: viewer
+      description: |
+        Request explorer over the same `requests` table, newest first. Credentials never reach the table (the
+        pipeline strips them), so a record carries no header or query values: only the path. `clientIp` is
+        masked for every role but admin.
+      parameters:
+        - { $ref: "#/components/parameters/AnalyticsFrom" }
+        - { $ref: "#/components/parameters/AnalyticsTo" }
+        - { $ref: "#/components/parameters/Limit" }
+        - { $ref: "#/components/parameters/Cursor" }
+        - name: status
+          in: query
+          schema: { type: integer, minimum: 100, maximum: 599 }
+          description: Exact status code; mutually exclusive with `statusClass`.
+        - name: statusClass
+          in: query
+          schema: { type: string, enum: [2xx, 3xx, 4xx, 5xx] }
+        - { $ref: "#/components/parameters/RouteFilter" }
+        - { $ref: "#/components/parameters/ServiceFilter" }
+        - { name: consumerId, in: query, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Requests, newest first
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RequestPage" }
+              example:
+                items:
+                  - id: "7a1d0c2e-5b3f-4e6a-9c8d-0f1e2d3c4b5a"
+                    ts: "2026-10-15T12:04:58.123Z"
+                    environmentId: "0b3c6b5e-8d1f-4a51-9c64-2f0f6d1f8a11"
+                    clusterId: "9d7c5a3b-1e2f-4a6b-8c9d-0e1f2a3b4c5d"
+                    serviceId: "6f1d2c3b-4a5e-4f60-8b7c-1d2e3f4a5b6c"
+                    routeId: "2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f"
+                    consumerId: "0b7c3c1e-1f2a-4f7e-9c41-0d3c1b2a9e11"
+                    method: GET
+                    path: /orders/42
+                    status: 200
+                    latencyKongMs: 1
+                    latencyUpstreamMs: 11
+                    latencyTotalMs: 12
+                    clientIp: "203.0.113.0"
+                    requestSize: 312
+                    responseSize: 1804
+                nextCursor: null
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "502": { $ref: "#/components/responses/AnalyticsUnavailable" }
+
 components:
   securitySchemes:
     cookieAuth:
@@ -933,6 +1024,26 @@ components:
       name: envId
       in: path
       required: true
+      schema: { type: string, format: uuid }
+    AnalyticsFrom:
+      name: from
+      in: query
+      required: true
+      schema: { type: string, format: date-time }
+      description: Start of the period (inclusive). The period may span at most 7 days, the table's retention.
+    AnalyticsTo:
+      name: to
+      in: query
+      required: true
+      schema: { type: string, format: date-time }
+      description: End of the period (exclusive); must be after `from`.
+    RouteFilter:
+      name: routeId
+      in: query
+      schema: { type: string, format: uuid }
+    ServiceFilter:
+      name: serviceId
+      in: query
       schema: { type: string, format: uuid }
     UserId:
       name: userId
@@ -977,6 +1088,11 @@ components:
           schema: { $ref: "#/components/schemas/Problem" }
     Forbidden:
       description: Role too low, or missing/invalid `X-CSRF-Token` on a mutation
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    AnalyticsUnavailable:
+      description: The analytics store (ClickHouse) is unreachable or not configured
       content:
         application/problem+json:
           schema: { $ref: "#/components/schemas/Problem" }
@@ -1330,4 +1446,63 @@ components:
       required: [items, nextCursor]
       properties:
         items: { type: array, items: { $ref: "#/components/schemas/AuditEvent" } }
+        nextCursor: { type: [string, "null"] }
+    TrafficStats:
+      type: object
+      required: [requests, errors4xx, errors5xx, errorRate, p50Ms, p95Ms, p99Ms]
+      properties:
+        requests: { type: integer, minimum: 0 }
+        errors4xx: { type: integer, minimum: 0 }
+        errors5xx: { type: integer, minimum: 0 }
+        errorRate: { type: number, minimum: 0, maximum: 1, description: "(errors4xx + errors5xx) / requests; 0 without traffic" }
+        p50Ms: { type: [number, "null"], description: Null without traffic }
+        p95Ms: { type: [number, "null"] }
+        p99Ms: { type: [number, "null"] }
+    AnalyticsSummary:
+      type: object
+      required: [from, to, interval, totals, series]
+      properties:
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+        interval: { type: string, enum: [1m, 5m, 15m, 1h, 1d] }
+        totals: { $ref: "#/components/schemas/TrafficStats" }
+        series:
+          type: array
+          description: One point per bucket from `from` (inclusive) to `to` (exclusive), oldest first
+          items:
+            allOf:
+              - type: object
+                required: [ts]
+                properties:
+                  ts: { type: string, format: date-time, description: Start of the bucket }
+              - { $ref: "#/components/schemas/TrafficStats" }
+    RequestRecord:
+      type: object
+      required: [id, ts, environmentId, clusterId, serviceId, routeId, consumerId, method, path, status, latencyKongMs, latencyUpstreamMs, latencyTotalMs, clientIp, requestSize, responseSize]
+      properties:
+        id: { type: string, format: uuid, description: Assigned by the pipeline; makes the cursor stable }
+        ts: { type: string, format: date-time }
+        environmentId: { type: string, format: uuid }
+        clusterId: { type: string, format: uuid }
+        serviceId: { type: [string, "null"], format: uuid, description: Null when no route matched }
+        routeId: { type: [string, "null"], format: uuid }
+        consumerId: { type: [string, "null"], format: uuid, description: Null for anonymous traffic }
+        method: { type: string }
+        path: { type: string, description: Request path without the query string }
+        status: { type: integer, minimum: 100, maximum: 599 }
+        latencyKongMs: { type: integer, minimum: 0 }
+        latencyUpstreamMs: { type: [integer, "null"], minimum: 0, description: Null when the request never reached an upstream }
+        latencyTotalMs: { type: integer, minimum: 0 }
+        clientIp:
+          type: string
+          description: |
+            Full address for admins only. Viewers and editors get it masked: IPv4 with the last octet zeroed
+            (203.0.113.10 → 203.0.113.0), IPv6 truncated to its /48 (2001:db8:1234:5678::1 → 2001:db8:1234::).
+        requestSize: { type: integer, minimum: 0, description: Bytes }
+        responseSize: { type: integer, minimum: 0, description: Bytes }
+    RequestPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/RequestRecord" } }
         nextCursor: { type: [string, "null"] }
