@@ -1,0 +1,13 @@
+{
+  "agents": 200,
+  "application": "simulated ACK; opaque snapshot downloaded per event",
+  "connectionMs": 227,
+  "firstConvergenceMs": 1087,
+  "firstVersion": 1,
+  "http5xx": 0,
+  "observationSecondsPerPhase": 16,
+  "reconnectConvergenceMs": 1195,
+  "reconnectVersion": 2,
+  "recordedAt": "2026-10-16T01:48:47Z",
+  "unexpectedDisconnects": 0
+}
