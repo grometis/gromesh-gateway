@@ -1,8 +1,34 @@
 {
   "$schema": "https://turbo.build/schema.json",
   "tasks": {
-    "build": { "dependsOn": ["^build"], "outputs": ["dist/**"] },
-    "typecheck": { "dependsOn": ["^build"] },
-    "test": { "dependsOn": ["^build"], "env": ["TEST_DATABASE_URL", "KONG_VALIDATOR_URL"] }
+    "build": {
+      "dependsOn": [
+        "^build"
+      ],
+      "outputs": [
+        "dist/**"
+      ]
+    },
+    "typecheck": {
+      "dependsOn": [
+        "^build"
+      ]
+    },
+    "test": {
+      "dependsOn": [
+        "^build"
+      ],
+      "env": [
+        "TEST_DATABASE_URL",
+        "KONG_VALIDATOR_URL",
+        "TEST_CLICKHOUSE_URL",
+        "TEST_CLICKHOUSE_USER",
+        "TEST_CLICKHOUSE_PASSWORD",
+        "TEST_CLICKHOUSE_DATABASE",
+        "TEST_CLICKHOUSE_ADMIN_USER",
+        "TEST_CLICKHOUSE_ADMIN_PASSWORD",
+        "CI"
+      ]
+    }
   }
 }
