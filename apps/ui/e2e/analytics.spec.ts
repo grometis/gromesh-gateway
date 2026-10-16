@@ -42,6 +42,31 @@ test("o dashboard renderiza os totais e as séries do período", async ({ page }
   await weekly;
 });
 
+test("o card Top rotas ranqueia pelo critério escolhido e leva ao explorador filtrado pela rota", async ({ page }) => {
+  await login(page);
+  const top = page.waitForRequest((r) => r.url().includes("/analytics/top-routes?"));
+  await menu(page).getByRole("link", { name: "Dashboard" }).click();
+  const url = new URL((await top).url());
+  expect(url.searchParams.get("by")).toBe("requests");
+  expect(url.searchParams.get("limit")).toBe("10");
+  const table = page.getByRole("table", { name: "Top rotas" });
+  await expect(table.getByRole("link", { name: "orders" })).toBeVisible();
+  await expect(table).toContainText("900");
+  await expect(table).toContainText("Sem rota"); // traffic that matched no route
+  await expect(table).toContainText("(removida)"); // a route that no longer exists keeps its id
+
+  const byErrors = page.waitForRequest((r) => r.url().includes("by=errors"));
+  await page.getByLabel("Critério").selectOption("errors");
+  await byErrors;
+
+  // The row opens the explorer with the route already applied.
+  const filtered = page.waitForRequest((r) => r.url().includes("/requests?") && r.url().includes("routeId=2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f"));
+  await table.getByRole("link", { name: "orders" }).click();
+  await filtered;
+  await expect(page).toHaveURL(/\/requests\?routeId=2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f$/);
+  await expect(page.getByRole("heading", { name: "Requisições" })).toBeVisible();
+});
+
 test("o explorador filtra por classe de status e abre o detalhe de uma requisição", async ({ page }) => {
   await login(page, "viewer");
   await menu(page).getByRole("link", { name: "Requisições" }).click();
