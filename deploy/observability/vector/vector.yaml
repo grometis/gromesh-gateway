@@ -1,3 +1,4 @@
+# Keep deploy/observability/vector/vector.yaml and deploy/helm/data-plane/files/vector/vector.yaml identical.
 data_dir: /var/lib/vector
 
 # The API/tap is disabled: it could expose events before sanitization.
@@ -5,6 +6,9 @@ api:
   enabled: false
 
 sources:
+  internal_metrics:
+    type: internal_metrics
+
   kong:
     type: http_server
     address: 0.0.0.0:8080
@@ -83,6 +87,11 @@ transforms:
       }
 
 sinks:
+  metrics:
+    type: prometheus_exporter
+    inputs: [internal_metrics]
+    address: 0.0.0.0:9598
+
   requests:
     type: clickhouse
     inputs: [sanitize]

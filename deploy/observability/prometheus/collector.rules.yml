@@ -1,0 +1,16 @@
+# Keep deploy/observability/prometheus/collector.rules.yml and deploy/helm/data-plane/files/prometheus/collector.rules.yml identical.
+groups:
+  - name: collector
+    rules:
+      - alert: CollectorWithoutEvents
+        # Missing series (including an unavailable collector) must count as zero, not silence the alert.
+        # Count sanitized log events: the HTTP source also receives empty-array health probes.
+        expr: |
+          (sum(rate(kong_http_requests_total{job="gateway"}[1m])) > 0)
+          and
+          ((sum(increase(vector_component_sent_events_total{job="collector",component_id="sanitize"}[30s])) or vector(0)) == 0)
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Collector has received no events for over two minutes while the gateway has traffic

@@ -107,3 +107,12 @@ app.kubernetes.io/component: collector
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 app.kubernetes.io/part-of: gromesh-gateway
 {{- end -}}
+
+{{/* Keep the packaged rule identical to compose; substitute job labels without reprocessing injected values. */}}
+{{- define "data-plane.collectorRules" -}}
+{{- $parts := list -}}
+{{- range splitList "job=\"gateway\"" (.Files.Get "files/prometheus/collector.rules.yml") -}}
+{{- $parts = append $parts (replace "job=\"collector\"" (printf "job=%s" ($.Values.metrics.collectorJob | toJson)) .) -}}
+{{- end -}}
+{{- join (printf "job=%s" (.Values.metrics.gatewayJob | toJson)) $parts -}}
+{{- end -}}

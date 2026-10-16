@@ -1,0 +1,22 @@
+{{- $rules := include "data-plane.collectorRules" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "data-plane.fullname" . }}-collector-rules
+  labels:
+    {{- include "data-plane.collectorLabels" . | nindent 4 }}
+    gromesh.io/prometheus-rules: "true"
+data:
+  collector.rules.yml: |
+{{ $rules | indent 4 }}
+{{- if .Values.metrics.prometheusRule.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "data-plane.fullname" . }}-collector-rules
+  labels:
+    {{- merge (dict) .Values.metrics.prometheusRule.labels (include "data-plane.collectorLabels" . | fromYaml) | toYaml | nindent 4 }}
+spec:
+{{ $rules | fromYaml | toYaml | indent 2 }}
+{{- end }}
