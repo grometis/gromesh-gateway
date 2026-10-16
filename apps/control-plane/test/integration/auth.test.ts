@@ -119,6 +119,28 @@ describe("login", () => {
     }
   });
 
+  it("never resets the address counter on a successful login", async () => {
+    // N-1 failures from X against someone else, one good login with an own account from X, then more failures:
+    // the address still locks at N. The window is the only thing that clears it.
+    const strict = await startHarness({ trustProxy: true, loginMaxFailuresPerIp: 3, loginLockoutMs: 60_000 });
+    try {
+      const fromX = { "x-forwarded-for": "198.51.100.77" };
+      const own = await newUser("viewer");
+      const other = await newUser("viewer");
+      for (let i = 0; i < 2; i++) expect((await strict.anonymous("POST", "/auth/login", { email: other.email, password: "wrong-password-123" }, fromX)).status).toBe(401);
+      expect((await strict.anonymous("POST", "/auth/login", { email: own.email, password: PASSWORD }, fromX)).status).toBe(200);
+      expect((await strict.anonymous("POST", "/auth/login", { email: other.email, password: "wrong-password-123" }, fromX)).status).toBe(401);
+      const locked = await strict.anonymous("POST", "/auth/login", { email: own.email, password: PASSWORD }, fromX);
+      expect(locked.status).toBe(429);
+      const { rows } = await h.sql.query("select failures, locked_until from login_attempts where key = $1", ["ip:198.51.100.77"]);
+      expect(rows[0].failures).toBe(3);
+      expect(rows[0].locked_until).not.toBeNull();
+    } finally {
+      await h.sql.query("delete from login_attempts where key like 'ip:198.51.100.%'");
+      await strict.close();
+    }
+  });
+
   it("slows repeated failures on an e-mail progressively, without ever locking it", async () => {
     const slow = await startHarness({ loginDelayBaseMs: 60, loginDelayMaxMs: 200 });
     try {
