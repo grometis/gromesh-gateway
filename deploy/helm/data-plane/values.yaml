@@ -18,7 +18,7 @@ kong:
   runAsUser: 1001
   # Two workers match compose without sizing workers from the host CPU count.
   workerProcesses: 2
-  # Prefix (/usr/local/kong: nginx files, sockets, certificates, LMDB) and /tmp
+  # Prefix (/kong_prefix: nginx files, sockets, certificates, LMDB) and /tmp
   # each have an emptyDir so the image root filesystem can remain read-only.
   resources:
     requests:
