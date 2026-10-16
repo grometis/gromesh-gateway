@@ -231,7 +231,7 @@ services:
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_WRITER_PASSWORD:-gromesh-dev-writer}
       # The e2e recreates this service with the real cluster id; the default marks "development, no cluster".
       GROMESH_CLUSTER_ID: ${GROMESH_CLUSTER_ID:-00000000-0000-4000-8000-00000000c0c0}
-      # JSON array; include all key-auth key_names configured on this cluster.
+      # JSON array, fallback and union: each http-log event already carries the key_names of the published key-auth plugins.
       GROMESH_KEY_NAMES: ${GROMESH_KEY_NAMES:-["apikey"]}
       VECTOR_LOG: info
     volumes:
