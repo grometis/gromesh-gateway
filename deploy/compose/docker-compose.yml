@@ -268,7 +268,8 @@ services:
   # From the repo root (Node >= 24, builds the compiler and checks Vector logs):
   # POSTGRES_PORT=55433 node deploy/observability/acceptance.mjs
   observability-acceptance:
-    profiles: [tools]
+    # Own profile: with only `tools` active (pnpm smoke) its dependency on vector would make the project invalid.
+    profiles: [observability-tools]
     image: node:24.18.0-alpine
     network_mode: "service:kong"
     volumes:

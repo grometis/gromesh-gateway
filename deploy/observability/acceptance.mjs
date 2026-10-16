@@ -209,7 +209,7 @@ async function host() {
   const config = compile(state, { platformPlugins: platformPlugins({
     httpLogEndpoint: "http://gromesh-collector:8080/kong", environmentId,
   }) });
-  const compose = ["compose", "-f", "deploy/compose/docker-compose.yml", "--profile", "observability", "--profile", "tools"];
+  const compose = ["compose", "-f", "deploy/compose/docker-compose.yml", "--profile", "observability", "--profile", "observability-tools"];
   let output;
   let failure;
   try {

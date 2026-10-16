@@ -85,9 +85,10 @@ jobs:
           test "$uid" -ne 0
 
       - name: Compose acceptance test with the built image
+        # The Admin API is not published on the host: the smoke runs inside the gateway's network namespace.
         run: |
           KONG_IMAGE="$KONG_IMAGE" docker compose up -d --wait kong echo
-          node scripts/smoke.mjs
+          KONG_IMAGE="$KONG_IMAGE" docker compose --profile tools run --rm --no-deps smoke
 
       - name: Scan image (block CRITICAL vulnerabilities)
         run: |

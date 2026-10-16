@@ -25,7 +25,8 @@ cleanup() {
 trap cleanup EXIT
 k() { kubectl -n "$namespace" "$@"; }
 mask() { if [[ "${GITHUB_ACTIONS:-}" == true ]]; then echo "::add-mask::$1"; fi; }
-secret() { local s; s="$(openssl rand -hex 24)"; mask "$s"; printf '%s' "$s"; }
+# Only the secret goes to stdout: the GitHub mask line must never end up inside the captured value.
+secret() { local s; s="$(openssl rand -hex 24)"; mask "$s" >&2; printf '%s' "$s"; }
 
 kubectl create namespace "$namespace"
 db_password="$(secret)"

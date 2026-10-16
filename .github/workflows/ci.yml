@@ -129,7 +129,7 @@ jobs:
         if: failure()
         run: |
           mkdir -p e2e/test-results
-          docker compose -f deploy/compose/docker-compose.yml logs --no-color > e2e/test-results/compose.log 2>&1
+          docker compose -f deploy/compose/docker-compose.yml --profile observability logs --no-color > e2e/test-results/compose.log 2>&1
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
