@@ -46,9 +46,14 @@ async function compose(args: string[], registrationToken?: string, extraEnv: Rec
   });
 }
 
-/** The collector of one cluster: Vector recreated with that cluster's id (the compose default is a placeholder). */
-const collector = (clusterId?: string) =>
-  compose(["--profile", "observability", "up", "-d", "--wait", "--force-recreate", "--no-deps", "vector"], undefined, clusterId ? { GROMESH_CLUSTER_ID: clusterId } : {});
+/**
+ * The collector of one cluster: Vector recreated with that cluster's id (the compose default is a placeholder).
+ * ClickHouse and its users come up first when the stack was started without the observability profile (CI).
+ */
+async function collector(clusterId?: string) {
+  await compose(["--profile", "observability", "up", "-d", "--wait", "clickhouse", "clickhouse-init"]);
+  await compose(["--profile", "observability", "up", "-d", "--wait", "--force-recreate", "--no-deps", "vector"], undefined, clusterId ? { GROMESH_CLUSTER_ID: clusterId } : {});
+}
 
 /** What the agent protocol serves to a node of `clusterId`: the snapshot must be the same for every cluster. */
 async function agentSnapshot(request: APIRequestContext, registrationToken: string) {
