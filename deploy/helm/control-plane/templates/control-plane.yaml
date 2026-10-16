@@ -71,12 +71,23 @@ spec:
                   key: {{ $key }}
             {{- end }}
             {{- end }}
-            {{- if .Values.encryption.existingSecret }}
             - name: GROMESH_ENCRYPTION_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.encryption.existingSecret }}
+                  name: {{ required "encryption.existingSecret is required (Secret with the at-rest key)" .Values.encryption.existingSecret }}
                   key: {{ .Values.encryption.key }}
+            - name: GROMESH_FINGERPRINT_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.encryption.existingSecret }}
+                  key: {{ .Values.encryption.fingerprintKeyKey }}
+            {{- if .Values.encryption.readKeysKey }}
+            - name: GROMESH_ENCRYPTION_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.encryption.existingSecret }}
+                  key: {{ .Values.encryption.readKeysKey }}
+                  optional: true
             {{- end }}
             {{- range $env, $value := dict "SESSION_TTL_MS" .Values.config.sessionTtlMs "LOGIN_MAX_FAILURES" .Values.config.loginMaxFailures "LOGIN_DELAY_BASE_MS" .Values.config.loginDelayBaseMs "LOGIN_DELAY_MAX_MS" .Values.config.loginDelayMaxMs "LOGIN_MAX_FAILURES_PER_IP" .Values.config.loginMaxFailuresPerIp "LOGIN_LOCKOUT_MS" .Values.config.loginLockoutMs "AUTO_PUBLISH_DELAY_MS" .Values.config.autoPublishDelayMs "AUTO_PUBLISH_POLL_MS" .Values.config.autoPublishPollMs }}
             - name: {{ $env }}

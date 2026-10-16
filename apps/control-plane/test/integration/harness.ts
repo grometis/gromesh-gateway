@@ -42,6 +42,13 @@ export const KONG_VALIDATOR_URL = process.env.KONG_VALIDATOR_URL ?? "http://127.
 
 export const BOOTSTRAP_ADMIN = { email: "admin@harness.test", password: "harness-admin-password" };
 
+/** Test-only keys (32 zero-ish bytes, base64); the encryption tests rotate between them. */
+export const ENCRYPTION_KEYS = {
+  k1: "k1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+  k2: "k2:AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+  fingerprint: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+};
+
 /** Analytics read the compose ClickHouse (observability profile) with the SELECT-only user unless overridden. */
 export const CLICKHOUSE = {
   url: process.env.TEST_CLICKHOUSE_URL ?? "http://127.0.0.1:8123",
@@ -70,6 +77,8 @@ export async function startHarness(overrides: Partial<AppConfig> = {}): Promise<
       loginMaxFailuresPerIp: 1_000_000,
       loginDelayBaseMs: 0,
       kongValidatorUrl: KONG_VALIDATOR_URL,
+      // k2 readable everywhere: the rotation test re-seals shared rows with it while other files run.
+      encryption: { writeKey: ENCRYPTION_KEYS.k1, readKeys: [ENCRYPTION_KEYS.k2], fingerprintKey: ENCRYPTION_KEYS.fingerprint },
       clickhouse: CLICKHOUSE,
       migrateOnStart: false,
       ...overrides,

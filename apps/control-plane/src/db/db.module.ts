@@ -17,7 +17,7 @@ import { createDb, DB, PG_POOL } from "./db.js";
       useFactory: (created: ReturnType<typeof createDb>) => created.db,
     },
   ],
-  exports: [DB],
+  exports: [DB, PG_POOL],
 })
 export class DbModule implements OnApplicationShutdown {
   constructor(@Inject(PG_POOL) private readonly created: { pool: pg.Pool }) {}

@@ -12,6 +12,8 @@ import { DB, type Db, type Executor } from "../db/db.js";
 import { consumerValues, keyAuthValues } from "../consumers/consumers.js";
 import { consumers, keyAuthCredentials, plugins, routes, services, type RouteRow, type ServiceRow } from "../db/schema.js";
 import { pluginValues } from "../plugins/plugins.js";
+import type { Encryptor } from "../crypto/crypto.js";
+import type { PluginCatalog } from "../plugin-catalog/catalog.js";
 import { markDraftChanged, requireEnvironment, uuidParam } from "../environments/environments.js";
 
 /* ---------------- mapping ---------------- */
@@ -101,7 +103,7 @@ function listFilter(envCol: PgColumn, nameCol: PgColumn, idCol: PgColumn, envId:
 /* ---------------- state for the compiler ---------------- */
 
 /** Everything in the environment's draft that affects traffic, in the compiler's domain model. */
-export async function loadGatewayState(tx: Executor, envId: string): Promise<GatewayState> {
+export async function loadGatewayState(tx: Executor, envId: string, enc: Encryptor, catalog: PluginCatalog): Promise<GatewayState> {
   const [svcRows, routeRows, consumerRows, keyRows, pluginRows] = await Promise.all([
     tx.select().from(services).where(eq(services.environmentId, envId)),
     tx.select().from(routes).where(eq(routes.environmentId, envId)),
@@ -119,13 +121,13 @@ export async function loadGatewayState(tx: Executor, envId: string): Promise<Gat
       return route;
     }),
     consumers: consumerRows.map((c) => ({ id: c.id, username: c.username, customId: c.customId, tags: c.tags })),
-    keyAuthCredentials: keyRows.map((k) => ({ id: k.id, consumerId: k.consumerId, key: k.key, tags: k.tags })),
+    keyAuthCredentials: keyRows.map((k) => ({ id: k.id, consumerId: k.consumerId, key: enc.open(k.key), tags: k.tags })),
     plugins: pluginRows.map((p) => ({
       id: p.id,
       name: p.name,
       enabled: p.enabled,
       scope: { serviceId: p.serviceId, routeId: p.routeId, consumerId: p.consumerId },
-      config: p.config,
+      config: catalog.mapSecrets(p.name, p.config, (v) => enc.open(v)),
       protocols: optional(p.protocols),
       tags: p.tags,
     })),
@@ -133,7 +135,7 @@ export async function loadGatewayState(tx: Executor, envId: string): Promise<Gat
 }
 
 /** Replaces the environment's draft with `state`, keeping entity ids (rollback). */
-export async function restoreGatewayState(tx: Executor, envId: string, state: GatewayState): Promise<void> {
+export async function restoreGatewayState(tx: Executor, envId: string, state: GatewayState, enc: Encryptor, catalog: PluginCatalog): Promise<void> {
   // Dependents first: plugins and credentials reference the rest, routes reference services (ON DELETE RESTRICT).
   await tx.delete(plugins).where(eq(plugins.environmentId, envId));
   await tx.delete(keyAuthCredentials).where(eq(keyAuthCredentials.environmentId, envId));
@@ -152,10 +154,10 @@ export async function restoreGatewayState(tx: Executor, envId: string, state: Ga
   if (state.keyAuthCredentials.length > 0) {
     await tx
       .insert(keyAuthCredentials)
-      .values(state.keyAuthCredentials.map((k) => ({ id: k.id, environmentId: envId, ...keyAuthValues(k) })));
+      .values(state.keyAuthCredentials.map((k) => ({ id: k.id, environmentId: envId, ...keyAuthValues(k, enc) })));
   }
   if (state.plugins.length > 0) {
-    await tx.insert(plugins).values(state.plugins.map((p) => ({ id: p.id, environmentId: envId, ...pluginValues(p) })));
+    await tx.insert(plugins).values(state.plugins.map((p) => ({ id: p.id, environmentId: envId, ...pluginValues(p, enc, catalog) })));
   }
 }
 

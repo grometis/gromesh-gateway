@@ -13,6 +13,7 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import type { GatewayState, KongDeclarativeConfig } from "@gromesh/compiler";
+import type { SealedJson } from "../crypto/crypto.js";
 
 const timestamps = {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -162,12 +163,14 @@ export const keyAuthCredentials = pgTable(
     consumerId: uuid("consumer_id")
       .notNull()
       .references(() => consumers.id, { onDelete: "cascade" }),
-    // Kong needs the clear key in the declarative config, so it cannot be stored hashed.
+    // Kong needs the clear key in the declarative config, so it is stored encrypted (see crypto/), not hashed.
     key: text("key").notNull(),
+    // sha256 of the clear key: uniqueness per environment without decrypting.
+    keyHash: text("key_hash").notNull(),
     tags: text("tags").array().notNull().default(sql`'{}'::text[]`),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [uniqueIndex("keyauth_env_key_uq").on(t.environmentId, t.key), index("keyauth_consumer_idx").on(t.consumerId)],
+  (t) => [uniqueIndex("keyauth_env_key_hash_uq").on(t.environmentId, t.keyHash), index("keyauth_consumer_idx").on(t.consumerId)],
 );
 
 export const plugins = pgTable(
@@ -200,9 +203,10 @@ export const snapshots = pgTable(
       .references(() => environments.id, { onDelete: "cascade" }),
     version: integer("version").notNull(),
     hash: text("hash").notNull(),
-    config: jsonb("config").$type<KongDeclarativeConfig>().notNull(),
+    // Both documents carry secrets: stored sealed (crypto/), opened only where served or compiled.
+    config: jsonb("config").$type<SealedJson | KongDeclarativeConfig>().notNull(),
     // Source state, so a rollback can restore the draft exactly.
-    state: jsonb("state").$type<GatewayState>().notNull(),
+    state: jsonb("state").$type<SealedJson | GatewayState>().notNull(),
     message: text("message"),
     createdBy: jsonb("created_by").$type<Actor>().notNull(),
     rollbackOf: integer("rollback_of"),

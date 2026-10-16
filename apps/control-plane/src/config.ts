@@ -33,6 +33,12 @@ export interface AppConfig {
    * cluster). Set, every publication carries the platform prometheus and http-log plugins; empty = none.
    */
   platformHttpLogEndpoint: string | null;
+  /**
+   * Secrets at rest: GROMESH_ENCRYPTION_KEY is the write key (`<keyId>:<base64 of 32 bytes>`), GROMESH_ENCRYPTION_KEYS
+   * the comma-separated previous keys still accepted for reading (rotation) and GROMESH_FINGERPRINT_KEY (base64 of
+   * 32 bytes) the separate HMAC key behind uniqueness checks. The first and the last are required to start the API.
+   */
+  encryption: { writeKey: string; readKeys: string[]; fingerprintKey: string } | null;
   /** The analytics store (CLICKHOUSE_URL/USER/PASSWORD/DATABASE), read with a SELECT-only user; null = analytics off (502). */
   clickhouse: { url: string; user: string; password: string; database: string } | null;
   contractsDir: string;
@@ -65,6 +71,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     loginLockoutMs: Number(env.LOGIN_LOCKOUT_MS ?? 15 * 60 * 1000),
     kongValidatorUrl: env.KONG_VALIDATOR_URL || null,
     platformHttpLogEndpoint: env.PLATFORM_HTTP_LOG_ENDPOINT || null,
+    encryption: env.GROMESH_ENCRYPTION_KEY
+      ? {
+          writeKey: env.GROMESH_ENCRYPTION_KEY,
+          readKeys: (env.GROMESH_ENCRYPTION_KEYS ?? "").split(",").map((k) => k.trim()).filter(Boolean),
+          fingerprintKey: env.GROMESH_FINGERPRINT_KEY ?? "",
+        }
+      : null,
     clickhouse: env.CLICKHOUSE_URL
       ? { url: env.CLICKHOUSE_URL, user: env.CLICKHOUSE_USER ?? "gromesh_reader", password: env.CLICKHOUSE_PASSWORD ?? "", database: env.CLICKHOUSE_DATABASE ?? "gromesh" }
       : null,

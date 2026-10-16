@@ -17,6 +17,8 @@ import { PluginsModule } from "./plugins/plugins.js";
 import { SnapshotsModule } from "./snapshots/snapshots.js";
 import { UsersModule } from "./users/users.js";
 import { AnalyticsModule } from "./analytics/analytics.js";
+import { AtRestModule } from "./crypto/at-rest.module.js";
+import { CryptoModule } from "./crypto/crypto.js";
 
 @Module({})
 export class AppModule {
@@ -25,6 +27,8 @@ export class AppModule {
       module: AppModule,
       global: true,
       imports: [
+        CryptoModule,
+        AtRestModule,
         AuthModule,
         AuditModule,
         DbModule,
