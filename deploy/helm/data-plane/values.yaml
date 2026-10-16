@@ -8,11 +8,10 @@ imagePullSecrets: []
 
 kong:
   image:
-    # Use the project's own build, never the upstream image. W7-X2 supplies the
-    # published GHCR repository and immutable tag/digest for each environment.
-    repository: gromesh-kong
-    tag: "3.9.4"
-    digest: ""
+    # The project's own build (images/kong, workflow kong-image), pinned by digest; never the upstream image.
+    repository: ghcr.io/grometis/gromesh-kong
+    tag: "3.9.4-48960afbeba04b0eea81dd44a6079ee0e1c647a5"
+    digest: "sha256:3293c2e49633c91fa838dbd3eaaa9d534b83d7dbcc7cc84ff341ccee2156fd40"
     pullPolicy: IfNotPresent
   # UID 1001 can read the packaged runtime; all runtime writes go to volumes.
   runAsUser: 1001

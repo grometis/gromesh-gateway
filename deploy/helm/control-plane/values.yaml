@@ -24,9 +24,10 @@ ui:
 
 validator:
   image:
-    repository: gromesh-kong
-    tag: "3.9.4"
-    digest: ""
+    # Same own build as the data plane, pinned by digest.
+    repository: ghcr.io/grometis/gromesh-kong
+    tag: "3.9.4-48960afbeba04b0eea81dd44a6079ee0e1c647a5"
+    digest: "sha256:3293c2e49633c91fa838dbd3eaaa9d534b83d7dbcc7cc84ff341ccee2156fd40"
     pullPolicy: IfNotPresent
   runAsUser: 1001
   resources:

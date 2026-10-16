@@ -86,7 +86,8 @@ fi
 
 # 7. Known advisories.
 check A1 "CVE-2026-1907 (RPC de clustering, modo híbrido)" NOTE "não se aplica: data planes em DB-less sem clustering do Kong"
-check A2 "Imagem própria Kong 3.9.4" NOTE "pendência atrelada ao repositório no GitHub (workflow kong-image, W7-X2)"
+kong_default="$(sed -n 's/.*image: \${KONG_IMAGE:-\([^}]*\)}.*/\1/p' deploy/compose/docker-compose.yml | head -1)"
+[[ "$kong_default" == ghcr.io/*/gromesh-kong@sha256:* ]] && check A2 "Imagem própria Kong 3.9.4 (build próprio, fixada por digest)" PASS "$kong_default" || check A2 "Imagem própria Kong 3.9.4" NOTE "padrão do compose ainda é \`$kong_default\`"
 
 {
   echo "# Checklist de segurança do MVP"
