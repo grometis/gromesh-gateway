@@ -45,7 +45,8 @@ transforms:
       if !starts_with(path, "/") { abort }
       uuid = r'(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
       environment_id = string!(.environment_id)
-      cluster_id = string!(.cluster_id)
+      # The cluster is this collector's own identity (validated by entrypoint.sh), never trusted from the event.
+      cluster_id = get_env_var!("GROMESH_CLUSTER_ID")
       if !match(environment_id, uuid) || !match(cluster_id, uuid) { abort }
       service_id = string(.service.id) ?? ""
       route_id = string(.route.id) ?? ""
@@ -85,8 +86,8 @@ sinks:
   requests:
     type: clickhouse
     inputs: [sanitize]
-    endpoint: http://clickhouse:8123
-    database: gromesh
+    endpoint: "${CLICKHOUSE_ENDPOINT:-http://clickhouse:8123}"
+    database: "${CLICKHOUSE_DATABASE:-gromesh}"
     table: requests
     acknowledgements:
       enabled: true

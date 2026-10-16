@@ -49,14 +49,31 @@ capabilities:
 {{- end -}}
 {{- end -}}
 
+{{/* The http-log target: the in-cluster collector when enabled, otherwise the configured external one (or none). */}}
+{{- define "data-plane.collectorEndpoint" -}}
+{{- if .Values.collector.enabled -}}
+http://gromesh-collector:8080/kong
+{{- else -}}
+{{- .Values.collector.httpLogEndpoint -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "data-plane.validate" -}}
+{{- if .Values.collector.enabled -}}
+{{- if not (regexMatch "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" .Values.collector.clusterId) -}}
+{{- fail "collector.clusterId must be the UUID of this cluster when collector.enabled is true" -}}
+{{- end -}}
+{{- if empty .Values.collector.clickhouse.existingSecret -}}
+{{- fail "collector.clickhouse.existingSecret must name the Secret with the ClickHouse writer password when collector.enabled is true" -}}
+{{- end -}}
+{{- end -}}
 {{- if and (empty (trim .Values.agent.token)) (empty .Values.agent.existingSecret) -}}
 {{- fail "Set agent.existingSecret (with agent.existingSecretKey) or agent.token to a cluster registration token" -}}
 {{- end -}}
 {{- if and .Values.agent.token (regexMatch "[\\r\\n]" .Values.agent.token) -}}
 {{- fail "agent.token must be a single line" -}}
 {{- end -}}
-{{- range $name, $value := dict "agent.controlPlaneUrl" .Values.agent.controlPlaneUrl "collector.httpLogEndpoint" .Values.collector.httpLogEndpoint -}}
+{{- range $name, $value := dict "agent.controlPlaneUrl" .Values.agent.controlPlaneUrl "collector.httpLogEndpoint" (include "data-plane.collectorEndpoint" .) -}}
 {{- if or (eq $name "agent.controlPlaneUrl") $value -}}
 {{- $url := urlParse $value -}}
 {{- if or (not (has $url.scheme (list "http" "https"))) (empty $url.host) $url.userinfo $url.query $url.fragment -}}
@@ -73,7 +90,20 @@ capabilities:
 {{- if and .Values.networkPolicy.enabled (empty .Values.networkPolicy.controlPlanePeers) -}}
 {{- fail "networkPolicy.controlPlanePeers must select the control plane when NetworkPolicy is enabled" -}}
 {{- end -}}
-{{- if and .Values.networkPolicy.enabled .Values.collector.httpLogEndpoint (empty .Values.networkPolicy.collectorPeers) -}}
+{{- if and .Values.networkPolicy.enabled (include "data-plane.collectorEndpoint" .) (not .Values.collector.enabled) (empty .Values.networkPolicy.collectorPeers) -}}
 {{- fail "networkPolicy.collectorPeers must select the configured collector when NetworkPolicy is enabled" -}}
 {{- end -}}
+{{- end -}}
+
+{{- define "data-plane.collectorSelectorLabels" -}}
+app.kubernetes.io/name: {{ include "data-plane.name" . }}-collector
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end -}}
+
+{{- define "data-plane.collectorLabels" -}}
+helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | quote }}
+{{ include "data-plane.collectorSelectorLabels" . }}
+app.kubernetes.io/component: collector
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+app.kubernetes.io/part-of: gromesh-gateway
 {{- end -}}

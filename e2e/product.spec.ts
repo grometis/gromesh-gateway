@@ -37,13 +37,31 @@ async function login(browser: Browser, credentials: { email: string; password: s
   return { api, request, close: () => context.close() };
 }
 
-async function compose(args: string[], registrationToken?: string) {
+async function compose(args: string[], registrationToken?: string, extraEnv: Record<string, string> = {}) {
   await exec("docker", ["compose", ...(process.env.COMPOSE_FILE ? [] : ["-f", COMPOSE]), ...args], {
     cwd: ROOT,
-    timeout: 60_000,
+    timeout: 180_000,
     // Registration tokens go only to this child, never argv or the parent environment.
-    env: { ...process.env, ...(registrationToken ? { GROMESH_REGISTRATION_TOKEN: registrationToken } : {}) },
+    env: { ...process.env, ...extraEnv, ...(registrationToken ? { GROMESH_REGISTRATION_TOKEN: registrationToken } : {}) },
   });
+}
+
+/** The collector of one cluster: Vector recreated with that cluster's id (the compose default is a placeholder). */
+const collector = (clusterId?: string) =>
+  compose(["--profile", "observability", "up", "-d", "--wait", "--force-recreate", "--no-deps", "vector"], undefined, clusterId ? { GROMESH_CLUSTER_ID: clusterId } : {});
+
+/** What the agent protocol serves to a node of `clusterId`: the snapshot must be the same for every cluster. */
+async function agentSnapshot(request: APIRequestContext, registrationToken: string) {
+  const base = CP.replace(/\/api\/v1$/, "") + "/agent/v1";
+  const registered = await request.post(`${base}/register`, {
+    headers: { authorization: `Bearer ${registrationToken}` },
+    data: { nodeId: `e2e-${randomUUID()}`, hostname: "e2e", kongVersion: "3.9.3", agentVersion: "0.1.0" },
+  });
+  expect(registered.status(), "agent registration").toBe(200);
+  const { nodeToken } = (await registered.json()) as { nodeToken: string };
+  const current = await request.get(`${base}/snapshots/current`, { headers: { authorization: `Bearer ${nodeToken}` } });
+  expect(current.status()).toBe(200);
+  return (await current.json()) as { hash: string };
 }
 
 async function converge(api: <T>(method: string, path: string, status: number) => Promise<T>, clusterId: string, version: number) {
@@ -66,6 +84,7 @@ test("UI publication, key-auth traffic, viewer limits, audit and rollback on the
   let clusterId: string | undefined;
   let viewerId: string | undefined;
   let agentStarted = false;
+  let collectorStarted = false;
   try {
     const cluster = await api<Cluster>("POST", `/environments/${env.id}/clusters`, 201, { name: "product-edge" });
     clusterId = cluster.id;
@@ -123,6 +142,28 @@ test("UI publication, key-auth traffic, viewer limits, audit and rollback on the
     await converge(api, cluster.id, uiVersion.version);
     expect((await proxy(traffic, path)).status()).toBe(200);
 
+    // Observability: the publication carries the platform plugins, the snapshot is the same for every cluster of
+    // the environment, and traffic through the gateway shows up in the dashboard tagged with this cluster.
+    // Two throwaway clusters (nodes registered here never report, so they must not join the real cluster).
+    const second = await api<Cluster>("POST", `/environments/${env.id}/clusters`, 201, { name: "product-edge-2" });
+    const third = await api<Cluster>("POST", `/environments/${env.id}/clusters`, 201, { name: "product-edge-3" });
+    const [fromSecond, fromThird] = await Promise.all([agentSnapshot(admin.request, second.registrationToken), agentSnapshot(admin.request, third.registrationToken)]);
+    expect(fromSecond.hash).toBe(fromThird.hash);
+    const current = await api<{ hash: string }>("GET", `/environments/${env.id}/snapshots/${uiVersion.version}`, 200);
+    expect(fromSecond.hash).toBe(current.hash);
+    await api("DELETE", `/clusters/${second.id}`, 204);
+    await api("DELETE", `/clusters/${third.id}`, 204);
+    collectorStarted = true;
+    await collector(cluster.id);
+    const trafficStarted = new Date(Date.now() - 60_000).toISOString();
+    for (let i = 0; i < 3; i++) expect((await proxy(traffic, `${path}?n=${i}`)).status()).toBe(200);
+    await expect.poll(async () => {
+      const to = new Date(Date.now() + 60_000).toISOString();
+      const page = await api<{ items: { path: string; status: number; environmentId: string; clusterId: string }[] }>("GET", `/environments/${env.id}/requests?from=${trafficStarted}&to=${to}&limit=50`, 200);
+      const rows = page.items.filter((r) => r.path === path && r.status === 200);
+      return rows.length >= 3 && rows.every((r) => r.environmentId === env.id && r.clusterId === cluster.id);
+    }, { timeout: 20_000, intervals: [500, 1000], message: "Gateway traffic must reach the analytics API with the environment and cluster ids" }).toBe(true);
+
     // The publication made through the UI is in the audit log, with its author.
     const me = await api<Entity & { name: string }>("GET", "/me", 200);
     const audit = await api<{ items: AuditEvent[] }>("GET", `/audit-events?environmentId=${env.id}&entityType=snapshot`, 200);
@@ -174,6 +215,8 @@ test("UI publication, key-auth traffic, viewer limits, audit and rollback on the
   } finally {
     try {
       if (agentStarted) await compose(["stop", "agent"]);
+      // Back to the placeholder cluster id, so the next run starts from a known collector.
+      if (collectorStarted) await collector();
     } finally {
       try {
         if (clusterId) await api("DELETE", `/clusters/${clusterId}`, 204);

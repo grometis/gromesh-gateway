@@ -1,0 +1,107 @@
+data_dir: /var/lib/vector
+
+# The API/tap is disabled: it could expose events before sanitization.
+api:
+  enabled: false
+
+sources:
+  kong:
+    type: http_server
+    address: 0.0.0.0:8080
+    path: /kong
+    strict_path: true
+    decoding:
+      codec: bytes
+
+transforms:
+  decode:
+    type: remap
+    inputs: [kong]
+    drop_on_error: true
+    drop_on_abort: true
+    # Parse errors are deliberately not interpolated in diagnostics. Kong sends
+    # arrays when queue.max_batch_size > 1; remap splits them into events.
+    source: |
+      payload, err = parse_json(.message)
+      if err != null { abort }
+      . = payload
+
+  sanitize:
+    type: remap
+    inputs: [decode]
+    drop_on_error: true
+    drop_on_abort: true
+    source: |
+      key_names = array!(parse_json!(get_env_var("GROMESH_KEY_NAMES") ?? "[\"apikey\"]"))
+      key_names = map_values(key_names) -> |name| { downcase(string!(name)) }
+      credentials = append(key_names, ["apikey", "authorization", "cookie", "set-cookie"])
+      .request.headers = filter(object(.request.headers) ?? {}) -> |name, _value| { !includes(credentials, downcase(name)) }
+      .response.headers = filter(object(.response.headers) ?? {}) -> |name, _value| { !includes(credentials, downcase(name)) }
+      .request.querystring = filter(object(.request.querystring) ?? {}) -> |name, _value| { !includes(credentials, downcase(name)) }
+
+      # Drop the whole query (also URL/referrer copies) and every field outside
+      # the analytics allowlist. No raw event can reach a sink or disk buffer.
+      path = string!(split(string!(.request.uri), "?", limit: 2)[0])
+      if !starts_with(path, "/") { abort }
+      uuid = r'(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+      environment_id = string!(.environment_id)
+      # The cluster is this collector's own identity (validated by entrypoint.sh), never trusted from the event.
+      cluster_id = get_env_var!("GROMESH_CLUSTER_ID")
+      if !match(environment_id, uuid) || !match(cluster_id, uuid) { abort }
+      service_id = string(.service.id) ?? ""
+      route_id = string(.route.id) ?? ""
+      consumer_id = string(.consumer.id) ?? ""
+      if service_id != "" && !match(service_id, uuid) { abort }
+      if route_id != "" && !match(route_id, uuid) { abort }
+      if consumer_id != "" && !match(consumer_id, uuid) { abort }
+      service_id = if service_id == "" { null } else { service_id }
+      route_id = if route_id == "" { null } else { route_id }
+      consumer_id = if consumer_id == "" { null } else { consumer_id }
+      method = string!(.request.method)
+      if !includes(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE", "CONNECT"], method) { abort }
+      client_ip = ip_to_ipv6!(string!(.client_ip))
+      ts = from_unix_timestamp!(to_int!(.started_at), unit: "milliseconds")
+      latency_upstream_ms = to_float!(.latencies.proxy)
+      latency_upstream_ms = if latency_upstream_ms < 0 { null } else { latency_upstream_ms }
+      . = {
+        "id": uuid_v4(),
+        "ts": format_timestamp!(ts, format: "%Y-%m-%d %H:%M:%S%.3f", timezone: "UTC"),
+        "environment_id": environment_id,
+        "cluster_id": cluster_id,
+        "service_id": service_id,
+        "route_id": route_id,
+        "consumer_id": consumer_id,
+        "method": method,
+        "path": path,
+        "status": to_int!(.response.status),
+        "latency_kong_ms": to_float!(.latencies.kong),
+        "latency_upstream_ms": latency_upstream_ms,
+        "latency_total_ms": to_float!(.latencies.request),
+        "client_ip": client_ip,
+        "request_size": to_int!(.request.size),
+        "response_size": to_int!(.response.size)
+      }
+
+sinks:
+  requests:
+    type: clickhouse
+    inputs: [sanitize]
+    endpoint: "${CLICKHOUSE_ENDPOINT:-http://clickhouse:8123}"
+    database: "${CLICKHOUSE_DATABASE:-gromesh}"
+    table: requests
+    acknowledgements:
+      enabled: true
+    auth:
+      strategy: basic
+      # INSERT-only user created by clickhouse/002-users.sh.
+      user: gromesh_writer
+      password: "${CLICKHOUSE_PASSWORD}"
+    skip_unknown_fields: false
+    date_time_best_effort: true
+    batch:
+      max_events: 100
+      timeout_secs: 1
+    buffer:
+      type: memory
+      max_events: 10000
+      when_full: block

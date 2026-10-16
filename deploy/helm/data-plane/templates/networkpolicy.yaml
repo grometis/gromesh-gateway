@@ -26,12 +26,18 @@ spec:
       ports:
         - protocol: TCP
           port: {{ include "data-plane.urlPort" .Values.agent.controlPlaneUrl }}
-    {{- if .Values.collector.httpLogEndpoint }}
+    {{- if include "data-plane.collectorEndpoint" . }}
     - to:
+        {{- if .Values.networkPolicy.collectorPeers }}
         {{- toYaml .Values.networkPolicy.collectorPeers | nindent 8 }}
+        {{- else }}
+        - podSelector:
+            matchLabels:
+              {{- include "data-plane.collectorSelectorLabels" . | nindent 14 }}
+        {{- end }}
       ports:
         - protocol: TCP
-          port: {{ include "data-plane.urlPort" .Values.collector.httpLogEndpoint }}
+          port: {{ include "data-plane.urlPort" (include "data-plane.collectorEndpoint" .) }}
     {{- end }}
     {{- with .Values.networkPolicy.dnsPeers }}
     - to:

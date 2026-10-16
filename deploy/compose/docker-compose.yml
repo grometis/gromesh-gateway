@@ -145,6 +145,8 @@ services:
       CLICKHOUSE_USER: gromesh_reader
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_READER_PASSWORD:-gromesh-dev-reader}
       CLICKHOUSE_DATABASE: gromesh
+      # Injects the prometheus and http-log platform plugins into every publication (empty = none).
+      PLATFORM_HTTP_LOG_ENDPOINT: http://gromesh-collector:8080/kong
     ports:
       - "127.0.0.1:3000:3000"
     depends_on:
@@ -206,14 +208,21 @@ services:
       clickhouse:
         condition: service_healthy
 
-  # platformPlugins.httpLogEndpoint = http://vector:8080/kong (compose network only).
+  # Reached by Kong as http://gromesh-collector:8080/kong (compose network only).
   vector:
     profiles: [observability]
     image: timberio/vector:0.53.0-alpine
     user: "65534:65534"
-    command: ["--config", "/etc/vector/vector.yaml", "--log-format", "json"]
+    # entrypoint.sh refuses to start without a UUID in GROMESH_CLUSTER_ID: every row is tagged with it.
+    entrypoint: ["sh", "/etc/vector/entrypoint.sh"]
+    networks:
+      default:
+        # The name the compiled http-log plugin targets; the same name resolves to each cluster's own collector.
+        aliases: [gromesh-collector]
     environment:
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_WRITER_PASSWORD:-gromesh-dev-writer}
+      # The e2e recreates this service with the real cluster id; the default marks "development, no cluster".
+      GROMESH_CLUSTER_ID: ${GROMESH_CLUSTER_ID:-00000000-0000-4000-8000-00000000c0c0}
       # JSON array; include all key-auth key_names configured on this cluster.
       GROMESH_KEY_NAMES: ${GROMESH_KEY_NAMES:-["apikey"]}
       VECTOR_LOG: info

@@ -28,6 +28,11 @@ export interface AppConfig {
   loginLockoutMs: number;
   /** A Kong (DB-less, no traffic) whose Admin API validates plugin configs: POST /schemas/plugins/validate. */
   kongValidatorUrl: string | null;
+  /**
+   * http-log endpoint of the clusters' collectors (PLATFORM_HTTP_LOG_ENDPOINT, a fixed name resolved inside each
+   * cluster). Set, every publication carries the platform prometheus and http-log plugins; empty = none.
+   */
+  platformHttpLogEndpoint: string | null;
   /** The analytics store (CLICKHOUSE_URL/USER/PASSWORD/DATABASE), read with a SELECT-only user; null = analytics off (502). */
   clickhouse: { url: string; user: string; password: string; database: string } | null;
   contractsDir: string;
@@ -59,6 +64,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     loginMaxFailuresPerIp: Number(env.LOGIN_MAX_FAILURES_PER_IP ?? 50),
     loginLockoutMs: Number(env.LOGIN_LOCKOUT_MS ?? 15 * 60 * 1000),
     kongValidatorUrl: env.KONG_VALIDATOR_URL || null,
+    platformHttpLogEndpoint: env.PLATFORM_HTTP_LOG_ENDPOINT || null,
     clickhouse: env.CLICKHOUSE_URL
       ? { url: env.CLICKHOUSE_URL, user: env.CLICKHOUSE_USER ?? "gromesh_reader", password: env.CLICKHOUSE_PASSWORD ?? "", database: env.CLICKHOUSE_DATABASE ?? "gromesh" }
       : null,

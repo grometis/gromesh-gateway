@@ -4,7 +4,6 @@ import { compile, CompileError, hashConfig, platformPlugins, type GatewayState }
 const options = {
   httpLogEndpoint: "http://vector:8080/kong",
   environmentId: "00000000-0000-4000-8000-0000000000e1",
-  clusterId: "00000000-0000-4000-8000-0000000000c1",
 };
 const state: GatewayState = { services: [], routes: [], consumers: [], keyAuthCredentials: [], plugins: [] };
 
@@ -19,7 +18,7 @@ describe("platformPlugins", () => {
         http_endpoint: options.httpLogEndpoint, method: "POST", content_type: "application/json", timeout: 5000,
         queue: { max_batch_size: 100, max_coalescing_delay: 1, max_entries: 10000, max_retry_time: 60 },
         custom_fields_by_lua: {
-          environment_id: `return "${options.environmentId}"`, cluster_id: `return "${options.clusterId}"`,
+          environment_id: `return "${options.environmentId}"`,
         },
       } }),
     ]);
@@ -43,7 +42,7 @@ describe("platformPlugins", () => {
   });
 
   it.each([
-    { environmentId: 'invalid"; return "value' }, { clusterId: "invalid" },
+    { environmentId: 'invalid"; return "value' }, { environmentId: "invalid" },
     { httpLogEndpoint: "file:///tmp/log" }, { httpLogEndpoint: "http://user:password@vector/kong" },
     { httpLogEndpoint: "http://vector/kong?apikey=secret" }, { httpLogEndpoint: "http://vector/kong#secret" },
     { queue: { maxBatchSize: 0 } }, { queue: { maxBatchSize: 1.5 } },

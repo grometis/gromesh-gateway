@@ -3,8 +3,8 @@ import type { Plugin } from "./model.js";
 
 export interface PlatformPluginOptions {
   httpLogEndpoint: string;
+  /** The environment every log line is tagged with; the cluster id is added by each cluster's own collector. */
   environmentId: string;
-  clusterId: string;
   queue?: {
     maxBatchSize?: number;
     maxCoalescingDelaySeconds?: number;
@@ -13,13 +13,14 @@ export interface PlatformPluginOptions {
   };
 }
 
-/** Stable IDs keep repeated publication deterministic; these plugins are global. */
+/**
+ * Stable IDs keep repeated publication deterministic; these plugins are global. The snapshot stays identical for
+ * every cluster of the environment: nothing cluster-specific goes in here.
+ */
 export function platformPlugins(options: PlatformPluginOptions): Plugin[] {
   const issues: { path: string; message: string }[] = [];
   const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  for (const field of ["environmentId", "clusterId"] as const) {
-    if (!uuid.test(options[field])) issues.push({ path: `platformPlugins.${field}`, message: "must be a UUID" });
-  }
+  if (!uuid.test(options.environmentId)) issues.push({ path: "platformPlugins.environmentId", message: "must be a UUID" });
   try {
     const url = new URL(options.httpLogEndpoint);
     if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error();
@@ -60,7 +61,6 @@ export function platformPlugins(options: PlatformPluginOptions): Plugin[] {
         queue,
         custom_fields_by_lua: {
           environment_id: `return "${options.environmentId.toLowerCase()}"`,
-          cluster_id: `return "${options.clusterId.toLowerCase()}"`,
         },
       },
     },

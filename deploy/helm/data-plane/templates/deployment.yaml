@@ -31,6 +31,8 @@ spec:
       {{- end }}
       securityContext:
         runAsNonRoot: true
+        # containerd refuses a pod-level group without a user; containers still set their own runAsUser.
+        runAsUser: {{ .Values.kong.runAsUser }}
         runAsGroup: 1001
         fsGroup: 1001
         seccompProfile:
@@ -72,8 +74,9 @@ spec:
               value: "0.0.0.0:8000, 0.0.0.0:8443 ssl"
             - name: KONG_STATUS_LISTEN
               value: "0.0.0.0:8100"
+            # Not /usr/local/kong: an emptyDir there would hide the image's own lib/ (libada.so, ...).
             - name: KONG_PREFIX
-              value: /usr/local/kong
+              value: /kong_prefix
             - name: KONG_NGINX_DAEMON
               value: "off"
             - name: KONG_PROXY_ACCESS_LOG
@@ -118,7 +121,7 @@ spec:
               mountPath: /kong/declarative
               readOnly: true
             - name: kong-prefix
-              mountPath: /usr/local/kong
+              mountPath: /kong_prefix
             - name: kong-tmp
               mountPath: /tmp
         - name: agent

@@ -61,7 +61,9 @@ export class AuthService {
       throw new ProblemException(HttpStatus.UNAUTHORIZED, "Invalid e-mail or password");
     }
     return this.db.transaction(async (tx) => {
-      await tx.delete(loginAttempts).where(inArray(loginAttempts.key, keys.map((k) => k.key)));
+      // A good login clears this e-mail's counters only. The address counter never resets on success: otherwise
+      // anyone with an account could reset the per-address limit between guesses at other accounts.
+      await tx.delete(loginAttempts).where(inArray(loginAttempts.key, keys.map((k) => k.key).filter((k) => !k.startsWith("ip:"))));
       await this.sessions.purgeExpired(tx);
       // A login from a browser that still holds a session replaces it: one session per login, never two.
       if (presentedSessionId) await this.sessions.revoke(tx, this.sessions.hashOf(presentedSessionId));

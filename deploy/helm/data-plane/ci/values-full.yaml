@@ -18,7 +18,10 @@ service:
   loadBalancerSourceRanges:
     - 192.0.2.0/24
 collector:
-  httpLogEndpoint: http://vector.observability.svc.cluster.local:8080/kong
+  enabled: true
+  clusterId: 22222222-2222-4222-8222-222222222222
+  clickhouse:
+    existingSecret: clickhouse-writer
 metrics:
   enabled: true
 autoscaling:

@@ -1,0 +1,111 @@
+{{- if .Values.collector.enabled }}
+{{- /* files/vector/ is a copy of deploy/observability/vector/: Helm cannot read outside the chart. Keep them equal. */}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "data-plane.fullname" . }}-collector
+  labels:
+    {{- include "data-plane.collectorLabels" . | nindent 4 }}
+data:
+  vector.yaml: |
+{{ .Files.Get "files/vector/vector.yaml" | indent 4 }}
+  entrypoint.sh: |
+{{ .Files.Get "files/vector/entrypoint.sh" | indent 4 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  # Fixed name: the compiled http-log plugin targets http://gromesh-collector:8080/kong in every cluster.
+  name: gromesh-collector
+  labels:
+    {{- include "data-plane.collectorLabels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "data-plane.collectorSelectorLabels" . | nindent 4 }}
+  ports:
+    - name: http-log
+      port: 8080
+      targetPort: http-log
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "data-plane.fullname" . }}-collector
+  labels:
+    {{- include "data-plane.collectorLabels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "data-plane.collectorSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "data-plane.collectorSelectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ print (.Files.Get "files/vector/vector.yaml") (.Files.Get "files/vector/entrypoint.sh") | sha256sum | trunc 16 }}
+    spec:
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: vector
+          image: {{ include "data-plane.image" .Values.collector.image | quote }}
+          imagePullPolicy: {{ .Values.collector.image.pullPolicy }}
+          command: [sh, /etc/vector/entrypoint.sh]
+          securityContext:
+            {{- include "data-plane.containerSecurityContext" . | nindent 12 }}
+          env:
+            - name: GROMESH_CLUSTER_ID
+              value: {{ .Values.collector.clusterId | quote }}
+            - name: GROMESH_KEY_NAMES
+              value: {{ .Values.collector.keyNames | toJson | quote }}
+            - name: CLICKHOUSE_ENDPOINT
+              value: {{ .Values.collector.clickhouse.endpoint | quote }}
+            - name: CLICKHOUSE_DATABASE
+              value: {{ .Values.collector.clickhouse.database | quote }}
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.collector.clickhouse.existingSecret }}
+                  key: {{ .Values.collector.clickhouse.existingSecretKey }}
+            - name: VECTOR_LOG
+              value: info
+          ports:
+            - name: http-log
+              containerPort: 8080
+          readinessProbe:
+            tcpSocket:
+              port: http-log
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: http-log
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.collector.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/vector
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/vector
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "data-plane.fullname" . }}-collector
+        - name: data
+          emptyDir: {}
+{{- end }}
