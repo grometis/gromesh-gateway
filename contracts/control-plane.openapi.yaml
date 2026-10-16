@@ -94,6 +94,7 @@ paths:
     get:
       tags: [auth]
       operationId: getCsrfToken
+      security: [{ cookieAuth: [] }]
       x-required-role: viewer
       description: |
         Token bound to the current session, to send as `X-CSRF-Token` on every mutation. Stable for the session's
@@ -194,7 +195,6 @@ paths:
       operationId: listMyTokens
       security: [{ cookieAuth: [] }]
       x-required-role: viewer
-      x-gromesh-planned: true
       description: The caller's API tokens, newest first, revoked ones included.
       parameters:
         - { $ref: "#/components/parameters/Limit" }
@@ -215,7 +215,6 @@ paths:
       operationId: createMyToken
       security: [{ cookieAuth: [], csrfToken: [] }]
       x-required-role: viewer
-      x-gromesh-planned: true
       description: |
         Creates an API token for the caller. The token itself is returned once, here, and never again: the server keeps
         only a keyed hash and the hint. `role` may not exceed the caller's role (422 on `role`). A user may hold at most
@@ -251,7 +250,6 @@ paths:
       operationId: revokeMyToken
       security: [{ cookieAuth: [], csrfToken: [] }]
       x-required-role: viewer
-      x-gromesh-planned: true
       description: |
         Revokes one of the caller's tokens; it stops working immediately. Idempotent on an already revoked token.
         Another user's token is not visible here: 404, never 403.
@@ -265,7 +263,6 @@ paths:
       operationId: listTokens
       security: [{ cookieAuth: [] }]
       x-required-role: admin
-      x-gromesh-planned: true
       description: Every user's API tokens, newest first, revoked ones included.
       parameters:
         - { $ref: "#/components/parameters/Limit" }
@@ -284,7 +281,6 @@ paths:
       operationId: revokeToken
       security: [{ cookieAuth: [], csrfToken: [] }]
       x-required-role: admin
-      x-gromesh-planned: true
       description: Revokes any user's token.
       responses:
         "204": { description: Revoked }

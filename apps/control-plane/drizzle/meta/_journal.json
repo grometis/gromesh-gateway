@@ -43,6 +43,13 @@
       "when": 1792113959089,
       "tag": "0005_encrypt_at_rest",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1792185231835,
+      "tag": "0006_api_tokens",
+      "breakpoints": true
     }
   ]
 }

@@ -9,7 +9,7 @@ import { APP_CONFIG, type AppConfig } from "../config.js";
 import { DB, type Db, type Executor } from "../db/db.js";
 import { loginAttempts, users, type UserRow } from "../db/schema.js";
 import { normalizeEmail, toUser } from "../users/users.js";
-import { type AuthenticatedRequest, Public, RequiredRole, type RequestContext } from "./auth.js";
+import { type AuthenticatedRequest, Public, RequiredRole, type RequestContext, SessionOnly } from "./auth.js";
 import { sessionCookie, SessionService } from "./sessions.js";
 
 interface LoginBody {
@@ -132,6 +132,7 @@ class AuthController {
   @Post("auth/logout")
   @HttpCode(HttpStatus.NO_CONTENT)
   @RequiredRole("viewer")
+  @SessionOnly()
   async logout(@Req() req: AuthenticatedRequest, @Res({ passthrough: true }) res: Response) {
     const ctx: RequestContext = { actor: { type: "user", id: req.user!.id, name: req.user!.name }, ip: req.ip ?? null, role: req.user!.role };
     await this.auth.logout(ctx, req.session!.idHash);
@@ -140,6 +141,7 @@ class AuthController {
 
   @Get("auth/csrf")
   @RequiredRole("viewer")
+  @SessionOnly()
   csrf(@Req() req: AuthenticatedRequest) {
     return { csrfToken: req.session!.csrfToken };
   }
