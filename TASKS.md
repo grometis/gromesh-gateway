@@ -296,5 +296,6 @@ Aceite: o job do e2e final verde no CI e o checklist sem pendências.
 6. **Analytics:** "top rotas por volume e por erro" no dashboard precisa de um endpoint novo no contrato.
 7. **Observabilidade:** `GROMESH_KEY_NAMES` do coletor é configurado por cluster à mão; derivar dos `key_names` dos plugins key-auth publicados.
 8. **Snapshot por cluster:** o agente ainda se registra de novo a cada restart (node token só em memória); avaliar persistir o token no volume do pod.
+9. **Proteção da `main` no GitHub:** aplicar `.github/rulesets/main.json` (`gh api -X POST repos/grometis/gromesh-gateway/rulesets --input .github/rulesets/main.json`) quando a conta tiver GitHub Pro; até lá vale o hook `pre-push` de `.githooks/` (CLAUDE.md, regra 10).
 
 Regras de produção já codificadas nos charts e que continuam valendo: `TRUST_PROXY` é o IP/CIDR exato do ingress (nunca `uniquelocal`); o `LISTEN` do control plane usa conexão direta ao Postgres (nunca PgBouncer em modo transação); o ingress na frente do SSE do agente precisa de idle timeout acima de 15 s e buffering desligado; `COOKIE_SECURE` só é falso no compose de desenvolvimento.
