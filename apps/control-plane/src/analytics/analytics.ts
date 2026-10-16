@@ -5,7 +5,9 @@ import { Ctx, RequiredRole, type RequestContext, type Role } from "../auth/auth.
 import { decodeCursor, encodeCursor, parseLimit, type Page } from "../common/pagination.js";
 import { ProblemException, unprocessable, type FieldError } from "../common/problem.js";
 import { APP_CONFIG, type AppConfig } from "../config.js";
+import { inArray } from "drizzle-orm";
 import { DB, type Db } from "../db/db.js";
+import { routes } from "../db/schema.js";
 import { requireEnvironment, uuidParam } from "../environments/environments.js";
 
 /* ---------------- query parsing ---------------- */
@@ -16,6 +18,10 @@ const MAX_PERIOD_MS = 7 * 86_400_000;
 const MAX_BUCKETS = 2000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const STATUS_CLASSES = { "2xx": [200, 299], "3xx": [300, 399], "4xx": [400, 499], "5xx": [500, 599] } as const;
+/** Ranking criteria of the top routes: the ORDER BY expression over the aggregated columns. */
+const TOP_BY = { requests: "requests DESC", errors: "errors DESC", p95: "p95 DESC" } as const;
+type TopBy = keyof typeof TOP_BY;
+const TOP_LIMIT = { default: 10, max: 50 };
 
 interface Period {
   fromMs: number;
@@ -82,6 +88,21 @@ function parseInterval(query: Record<string, unknown>, period: Period, errors: F
   return interval;
 }
 
+function parseTopBy(query: Record<string, unknown>, errors: FieldError[]): TopBy {
+  const raw = query.by ?? "requests";
+  if (typeof raw === "string" && raw in TOP_BY) return raw as TopBy;
+  errors.push({ path: "by", message: "must be one of requests, errors, p95" });
+  return "requests";
+}
+
+function parseTopLimit(query: Record<string, unknown>, errors: FieldError[]): number {
+  if (query.limit === undefined) return TOP_LIMIT.default;
+  const n = Number(query.limit);
+  if (Number.isInteger(n) && n >= 1 && n <= TOP_LIMIT.max) return n;
+  errors.push({ path: "limit", message: `must be an integer between 1 and ${TOP_LIMIT.max}` });
+  return TOP_LIMIT.default;
+}
+
 /* ---------------- client address masking ---------------- */
 
 /** Admins see the address; everyone else gets the IPv4 /24 or the IPv6 /48. */
@@ -103,6 +124,15 @@ export function maskClientIp(ip: string, role: Role): string {
 
 interface BucketRow {
   b: number;
+  requests: number;
+  errors4xx: number;
+  errors5xx: number;
+  q: [number, number, number];
+}
+
+interface TopRouteRow {
+  route_id: string | null;
+  service_id: string | null;
   requests: number;
   errors4xx: number;
   errors5xx: number;
@@ -181,6 +211,41 @@ export class AnalyticsService implements OnApplicationShutdown {
       interval,
       totals: stats(totals[0]),
       series: Array.from({ length: count }, (_, b) => ({ ts: new Date(period.fromMs + b * bucketMs).toISOString(), ...stats(byBucket.get(b)) })),
+    };
+  }
+
+  /** Routes ranked over the period; names come from the control plane, so a deleted route keeps its id with a null name. */
+  async topRoutes(envId: string, query: Record<string, unknown>) {
+    await requireEnvironment(this.db, envId);
+    const errors: FieldError[] = [];
+    const period = parsePeriod(query, errors);
+    const by = parseTopBy(query, errors);
+    const limit = parseTopLimit(query, errors);
+    if (errors.length > 0) throw unprocessable("Invalid analytics query", errors);
+    const { where, params } = this.scope(envId, period, {});
+    // A route belongs to one service; `any` picks it. Ties: more requests first, then the route id (nulls last).
+    const rows = await this.rows<TopRouteRow>(
+      `SELECT route_id, any(service_id) AS service_id, count() AS requests,
+              countIf(status >= 400 AND status < 500) AS errors4xx, countIf(status >= 500) AS errors5xx,
+              countIf(status >= 400) AS errors, quantileExact(0.95)(latency_total_ms) AS p95,
+              quantilesExact(0.5, 0.95, 0.99)(latency_total_ms) AS q
+       FROM requests WHERE ${where} GROUP BY route_id
+       ORDER BY ${TOP_BY[by]}, requests DESC, route_id ASC NULLS LAST LIMIT {limit:UInt32}`,
+      { ...params, limit },
+    );
+    const ids = rows.map((row) => row.route_id).filter((id): id is string => id !== null);
+    const named = ids.length > 0 ? await this.db.select({ id: routes.id, name: routes.name }).from(routes).where(inArray(routes.id, ids)) : [];
+    const names = new Map(named.map((r) => [r.id, r.name]));
+    return {
+      from: new Date(period.fromMs).toISOString(),
+      to: new Date(period.toMs).toISOString(),
+      by,
+      items: rows.map((row) => ({
+        routeId: row.route_id,
+        routeName: row.route_id === null ? null : (names.get(row.route_id) ?? null),
+        serviceId: row.service_id,
+        ...stats(row),
+      })),
     };
   }
 
@@ -283,6 +348,12 @@ export class AnalyticsController {
   @RequiredRole("viewer")
   summary(@Param("envId", uuidParam()) envId: string, @Query() query: Record<string, unknown>) {
     return this.analytics.summary(envId, query);
+  }
+
+  @Get("analytics/top-routes")
+  @RequiredRole("viewer")
+  topRoutes(@Param("envId", uuidParam()) envId: string, @Query() query: Record<string, unknown>) {
+    return this.analytics.topRoutes(envId, query);
   }
 
   @Get("requests")

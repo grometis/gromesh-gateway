@@ -946,8 +946,6 @@ paths:
       tags: [analytics]
       operationId: getTopRoutes
       x-required-role: viewer
-      # Contract-only PR: no handler yet. The implementation PR removes this mark (see CLAUDE.md, rule 11).
-      x-gromesh-planned: true
       description: |
         The routes with the most traffic, the most errors or the slowest p95 over the period, from the same
         `requests` table as the summary (same 7-day limit). Traffic that matched no route is one row with null

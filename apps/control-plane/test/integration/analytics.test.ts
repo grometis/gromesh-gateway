@@ -66,6 +66,77 @@ async function seed() {
 
 const period = (fromOffsetMs = 0, toOffsetMs = 10 * 60_000) => `from=${new Date(base + fromOffsetMs).toISOString()}&to=${new Date(base + toOffsetMs).toISOString()}`;
 
+/** Fixture for the ranking: four routes with distinct winners per criterion, one of them a real route of the environment. */
+async function seedTop() {
+  const env = await h.api("POST", "/environments", { name: uniq("top") });
+  const envId = env.body.id as string;
+  const svc = await h.api("POST", `/environments/${envId}/services`, { name: uniq("svc"), protocol: "http", host: "echo", port: 80 });
+  const named = await h.api("POST", `/environments/${envId}/routes`, { name: "orders-route", serviceId: svc.body.id, paths: ["/orders"] });
+  expect(named.status, JSON.stringify(named.body)).toBe(201);
+  const R = named.body.id as string;
+  const gone = "00000000-0000-4000-8000-0000000000b2"; // never existed in the control plane: id kept, name null
+  const slow = "00000000-0000-4000-8000-0000000000b3";
+  const rows = [
+    // R: 5 requests, 2 errors, p95 100
+    row(envId, 1_000, 200, 10, { route_id: R, service_id: svc.body.id }),
+    row(envId, 2_000, 200, 10, { route_id: R, service_id: svc.body.id }),
+    row(envId, 3_000, 200, 10, { route_id: R, service_id: svc.body.id }),
+    row(envId, 4_000, 500, 100, { route_id: R, service_id: svc.body.id }),
+    row(envId, 5_000, 404, 100, { route_id: R, service_id: svc.body.id }),
+    // gone: 1 request, p95 10
+    row(envId, 6_000, 200, 10, { route_id: gone }),
+    // slow: 3 requests, no errors, p95 500
+    row(envId, 7_000, 200, 500, { route_id: slow }),
+    row(envId, 8_000, 200, 500, { route_id: slow }),
+    row(envId, 9_000, 200, 500, { route_id: slow }),
+    // no route matched: 2 requests, 2 errors, p95 5
+    row(envId, 10_000, 404, 5, { route_id: null, service_id: null, path: "/nowhere" }),
+    row(envId, 11_000, 404, 5, { route_id: null, service_id: null, path: "/nowhere" }),
+    // another environment
+    row(randomUUID(), 1_000, 200, 999),
+  ];
+  await admin.insert({ table: "requests", values: rows, format: "JSONEachRow" });
+  return { envId, R, gone, slow, serviceId: svc.body.id as string };
+}
+
+describe("analytics top routes", () => {
+  it("ranks by requests, errors (4xx + 5xx) and p95, with names from the control plane and null for deleted or unmatched", async () => {
+    const { envId, R, gone, slow, serviceId } = await seedTop();
+    const ids = (res: ApiResponse) => (res.body.items as { routeId: string | null }[]).map((i) => i.routeId);
+
+    const byRequests = await h.api("GET", `/environments/${envId}/analytics/top-routes?${period()}`);
+    expect(byRequests.status, JSON.stringify(byRequests.body)).toBe(200);
+    expect(byRequests.body).toMatchObject({ from: new Date(base).toISOString(), to: new Date(base + 10 * 60_000).toISOString(), by: "requests" });
+    expect(ids(byRequests)).toEqual([R, slow, null, gone]);
+    expect(byRequests.body.items[0]).toEqual({
+      routeId: R, routeName: "orders-route", serviceId, requests: 5, errors4xx: 1, errors5xx: 1, errorRate: 0.4, p50Ms: 10, p95Ms: 100, p99Ms: 100,
+    });
+    expect(byRequests.body.items[2]).toMatchObject({ routeId: null, routeName: null, serviceId: null, requests: 2, errors4xx: 2, errorRate: 1, p95Ms: 5 });
+    expect(byRequests.body.items[3]).toMatchObject({ routeId: gone, routeName: null, requests: 1 });
+
+    // errors: R and the unmatched traffic tie at 2, more requests first; then the error-free routes by requests.
+    const byErrors = await h.api("GET", `/environments/${envId}/analytics/top-routes?${period()}&by=errors`);
+    expect(byErrors.body.by).toBe("errors");
+    expect(ids(byErrors)).toEqual([R, null, slow, gone]);
+
+    const byP95 = await h.api("GET", `/environments/${envId}/analytics/top-routes?${period()}&by=p95&limit=2`);
+    expect(byP95.body.by).toBe("p95");
+    expect(ids(byP95)).toEqual([slow, R]);
+    expect(byP95.body.items[0].p95Ms).toBe(500);
+  });
+
+  it("refuses an unknown criterion, a limit above 50 and the usual period errors", async () => {
+    const { envId } = await seedTop();
+    const bad = await h.api("GET", `/environments/${envId}/analytics/top-routes?${period()}&by=latency&limit=51`);
+    expect(bad.status).toBe(422);
+    expect(bad.body.errors.map((e: { path: string }) => e.path).sort()).toEqual(["by", "limit"]);
+    const span = await h.api("GET", `/environments/${envId}/analytics/top-routes?from=${new Date(base - 8 * 86_400_000).toISOString()}&to=${new Date(base).toISOString()}`);
+    expect(span.status).toBe(422);
+    expect(span.body.errors[0].path).toBe("to");
+    expect((await h.api("GET", `/environments/${randomUUID()}/analytics/top-routes?${period()}`)).status).toBe(404);
+  });
+});
+
 describe("analytics summary", () => {
   it("aggregates totals and one point per bucket, filling the empty ones", async () => {
     const { envId } = await seed();
