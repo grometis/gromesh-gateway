@@ -56,7 +56,7 @@ describe("platformPlugins", () => {
     const platform = platformPlugins(options);
     const original = structuredClone(input);
     expect(logFields(input, platform)).toEqual({
-      environment_id: `return "${options.environmentId}"`, key_names: 'return {"X.Token","a_b-9","x-token","z"}',
+      environment_id: `return "${options.environmentId}"`, key_names: 'return {"X.Token","a_b-9","apikey","x-token","z"}',
     });
     expect(logFields({ ...input, plugins: [...input.plugins].reverse() }, platform)).toEqual(logFields(input, platform));
     expect(input).toEqual(original);
@@ -64,8 +64,9 @@ describe("platformPlugins", () => {
     expect(logFields(state, platform)).toHaveProperty("key_names", 'return {"apikey"}');
   });
 
-  it("uses apikey for each omitted key_names and when no key-auth exists", () => {
-    expect(logFields({ ...state, plugins: [auth(1, { key_names: ["x-token"] })] })).toHaveProperty("key_names", 'return {"x-token"}');
+  it("always includes apikey, for omitted key_names and when no key-auth exists", () => {
+    // apikey is always in the union: a key-auth with key_names ["x-token"] still strips the default name.
+    expect(logFields({ ...state, plugins: [auth(1, { key_names: ["x-token"] })] })).toHaveProperty("key_names", 'return {"apikey","x-token"}');
     expect(logFields({ ...state, plugins: [auth(1)] })).toHaveProperty("key_names", 'return {"apikey"}');
     expect(logFields({ ...state, plugins: [auth(1, { key_names: ["x-token"] }), auth(2, {}, { consumerId: "00000000-0000-4000-8000-000000000010" })],
       consumers: [{ id: "00000000-0000-4000-8000-000000000010", username: "test" }],
@@ -73,7 +74,7 @@ describe("platformPlugins", () => {
     expect(logFields({ ...state, plugins: [{ id: auth(1).id, name: "rate-limiting", config: { key_names: ["ignored"] } }] }))
       .toHaveProperty("key_names", 'return {"apikey"}');
     expect(logFields({ ...state, plugins: [auth(1, { key_names: ["a".repeat(64)] })] }))
-      .toHaveProperty("key_names", `return {"${"a".repeat(64)}"}`);
+      .toHaveProperty("key_names", `return {"${"a".repeat(64)}","apikey"}`);
   });
 
   it.each([null, "x-token", [], [1], [null], [{}], [""], ["a".repeat(65)], ["x token"], ["x/token"], ["é"], ["x\n"], ['x"}; return "injected']])(

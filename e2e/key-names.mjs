@@ -104,7 +104,7 @@ async function main() {
     const publication = await api("POST", `/environments/${environmentId}/snapshots`, 201, {});
     const snapshot = await api("GET", `/environments/${environmentId}/snapshots/${publication.version}`, 200);
     const fields = snapshot.config.plugins.find((entry) => entry.name === "http-log")?.config.custom_fields_by_lua;
-    check(fields?.key_names === 'return {"x-token"}', "Control plane publication must derive key_names from the configured plugins");
+    check(fields?.key_names === 'return {"apikey","x-token"}', "Control plane publication must derive key_names from the configured plugins (apikey always included)");
 
     const serviceId = randomUUID();
     const routeId = randomUUID();

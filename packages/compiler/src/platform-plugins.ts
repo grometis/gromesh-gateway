@@ -15,9 +15,8 @@ export function keyNameIssues(plugin: Plugin, path: string) {
 /** Resolve at compile time, where the complete environment is available to existing publication callers. */
 export function resolvePlatformKeyNames(platform: Plugin[], configured: Plugin[]): Plugin[] {
   const auth = configured.filter((plugin) => plugin.name === "key-auth");
-  const names = [...new Set(auth.length === 0 ? ["apikey"] : auth.flatMap((plugin) =>
-    (plugin.config?.key_names ?? ["apikey"]) as string[],
-  ))].sort();
+  // "apikey" is always stripped: Kong's default name, and what the collector assumed before the list existed.
+  const names = [...new Set(["apikey", ...auth.flatMap((plugin) => (plugin.config?.key_names ?? ["apikey"]) as string[])])].sort();
   // A Lua table serializes as a JSON array in http-log events. Names have already been validated before interpolation.
   const lua = `return {${names.map((name) => `"${name}"`).join(",")}}`;
   return platform.map((plugin) => plugin.id === HTTP_LOG_ID && plugin.name === "http-log" ? {
