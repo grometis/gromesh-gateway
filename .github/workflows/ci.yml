@@ -130,6 +130,13 @@ jobs:
       # The compose default Kong image is our own build, published privately on GHCR.
       - run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
       - run: docker compose -f deploy/compose/docker-compose.yml up -d --build --wait
+      # The gateway caches a failed lookup of gromesh-collector for about a minute, and the steps below send traffic
+      # right away (the control-plane e2e even restarts the gateway): the collector must exist before any of them.
+      - name: Start the collector before any gateway traffic
+        run: |
+          docker compose -f deploy/compose/docker-compose.yml --profile observability up -d --wait clickhouse
+          docker compose -f deploy/compose/docker-compose.yml --profile observability run --rm --no-deps clickhouse-init
+          docker compose -f deploy/compose/docker-compose.yml --profile observability up -d --wait --no-deps vector
       - name: Kong accepts the compiler output (contract example)
         run: pnpm smoke
       - name: Walking skeleton (API → compiler → Kong → upstream)
