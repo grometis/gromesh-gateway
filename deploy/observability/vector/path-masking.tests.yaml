@@ -1,0 +1,190 @@
+# Run with vector test vector.yaml path-masking.tests.yaml (see e2e/path-masking.mjs).
+tests:
+  - name: punctuated-cpf
+    inputs:
+      - insert_at: mask_path
+        type: log
+        log_fields:
+          request: {"uri": "/clientes/123.456.789-09"}
+          expected: "/clientes/{cpf}"
+    outputs:
+      - extract_from: mask_path
+        conditions:
+          - type: vrl
+            source: assert!(.request.uri == .expected, "Unexpected masked path")
+  - name: cpf
+    inputs:
+      - insert_at: mask_path
+        type: log
+        log_fields:
+          request: {"uri": "/clientes/12345678909"}
+          expected: "/clientes/{cpf}"
+    outputs:
+      - extract_from: mask_path
+        conditions:
+          - type: vrl
+            source: assert!(.request.uri == .expected, "Unexpected masked path")
+  - name: punctuated-cnpj
+    inputs:
+      - insert_at: mask_path
+        type: log
+        log_fields:
+          request: {"uri": "/empresas/12.345.678/0001-95"}
+          expected: "/empresas/{cnpj}"
+    outputs:
+      - extract_from: mask_path
+        conditions:
+          - type: vrl
+            source: assert!(.request.uri == .expected, "Unexpected masked path")
+  - name: cnpj
+    inputs:
+      - insert_at: mask_path
+        type: log
+        log_fields:
+          request: {"uri": "/empresas/12345678000195"}
+          expected: "/empresas/{cnpj}"
+    outputs:
+      - extract_from: mask_path
+        conditions:
+          - type: vrl
+            source: assert!(.request.uri == .expected, "Unexpected masked path")
+  - name: email-before-numbers
+    inputs:
+      - insert_at: mask_path
+        type: log
+        log_fields:
+          request: {"uri": "/contatos/test.12345678909+tag@example.test"}
+          expected: "/contatos/{email}"
+    outputs:
+      - extract_from: mask_path
+        conditions:
+          - type: vrl
+            source: assert!(.request.uri == .expected, "Unexpected masked path")
+  - name: numbers-and-adjacent-matches
+    inputs:
+      - insert_at: mask_path
+        type: log
+        log_fields:
+          request: {"uri": "/ids/123456/9876543210/123456789012345/123456-654321"}
+          expected: "/ids/{num}/{num}/{num}/{num}-{num}"
+    outputs:
+      - extract_from: mask_path
+        conditions:
+          - type: vrl
+            source: assert!(.request.uri == .expected, "Unexpected masked path")
+  - name: short-ids
+    inputs:
+      - insert_at: mask_path
+        type: log
+        log_fields:
+          request: {"uri": "/v1/pedidos/123/12345"}
+          expected: "/v1/pedidos/123/12345"
+    outputs:
+      - extract_from: mask_path
+        conditions:
+          - type: vrl
+            source: assert!(.request.uri == .expected, "Unexpected masked path")
+  - name: uuid-and-numbers
+    inputs:
+      - insert_at: mask_path
+        type: log
+        log_fields:
+          request: {"uri": "/ids/12345678-1234-1234-1234-123456789012/ABCDEF12-3456-7890-ABCD-123456789012/123456"}
+          expected: "/ids/12345678-1234-1234-1234-123456789012/ABCDEF12-3456-7890-ABCD-123456789012/{num}"
+    outputs:
+      - extract_from: mask_path
+        conditions:
+          - type: vrl
+            source: assert!(.request.uri == .expected, "Unexpected masked path")
+  - name: encoded-pii
+    inputs:
+      - insert_at: mask_path
+        type: log
+        log_fields:
+          request: {"uri": "/clientes/%31%32%33%2E456%2E789%2D09/contatos/ana%2B123456%40example.test/12.345.678%2F0001-95"}
+          expected: "/clientes/{cpf}/contatos/{email}/{cnpj}"
+    outputs:
+      - extract_from: mask_path
+        conditions:
+          - type: vrl
+            source: assert!(.request.uri == .expected, "Unexpected masked path")
+  - name: discard-query-before-decoding
+    inputs:
+      - insert_at: mask_path
+        type: log
+        log_fields:
+          request: {"uri": "/v1/pedidos/123?cpf=12345678909&email=test@example.test"}
+          expected: "/v1/pedidos/123"
+    outputs:
+      - extract_from: mask_path
+        conditions:
+          - type: vrl
+            source: assert!(.request.uri == .expected, "Unexpected masked path")
+  - name: encoded-question-in-path
+    inputs:
+      - insert_at: mask_path
+        type: log
+        log_fields:
+          request: {"uri": "/v1/a%3Fb/123456"}
+          expected: "/v1/a?b/{num}"
+    outputs:
+      - extract_from: mask_path
+        conditions:
+          - type: vrl
+            source: assert!(.request.uri == .expected, "Unexpected masked path")
+  - name: multiple-patterns
+    inputs:
+      - insert_at: mask_path
+        type: log
+        log_fields:
+          request: {"uri": "/123.456.789-09/12.345.678/0001-95/12345678909/12345678000195/test@example.test/123456"}
+          expected: "/{cpf}/{cnpj}/{cpf}/{cnpj}/{email}/{num}"
+    outputs:
+      - extract_from: mask_path
+        conditions:
+          - type: vrl
+            source: assert!(.request.uri == .expected, "Unexpected masked path")
+  - name: missing-uri
+    inputs:
+      - insert_at: mask_path
+        type: log
+        log_fields: {}
+    no_outputs_from: [mask_path, sanitize]
+  - name: invalid-uri-type
+    inputs:
+      - insert_at: mask_path
+        type: log
+        log_fields: {"request": {"uri": 123456}}
+    no_outputs_from: [mask_path, sanitize]
+  - name: non-path-uri
+    inputs:
+      - insert_at: mask_path
+        type: log
+        log_fields: {"request": {"uri": "https://example.test/12345678909"}}
+    no_outputs_from: [mask_path, sanitize]
+  - name: single-event-pipeline
+    inputs:
+      - insert_at: decode
+        type: log
+        log_fields:
+          message: "{\"environment_id\": \"00000000-0000-4000-8000-000000000001\", \"started_at\": 1792100000123, \"request\": {\"uri\": \"/clientes/12345678909?email=test@example.test\", \"method\": \"GET\", \"size\": 100, \"querystring\": {\"email\": \"test@example.test\"}, \"url\": \"http://example.test/clientes/12345678909\"}, \"response\": {\"status\": 200, \"size\": 200}, \"client_ip\": \"127.0.0.1\", \"latencies\": {\"kong\": 1, \"proxy\": 2, \"request\": 3}}"
+    outputs:
+      - extract_from: sanitize
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.path == "/clientes/{cpf}", "Unexpected analytics path")
+              assert!(!exists(.request) && !exists(.querystring), "Raw request must not survive sanitization")
+  - name: batch-pipeline
+    inputs:
+      - insert_at: decode
+        type: log
+        log_fields:
+          message: "[{\"environment_id\": \"00000000-0000-4000-8000-000000000001\", \"started_at\": 1792100000123, \"request\": {\"uri\": \"/clientes/12345678909?email=test@example.test\", \"method\": \"GET\", \"size\": 100, \"querystring\": {\"email\": \"test@example.test\"}, \"url\": \"http://example.test/clientes/12345678909\"}, \"response\": {\"status\": 200, \"size\": 200}, \"client_ip\": \"127.0.0.1\", \"latencies\": {\"kong\": 1, \"proxy\": 2, \"request\": 3}}, {\"environment_id\": \"00000000-0000-4000-8000-000000000001\", \"started_at\": 1792100000123, \"request\": {\"uri\": \"/clientes/12345678909?email=test@example.test\", \"method\": \"GET\", \"size\": 100, \"querystring\": {\"email\": \"test@example.test\"}, \"url\": \"http://example.test/clientes/12345678909\"}, \"response\": {\"status\": 200, \"size\": 200}, \"client_ip\": \"127.0.0.1\", \"latencies\": {\"kong\": 1, \"proxy\": 2, \"request\": 3}}]"
+    outputs:
+      - extract_from: sanitize
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.path == "/clientes/{cpf}", "Unexpected analytics path")
+              assert!(!exists(.request) && !exists(.querystring), "Raw request must not survive sanitization")

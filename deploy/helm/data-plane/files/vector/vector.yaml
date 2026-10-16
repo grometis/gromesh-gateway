@@ -30,9 +30,31 @@ transforms:
       if err != null { abort }
       . = payload
 
-  sanitize:
+  mask_path:
     type: remap
     inputs: [decode]
+    drop_on_error: true
+    drop_on_abort: true
+    source: |
+      uri, err = string(.request.uri)
+      if err != null { abort }
+      # Queries are never stored. Decode the path before matching encoded PII.
+      path = decode_percent(string!(split(uri, "?", limit: 2)[0]))
+      if !starts_with(path, "/") { abort }
+      # One pass keeps UUIDs opaque, including all-numeric UUIDs. Specific
+      # patterns win over the generic digit run; unpunctuated IDs use its length.
+      .request.uri = replace_with(path, r'(?i)(?P<email>[a-z0-9.!#%&*+=^_`{|}~\x24\x27-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+)|(?P<uuid>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})|(?P<cnpj>[0-9]{2}\.[0-9]{3}\.[0-9]{3}/[0-9]{4}-[0-9]{2})|(?P<cpf>[0-9]{3}\.[0-9]{3}\.[0-9]{3}-[0-9]{2})|(?P<num>[0-9]{6,})') -> |m| {
+        if m.email != null { "{email}" } else if m.uuid != null { string!(m.uuid) } else if m.cnpj != null {
+          "{cnpj}"
+        } else if m.cpf != null { "{cpf}" } else {
+          digits = string!(m.num)
+          if length(digits) == 14 { "{cnpj}" } else if length(digits) == 11 { "{cpf}" } else { "{num}" }
+        }
+      }
+
+  sanitize:
+    type: remap
+    inputs: [mask_path]
     drop_on_error: true
     drop_on_abort: true
     source: |
@@ -45,7 +67,7 @@ transforms:
 
       # Drop the whole query (also URL/referrer copies) and every field outside
       # the analytics allowlist. No raw event can reach a sink or disk buffer.
-      path = string!(split(string!(.request.uri), "?", limit: 2)[0])
+      path = string!(.request.uri)
       if !starts_with(path, "/") { abort }
       uuid = r'(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
       environment_id = string!(.environment_id)
