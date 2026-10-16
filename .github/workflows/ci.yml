@@ -30,19 +30,6 @@ jobs:
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U gromesh" --health-interval 5s --health-timeout 3s --health-retries 20
-      # Plugin configs are validated by a real Kong (control-plane integration tests).
-      kong:
-        image: ghcr.io/grometis/gromesh-kong@sha256:3293c2e49633c91fa838dbd3eaaa9d534b83d7dbcc7cc84ff341ccee2156fd40
-        credentials:
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-        env:
-          KONG_DATABASE: "off"
-          KONG_ADMIN_LISTEN: "0.0.0.0:8001"
-          KONG_PLUGINS: bundled
-        ports: ["127.0.0.1:8011:8001"]
-        options: >-
-          --health-cmd "kong health" --health-interval 5s --health-timeout 5s --health-retries 20
       # Analytics are read from a real ClickHouse (control-plane integration tests create the table themselves).
       clickhouse:
         image: clickhouse/clickhouse-server:25.8.16.34-alpine
@@ -68,6 +55,16 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # Plugin configs are validated by a real Kong (control-plane integration tests). A step, not a service: the
+      # image is read from the compose default so image-digests never has to edit this workflow.
+      - name: Start the Kong validator (compose default image)
+        run: |
+          read -r kong_ref _ < <(node scripts/kong-image-ref.mjs)
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker run -d --name kong-validator -p 127.0.0.1:8011:8001 \
+            -e KONG_DATABASE=off -e KONG_ADMIN_LISTEN=0.0.0.0:8001 -e KONG_PLUGINS=bundled "$kong_ref"
+          for i in $(seq 1 40); do docker exec kong-validator kong health >/dev/null 2>&1 && break; sleep 3; done
+          docker exec kong-validator kong health
       - name: Generated UI client matches the contract
         run: |
           pnpm --filter @gromesh/ui gen:api
@@ -251,8 +248,10 @@ jobs:
           docker build -t gromesh-ui:ci -f apps/ui/Dockerfile .
           docker build -t gromesh-agent:ci -f apps/agent/Dockerfile .
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          docker pull ghcr.io/grometis/gromesh-kong@sha256:3293c2e49633c91fa838dbd3eaaa9d534b83d7dbcc7cc84ff341ccee2156fd40
-          docker tag ghcr.io/grometis/gromesh-kong@sha256:3293c2e49633c91fa838dbd3eaaa9d534b83d7dbcc7cc84ff341ccee2156fd40 ghcr.io/grometis/gromesh-kong:3.9.4-48960afbeba04b0eea81dd44a6079ee0e1c647a5
+          read -r kong_ref kong_tag < <(node scripts/kong-image-ref.mjs)
+          docker pull "$kong_ref"
+          docker tag "$kong_ref" "$kong_tag"
+          echo "KONG_TAG=$kong_tag" >> "$GITHUB_ENV"
           docker pull postgres:16-alpine
           docker pull traefik/whoami:v1.10.3
       - name: Create kind cluster and preload images
@@ -260,11 +259,11 @@ jobs:
           kind create cluster --name "$KIND_CLUSTER_NAME" --image kindest/node:v1.32.2 --wait 120s
           if ! kind load docker-image --name "$KIND_CLUSTER_NAME" \
             gromesh-control-plane:ci gromesh-ui:ci gromesh-agent:ci \
-            ghcr.io/grometis/gromesh-kong:3.9.4-48960afbeba04b0eea81dd44a6079ee0e1c647a5 postgres:16-alpine traefik/whoami:v1.10.3; then
+            "$KONG_TAG" postgres:16-alpine traefik/whoami:v1.10.3; then
             # Docker's containerd store may retain indexes for unloaded platforms.
             docker save --platform=linux/amd64 -o "$RUNNER_TEMP/images.tar" \
               gromesh-control-plane:ci gromesh-ui:ci gromesh-agent:ci \
-              ghcr.io/grometis/gromesh-kong:3.9.4-48960afbeba04b0eea81dd44a6079ee0e1c647a5 postgres:16-alpine traefik/whoami:v1.10.3
+              "$KONG_TAG" postgres:16-alpine traefik/whoami:v1.10.3
             kind load image-archive --name "$KIND_CLUSTER_NAME" "$RUNNER_TEMP/images.tar"
             rm -f "$RUNNER_TEMP/images.tar"
           fi
@@ -325,8 +324,10 @@ jobs:
           docker build -t gromesh-ui:ci -f apps/ui/Dockerfile .
           docker build -t gromesh-agent:ci -f apps/agent/Dockerfile .
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          docker pull ghcr.io/grometis/gromesh-kong@sha256:3293c2e49633c91fa838dbd3eaaa9d534b83d7dbcc7cc84ff341ccee2156fd40
-          docker tag ghcr.io/grometis/gromesh-kong@sha256:3293c2e49633c91fa838dbd3eaaa9d534b83d7dbcc7cc84ff341ccee2156fd40 ghcr.io/grometis/gromesh-kong:3.9.4-48960afbeba04b0eea81dd44a6079ee0e1c647a5
+          read -r kong_ref kong_tag < <(node scripts/kong-image-ref.mjs)
+          docker pull "$kong_ref"
+          docker tag "$kong_ref" "$kong_tag"
+          echo "KONG_TAG=$kong_tag" >> "$GITHUB_ENV"
           docker pull postgres:16-alpine
           docker pull traefik/whoami:v1.10.3
           docker pull clickhouse/clickhouse-server:25.8.16.34-alpine
@@ -334,7 +335,7 @@ jobs:
       - name: Create kind cluster and preload images
         run: |
           kind create cluster --name "$KIND_CLUSTER_NAME" --image kindest/node:v1.32.2 --wait 120s
-          images="gromesh-control-plane:ci gromesh-ui:ci gromesh-agent:ci ghcr.io/grometis/gromesh-kong:3.9.4-48960afbeba04b0eea81dd44a6079ee0e1c647a5 postgres:16-alpine traefik/whoami:v1.10.3 clickhouse/clickhouse-server:25.8.16.34-alpine timberio/vector:0.53.0-alpine"
+          images="gromesh-control-plane:ci gromesh-ui:ci gromesh-agent:ci $KONG_TAG postgres:16-alpine traefik/whoami:v1.10.3 clickhouse/clickhouse-server:25.8.16.34-alpine timberio/vector:0.53.0-alpine"
           # shellcheck disable=SC2086
           if ! kind load docker-image --name "$KIND_CLUSTER_NAME" $images; then
             # shellcheck disable=SC2086

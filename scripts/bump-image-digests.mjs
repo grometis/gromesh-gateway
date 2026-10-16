@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Pins a published build of one of the project's images everywhere the repository references it.
 // Usage: node scripts/bump-image-digests.mjs --image <kong|control-plane|ui|agent> --tag <tag> --digest sha256:<hex> [--check]
-// kong: the compose default, both charts, the ci workflow, the security checklist and the kind script comment.
+// kong: the compose default, both charts, the security checklist and the kind script comment (ci reads
+// scripts/kong-image-ref.mjs: GITHUB_TOKEN cannot push workflow changes).
 // control-plane, ui, agent: the chart values (repository/tag/digest block) of the component.
 // The current reference is read from the files, so the script is idempotent and needs no state.
 import { readFileSync, writeFileSync } from "node:fs";
@@ -12,7 +13,6 @@ const KONG_FILES = [
   "deploy/compose/docker-compose.yml",
   "deploy/helm/data-plane/values.yaml",
   "deploy/helm/control-plane/values.yaml",
-  ".github/workflows/ci.yml",
   "e2e/security-checklist.md",
   "e2e/kind/run.sh", // comment listing the images the kind cluster preloads
 ];

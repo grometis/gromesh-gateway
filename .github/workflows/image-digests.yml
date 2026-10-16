@@ -7,6 +7,8 @@ on:
   workflow_run:
     workflows: [kong-image, images]
     types: [completed]
+    # Builds dispatched on a branch (for example to prove a workflow change) are not pinned.
+    branches: [main]
   workflow_dispatch:
     inputs:
       group:
