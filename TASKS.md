@@ -288,12 +288,13 @@ Aceite: o job do e2e final verde no CI e o checklist sem pendências.
 
 ## Backlog (pós-MVP, em ordem de prioridade)
 
-1. **W7-X2, parte remota (precisa do repositório no GitHub):** rodar o workflow `kong-image` (imagem própria 3.9.4; se o tempo estourar, `--jobs=4`), regenerar o catálogo de plugins a partir dela (`catalog:generate`), trocar o padrão do compose para a imagem própria e fixar os digests nos charts. Até lá o compose e o kind usam `kong:3.9.3`.
+1. **Digests nos charts a cada nova imagem:** o workflow `kong-image` publica por SHA; os charts e o compose fixam o digest à mão (`chore/kong-3.9.4-image`). Automatizar a atualização (PR gerado pelo workflow) quando a imagem mudar.
 2. **Observabilidade resiliente:** o Kong cacheia o NXDOMAIN de `gromesh-collector`. Definir `KONG_DNS_NOT_FOUND_TTL` baixo (ex.: 5 s) nos charts e no compose, ajustar `queue.max_retry_time` do http-log para cobrir uma queda curta do coletor, e alertar (métrica do Prometheus) quando o coletor não estiver recebendo eventos.
-3. **Cifragem em repouso:** incluir no AAD o contexto (tabela, coluna, id da linha) para impedir a troca de valores cifrados entre linhas.
-4. **Analytics e dado pessoal:** o `path` das requisições pode conter dado pessoal (ex.: CPF em `/clientes/{cpf}`); avaliar retenção menor ou máscara de path por rota.
-5. **Analytics:** "top rotas por volume e por erro" no dashboard precisa de um endpoint novo no contrato.
-6. **Observabilidade:** `GROMESH_KEY_NAMES` do coletor é configurado por cluster à mão; derivar dos `key_names` dos plugins key-auth publicados.
-7. **Snapshot por cluster:** o agente ainda se registra de novo a cada restart (node token só em memória); avaliar persistir o token no volume do pod.
+3. **kong-image multi-arquitetura:** build `linux/arm64` em runner ARM nativo (`ubuntu-24.04-arm`) e manifest list junto com o `amd64`. Motivo: Macs de desenvolvimento e nós ARM em produção. Enquanto isso, em Apple Silicon o desenvolvimento local usa `KONG_IMAGE=kong:3.9.3` (ver `deploy/compose/.env.example`).
+4. **Cifragem em repouso:** incluir no AAD o contexto (tabela, coluna, id da linha) para impedir a troca de valores cifrados entre linhas.
+5. **Analytics e dado pessoal:** o `path` das requisições pode conter dado pessoal (ex.: CPF em `/clientes/{cpf}`); avaliar retenção menor ou máscara de path por rota.
+6. **Analytics:** "top rotas por volume e por erro" no dashboard precisa de um endpoint novo no contrato.
+7. **Observabilidade:** `GROMESH_KEY_NAMES` do coletor é configurado por cluster à mão; derivar dos `key_names` dos plugins key-auth publicados.
+8. **Snapshot por cluster:** o agente ainda se registra de novo a cada restart (node token só em memória); avaliar persistir o token no volume do pod.
 
 Regras de produção já codificadas nos charts e que continuam valendo: `TRUST_PROXY` é o IP/CIDR exato do ingress (nunca `uniquelocal`); o `LISTEN` do control plane usa conexão direta ao Postgres (nunca PgBouncer em modo transação); o ingress na frente do SSE do agente precisa de idle timeout acima de 15 s e buffering desligado; `COOKIE_SECURE` só é falso no compose de desenvolvimento.
