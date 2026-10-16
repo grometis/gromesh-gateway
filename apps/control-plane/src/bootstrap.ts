@@ -1,5 +1,5 @@
 import "reflect-metadata";
-import { type INestApplication, Logger, RequestMethod } from "@nestjs/common";
+import { type INestApplication, Logger, type LogLevel, RequestMethod } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { AppModule } from "./app.module.js";
 import type { AppConfig } from "./config.js";
@@ -8,13 +8,13 @@ import { AtRestService } from "./crypto/at-rest.js";
 import { UsersService } from "./users/users.js";
 
 /** Shared by main.ts and the integration tests, so tests run the real app wiring. */
-export async function createApp(config: AppConfig, opts: { logger?: false } = {}): Promise<INestApplication> {
+export async function createApp(config: AppConfig, opts: { logger?: false | LogLevel[] } = {}): Promise<INestApplication> {
   if (config.migrateOnStart) {
     await runMigrations(config.databaseUrl);
     Logger.log("Migrations applied", "Bootstrap");
   }
   const app = await NestFactory.create(AppModule.forRoot(config), {
-    ...(opts.logger === false ? { logger: false } : {}),
+    ...(opts.logger === undefined ? {} : { logger: opts.logger }),
   });
   app.setGlobalPrefix("api/v1", {
     exclude: ["healthz", { path: "agent/v1/(.*)", method: RequestMethod.ALL }],

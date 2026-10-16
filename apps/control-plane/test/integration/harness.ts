@@ -83,7 +83,8 @@ export async function startHarness(overrides: Partial<AppConfig> = {}): Promise<
       migrateOnStart: false,
       ...overrides,
     },
-    { logger: false },
+    // Quiet locally; in CI the application's error log is the only trace of a 5xx behind an assertion.
+    { logger: process.env.CI ? ["error"] : false },
   );
   await app.listen(0, "127.0.0.1");
   const base = `${await app.getUrl()}/api/v1`.replace("[::1]", "127.0.0.1");
