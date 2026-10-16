@@ -84,6 +84,25 @@ else
   check I1 "Imagens sem CRITICAL (Trivy)" NOTE "scripts/scan-images.sh ainda não disponível nesta branch (W7-X2)"
 fi
 
+# 6b. API tokens: shown once, expire, and cannot manage tokens.
+token_json="$(api -d '{"name":"seccheck","role":"viewer","expiresInDays":1}' "$CP/users/me/tokens")"
+token="$(printf '%s' "$token_json" | sed -n 's/.*"token":"\(ggt_[A-Za-z0-9_-]*\)".*/\1/p')"
+# The token's own id is the first key; a greedy match would take owner.id instead.
+token_id="$(printf '%s' "$token_json" | sed -n 's/^{"id":"\([^"]*\)".*/\1/p')"
+[[ ${#token} -eq 47 && -n "$token_id" ]] || { echo "token creation failed" >&2; exit 2; }
+mine="$(api "$CP/users/me/tokens")"
+audit_tokens="$(api "$CP/audit-events?entityType=api_token&limit=50")"
+[[ "$mine" != *"$token"* && "$mine" == *tokenHint* && "$audit_tokens" != *"$token"* ]] && check T1 "Token de API só na criação; depois só tokenHint (lista e audit)" PASS "" || check T1 "Token de API reaparece" FAIL ""
+bearer_ok="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -H "Authorization: Bearer $token" "$CP/environments")"
+docker compose -f deploy/compose/docker-compose.yml exec -T postgres psql -U gromesh -d gromesh -tAc "update api_tokens set expires_at = now() - interval '1 second' where id = '$token_id'" > /dev/null
+bearer_expired="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -H "Authorization: Bearer $token" "$CP/environments")"
+[[ "$bearer_ok" == 200 && "$bearer_expired" == 401 ]] && check T2 "Token expirado → 401 (válido antes: $bearer_ok)" PASS "" || check T2 "Token expirado" FAIL "antes=$bearer_ok depois=$bearer_expired"
+docker compose -f deploy/compose/docker-compose.yml exec -T postgres psql -U gromesh -d gromesh -tAc "update api_tokens set expires_at = now() + interval '1 day' where id = '$token_id'" > /dev/null
+bearer_tokens="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -H "Authorization: Bearer $token" -H 'content-type: application/json' -d '{"name":"nested","role":"viewer","expiresInDays":1}' "$CP/users/me/tokens")"
+bearer_users="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -H "Authorization: Bearer $token" "$CP/users")"
+[[ "$bearer_tokens" == 401 && "$bearer_users" == 401 ]] && check T3 "Token não cria tokens nem gerencia usuários (401)" PASS "" || check T3 "Token gerencia tokens/usuários" FAIL "tokens=$bearer_tokens users=$bearer_users"
+api -X DELETE "$CP/users/me/tokens/$token_id" > /dev/null
+
 # 7. Known advisories.
 check A1 "CVE-2026-1907 (RPC de clustering, modo híbrido)" NOTE "não se aplica: data planes em DB-less sem clustering do Kong"
 kong_default="$(sed -n 's/.*image: \${KONG_IMAGE:-\([^}]*\)}.*/\1/p' deploy/compose/docker-compose.yml | head -1)"
