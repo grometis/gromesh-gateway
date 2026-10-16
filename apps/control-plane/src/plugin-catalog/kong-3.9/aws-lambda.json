@@ -1,7 +1,23 @@
 {
+  "entity_checks": [
+    {
+      "mutually_required": [
+        "config.aws_key",
+        "config.aws_secret"
+      ]
+    },
+    {
+      "custom_entity_check": {
+        "field_sources": [
+          "config.proxy_url"
+        ]
+      }
+    }
+  ],
   "fields": [
     {
       "protocols": {
+        "type": "set",
         "default": [
           "grpc",
           "grpcs",
@@ -18,52 +34,51 @@
           ]
         },
         "required": true,
-        "type": "set",
         "description": "A set of strings representing HTTP protocols."
       }
     },
     {
       "config": {
-        "required": true,
         "type": "record",
+        "required": true,
         "fields": [
           {
             "timeout": {
               "default": 60000,
-              "required": true,
               "type": "number",
+              "required": true,
               "description": "An optional timeout in milliseconds when invoking the function."
             }
           },
           {
             "keepalive": {
               "default": 60000,
-              "required": true,
               "type": "number",
+              "required": true,
               "description": "An optional value in milliseconds that defines how long an idle connection lives before being closed."
             }
           },
           {
             "aws_key": {
               "referenceable": true,
-              "encrypted": true,
               "type": "string",
+              "encrypted": true,
               "description": "The AWS key credential to be used when invoking the function."
             }
           },
           {
             "aws_secret": {
               "referenceable": true,
-              "encrypted": true,
               "type": "string",
+              "encrypted": true,
               "description": "The AWS secret credential to be used when invoking the function. "
             }
           },
           {
             "aws_assume_role_arn": {
               "referenceable": true,
-              "encrypted": true,
               "type": "string",
+              "encrypted": true,
               "description": "The target AWS IAM role ARN used to invoke the Lambda function."
             }
           },
@@ -88,8 +103,8 @@
           },
           {
             "function_name": {
-              "required": false,
               "type": "string",
+              "required": false,
               "description": "The AWS Lambda function to invoke. Both function name and function ARN (including partial) are supported."
             }
           },
@@ -101,27 +116,27 @@
           },
           {
             "invocation_type": {
-              "required": true,
-              "type": "string",
+              "description": "The InvocationType to use when invoking the function. Available types are RequestResponse, Event, DryRun.",
               "default": "RequestResponse",
+              "type": "string",
+              "required": true,
               "one_of": [
                 "RequestResponse",
                 "Event",
                 "DryRun"
-              ],
-              "description": "The InvocationType to use when invoking the function. Available types are RequestResponse, Event, DryRun."
+              ]
             }
           },
           {
             "log_type": {
-              "required": true,
-              "type": "string",
+              "description": "The LogType to use when invoking the function. By default, None and Tail are supported.",
               "default": "Tail",
+              "type": "string",
+              "required": true,
               "one_of": [
                 "Tail",
                 "None"
-              ],
-              "description": "The LogType to use when invoking the function. By default, None and Tail are supported."
+              ]
             }
           },
           {
@@ -132,11 +147,11 @@
           },
           {
             "port": {
+              "default": 443,
               "between": [
                 0,
                 65535
               ],
-              "default": 443,
               "type": "integer",
               "description": "An integer representing a port number between 0 and 65535, inclusive."
             }
@@ -149,11 +164,11 @@
           },
           {
             "unhandled_status": {
+              "type": "integer",
               "between": [
                 100,
                 999
               ],
-              "type": "integer",
               "description": "The response status code to use (instead of the default 200, 202, or 204) in the case of an Unhandled Function Error."
             }
           },
@@ -221,43 +236,28 @@
           },
           {
             "aws_imds_protocol_version": {
-              "required": true,
-              "type": "string",
+              "description": "Identifier to select the IMDS protocol version to use: `v1` or `v2`.",
               "default": "v1",
+              "type": "string",
+              "required": true,
               "one_of": [
                 "v1",
                 "v2"
-              ],
-              "description": "Identifier to select the IMDS protocol version to use: `v1` or `v2`."
+              ]
             }
           },
           {
             "empty_arrays_mode": {
-              "required": true,
-              "type": "string",
+              "description": "An optional value that defines whether Kong should send empty arrays (returned by Lambda function) as `[]` arrays or `{}` objects in JSON responses. The value `legacy` means Kong will send empty arrays as `{}` objects in response",
               "default": "legacy",
+              "type": "string",
+              "required": true,
               "one_of": [
                 "legacy",
                 "correct"
-              ],
-              "description": "An optional value that defines whether Kong should send empty arrays (returned by Lambda function) as `[]` arrays or `{}` objects in JSON responses. The value `legacy` means Kong will send empty arrays as `{}` objects in response"
+              ]
             }
           }
-        ]
-      }
-    }
-  ],
-  "entity_checks": [
-    {
-      "mutually_required": [
-        "config.aws_key",
-        "config.aws_secret"
-      ]
-    },
-    {
-      "custom_entity_check": {
-        "field_sources": [
-          "config.proxy_url"
         ]
       }
     }

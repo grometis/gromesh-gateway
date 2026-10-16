@@ -1,15 +1,17 @@
 {
+  "entity_checks": [],
   "fields": [
     {
       "consumer": {
-        "type": "foreign",
-        "description": "Custom type for representing a foreign key with a null value allowed.",
         "eq": null,
-        "reference": "consumers"
+        "reference": "consumers",
+        "type": "foreign",
+        "description": "Custom type for representing a foreign key with a null value allowed."
       }
     },
     {
       "protocols": {
+        "type": "set",
         "default": [
           "grpc",
           "grpcs",
@@ -26,40 +28,38 @@
           ]
         },
         "required": true,
-        "type": "set",
         "description": "A set of strings representing HTTP protocols."
       }
     },
     {
       "config": {
-        "required": true,
         "type": "record",
+        "required": true,
         "fields": [
           {
             "allow": {
-              "type": "array",
               "default": [],
               "elements": {
                 "type": "string",
                 "is_regex": true
               },
+              "type": "array",
               "description": "An array of regular expressions that should be allowed. The regular expressions will be checked against the `User-Agent` header."
             }
           },
           {
             "deny": {
-              "type": "array",
               "default": [],
               "elements": {
                 "type": "string",
                 "is_regex": true
               },
+              "type": "array",
               "description": "An array of regular expressions that should be denied. The regular expressions will be checked against the `User-Agent` header."
             }
           }
         ]
       }
     }
-  ],
-  "entity_checks": []
+  ]
 }

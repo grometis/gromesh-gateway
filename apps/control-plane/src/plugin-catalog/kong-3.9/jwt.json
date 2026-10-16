@@ -1,15 +1,30 @@
 {
+  "entity_checks": [
+    {
+      "conditional": {
+        "if_match": {
+          "gt": 0
+        },
+        "if_field": "config.maximum_expiration",
+        "then_field": "config.claims_to_verify",
+        "then_match": {
+          "contains": "exp"
+        }
+      }
+    }
+  ],
   "fields": [
     {
       "consumer": {
-        "type": "foreign",
-        "description": "Custom type for representing a foreign key with a null value allowed.",
         "eq": null,
-        "reference": "consumers"
+        "reference": "consumers",
+        "type": "foreign",
+        "description": "Custom type for representing a foreign key with a null value allowed."
       }
     },
     {
       "protocols": {
+        "type": "set",
         "default": [
           "grpc",
           "grpcs",
@@ -26,34 +41,33 @@
           ]
         },
         "required": true,
-        "type": "set",
         "description": "A set of strings representing HTTP protocols."
       }
     },
     {
       "config": {
-        "required": true,
         "type": "record",
+        "required": true,
         "fields": [
           {
             "uri_param_names": {
-              "type": "set",
               "default": [
                 "jwt"
               ],
               "elements": {
                 "type": "string"
               },
+              "type": "set",
               "description": "A list of querystring parameters that Kong will inspect to retrieve JWTs."
             }
           },
           {
             "cookie_names": {
-              "type": "set",
               "default": [],
               "elements": {
                 "type": "string"
               },
+              "type": "set",
               "description": "A list of cookie names that Kong will inspect to retrieve JWTs."
             }
           },
@@ -67,14 +81,13 @@
           {
             "secret_is_base64": {
               "default": false,
-              "required": true,
               "type": "boolean",
+              "required": true,
               "description": "If true, the plugin assumes the credential’s secret to be base64 encoded. You will need to create a base64-encoded secret for your Consumer, and sign your JWT with the original secret."
             }
           },
           {
             "claims_to_verify": {
-              "type": "set",
               "elements": {
                 "type": "string",
                 "one_of": [
@@ -82,6 +95,7 @@
                   "nbf"
                 ]
               },
+              "type": "set",
               "description": "A list of registered claims (according to RFC 7519) that Kong can verify as well. Accepted values: one of exp or nbf."
             }
           },
@@ -94,56 +108,42 @@
           {
             "run_on_preflight": {
               "default": true,
-              "required": true,
               "type": "boolean",
+              "required": true,
               "description": "A boolean value that indicates whether the plugin should run (and try to authenticate) on OPTIONS preflight requests. If set to false, then OPTIONS requests will always be allowed."
             }
           },
           {
             "maximum_expiration": {
+              "default": 0,
+              "type": "number",
               "between": [
                 0,
                 31536000
               ],
-              "default": 0,
-              "type": "number",
               "description": "A value between 0 and 31536000 (365 days) limiting the lifetime of the JWT to maximum_expiration seconds in the future."
             }
           },
           {
             "header_names": {
-              "type": "set",
               "default": [
                 "authorization"
               ],
               "elements": {
                 "type": "string"
               },
+              "type": "set",
               "description": "A list of HTTP header names that Kong will inspect to retrieve JWTs."
             }
           },
           {
             "realm": {
-              "required": false,
               "type": "string",
+              "required": false,
               "description": "When authentication fails the plugin sends `WWW-Authenticate` header with `realm` attribute value."
             }
           }
         ]
-      }
-    }
-  ],
-  "entity_checks": [
-    {
-      "conditional": {
-        "if_field": "config.maximum_expiration",
-        "if_match": {
-          "gt": 0
-        },
-        "then_match": {
-          "contains": "exp"
-        },
-        "then_field": "config.claims_to_verify"
       }
     }
   ]

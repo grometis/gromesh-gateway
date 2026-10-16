@@ -1,7 +1,9 @@
 {
+  "entity_checks": [],
   "fields": [
     {
       "protocols": {
+        "type": "set",
         "default": [
           "grpc",
           "grpcs",
@@ -18,14 +20,13 @@
           ]
         },
         "required": true,
-        "type": "set",
         "description": "A set of strings representing HTTP protocols."
       }
     },
     {
       "config": {
-        "required": true,
         "type": "record",
+        "required": true,
         "fields": [
           {
             "status_code": {
@@ -60,8 +61,8 @@
           {
             "echo": {
               "default": false,
-              "required": true,
               "type": "boolean",
+              "required": true,
               "description": "When set, the plugin will echo a copy of the request back to the client. The main usecase for this is debugging. It can be combined with `trigger` in order to debug requests on live systems without disturbing real traffic."
             }
           },
@@ -74,6 +75,5 @@
         ]
       }
     }
-  ],
-  "entity_checks": []
+  ]
 }

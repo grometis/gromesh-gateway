@@ -1,15 +1,17 @@
 {
+  "entity_checks": [],
   "fields": [
     {
       "consumer": {
-        "type": "foreign",
-        "description": "Custom type for representing a foreign key with a null value allowed.",
         "eq": null,
-        "reference": "consumers"
+        "reference": "consumers",
+        "type": "foreign",
+        "description": "Custom type for representing a foreign key with a null value allowed."
       }
     },
     {
       "protocols": {
+        "type": "set",
         "default": [
           "grpc",
           "grpcs",
@@ -26,14 +28,13 @@
           ]
         },
         "required": true,
-        "type": "set",
         "description": "A set of strings representing HTTP protocols."
       }
     },
     {
       "config": {
-        "required": true,
         "type": "record",
+        "required": true,
         "fields": [
           {
             "anonymous": {
@@ -44,22 +45,21 @@
           {
             "hide_credentials": {
               "default": false,
-              "required": true,
               "type": "boolean",
+              "required": true,
               "description": "An optional boolean value telling the plugin to show or hide the credential from the upstream service. If `true`, the plugin will strip the credential from the request (i.e. the `Authorization` header) before proxying it."
             }
           },
           {
             "realm": {
               "default": "service",
-              "required": true,
               "type": "string",
+              "required": true,
               "description": "When authentication fails the plugin sends `WWW-Authenticate` header with `realm` attribute value."
             }
           }
         ]
       }
     }
-  ],
-  "entity_checks": []
+  ]
 }

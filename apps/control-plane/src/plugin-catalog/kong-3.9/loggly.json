@@ -1,7 +1,9 @@
 {
+  "entity_checks": [],
   "fields": [
     {
       "protocols": {
+        "type": "set",
         "default": [
           "grpc",
           "grpcs",
@@ -23,14 +25,13 @@
           "description": "A string representing a protocol, such as HTTP or HTTPS."
         },
         "required": true,
-        "type": "set",
         "description": "A set of strings representing protocols."
       }
     },
     {
       "config": {
-        "required": true,
         "type": "record",
+        "required": true,
         "fields": [
           {
             "host": {
@@ -41,21 +42,21 @@
           },
           {
             "port": {
+              "default": 514,
               "between": [
                 0,
                 65535
               ],
-              "default": 514,
               "type": "integer",
               "description": "An integer representing a port number between 0 and 65535, inclusive."
             }
           },
           {
             "key": {
-              "encrypted": true,
+              "referenceable": true,
               "required": true,
-              "type": "string",
-              "referenceable": true
+              "encrypted": true,
+              "type": "string"
             }
           },
           {
@@ -63,10 +64,10 @@
               "default": [
                 "kong"
               ],
-              "type": "set",
               "elements": {
                 "type": "string"
-              }
+              },
+              "type": "set"
             }
           },
           {
@@ -141,12 +142,12 @@
           },
           {
             "custom_fields_by_lua": {
-              "values": {
+              "type": "map",
+              "keys": {
                 "type": "string",
                 "len_min": 1
               },
-              "type": "map",
-              "keys": {
+              "values": {
                 "type": "string",
                 "len_min": 1
               },
@@ -156,6 +157,5 @@
         ]
       }
     }
-  ],
-  "entity_checks": []
+  ]
 }

@@ -1,7 +1,9 @@
 {
+  "entity_checks": [],
   "fields": [
     {
       "protocols": {
+        "type": "set",
         "default": [
           "grpc",
           "grpcs",
@@ -18,14 +20,13 @@
           ]
         },
         "required": true,
-        "type": "set",
         "description": "A set of strings representing HTTP protocols."
       }
     },
     {
       "config": {
-        "required": true,
         "type": "record",
+        "required": true,
         "fields": [
           {
             "header_name": {
@@ -36,6 +37,7 @@
           },
           {
             "generator": {
+              "description": "The generator to use for the correlation ID. Accepted values are `uuid`, `uuid#counter`, and `tracker`. See [Generators](#generators).",
               "default": "uuid#counter",
               "type": "string",
               "required": true,
@@ -43,21 +45,19 @@
                 "uuid",
                 "uuid#counter",
                 "tracker"
-              ],
-              "description": "The generator to use for the correlation ID. Accepted values are `uuid`, `uuid#counter`, and `tracker`. See [Generators](#generators)."
+              ]
             }
           },
           {
             "echo_downstream": {
               "default": false,
-              "required": true,
               "type": "boolean",
+              "required": true,
               "description": "Whether to echo the header back to downstream (the client)."
             }
           }
         ]
       }
     }
-  ],
-  "entity_checks": []
+  ]
 }
