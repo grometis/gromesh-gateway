@@ -1,15 +1,17 @@
 {
+  "entity_checks": [],
   "fields": [
     {
       "consumer": {
-        "type": "foreign",
-        "description": "Custom type for representing a foreign key with a null value allowed.",
         "eq": null,
-        "reference": "consumers"
+        "reference": "consumers",
+        "type": "foreign",
+        "description": "Custom type for representing a foreign key with a null value allowed."
       }
     },
     {
       "protocols": {
+        "type": "set",
         "default": [
           "grpc",
           "grpcs",
@@ -31,34 +33,70 @@
           "description": "A string representing a protocol, such as HTTP or HTTPS."
         },
         "required": true,
-        "type": "set",
         "description": "A set of strings representing protocols."
       }
     },
     {
       "config": {
+        "shorthand_fields": [
+          {
+            "cookie_lifetime": {
+              "type": "number"
+            }
+          },
+          {
+            "cookie_idletime": {
+              "type": "number"
+            }
+          },
+          {
+            "cookie_renew": {
+              "type": "number"
+            }
+          },
+          {
+            "cookie_discard": {
+              "type": "number"
+            }
+          },
+          {
+            "cookie_samesite": {
+              "type": "string"
+            }
+          },
+          {
+            "cookie_httponly": {
+              "type": "boolean"
+            }
+          },
+          {
+            "cookie_persistent": {
+              "type": "boolean"
+            }
+          }
+        ],
         "type": "record",
         "required": true,
         "fields": [
           {
             "secret": {
-              "default": "NWT74hnVTBOspMAOaBfewxMdytmuPh7AAxL4mQdeIF4n",
-              "type": "string",
               "referenceable": true,
               "encrypted": true,
+              "default": "MKByVTmX7kul3TKJRzTjzCVQnC5m0wFI0hT0XWXMltoe",
               "required": false,
+              "type": "string",
               "description": "The secret that is used in keyed HMAC generation."
             }
           },
           {
             "storage": {
               "default": "cookie",
+              "description": "Determines where the session data is stored. `kong`: Stores encrypted session data into Kong's current database strategy; the cookie will not contain any session data. `cookie`: Stores encrypted session data within the cookie itself.",
+              "type": "string",
               "one_of": [
                 "cookie",
                 "kong"
-              ],
-              "type": "string",
-              "description": "Determines where the session data is stored. `kong`: Stores encrypted session data into Kong's current database strategy; the cookie will not contain any session data. `cookie`: Stores encrypted session data within the cookie itself."
+              ]
             }
           },
           {
@@ -118,15 +156,15 @@
           },
           {
             "cookie_same_site": {
+              "default": "Strict",
+              "description": "Determines whether and how a cookie may be sent with cross-site requests.",
+              "type": "string",
               "one_of": [
                 "Strict",
                 "Lax",
                 "None",
                 "Default"
-              ],
-              "default": "Strict",
-              "type": "string",
-              "description": "Determines whether and how a cookie may be sent with cross-site requests."
+              ]
             }
           },
           {
@@ -173,7 +211,6 @@
           },
           {
             "response_headers": {
-              "type": "set",
               "elements": {
                 "type": "string",
                 "one_of": [
@@ -186,12 +223,12 @@
                   "absolute-timeout"
                 ]
               },
+              "type": "set",
               "description": "List of information to include, as headers, in the response to the downstream."
             }
           },
           {
             "request_headers": {
-              "type": "set",
               "elements": {
                 "type": "string",
                 "one_of": [
@@ -204,6 +241,7 @@
                   "absolute-timeout"
                 ]
               },
+              "type": "set",
               "description": "List of information to include, as headers, in the response to the downstream."
             }
           },
@@ -215,7 +253,6 @@
           },
           {
             "logout_methods": {
-              "type": "set",
               "default": [
                 "POST",
                 "DELETE"
@@ -228,6 +265,7 @@
                   "DELETE"
                 ]
               },
+              "type": "set",
               "description": "A set of HTTP methods that the plugin will respond to."
             }
           },
@@ -245,46 +283,8 @@
               "description": "The POST argument passed to logout requests. Do not change this property."
             }
           }
-        ],
-        "shorthand_fields": [
-          {
-            "cookie_lifetime": {
-              "type": "number"
-            }
-          },
-          {
-            "cookie_idletime": {
-              "type": "number"
-            }
-          },
-          {
-            "cookie_renew": {
-              "type": "number"
-            }
-          },
-          {
-            "cookie_discard": {
-              "type": "number"
-            }
-          },
-          {
-            "cookie_samesite": {
-              "type": "string"
-            }
-          },
-          {
-            "cookie_httponly": {
-              "type": "boolean"
-            }
-          },
-          {
-            "cookie_persistent": {
-              "type": "boolean"
-            }
-          }
         ]
       }
     }
-  ],
-  "entity_checks": []
+  ]
 }

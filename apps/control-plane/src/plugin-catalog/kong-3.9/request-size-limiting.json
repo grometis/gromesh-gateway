@@ -1,7 +1,9 @@
 {
+  "entity_checks": [],
   "fields": [
     {
       "protocols": {
+        "type": "set",
         "default": [
           "grpc",
           "grpcs",
@@ -18,14 +20,13 @@
           ]
         },
         "required": true,
-        "type": "set",
         "description": "A set of strings representing HTTP protocols."
       }
     },
     {
       "config": {
-        "required": true,
         "type": "record",
+        "required": true,
         "fields": [
           {
             "allowed_payload_size": {
@@ -36,28 +37,27 @@
           },
           {
             "size_unit": {
-              "required": true,
-              "type": "string",
+              "description": "Size unit can be set either in `bytes`, `kilobytes`, or `megabytes` (default). This configuration is not available in versions prior to Kong Gateway 1.3 and Kong Gateway (OSS) 2.0.",
               "default": "megabytes",
+              "type": "string",
+              "required": true,
               "one_of": [
                 "megabytes",
                 "kilobytes",
                 "bytes"
-              ],
-              "description": "Size unit can be set either in `bytes`, `kilobytes`, or `megabytes` (default). This configuration is not available in versions prior to Kong Gateway 1.3 and Kong Gateway (OSS) 2.0."
+              ]
             }
           },
           {
             "require_content_length": {
               "default": false,
-              "required": true,
               "type": "boolean",
+              "required": true,
               "description": "Set to `true` to ensure a valid `Content-Length` header exists before reading the request body."
             }
           }
         ]
       }
     }
-  ],
-  "entity_checks": []
+  ]
 }

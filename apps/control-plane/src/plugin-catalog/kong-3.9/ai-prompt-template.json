@@ -1,7 +1,9 @@
 {
+  "entity_checks": [],
   "fields": [
     {
       "protocols": {
+        "type": "set",
         "default": [
           "grpc",
           "grpcs",
@@ -18,69 +20,67 @@
           ]
         },
         "required": true,
-        "type": "set",
         "description": "A set of strings representing HTTP protocols."
       }
     },
     {
       "config": {
-        "required": true,
         "type": "record",
+        "required": true,
         "fields": [
           {
             "templates": {
               "type": "array",
-              "required": true,
               "elements": {
-                "required": true,
                 "type": "record",
+                "required": true,
                 "fields": [
                   {
                     "name": {
-                      "required": true,
                       "type": "string",
+                      "required": true,
                       "description": "Unique name for the template, can be called with `{template://NAME}`"
                     }
                   },
                   {
                     "template": {
-                      "required": true,
                       "type": "string",
+                      "required": true,
                       "description": "Template string for this request, supports mustache-style `{{placeholders}}`"
                     }
                   }
                 ]
               },
+              "required": true,
               "description": "Array of templates available to the request context."
             }
           },
           {
             "allow_untemplated_requests": {
               "default": true,
-              "required": true,
               "type": "boolean",
+              "required": true,
               "description": "Set true to allow requests that don't call or match any template."
             }
           },
           {
             "log_original_request": {
               "default": false,
-              "required": true,
               "type": "boolean",
+              "required": true,
               "description": "Set true to add the original request to the Kong log plugin(s) output."
             }
           },
           {
             "max_request_body_size": {
-              "gt": 0,
               "default": 8192,
               "type": "integer",
+              "gt": 0,
               "description": "max allowed body size allowed to be introspected"
             }
           }
         ]
       }
     }
-  ],
-  "entity_checks": []
+  ]
 }

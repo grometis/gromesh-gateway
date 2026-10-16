@@ -1,15 +1,17 @@
 {
+  "entity_checks": [],
   "fields": [
     {
       "consumer": {
-        "type": "foreign",
-        "description": "Custom type for representing a foreign key with a null value allowed.",
         "eq": null,
-        "reference": "consumers"
+        "reference": "consumers",
+        "type": "foreign",
+        "description": "Custom type for representing a foreign key with a null value allowed."
       }
     },
     {
       "protocols": {
+        "type": "set",
         "default": [
           "grpc",
           "grpcs",
@@ -26,12 +28,26 @@
           ]
         },
         "required": true,
-        "type": "set",
         "description": "A set of strings representing HTTP protocols."
       }
     },
     {
       "config": {
+        "entity_checks": [
+          {
+            "conditional": {
+              "if_match": {
+                "eq": true
+              },
+              "then_field": "start_tls",
+              "then_match": {
+                "eq": false
+              },
+              "if_field": "ldaps",
+              "then_err": "'ldaps' and 'start_tls' cannot be enabled simultaneously"
+            }
+          }
+        ],
         "type": "record",
         "required": true,
         "fields": [
@@ -44,67 +60,67 @@
           },
           {
             "ldap_port": {
+              "required": true,
+              "default": 389,
               "between": [
                 0,
                 65535
               ],
-              "default": 389,
               "type": "integer",
-              "required": true,
               "description": "An integer representing a port number between 0 and 65535, inclusive."
             }
           },
           {
             "ldaps": {
               "default": false,
-              "required": true,
               "type": "boolean",
+              "required": true,
               "description": "Set to `true` to connect using the LDAPS protocol (LDAP over TLS).  When `ldaps` is configured, you must use port 636. If the `ldap` setting is enabled, ensure the `start_tls` setting is disabled."
             }
           },
           {
             "start_tls": {
               "default": false,
-              "required": true,
               "type": "boolean",
+              "required": true,
               "description": "Set it to `true` to issue StartTLS (Transport Layer Security) extended operation over `ldap` connection. If the `start_tls` setting is enabled, ensure the `ldaps` setting is disabled."
             }
           },
           {
             "verify_ldap_host": {
               "default": false,
-              "required": true,
               "type": "boolean",
+              "required": true,
               "description": "Set to `true` to authenticate LDAP server. The server certificate will be verified according to the CA certificates specified by the `lua_ssl_trusted_certificate` directive."
             }
           },
           {
             "base_dn": {
-              "required": true,
               "type": "string",
+              "required": true,
               "description": "Base DN as the starting point for the search; e.g., dc=example,dc=com"
             }
           },
           {
             "attribute": {
-              "required": true,
               "type": "string",
+              "required": true,
               "description": "Attribute to be used to search the user; e.g. cn"
             }
           },
           {
             "cache_ttl": {
               "default": 60,
-              "required": true,
               "type": "number",
+              "required": true,
               "description": "Cache expiry time in seconds."
             }
           },
           {
             "hide_credentials": {
               "default": false,
-              "required": true,
               "type": "boolean",
+              "required": true,
               "description": "An optional boolean value telling the plugin to hide the credential to the upstream server. It will be removed by Kong before proxying the request."
             }
           },
@@ -137,29 +153,13 @@
           },
           {
             "realm": {
-              "required": false,
               "type": "string",
+              "required": false,
               "description": "When authentication fails the plugin sends `WWW-Authenticate` header with `realm` attribute value."
-            }
-          }
-        ],
-        "entity_checks": [
-          {
-            "conditional": {
-              "then_match": {
-                "eq": false
-              },
-              "then_field": "start_tls",
-              "if_match": {
-                "eq": true
-              },
-              "then_err": "'ldaps' and 'start_tls' cannot be enabled simultaneously",
-              "if_field": "ldaps"
             }
           }
         ]
       }
     }
-  ],
-  "entity_checks": []
+  ]
 }

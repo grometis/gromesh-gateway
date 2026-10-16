@@ -91,7 +91,7 @@ helm install dp deploy/helm/data-plane -n "$namespace" --timeout 2m \
   --set fullnameOverride=ci-data-plane --set replicaCount=1 \
   --set agent.image.tag=ci --set agent.image.pullPolicy=Never \
   --set agent.existingSecret=ci-agent --set agent.controlPlaneUrl=http://control-plane:3000 \
-  --set kong.image.repository=kong --set-string kong.image.tag=3.9.3 --set kong.image.pullPolicy=Never
+  --set kong.image.digest= --set kong.image.pullPolicy=Never
 k wait --for=jsonpath='{.status.phase}'=Running pod -l app.kubernetes.io/instance=dp --timeout=120s
 registered=false
 for ((attempt=0; attempt<60; attempt++)); do

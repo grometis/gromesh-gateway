@@ -19,6 +19,6 @@ ui:
     pullPolicy: Never
 validator:
   image:
-    repository: kong
-    tag: "3.9.3"
+    # kind loads the own image by tag; the digest is only known to the registry.
+    digest: ""
     pullPolicy: Never

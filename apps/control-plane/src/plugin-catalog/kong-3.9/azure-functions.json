@@ -1,7 +1,9 @@
 {
+  "entity_checks": [],
   "fields": [
     {
       "protocols": {
+        "type": "set",
         "default": [
           "grpc",
           "grpcs",
@@ -23,14 +25,13 @@
           "description": "A string representing a protocol, such as HTTP or HTTPS."
         },
         "required": true,
-        "type": "set",
         "description": "A set of strings representing protocols."
       }
     },
     {
       "config": {
-        "required": true,
         "type": "record",
+        "required": true,
         "fields": [
           {
             "timeout": {
@@ -63,31 +64,31 @@
           {
             "apikey": {
               "referenceable": true,
-              "encrypted": true,
               "type": "string",
+              "encrypted": true,
               "description": "The apikey to access the Azure resources. If provided, it is injected as the `x-functions-key` header."
             }
           },
           {
             "clientid": {
               "referenceable": true,
-              "encrypted": true,
               "type": "string",
+              "encrypted": true,
               "description": "The `clientid` to access the Azure resources. If provided, it is injected as the `x-functions-clientid` header."
             }
           },
           {
             "appname": {
-              "required": true,
               "type": "string",
+              "required": true,
               "description": "The Azure app name."
             }
           },
           {
             "hostdomain": {
               "default": "azurewebsites.net",
-              "required": true,
               "type": "string",
+              "required": true,
               "description": "The domain where the function resides."
             }
           },
@@ -100,14 +101,13 @@
           },
           {
             "functionname": {
-              "required": true,
               "type": "string",
+              "required": true,
               "description": "Name of the Azure function to invoke."
             }
           }
         ]
       }
     }
-  ],
-  "entity_checks": []
+  ]
 }

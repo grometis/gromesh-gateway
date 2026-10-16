@@ -1,7 +1,9 @@
 {
+  "entity_checks": [],
   "fields": [
     {
       "protocols": {
+        "type": "set",
         "default": [
           "grpc",
           "grpcs",
@@ -23,20 +25,19 @@
           "description": "A string representing a protocol, such as HTTP or HTTPS."
         },
         "required": true,
-        "type": "set",
         "description": "A set of strings representing protocols."
       }
     },
     {
       "config": {
-        "required": true,
         "type": "record",
+        "required": true,
         "fields": [
           {
             "log_level": {
-              "required": true,
               "default": "info",
               "type": "string",
+              "required": true,
               "one_of": [
                 "debug",
                 "info",
@@ -51,9 +52,9 @@
           },
           {
             "successful_severity": {
-              "required": true,
               "default": "info",
               "type": "string",
+              "required": true,
               "one_of": [
                 "debug",
                 "info",
@@ -68,9 +69,9 @@
           },
           {
             "client_errors_severity": {
-              "required": true,
               "default": "info",
               "type": "string",
+              "required": true,
               "one_of": [
                 "debug",
                 "info",
@@ -85,9 +86,9 @@
           },
           {
             "server_errors_severity": {
-              "required": true,
               "default": "info",
               "type": "string",
+              "required": true,
               "one_of": [
                 "debug",
                 "info",
@@ -102,12 +103,12 @@
           },
           {
             "custom_fields_by_lua": {
-              "values": {
+              "type": "map",
+              "keys": {
                 "type": "string",
                 "len_min": 1
               },
-              "type": "map",
-              "keys": {
+              "values": {
                 "type": "string",
                 "len_min": 1
               },
@@ -116,6 +117,7 @@
           },
           {
             "facility": {
+              "description": "The facility is used by the operating system to decide how to handle each log message.",
               "default": "user",
               "type": "string",
               "required": true,
@@ -140,13 +142,11 @@
                 "local5",
                 "local6",
                 "local7"
-              ],
-              "description": "The facility is used by the operating system to decide how to handle each log message."
+              ]
             }
           }
         ]
       }
     }
-  ],
-  "entity_checks": []
+  ]
 }

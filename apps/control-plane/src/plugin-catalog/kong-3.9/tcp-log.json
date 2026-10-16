@@ -1,7 +1,9 @@
 {
+  "entity_checks": [],
   "fields": [
     {
       "protocols": {
+        "type": "set",
         "default": [
           "grpc",
           "grpcs",
@@ -23,14 +25,13 @@
           "description": "A string representing a protocol, such as HTTP or HTTPS."
         },
         "required": true,
-        "type": "set",
         "description": "A set of strings representing protocols."
       }
     },
     {
       "config": {
-        "required": true,
         "type": "record",
+        "required": true,
         "fields": [
           {
             "host": {
@@ -67,8 +68,8 @@
           {
             "tls": {
               "default": false,
-              "required": true,
               "type": "boolean",
+              "required": true,
               "description": "Indicates whether to perform a TLS handshake against the remote server."
             }
           },
@@ -80,21 +81,20 @@
           },
           {
             "custom_fields_by_lua": {
-              "description": "A list of key-value pairs, where the key is the name of a log field and the value is a chunk of Lua code, whose return value sets or replaces the log field value.",
+              "values": {
+                "type": "string",
+                "len_min": 1
+              },
               "keys": {
                 "type": "string",
                 "len_min": 1
               },
               "type": "map",
-              "values": {
-                "type": "string",
-                "len_min": 1
-              }
+              "description": "A list of key-value pairs, where the key is the name of a log field and the value is a chunk of Lua code, whose return value sets or replaces the log field value."
             }
           }
         ]
       }
     }
-  ],
-  "entity_checks": []
+  ]
 }

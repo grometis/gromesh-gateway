@@ -1,15 +1,28 @@
 {
+  "entity_checks": [
+    {
+      "at_least_one_of": [
+        "config.certificate",
+        "config.rewrite",
+        "config.access",
+        "config.header_filter",
+        "config.body_filter",
+        "config.log"
+      ]
+    }
+  ],
   "fields": [
     {
       "consumer": {
-        "type": "foreign",
-        "description": "Custom type for representing a foreign key with a null value allowed.",
         "eq": null,
-        "reference": "consumers"
+        "reference": "consumers",
+        "type": "foreign",
+        "description": "Custom type for representing a foreign key with a null value allowed."
       }
     },
     {
       "protocols": {
+        "type": "set",
         "default": [
           "grpc",
           "grpcs",
@@ -31,101 +44,88 @@
           "description": "A string representing a protocol, such as HTTP or HTTPS."
         },
         "required": true,
-        "type": "set",
         "description": "A set of strings representing protocols."
       }
     },
     {
       "config": {
-        "required": true,
         "type": "record",
+        "required": true,
         "fields": [
           {
             "certificate": {
-              "default": [],
               "type": "array",
-              "required": true,
+              "default": [],
               "elements": {
                 "type": "string",
                 "required": false
               },
+              "required": true,
               "description": "Custom functions, which can be user-defined, are cached and executed sequentially during specific phases: `certificate`, `rewrite`, `access`, `header_filter`, `body_filter`, and `log`."
             }
           },
           {
             "rewrite": {
-              "default": [],
               "type": "array",
-              "required": true,
+              "default": [],
               "elements": {
                 "type": "string",
                 "required": false
               },
+              "required": true,
               "description": "Custom functions, which can be user-defined, are cached and executed sequentially during specific phases: `certificate`, `rewrite`, `access`, `header_filter`, `body_filter`, and `log`."
             }
           },
           {
             "access": {
-              "default": [],
               "type": "array",
-              "required": true,
+              "default": [],
               "elements": {
                 "type": "string",
                 "required": false
               },
+              "required": true,
               "description": "Custom functions, which can be user-defined, are cached and executed sequentially during specific phases: `certificate`, `rewrite`, `access`, `header_filter`, `body_filter`, and `log`."
             }
           },
           {
             "header_filter": {
-              "default": [],
               "type": "array",
-              "required": true,
+              "default": [],
               "elements": {
                 "type": "string",
                 "required": false
               },
+              "required": true,
               "description": "Custom functions, which can be user-defined, are cached and executed sequentially during specific phases: `certificate`, `rewrite`, `access`, `header_filter`, `body_filter`, and `log`."
             }
           },
           {
             "body_filter": {
-              "default": [],
               "type": "array",
-              "required": true,
+              "default": [],
               "elements": {
                 "type": "string",
                 "required": false
               },
+              "required": true,
               "description": "Custom functions, which can be user-defined, are cached and executed sequentially during specific phases: `certificate`, `rewrite`, `access`, `header_filter`, `body_filter`, and `log`."
             }
           },
           {
             "log": {
-              "default": [],
               "type": "array",
-              "required": true,
+              "default": [],
               "elements": {
                 "type": "string",
                 "required": false
               },
+              "required": true,
               "description": "Custom functions, which can be user-defined, are cached and executed sequentially during specific phases: `certificate`, `rewrite`, `access`, `header_filter`, `body_filter`, and `log`."
             }
           }
         ]
       }
-    }
-  ],
-  "entity_checks": [
-    {
-      "at_least_one_of": [
-        "config.certificate",
-        "config.rewrite",
-        "config.access",
-        "config.header_filter",
-        "config.body_filter",
-        "config.log"
-      ]
     }
   ]
 }
