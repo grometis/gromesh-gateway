@@ -22,7 +22,7 @@ import { Public, type RequestContext } from "../auth/auth.js";
 import { HEARTBEAT_SECONDS, newToken, tokenHash } from "../clusters/clusters.js";
 import { ProblemException, unprocessable } from "../common/problem.js";
 import type { GatewayState } from "@gromesh/compiler";
-import { ENCRYPTOR, Encryptor } from "../crypto/crypto.js";
+import { ENCRYPTOR, Encryptor, snapshotContext } from "../crypto/crypto.js";
 import { DB, type Db, type Executor } from "../db/db.js";
 import { clusterNodes, clusters, environments, snapshots, type SnapshotRow } from "../db/schema.js";
 import { PluginCatalog, PluginCatalogModule } from "../plugin-catalog/catalog.js";
@@ -150,7 +150,7 @@ export class AgentGatewayService {
       hash: row.hash,
       createdAt: row.createdAt.toISOString(),
       // Opened only here, on the way to the agent: the row holds it sealed.
-      config: this.enc.openJson(row.config),
+      config: this.enc.openJson(row.config, snapshotContext(row.environmentId, row.version, "config")),
     });
   }
 
@@ -209,21 +209,21 @@ export class AgentGatewayService {
     registrationTokenHash: string,
   ): Promise<string | null> {
     if (body.error == null) return null;
-    let snapshot: Pick<SnapshotRow, "state"> | undefined;
+    let snapshot: Pick<SnapshotRow, "state" | "version"> | undefined;
     if (body.failedVersion != null) {
       [snapshot] = await tx
-        .select({ state: snapshots.state })
+        .select({ state: snapshots.state, version: snapshots.version })
         .from(snapshots)
         .where(and(eq(snapshots.environmentId, envId), eq(snapshots.version, body.failedVersion)));
     }
     if (!snapshot) {
       [snapshot] = await tx
-        .select({ state: snapshots.state })
+        .select({ state: snapshots.state, version: snapshots.version })
         .from(snapshots)
         .innerJoin(environments, and(eq(environments.id, snapshots.environmentId), eq(environments.currentVersion, snapshots.version)))
         .where(eq(snapshots.environmentId, envId));
     }
-    return redactAgentError(body.error, snapshot && this.enc.openJson<GatewayState>(snapshot.state), this.catalog, nodeToken, registrationTokenHash);
+    return redactAgentError(body.error, snapshot && this.enc.openJson<GatewayState>(snapshot.state, snapshotContext(envId, snapshot.version, "state")), this.catalog, nodeToken, registrationTokenHash);
   }
 
   async stream(req: Request, res: Response, events: AgentEvents) {

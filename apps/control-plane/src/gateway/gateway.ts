@@ -12,7 +12,7 @@ import { DB, type Db, type Executor } from "../db/db.js";
 import { consumerValues, keyAuthValues } from "../consumers/consumers.js";
 import { consumers, keyAuthCredentials, plugins, routes, services, type RouteRow, type ServiceRow } from "../db/schema.js";
 import { pluginValues } from "../plugins/plugins.js";
-import type { Encryptor } from "../crypto/crypto.js";
+import { credentialContext, type Encryptor, pluginSecretContext } from "../crypto/crypto.js";
 import type { PluginCatalog } from "../plugin-catalog/catalog.js";
 import { markDraftChanged, requireEnvironment, uuidParam } from "../environments/environments.js";
 
@@ -121,13 +121,13 @@ export async function loadGatewayState(tx: Executor, envId: string, enc: Encrypt
       return route;
     }),
     consumers: consumerRows.map((c) => ({ id: c.id, username: c.username, customId: c.customId, tags: c.tags })),
-    keyAuthCredentials: keyRows.map((k) => ({ id: k.id, consumerId: k.consumerId, key: enc.open(k.key), tags: k.tags })),
+    keyAuthCredentials: keyRows.map((k) => ({ id: k.id, consumerId: k.consumerId, key: enc.open(k.key, credentialContext(k.id)), tags: k.tags })),
     plugins: pluginRows.map((p) => ({
       id: p.id,
       name: p.name,
       enabled: p.enabled,
       scope: { serviceId: p.serviceId, routeId: p.routeId, consumerId: p.consumerId },
-      config: catalog.mapSecrets(p.name, p.config, (v) => enc.open(v)),
+      config: catalog.mapSecrets(p.name, p.config, (v, path) => enc.open(v, pluginSecretContext(p.id, path))),
       protocols: optional(p.protocols),
       tags: p.tags,
     })),
@@ -154,10 +154,10 @@ export async function restoreGatewayState(tx: Executor, envId: string, state: Ga
   if (state.keyAuthCredentials.length > 0) {
     await tx
       .insert(keyAuthCredentials)
-      .values(state.keyAuthCredentials.map((k) => ({ id: k.id, environmentId: envId, ...keyAuthValues(k, enc) })));
+      .values(state.keyAuthCredentials.map((k) => ({ environmentId: envId, ...keyAuthValues(k, enc) })));
   }
   if (state.plugins.length > 0) {
-    await tx.insert(plugins).values(state.plugins.map((p) => ({ id: p.id, environmentId: envId, ...pluginValues(p, enc, catalog) })));
+    await tx.insert(plugins).values(state.plugins.map((p) => ({ id: p.id, environmentId: envId, ...pluginValues(p.id, p, enc, catalog) })));
   }
 }
 

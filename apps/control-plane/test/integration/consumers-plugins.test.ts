@@ -267,7 +267,7 @@ describe("plugin secrets", () => {
     const rotated = `redis-${uniq("pw2")}`;
     expect((await h.api("PUT", `/environments/${envId}/plugins/${p.id}`, { name: "rate-limiting", scope: { serviceId: svc.id }, config: redis(rotated) })).status).toBe(200);
     const { rows } = await h.sql.query("select config from plugins where id = $1", [p.id]);
-    expect(rows[0]!.config.redis.password).toMatch(/^enc:v1:k1:/); // sealed at rest; the agent gets it in clear
+    expect(rows[0]!.config.redis.password).toMatch(/^enc:v2:k1:/); // sealed at rest; the agent gets it in clear
     expect(JSON.stringify(rows)).not.toContain(rotated);
     await create(`/environments/${envId}/snapshots`, {});
     expect((await agentConfig(envId)).plugins[0]!.config.redis.password).toBe(rotated);

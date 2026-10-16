@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { AtRestService, LOCK_KEY } from "../../src/crypto/at-rest.js";
-import { Encryptor, parseFingerprintKey, parseKey } from "../../src/crypto/crypto.js";
-import { createHash } from "node:crypto";
+import { credentialContext, Encryptor, parseFingerprintKey, parseKey, pluginSecretContext, snapshotContext } from "../../src/crypto/crypto.js";
+import { createCipheriv, createHash } from "node:crypto";
 import { ENCRYPTION_KEYS, startHarness, uniq, type Harness } from "./harness.js";
 
 let h: Harness;
@@ -83,7 +83,7 @@ describe("secrets at rest", () => {
     const all = await dump(h);
     expect(all).not.toContain(key);
     expect(all).not.toContain(password);
-    expect(all).toContain("enc:v1:k1:");
+    expect(all).toContain("enc:v2:k1:");
     // The API shows hints and placeholders only.
     expect((await h.api("GET", `/environments/${envId}/consumers/${consumerId}/key-auth`)).body.items[0].keyHint).toBe(`…${key.slice(-4)}`);
     expect(JSON.stringify((await h.api("GET", `/environments/${envId}/snapshots/${version}`)).body)).not.toContain(key);
@@ -141,7 +141,7 @@ describe("secrets at rest", () => {
       expect(interposed).toBe(2); // first write refused and interposed, second one re-read and succeeded
       const { rows } = await h.sql.query("select config from plugins where id = $1", [plugin.id]);
       expect(rows[0].config.minute).toBe(7);
-      expect(rows[0].config.redis.password).toMatch(/^enc:v1:k2:/);
+      expect(rows[0].config.redis.password).toMatch(/^enc:v2:k2:/);
       expect((await h.api("POST", `/environments/${envId}/snapshots`, {})).status).toBe(201);
       const served = await agentConfig(h, envId);
       expect(served.config.plugins[0]!.config.redis.password).toBe(edited);
@@ -159,7 +159,7 @@ describe("secrets at rest", () => {
     const enc = Encryptor.fromConfig({ writeKey: ENCRYPTION_KEYS.k1, readKeys: [], fingerprintKey: ENCRYPTION_KEYS.fingerprint });
     const { rows } = await h.sql.query("select config, state from snapshots where environment_id = $1 and version = $2", [envId, version]);
     await h.sql.query("update snapshots set config = $1, state = $2 where environment_id = $3 and version = $4", [
-      JSON.stringify(enc.openJson(rows[0].config)), JSON.stringify(enc.openJson(rows[0].state)), envId, version,
+      JSON.stringify(enc.openJson(rows[0].config, snapshotContext(envId, version, "config"))), JSON.stringify(enc.openJson(rows[0].state, snapshotContext(envId, version, "state"))), envId, version,
     ]);
     // (Not asserted in clear here: any replica starting meanwhile, e.g. another test file's harness, seals it.)
     const restarted = await startHarness(); // createApp runs encryptExisting (unless another replica held the lock)
@@ -184,8 +184,8 @@ describe("secrets at rest", () => {
       expect(report.credentials).toBeGreaterThan(0);
       expect(report.snapshots).toBeGreaterThan(0);
       const mine = await rowsOf(rotating, envId);
-      expect(mine).not.toContain("enc:v1:k1:");
-      expect(mine).toContain("enc:v1:k2:");
+      expect(mine).not.toContain(":k1:");
+      expect(mine).toContain("enc:v2:k2:");
       expect(mine).not.toContain(key);
       expect(await dump(rotating)).not.toContain(key);
     } finally {
@@ -203,16 +203,81 @@ describe("secrets at rest", () => {
     }
   });
 
+  it("binds every sealed value to its row: a value copied to another row does not open", async () => {
+    const a = await secrets(h);
+    const b = await secrets(h);
+    const enc = Encryptor.fromConfig({ writeKey: ENCRYPTION_KEYS.k1, readKeys: [], fingerprintKey: ENCRYPTION_KEYS.fingerprint });
+    // Unit level: same key, same plain text, different row.
+    const sealed = enc.seal("hello", credentialContext("row-a"));
+    expect(() => enc.open(sealed, credentialContext("row-b"))).toThrow(/does not belong to this row/);
+    expect(() => enc.open(sealed, { ...credentialContext("row-a"), column: "other" })).toThrow(/does not belong/);
+    expect(() => enc.open(sealed, { ...credentialContext("row-a"), table: "plugins" })).toThrow(/does not belong/);
+    expect(() => enc.open(enc.seal("x", pluginSecretContext("p1", ["redis", "password"])), pluginSecretContext("p1", ["redis", "username"]))).toThrow(/does not belong/);
+    expect(() => enc.open(enc.seal("x", snapshotContext("env", 1, "config")), snapshotContext("env", 2, "config"))).toThrow(/does not belong/);
+    // Database level: copy the sealed credential key of B into A, and the plugin secret of B into A's plugin.
+    const { rows: keys } = await h.sql.query("select key from keyauth_credentials where id = $1", [b.credentialId]);
+    await h.sql.query("update keyauth_credentials set key = $1 where id = $2", [keys[0].key, a.credentialId]);
+    const { rows: plugs } = await h.sql.query("select id, config from plugins where environment_id = $1", [b.envId]);
+    const { rows: mine } = await h.sql.query("select id from plugins where environment_id = $1", [a.envId]);
+    await h.sql.query("update plugins set config = $1 where id = $2", [JSON.stringify(plugs[0].config), mine[0].id]);
+    const listed = await h.api("GET", `/environments/${a.envId}/consumers/${a.consumerId}/key-auth`);
+    expect(listed.status).toBe(500);
+    expect(JSON.stringify(listed.body)).not.toContain(b.key);
+    const published = await h.api("POST", `/environments/${a.envId}/snapshots`, {});
+    expect(published.status).toBe(500);
+    // Row B itself is untouched and still serves.
+    expect((await agentConfig(h, b.envId)).config.keyauth_credentials[0]!.key).toBe(b.key);
+  });
+
+  it("re-seals v1 rows (key id only as associated data) as v2 on the next start; none is left behind", async () => {
+    const { envId, consumerId, credentialId, key, password, version } = await secrets(h);
+    // Rows written by the previous format: AES-256-GCM with the key id alone as associated data.
+    const k1 = parseKey(ENCRYPTION_KEYS.k1);
+    const v1 = (plain: string) => {
+      const iv = Buffer.alloc(12, 7);
+      const cipher = createCipheriv("aes-256-gcm", k1.key, iv);
+      cipher.setAAD(Buffer.from(k1.id));
+      const body = Buffer.concat([cipher.update(plain, "utf8"), cipher.final()]);
+      return `enc:v1:${k1.id}:${iv.toString("base64url")}:${body.toString("base64url")}:${cipher.getAuthTag().toString("base64url")}`;
+    };
+    await h.sql.query("update keyauth_credentials set key = $1 where id = $2", [v1(key), credentialId]);
+    await h.sql.query("update plugins set config = jsonb_set(config, '{redis,password}', to_jsonb($1::text)) where environment_id = $2", [v1(password), envId]);
+    const enc = Encryptor.fromConfig({ writeKey: ENCRYPTION_KEYS.k1, readKeys: [], fingerprintKey: ENCRYPTION_KEYS.fingerprint });
+    const { rows } = await h.sql.query("select config, state from snapshots where environment_id = $1 and version = $2", [envId, version]);
+    await h.sql.query("update snapshots set config = $1, state = $2 where environment_id = $3 and version = $4", [
+      JSON.stringify({ $enc: v1(JSON.stringify(enc.openJson(rows[0].config, snapshotContext(envId, version, "config")))) }),
+      JSON.stringify({ $enc: v1(JSON.stringify(enc.openJson(rows[0].state, snapshotContext(envId, version, "state")))) }),
+      envId, version,
+    ]);
+    // v1 is still readable before the re-seal (a replica of the previous version could have written it a moment ago).
+    expect((await h.api("GET", `/environments/${envId}/consumers/${consumerId}/key-auth`)).body.items[0].keyHint).toBe(`…${key.slice(-4)}`);
+    const restarted = await startHarness();
+    try {
+      await untilNotSkipped(() => restarted.app.get(AtRestService).encryptExisting());
+      const mine = await rowsOf(restarted, envId);
+      expect(mine).not.toContain("enc:v1:");
+      expect(mine).not.toContain(key);
+      expect(mine).not.toContain(password);
+      const served = await agentConfig(restarted, envId);
+      expect(served.config.keyauth_credentials[0]!.key).toBe(key);
+      expect(served.config.plugins[0]!.config.redis.password).toBe(password);
+      expect((await restarted.api("GET", `/environments/${envId}/snapshots/${version}`)).status).toBe(200);
+    } finally {
+      await restarted.close();
+    }
+  });
+
   it("refuses to start without a key and rejects malformed keys", () => {
     expect(() => parseKey("short:AAAA")).toThrow();
     expect(() => parseKey("no-colon")).toThrow();
     expect(() => new Encryptor("k9", [parseKey(ENCRYPTION_KEYS.k1)], parseFingerprintKey(ENCRYPTION_KEYS.fingerprint))).toThrow(/k9/);
     const enc = Encryptor.fromConfig({ writeKey: ENCRYPTION_KEYS.k1, readKeys: [], fingerprintKey: ENCRYPTION_KEYS.fingerprint });
-    const sealed = enc.seal("hello");
-    expect(sealed).toMatch(/^enc:v1:k1:/);
-    expect(enc.open(sealed)).toBe("hello");
-    expect(enc.open("plain")).toBe("plain");
-    expect(() => Encryptor.fromConfig({ writeKey: ENCRYPTION_KEYS.k2, readKeys: [], fingerprintKey: ENCRYPTION_KEYS.fingerprint }).open(sealed)).toThrow(/unknown key k1/);
+    const ctx = credentialContext("row-a");
+    const sealed = enc.seal("hello", ctx);
+    expect(sealed).toMatch(/^enc:v2:k1:/);
+    expect(enc.open(sealed, ctx)).toBe("hello");
+    expect(enc.open("plain", ctx)).toBe("plain");
+    expect(() => Encryptor.fromConfig({ writeKey: ENCRYPTION_KEYS.k2, readKeys: [], fingerprintKey: ENCRYPTION_KEYS.fingerprint }).open(sealed, ctx)).toThrow(/unknown key k1/);
     expect(() => parseFingerprintKey("c2hvcnQ=")).toThrow(/32 bytes/);
   });
 });
