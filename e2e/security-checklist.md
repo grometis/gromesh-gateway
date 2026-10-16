@@ -24,6 +24,6 @@ Gerado por `e2e/security-checklist.sh` em 2026-10-16T14:18:10Z contra o compose 
 | L2 | Log do control plane sem segredos nem senhas | PASS |  |
 | I1 | Imagens sem CRITICAL (Trivy) e SBOM (syft) | PASS | scripts/scan-images.sh |
 | A1 | CVE-2026-1907 (RPC de clustering, modo híbrido) | NOTE | não se aplica: data planes em DB-less sem clustering do Kong |
-| A2 | Imagem própria Kong 3.9.4 (build próprio, fixada por digest) | PASS | ghcr.io/grometis/gromesh-kong@sha256:3293c2e49633c91fa838dbd3eaaa9d534b83d7dbcc7cc84ff341ccee2156fd40 |
+| A2 | Imagem própria Kong 3.9.4 (build próprio, fixada por digest) | PASS | ghcr.io/grometis/gromesh-kong@sha256:58e49a1347c60cac60c6994888f07a0f2693edd4875fdce44b29edea31d78d59 |
 
 Falhas: 0.
