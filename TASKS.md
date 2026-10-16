@@ -40,6 +40,10 @@ git worktree add ../gg-codex  -b task/W1-X1-kong-image
 | W8-X1 | Codex | W7-X1, W7-C1 | `tests/load/`, `deploy/helm/*/templates/backup*`, `scripts/` |
 | W8-C2 | Claude | todas | `e2e/`, `.github/workflows/`, `TASKS.md` |
 | B1 | Codex | W8-C2 | `deploy/compose/`, `deploy/observability/`, `deploy/helm/data-plane/`, `packages/compiler/` (só opções do `platformPlugins`), `e2e/` (spec novo) |
+| P1-C0 | Claude | — | `contracts/` (+ `apps/ui/src/api/schema.d.ts` gerado) |
+| P1-C1 | Claude | P1-C0 | `apps/control-plane/`, `apps/ui/`, `e2e/security-checklist.*`, `contracts/` (só remover `x-gromesh-planned`) |
+| P1-X1 | Codex | — | `apps/agent/`, `deploy/helm/data-plane/`, `deploy/compose/`, `e2e/kind/` |
+| P1-X2 | Codex | P1-X1 | `.github/workflows/`, `e2e/kind/`, `deploy/helm/`, `deploy/compose/` |
 
 Ordem de merge na semana 3: W2-C2 → W3-X1 → W3-C1 → W3-X2. Quem mergeia depois faz rebase; `src/db/schema.ts` e `drizzle/` são alterados por uma frente por vez.
 
@@ -298,17 +302,54 @@ Aceite: reiniciar o coletor com tráfego contínuo perde no máximo 10 s de even
 
 ---
 
+## P1 — Tokens de API, agente resiliente e limpezas
+
+### P1-C0 [Claude] Contrato: tokens de API
+- `POST /users/me/tokens {name, role, expiresInDays}` → 201 com o token completo (única vez) + metadados; `GET /users/me/tokens`; `DELETE /users/me/tokens/{id}`.
+- Admin: `GET /tokens` (todos os usuários, cursor) e `DELETE /tokens/{id}`.
+- `ApiToken`: id, name, role, tokenHint (últimos 4), createdAt, expiresAt, lastUsedAt, revokedAt, owner {id, name}.
+- `securitySchemes.bearerApiToken`, aceito em toda operação que hoje aceita `cookieAuth`, exceto as de `/users/me/tokens` e `/tokens` (só por sessão). Operações novas com `x-gromesh-planned: true`.
+
+Aceite: lint do contrato válido, matriz RBAC verde com as operações planejadas puladas, diff aprovado antes do P1-C1.
+
+### P1-C1 [Claude] Tokens de API
+- Formato `ggt_` + 32 bytes aleatórios em base64url; guardado só o HMAC-SHA256 com `GROMESH_FINGERPRINT_KEY` + tokenHint; comparação por hash.
+- `role` ≤ papel do dono na criação; `expiresInDays` obrigatório, 1..365, padrão 90 na UI. Papel efetivo = min(role do token, role atual do dono); dono desativado ou rebaixado reflete na hora.
+- `Authorization: Bearer` usa só o token (ignora cookie), sem CSRF; bearer inválido → 401 e entra no limitador por IP do login. Token não cria nem revoga tokens e não mexe em usuários.
+- `lastUsedAt` no máximo 1×/min por token. Audit `token.create`/`token.revoke`; mutações por token levam actor `{userId, name, via: "token", tokenId, tokenName}`. O token nunca aparece em log, audit ou resposta depois do 201.
+- Matriz RBAC estendida por bearer nos três papéis; testes de rebaixamento do dono, expiração e CSRF dispensado só com bearer.
+- UI: página "Tokens de API" no menu do usuário (criar com modal de exibição única + copiar, lista, revogar); admin vê todos. Remover `x-gromesh-planned`.
+- `e2e/security-checklist.sh`: linhas T1 (token não reaparece), T2 (expirado → 401), T3 (token não gerencia tokens).
+
+Aceite: testes acima verdes, checklist com T1–T3 PASS, CI verde.
+
+### P1-X1 [Codex] Persistir o node token do agente (backlog 8)
+- Token em `GROMESH_STATE_DIR/node-token` (padrão `/var/lib/gromesh`), escrita atômica, modo 0600. Na subida usa o salvo; 401 → apaga e registra de novo com o registration token.
+- Helm e compose: volume próprio montado só no container do agente (não reaproveitar o volume do snapshot).
+
+Aceite: `go test` com o cpmock prova reinício sem novo register, token revogado → re-register e permissões 0600; e2e em kind: kill do agente → mesmo nodeId e nenhum nó duplicado.
+
+### P1-X2 [Codex] Limpezas
+- Jobs em kind: em falha, salvar `kubectl get pods -A -o wide`, `kubectl get events -A --sort-by=.lastTimestamp` e os logs dos pods como artefato.
+- `GROMESH_KEY_NAMES`/`collector.keyNames` deixa de ser Secret e vira valor opcional comum (só fallback); remover o que ficou sem uso.
+
+Aceite: artefato presente num job forçado a falhar (ou verificação por renderização do workflow) e charts/compose sem o Secret.
+
+---
+
 ## Backlog (pós-MVP, em ordem de prioridade)
 
 1. **Observabilidade resiliente:** feito (B1, PR #5). `dns_not_found_ttl`/`dns_error_ttl` = 1 s no compose e no chart (NXDOMAIN frio do coletor: 80,6 s → 10,3 s nas duas imagens), fila do http-log cobrindo 60 s, alerta `CollectorWithoutEvents` no Prometheus (compose e chart) e aceite automatizado em `e2e/observability.spec.ts` (reinício do coletor e NXDOMAIN frio perdem 0 s de eventos).
 2. **Digests nos charts a cada nova imagem:** feito. O workflow `image-digests` abre um PR por grupo (`chore/kong-image-digest` após o `kong-image`, `chore/app-image-digests` após o `images`) com `scripts/bump-image-digests.mjs`; os charts só referenciam imagens por digest (Kong, control-plane, UI, agente, Vector e Postgres do backup). Vector e Postgres são atualizados à mão (`docker buildx imagetools inspect`). Cada merge na `main` gera um PR de digests das aplicações: avaliar agrupar por release (tag) se o ruído incomodar.
 3. **kong-image multi-arquitetura:** feito. O `kong-image` constrói `linux/amd64` e `linux/arm64` em runners nativos (smoke e Trivy em cada perna) e publica o manifest list `3.9.4-<sha>`; o `image-digests` fixa o digest da lista. Aceite em 2026-10-16: pull pelo digest da lista num Mac arm64 sem emulação e `pnpm smoke` verde com o padrão do compose.
 4. **Cifragem em repouso:** feito (B4). Formato `enc:v2` com tabela, coluna e id da linha no AAD do AES-256-GCM; leitura aceita v1 e v2; a próxima inicialização recifra v1 → v2 pelo mesmo mecanismo da rotação (advisory lock + update condicional). Teste: valor copiado de uma linha para outra não abre; nenhuma linha v1 sobra; publish/rollback/agente continuam funcionando.
-5. **Analytics e dado pessoal:** feito (B5). O Vector mascara no path, antes do ClickHouse, CPF e CNPJ (com e sem pontuação), e-mails e sequências de 6+ dígitos (`{cpf}`, `{cnpj}`, `{email}`, `{num}`), inclusive percent-encoded; UUIDs e ids curtos ficam intactos; a query continua descartada. Aceite em `e2e/path-masking.spec.ts` (ClickHouse e log do Vector sem valores brutos). Retenção menor por rota continua em aberto.
+5. **Analytics e dado pessoal:** feito (B5). O Vector mascara no path, antes do ClickHouse, CPF e CNPJ (com e sem pontuação), e-mails e sequências de 6+ dígitos (`{cpf}`, `{cnpj}`, `{email}`, `{num}`), inclusive percent-encoded; UUIDs e ids curtos ficam intactos; a query continua descartada. Aceite em `e2e/path-masking.spec.ts` (ClickHouse e log do Vector sem valores brutos).
 6. **Analytics:** feito (B6). `GET /environments/{envId}/analytics/top-routes` (`by` = requests | errors | p95, `limit` ≤ 50, 7 dias) agrupando a tabela `requests` por `route_id`, nome vindo do Postgres (rota apagada: id com nome nulo); card "Top rotas" no dashboard com seletor de critério e link para o explorador filtrado pela rota.
 7. **Observabilidade:** feito (B7). O compilador injeta no http-log a união dos `key_names` dos key-auth publicados (validados por `^[A-Za-z0-9._-]{1,64}$`, 422 em `config.key_names` na API); o Vector remove esses nomes de header e query por evento; `GROMESH_KEY_NAMES` fica como fallback/união. Aceite em `e2e/key-names.spec.ts`.
-8. **Snapshot por cluster:** o agente ainda se registra de novo a cada restart (node token só em memória); avaliar persistir o token no volume do pod.
+8. **Snapshot por cluster:** em andamento como P1-X1 (persistir o node token do agente).
 9. **Proteção da `main` no GitHub:** aplicar `.github/rulesets/main.json` (`gh api -X POST repos/grometis/gromesh-gateway/rulesets --input .github/rulesets/main.json`) quando a conta tiver GitHub Pro; até lá vale o hook `pre-push` de `.githooks/` (CLAUDE.md, regra 10).
 10. **401 antes de 404 para anônimos:** hoje uma rota sem handler responde 404 mesmo sem sessão (um anônimo descobre quais rotas existem). Rejeitar com 401 antes do roteamento, com allowlist de rotas públicas gerada do contrato (incluindo os endpoints do agente).
+11. **Retenção por rota no ClickHouse:** o `path` pode ser sensível mesmo mascarado; permitir retenção menor (TTL) para rotas marcadas, em vez dos 7 dias globais da tabela `requests`.
+12. **P2: upstreams/targets + certificados/SNIs:** entidades do Kong ainda não cobertas pelo modelo (balanceamento por upstream/targets, certificados e SNIs); contrato depois do P1-C0.
 
 Regras de produção já codificadas nos charts e que continuam valendo: `TRUST_PROXY` é o IP/CIDR exato do ingress (nunca `uniquelocal`); o `LISTEN` do control plane usa conexão direta ao Postgres (nunca PgBouncer em modo transação); o ingress na frente do SSE do agente precisa de idle timeout acima de 15 s e buffering desligado; `COOKIE_SECURE` só é falso no compose de desenvolvimento.
