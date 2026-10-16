@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # image-digests dispatches ci on its PR branch: a PR opened with GITHUB_TOKEN gets no pull_request event.
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}

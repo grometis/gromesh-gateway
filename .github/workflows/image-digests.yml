@@ -1,0 +1,88 @@
+name: image-digests
+
+# After kong-image publishes a new build, pin its digest everywhere the repository references the image
+# (scripts/bump-kong-image.mjs) and open or refresh a single PR. The PR is created with GITHUB_TOKEN, which never
+# triggers the pull_request event, so the ci workflow is dispatched on the branch explicitly (mvp-e2e included).
+on:
+  workflow_run:
+    workflows: [kong-image]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Published tag of ghcr.io/<owner>/gromesh-kong (for example 3.9.4-<commit sha>)"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: image-digests
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+      packages: read
+      actions: write
+    env:
+      BRANCH: chore/kong-image-digest
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: main
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: Resolve the published tag and its digest
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          image="ghcr.io/${owner}/gromesh-kong"
+          # kong-image tags the build with the commit it ran on (3.9.4-<sha>).
+          tag="${INPUT_TAG:-3.9.4-${RUN_SHA}}"
+          echo "${GH_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+          digest="$(docker buildx imagetools inspect "${image}:${tag}" --format '{{.Manifest.Digest}}')"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "unexpected digest for ${image}:${tag}: ${digest}" >&2; exit 1; }
+          echo "IMAGE=${image}" >> "$GITHUB_ENV"
+          echo "TAG=${tag}" >> "$GITHUB_ENV"
+          echo "DIGEST=${digest}" >> "$GITHUB_ENV"
+
+      - name: Pin the digest in compose, charts, ci and checklist
+        id: bump
+        run: |
+          node scripts/bump-kong-image.mjs --tag "$TAG" --digest "$DIGEST"
+          if git diff --quiet; then echo "changed=false" >> "$GITHUB_OUTPUT"; else echo "changed=true" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Push the branch
+        if: steps.bump.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BRANCH"
+          git commit -am "chore: pin gromesh-kong ${TAG}" -m "Digest ${DIGEST}, published by the kong-image workflow."
+          # One branch per image, rewritten on every new build: the open PR follows it.
+          git push --force origin "$BRANCH"
+
+      - name: Open or refresh the PR and run ci on it
+        if: steps.bump.outputs.changed == 'true'
+        run: |
+          body="$(printf '%s\n\n%s' \
+            "Pins \`${IMAGE}:${TAG}\` by digest \`${DIGEST}\` in the compose default, both charts, the ci workflow, the security checklist and the kind script comment." \
+            "Opened by the image-digests workflow; the ci run on this branch (mvp-e2e included) was dispatched explicitly. Re-run e2e/security-checklist.sh locally before merging to refresh row A2 with a real run.")"
+          number="$(gh pr list --head "$BRANCH" --base main --state open --json number --jq '.[0].number')"
+          if [ -z "$number" ]; then
+            gh pr create --base main --head "$BRANCH" --title "chore: pin gromesh-kong ${TAG}" --body "$body"
+          else
+            gh pr edit "$number" --title "chore: pin gromesh-kong ${TAG}" --body "$body"
+          fi
+          gh workflow run ci.yml --ref "$BRANCH"
