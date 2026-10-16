@@ -51,7 +51,9 @@ async function compose(args: string[], registrationToken?: string, extraEnv: Rec
  * ClickHouse and its users come up first when the stack was started without the observability profile (CI).
  */
 async function collector(clusterId?: string) {
-  await compose(["--profile", "observability", "up", "-d", "--wait", "clickhouse", "clickhouse-init"]);
+  await compose(["--profile", "observability", "up", "-d", "--wait", "clickhouse"]);
+  // One-shot: `up --wait` would treat its clean exit as a failure, `run` waits for it to finish.
+  await compose(["--profile", "observability", "run", "--rm", "--no-deps", "clickhouse-init"]);
   await compose(["--profile", "observability", "up", "-d", "--wait", "--force-recreate", "--no-deps", "vector"], undefined, clusterId ? { GROMESH_CLUSTER_ID: clusterId } : {});
 }
 
