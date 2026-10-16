@@ -7,6 +7,7 @@ import { ConsumerDetailPage, ConsumersPage } from "./pages/Consumers";
 import { PluginsPage } from "./pages/Plugins";
 import { SnapshotsPage, SnapshotDetailPage } from "./pages/Snapshots";
 import { ClustersPage } from "./pages/Clusters";
+import { TokensPage } from "./pages/Tokens";
 import { UsersPage } from "./pages/Users";
 import { AuditPage } from "./pages/Audit";
 import { AnalyticsPage } from "./pages/Analytics";
@@ -21,6 +22,7 @@ export const router = createBrowserRouter([
       {
         element: <Shell />,
         children: [
+          { path: "tokens", element: <TokensPage /> },
           {
             element: <RequireAdmin />,
             children: [
