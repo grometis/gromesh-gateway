@@ -92,7 +92,8 @@ sinks:
       enabled: true
     auth:
       strategy: basic
-      user: gromesh
+      # INSERT-only user created by clickhouse/002-users.sh.
+      user: gromesh_writer
       password: "${CLICKHOUSE_PASSWORD}"
     skip_unknown_fields: false
     date_time_best_effort: true

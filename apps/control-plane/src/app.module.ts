@@ -16,6 +16,7 @@ import { PluginCatalogModule } from "./plugin-catalog/catalog.js";
 import { PluginsModule } from "./plugins/plugins.js";
 import { SnapshotsModule } from "./snapshots/snapshots.js";
 import { UsersModule } from "./users/users.js";
+import { AnalyticsModule } from "./analytics/analytics.js";
 
 @Module({})
 export class AppModule {
@@ -37,6 +38,7 @@ export class AppModule {
         PluginCatalogModule,
         SnapshotsModule,
         UsersModule,
+        AnalyticsModule,
       ],
       providers: [
         { provide: APP_CONFIG, useValue: config },

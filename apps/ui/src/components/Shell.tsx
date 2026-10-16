@@ -54,6 +54,8 @@ const MENU = [
   ["plugins", "Plugins"],
   ["publications", "Publicações"],
   ["clusters", "Clusters"],
+  ["analytics", "Dashboard"],
+  ["requests", "Requisições"],
 ] as const;
 
 export function Shell() {

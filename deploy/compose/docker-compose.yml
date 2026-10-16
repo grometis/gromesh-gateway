@@ -140,6 +140,11 @@ services:
       TRUST_PROXY: uniquelocal
       # Plugin configs are validated by Kong itself (POST /schemas/plugins/validate).
       KONG_VALIDATOR_URL: http://kong-validator:8001
+      # Analytics read the `observability` profile's ClickHouse with the SELECT-only user; 502 while it is down.
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: gromesh_reader
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_READER_PASSWORD:-gromesh-dev-reader}
+      CLICKHOUSE_DATABASE: gromesh
     ports:
       - "127.0.0.1:3000:3000"
     depends_on:
@@ -185,6 +190,22 @@ services:
       retries: 30
     restart: unless-stopped
 
+  # Creates the INSERT-only (Vector) and SELECT-only (control plane) users; idempotent, runs before Vector.
+  clickhouse-init:
+    profiles: [observability]
+    image: clickhouse/clickhouse-server:25.8.16.34-alpine
+    entrypoint: ["sh", "/init/users.sh"]
+    environment:
+      CLICKHOUSE_USER: gromesh
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-gromesh-dev-observability}
+      CLICKHOUSE_WRITER_PASSWORD: ${CLICKHOUSE_WRITER_PASSWORD:-gromesh-dev-writer}
+      CLICKHOUSE_READER_PASSWORD: ${CLICKHOUSE_READER_PASSWORD:-gromesh-dev-reader}
+    volumes:
+      - ../observability/clickhouse-init:/init:ro
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+
   # platformPlugins.httpLogEndpoint = http://vector:8080/kong (compose network only).
   vector:
     profiles: [observability]
@@ -192,7 +213,7 @@ services:
     user: "65534:65534"
     command: ["--config", "/etc/vector/vector.yaml", "--log-format", "json"]
     environment:
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-gromesh-dev-observability}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_WRITER_PASSWORD:-gromesh-dev-writer}
       # JSON array; include all key-auth key_names configured on this cluster.
       GROMESH_KEY_NAMES: ${GROMESH_KEY_NAMES:-["apikey"]}
       VECTOR_LOG: info
@@ -203,6 +224,8 @@ services:
     depends_on:
       clickhouse:
         condition: service_healthy
+      clickhouse-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null --post-data='[]' http://127.0.0.1:8080/kong"]
       interval: 2s

@@ -35,9 +35,23 @@ jobs:
         ports: ["127.0.0.1:8011:8001"]
         options: >-
           --health-cmd "kong health" --health-interval 5s --health-timeout 5s --health-retries 20
+      # Analytics are read from a real ClickHouse (control-plane integration tests create the table themselves).
+      clickhouse:
+        image: clickhouse/clickhouse-server:25.8.16.34-alpine
+        env:
+          CLICKHOUSE_DB: gromesh
+          CLICKHOUSE_USER: gromesh
+          CLICKHOUSE_PASSWORD: gromesh-dev-observability
+          CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+        ports: ["127.0.0.1:8123:8123"]
+        options: >-
+          --health-cmd "wget -q -O /dev/null http://127.0.0.1:8123/ping" --health-interval 5s --health-timeout 5s --health-retries 20
     env:
       TEST_DATABASE_URL: postgres://gromesh:gromesh@127.0.0.1:5432/gromesh
       KONG_VALIDATOR_URL: http://127.0.0.1:8011
+      # No init scripts in a CI service: the tests create the table and read it with the admin user.
+      TEST_CLICKHOUSE_USER: gromesh
+      TEST_CLICKHOUSE_PASSWORD: gromesh-dev-observability
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4

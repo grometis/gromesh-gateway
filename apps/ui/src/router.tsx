@@ -9,6 +9,8 @@ import { SnapshotsPage, SnapshotDetailPage } from "./pages/Snapshots";
 import { ClustersPage } from "./pages/Clusters";
 import { UsersPage } from "./pages/Users";
 import { AuditPage } from "./pages/Audit";
+import { AnalyticsPage } from "./pages/Analytics";
+import { RequestsPage } from "./pages/Requests";
 
 export const router = createBrowserRouter([
   { path: "/login", element: <LoginPage /> },
@@ -38,6 +40,8 @@ export const router = createBrowserRouter([
               { path: "publications", element: <SnapshotsPage /> },
               { path: "publications/:version", element: <SnapshotDetailPage /> },
               { path: "clusters", element: <ClustersPage /> },
+              { path: "analytics", element: <AnalyticsPage /> },
+              { path: "requests", element: <RequestsPage /> },
             ],
           },
         ],
