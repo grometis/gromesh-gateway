@@ -23,9 +23,11 @@ servers:
   - url: http://localhost:3000/api/v1
 security:
   - cookieAuth: []
+  - bearerApiToken: []
 tags:
   - name: auth
   - name: users
+  - name: tokens
   - name: environments
   - name: services
   - name: routes
@@ -126,6 +128,7 @@ paths:
     get:
       tags: [users]
       operationId: listUsers
+      security: [{ cookieAuth: [] }]
       x-required-role: admin
       parameters: [{ $ref: "#/components/parameters/Limit" }, { $ref: "#/components/parameters/Cursor" }]
       responses:
@@ -185,6 +188,106 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /users/me/tokens:
+    get:
+      tags: [tokens]
+      operationId: listMyTokens
+      security: [{ cookieAuth: [] }]
+      x-required-role: viewer
+      x-gromesh-planned: true
+      description: The caller's API tokens, newest first, revoked ones included.
+      parameters:
+        - { $ref: "#/components/parameters/Limit" }
+        - { $ref: "#/components/parameters/Cursor" }
+      responses:
+        "200":
+          description: Tokens
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiTokenPage" }
+              example:
+                items:
+                  - { id: "5f0c1d2e-3a4b-4c5d-8e6f-7a8b9c0d1e2f", name: ci-deploy, role: editor, tokenHint: "…k7Qp", createdAt: "2026-10-16T12:00:00Z", expiresAt: "2027-01-14T12:00:00Z", lastUsedAt: "2026-10-16T13:05:00Z", revokedAt: null, owner: { id: "33333333-3333-4333-8333-333333333333", name: Ana } }
+                nextCursor: null
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [tokens]
+      operationId: createMyToken
+      security: [{ cookieAuth: [], csrfToken: [] }]
+      x-required-role: viewer
+      x-gromesh-planned: true
+      description: |
+        Creates an API token for the caller. The token itself is returned once, here, and never again: the server keeps
+        only a keyed hash and the hint. `role` may not exceed the caller's role (422 on `role`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ApiTokenCreate" }
+      responses:
+        "201":
+          description: Created; `token` is shown only in this response
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiTokenCreated" }
+              example:
+                id: "5f0c1d2e-3a4b-4c5d-8e6f-7a8b9c0d1e2f"
+                name: ci-deploy
+                role: editor
+                tokenHint: "…k7Qp"
+                createdAt: "2026-10-16T12:00:00Z"
+                expiresAt: "2027-01-14T12:00:00Z"
+                lastUsedAt: null
+                revokedAt: null
+                owner: { id: "33333333-3333-4333-8333-333333333333", name: Ana }
+                token: "ggt_2n9vL0Qx7c8d1KpR4sTfWz6yHb3mJ5aVe8uNq1oLk7Qp"
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /users/me/tokens/{tokenId}:
+    parameters: [{ $ref: "#/components/parameters/TokenId" }]
+    delete:
+      tags: [tokens]
+      operationId: revokeMyToken
+      security: [{ cookieAuth: [], csrfToken: [] }]
+      x-required-role: viewer
+      x-gromesh-planned: true
+      description: Revokes one of the caller's tokens; it stops working immediately. Idempotent on an already revoked token.
+      responses:
+        "204": { description: Revoked }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /tokens:
+    get:
+      tags: [tokens]
+      operationId: listTokens
+      security: [{ cookieAuth: [] }]
+      x-required-role: admin
+      x-gromesh-planned: true
+      description: Every user's API tokens, newest first, revoked ones included.
+      parameters:
+        - { $ref: "#/components/parameters/Limit" }
+        - { $ref: "#/components/parameters/Cursor" }
+      responses:
+        "200":
+          description: Tokens
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiTokenPage" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /tokens/{tokenId}:
+    parameters: [{ $ref: "#/components/parameters/TokenId" }]
+    delete:
+      tags: [tokens]
+      operationId: revokeToken
+      security: [{ cookieAuth: [], csrfToken: [] }]
+      x-required-role: admin
+      x-gromesh-planned: true
+      description: Revokes any user's token.
+      responses:
+        "204": { description: Revoked }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /environments:
     get:
       tags: [environments]
@@ -206,7 +309,7 @@ paths:
     post:
       tags: [environments]
       operationId: createEnvironment
-      security: [{ cookieAuth: [], csrfToken: [] }]
+      security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: admin
       requestBody:
         required: true
@@ -238,7 +341,7 @@ paths:
     patch:
       tags: [environments]
       operationId: updateEnvironment
-      security: [{ cookieAuth: [], csrfToken: [] }]
+      security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: admin
       requestBody:
         required: true
@@ -256,7 +359,7 @@ paths:
     delete:
       tags: [environments]
       operationId: deleteEnvironment
-      security: [{ cookieAuth: [], csrfToken: [] }]
+      security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: admin
       description: Refused with 409 while clusters are registered.
       responses:
@@ -284,7 +387,7 @@ paths:
     post:
       tags: [services]
       operationId: createService
-      security: [{ cookieAuth: [], csrfToken: [] }]
+      security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
       requestBody:
         required: true
@@ -317,7 +420,7 @@ paths:
     put:
       tags: [services]
       operationId: replaceService
-      security: [{ cookieAuth: [], csrfToken: [] }]
+      security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
       requestBody:
         required: true
@@ -337,7 +440,7 @@ paths:
     delete:
       tags: [services]
       operationId: deleteService
-      security: [{ cookieAuth: [], csrfToken: [] }]
+      security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
       description: Refused with 409 while routes or plugins reference the service.
       responses:
@@ -368,7 +471,7 @@ paths:
     post:
       tags: [routes]
       operationId: createRoute
-      security: [{ cookieAuth: [], csrfToken: [] }]
+      security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
       requestBody:
         required: true
@@ -401,7 +504,7 @@ paths:
     put:
       tags: [routes]
       operationId: replaceRoute
-      security: [{ cookieAuth: [], csrfToken: [] }]
+      security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
       requestBody:
         required: true
@@ -421,7 +524,7 @@ paths:
     delete:
       tags: [routes]
       operationId: deleteRoute
-      security: [{ cookieAuth: [], csrfToken: [] }]
+      security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
       responses:
         "204": { description: Deleted (route-scoped plugins are deleted with it) }
@@ -446,7 +549,7 @@ paths:
     post:
       tags: [consumers]
       operationId: createConsumer
-      security: [{ cookieAuth: [], csrfToken: [] }]
+      security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
       requestBody:
         required: true
@@ -477,7 +580,7 @@ paths:
     put:
       tags: [consumers]
       operationId: replaceConsumer
-      security: [{ cookieAuth: [], csrfToken: [] }]
+      security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
       requestBody:
         required: true
@@ -496,7 +599,7 @@ paths:
     delete:
       tags: [consumers]
       operationId: deleteConsumer
-      security: [{ cookieAuth: [], csrfToken: [] }]
+      security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
       responses:
         "204": { description: Deleted (credentials and consumer-scoped plugins are deleted with it) }
@@ -522,7 +625,7 @@ paths:
     post:
       tags: [consumers]
       operationId: createKeyAuthCredential
-      security: [{ cookieAuth: [], csrfToken: [] }]
+      security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
       description: If `key` is omitted a random 32-byte key is generated. The full key is returned only in this response.
       requestBody:
@@ -558,7 +661,7 @@ paths:
     delete:
       tags: [consumers]
       operationId: deleteKeyAuthCredential
-      security: [{ cookieAuth: [], csrfToken: [] }]
+      security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
       responses:
         "204": { description: Deleted }
@@ -586,7 +689,7 @@ paths:
     post:
       tags: [plugins]
       operationId: createPlugin
-      security: [{ cookieAuth: [], csrfToken: [] }]
+      security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
       description: "`config` is validated against the plugin schema of the Kong version pinned by the platform."
       requestBody:
@@ -618,7 +721,7 @@ paths:
     put:
       tags: [plugins]
       operationId: replacePlugin
-      security: [{ cookieAuth: [], csrfToken: [] }]
+      security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
       requestBody:
         required: true
@@ -637,7 +740,7 @@ paths:
     delete:
       tags: [plugins]
       operationId: deletePlugin
-      security: [{ cookieAuth: [], csrfToken: [] }]
+      security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
       responses:
         "204": { description: Deleted }
@@ -717,7 +820,7 @@ paths:
     post:
       tags: [snapshots]
       operationId: publish
-      security: [{ cookieAuth: [], csrfToken: [] }]
+      security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
       description: |
         Compiles the draft, stores it as version N+1 and notifies agents.
@@ -782,7 +885,7 @@ paths:
     post:
       tags: [snapshots]
       operationId: rollback
-      security: [{ cookieAuth: [], csrfToken: [] }]
+      security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
       description: Restores the draft to this version's state and publishes it as a NEW version.
       responses:
@@ -817,7 +920,7 @@ paths:
     post:
       tags: [clusters]
       operationId: createCluster
-      security: [{ cookieAuth: [], csrfToken: [] }]
+      security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: admin
       requestBody:
         required: true
@@ -857,7 +960,7 @@ paths:
     delete:
       tags: [clusters]
       operationId: deleteCluster
-      security: [{ cookieAuth: [], csrfToken: [] }]
+      security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: admin
       description: Revokes registration and node tokens.
       responses:
@@ -868,7 +971,7 @@ paths:
     post:
       tags: [clusters]
       operationId: rotateClusterToken
-      security: [{ cookieAuth: [], csrfToken: [] }]
+      security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: admin
       description: New registration token; already-registered nodes keep working.
       responses:
@@ -1046,6 +1149,14 @@ components:
       in: header
       name: X-CSRF-Token
       description: Value of `GET /auth/csrf`, required together with the session cookie on every mutation.
+    bearerApiToken:
+      type: http
+      scheme: bearer
+      description: |
+        An API token (`POST /users/me/tokens`), `Authorization: Bearer ggt_…`. Accepted wherever the session cookie is,
+        except by the token and user management operations, which take a session only. A request with a bearer token
+        ignores any cookie and needs no CSRF token. The effective role is the lower of the token's role and its owner's
+        current role; a token of a deactivated user, an expired or a revoked token answers 401.
   parameters:
     Limit:
       name: limit
@@ -1084,6 +1195,11 @@ components:
     ServiceFilter:
       name: serviceId
       in: query
+      schema: { type: string, format: uuid }
+    TokenId:
+      name: tokenId
+      in: path
+      required: true
       schema: { type: string, format: uuid }
     UserId:
       name: userId
@@ -1225,6 +1341,44 @@ components:
       required: [items, nextCursor]
       properties:
         items: { type: array, items: { $ref: "#/components/schemas/User" } }
+        nextCursor: { type: [string, "null"] }
+    ApiTokenCreate:
+      type: object
+      required: [name, role, expiresInDays]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 64 }
+        role: { $ref: "#/components/schemas/Role", description: At most the caller's role }
+        expiresInDays: { type: integer, minimum: 1, maximum: 365 }
+    ApiToken:
+      type: object
+      required: [id, name, role, tokenHint, createdAt, expiresAt, lastUsedAt, revokedAt, owner]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        role: { $ref: "#/components/schemas/Role" }
+        tokenHint: { type: string, description: "The last four characters, prefixed with …" }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        lastUsedAt: { type: [string, "null"], format: date-time, description: Updated at most once a minute }
+        revokedAt: { type: [string, "null"], format: date-time }
+        owner:
+          type: object
+          required: [id, name]
+          properties:
+            id: { type: string, format: uuid }
+            name: { type: string }
+    ApiTokenCreated:
+      allOf:
+        - { $ref: "#/components/schemas/ApiToken" }
+        - type: object
+          required: [token]
+          properties:
+            token: { type: string, description: "`ggt_` plus 43 base64url characters; shown only in this response" }
+    ApiTokenPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/ApiToken" } }
         nextCursor: { type: [string, "null"] }
     Environment:
       allOf:
@@ -1471,6 +1625,9 @@ components:
             type: { type: string, enum: [user, system, agent] }
             id: { type: string }
             name: { type: string }
+            via: { type: string, enum: [session, token], description: How a user authenticated; absent for system and agent }
+            tokenId: { type: string, format: uuid, description: Present when `via` is token }
+            tokenName: { type: string, description: Present when `via` is token }
         action:
           type: string
           example: route.update
