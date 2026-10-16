@@ -76,6 +76,11 @@ spec:
                 secretKeyRef:
                   name: {{ required "encryption.existingSecret is required (Secret with the at-rest key)" .Values.encryption.existingSecret }}
                   key: {{ .Values.encryption.key }}
+            - name: GROMESH_FINGERPRINT_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.encryption.existingSecret }}
+                  key: {{ .Values.encryption.fingerprintKeyKey }}
             {{- if .Values.encryption.readKeysKey }}
             - name: GROMESH_ENCRYPTION_KEYS
               valueFrom:

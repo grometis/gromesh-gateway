@@ -72,6 +72,8 @@ encryption:
   existingSecret: ""
   key: key
   readKeysKey: ""
+  # Same Secret: base64 of 32 bytes for the credential fingerprints (HMAC), independent of the cipher keys.
+  fingerprintKeyKey: fingerprint-key
 
 # Development HTTP only. Production cookies remain Secure unless explicitly opted out.
 insecureCookies: false

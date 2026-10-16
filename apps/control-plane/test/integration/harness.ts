@@ -46,6 +46,7 @@ export const BOOTSTRAP_ADMIN = { email: "admin@harness.test", password: "harness
 export const ENCRYPTION_KEYS = {
   k1: "k1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
   k2: "k2:AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+  fingerprint: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
 };
 
 /** Analytics read the compose ClickHouse (observability profile) with the SELECT-only user unless overridden. */
@@ -77,7 +78,7 @@ export async function startHarness(overrides: Partial<AppConfig> = {}): Promise<
       loginDelayBaseMs: 0,
       kongValidatorUrl: KONG_VALIDATOR_URL,
       // k2 readable everywhere: the rotation test re-seals shared rows with it while other files run.
-      encryption: { writeKey: ENCRYPTION_KEYS.k1, readKeys: [ENCRYPTION_KEYS.k2] },
+      encryption: { writeKey: ENCRYPTION_KEYS.k1, readKeys: [ENCRYPTION_KEYS.k2], fingerprintKey: ENCRYPTION_KEYS.fingerprint },
       clickhouse: CLICKHOUSE,
       migrateOnStart: false,
       ...overrides,

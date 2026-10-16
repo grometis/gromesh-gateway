@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHmac, randomBytes } from "node:crypto";
 import { Global, Module } from "@nestjs/common";
 import { APP_CONFIG, type AppConfig } from "../config.js";
 
@@ -19,8 +19,12 @@ export function parseKey(entry: string): { id: string; key: Buffer } {
   return { id, key };
 }
 
-/** sha256 hex of a secret, for uniqueness checks on data that is stored encrypted. */
-export const fingerprint = (value: string) => createHash("sha256").update(value).digest("hex");
+/** `GROMESH_FINGERPRINT_KEY`: base64 of 32 bytes, separate from the cipher keys so a rotation never reindexes. */
+export function parseFingerprintKey(entry: string): Buffer {
+  const key = Buffer.from(entry.trim(), "base64");
+  if (key.length !== 32) throw new Error("GROMESH_FINGERPRINT_KEY must be the base64 of 32 bytes");
+  return key;
+}
 
 /**
  * AES-256-GCM with the key id as associated data. One write key, any number of read keys, so a rotation is:
@@ -32,6 +36,7 @@ export class Encryptor {
   constructor(
     readonly writeKeyId: string,
     keys: { id: string; key: Buffer }[],
+    private readonly fingerprintKey: Buffer,
   ) {
     this.keys = new Map(keys.map((k) => [k.id, k.key]));
     if (!this.keys.has(writeKeyId)) throw new Error(`Write key ${writeKeyId} is not among the known keys`);
@@ -39,7 +44,12 @@ export class Encryptor {
 
   static fromConfig(encryption: NonNullable<AppConfig["encryption"]>): Encryptor {
     const write = parseKey(encryption.writeKey);
-    return new Encryptor(write.id, [write, ...encryption.readKeys.map(parseKey)]);
+    return new Encryptor(write.id, [write, ...encryption.readKeys.map(parseKey)], parseFingerprintKey(encryption.fingerprintKey));
+  }
+
+  /** HMAC-SHA256 of a secret: equality and uniqueness checks on data that is stored encrypted. */
+  fingerprint(value: string): string {
+    return createHmac("sha256", this.fingerprintKey).update(value).digest("hex");
   }
 
   seal(plain: string): string {
@@ -95,7 +105,7 @@ export const ENCRYPTOR = Symbol("ENCRYPTOR");
       provide: ENCRYPTOR,
       inject: [APP_CONFIG],
       useFactory: (config: AppConfig) => {
-        if (!config.encryption) throw new Error("GROMESH_ENCRYPTION_KEY is required (`<keyId>:<base64 of 32 bytes>`)");
+        if (!config.encryption) throw new Error("GROMESH_ENCRYPTION_KEY and GROMESH_FINGERPRINT_KEY are required");
         return Encryptor.fromConfig(config.encryption);
       },
     },

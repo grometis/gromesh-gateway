@@ -8,7 +8,7 @@ import { Ctx, RequiredRole, type RequestContext } from "../auth/auth.js";
 import { contractBody, inlineBody } from "../common/contract.js";
 import { decodeCursor, parseLimit, toPage } from "../common/pagination.js";
 import { notFound, unprocessable } from "../common/problem.js";
-import { ENCRYPTOR, Encryptor, fingerprint } from "../crypto/crypto.js";
+import { ENCRYPTOR, Encryptor } from "../crypto/crypto.js";
 import { DB, type Db, type Executor } from "../db/db.js";
 import { consumers, keyAuthCredentials, type ConsumerRow, type KeyAuthCredentialRow } from "../db/schema.js";
 import { markDraftChanged, requireEnvironment, uuidParam } from "../environments/environments.js";
@@ -38,7 +38,7 @@ export function consumerValues(body: ConsumerWrite | Consumer) {
 
 /** Column values for a credential whose `key` is in clear: sealed, plus its fingerprint for uniqueness. */
 export function keyAuthValues(c: KeyAuthCredential, enc: Encryptor) {
-  return { consumerId: c.consumerId, key: enc.seal(c.key), keyHash: fingerprint(c.key), tags: c.tags ?? [] };
+  return { consumerId: c.consumerId, key: enc.seal(c.key), keyHash: enc.fingerprint(c.key), tags: c.tags ?? [] };
 }
 
 /** Sort and search key: username, or customId for consumers without one. */

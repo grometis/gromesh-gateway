@@ -147,6 +147,8 @@ services:
       CLICKHOUSE_DATABASE: gromesh
       # Development-only key for secrets at rest (`<keyId>:<base64 of 32 bytes>`); never reuse outside this stack.
       GROMESH_ENCRYPTION_KEY: ${GROMESH_ENCRYPTION_KEY:-dev:ZGV2LW9ubHktZ3JvbWVzaC1lbmNyeXB0aW9uLWtleS0=}
+      # Development-only HMAC key for credential fingerprints (base64 of 32 bytes), separate from the cipher key.
+      GROMESH_FINGERPRINT_KEY: ${GROMESH_FINGERPRINT_KEY:-ZGV2LW9ubHktZ3JvbWVzaC1maW5nZXJwcmludC1rZXk=}
       # Injects the prometheus and http-log platform plugins into every publication (empty = none).
       PLATFORM_HTTP_LOG_ENDPOINT: http://gromesh-collector:8080/kong
     ports:
