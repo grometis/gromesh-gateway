@@ -288,8 +288,8 @@ Aceite: o job do e2e final verde no CI e o checklist sem pendências.
 
 ## Backlog (pós-MVP, em ordem de prioridade)
 
-1. **Digests nos charts a cada nova imagem:** o workflow `kong-image` publica por SHA; os charts e o compose fixam o digest à mão (`chore/kong-3.9.4-image`). Automatizar a atualização (PR gerado pelo workflow) quando a imagem mudar.
-2. **Observabilidade resiliente:** o Kong cacheia o NXDOMAIN de `gromesh-collector`. Definir `KONG_DNS_NOT_FOUND_TTL` baixo (ex.: 5 s) nos charts e no compose, ajustar `queue.max_retry_time` do http-log para cobrir uma queda curta do coletor, e alertar (métrica do Prometheus) quando o coletor não estiver recebendo eventos.
+1. **Observabilidade resiliente:** o Kong cacheia o NXDOMAIN de `gromesh-collector`. Medido em 2026-10-16 no compose: ~70 s de perda de logs a cada NXDOMAIN do coletor, igual na `kong:3.9.3` e na imagem própria 3.9.4 (a CI contorna subindo o coletor antes de qualquer tráfego). Definir `KONG_DNS_NOT_FOUND_TTL` baixo (ex.: 5 s) nos charts e no compose, ajustar `queue.max_retry_time` do http-log para cobrir uma queda curta do coletor, e alertar (métrica do Prometheus) quando o coletor não estiver recebendo eventos. Aceite: reiniciar o coletor com tráfego contínuo perde no máximo 10 s de eventos.
+2. **Digests nos charts a cada nova imagem:** o workflow `kong-image` publica por SHA; os charts e o compose fixam o digest à mão (`chore/kong-3.9.4-image`). Automatizar a atualização (PR gerado pelo workflow) quando a imagem mudar.
 3. **kong-image multi-arquitetura:** build `linux/arm64` em runner ARM nativo (`ubuntu-24.04-arm`) e manifest list junto com o `amd64`. Motivo: Macs de desenvolvimento e nós ARM em produção. Enquanto isso, em Apple Silicon o desenvolvimento local usa `KONG_IMAGE=kong:3.9.3` (ver `deploy/compose/.env.example`).
 4. **Cifragem em repouso:** incluir no AAD o contexto (tabela, coluna, id da linha) para impedir a troca de valores cifrados entre linhas.
 5. **Analytics e dado pessoal:** o `path` das requisições pode conter dado pessoal (ex.: CPF em `/clientes/{cpf}`); avaliar retenção menor ou máscara de path por rota.
