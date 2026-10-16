@@ -68,7 +68,7 @@ snapshot="$(api "$CP/environments/$env_id/snapshots/$version")"
 [[ "$snapshot" != *"$key"* && "$snapshot" != *"$pw"* ]] && check S3 "Envelope do snapshot redigido para admin" PASS "" || check S3 "Envelope do snapshot" FAIL ""
 audit="$(api "$CP/audit-events?environmentId=$env_id&limit=200")"
 [[ "$audit" != *"$key"* && "$audit" != *"$pw"* ]] && check S4 "Audit sem segredos" PASS "" || check S4 "Audit" FAIL ""
-stored="$(docker compose -f deploy/compose/docker-compose.yml exec -T postgres psql -U gromesh -d gromesh -tAc "select count(*) from keyauth_credentials where key not like 'enc:v1:%' union all select count(*) from plugins where config::text like '%$pw%' union all select count(*) from snapshots where config::text not like '{\"\$enc\"%' or state::text not like '{\"\$enc\"%'" | tr '\n' ' ')"
+stored="$(docker compose -f deploy/compose/docker-compose.yml exec -T postgres psql -U gromesh -d gromesh -tAc "select count(*) from keyauth_credentials where key not like 'enc:v2:%' union all select count(*) from plugins where config::text like '%$pw%' union all select count(*) from snapshots where config::text not like '{\"\$enc\"%' or state::text not like '{\"\$enc\"%'" | tr '\n' ' ')"
 [[ "$stored" == "0 0 0 " ]] && check S5 "Segredos cifrados em repouso (credenciais, plugins, snapshots)" PASS "" || check S5 "Cifragem em repouso" FAIL "$stored"
 api -X DELETE "$CP/environments/$env_id" > /dev/null
 
