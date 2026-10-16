@@ -335,23 +335,45 @@ describe("RBAC matrix from the contract", () => {
   interface Operation { method: string; path: string; role: "viewer" | "editor" | "admin"; id: string }
   const RANK = { viewer: 1, editor: 2, admin: 3 };
   const contract = parse(readFileSync(new URL("../../../../contracts/control-plane.openapi.yaml", import.meta.url), "utf8")) as {
-    paths: Record<string, Record<string, { operationId: string; "x-required-role"?: Operation["role"]; security?: unknown[] }>>;
+    paths: Record<string, Record<string, { operationId: string; "x-required-role"?: Operation["role"]; "x-gromesh-planned"?: boolean; security?: unknown[] }>>;
   };
   // logout ends the session it is called with, so the sessions tests cover it instead of the matrix.
   const SKIP = new Set(["logout"]);
   const operations: Operation[] = [];
+  // Contract-only PRs mark new operations with x-gromesh-planned until the implementation PR removes the mark.
+  const planned: Operation[] = [];
   for (const [path, methods] of Object.entries(contract.paths)) {
     for (const [method, op] of Object.entries(methods)) {
       if (method === "parameters" || !op["x-required-role"] || SKIP.has(op.operationId)) continue;
-      operations.push({ method: method.toUpperCase(), path, role: op["x-required-role"], id: op.operationId });
+      const operation = { method: method.toUpperCase(), path, role: op["x-required-role"], id: op.operationId };
+      (op["x-gromesh-planned"] ? planned : operations).push(operation);
     }
   }
+  /** Routes registered in Nest, as "METHOD /api/v1/path/:param", from the Express router. */
+  const registeredRoutes = (): Set<string> => {
+    const express = h.app.getHttpAdapter().getInstance() as { _router?: { stack: { route?: { path: string; methods: Record<string, boolean> } }[] } };
+    const routes = new Set<string>();
+    for (const layer of express._router?.stack ?? []) {
+      if (!layer.route) continue;
+      for (const [method, on] of Object.entries(layer.route.methods)) if (on) routes.add(`${method.toUpperCase()} ${layer.route.path}`);
+    }
+    return routes;
+  };
+  const nestPath = (path: string) => `/api/v1${path.replace(/\{([a-zA-Z]+)\}/g, ":$1")}`;
   const concrete = (path: string) => path.replace(/\{version\}/g, "1").replace(/\{pluginName\}/g, "cors").replace(/\{[a-zA-Z]+\}/g, () => randomUUID());
   const mutation = (method: string) => !["GET", "HEAD"].includes(method);
 
   it("covers every operation of the contract", () => {
     expect(operations.length).toBeGreaterThan(40);
     expect(operations.map((o) => o.id)).toContain("rotateClusterToken");
+  });
+
+  it("has a handler for every operation that is not planned, and none for a planned one", () => {
+    const routes = registeredRoutes();
+    expect(routes.size).toBeGreaterThan(40);
+    for (const op of operations) expect(routes.has(`${op.method} ${nestPath(op.path)}`), `${op.id} has no handler`).toBe(true);
+    // The implementation PR must remove x-gromesh-planned: a planned operation with a handler fails here.
+    for (const op of planned) expect(routes.has(`${op.method} ${nestPath(op.path)}`), `${op.id} is marked x-gromesh-planned but has a handler`).toBe(false);
   });
 
   it("answers 401 to every operation without a session", async () => {

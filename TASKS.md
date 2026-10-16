@@ -309,5 +309,6 @@ Aceite: reiniciar o coletor com tráfego contínuo perde no máximo 10 s de even
 7. **Observabilidade:** `GROMESH_KEY_NAMES` do coletor é configurado por cluster à mão; derivar dos `key_names` dos plugins key-auth publicados.
 8. **Snapshot por cluster:** o agente ainda se registra de novo a cada restart (node token só em memória); avaliar persistir o token no volume do pod.
 9. **Proteção da `main` no GitHub:** aplicar `.github/rulesets/main.json` (`gh api -X POST repos/grometis/gromesh-gateway/rulesets --input .github/rulesets/main.json`) quando a conta tiver GitHub Pro; até lá vale o hook `pre-push` de `.githooks/` (CLAUDE.md, regra 10).
+10. **401 antes de 404 para anônimos:** hoje uma rota sem handler responde 404 mesmo sem sessão (um anônimo descobre quais rotas existem). Rejeitar com 401 antes do roteamento, com allowlist de rotas públicas gerada do contrato (incluindo os endpoints do agente).
 
 Regras de produção já codificadas nos charts e que continuam valendo: `TRUST_PROXY` é o IP/CIDR exato do ingress (nunca `uniquelocal`); o `LISTEN` do control plane usa conexão direta ao Postgres (nunca PgBouncer em modo transação); o ingress na frente do SSE do agente precisa de idle timeout acima de 15 s e buffering desligado; `COOKIE_SECURE` só é falso no compose de desenvolvimento.
