@@ -1,0 +1,6 @@
+apiVersion: v2
+name: control-plane
+description: Gromesh Gateway control plane, UI and isolated configuration validator
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

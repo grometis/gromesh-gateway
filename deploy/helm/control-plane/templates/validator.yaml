@@ -1,0 +1,74 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "control-plane.fullname" . }}-validator
+  labels:
+    {{- include "control-plane.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "control-plane.selector" (dict "root" . "component" "validator") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "control-plane.selector" (dict "root" . "component" "validator") | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "control-plane.podSecurity" . | nindent 8 }}
+        runAsUser: {{ .Values.validator.runAsUser }}
+        runAsGroup: 1001
+        fsGroup: 1001
+      containers:
+        - name: validator
+          image: {{ include "control-plane.image" .Values.validator.image | quote }}
+          imagePullPolicy: {{ .Values.validator.image.pullPolicy }}
+          securityContext:
+            {{- include "control-plane.security" . | nindent 12 }}
+          env:
+            - {name: KONG_DATABASE, value: "off"}
+            - {name: KONG_PROXY_LISTEN, value: "off"}
+            - {name: KONG_ADMIN_LISTEN, value: "0.0.0.0:8001"}
+            - {name: KONG_STATUS_LISTEN, value: "0.0.0.0:8100"}
+            - {name: KONG_ADMIN_ACCESS_LOG, value: "off"}
+            - {name: KONG_ADMIN_ERROR_LOG, value: /dev/stderr}
+            - {name: KONG_PREFIX, value: /var/run/kong}
+            - {name: KONG_NGINX_WORKER_PROCESSES, value: "1"}
+            - {name: KONG_NGINX_DAEMON, value: "off"}
+            - {name: KONG_PLUGINS, value: bundled}
+          ports:
+            - name: admin
+              containerPort: 8001
+            - name: status
+              containerPort: 8100
+          readinessProbe:
+            httpGet: {path: /status, port: status}
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet: {path: /status, port: status}
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 3
+          startupProbe:
+            httpGet: {path: /status, port: status}
+            periodSeconds: 5
+            failureThreshold: 36
+          resources:
+            {{- toYaml .Values.validator.resources | nindent 12 }}
+          # /usr/local/kong/lib contains image libraries; keep it visible.
+          volumeMounts:
+            - name: prefix
+              mountPath: /var/run/kong
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: prefix
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

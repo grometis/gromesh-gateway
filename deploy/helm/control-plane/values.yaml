@@ -1,0 +1,127 @@
+# Fixed control-plane and kong-validator Service names match the shipped nginx
+# and application defaults. Install only one control-plane release per namespace.
+replicaCount: 2
+imagePullSecrets: []
+
+image:
+  # W7-X2 supplies the published repository and immutable tag/digest.
+  repository: gromesh-control-plane
+  tag: "0.1.0"
+  digest: ""
+  pullPolicy: IfNotPresent
+
+ui:
+  replicaCount: 2
+  image:
+    # Build apps/ui/Dockerfile: its final stage is nginx-unprivileged on 8080.
+    repository: gromesh-ui
+    tag: "0.1.0"
+    digest: ""
+    pullPolicy: IfNotPresent
+  resources:
+    requests: {cpu: 25m, memory: 32Mi}
+    limits: {cpu: 250m, memory: 128Mi}
+
+validator:
+  image:
+    repository: gromesh-kong
+    tag: "3.9.4"
+    digest: ""
+    pullPolicy: IfNotPresent
+  runAsUser: 1001
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {cpu: "1", memory: 512Mi}
+
+database:
+  # Pre-create in the release namespace: the pre-install hook runs before normal
+  # chart resources. No database is bundled, and credentials never enter a ConfigMap.
+  existingSecret: ""
+  urlKey: url
+  # Reserved second key in that SAME Secret: direct connection, never PgBouncer
+  # transaction mode. Today's app reads ONLY DATABASE_URL (urlKey) for BOTH SQL
+  # and LISTEN/NOTIFY, so urlKey MUST also be direct. listenUrlKey is not wired
+  # to an env var until the application supports separate listener configuration.
+  listenUrlKey: listenUrl
+
+bootstrapAdmin:
+  # Required on first install with an empty users table; ignored by the app once
+  # any user exists. Prefer a pre-created Secret; upgrades can omit credentials.
+  # External Secret rotation requires a rollout because env vars are read once.
+  existingSecret: ""
+  emailKey: email
+  passwordKey: password
+  # Alternative: inject privately via --set-file; Helm release history retains it.
+  # Never commit real credentials. These values render ONLY into a Secret.
+  email: ""
+  password: ""
+
+clickhouse:
+  # Optional external Secret with url/user/password/database keys. Provision a
+  # SELECT-only reader (never the ingestion/admin user); no ClickHouse is bundled.
+  existingSecret: ""
+  urlKey: url
+  userKey: user
+  passwordKey: password
+  databaseKey: database
+
+encryption:
+  # W8-C1: inject GROMESH_ENCRYPTION_KEY only when this Secret is explicitly set.
+  # The future app expects a base64-encoded 32-byte key; preserve it across upgrades.
+  existingSecret: ""
+  key: key
+
+# Development HTTP only. Production cookies remain Secure unless explicitly opted out.
+insecureCookies: false
+# With ingress enabled, set only the ingress controller's actual source CIDR(s),
+# comma-separated. Never use aliases (especially uniquelocal), booleans or /0.
+# /api/v1/ bypasses UI nginx at ingress so this trust boundary stays one hop.
+trustProxy: ""
+config:
+  sessionTtlMs: 28800000
+  loginMaxFailures: 5
+  loginDelayBaseMs: 250
+  loginDelayMaxMs: 5000
+  loginMaxFailuresPerIp: 50
+  loginLockoutMs: 900000
+  autoPublishDelayMs: 3000
+  autoPublishPollMs: 1000
+
+resources:
+  requests: {cpu: 100m, memory: 256Mi}
+  limits: {cpu: "1", memory: 512Mi}
+migration:
+  # The hook only needs DATABASE_URL; it does not bootstrap users or call Kong.
+  activeDeadlineSeconds: 180
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {cpu: "1", memory: 512Mi}
+pdb:
+  enabled: true
+  minAvailable: 1
+
+ingress:
+  enabled: false
+  className: nginx
+  host: ""
+  # Agent heartbeats alone must not be relied on to keep streams alive. These
+  # nginx settings apply to /agent/v1/ directly, without a second nginx proxy.
+  # Any external load balancer must also have an idle timeout greater than 15s.
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+  # Pre-create the TLS Secret; production ingress requires TLS for Secure cookies.
+  tls: []
+  # - secretName: gromesh-tls
+  #   hosts: [gateway.example.com]
+
+networkPolicy:
+  # Ingress restrictions only; DB, DNS and optional analytics egress remain usable,
+  # including by the pre-install migration hook. Requires an enforcing CNI.
+  enabled: false
+  # Explicit peers for the ingress controller and agents; empty lists deny them.
+  # Use namespaceSelector + podSelector or ipBlock for your cluster topology.
+  ingressPeers: []
+  agentPeers: []

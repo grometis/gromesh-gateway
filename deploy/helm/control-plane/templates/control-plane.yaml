@@ -1,0 +1,104 @@
+{{- include "control-plane.validate" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "control-plane.fullname" . }}
+  labels:
+    {{- include "control-plane.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "control-plane.selector" (dict "root" . "component" "api") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "control-plane.selector" (dict "root" . "component" "api") | nindent 8 }}
+      annotations:
+        checksum/config: {{ toJson .Values.config | sha256sum }}
+        checksum/bootstrap: {{ include (print $.Template.BasePath "/bootstrap-secret.yaml") . | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "control-plane.podSecurity" . | nindent 8 }}
+        runAsUser: 1000
+        runAsGroup: 1000
+      containers:
+        - name: control-plane
+          image: {{ include "control-plane.image" .Values.image | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- include "control-plane.security" . | nindent 12 }}
+          env:
+            - name: PORT
+              value: "3000"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret }}
+                  key: {{ .Values.database.urlKey }}
+            - name: MIGRATE_ON_START
+              value: "false"
+            - name: COOKIE_SECURE
+              value: {{ ternary "false" "true" .Values.insecureCookies | quote }}
+            - name: TRUST_PROXY
+              value: {{ default "false" .Values.trustProxy | quote }}
+            - name: KONG_VALIDATOR_URL
+              value: http://kong-validator:8001
+            {{- if or .Values.bootstrapAdmin.existingSecret .Values.bootstrapAdmin.email }}
+            - name: BOOTSTRAP_ADMIN_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "control-plane.bootstrapSecret" . }}
+                  key: {{ .Values.bootstrapAdmin.emailKey }}
+            - name: BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "control-plane.bootstrapSecret" . }}
+                  key: {{ .Values.bootstrapAdmin.passwordKey }}
+            {{- end }}
+            {{- if .Values.clickhouse.existingSecret }}
+            {{- range $env, $key := dict "CLICKHOUSE_URL" .Values.clickhouse.urlKey "CLICKHOUSE_USER" .Values.clickhouse.userKey "CLICKHOUSE_PASSWORD" .Values.clickhouse.passwordKey "CLICKHOUSE_DATABASE" .Values.clickhouse.databaseKey }}
+            - name: {{ $env }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.clickhouse.existingSecret }}
+                  key: {{ $key }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.encryption.existingSecret }}
+            - name: GROMESH_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.encryption.existingSecret }}
+                  key: {{ .Values.encryption.key }}
+            {{- end }}
+            {{- range $env, $value := dict "SESSION_TTL_MS" .Values.config.sessionTtlMs "LOGIN_MAX_FAILURES" .Values.config.loginMaxFailures "LOGIN_DELAY_BASE_MS" .Values.config.loginDelayBaseMs "LOGIN_DELAY_MAX_MS" .Values.config.loginDelayMaxMs "LOGIN_MAX_FAILURES_PER_IP" .Values.config.loginMaxFailuresPerIp "LOGIN_LOCKOUT_MS" .Values.config.loginLockoutMs "AUTO_PUBLISH_DELAY_MS" .Values.config.autoPublishDelayMs "AUTO_PUBLISH_POLL_MS" .Values.config.autoPublishPollMs }}
+            - name: {{ $env }}
+              value: {{ $value | quote }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 3000
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 5
+            timeoutSeconds: 3
+          # /healthz checks Postgres, so use TCP for liveness to avoid restarts
+          # across every replica during a database outage.
+          livenessProbe:
+            tcpSocket: {port: http}
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          startupProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 5
+            failureThreshold: 36
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
