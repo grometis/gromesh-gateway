@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { api, ApiError, unwrap, type Schemas } from "../api/client";
 import { statusMessage } from "../api/errors";
@@ -9,6 +10,9 @@ import { useEnvId } from "../components/Shell";
 import { useServices } from "./Services";
 
 type Interval = Schemas["AnalyticsSummary"]["interval"];
+type TopBy = Schemas["TopRoutes"]["by"];
+
+const TOP_BY: Record<TopBy, string> = { requests: "Requisições", errors: "Erros (4xx + 5xx)", p95: "Latência p95" };
 
 /** Preset periods; the bucket size keeps every preset under a few hundred points. */
 export const PERIODS = {
@@ -175,6 +179,7 @@ function Dashboard({ envId }: { envId: string }) {
               <dd>{ms(data.totals.p99Ms)}</dd>
             </div>
           </dl>
+          <TopRoutes envId={envId} range={range} tick={tick} visible={visible} />
           <div className="charts">
             <LineChart title="Requisições por intervalo" points={data.series} lines={[{ key: "requests", label: "Requisições", color: "var(--primary)" }]} />
             <LineChart
@@ -197,6 +202,72 @@ function Dashboard({ envId }: { envId: string }) {
             />
           </div>
         </>
+      )}
+    </section>
+  );
+}
+
+/** The routes with the most traffic, errors or latency of the period; a row opens the explorer filtered by the route. */
+function TopRoutes({ envId, range, tick, visible }: { envId: string; range: { from: string; to: string }; tick: number; visible: boolean }) {
+  const [by, setBy] = useState<TopBy>("requests");
+  const top = useQuery({
+    queryKey: ["top-routes", envId, by, range.to, tick],
+    queryFn: () => unwrap(api.GET("/environments/{envId}/analytics/top-routes", { params: { path: { envId }, query: { ...range, by, limit: 10 } } })),
+    refetchInterval: visible ? 60_000 : false,
+  });
+  return (
+    <section className="top-routes" aria-labelledby="top-routes-title">
+      <div className="page-head">
+        <h2 id="top-routes-title">Top rotas</h2>
+        <Field label="Critério">
+          {(id) => (
+            <select id={id} value={by} onChange={(e) => setBy(e.target.value as TopBy)}>
+              {(Object.keys(TOP_BY) as TopBy[]).map((k) => (
+                <option key={k} value={k}>
+                  {TOP_BY[k]}
+                </option>
+              ))}
+            </select>
+          )}
+        </Field>
+      </div>
+      {top.isError && (
+        <p className="error" role="alert">
+          {statusMessage(top.error)}
+        </p>
+      )}
+      {top.data && top.data.items.length === 0 && <p className="muted">Sem tráfego no período.</p>}
+      {top.data && top.data.items.length > 0 && (
+        <table aria-label="Top rotas">
+          <thead>
+            <tr>
+              <th scope="col">Route</th>
+              <th scope="col">Requisições</th>
+              <th scope="col">Erros</th>
+              <th scope="col">Taxa de erro</th>
+              <th scope="col">p95</th>
+            </tr>
+          </thead>
+          <tbody>
+            {top.data.items.map((item) => (
+              <tr key={item.routeId ?? "none"}>
+                <td>
+                  {item.routeId === null ? (
+                    <span className="muted">Sem rota</span>
+                  ) : (
+                    <Link to={`/e/${envId}/requests?routeId=${item.routeId}`} title={item.routeName === null ? "Rota removida; abre o explorador filtrado pelo id" : "Abre o explorador filtrado por esta rota"}>
+                      {item.routeName ?? `${item.routeId.slice(0, 8)}… (removida)`}
+                    </Link>
+                  )}
+                </td>
+                <td>{number(item.requests)}</td>
+                <td>{number(item.errors4xx + item.errors5xx)}</td>
+                <td>{percent(item.errorRate)}</td>
+                <td>{ms(item.p95Ms)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
     </section>
   );

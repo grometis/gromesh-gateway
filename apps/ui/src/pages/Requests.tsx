@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from "react";
+import { useSearchParams } from "react-router";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { api, ApiError, unwrap, type Schemas } from "../api/client";
 import { statusMessage, toFormErrors } from "../api/errors";
@@ -24,8 +25,11 @@ export function RequestsPage() {
 }
 
 function Explorer({ envId }: { envId: string }) {
-  const [form, setForm] = useState<Filters>(EMPTY);
-  const [applied, setApplied] = useState<Filters & { range: { from: string; to: string } }>({ ...EMPTY, range: periodRange(EMPTY.period) });
+  // The dashboard links here with ?routeId=…: the filter starts applied.
+  const [params] = useSearchParams();
+  const initial = { ...EMPTY, routeId: params.get("routeId") ?? "" };
+  const [form, setForm] = useState<Filters>(initial);
+  const [applied, setApplied] = useState<Filters & { range: { from: string; to: string } }>({ ...initial, range: periodRange(initial.period) });
   const [selected, setSelected] = useState<RequestRecord | null>(null);
   const consumers = useConsumers(envId);
   const set = <K extends keyof Filters>(k: K, v: Filters[K]) => setForm((f) => ({ ...f, [k]: v }));
