@@ -21,6 +21,7 @@ import {
   type EntityChange,
   type GatewayState,
   type KongDeclarativeConfig,
+  platformPlugins,
   type SnapshotEnvelope,
 } from "@gromesh/compiler";
 import { and, desc, eq, lt, sql } from "drizzle-orm";
@@ -101,6 +102,7 @@ export class SnapshotsService {
 
   constructor(
     @Inject(DB) private readonly db: Db,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
     private readonly catalog: PluginCatalog,
   ) {}
 
@@ -251,7 +253,13 @@ export class SnapshotsService {
     const state = await loadGatewayState(tx, env.id);
     let envelope: SnapshotEnvelope;
     try {
-      envelope = buildSnapshot(state, { version: (env.currentVersion ?? 0) + 1, environmentId: env.id });
+      // Platform plugins are environment-wide: every cluster of the environment gets the same snapshot and hash.
+      const endpoint = this.config.platformHttpLogEndpoint;
+      envelope = buildSnapshot(
+        state,
+        { version: (env.currentVersion ?? 0) + 1, environmentId: env.id },
+        endpoint ? { platformPlugins: platformPlugins({ httpLogEndpoint: endpoint, environmentId: env.id }) } : undefined,
+      );
     } catch (err) {
       if (err instanceof CompileError) throw unprocessable("The draft cannot be published", err.issues);
       throw err;
