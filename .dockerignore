@@ -4,3 +4,9 @@
 .git
 deploy/compose/.data
 *.tgz
+**/.env
+**/.env.*
+**/coverage
+**/test-results
+**/playwright-report
+tmp-images
