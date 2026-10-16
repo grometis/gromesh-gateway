@@ -31,6 +31,8 @@ spec:
       {{- end }}
       securityContext:
         runAsNonRoot: true
+        # containerd refuses a pod-level group without a user; containers still set their own runAsUser.
+        runAsUser: {{ .Values.kong.runAsUser }}
         runAsGroup: 1001
         fsGroup: 1001
         seccompProfile:
