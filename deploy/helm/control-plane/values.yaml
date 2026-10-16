@@ -125,3 +125,20 @@ networkPolicy:
   # Use namespaceSelector + podSelector or ipBlock for your cluster topology.
   ingressPeers: []
   agentPeers: []
+
+backup:
+  # Enable with: helm upgrade --install cp deploy/helm/control-plane -f <private-values> --set backup.enabled=true
+  # Logical PostgreSQL 16 backups, UTC. PVC backups survive Helm uninstall;
+  # copy them off-cluster separately and preserve encryption keys outside the dump.
+  enabled: false
+  schedule: "0 3 * * *"
+  retentionDays: 7
+  image: postgres:16-alpine
+  # Must be writable by UID/GID 70 (postgres in the Alpine image).
+  storage:
+    size: 10Gi
+    # Empty uses the cluster's default StorageClass.
+    className: ""
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {cpu: "1", memory: 512Mi}

@@ -1,0 +1,82 @@
+{{- if .Values.backup.enabled }}
+{{- if or (lt (int .Values.backup.retentionDays) 1) (not (regexMatch "^[0-9]+$" (toString .Values.backup.retentionDays))) }}
+{{- fail "backup.retentionDays must be a positive integer" }}
+{{- end }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "control-plane.fullname" . }}-backup
+  labels:
+    {{- include "control-plane.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.backup.schedule | quote }}
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 3600
+      template:
+        metadata:
+          labels:
+            {{- include "control-plane.selector" (dict "root" . "component" "backup") | nindent 12 }}
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            {{- include "control-plane.podSecurity" . | nindent 12 }}
+            runAsUser: 70
+            runAsGroup: 70
+            fsGroup: 70
+            fsGroupChangePolicy: OnRootMismatch
+          containers:
+            - name: pg-dump
+              image: {{ .Values.backup.image | quote }}
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                {{- include "control-plane.security" . | nindent 16 }}
+              env:
+                # Pass the Secret URI explicitly: pg_dump does not expand URI-valued PGDATABASE.
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.database.existingSecret }}
+                      key: {{ .Values.database.urlKey }}
+                - name: RETENTION_DAYS
+                  value: {{ .Values.backup.retentionDays | quote }}
+                - name: HOME
+                  value: /tmp
+              command: [/bin/sh, -ec]
+              args:
+                - |
+                  umask 077
+                  file="/backups/gromesh-$(date -u +%Y%m%dT%H%M%SZ).dump"
+                  trap 'rm -f "$file.partial"' EXIT HUP INT TERM
+                  pg_dump --dbname="$DATABASE_URL" --format=custom --no-owner --no-acl --file="$file.partial"
+                  pg_restore --list "$file.partial" > /dev/null
+                  mv "$file.partial" "$file"
+                  # Prune only completed dumps, and only after this backup succeeds.
+                  find /backups -maxdepth 1 -type f -name 'gromesh-*.dump' -mtime +"$RETENTION_DAYS" -exec rm -f {} \;
+                  echo "Backup completed: $(basename "$file")"
+              resources:
+                {{- toYaml .Values.backup.resources | nindent 16 }}
+              volumeMounts:
+                - name: backups
+                  mountPath: /backups
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: backups
+              persistentVolumeClaim:
+                claimName: {{ include "control-plane.fullname" . }}-backup
+            - name: tmp
+              emptyDir:
+                sizeLimit: 64Mi
+{{- end }}
