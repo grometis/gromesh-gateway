@@ -156,11 +156,12 @@ test("UI publication, key-auth traffic, viewer limits, audit and rollback on the
     collectorStarted = true;
     await collector(cluster.id);
     const trafficStarted = new Date(Date.now() - 60_000).toISOString();
-    for (let i = 0; i < 3; i++) expect((await proxy(traffic, `${path}?n=${i}`)).status()).toBe(200);
+    // Distinct sub-paths: requests made before the collector carried this cluster's id must not be counted.
+    for (let i = 0; i < 3; i++) expect((await proxy(traffic, `${path}/traffic-${i}`)).status()).toBe(200);
     await expect.poll(async () => {
       const to = new Date(Date.now() + 60_000).toISOString();
       const page = await api<{ items: { path: string; status: number; environmentId: string; clusterId: string }[] }>("GET", `/environments/${env.id}/requests?from=${trafficStarted}&to=${to}&limit=50`, 200);
-      const rows = page.items.filter((r) => r.path === path && r.status === 200);
+      const rows = page.items.filter((r) => r.path.startsWith(`${path}/traffic-`) && r.status === 200);
       return rows.length >= 3 && rows.every((r) => r.environmentId === env.id && r.clusterId === cluster.id);
     }, { timeout: 20_000, intervals: [500, 1000], message: "Gateway traffic must reach the analytics API with the environment and cluster ids" }).toBe(true);
 
