@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: postgres}
+  template:
+    metadata:
+      labels: {app: postgres}
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          imagePullPolicy: Never
+          env:
+            - {name: POSTGRES_DB, value: gromesh}
+            - {name: POSTGRES_USER, value: gromesh}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: ci-db-auth, key: password}
+          ports: [{name: postgres, containerPort: 5432}]
+          readinessProbe:
+            exec: {command: [pg_isready, -U, gromesh, -d, gromesh]}
+            periodSeconds: 2
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          volumeMounts: [{name: data, mountPath: /var/lib/postgresql/data}]
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  selector: {app: postgres}
+  ports: [{port: 5432, targetPort: postgres}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: echo
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: echo}
+  template:
+    metadata:
+      labels: {app: echo}
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: echo
+          image: traefik/whoami:v1.10.3
+          imagePullPolicy: Never
+          ports: [{name: http, containerPort: 80}]
+          readinessProbe:
+            httpGet: {path: /, port: http}
+            periodSeconds: 2
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {cpu: 100m, memory: 64Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: echo
+spec:
+  selector: {app: echo}
+  ports: [{port: 80, targetPort: http}]

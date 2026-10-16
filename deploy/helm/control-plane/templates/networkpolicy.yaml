@@ -1,0 +1,46 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- range $component := list "api" "ui" "validator" }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "control-plane.fullname" $ }}-{{ $component }}
+  labels:
+    {{- include "control-plane.labels" $ | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "control-plane.selector" (dict "root" $ "component" $component) | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    {{- if eq $component "validator" }}
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "control-plane.selector" (dict "root" $ "component" "api") | nindent 14 }}
+      ports: [{protocol: TCP, port: 8001}]
+    {{- else }}
+    {{- if eq $component "api" }}
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "control-plane.selector" (dict "root" $ "component" "ui") | nindent 14 }}
+      ports: [{protocol: TCP, port: 3000}]
+    {{- with $.Values.networkPolicy.agentPeers }}
+    - from:
+        {{- toYaml . | nindent 8 }}
+      ports: [{protocol: TCP, port: 3000}]
+    {{- end }}
+    {{- end }}
+    {{- if $.Values.networkPolicy.ingressPeers }}
+    - from:
+        {{- toYaml $.Values.networkPolicy.ingressPeers | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ ternary 3000 8080 (eq $component "api") }}
+    {{- else if eq $component "ui" }}
+    []
+    {{- end }}
+    {{- end }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,30 @@
+database:
+  existingSecret: ci-database
+  urlKey: url
+  listenUrlKey: listenUrl
+bootstrapAdmin:
+  existingSecret: ci-admin
+clickhouse:
+  existingSecret: ci-clickhouse-reader
+encryption:
+  existingSecret: ci-encryption
+trustProxy: 10.244.0.0/24
+ingress:
+  enabled: true
+  host: gateway.example.test
+  tls:
+    - secretName: ci-tls
+      hosts: [gateway.example.test]
+networkPolicy:
+  enabled: true
+  ingressPeers:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/component: controller
+  agentPeers:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: data-plane

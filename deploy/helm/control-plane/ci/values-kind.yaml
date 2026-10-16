@@ -1,0 +1,22 @@
+# Synthetic Secrets are provisioned by kind.sh before the migration hook.
+database:
+  existingSecret: ci-database
+bootstrapAdmin:
+  existingSecret: ci-admin
+# kind has no TLS terminator; this is the only development opt-out.
+insecureCookies: true
+image:
+  repository: gromesh-control-plane
+  tag: ci
+  pullPolicy: Never
+ui:
+  replicaCount: 1
+  image:
+    repository: gromesh-ui
+    tag: ci
+    pullPolicy: Never
+validator:
+  image:
+    repository: kong
+    tag: "3.9.3"
+    pullPolicy: Never

@@ -1,0 +1,25 @@
+Gromesh Gateway installed in {{ .Release.Namespace }}.
+
+The database Secret must exist before installation, including the migration hook.
+DATABASE_URL is shared by SQL and LISTEN/NOTIFY: use a direct Postgres connection,
+never PgBouncer transaction mode. database.listenUrlKey is reserved, not consumed.
+Bootstrap credentials are used only while the users table is empty.
+Restart deployments after rotating externally managed Secrets.
+
+The UI image expects control-plane:3000; install one release per namespace.
+The validator Admin API is ClusterIP-only at kong-validator:8001, with no proxy.
+{{- if .Values.ingress.enabled }}
+UI: https://{{ .Values.ingress.host }}
+Agent base URL: https://{{ .Values.ingress.host }} (do not append /agent/v1).
+TRUST_PROXY must match the ingress controller's actual source CIDRs.
+Configure the external load balancer's SSE idle timeout above 15 seconds too.
+{{- else }}
+Development access: kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "control-plane.fullname" . }}-ui 8080:8080
+Production cookies require HTTPS. Use insecureCookies only for development HTTP.
+{{- end }}
+{{- if .Values.insecureCookies }}
+WARNING: Secure cookies are disabled for this development release.
+{{- end }}
+{{- if .Values.encryption.existingSecret }}
+Encryption key injected for W8-C1; encryption requires the corresponding app version.
+{{- end }}

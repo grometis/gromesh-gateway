@@ -1,0 +1,17 @@
+{{- range $component, $service := dict "api" (dict "name" "control-plane" "port" 3000 "target" "http") "ui" (dict "name" (printf "%s-ui" (include "control-plane.fullname" .)) "port" 8080 "target" "http") "validator" (dict "name" "kong-validator" "port" 8001 "target" "admin") }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $service.name }}
+  labels:
+    {{- include "control-plane.labels" $ | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "control-plane.selector" (dict "root" $ "component" $component) | nindent 4 }}
+  ports:
+    - name: {{ $service.target }}
+      port: {{ $service.port }}
+      targetPort: {{ $service.target }}
+{{- end }}
