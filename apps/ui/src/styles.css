@@ -139,3 +139,22 @@ td.actions button + button { margin-left: 6px; }
   .audit-filters { grid-template-columns: 1fr; }
   .audit-event .props { grid-template-columns: 1fr; }
 }
+
+.stat-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.stat-card { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 12px; }
+.stat-card dt { color: var(--muted); font-size: 12px; }
+.stat-card dd { margin: 4px 0 0; font-size: 22px; font-weight: 600; }
+.charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+.chart { margin: 0; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 12px; }
+.chart figcaption { font-weight: 600; margin-bottom: 8px; }
+.chart svg { width: 100%; height: auto; display: block; }
+.chart-grid { stroke: var(--border); stroke-width: 1; }
+.chart-tick { fill: var(--muted); font-size: 11px; }
+.chart-legend { list-style: none; display: flex; flex-wrap: wrap; gap: 12px; padding: 0; margin: 8px 0 0; font-size: 12px; color: var(--muted); }
+.chart-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: middle; }
+.analytics-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; align-items: end; margin-bottom: 16px; }
+.analytics-filters .form-actions { grid-column: 1 / -1; justify-content: flex-start; }
+.status-2xx { color: var(--added); }
+.status-4xx { color: var(--modified); }
+.status-5xx { color: var(--removed); }
+tr.row-link { cursor: pointer; }
