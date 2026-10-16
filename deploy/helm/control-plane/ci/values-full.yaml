@@ -28,3 +28,5 @@ networkPolicy:
     - podSelector:
         matchLabels:
           app.kubernetes.io/name: data-plane
+backup:
+  enabled: true
