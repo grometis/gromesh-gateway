@@ -288,6 +288,7 @@ Aceite: o job do e2e final verde no CI e o checklist sem pendências.
 
 - Analytics: "top rotas por volume e por erro" no dashboard precisa de um endpoint novo no contrato; fora do MVP.
 - Analytics: o `path` das requisições pode conter dado pessoal (ex.: CPF em `/clientes/{cpf}`); avaliar retenção menor ou máscara de path por rota.
+- Cifragem em repouso: incluir no AAD o contexto (tabela, coluna, id da linha) para impedir a troca de valores cifrados entre linhas.
 - Cifrar em repouso, no Postgres, as chaves key-auth e os campos `encrypted` da config de plugins.
 - Semana 5 (auth): token em cookie httpOnly + SameSite + proteção CSRF, no lugar do `sessionStorage` da UI.
 - Semana 8 (Helm/produção): `TRUST_PROXY` em produção é o IP/CIDR exato do ingress, nunca `uniquelocal` (só o compose de desenvolvimento usa isso).
