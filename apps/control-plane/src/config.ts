@@ -28,6 +28,8 @@ export interface AppConfig {
   loginLockoutMs: number;
   /** A Kong (DB-less, no traffic) whose Admin API validates plugin configs: POST /schemas/plugins/validate. */
   kongValidatorUrl: string | null;
+  /** The analytics store (CLICKHOUSE_URL/USER/PASSWORD/DATABASE), read with a SELECT-only user; null = analytics off (502). */
+  clickhouse: { url: string; user: string; password: string; database: string } | null;
   contractsDir: string;
   migrateOnStart: boolean;
   /** Auto-publish environments fire this long after their last draft edit (debounce). */
@@ -57,6 +59,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     loginMaxFailuresPerIp: Number(env.LOGIN_MAX_FAILURES_PER_IP ?? 50),
     loginLockoutMs: Number(env.LOGIN_LOCKOUT_MS ?? 15 * 60 * 1000),
     kongValidatorUrl: env.KONG_VALIDATOR_URL || null,
+    clickhouse: env.CLICKHOUSE_URL
+      ? { url: env.CLICKHOUSE_URL, user: env.CLICKHOUSE_USER ?? "gromesh_reader", password: env.CLICKHOUSE_PASSWORD ?? "", database: env.CLICKHOUSE_DATABASE ?? "gromesh" }
+      : null,
     contractsDir: env.CONTRACTS_DIR ?? resolve(PACKAGE_ROOT, "../../contracts"),
     migrateOnStart: env.MIGRATE_ON_START === "true",
     autoPublishDelayMs: Number(env.AUTO_PUBLISH_DELAY_MS ?? 3000),

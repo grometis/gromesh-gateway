@@ -42,6 +42,19 @@ export const KONG_VALIDATOR_URL = process.env.KONG_VALIDATOR_URL ?? "http://127.
 
 export const BOOTSTRAP_ADMIN = { email: "admin@harness.test", password: "harness-admin-password" };
 
+/** Analytics read the compose ClickHouse (observability profile) with the SELECT-only user unless overridden. */
+export const CLICKHOUSE = {
+  url: process.env.TEST_CLICKHOUSE_URL ?? "http://127.0.0.1:8123",
+  user: process.env.TEST_CLICKHOUSE_USER ?? "gromesh_reader",
+  password: process.env.TEST_CLICKHOUSE_PASSWORD ?? "gromesh-dev-reader",
+  database: process.env.TEST_CLICKHOUSE_DATABASE ?? "gromesh",
+};
+/** Admin credentials the tests use to create the table (CI) and insert fixtures. */
+export const CLICKHOUSE_ADMIN = {
+  user: process.env.TEST_CLICKHOUSE_ADMIN_USER ?? "gromesh",
+  password: process.env.TEST_CLICKHOUSE_ADMIN_PASSWORD ?? "gromesh-dev-observability",
+};
+
 /** Each call is one more control-plane replica on the shared test database. */
 export async function startHarness(overrides: Partial<AppConfig> = {}): Promise<Harness> {
   const databaseUrl = inject("databaseUrl");
@@ -57,6 +70,7 @@ export async function startHarness(overrides: Partial<AppConfig> = {}): Promise<
       loginMaxFailuresPerIp: 1_000_000,
       loginDelayBaseMs: 0,
       kongValidatorUrl: KONG_VALIDATOR_URL,
+      clickhouse: CLICKHOUSE,
       migrateOnStart: false,
       ...overrides,
     },
