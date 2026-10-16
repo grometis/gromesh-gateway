@@ -91,6 +91,12 @@ spec:
               value: bundled
             - name: KONG_NGINX_WORKER_PROCESSES
               value: {{ .Values.kong.workerProcesses | quote }}
+            - name: KONG_DNS_NOT_FOUND_TTL
+              value: {{ .Values.kong.dns.notFoundTtl | quote }}
+            - name: KONG_DNS_ERROR_TTL
+              value: {{ .Values.kong.dns.errorTtl | quote }}
+            - name: KONG_DNS_STALE_TTL
+              value: {{ .Values.kong.dns.staleTtl | quote }}
           ports:
             - name: proxy-http
               containerPort: 8000

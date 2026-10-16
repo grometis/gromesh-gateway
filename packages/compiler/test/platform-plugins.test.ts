@@ -41,6 +41,17 @@ describe("platformPlugins", () => {
     expect(platformPlugins(options)[1]?.config?.queue).toHaveProperty("max_batch_size", 100);
   });
 
+  it("allows retry retention and capacity to be tuned independently while retaining other defaults", () => {
+    const retry = compile(state, { platformPlugins: platformPlugins({ ...options, queue: { maxRetryTimeSeconds: 120 } }) });
+    expect(retry.plugins.find((plugin) => plugin.name === "http-log")?.config.queue).toEqual({
+      max_batch_size: 100, max_coalescing_delay: 1, max_entries: 10000, max_retry_time: 120,
+    });
+    const capacity = compile(state, { platformPlugins: platformPlugins({ ...options, queue: { maxEntries: 30000 } }) });
+    expect(capacity.plugins.find((plugin) => plugin.name === "http-log")?.config.queue).toEqual({
+      max_batch_size: 100, max_coalescing_delay: 1, max_entries: 30000, max_retry_time: 60,
+    });
+  });
+
   it.each([
     { environmentId: 'invalid"; return "value' }, { environmentId: "invalid" },
     { httpLogEndpoint: "file:///tmp/log" }, { httpLogEndpoint: "http://user:password@vector/kong" },
@@ -48,6 +59,9 @@ describe("platformPlugins", () => {
     { queue: { maxBatchSize: 0 } }, { queue: { maxBatchSize: 1.5 } },
     { queue: { maxCoalescingDelaySeconds: -1 } }, { queue: { maxRetryTimeSeconds: Infinity } },
     { queue: { maxBatchSize: 200, maxEntries: 100 } },
+    { queue: { maxEntries: 0 } }, { queue: { maxEntries: -1 } },
+    { queue: { maxEntries: 100.5 } }, { queue: { maxEntries: NaN } },
+    { queue: { maxRetryTimeSeconds: -1 } }, { queue: { maxRetryTimeSeconds: NaN } },
   ])("rejects unsafe or invalid platform configuration: %j", (invalid) => {
     expect(() => platformPlugins({ ...options, ...invalid })).toThrow(CompileError);
   });

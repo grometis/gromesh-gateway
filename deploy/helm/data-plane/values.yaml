@@ -17,6 +17,12 @@ kong:
   runAsUser: 1001
   # Two workers match compose without sizing workers from the host CPU count.
   workerProcesses: 2
+  # Cold NXDOMAIN, 5s polls: 80.6s baseline -> 10.3s (3.9.3/3.9.4); recover within the 60s log queue.
+  dns:
+    notFoundTtl: 1
+    errorTtl: 1
+    # Retain stale positive answers during DNS outages; do not shorten upstream availability.
+    staleTtl: 3600
   # Prefix (/kong_prefix: nginx files, sockets, certificates, LMDB) and /tmp
   # each have an emptyDir so the image root filesystem can remain read-only.
   resources:
@@ -110,14 +116,21 @@ collector:
       memory: 512Mi
 
 metrics:
-  # Adds pod scrape annotations for :8100/metrics. Publish the platform prometheus
-  # plugin through the control plane/compiler; annotations cannot enable it.
+  # Adds pod scrape annotations for gateway :8100/metrics and collector :9598/metrics.
+  # Publish the platform prometheus plugin through the control plane/compiler; annotations cannot enable it.
   # The agent separately serves :9100/metrics, with no health endpoint, so there
   # is no agent liveness probe that could mistake a metrics response for health.
   enabled: false
+  # Match the scrape jobs for this gateway and collector; keep unrelated installations out of the alert.
+  gatewayJob: gateway
+  collectorJob: collector
+  prometheusRule:
+    # Requires the Prometheus Operator CRD. The rules ConfigMap is always available.
+    enabled: false
+    labels: {}
   # NetworkPolicy intentionally permits proxy ingress ONLY. When enabled, an
-  # operator-managed policy must allow trusted scrapers to :8100 (and optionally
-  # :9100). Kubelet probes and same-pod loopback do not need these ingress rules.
+  # operator-managed policy must allow trusted scrapers to :8100 and collector :9598
+  # (and optionally agent :9100). Kubelet probes and same-pod loopback do not need these ingress rules.
 
 # CPU requests above provide the denominator for the HPA's pod utilization.
 autoscaling:

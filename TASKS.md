@@ -39,6 +39,7 @@ git worktree add ../gg-codex  -b task/W1-X1-kong-image
 | W8-C1 | Claude | — | `apps/control-plane/` (crypto, migração), `packages/compiler/` só se precisar |
 | W8-X1 | Codex | W7-X1, W7-C1 | `tests/load/`, `deploy/helm/*/templates/backup*`, `scripts/` |
 | W8-C2 | Claude | todas | `e2e/`, `.github/workflows/`, `TASKS.md` |
+| B1 | Codex | W8-C2 | `deploy/compose/`, `deploy/observability/`, `deploy/helm/data-plane/`, `packages/compiler/` (só opções do `platformPlugins`), `e2e/` (spec novo) |
 
 Ordem de merge na semana 3: W2-C2 → W3-X1 → W3-C1 → W3-X2. Quem mergeia depois faz rebase; `src/db/schema.ts` e `drizzle/` são alterados por uma frente por vez.
 
@@ -283,6 +284,17 @@ Aceite: p95 do overhead do Kong registrado como baseline; **zero 5xx** durante a
 - Atualizar `TASKS.md`: MVP fechado e backlog priorizado para o pós-MVP.
 
 Aceite: o job do e2e final verde no CI e o checklist sem pendências.
+
+---
+
+### B1 [Codex] Observabilidade resiliente
+- Investigar e medir no compose qual configuração do Kong 3.9.4 reduz a janela após NXDOMAIN do `gromesh-collector` (`dns_not_found_ttl`, `dns_error_ttl`, `dns_stale_ttl` e, se existir nessa versão, o novo cliente DNS). Registrar a medição antes/depois.
+- Aplicar a configuração escolhida no compose e no chart do data plane (valores com padrão sensato).
+- `platformPlugins`: fila do http-log configurável (`max_retry_time`, `max_entries`) para segurar eventos durante uma queda curta do coletor; padrão que cubra pelo menos 30 s.
+- Métrica/alerta: regra do Prometheus (arquivo de rules no chart/compose) para "coletor sem eventos há mais de 2 min com tráfego no Kong".
+- Aceite automatizado: tráfego contínuo pelo Kong, reiniciar o coletor, contar eventos no ClickHouse. Roda no compose e no job e2e.
+
+Aceite: reiniciar o coletor com tráfego contínuo perde no máximo 10 s de eventos.
 
 ---
 

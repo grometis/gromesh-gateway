@@ -28,6 +28,10 @@ spec:
       port: 8080
       targetPort: http-log
       protocol: TCP
+    - name: metrics
+      port: 9598
+      targetPort: metrics
+      protocol: TCP
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -45,6 +49,11 @@ spec:
       labels:
         {{- include "data-plane.collectorSelectorLabels" . | nindent 8 }}
       annotations:
+        {{- if .Values.metrics.enabled }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9598"
+        prometheus.io/path: /metrics
+        {{- end }}
         checksum/config: {{ print (.Files.Get "files/vector/vector.yaml") (.Files.Get "files/vector/entrypoint.sh") | sha256sum | trunc 16 }}
     spec:
       automountServiceAccountToken: false
@@ -85,6 +94,8 @@ spec:
           ports:
             - name: http-log
               containerPort: 8080
+            - name: metrics
+              containerPort: 9598
           readinessProbe:
             tcpSocket:
               port: http-log

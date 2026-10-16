@@ -1,0 +1,55 @@
+rule_files:
+  - collector.rules.yml
+evaluation_interval: 5s
+tests:
+  - name: traffic with a stalled collector despite HTTP health probes
+    interval: 5s
+    input_series:
+      - series: 'kong_http_requests_total{job="gateway"}'
+        values: '0+50x60'
+      - series: 'vector_component_sent_events_total{job="collector",component_id="sanitize"}'
+        values: '100+0x60'
+      - series: 'vector_component_received_events_total{job="collector",component_id="kong"}'
+        values: '0+1x60'
+    alert_rule_test:
+      - eval_time: 1m55s
+        alertname: CollectorWithoutEvents
+        exp_alerts: []
+      - eval_time: 2m15s
+        alertname: CollectorWithoutEvents
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations:
+              summary: Collector has received no events for over two minutes while the gateway has traffic
+  - name: unavailable collector
+    interval: 5s
+    input_series:
+      - series: 'kong_http_requests_total{job="gateway"}'
+        values: '0+50x60'
+    alert_rule_test:
+      - eval_time: 2m15s
+        alertname: CollectorWithoutEvents
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations:
+              summary: Collector has received no events for over two minutes while the gateway has traffic
+  - name: idle gateway
+    interval: 5s
+    input_series:
+      - series: 'kong_http_requests_total{job="gateway"}'
+        values: '100+0x60'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: CollectorWithoutEvents
+        exp_alerts: []
+  - name: healthy collector including a counter reset
+    interval: 5s
+    input_series:
+      - series: 'kong_http_requests_total{job="gateway"}'
+        values: '0+50x30 0+50x30'
+      - series: 'vector_component_sent_events_total{job="collector",component_id="sanitize"}'
+        values: '0+50x30 0+50x30'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: CollectorWithoutEvents
+        exp_alerts: []

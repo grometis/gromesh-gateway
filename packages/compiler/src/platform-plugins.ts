@@ -8,7 +8,9 @@ export interface PlatformPluginOptions {
   queue?: {
     maxBatchSize?: number;
     maxCoalescingDelaySeconds?: number;
+    /** Per worker; size for peak events/second times the intended outage window. */
     maxEntries?: number;
+    /** Defaults to 60 seconds so a short collector outage does not discard the queued batch. */
     maxRetryTimeSeconds?: number;
   };
 }
