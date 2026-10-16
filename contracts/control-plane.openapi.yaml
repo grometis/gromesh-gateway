@@ -976,9 +976,9 @@ paths:
                 to: "2026-10-15T12:10:00Z"
                 by: requests
                 items:
-                  - { routeId: "2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f", serviceId: "6f1d2c3b-4a5e-4f60-8b7c-1d2e3f4a5b6c", requests: 900, errors4xx: 30, errors5xx: 2, errorRate: 0.0356, p50Ms: 12.1, p95Ms: 47.0, p99Ms: 118.0 }
-                  - { routeId: "8e1f2a3b-4c5d-4e6f-8a9b-0c1d2e3f4a5b", serviceId: "6f1d2c3b-4a5e-4f60-8b7c-1d2e3f4a5b6c", requests: 300, errors4xx: 10, errors5xx: 1, errorRate: 0.0367, p50Ms: 13.4, p95Ms: 55.2, p99Ms: 140.0 }
-                  - { routeId: null, serviceId: null, requests: 50, errors4xx: 50, errors5xx: 0, errorRate: 1, p50Ms: 0.4, p95Ms: 0.9, p99Ms: 1.2 }
+                  - { routeId: "2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f", routeName: orders, serviceId: "6f1d2c3b-4a5e-4f60-8b7c-1d2e3f4a5b6c", requests: 900, errors4xx: 30, errors5xx: 2, errorRate: 0.0356, p50Ms: 12.1, p95Ms: 47.0, p99Ms: 118.0 }
+                  - { routeId: "8e1f2a3b-4c5d-4e6f-8a9b-0c1d2e3f4a5b", routeName: null, serviceId: "6f1d2c3b-4a5e-4f60-8b7c-1d2e3f4a5b6c", requests: 300, errors4xx: 10, errors5xx: 1, errorRate: 0.0367, p50Ms: 13.4, p95Ms: 55.2, p99Ms: 140.0 }
+                  - { routeId: null, routeName: null, serviceId: null, requests: 50, errors4xx: 50, errors5xx: 0, errorRate: 1, p50Ms: 0.4, p95Ms: 0.9, p99Ms: 1.2 }
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationError" }
         "502": { $ref: "#/components/responses/AnalyticsUnavailable" }
@@ -1532,9 +1532,10 @@ components:
     TopRoute:
       allOf:
         - type: object
-          required: [routeId, serviceId]
+          required: [routeId, routeName, serviceId]
           properties:
             routeId: { type: [string, "null"], format: uuid, description: Null for traffic that matched no route }
+            routeName: { type: [string, "null"], description: Current name in the control plane; null when the route was deleted or no route matched }
             serviceId: { type: [string, "null"], format: uuid }
         - { $ref: "#/components/schemas/TrafficStats" }
     RequestRecord:

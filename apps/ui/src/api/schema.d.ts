@@ -951,6 +951,8 @@ export interface components {
              * @description Null for traffic that matched no route
              */
             routeId: string | null;
+            /** @description Current name in the control plane; null when the route was deleted or no route matched */
+            routeName: string | null;
             /** Format: uuid */
             serviceId: string | null;
         } & components["schemas"]["TrafficStats"];
@@ -2898,6 +2900,7 @@ export interface operations {
                      *       "items": [
                      *         {
                      *           "routeId": "2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f",
+                     *           "routeName": "orders",
                      *           "serviceId": "6f1d2c3b-4a5e-4f60-8b7c-1d2e3f4a5b6c",
                      *           "requests": 900,
                      *           "errors4xx": 30,
@@ -2909,6 +2912,7 @@ export interface operations {
                      *         },
                      *         {
                      *           "routeId": "8e1f2a3b-4c5d-4e6f-8a9b-0c1d2e3f4a5b",
+                     *           "routeName": null,
                      *           "serviceId": "6f1d2c3b-4a5e-4f60-8b7c-1d2e3f4a5b6c",
                      *           "requests": 300,
                      *           "errors4xx": 10,
@@ -2920,6 +2924,7 @@ export interface operations {
                      *         },
                      *         {
                      *           "routeId": null,
+                     *           "routeName": null,
                      *           "serviceId": null,
                      *           "requests": 50,
                      *           "errors4xx": 50,
