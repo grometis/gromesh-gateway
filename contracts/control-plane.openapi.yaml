@@ -940,6 +940,48 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationError" }
         "502": { $ref: "#/components/responses/AnalyticsUnavailable" }
+  /environments/{envId}/analytics/top-routes:
+    parameters: [{ $ref: "#/components/parameters/EnvId" }]
+    get:
+      tags: [analytics]
+      operationId: getTopRoutes
+      x-required-role: viewer
+      # Contract-only PR: no handler yet. The implementation PR removes this mark (see CLAUDE.md, rule 11).
+      x-gromesh-planned: true
+      description: |
+        The routes with the most traffic, the most errors or the slowest p95 over the period, from the same
+        `requests` table as the summary (same 7-day limit). Traffic that matched no route is one row with null
+        `routeId` and `serviceId`. Ordered by the chosen criterion descending, ties by `requests` descending then
+        `routeId`.
+      parameters:
+        - { $ref: "#/components/parameters/AnalyticsFrom" }
+        - { $ref: "#/components/parameters/AnalyticsTo" }
+        - name: by
+          in: query
+          schema: { type: string, enum: [requests, errors, p95], default: requests }
+          description: |
+            `requests`: request count; `errors`: 4xx plus 5xx responses; `p95`: p95 of the total latency (routes
+            without latency data come last).
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 50, default: 10 }
+      responses:
+        "200":
+          description: Top routes
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TopRoutes" }
+              example:
+                from: "2026-10-15T12:00:00Z"
+                to: "2026-10-15T12:10:00Z"
+                by: requests
+                items:
+                  - { routeId: "2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f", routeName: orders, serviceId: "6f1d2c3b-4a5e-4f60-8b7c-1d2e3f4a5b6c", requests: 900, errors4xx: 30, errors5xx: 2, errorRate: 0.0356, p50Ms: 12.1, p95Ms: 47.0, p99Ms: 118.0 }
+                  - { routeId: "8e1f2a3b-4c5d-4e6f-8a9b-0c1d2e3f4a5b", routeName: null, serviceId: "6f1d2c3b-4a5e-4f60-8b7c-1d2e3f4a5b6c", requests: 300, errors4xx: 10, errors5xx: 1, errorRate: 0.0367, p50Ms: 13.4, p95Ms: 55.2, p99Ms: 140.0 }
+                  - { routeId: null, routeName: null, serviceId: null, requests: 50, errors4xx: 50, errors5xx: 0, errorRate: 1, p50Ms: 0.4, p95Ms: 0.9, p99Ms: 1.2 }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "502": { $ref: "#/components/responses/AnalyticsUnavailable" }
   /environments/{envId}/requests:
     parameters: [{ $ref: "#/components/parameters/EnvId" }]
     get:
@@ -1476,6 +1518,26 @@ components:
                 properties:
                   ts: { type: string, format: date-time, description: Start of the bucket }
               - { $ref: "#/components/schemas/TrafficStats" }
+    TopRoutes:
+      type: object
+      required: [from, to, by, items]
+      properties:
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+        by: { type: string, enum: [requests, errors, p95] }
+        items:
+          type: array
+          maxItems: 50
+          items: { $ref: "#/components/schemas/TopRoute" }
+    TopRoute:
+      allOf:
+        - type: object
+          required: [routeId, routeName, serviceId]
+          properties:
+            routeId: { type: [string, "null"], format: uuid, description: Null for traffic that matched no route }
+            routeName: { type: [string, "null"], description: Current name in the control plane; null when the route was deleted or no route matched }
+            serviceId: { type: [string, "null"], format: uuid }
+        - { $ref: "#/components/schemas/TrafficStats" }
     RequestRecord:
       type: object
       required: [id, ts, environmentId, clusterId, serviceId, routeId, consumerId, method, path, status, latencyKongMs, latencyUpstreamMs, latencyTotalMs, clientIp, requestSize, responseSize]
