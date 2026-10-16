@@ -157,7 +157,10 @@ async function main() {
 }
 
 main().catch((error) => {
-  // Child-process errors can contain configuration or secrets. Emit only deliberate assertions.
-  console.error(error instanceof assert.AssertionError ? error.message : "Resilience acceptance failed; check compose service health and connectivity");
+  // Child-process errors can carry configuration or secrets (subprocess output, env): outside CI only deliberate
+  // assertions are shown; in CI the message and stack are shown without the subprocess streams.
+  if (error instanceof assert.AssertionError) console.error(error.message);
+  else if (process.env.CI) console.error(error instanceof Error ? (error.stack ?? error.message) : String(error));
+  else console.error("Resilience acceptance failed; check compose service health and connectivity");
   process.exitCode = 1;
 });
