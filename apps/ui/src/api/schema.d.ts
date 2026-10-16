@@ -111,6 +111,86 @@ export interface paths {
         patch: operations["updateUser"];
         trace?: never;
     };
+    "/users/me/tokens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The caller's API tokens, newest first, revoked ones included. */
+        get: operations["listMyTokens"];
+        put?: never;
+        /**
+         * @description Creates an API token for the caller. The token itself is returned once, here, and never again: the server keeps
+         *     only a keyed hash and the hint. `role` may not exceed the caller's role (422 on `role`). A user may hold at most
+         *     50 active tokens (neither revoked nor expired): the 51st answers 422 with path `(body)` and a message saying so.
+         */
+        post: operations["createMyToken"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/users/me/tokens/{tokenId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tokenId: components["parameters"]["TokenId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * @description Revokes one of the caller's tokens; it stops working immediately. Idempotent on an already revoked token.
+         *     Another user's token is not visible here: 404, never 403.
+         */
+        delete: operations["revokeMyToken"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tokens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Every user's API tokens, newest first, revoked ones included. */
+        get: operations["listTokens"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tokens/{tokenId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tokenId: components["parameters"]["TokenId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** @description Revokes any user's token. */
+        delete: operations["revokeToken"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/environments": {
         parameters: {
             query?: never;
@@ -670,6 +750,44 @@ export interface components {
             items: components["schemas"]["User"][];
             nextCursor: string | null;
         };
+        ApiTokenCreate: {
+            name: string;
+            /** @description At most the caller's role */
+            role: components["schemas"]["Role"];
+            expiresInDays: number;
+        };
+        ApiToken: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            role: components["schemas"]["Role"];
+            /** @description The last four characters, prefixed with … */
+            tokenHint: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            expiresAt: string;
+            /**
+             * Format: date-time
+             * @description Updated at most once a minute
+             */
+            lastUsedAt: string | null;
+            /** Format: date-time */
+            revokedAt: string | null;
+            owner: {
+                /** Format: uuid */
+                id: string;
+                name: string;
+            };
+        };
+        ApiTokenCreated: components["schemas"]["ApiToken"] & {
+            /** @description `ggt_` plus 32 random bytes in unpadded base64url (43 characters); shown only in this response */
+            token: string;
+        };
+        ApiTokenPage: {
+            items: components["schemas"]["ApiToken"][];
+            nextCursor: string | null;
+        };
         Environment: {
             /** Format: uuid */
             id: string;
@@ -890,6 +1008,18 @@ export interface components {
                 type: "user" | "system" | "agent";
                 id: string;
                 name?: string;
+                /**
+                 * @description How a user authenticated; absent for system and agent
+                 * @enum {string}
+                 */
+                via?: "session" | "token";
+                /**
+                 * Format: uuid
+                 * @description Present when `via` is token
+                 */
+                tokenId?: string;
+                /** @description Present when `via` is token */
+                tokenName?: string;
             };
             /**
              * @description <entity>.<create|update|delete> | snapshot.publish | snapshot.rollback | auth.login | cluster.rotate-token
@@ -1232,6 +1362,7 @@ export interface components {
         AnalyticsTo: string;
         RouteFilter: string;
         ServiceFilter: string;
+        TokenId: string;
         UserId: string;
         ServiceId: string;
         RouteId: string;
@@ -1481,6 +1612,162 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             422: components["responses"]["ValidationError"];
+        };
+    };
+    listMyTokens: {
+        parameters: {
+            query?: {
+                limit?: components["parameters"]["Limit"];
+                cursor?: components["parameters"]["Cursor"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Tokens */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "items": [
+                     *         {
+                     *           "id": "5f0c1d2e-3a4b-4c5d-8e6f-7a8b9c0d1e2f",
+                     *           "name": "ci-deploy",
+                     *           "role": "editor",
+                     *           "tokenHint": "…Ubok",
+                     *           "createdAt": "2026-10-16T12:00:00Z",
+                     *           "expiresAt": "2027-01-14T12:00:00Z",
+                     *           "lastUsedAt": "2026-10-16T13:05:00Z",
+                     *           "revokedAt": null,
+                     *           "owner": {
+                     *             "id": "33333333-3333-4333-8333-333333333333",
+                     *             "name": "Ana"
+                     *           }
+                     *         }
+                     *       ],
+                     *       "nextCursor": null
+                     *     }
+                     */
+                    "application/json": components["schemas"]["ApiTokenPage"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    createMyToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApiTokenCreate"];
+            };
+        };
+        responses: {
+            /** @description Created; `token` is shown only in this response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "id": "5f0c1d2e-3a4b-4c5d-8e6f-7a8b9c0d1e2f",
+                     *       "name": "ci-deploy",
+                     *       "role": "editor",
+                     *       "tokenHint": "…Ubok",
+                     *       "createdAt": "2026-10-16T12:00:00Z",
+                     *       "expiresAt": "2027-01-14T12:00:00Z",
+                     *       "lastUsedAt": null,
+                     *       "revokedAt": null,
+                     *       "owner": {
+                     *         "id": "33333333-3333-4333-8333-333333333333",
+                     *         "name": "Ana"
+                     *       },
+                     *       "token": "ggt_iCXWerLvtnlqVo5U92Mo6dN-H6L0ZWmq1HCVAjMUbok"
+                     *     }
+                     */
+                    "application/json": components["schemas"]["ApiTokenCreated"];
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            422: components["responses"]["ValidationError"];
+        };
+    };
+    revokeMyToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tokenId: components["parameters"]["TokenId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Revoked */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    listTokens: {
+        parameters: {
+            query?: {
+                limit?: components["parameters"]["Limit"];
+                cursor?: components["parameters"]["Cursor"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Tokens */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiTokenPage"];
+                };
+            };
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    revokeToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tokenId: components["parameters"]["TokenId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Revoked */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
         };
     };
     listEnvironments: {
