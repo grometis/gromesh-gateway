@@ -4,6 +4,18 @@ on:
   push:
     branches: [main]
     tags: ['*']
+    # Only application code produces a new image. Digest-bump PRs (deploy/**, ci.yml, checklist) and docs must not
+    # rebuild, or image-digests would open another PR after every merge of its own PR.
+    paths:
+      - apps/**
+      - packages/**
+      - contracts/**
+      - pnpm-lock.yaml
+      - package.json
+      - pnpm-workspace.yaml
+      - .npmrc
+      - .nvmrc
+      - .github/workflows/images.yml
 
 permissions:
   contents: read

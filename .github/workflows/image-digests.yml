@@ -27,7 +27,14 @@ concurrency:
 
 jobs:
   bump:
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    # Never answer a build that a digest-bump merge itself triggered (second guard; images.yml also filters paths).
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_commit.author.name != 'github-actions[bot]' &&
+       !startsWith(github.event.workflow_run.head_commit.message, 'chore: pin ') &&
+       !contains(github.event.workflow_run.head_commit.message, 'chore/kong-image-digest') &&
+       !contains(github.event.workflow_run.head_commit.message, 'chore/app-image-digests'))
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
