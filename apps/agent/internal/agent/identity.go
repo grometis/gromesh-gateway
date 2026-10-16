@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -16,9 +17,14 @@ type identityStore struct {
 }
 
 type nodeState struct {
-	ControlPlaneURL string       `json:"controlPlaneUrl"`
-	NodeID          string       `json:"nodeId"`
-	Registration    Registration `json:"registration"`
+	ControlPlaneURL       string       `json:"controlPlaneUrl"`
+	NodeID                string       `json:"nodeId"`
+	RegistrationTokenHash string       `json:"registrationTokenHash"`
+	Registration          Registration `json:"registration"`
+}
+
+func registrationTokenHash(token string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(token)))
 }
 
 func validRegistration(r Registration) bool {
@@ -29,7 +35,7 @@ func (s identityStore) load(config Config, logger *slog.Logger) (*Registration, 
 	if err := os.MkdirAll(s.dir, 0700); err != nil {
 		return nil, fmt.Errorf("create agent state directory: %w", err)
 	}
-	fresh := nodeState{ControlPlaneURL: config.ControlPlaneURL, NodeID: config.NodeID}
+	fresh := nodeState{ControlPlaneURL: config.ControlPlaneURL, NodeID: config.NodeID, RegistrationTokenHash: registrationTokenHash(config.RegistrationToken)}
 	reset := func(reason string) (*Registration, error) {
 		// Reasons are fixed strings: corrupt state and credentials must never reach logs.
 		logger.Warn("ignoring unusable persisted node state", "reason", reason)
@@ -57,6 +63,12 @@ func (s identityStore) load(config Config, logger *slog.Logger) (*Registration, 
 	if state.NodeID != config.NodeID {
 		return reset("node ID mismatch")
 	}
+	if state.RegistrationTokenHash == "" {
+		return reset("registration token hash is missing")
+	}
+	if state.RegistrationTokenHash != fresh.RegistrationTokenHash {
+		return reset("registration token hash mismatch")
+	}
 	token, err := os.ReadFile(filepath.Join(s.dir, "node-token"))
 	if os.IsNotExist(err) {
 		return reset("node token is missing")
@@ -81,7 +93,7 @@ func (s identityStore) saveState(state nodeState) error {
 }
 
 func (s identityStore) save(config Config, registration Registration) error {
-	if err := s.saveState(nodeState{ControlPlaneURL: config.ControlPlaneURL, NodeID: config.NodeID, Registration: registration}); err != nil {
+	if err := s.saveState(nodeState{ControlPlaneURL: config.ControlPlaneURL, NodeID: config.NodeID, RegistrationTokenHash: registrationTokenHash(config.RegistrationToken), Registration: registration}); err != nil {
 		return err
 	}
 	return s.write("node-token", []byte(registration.NodeToken))

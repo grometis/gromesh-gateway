@@ -196,7 +196,8 @@ func TestPersistedIdentityRecovery(t *testing.T) {
 			a.log = slog.New(slog.NewJSONHandler(&logs, nil))
 			state := nodeState{
 				ControlPlaneURL: cp.HTTP.URL, NodeID: "node-1",
-				Registration: Registration{ClusterID: cpmock.ClusterID, EnvironmentID: cpmock.EnvironmentID, PollIntervalSeconds: 5, HeartbeatIntervalSeconds: 5},
+				RegistrationTokenHash: testRegistrationTokenHash,
+				Registration:          Registration{ClusterID: cpmock.ClusterID, EnvironmentID: cpmock.EnvironmentID, PollIntervalSeconds: 5, HeartbeatIntervalSeconds: 5},
 			}
 			var data []byte
 			token := cpmock.NodeToken
@@ -260,7 +261,7 @@ func TestPersistedIdentityRecovery(t *testing.T) {
 			if err != nil || json.Unmarshal(savedData, &saved) != nil {
 				t.Fatalf("state file is not usable JSON: %v", err)
 			}
-			expected := nodeState{ControlPlaneURL: cp.HTTP.URL, NodeID: "node-1", Registration: Registration{ClusterID: cpmock.ClusterID, EnvironmentID: cpmock.EnvironmentID, PollIntervalSeconds: 5, HeartbeatIntervalSeconds: 5}}
+			expected := nodeState{ControlPlaneURL: cp.HTTP.URL, NodeID: "node-1", RegistrationTokenHash: testRegistrationTokenHash, Registration: Registration{ClusterID: cpmock.ClusterID, EnvironmentID: cpmock.EnvironmentID, PollIntervalSeconds: 5, HeartbeatIntervalSeconds: 5}}
 			if saved != expected {
 				t.Error("persisted metadata is inconsistent with registration")
 			}
