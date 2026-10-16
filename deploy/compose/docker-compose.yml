@@ -165,6 +165,93 @@ services:
     ports:
       - "127.0.0.1:8080:80"
 
+  clickhouse:
+    profiles: [observability]
+    image: clickhouse/clickhouse-server:25.8.16.34-alpine
+    environment:
+      CLICKHOUSE_DB: gromesh
+      CLICKHOUSE_USER: gromesh
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-gromesh-dev-observability}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ports:
+      - "127.0.0.1:8123:8123"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ../observability/clickhouse:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8123/ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  # platformPlugins.httpLogEndpoint = http://vector:8080/kong (compose network only).
+  vector:
+    profiles: [observability]
+    image: timberio/vector:0.53.0-alpine
+    user: "65534:65534"
+    command: ["--config", "/etc/vector/vector.yaml", "--log-format", "json"]
+    environment:
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-gromesh-dev-observability}
+      # JSON array; include all key-auth key_names configured on this cluster.
+      GROMESH_KEY_NAMES: ${GROMESH_KEY_NAMES:-["apikey"]}
+      VECTOR_LOG: info
+    volumes:
+      - ../observability/vector:/etc/vector:ro
+    tmpfs:
+      - /var/lib/vector:uid=65534,gid=65534,mode=0700
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null --post-data='[]' http://127.0.0.1:8080/kong"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  prometheus:
+    profiles: [observability]
+    image: prom/prometheus:v3.5.1
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=7d"]
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ../observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      kong:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9090/-/ready"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  # From the repo root (Node >= 24, builds the compiler and checks Vector logs):
+  # POSTGRES_PORT=55433 node deploy/observability/acceptance.mjs
+  observability-acceptance:
+    profiles: [tools]
+    image: node:24.18.0-alpine
+    network_mode: "service:kong"
+    volumes:
+      - ../observability:/repo/deploy/observability:ro
+    environment:
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-gromesh-dev-observability}
+    command: ["node", "/repo/deploy/observability/acceptance.mjs", "--inside"]
+    depends_on:
+      kong:
+        condition: service_healthy
+      echo:
+        condition: service_started
+      vector:
+        condition: service_healthy
+      prometheus:
+        condition: service_healthy
+
 volumes:
   pg-data:
   kong-config:
+  clickhouse-data:
+  prometheus-data:
