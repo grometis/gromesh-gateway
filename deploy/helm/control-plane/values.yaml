@@ -4,19 +4,19 @@ replicaCount: 2
 imagePullSecrets: []
 
 image:
-  # W7-X2 supplies the published repository and immutable tag/digest.
-  repository: gromesh-control-plane
-  tag: "0.1.0"
-  digest: ""
+  # Published by the images workflow and pinned by digest through image-digests (scripts/bump-image-digests.mjs).
+  repository: ghcr.io/grometis/gromesh-control-plane
+  tag: "b24106ab29657f3ffc49d59b87750169a1e146e7"
+  digest: "sha256:f7cac3964867f01180c3fe7985abd1f7d0145dd0fcf7e19e87d6054823aa55c0"
   pullPolicy: IfNotPresent
 
 ui:
   replicaCount: 2
   image:
-    # Build apps/ui/Dockerfile: its final stage is nginx-unprivileged on 8080.
-    repository: gromesh-ui
-    tag: "0.1.0"
-    digest: ""
+    # apps/ui/Dockerfile (nginx-unprivileged on 8080), published and pinned like the control plane.
+    repository: ghcr.io/grometis/gromesh-ui
+    tag: "b24106ab29657f3ffc49d59b87750169a1e146e7"
+    digest: "sha256:446bec6c70c693770737bbccd4f29ca405a7f44c05432fd943c5c0edcd624c88"
     pullPolicy: IfNotPresent
   resources:
     requests: {cpu: 25m, memory: 32Mi}
@@ -143,7 +143,8 @@ backup:
   enabled: false
   schedule: "0 3 * * *"
   retentionDays: 7
-  image: postgres:16-alpine
+  # Pinned by digest (postgres:16-alpine); bump by hand with `docker buildx imagetools inspect`.
+  image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
   # Must be writable by UID/GID 70 (postgres in the Alpine image).
   storage:
     size: 10Gi

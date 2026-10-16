@@ -10,12 +10,14 @@ insecureCookies: true
 image:
   repository: gromesh-control-plane
   tag: ci
+  digest: ""
   pullPolicy: Never
 ui:
   replicaCount: 1
   image:
     repository: gromesh-ui
     tag: ci
+    digest: ""
     pullPolicy: Never
 validator:
   image:

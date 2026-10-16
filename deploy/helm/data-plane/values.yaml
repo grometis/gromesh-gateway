@@ -29,10 +29,10 @@ kong:
 
 agent:
   image:
-    # Build apps/agent/Dockerfile and override this with the published W7-X2 image.
-    repository: gromesh-agent
-    tag: "0.1.0"
-    digest: ""
+    # Published by the images workflow and pinned by digest through image-digests (scripts/bump-image-digests.mjs).
+    repository: ghcr.io/grometis/gromesh-agent
+    tag: "b24106ab29657f3ffc49d59b87750169a1e146e7"
+    digest: "sha256:6d35bab733ac557e99d35f7a5a95386bc650996f7a5ddefab306d8c12335e2a7"
     pullPolicy: IfNotPresent
   # The agent appends /agent/v1/... itself. Use the control plane origin/base URL,
   # e.g. http://control-plane:3000, WITHOUT /api/v1 or /agent/v1.
@@ -91,7 +91,8 @@ collector:
   image:
     repository: timberio/vector
     tag: "0.53.0-alpine"
-    digest: ""
+    # Pinned by digest; bump by hand with `docker buildx imagetools inspect timberio/vector:<tag>`.
+    digest: "sha256:ca92d617e905953c3f852e7e88061f7039460e733522e3f0c21bc6ae946b2558"
     pullPolicy: IfNotPresent
   # key-auth key_names used on this cluster, stripped from headers and query strings before anything is stored.
   keyNames: [apikey]

@@ -1,16 +1,21 @@
 name: image-digests
 
-# After kong-image publishes a new build, pin its digest everywhere the repository references the image
-# (scripts/bump-kong-image.mjs) and open or refresh a single PR. The PR is created with GITHUB_TOKEN, which never
-# triggers the pull_request event, so the ci workflow is dispatched on the branch explicitly (mvp-e2e included).
+# After kong-image or images publishes a new build, pin its digest everywhere the repository references the image
+# (scripts/bump-image-digests.mjs) and open or refresh one PR per image group. The PR is created with GITHUB_TOKEN,
+# which never triggers the pull_request event, so the ci workflow is dispatched on the branch explicitly (mvp-e2e included).
 on:
   workflow_run:
-    workflows: [kong-image]
+    workflows: [kong-image, images]
     types: [completed]
   workflow_dispatch:
     inputs:
+      group:
+        description: "Which images to pin"
+        type: choice
+        options: [kong, apps]
+        required: true
       tag:
-        description: "Published tag of ghcr.io/<owner>/gromesh-kong (for example 3.9.4-<commit sha>)"
+        description: "Published tag: 3.9.4-<commit sha> for kong, <commit sha> for apps"
         required: true
 
 permissions:
@@ -31,7 +36,6 @@ jobs:
       packages: read
       actions: write
     env:
-      BRANCH: chore/kong-image-digest
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -41,26 +45,45 @@ jobs:
         with:
           node-version-file: .nvmrc
 
-      - name: Resolve the published tag and its digest
+      - name: Resolve the published tags and their digests
         env:
+          INPUT_GROUP: ${{ inputs.group }}
           INPUT_TAG: ${{ inputs.tag }}
+          RUN_WORKFLOW: ${{ github.event.workflow_run.name }}
           RUN_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           owner="${GITHUB_REPOSITORY_OWNER,,}"
-          image="ghcr.io/${owner}/gromesh-kong"
-          # kong-image tags the build with the commit it ran on (3.9.4-<sha>).
-          tag="${INPUT_TAG:-3.9.4-${RUN_SHA}}"
+          group="${INPUT_GROUP:-}"
+          if [ -z "$group" ]; then
+            case "$RUN_WORKFLOW" in
+              kong-image) group=kong ;;
+              images) group=apps ;;
+              *) echo "unknown workflow ${RUN_WORKFLOW}" >&2; exit 1 ;;
+            esac
+          fi
+          # kong-image tags its build 3.9.4-<sha>; images tags each app image <sha>.
+          if [ "$group" = kong ]; then
+            tag="${INPUT_TAG:-3.9.4-${RUN_SHA}}"; images="kong"; branch=chore/kong-image-digest; title="chore: pin gromesh-kong ${tag}"
+          else
+            tag="${INPUT_TAG:-${RUN_SHA}}"; images="control-plane ui agent"; branch=chore/app-image-digests; title="chore: pin the application images of ${tag}"
+          fi
           echo "${GH_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
-          digest="$(docker buildx imagetools inspect "${image}:${tag}" --format '{{.Manifest.Digest}}')"
-          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "unexpected digest for ${image}:${tag}: ${digest}" >&2; exit 1; }
-          echo "IMAGE=${image}" >> "$GITHUB_ENV"
-          echo "TAG=${tag}" >> "$GITHUB_ENV"
-          echo "DIGEST=${digest}" >> "$GITHUB_ENV"
+          : > "$RUNNER_TEMP/digests"
+          for image in $images; do
+            ref="ghcr.io/${owner}/gromesh-${image}:${tag}"
+            digest="$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}')"
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "unexpected digest for ${ref}: ${digest}" >&2; exit 1; }
+            echo "${image} ${digest}" >> "$RUNNER_TEMP/digests"
+          done
+          cat "$RUNNER_TEMP/digests"
+          { echo "TAG=${tag}"; echo "BRANCH=${branch}"; echo "TITLE=${title}"; } >> "$GITHUB_ENV"
 
-      - name: Pin the digest in compose, charts, ci and checklist
+      - name: Pin the digests
         id: bump
         run: |
-          node scripts/bump-kong-image.mjs --tag "$TAG" --digest "$DIGEST"
+          while read -r image digest; do
+            node scripts/bump-image-digests.mjs --image "$image" --tag "$TAG" --digest "$digest"
+          done < "$RUNNER_TEMP/digests"
           if git diff --quiet; then echo "changed=false" >> "$GITHUB_OUTPUT"; else echo "changed=true" >> "$GITHUB_OUTPUT"; fi
 
       - name: Push the branch
@@ -69,20 +92,21 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -B "$BRANCH"
-          git commit -am "chore: pin gromesh-kong ${TAG}" -m "Digest ${DIGEST}, published by the kong-image workflow."
-          # One branch per image, rewritten on every new build: the open PR follows it.
+          git commit -am "$TITLE" -m "$(cat "$RUNNER_TEMP/digests")"
+          # One branch per image group, rewritten on every new build: the open PR follows it.
           git push --force origin "$BRANCH"
 
       - name: Open or refresh the PR and run ci on it
         if: steps.bump.outputs.changed == 'true'
         run: |
-          body="$(printf '%s\n\n%s' \
-            "Pins \`${IMAGE}:${TAG}\` by digest \`${DIGEST}\` in the compose default, both charts, the ci workflow, the security checklist and the kind script comment." \
-            "Opened by the image-digests workflow; the ci run on this branch (mvp-e2e included) was dispatched explicitly. Re-run e2e/security-checklist.sh locally before merging to refresh row A2 with a real run.")"
+          body="$(printf '%s\n\n```\n%s\n```\n\n%s' \
+            "Pins tag \`${TAG}\` by digest wherever the repository references these images (compose default, charts, ci workflow, security checklist for kong)." \
+            "$(cat "$RUNNER_TEMP/digests")" \
+            "Opened by the image-digests workflow; the ci run on this branch (mvp-e2e included) was dispatched explicitly. For kong, re-run e2e/security-checklist.sh locally before merging to refresh row A2 with a real run.")"
           number="$(gh pr list --head "$BRANCH" --base main --state open --json number --jq '.[0].number')"
           if [ -z "$number" ]; then
-            gh pr create --base main --head "$BRANCH" --title "chore: pin gromesh-kong ${TAG}" --body "$body"
+            gh pr create --base main --head "$BRANCH" --title "$TITLE" --body "$body"
           else
-            gh pr edit "$number" --title "chore: pin gromesh-kong ${TAG}" --body "$body"
+            gh pr edit "$number" --title "$TITLE" --body "$body"
           fi
           gh workflow run ci.yml --ref "$BRANCH"

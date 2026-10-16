@@ -99,11 +99,11 @@ unset cluster registration_token
 # The data plane with its own collector: --wait would deadlock, Kong stays NotReady until the first publication.
 helm install dp "$dp_chart" -n "$namespace" --timeout 2m \
   --set fullnameOverride=mvp-data-plane --set replicaCount=1 \
-  --set agent.image.tag=ci --set agent.image.pullPolicy=Never \
+  --set agent.image.repository=gromesh-agent --set agent.image.tag=ci --set agent.image.digest= --set agent.image.pullPolicy=Never \
   --set agent.existingSecret=ci-agent --set agent.controlPlaneUrl=http://control-plane:3000 \
   --set kong.image.digest= --set kong.image.pullPolicy=Never \
   --set collector.enabled=true --set "collector.clusterId=$cluster_id" \
-  --set collector.image.pullPolicy=Never \
+  --set collector.image.digest= --set collector.image.pullPolicy=Never \
   --set collector.clickhouse.endpoint=http://clickhouse:8123 --set collector.clickhouse.existingSecret=ci-clickhouse-writer
 k rollout status deployment/mvp-data-plane-collector --timeout=120s
 for ((attempt=0; attempt<60; attempt++)); do
