@@ -1,6 +1,33 @@
 import { CompileError } from "./errors.js";
 import type { Plugin } from "./model.js";
 
+const HTTP_LOG_ID = "14f9de7e-3701-4c69-b7f7-b8b5622c0102";
+const KEY_NAME_RE = /^[A-Za-z0-9._-]{1,64}$/;
+
+export function keyNameIssues(plugin: Plugin, path: string) {
+  const names = plugin.config?.key_names;
+  if (plugin.name !== "key-auth" || names === undefined) return [];
+  return Array.isArray(names) && names.length > 0 && names.every((name: unknown) => typeof name === "string" && KEY_NAME_RE.test(name))
+    ? []
+    : [{ path: `${path}.config.key_names`, message: "must be a non-empty array of names matching ^[A-Za-z0-9._-]{1,64}$" }];
+}
+
+/** Resolve at compile time, where the complete environment is available to existing publication callers. */
+export function resolvePlatformKeyNames(platform: Plugin[], configured: Plugin[]): Plugin[] {
+  const auth = configured.filter((plugin) => plugin.name === "key-auth");
+  const names = [...new Set(auth.length === 0 ? ["apikey"] : auth.flatMap((plugin) =>
+    (plugin.config?.key_names ?? ["apikey"]) as string[],
+  ))].sort();
+  // A Lua table serializes as a JSON array in http-log events. Names have already been validated before interpolation.
+  const lua = `return {${names.map((name) => `"${name}"`).join(",")}}`;
+  return platform.map((plugin) => plugin.id === HTTP_LOG_ID && plugin.name === "http-log" ? {
+    ...plugin,
+    config: { ...plugin.config, custom_fields_by_lua: {
+      ...(plugin.config?.custom_fields_by_lua as Record<string, string>), key_names: lua,
+    } },
+  } : plugin);
+}
+
 export interface PlatformPluginOptions {
   httpLogEndpoint: string;
   /** The environment every log line is tagged with; the cluster id is added by each cluster's own collector. */
@@ -53,7 +80,7 @@ export function platformPlugins(options: PlatformPluginOptions): Plugin[] {
       config: { per_consumer: false, status_code_metrics: true, latency_metrics: true, bandwidth_metrics: true },
     },
     {
-      id: "14f9de7e-3701-4c69-b7f7-b8b5622c0102",
+      id: HTTP_LOG_ID,
       name: "http-log",
       config: {
         http_endpoint: options.httpLogEndpoint,
@@ -63,6 +90,7 @@ export function platformPlugins(options: PlatformPluginOptions): Plugin[] {
         queue,
         custom_fields_by_lua: {
           environment_id: `return "${options.environmentId.toLowerCase()}"`,
+          key_names: 'return {"apikey"}',
         },
       },
     },

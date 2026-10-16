@@ -1,4 +1,5 @@
 import { CompileError, type CompileIssue } from "./errors.js";
+import { keyNameIssues, resolvePlatformKeyNames } from "./platform-plugins.js";
 import type {
   CompileOptions,
   GatewayState,
@@ -26,9 +27,9 @@ const HTTP_METHODS = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "
  */
 export function compile(state: GatewayState, options: CompileOptions = {}): KongDeclarativeConfig {
   const managedTag = options.managedTag ?? DEFAULT_MANAGED_TAG;
-  const plugins = [...state.plugins, ...(options.platformPlugins ?? [])];
-  const issues = validate({ ...state, plugins });
+  const issues = validate({ ...state, plugins: [...state.plugins, ...(options.platformPlugins ?? [])] });
   if (issues.length > 0) throw new CompileError(issues);
+  const plugins = [...state.plugins, ...resolvePlatformKeyNames(options.platformPlugins ?? [], state.plugins)];
 
   const tags = (own: string[] | undefined) => sortedUnique([...(own ?? []), managedTag]);
 
@@ -193,6 +194,7 @@ export function validate(state: GatewayState): CompileIssue[] {
   const pluginScopes = new Set<string>();
   state.plugins.forEach((pl: Plugin, i) => {
     const p = `plugins[${i}]`;
+    issues.push(...keyNameIssues(pl, p));
     checkId(p, pl.id);
     if (!pl.name) add(`${p}.name`, "is required");
     const s = pl.scope ?? {};
