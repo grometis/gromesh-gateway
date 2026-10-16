@@ -114,6 +114,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: checks
     timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -124,6 +127,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @gromesh/e2e exec playwright install --with-deps chromium
       - run: docker compose -f deploy/compose/docker-compose.yml build agent
+      # The compose default Kong image is our own build, published privately on GHCR.
+      - run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
       - run: docker compose -f deploy/compose/docker-compose.yml up -d --build --wait
       - name: Kong accepts the compiler output (contract example)
         run: pnpm smoke
