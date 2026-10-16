@@ -1,0 +1,162 @@
+{{- include "data-plane.validate" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "data-plane.fullname" . }}
+  labels:
+    {{- include "data-plane.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "data-plane.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "data-plane.selectorLabels" . | nindent 8 }}
+      {{- if .Values.metrics.enabled }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8100"
+        prometheus.io/path: /metrics
+      {{- end }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsGroup: 1001
+        fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: seed-config
+          image: {{ include "data-plane.image" .Values.kong.image | quote }}
+          imagePullPolicy: {{ .Values.kong.image.pullPolicy }}
+          command: [/bin/sh, -ec]
+          args:
+            - |
+              if [ ! -e /kong/declarative/kong.json ]; then
+                umask 022
+                printf '%s\n' '{"_format_version":"3.0"}' > /kong/declarative/kong.json
+              fi
+          securityContext:
+            runAsUser: 1001
+            {{- include "data-plane.containerSecurityContext" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.initResources | nindent 12 }}
+          volumeMounts:
+            - name: snapshot
+              mountPath: /kong/declarative
+      containers:
+        - name: kong
+          image: {{ include "data-plane.image" .Values.kong.image | quote }}
+          imagePullPolicy: {{ .Values.kong.image.pullPolicy }}
+          securityContext:
+            runAsUser: {{ .Values.kong.runAsUser }}
+            {{- include "data-plane.containerSecurityContext" . | nindent 12 }}
+          env:
+            - name: KONG_DATABASE
+              value: "off"
+            - name: KONG_DECLARATIVE_CONFIG
+              value: /kong/declarative/kong.json
+            - name: KONG_ADMIN_LISTEN
+              value: "127.0.0.1:8001"
+            - name: KONG_PROXY_LISTEN
+              value: "0.0.0.0:8000, 0.0.0.0:8443 ssl"
+            - name: KONG_STATUS_LISTEN
+              value: "0.0.0.0:8100"
+            - name: KONG_PREFIX
+              value: /usr/local/kong
+            - name: KONG_NGINX_DAEMON
+              value: "off"
+            - name: KONG_PROXY_ACCESS_LOG
+              value: /dev/stdout
+            - name: KONG_PROXY_ERROR_LOG
+              value: /dev/stderr
+            - name: KONG_ADMIN_ACCESS_LOG
+              value: /dev/stdout
+            - name: KONG_ADMIN_ERROR_LOG
+              value: /dev/stderr
+            - name: KONG_PLUGINS
+              value: bundled
+            - name: KONG_NGINX_WORKER_PROCESSES
+              value: {{ .Values.kong.workerProcesses | quote }}
+          ports:
+            - name: proxy-http
+              containerPort: 8000
+            - name: proxy-https
+              containerPort: 8443
+            - name: status
+              containerPort: 8100
+          readinessProbe:
+            httpGet:
+              path: /status/ready
+              port: status
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /status
+              port: status
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.kong.resources | nindent 12 }}
+          volumeMounts:
+            - name: snapshot
+              mountPath: /kong/declarative
+              readOnly: true
+            - name: kong-prefix
+              mountPath: /usr/local/kong
+            - name: kong-tmp
+              mountPath: /tmp
+        - name: agent
+          image: {{ include "data-plane.image" .Values.agent.image | quote }}
+          imagePullPolicy: {{ .Values.agent.image.pullPolicy }}
+          securityContext:
+            runAsUser: 1001
+            {{- include "data-plane.containerSecurityContext" . | nindent 12 }}
+          env:
+            - name: GROMESH_CP_URL
+              value: {{ .Values.agent.controlPlaneUrl | quote }}
+            - name: GROMESH_REGISTRATION_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "data-plane.secretName" . }}
+                  key: {{ .Values.agent.existingSecretKey }}
+            - name: GROMESH_NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: KONG_ADMIN_URL
+              value: http://127.0.0.1:8001
+            - name: KONG_STATUS_URL
+              value: http://127.0.0.1:8100
+            - name: SNAPSHOT_PATH
+              value: /kong/declarative/kong.json
+          ports:
+            - name: agent-metrics
+              containerPort: 9100
+          resources:
+            {{- toYaml .Values.agent.resources | nindent 12 }}
+          volumeMounts:
+            - name: snapshot
+              mountPath: /kong/declarative
+      volumes:
+        - name: snapshot
+          emptyDir: {}
+        - name: kong-prefix
+          emptyDir: {}
+        - name: kong-tmp
+          emptyDir: {}

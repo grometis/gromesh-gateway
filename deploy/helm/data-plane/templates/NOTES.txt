@@ -1,0 +1,13 @@
+Proxy: {{ include "data-plane.fullname" . }}.{{ .Release.Namespace }}:8000 / :8443 ({{ .Values.service.type }}).
+Agent control plane: {{ .Values.agent.controlPlaneUrl }} (appends /agent/v1; no /api/v1).
+Registration Secret: {{ include "data-plane.secretName" . }} / {{ .Values.agent.existingSecretKey }}.
+Publish a snapshot before waiting for /status/ready; the empty boot config stays NotReady.
+{{- if .Values.collector.httpLogEndpoint }}
+Publish platformPlugins.httpLogEndpoint={{ .Values.collector.httpLogEndpoint }} through the control plane/compiler.
+{{- end }}
+{{- if .Values.metrics.enabled }}
+Scrape pod :8100/metrics after publishing the platform prometheus plugin.
+{{- if .Values.networkPolicy.enabled }}
+NetworkPolicy allows proxy ingress only; trusted scrapers need a separate ingress policy.
+{{- end }}
+{{- end }}

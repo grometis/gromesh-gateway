@@ -1,0 +1,53 @@
+# Render fixture only: image names, addresses and Secret are not deployed by CI.
+replicaCount: 3
+nameOverride: gateway
+fullnameOverride: gromesh-dp-full
+imagePullSecrets:
+  - name: registry-credentials
+kong:
+  workerProcesses: 2
+agent:
+  controlPlaneUrl: http://control-plane.gromesh-system.svc.cluster.local:3000
+  existingSecret: data-plane-registration
+  existingSecretKey: token
+service:
+  type: LoadBalancer
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internal
+  externalTrafficPolicy: Local
+  loadBalancerSourceRanges:
+    - 192.0.2.0/24
+collector:
+  httpLogEndpoint: http://vector.observability.svc.cluster.local:8080/kong
+metrics:
+  enabled: true
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+pdb:
+  enabled: true
+  minAvailable: 1
+networkPolicy:
+  enabled: true
+  proxyPeers:
+    - ipBlock:
+        cidr: 192.0.2.0/24
+  controlPlanePeers:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: gromesh-system
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: control-plane
+  collectorPeers:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: observability
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: vector
+  upstreams:
+    - cidr: 10.42.0.0/16
+      ports: [80, 443]

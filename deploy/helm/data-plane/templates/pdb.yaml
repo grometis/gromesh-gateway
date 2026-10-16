@@ -1,0 +1,17 @@
+{{- $replicas := .Values.replicaCount -}}
+{{- if .Values.autoscaling.enabled -}}
+{{- $replicas = .Values.autoscaling.minReplicas -}}
+{{- end -}}
+{{- if and .Values.pdb.enabled (gt (int $replicas) 1) }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "data-plane.fullname" . }}
+  labels:
+    {{- include "data-plane.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "data-plane.selectorLabels" . | nindent 6 }}
+{{- end }}
