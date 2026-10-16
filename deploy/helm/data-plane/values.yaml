@@ -100,7 +100,8 @@ collector:
     # Pinned by digest; bump by hand with `docker buildx imagetools inspect timberio/vector:<tag>`.
     digest: "sha256:ca92d617e905953c3f852e7e88061f7039460e733522e3f0c21bc6ae946b2558"
     pullPolicy: IfNotPresent
-  # key-auth key_names used on this cluster, stripped from headers and query strings before anything is stored.
+  # Fallback and union: each http-log event carries the key_names of the published key-auth plugins; names listed
+  # here are stripped from headers and query strings as well.
   keyNames: [apikey]
   clickhouse:
     endpoint: http://clickhouse.observability.svc.cluster.local:8123

@@ -6,6 +6,11 @@ const options = {
   environmentId: "00000000-0000-4000-8000-0000000000e1",
 };
 const state: GatewayState = { services: [], routes: [], consumers: [], keyAuthCredentials: [], plugins: [] };
+const auth = (id: number, config?: Record<string, unknown>, scope?: { consumerId: string }) => ({
+  id: `00000000-0000-4000-8000-${String(id).padStart(12, "0")}`, name: "key-auth", config, scope,
+});
+const logFields = (input: GatewayState, platform = platformPlugins(options)) =>
+  compile(input, { platformPlugins: platform }).plugins.find((plugin) => plugin.name === "http-log")?.config.custom_fields_by_lua;
 
 describe("platformPlugins", () => {
   it("compiles global metrics and batched HTTP logs with snapshot identity", () => {
@@ -19,6 +24,7 @@ describe("platformPlugins", () => {
         queue: { max_batch_size: 100, max_coalescing_delay: 1, max_entries: 10000, max_retry_time: 60 },
         custom_fields_by_lua: {
           environment_id: `return "${options.environmentId}"`,
+          key_names: 'return {"apikey"}',
         },
       } }),
     ]);
@@ -40,6 +46,48 @@ describe("platformPlugins", () => {
     });
     expect(platformPlugins(options)[1]?.config?.queue).toHaveProperty("max_batch_size", 100);
   });
+
+  it("derives a sorted union across scopes, including disabled plugins, without mutating the platform defaults", () => {
+    const consumerId = "00000000-0000-4000-8000-000000000010";
+    const input: GatewayState = { ...state, consumers: [{ id: consumerId, username: "test" }], plugins: [
+      auth(1, { key_names: ["x-token", "X.Token", "a_b-9"] }),
+      { ...auth(2, { key_names: ["x-token", "z"] }, { consumerId }), enabled: false },
+    ] };
+    const platform = platformPlugins(options);
+    const original = structuredClone(input);
+    expect(logFields(input, platform)).toEqual({
+      environment_id: `return "${options.environmentId}"`, key_names: 'return {"X.Token","a_b-9","apikey","x-token","z"}',
+    });
+    expect(logFields({ ...input, plugins: [...input.plugins].reverse() }, platform)).toEqual(logFields(input, platform));
+    expect(input).toEqual(original);
+    expect(platform).toEqual(platformPlugins(options));
+    expect(logFields(state, platform)).toHaveProperty("key_names", 'return {"apikey"}');
+  });
+
+  it("always includes apikey, for omitted key_names and when no key-auth exists", () => {
+    // apikey is always in the union: a key-auth with key_names ["x-token"] still strips the default name.
+    expect(logFields({ ...state, plugins: [auth(1, { key_names: ["x-token"] })] })).toHaveProperty("key_names", 'return {"apikey","x-token"}');
+    expect(logFields({ ...state, plugins: [auth(1)] })).toHaveProperty("key_names", 'return {"apikey"}');
+    expect(logFields({ ...state, plugins: [auth(1, { key_names: ["x-token"] }), auth(2, {}, { consumerId: "00000000-0000-4000-8000-000000000010" })],
+      consumers: [{ id: "00000000-0000-4000-8000-000000000010", username: "test" }],
+    })).toHaveProperty("key_names", 'return {"apikey","x-token"}');
+    expect(logFields({ ...state, plugins: [{ id: auth(1).id, name: "rate-limiting", config: { key_names: ["ignored"] } }] }))
+      .toHaveProperty("key_names", 'return {"apikey"}');
+    expect(logFields({ ...state, plugins: [auth(1, { key_names: ["a".repeat(64)] })] }))
+      .toHaveProperty("key_names", `return {"${"a".repeat(64)}","apikey"}`);
+  });
+
+  it.each([null, "x-token", [], [1], [null], [{}], [""], ["a".repeat(65)], ["x token"], ["x/token"], ["é"], ["x\n"], ['x"}; return "injected']])(
+    "rejects invalid key_names before Lua interpolation even without platform plugins: %j", (key_names) => {
+      const input = { ...state, plugins: [auth(1, { key_names })] };
+      for (const platform of [[], platformPlugins(options)]) {
+        expect(() => compile(input, { platformPlugins: platform })).toThrow(CompileError);
+        try { compile(input, { platformPlugins: platform }); } catch (error) {
+          expect((error as CompileError).issues).toContainEqual(expect.objectContaining({ path: "plugins[0].config.key_names" }));
+        }
+      }
+    },
+  );
 
   it("allows retry retention and capacity to be tuned independently while retaining other defaults", () => {
     const retry = compile(state, { platformPlugins: platformPlugins({ ...options, queue: { maxRetryTimeSeconds: 120 } }) });

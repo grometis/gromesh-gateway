@@ -164,6 +164,11 @@ export class PluginsService {
     if (!entry.supportedInDbless) {
       throw unprocessable("Invalid plugin", [{ path: "name", message: `plugin "${body.name}" needs Kong's database and cannot run DB-less` }]);
     }
+    const names = body.config?.key_names;
+    if (body.name === "key-auth" && names !== undefined &&
+      (!Array.isArray(names) || names.length === 0 || !names.every((name: unknown) => typeof name === "string" && /^[A-Za-z0-9._-]{1,64}$/.test(name)))) {
+      throw unprocessable("Invalid plugin", [{ path: "config.key_names", message: "must be a non-empty array of names matching ^[A-Za-z0-9._-]{1,64}$" }]);
+    }
     await this.validator.validatePlugin({ id, ...body });
   }
 

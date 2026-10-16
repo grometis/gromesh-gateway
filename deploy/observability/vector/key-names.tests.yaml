@@ -1,0 +1,69 @@
+# Run with vector test vector.yaml key-names.tests.yaml (see e2e/key-names.mjs).
+# The acceptance runner sets GROMESH_KEY_NAMES to ["legacy-key"] for this suite.
+tests:
+  - name: published-names-and-cluster-fallback
+    inputs:
+      - insert_at: decode
+        type: log
+        log_fields:
+          message: "{\"environment_id\": \"00000000-0000-4000-8000-000000000001\", \"started_at\": 1792100000123, \"request\": {\"uri\": \"/key-names?x-token=header-secret&legacy-key=legacy-secret&apikey=default-secret\", \"method\": \"GET\", \"size\": 100, \"headers\": {\"X-ToKeN\": \"header-secret\", \"Legacy-Key\": \"legacy-secret\", \"Authorization\": \"auth-secret\", \"apikey\": \"default-secret\"}, \"querystring\": {\"X-ToKeN\": \"query-secret\", \"legacy-key\": \"legacy-secret\", \"apikey\": \"default-secret\"}, \"url\": \"http://echo/key-names?x-token=query-secret\"}, \"response\": {\"status\": 200, \"size\": 200, \"headers\": {\"X-ToKeN\": \"response-secret\", \"Set-Cookie\": \"cookie-secret\"}}, \"client_ip\": \"127.0.0.1\", \"latencies\": {\"kong\": 1, \"proxy\": 2, \"request\": 3}, \"key_names\": [\"X-ToKeN\", \"x.other\", \"a_b-9\"]}"
+    outputs:
+      - extract_from: sanitize
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.path == "/key-names", "Query must be discarded")
+              assert!(.status == 200, "Valid events must reach analytics")
+              assert!(!exists(.request) && !exists(.response) && !exists(.key_names), "Only analytics fields may survive")
+              assert!(!contains(encode_json(.), "secret"), "No credential may survive in any column")
+  - name: legacy-snapshot-without-names
+    inputs:
+      - insert_at: decode
+        type: log
+        log_fields:
+          message: "{\"environment_id\": \"00000000-0000-4000-8000-000000000001\", \"started_at\": 1792100000123, \"request\": {\"uri\": \"/key-names?x-token=header-secret&legacy-key=legacy-secret&apikey=default-secret\", \"method\": \"GET\", \"size\": 100, \"headers\": {\"X-ToKeN\": \"header-secret\", \"Legacy-Key\": \"legacy-secret\", \"Authorization\": \"auth-secret\", \"apikey\": \"default-secret\"}, \"querystring\": {\"X-ToKeN\": \"query-secret\", \"legacy-key\": \"legacy-secret\", \"apikey\": \"default-secret\"}, \"url\": \"http://echo/key-names?x-token=query-secret\"}, \"response\": {\"status\": 200, \"size\": 200, \"headers\": {\"X-ToKeN\": \"response-secret\", \"Set-Cookie\": \"cookie-secret\"}}, \"client_ip\": \"127.0.0.1\", \"latencies\": {\"kong\": 1, \"proxy\": 2, \"request\": 3}}"
+    outputs:
+      - extract_from: sanitize
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.path == "/key-names", "Query must be discarded")
+              assert!(.status == 200, "Valid events must reach analytics")
+              assert!(!exists(.request) && !exists(.response) && !exists(.key_names), "Only analytics fields may survive")
+              assert!(!contains(encode_json(.), "secret"), "No credential may survive in any column")
+  - name: multiple-published-names
+    inputs:
+      - insert_at: decode
+        type: log
+        log_fields:
+          message: "{\"environment_id\": \"00000000-0000-4000-8000-000000000001\", \"started_at\": 1792100000123, \"request\": {\"uri\": \"/key-names?x-token=header-secret&legacy-key=legacy-secret&apikey=default-secret\", \"method\": \"GET\", \"size\": 100, \"headers\": {\"X-ToKeN\": \"header-secret\", \"Legacy-Key\": \"legacy-secret\", \"Authorization\": \"auth-secret\", \"apikey\": \"default-secret\"}, \"querystring\": {\"X-ToKeN\": \"query-secret\", \"legacy-key\": \"legacy-secret\", \"apikey\": \"default-secret\"}, \"url\": \"http://echo/key-names?x-token=query-secret\"}, \"response\": {\"status\": 200, \"size\": 200, \"headers\": {\"X-ToKeN\": \"response-secret\", \"Set-Cookie\": \"cookie-secret\"}}, \"client_ip\": \"127.0.0.1\", \"latencies\": {\"kong\": 1, \"proxy\": 2, \"request\": 3}, \"key_names\": [\"x-token\", \"y-token\"]}"
+    outputs:
+      - extract_from: sanitize
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.path == "/key-names", "Query must be discarded")
+              assert!(.status == 200, "Valid events must reach analytics")
+              assert!(!exists(.request) && !exists(.response) && !exists(.key_names), "Only analytics fields may survive")
+              assert!(!contains(encode_json(.), "secret"), "No credential may survive in any column")
+  - name: invalid-published-type-drops-event
+    inputs:
+      - insert_at: decode
+        type: log
+        log_fields:
+          message: "{\"environment_id\": \"00000000-0000-4000-8000-000000000001\", \"started_at\": 1792100000123, \"request\": {\"uri\": \"/key-names?x-token=header-secret&legacy-key=legacy-secret&apikey=default-secret\", \"method\": \"GET\", \"size\": 100, \"headers\": {\"X-ToKeN\": \"header-secret\", \"Legacy-Key\": \"legacy-secret\", \"Authorization\": \"auth-secret\", \"apikey\": \"default-secret\"}, \"querystring\": {\"X-ToKeN\": \"query-secret\", \"legacy-key\": \"legacy-secret\", \"apikey\": \"default-secret\"}, \"url\": \"http://echo/key-names?x-token=query-secret\"}, \"response\": {\"status\": 200, \"size\": 200, \"headers\": {\"X-ToKeN\": \"response-secret\", \"Set-Cookie\": \"cookie-secret\"}}, \"client_ip\": \"127.0.0.1\", \"latencies\": {\"kong\": 1, \"proxy\": 2, \"request\": 3}, \"key_names\": \"x-token\"}"
+    no_outputs_from: [sanitize]
+  - name: invalid-published-member-drops-event
+    inputs:
+      - insert_at: decode
+        type: log
+        log_fields:
+          message: "{\"environment_id\": \"00000000-0000-4000-8000-000000000001\", \"started_at\": 1792100000123, \"request\": {\"uri\": \"/key-names?x-token=header-secret&legacy-key=legacy-secret&apikey=default-secret\", \"method\": \"GET\", \"size\": 100, \"headers\": {\"X-ToKeN\": \"header-secret\", \"Legacy-Key\": \"legacy-secret\", \"Authorization\": \"auth-secret\", \"apikey\": \"default-secret\"}, \"querystring\": {\"X-ToKeN\": \"query-secret\", \"legacy-key\": \"legacy-secret\", \"apikey\": \"default-secret\"}, \"url\": \"http://echo/key-names?x-token=query-secret\"}, \"response\": {\"status\": 200, \"size\": 200, \"headers\": {\"X-ToKeN\": \"response-secret\", \"Set-Cookie\": \"cookie-secret\"}}, \"client_ip\": \"127.0.0.1\", \"latencies\": {\"kong\": 1, \"proxy\": 2, \"request\": 3}, \"key_names\": [42]}"
+    no_outputs_from: [sanitize]
+  - name: invalid-published-null-drops-event
+    inputs:
+      - insert_at: decode
+        type: log
+        log_fields:
+          message: "{\"environment_id\": \"00000000-0000-4000-8000-000000000001\", \"started_at\": 1792100000123, \"request\": {\"uri\": \"/key-names?x-token=header-secret&legacy-key=legacy-secret&apikey=default-secret\", \"method\": \"GET\", \"size\": 100, \"headers\": {\"X-ToKeN\": \"header-secret\", \"Legacy-Key\": \"legacy-secret\", \"Authorization\": \"auth-secret\", \"apikey\": \"default-secret\"}, \"querystring\": {\"X-ToKeN\": \"query-secret\", \"legacy-key\": \"legacy-secret\", \"apikey\": \"default-secret\"}, \"url\": \"http://echo/key-names?x-token=query-secret\"}, \"response\": {\"status\": 200, \"size\": 200, \"headers\": {\"X-ToKeN\": \"response-secret\", \"Set-Cookie\": \"cookie-secret\"}}, \"client_ip\": \"127.0.0.1\", \"latencies\": {\"kong\": 1, \"proxy\": 2, \"request\": 3}, \"key_names\": null}"
+    no_outputs_from: [sanitize]

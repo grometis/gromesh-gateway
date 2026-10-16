@@ -59,6 +59,9 @@ transforms:
     drop_on_abort: true
     source: |
       key_names = array!(parse_json!(get_env_var("GROMESH_KEY_NAMES") ?? "[\"apikey\"]"))
+      # http-log emits the environment's published key_names as a JSON array.
+      # Old snapshots omit it; the cluster env var remains a fallback and union.
+      if exists(.key_names) { key_names = append(key_names, array!(.key_names)) }
       key_names = map_values(key_names) -> |name| { downcase(string!(name)) }
       credentials = append(key_names, ["apikey", "authorization", "cookie", "set-cookie"])
       .request.headers = filter(object(.request.headers) ?? {}) -> |name, _value| { !includes(credentials, downcase(name)) }
