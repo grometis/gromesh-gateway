@@ -42,7 +42,7 @@ func TestSnapshotEnvelopeValidation(t *testing.T) {
 }
 
 func TestConfigFromEnv(t *testing.T) {
-	for _, key := range []string{"GROMESH_NODE_ID", "KONG_ADMIN_URL", "KONG_STATUS_URL", "SNAPSHOT_PATH"} {
+	for _, key := range []string{"GROMESH_NODE_ID", "KONG_ADMIN_URL", "KONG_STATUS_URL", "SNAPSHOT_PATH", "GROMESH_STATE_DIR"} {
 		t.Setenv(key, "")
 	}
 	t.Setenv("GROMESH_CP_URL", "https://cp.example/base")
@@ -58,13 +58,20 @@ func TestConfigFromEnv(t *testing.T) {
 	if c.NodeID != hostname || c.Hostname != hostname || c.KongAdminURL != "http://127.0.0.1:8001" || c.KongStatusURL != "http://127.0.0.1:8100" || c.SnapshotPath != "/kong/declarative/kong.json" {
 		t.Fatalf("incorrect defaults: %+v", c)
 	}
+	if c.StateDir != "/var/lib/gromesh" {
+		t.Fatal("incorrect state directory default")
+	}
 	t.Setenv("GROMESH_NODE_ID", "explicit-node")
 	t.Setenv("KONG_ADMIN_URL", "http://localhost:9001")
 	t.Setenv("KONG_STATUS_URL", "http://localhost:9101")
 	t.Setenv("SNAPSHOT_PATH", "/tmp/config.json")
+	t.Setenv("GROMESH_STATE_DIR", "/tmp/agent-state")
 	c, err = ConfigFromEnv()
 	if err != nil || c.NodeID != "explicit-node" || c.KongAdminURL != "http://localhost:9001" || c.KongStatusURL != "http://localhost:9101" || c.SnapshotPath != "/tmp/config.json" {
 		t.Fatal("environment overrides were ignored")
+	}
+	if c.StateDir != "/tmp/agent-state" {
+		t.Fatal("state directory override was ignored")
 	}
 	for _, value := range []string{"", "file:///tmp/config", "https://user:pass@cp.example", "http://cp.example?token=secret"} {
 		t.Setenv("GROMESH_CP_URL", value)

@@ -53,6 +53,7 @@ func TestIntegrationAppliesExampleToComposeKong(t *testing.T) {
 		ControlPlaneURL: cp.HTTP.URL, RegistrationToken: cpmock.RegistrationToken,
 		NodeID: "integration-node", Hostname: "integration-host", KongAdminURL: admin,
 		KongStatusURL: statusURL, SnapshotPath: filepath.Join(t.TempDir(), "kong.json"),
+		StateDir: filepath.Join(t.TempDir(), "state"),
 	}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
