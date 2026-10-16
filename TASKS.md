@@ -30,8 +30,9 @@ git worktree add ../gg-codex  -b task/W1-X1-kong-image
 | W6-X1 | Codex | — | `packages/compiler/` (só opções de plugins de plataforma), `deploy/compose/`, `deploy/observability/` |
 | W6-C0 | Claude | W6-X1 (schema da tabela) | `contracts/` |
 | W6-C1 | Claude | W6-C0 | `apps/control-plane/src/analytics/`, `apps/ui/` |
+| W6-C2 | Claude | W6-X1, W6-C1 | `packages/compiler/`, `apps/control-plane/src/snapshots/`, `apps/control-plane/src/config.ts`, `deploy/compose/`, `deploy/observability/`, `deploy/helm/data-plane/` (só collector), `e2e/` |
 | W7-X1 | Codex | — | `deploy/helm/data-plane/`, `.github/workflows/` (job helm-dp) |
-| W7-C1 | Claude | — | `deploy/helm/control-plane/`, `.github/workflows/` (job helm-cp) |
+| W7-C1 | Codex | W7-X1 | `deploy/helm/control-plane/`, `.github/workflows/` (jobs helm-cp e helm-e2e) |
 | W7-X2 | Codex | repositório no GitHub | `apps/*/Dockerfile`, `images/`, `.github/workflows/` (jobs de imagem) |
 | W8-C1 | Claude | — | `apps/control-plane/` (crypto, migração), `packages/compiler/` só se precisar |
 | W8-X1 | Codex | W7-X1, W7-C1 | `tests/load/`, `deploy/helm/*/templates/backup*`, `scripts/` |
@@ -39,7 +40,7 @@ git worktree add ../gg-codex  -b task/W1-X1-kong-image
 
 Ordem de merge na semana 3: W2-C2 → W3-X1 → W3-C1 → W3-X2. Quem mergeia depois faz rebase; `src/db/schema.ts` e `drizzle/` são alterados por uma frente por vez.
 
-Ordem de merge: semana 4 → W4-C1 antes de W4-X1 (W4-X1 faz rebase em `router.tsx`); W4-C2 mergeia antes de começar a semana 5. Semana 5 → W5-C0 → W5-C1 → W5-X1, todos na branch `integration/w5-auth` (criada da `main`), que entra na `main` num único merge quando a CI inteira estiver verde; a `main` é mergeada nela, nunca o contrário. Semana 6 → W6-X1 → W6-C0 → W6-C1. Semanas 7 e 8 → W7-X1 e W7-C1 em paralelo (charts diferentes), depois o job conjunto em kind; W7-X2 assim que o repositório estiver no GitHub; W8-C1 em paralelo; W8-X1 depois dos charts; W8-C2 por último.
+Ordem de merge: semana 4 → W4-C1 antes de W4-X1 (W4-X1 faz rebase em `router.tsx`); W4-C2 mergeia antes de começar a semana 5. Semana 5 → W5-C0 → W5-C1 → W5-X1, todos na branch `integration/w5-auth` (criada da `main`), que entra na `main` num único merge quando a CI inteira estiver verde; a `main` é mergeada nela, nunca o contrário. Semana 6 → W6-X1 → W6-C0 → W6-C1 → W6-C2 (antes da W8-C2). Semanas 7 e 8 → W7-X1 e W7-C1 em paralelo (charts diferentes), depois o job conjunto em kind; W7-X2 assim que o repositório estiver no GitHub; W8-C1 em paralelo; W8-X1 depois dos charts; W8-C2 por último.
 
 **Pré-requisito (decisão do Fabrício):** repositório privado no GitHub com a `main` publicada. Sem isso, o build da imagem Kong 3.9.4, o CI e o job em kind não rodam de verdade.
 
@@ -216,6 +217,14 @@ Aceite: requisição via Kong aparece no ClickHouse em até 10 s; teste prova qu
 
 Aceite: testes de integração com ClickHouse real e dados de fixture conhecidos (números conferidos); Playwright contra o Prism: dashboard renderiza séries e o explorador filtra por status.
 
+### W6-C2 [Claude] Plugins de plataforma na publicação
+- `platformPlugins()` deixa de exigir `clusterId`: injeta só `environment_id` (`custom_fields_by_lua`, mantendo a validação de UUID). O snapshot continua idêntico (mesmo hash) para todos os clusters do environment: **nunca** compilar por cluster no endpoint do agente.
+- Aplicado em publish, rollback e auto-publish quando a plataforma tiver observabilidade configurada (`PLATFORM_HTTP_LOG_ENDPOINT` no control plane; vazio = não injeta). O endpoint do http-log é um nome fixo resolvido localmente em cada cluster (ex.: `http://gromesh-collector:8686`).
+- Vector: acrescenta `cluster_id` a partir da própria variável `GROMESH_CLUSTER_ID` (valida UUID na subida e recusa iniciar sem ela); continua descartando eventos sem `environment_id` válido.
+- Compose: serviço/alias `gromesh-collector` apontando para o Vector. Chart do data plane: opção `collector.enabled` com o Vector como Deployment/Service `gromesh-collector` no namespace do cluster (ou endpoint externo).
+
+Aceite: e2e de produto publica uma rota pela UI, envia tráfego pelo Kong e vê as requisições no dashboard (via API de analytics) com `environment_id` e `cluster_id` corretos; o hash do snapshot muda quando os plugins entram, mas o teste confere que é igual para dois clusters do mesmo environment.
+
 ---
 
 ## Semana 7 — Kubernetes e imagens de produção
@@ -229,7 +238,7 @@ Aceite: testes de integração com ClickHouse real e dados de fixture conhecidos
 
 Aceite: `helm lint` e `helm template` sem erro; no job conjunto em kind (W7-C1), um pod sem snapshot fica NotReady e passa a Ready depois da primeira publicação.
 
-### W7-C1 [Claude] Helm chart do control plane
+### W7-C1 [Codex] Helm chart do control plane
 - Deployments: control plane (2 réplicas), UI (nginx não-root), kong-validator; Job de migração como hook `pre-install,pre-upgrade`.
 - Postgres externo obrigatório (`database.existingSecret`); URL separada para o LISTEN com conexão direta (documentada no `values.yaml`, nunca via PgBouncer em modo transação).
 - Ingress com anotações para o SSE do agente (idle timeout > 15 s, buffering desligado), `TRUST_PROXY` = CIDR do ingress (nunca `uniquelocal`), `COOKIE_SECURE=true`.
@@ -277,6 +286,7 @@ Aceite: o job do e2e final verde no CI e o checklist sem pendências.
 
 ## Backlog
 
+- Analytics: "top rotas por volume e por erro" no dashboard precisa de um endpoint novo no contrato; fora do MVP.
 - Analytics: o `path` das requisições pode conter dado pessoal (ex.: CPF em `/clientes/{cpf}`); avaliar retenção menor ou máscara de path por rota.
 - Cifrar em repouso, no Postgres, as chaves key-auth e os campos `encrypted` da config de plugins.
 - Semana 5 (auth): token em cookie httpOnly + SameSite + proteção CSRF, no lugar do `sessionStorage` da UI.
