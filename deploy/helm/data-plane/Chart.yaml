@@ -1,0 +1,7 @@
+apiVersion: v2
+name: data-plane
+description: Gromesh Gateway DB-less data plane and snapshot agent
+version: 0.1.0
+appVersion: "3.9.4"
+type: application
+kubeVersion: ">=1.25.0-0"

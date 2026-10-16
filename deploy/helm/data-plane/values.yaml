@@ -1,0 +1,135 @@
+# Two pods let voluntary maintenance retain a serving data plane after publication.
+replicaCount: 2
+# Overrides allow several releases to share a namespace without selector collisions.
+nameOverride: ""
+fullnameOverride: ""
+# Private project images may require credentials in the release namespace.
+imagePullSecrets: []
+
+kong:
+  image:
+    # Use the project's own build, never the upstream image. W7-X2 supplies the
+    # published GHCR repository and immutable tag/digest for each environment.
+    repository: gromesh-kong
+    tag: "3.9.4"
+    digest: ""
+    pullPolicy: IfNotPresent
+  # UID 1001 can read the packaged runtime; all runtime writes go to volumes.
+  runAsUser: 1001
+  # Two workers match compose without sizing workers from the host CPU count.
+  workerProcesses: 2
+  # Prefix (/usr/local/kong: nginx files, sockets, certificates, LMDB) and /tmp
+  # each have an emptyDir so the image root filesystem can remain read-only.
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "2"
+      memory: 1Gi
+
+agent:
+  image:
+    # Build apps/agent/Dockerfile and override this with the published W7-X2 image.
+    repository: gromesh-agent
+    tag: "0.1.0"
+    digest: ""
+    pullPolicy: IfNotPresent
+  # The agent appends /agent/v1/... itself. Use the control plane origin/base URL,
+  # e.g. http://control-plane:3000, WITHOUT /api/v1 or /agent/v1.
+  controlPlaneUrl: http://control-plane:3000
+  # Prefer an existing Secret in this namespace. Never commit a real token here;
+  # token is an alternative for injection via a private values file or --set-file.
+  # Missing both sources fails rendering; existingSecret takes precedence.
+  # Secret rotation requires restarting pods: environment variables are read once.
+  token: ""
+  existingSecret: ""
+  existingSecretKey: registration-token
+  # The node token is ONLY in memory: the agent re-registers on every process
+  # restart. Keep the registration Secret valid; no PVC can persist that token.
+  # GROMESH_NODE_ID comes from metadata.name so replicas register independently.
+  # /kong/declarative is an emptyDir: snapshots survive container restarts, not
+  # pod replacement. The agent stages metadata/config then atomically renames.
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+# The init uses the Kong image's shell, avoiding an additional image dependency.
+# fsGroup 1001 grants it and the agent write access without a root chown step.
+initResources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    cpu: 100m
+    memory: 64Mi
+
+service:
+  # ClusterIP avoids provisioning an external balancer during local acceptance.
+  # Both types expose only 8000/8443; admin and status are never Service ports.
+  type: ClusterIP
+  annotations: {}
+  # Local preserves client addresses with LoadBalancer; use Cluster if required
+  # by the provider's health checks or topology. Ignored for ClusterIP.
+  externalTrafficPolicy: Local
+  # Limit public balancer clients when the cloud provider supports source ranges.
+  loadBalancerSourceRanges: []
+
+collector:
+  # Set this same URL as platformPlugins.httpLogEndpoint when publishing through
+  # the control plane/compiler (e.g. http://vector.observability:8080/kong).
+  # This chart cannot inject http-log plugins: snapshots exclusively own config.
+  # With NetworkPolicy enabled, this URL also determines the collector TCP port;
+  # configure matching destination peers under networkPolicy.collectorPeers.
+  httpLogEndpoint: ""
+
+metrics:
+  # Adds pod scrape annotations for :8100/metrics. Publish the platform prometheus
+  # plugin through the control plane/compiler; annotations cannot enable it.
+  # The agent separately serves :9100/metrics, with no health endpoint, so there
+  # is no agent liveness probe that could mistake a metrics response for health.
+  enabled: false
+  # NetworkPolicy intentionally permits proxy ingress ONLY. When enabled, an
+  # operator-managed policy must allow trusted scrapers to :8100 (and optionally
+  # :9100). Kubelet probes and same-pod loopback do not need these ingress rules.
+
+# CPU requests above provide the denominator for the HPA's pod utilization.
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+pdb:
+  # Render only when the effective minimum replicas (HPA min or replicaCount)
+  # exceeds one, so a single-pod development release can still be drained.
+  enabled: true
+  minAvailable: 1
+
+networkPolicy:
+  # Requires a CNI that enforces NetworkPolicy. Empty destination lists deny
+  # traffic, never mean allow-all. Explicitly choose peers for CP and collector.
+  enabled: false
+  # Empty proxy peers allow clients from any source, but only on 8000/8443.
+  # Use NetworkPolicyPeer objects (ipBlock or namespaceSelector + podSelector).
+  proxyPeers: []
+  controlPlanePeers: []
+  collectorPeers: []
+  # Each upstream needs an explicit CIDR and TCP ports (Service DNAT behavior
+  # depends on the CNI; allow backend pod CIDRs when it evaluates post-DNAT).
+  upstreams: []
+  # - cidr: 10.42.0.0/16
+  #   ports: [80, 443]
+  # Select the cluster's DNS pods; override for NodeLocal DNS with an ipBlock.
+  # Restricting both UDP/TCP 53 avoids opening arbitrary kube-system egress.
+  dnsPeers:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
