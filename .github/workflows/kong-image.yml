@@ -13,8 +13,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build-test-publish:
-    runs-on: ubuntu-24.04
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     permissions:
       contents: read
@@ -25,6 +33,7 @@ jobs:
     env:
       COMPOSE_FILE: deploy/compose/docker-compose.yml
       COMPOSE_PROJECT_NAME: gromesh-kong-image
+      TARGET_ARCH: ${{ matrix.arch }}
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -36,10 +45,14 @@ jobs:
         with:
           node-version-file: .nvmrc
 
-      - name: Image tag
+      - name: Verify native runner and set image tag
         run: |
+          case "${TARGET_ARCH}:$(uname -m)" in
+            amd64:x86_64|arm64:aarch64) ;;
+            *) echo "Runner architecture does not match ${TARGET_ARCH}" >&2; exit 1 ;;
+          esac
           owner="${GITHUB_REPOSITORY_OWNER,,}"
-          echo "KONG_IMAGE=ghcr.io/${owner}/gromesh-kong:3.9.4-${GITHUB_SHA}" >> "$GITHUB_ENV"
+          echo "KONG_IMAGE=ghcr.io/${owner}/gromesh-kong:3.9.4-${GITHUB_SHA}-${TARGET_ARCH}" >> "$GITHUB_ENV"
 
       - name: Set up Buildx
         id: buildx
@@ -53,8 +66,8 @@ jobs:
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: ${{ runner.temp }}/kong-bazel-cache
-          key: kong-bazel-${{ runner.os }}-${{ runner.arch }}-3.9.4-${{ hashFiles('images/kong/Dockerfile') }}
-          restore-keys: kong-bazel-${{ runner.os }}-${{ runner.arch }}-3.9.4-
+          key: kong-bazel-${{ runner.os }}-${{ matrix.arch }}-3.9.4-${{ hashFiles('images/kong/Dockerfile') }}
+          restore-keys: kong-bazel-${{ runner.os }}-${{ matrix.arch }}-3.9.4-
 
       # BuildKit's layer cache does not export RUN cache mounts.
       - name: Restore and persist Bazel cache mount
@@ -69,15 +82,17 @@ jobs:
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
         with:
           context: images/kong
-          platforms: linux/amd64
+          platforms: linux/${{ matrix.arch }}
           load: true
           push: false
           tags: ${{ env.KONG_IMAGE }}
-          cache-from: type=gha,scope=kong-3.9.4-amd64
-          cache-to: type=gha,mode=max,scope=kong-3.9.4-amd64
+          cache-from: type=gha,scope=kong-3.9.4-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=kong-3.9.4-${{ matrix.arch }}
 
-      - name: Verify Kong version and non-root user
+      - name: Verify image architecture, Kong version and non-root user
         run: |
+          platform="$(docker image inspect "$KONG_IMAGE" --format '{{.Os}}/{{.Architecture}}')"
+          test "$platform" = "linux/${TARGET_ARCH}"
           version="$(docker run --rm "$KONG_IMAGE" kong version)"
           printf '%s\n' "$version"
           test "$version" = 3.9.4
@@ -106,7 +121,20 @@ jobs:
 
       # Push the exact local image that passed version, smoke and vulnerability checks.
       - name: Publish tested image
-        run: docker push "$KONG_IMAGE"
+        run: |
+          docker push "$KONG_IMAGE"
+          # The manifest digest is the sha256 of the raw manifest; --format is not honoured by every buildx release.
+          digest="sha256:$(docker buildx imagetools inspect --raw "$KONG_IMAGE" | sha256sum | cut -d' ' -f1)"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "Unexpected image digest: ${digest}" >&2; exit 1; }
+          mkdir -p "$RUNNER_TEMP/kong-digests"
+          printf '%s\n' "$digest" > "$RUNNER_TEMP/kong-digests/${TARGET_ARCH}.txt"
+
+      - name: Upload image digest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: kong-digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/kong-digests/${{ matrix.arch }}.txt
+          if-no-files-found: error
 
       - name: Compose logs
         if: failure()
@@ -115,3 +143,50 @@ jobs:
       - name: Clean up acceptance stack
         if: always()
         run: docker compose down --volumes --remove-orphans
+
+  manifest:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+        with:
+          version: v0.25.0
+          driver-opts: image=moby/buildkit:v0.23.2@sha256:ddd1ca44b21eda906e81ab14a3d467fa6c39cd73b9a39df1196210edcb8db59e
+
+      - name: Login to GHCR
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download image digests
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: kong-digest-*
+          path: ${{ runner.temp }}/kong-digests
+          merge-multiple: true
+
+      - name: Publish and inspect manifest list
+        env:
+          DIGEST_DIR: ${{ runner.temp }}/kong-digests
+        run: |
+          AMD64_DIGEST="$(cat "$DIGEST_DIR/amd64.txt")"
+          ARM64_DIGEST="$(cat "$DIGEST_DIR/arm64.txt")"
+          [[ "$AMD64_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "Missing or invalid amd64 digest: ${AMD64_DIGEST}" >&2; exit 1; }
+          [[ "$ARM64_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "Missing or invalid arm64 digest: ${ARM64_DIGEST}" >&2; exit 1; }
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          image="ghcr.io/${owner}/gromesh-kong"
+          tag="3.9.4-${GITHUB_SHA}"
+          docker buildx imagetools create -t "${image}:${tag}" \
+            "${image}@${AMD64_DIGEST}" "${image}@${ARM64_DIGEST}"
+          docker buildx imagetools inspect "${image}:${tag}"
+          echo "manifest list digest: sha256:$(docker buildx imagetools inspect --raw "${image}:${tag}" | sha256sum | cut -d' ' -f1)"
