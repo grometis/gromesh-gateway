@@ -1,0 +1,13 @@
+#!/bin/sh
+# main only changes through a pull request with green CI and the owner's approval (CLAUDE.md).
+# The GitHub plan of this private repository has no branch protection, so the guard lives here.
+# Emergency override: GROMESH_ALLOW_MAIN_PUSH=1 git push ...
+remote="$1"
+while read -r local_ref local_sha remote_ref remote_sha; do
+    if [ "$remote_ref" = "refs/heads/main" ] && [ "${GROMESH_ALLOW_MAIN_PUSH:-}" != "1" ]; then
+        echo "pre-push: push to $remote/main refused: main só por PR (CI verde + aprovação)." >&2
+        echo "pre-push: abra um PR a partir da sua branch; emergência: GROMESH_ALLOW_MAIN_PUSH=1 git push." >&2
+        exit 1
+    fi
+done
+exit 0

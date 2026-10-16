@@ -56,6 +56,7 @@ Go: `cd apps/agent && go test ./... && go vet ./...`
 7. **Teste antes de tela.** Cada tarefa tem um teste de aceite (e2e ou de integração). Tarefa sem teste verde não está pronta.
 8. **Dependências:** só a tarefa que precisa adiciona; uma frente por vez mexe no `pnpm-lock.yaml`. Fixe versões exatas.
 9. **Sem documentação extra.** Nada de README por pasta, ADR ou guias. Código claro, testes e o contrato bastam. Comente só o "porquê" não óbvio.
+10. **`main` só por PR** com a CI verde e aprovação do Fabrício, documentação inclusive. O plano do GitHub não protege a branch, então a trava é local: todo clone novo (e cada worktree) roda `git config core.hooksPath .githooks` logo após o clone; o hook `pre-push` recusa push para `main` (emergência: `GROMESH_ALLOW_MAIN_PUSH=1`). O ruleset em `.github/rulesets/main.json` é aplicado quando houver GitHub Pro.
 
 ## Convenções
 
