@@ -47,7 +47,8 @@ async function uiLogin(page: Page) {
 }
 
 test("MVP: install → publish → converge → traffic in the dashboard → rollback → audit", async ({ page, browser, playwright }) => {
-  const name = `mvp-${randomUUID().slice(0, 8)}`;
+  // A full UUID: the collector masks runs of 6+ digits in paths ({num}), and an 8-hex suffix holds one ~10% of the time.
+  const name = `mvp-${randomUUID()}`;
   const path = `/${name}`;
   const admin = await login(browser);
   const { api } = admin;
