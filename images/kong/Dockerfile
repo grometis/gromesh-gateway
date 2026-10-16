@@ -13,9 +13,19 @@ RUN apt-get update \
         python3 unzip zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
-RUN curl -fsSL https://releases.bazel.build/7.3.1/release/bazel-7.3.1-linux-x86_64 \
+ARG TARGETARCH
+RUN case "${TARGETARCH:-$(uname -m)}" in \
+        amd64|x86_64) \
+            bazel_arch=x86_64; \
+            bazel_sha256=794f58b5a5c28c4729f04db0bd1238eaf827105bb49946238b00f681a1da377c ;; \
+        arm64|aarch64) \
+            bazel_arch=arm64; \
+            bazel_sha256=95871a3dc9db88043fb54752ce2155d702bbad809b0e5f0c428a67c0522e5944 ;; \
+        *) echo "Unsupported architecture: ${TARGETARCH:-$(uname -m)}" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL "https://releases.bazel.build/7.3.1/release/bazel-7.3.1-linux-${bazel_arch}" \
         -o /usr/local/bin/bazel \
-    && echo "794f58b5a5c28c4729f04db0bd1238eaf827105bb49946238b00f681a1da377c  /usr/local/bin/bazel" \
+    && echo "${bazel_sha256}  /usr/local/bin/bazel" \
         | sha256sum --check --strict \
     && chmod 0755 /usr/local/bin/bazel
 
@@ -32,7 +42,7 @@ RUN --mount=type=cache,target=/root/.cache/bazel,sharing=locked \
         --verbose_failures --jobs=2 //build:kong \
     && bazel --batch build --config=release --//:licensing=false --//:skip_webui=true \
         --verbose_failures --jobs=2 //:kong_deb \
-    && install -m 0644 bazel-bin/pkg/kong.amd64.deb /tmp/kong.deb
+    && install -m 0644 "bazel-bin/pkg/kong.${TARGETARCH:-$(dpkg --print-architecture)}.deb" /tmp/kong.deb
 
 FROM ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55 AS runtime
 
