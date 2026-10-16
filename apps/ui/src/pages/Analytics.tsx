@@ -19,9 +19,9 @@ export const PERIODS = {
 } as const;
 export type PeriodKey = keyof typeof PERIODS;
 
-/** `to` is rounded down to the minute so the query key is stable between refreshes within the same minute. */
+/** `to` is the end of the current minute: the latest traffic counts, and the query key stays stable within a minute. */
 export function periodRange(key: PeriodKey, now = Date.now()): { from: string; to: string } {
-  const to = Math.floor(now / 60_000) * 60_000;
+  const to = Math.ceil((now + 1) / 60_000) * 60_000;
   return { from: new Date(to - PERIODS[key].ms).toISOString(), to: new Date(to).toISOString() };
 }
 

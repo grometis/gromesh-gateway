@@ -75,6 +75,11 @@ encryption:
   # Same Secret: base64 of 32 bytes for the credential fingerprints (HMAC), independent of the cipher keys.
   fingerprintKeyKey: fingerprint-key
 
+platform:
+  # http-log endpoint compiled into every publication (PLATFORM_HTTP_LOG_ENDPOINT); each cluster resolves the
+  # name to its own collector (data-plane chart, collector.enabled). Empty: no platform plugins.
+  httpLogEndpoint: ""
+
 # Development HTTP only. Production cookies remain Secure unless explicitly opted out.
 insecureCookies: false
 # With ingress enabled, set only the ingress controller's actual source CIDR(s),

@@ -50,6 +50,10 @@ spec:
               value: {{ default "false" .Values.trustProxy | quote }}
             - name: KONG_VALIDATOR_URL
               value: http://kong-validator:8001
+            {{- with .Values.platform.httpLogEndpoint }}
+            - name: PLATFORM_HTTP_LOG_ENDPOINT
+              value: {{ . | quote }}
+            {{- end }}
             {{- if or .Values.bootstrapAdmin.existingSecret .Values.bootstrapAdmin.email }}
             - name: BOOTSTRAP_ADMIN_EMAIL
               valueFrom:

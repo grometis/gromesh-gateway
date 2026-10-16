@@ -1,0 +1,84 @@
+# Throwaway ClickHouse for the final acceptance in kind (the compose observability profile, minus Prometheus).
+# Init files come from ConfigMaps created by run.sh out of deploy/observability/, so there is a single source.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clickhouse
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: clickhouse}
+  template:
+    metadata:
+      labels: {app: clickhouse}
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: clickhouse
+          image: clickhouse/clickhouse-server:25.8.16.34-alpine
+          imagePullPolicy: Never
+          env:
+            - {name: CLICKHOUSE_DB, value: gromesh}
+            - {name: CLICKHOUSE_USER, value: gromesh}
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: ci-clickhouse-admin, key: password}
+            - {name: CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT, value: "1"}
+          ports: [{name: http, containerPort: 8123}, {name: native, containerPort: 9000}]
+          readinessProbe:
+            httpGet: {path: /ping, port: http}
+            periodSeconds: 2
+          resources:
+            requests: {cpu: 200m, memory: 512Mi}
+            limits: {cpu: "2", memory: 2Gi}
+          volumeMounts:
+            - {name: init, mountPath: /docker-entrypoint-initdb.d, readOnly: true}
+            - {name: data, mountPath: /var/lib/clickhouse}
+      volumes:
+        - name: init
+          configMap: {name: clickhouse-init-sql}
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse
+spec:
+  selector: {app: clickhouse}
+  # 9000: clickhouse-client in the init job; 8123: Vector and the control plane.
+  ports: [{name: http, port: 8123, targetPort: http}, {name: native, port: 9000, targetPort: native}]
+---
+# Same script as the compose clickhouse-init service: writer (INSERT) and reader (SELECT) users.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: clickhouse-init
+spec:
+  backoffLimit: 10
+  template:
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      containers:
+        - name: init
+          image: clickhouse/clickhouse-server:25.8.16.34-alpine
+          imagePullPolicy: Never
+          command: [sh, /init/users.sh]
+          env:
+            - {name: CLICKHOUSE_HOST, value: clickhouse}
+            - {name: CLICKHOUSE_USER, value: gromesh}
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: ci-clickhouse-admin, key: password}
+            - name: CLICKHOUSE_WRITER_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: ci-clickhouse-writer, key: writer-password}
+            - name: CLICKHOUSE_READER_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: ci-clickhouse-reader, key: password}
+          volumeMounts:
+            - {name: init, mountPath: /init, readOnly: true}
+      volumes:
+        - name: init
+          configMap: {name: clickhouse-init-users}

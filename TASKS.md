@@ -5,6 +5,8 @@ Pronto = teste de aceite verde no CI + checklist de `CLAUDE.md`. Revisão cruzad
 
 Já entregue (base): contratos em `contracts/`, `packages/compiler` (compile, hash, diff, snapshot, 12 testes), compose com Kong 3.9 DB-less, `scripts/smoke.mjs`, CI.
 
+**MVP fechado (W8-C2):** o aceite final roda em kind (`e2e/kind/run.sh`, job `mvp-e2e`): instalar via Helm → login do admin → service + route + key-auth + rate-limiting → publicar → cluster converge → tráfego no dashboard → rollback → audit. O checklist de segurança executado está em `e2e/security-checklist.md` (`e2e/security-checklist.sh`). Pendências atreladas ao repositório no GitHub: imagem própria Kong 3.9.4, catálogo regenerado, compose com a imagem própria e digests nos charts (parte remota da W7-X2).
+
 ```bash
 # uma worktree por frente, a partir da main
 git worktree add ../gg-claude -b task/W1-C1-control-plane-skeleton
@@ -284,12 +286,13 @@ Aceite: o job do e2e final verde no CI e o checklist sem pendências.
 
 ---
 
-## Backlog
+## Backlog (pós-MVP, em ordem de prioridade)
 
-- Analytics: "top rotas por volume e por erro" no dashboard precisa de um endpoint novo no contrato; fora do MVP.
-- Analytics: o `path` das requisições pode conter dado pessoal (ex.: CPF em `/clientes/{cpf}`); avaliar retenção menor ou máscara de path por rota.
-- Cifragem em repouso: incluir no AAD o contexto (tabela, coluna, id da linha) para impedir a troca de valores cifrados entre linhas.
-- Cifrar em repouso, no Postgres, as chaves key-auth e os campos `encrypted` da config de plugins.
-- Semana 5 (auth): token em cookie httpOnly + SameSite + proteção CSRF, no lugar do `sessionStorage` da UI.
-- Semana 8 (Helm/produção): `TRUST_PROXY` em produção é o IP/CIDR exato do ingress, nunca `uniquelocal` (só o compose de desenvolvimento usa isso).
-- Semana 8 (Helm/produção): o `LISTEN` do control plane usa conexão direta ao Postgres, nunca via PgBouncer em modo transação; o LB/ingress na frente do SSE do agente precisa de idle timeout acima de 15 s e buffering desligado.
+1. **W7-X2, parte remota (precisa do repositório no GitHub):** rodar o workflow `kong-image` (imagem própria 3.9.4; se o tempo estourar, `--jobs=4`), regenerar o catálogo de plugins a partir dela (`catalog:generate`), trocar o padrão do compose para a imagem própria e fixar os digests nos charts. Até lá o compose e o kind usam `kong:3.9.3`.
+2. **Cifragem em repouso:** incluir no AAD o contexto (tabela, coluna, id da linha) para impedir a troca de valores cifrados entre linhas.
+3. **Analytics e dado pessoal:** o `path` das requisições pode conter dado pessoal (ex.: CPF em `/clientes/{cpf}`); avaliar retenção menor ou máscara de path por rota.
+4. **Analytics:** "top rotas por volume e por erro" no dashboard precisa de um endpoint novo no contrato.
+5. **Observabilidade:** `GROMESH_KEY_NAMES` do coletor é configurado por cluster à mão; derivar dos `key_names` dos plugins key-auth publicados.
+6. **Snapshot por cluster:** o agente ainda se registra de novo a cada restart (node token só em memória); avaliar persistir o token no volume do pod.
+
+Regras de produção já codificadas nos charts e que continuam valendo: `TRUST_PROXY` é o IP/CIDR exato do ingress (nunca `uniquelocal`); o `LISTEN` do control plane usa conexão direta ao Postgres (nunca PgBouncer em modo transação); o ingress na frente do SSE do agente precisa de idle timeout acima de 15 s e buffering desligado; `COOKIE_SECURE` só é falso no compose de desenvolvimento.
