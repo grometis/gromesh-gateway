@@ -571,6 +571,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/environments/{envId}/analytics/top-routes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+            };
+            cookie?: never;
+        };
+        /**
+         * @description The routes with the most traffic, the most errors or the slowest p95 over the period, from the same
+         *     `requests` table as the summary (same 7-day limit). Traffic that matched no route is one row with null
+         *     `routeId` and `serviceId`. Ordered by the chosen criterion descending, ties by `requests` descending then
+         *     `routeId`.
+         */
+        get: operations["getTopRoutes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/environments/{envId}/requests": {
         parameters: {
             query?: never;
@@ -912,6 +936,24 @@ export interface components {
                 ts: string;
             } & components["schemas"]["TrafficStats"])[];
         };
+        TopRoutes: {
+            /** Format: date-time */
+            from: string;
+            /** Format: date-time */
+            to: string;
+            /** @enum {string} */
+            by: "requests" | "errors" | "p95";
+            items: components["schemas"]["TopRoute"][];
+        };
+        TopRoute: {
+            /**
+             * Format: uuid
+             * @description Null for traffic that matched no route
+             */
+            routeId: string | null;
+            /** Format: uuid */
+            serviceId: string | null;
+        } & components["schemas"]["TrafficStats"];
         RequestRecord: {
             /**
              * Format: uuid
@@ -2813,6 +2855,84 @@ export interface operations {
                      *     }
                      */
                     "application/json": components["schemas"]["AnalyticsSummary"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+            502: components["responses"]["AnalyticsUnavailable"];
+        };
+    };
+    getTopRoutes: {
+        parameters: {
+            query: {
+                /** @description Start of the period (inclusive). The period may span at most 7 days, the table's retention. */
+                from: components["parameters"]["AnalyticsFrom"];
+                /** @description End of the period (exclusive); must be after `from`. */
+                to: components["parameters"]["AnalyticsTo"];
+                /**
+                 * @description `requests`: request count; `errors`: 4xx plus 5xx responses; `p95`: p95 of the total latency (routes
+                 *     without latency data come last).
+                 */
+                by?: "requests" | "errors" | "p95";
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Top routes */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "from": "2026-10-15T12:00:00Z",
+                     *       "to": "2026-10-15T12:10:00Z",
+                     *       "by": "requests",
+                     *       "items": [
+                     *         {
+                     *           "routeId": "2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f",
+                     *           "serviceId": "6f1d2c3b-4a5e-4f60-8b7c-1d2e3f4a5b6c",
+                     *           "requests": 900,
+                     *           "errors4xx": 30,
+                     *           "errors5xx": 2,
+                     *           "errorRate": 0.0356,
+                     *           "p50Ms": 12.1,
+                     *           "p95Ms": 47,
+                     *           "p99Ms": 118
+                     *         },
+                     *         {
+                     *           "routeId": "8e1f2a3b-4c5d-4e6f-8a9b-0c1d2e3f4a5b",
+                     *           "serviceId": "6f1d2c3b-4a5e-4f60-8b7c-1d2e3f4a5b6c",
+                     *           "requests": 300,
+                     *           "errors4xx": 10,
+                     *           "errors5xx": 1,
+                     *           "errorRate": 0.0367,
+                     *           "p50Ms": 13.4,
+                     *           "p95Ms": 55.2,
+                     *           "p99Ms": 140
+                     *         },
+                     *         {
+                     *           "routeId": null,
+                     *           "serviceId": null,
+                     *           "requests": 50,
+                     *           "errors4xx": 50,
+                     *           "errors5xx": 0,
+                     *           "errorRate": 1,
+                     *           "p50Ms": 0.4,
+                     *           "p95Ms": 0.9,
+                     *           "p99Ms": 1.2
+                     *         }
+                     *       ]
+                     *     }
+                     */
+                    "application/json": components["schemas"]["TopRoutes"];
                 };
             };
             404: components["responses"]["NotFound"];
