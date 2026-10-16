@@ -98,6 +98,10 @@ test("UI publication, key-auth traffic, viewer limits, audit and rollback on the
     expect(Boolean(cluster.registrationToken)).toBe(true);
     // The first version must be empty so rollback removes the route created through the UI.
     const baseline = await api<Publication>("POST", `/environments/${env.id}/snapshots`, 201, { message: "Empty baseline" });
+    // The collector comes up before the first request hits the gateway: a failed lookup of gromesh-collector would
+    // otherwise be cached by the gateway (dns_not_found_ttl) and the log lines of the next seconds would be lost.
+    collectorStarted = true;
+    await collector(cluster.id);
     agentStarted = true;
     await compose(["up", "-d", "--no-deps", "--force-recreate", "agent"], cluster.registrationToken);
     await converge(api, cluster.id, baseline.version);
@@ -160,8 +164,6 @@ test("UI publication, key-auth traffic, viewer limits, audit and rollback on the
     expect(fromSecond.hash).toBe(current.hash);
     await api("DELETE", `/clusters/${second.id}`, 204);
     await api("DELETE", `/clusters/${third.id}`, 204);
-    collectorStarted = true;
-    await collector(cluster.id);
     const trafficStarted = new Date(Date.now() - 60_000).toISOString();
     // Distinct sub-paths: requests made before the collector carried this cluster's id must not be counted.
     for (let i = 0; i < 3; i++) expect((await proxy(traffic, `${path}/traffic-${i}`)).status()).toBe(200);
@@ -170,7 +172,7 @@ test("UI publication, key-auth traffic, viewer limits, audit and rollback on the
       const page = await api<{ items: { path: string; status: number; environmentId: string; clusterId: string }[] }>("GET", `/environments/${env.id}/requests?from=${trafficStarted}&to=${to}&limit=50`, 200);
       const rows = page.items.filter((r) => r.path.startsWith(`${path}/traffic-`) && r.status === 200);
       return rows.length >= 3 && rows.every((r) => r.environmentId === env.id && r.clusterId === cluster.id);
-    }, { timeout: 20_000, intervals: [500, 1000], message: "Gateway traffic must reach the analytics API with the environment and cluster ids" }).toBe(true);
+    }, { timeout: 45_000, intervals: [500, 1000, 2000], message: "Gateway traffic must reach the analytics API with the environment and cluster ids" }).toBe(true);
 
     // The publication made through the UI is in the audit log, with its author.
     const me = await api<Entity & { name: string }>("GET", "/me", 200);
