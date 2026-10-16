@@ -47,13 +47,15 @@ describe("platform plugins at publish", () => {
     );
     const published = await h.api("POST", `/environments/${envId}/snapshots`, {});
     expect(published.status).toBe(201);
-    const snapshot = (await h.api("GET", `/environments/${envId}/snapshots/${published.body.version}`)).body;
-    const httpLog = snapshot.config.plugins.find((p: { name: string }) => p.name === "http-log");
+    // The API envelope redacts http_endpoint (an `encrypted` field in the gateway's schema): read it as an agent.
+    const snapshot = await agentSnapshot(h, envId);
+    const httpLog = snapshot.config.plugins.find((p: { name: string }) => p.name === "http-log")!;
     expect(httpLog.config).toMatchObject({ http_endpoint: ENDPOINT, custom_fields_by_lua: { environment_id: `return "${envId}"` } });
     expect(httpLog.config.custom_fields_by_lua).not.toHaveProperty("cluster_id");
     expect(snapshot.config.plugins.some((p: { name: string }) => p.name === "prometheus")).toBe(true);
     // Rollback republishes through the same path, so the plugins stay.
-    await h.api("PUT", `/environments/${envId}/services/${snapshot.config.services[0].id}`, { name: snapshot.config.services[0].name, protocol: "http", host: "echo", port: 8080 });
+    const service = (await h.api("GET", `/environments/${envId}/services`)).body.items[0];
+    await h.api("PUT", `/environments/${envId}/services/${service.id}`, { name: service.name, protocol: "http", host: "echo", port: 8080 });
     await h.api("POST", `/environments/${envId}/snapshots`, {});
     const rollback = await h.api("POST", `/environments/${envId}/snapshots/${published.body.version}/rollback`);
     expect(rollback.status).toBe(201);

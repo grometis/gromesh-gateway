@@ -38,6 +38,9 @@ import { requireEnvironment, uuidParam } from "../environments/environments.js";
 import { loadGatewayState, restoreGatewayState } from "../gateway/gateway.js";
 import { AGENT_CHANNEL } from "../clusters/clusters.js";
 import { PluginCatalog, PluginCatalogModule } from "../plugin-catalog/catalog.js";
+import { ENCRYPTOR, Encryptor } from "../crypto/crypto.js";
+
+type OpenSnapshot = Omit<SnapshotRow, "config" | "state"> & { config: KongDeclarativeConfig; state: GatewayState };
 
 type SnapshotSummaryRow = Pick<SnapshotRow, "version" | "hash" | "message" | "createdAt" | "createdBy" | "rollbackOf">;
 
@@ -56,9 +59,8 @@ export function toSnapshotSummary(r: SnapshotSummaryRow, isCurrent: boolean, cha
 
 type RedactPluginConfig = (name: string, config: Record<string, unknown>) => Record<string, unknown>;
 
-/** Credential keys and plugin secrets are only readable by admins (contract: getSnapshot). */
-export function maskConfigFor(role: Role, config: KongDeclarativeConfig, redact: RedactPluginConfig = (_n, c) => c): KongDeclarativeConfig {
-  if (role === "admin") return config;
+/** Credential keys and plugin secrets never leave through the API, admin included (contract: getSnapshot). */
+export function maskConfigFor(_role: Role, config: KongDeclarativeConfig, redact: RedactPluginConfig = (_n, c) => c): KongDeclarativeConfig {
   return {
     ...config,
     keyauth_credentials: config.keyauth_credentials.map((c) => ({ ...c, key: "REDACTED" })),
@@ -93,7 +95,7 @@ const isDue = (delayMs: number) =>
 interface PreparedPublish {
   state: GatewayState;
   envelope: SnapshotEnvelope;
-  current: SnapshotRow | undefined;
+  current: OpenSnapshot | undefined;
 }
 
 @Injectable()
@@ -103,6 +105,7 @@ export class SnapshotsService {
   constructor(
     @Inject(DB) private readonly db: Db,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
+    @Inject(ENCRYPTOR) private readonly enc: Encryptor,
     private readonly catalog: PluginCatalog,
   ) {}
 
@@ -127,7 +130,7 @@ export class SnapshotsService {
     const { row, changeCount } = await this.db.transaction(async (tx) => {
       const env = await requireEnvironment(tx, envId, true);
       const target = await this.requireSnapshot(tx, envId, version);
-      await restoreGatewayState(tx, envId, target.state);
+      await restoreGatewayState(tx, envId, target.state, this.enc, this.catalog);
       const prepared = await this.prepare(tx, env);
       if (prepared.current?.hash === prepared.envelope.hash) {
         throw conflict(`Nothing to roll back: version ${version} has the same configuration as the current version`);
@@ -250,7 +253,7 @@ export class SnapshotsService {
   }
 
   private async prepare(tx: Executor, env: EnvironmentRow): Promise<PreparedPublish> {
-    const state = await loadGatewayState(tx, env.id);
+    const state = await loadGatewayState(tx, env.id, this.enc, this.catalog);
     let envelope: SnapshotEnvelope;
     try {
       // Platform plugins are environment-wide: every cluster of the environment gets the same snapshot and hash.
@@ -281,8 +284,8 @@ export class SnapshotsService {
         environmentId: env.id,
         version: envelope.version,
         hash: envelope.hash,
-        config: envelope.config,
-        state,
+        config: this.enc.sealJson(envelope.config),
+        state: this.enc.sealJson(state),
         message: opts.message,
         createdBy: ctx.actor,
         rollbackOf: opts.rollbackOf,
@@ -306,15 +309,16 @@ export class SnapshotsService {
     return { row: row!, changeCount, envelope };
   }
 
-  private async findSnapshot(tx: Executor, envId: string, version: number): Promise<SnapshotRow | undefined> {
+  /** A snapshot with its sealed documents opened: the only place the row's `config` and `state` are read. */
+  private async findSnapshot(tx: Executor, envId: string, version: number): Promise<OpenSnapshot | undefined> {
     const [row] = await tx
       .select()
       .from(snapshots)
       .where(and(eq(snapshots.environmentId, envId), eq(snapshots.version, version)));
-    return row;
+    return row && { ...row, config: this.enc.openJson<KongDeclarativeConfig>(row.config), state: this.enc.openJson<GatewayState>(row.state) };
   }
 
-  private async requireSnapshot(tx: Executor, envId: string, version: number): Promise<SnapshotRow> {
+  private async requireSnapshot(tx: Executor, envId: string, version: number): Promise<OpenSnapshot> {
     const row = await this.findSnapshot(tx, envId, version);
     if (!row) throw notFound(`Snapshot version ${version}`);
     return row;

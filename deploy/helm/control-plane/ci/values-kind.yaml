@@ -3,6 +3,8 @@ database:
   existingSecret: ci-database
 bootstrapAdmin:
   existingSecret: ci-admin
+encryption:
+  existingSecret: ci-encryption
 # kind has no TLS terminator; this is the only development opt-out.
 insecureCookies: true
 image:

@@ -24,6 +24,21 @@ async function create(path: string, body: unknown) {
   return res.body;
 }
 
+/** The current snapshot as the agent protocol serves it: the only read that carries secrets in clear. */
+async function agentConfig(envId: string) {
+  const cluster = await create(`/environments/${envId}/clusters`, { name: uniq("edge") });
+  const base = `${await h.app.getUrl()}/agent/v1`;
+  const registered = await fetch(`${base}/register`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${cluster.registrationToken}`, "content-type": "application/json" },
+    body: JSON.stringify({ nodeId: uniq("node"), hostname: "host", kongVersion: "3.9.4", agentVersion: "0.1.0" }),
+  });
+  const { nodeToken } = (await registered.json()) as { nodeToken: string };
+  const res = await fetch(`${base}/snapshots/current`, { headers: { authorization: `Bearer ${nodeToken}` } });
+  expect(res.status).toBe(200);
+  return ((await res.json()) as { config: { plugins: { id: string; config: Record<string, any> }[]; keyauth_credentials: { key: string }[] } }).config;
+}
+
 /** env + service + route + consumer. */
 async function fixture() {
   const envId = await newEnv();
@@ -245,15 +260,17 @@ describe("plugin secrets", () => {
     const keep = await h.api("PUT", `/environments/${envId}/plugins/${p.id}`, { name: "rate-limiting", scope: { serviceId: svc.id }, config: redis("REDACTED", 6) });
     expect(keep.status, JSON.stringify(keep.body)).toBe(200);
     expect(keep.body.config).toEqual(redis("REDACTED", 6));
-    const v1 = await create(`/environments/${envId}/snapshots`, {});
-    const published = (await h.api("GET", `/environments/${envId}/snapshots/${v1.version}`)).body;
-    expect(published.config.plugins).toEqual([expect.objectContaining({ id: p.id, config: expect.objectContaining({ minute: 6, redis: { host: "redis.internal", password } }) })]);
+    await create(`/environments/${envId}/snapshots`, {});
+    expect((await agentConfig(envId)).plugins).toEqual([expect.objectContaining({ id: p.id, config: expect.objectContaining({ minute: 6, redis: { host: "redis.internal", password } }) })]);
 
     // Typing a new secret replaces it.
     const rotated = `redis-${uniq("pw2")}`;
     expect((await h.api("PUT", `/environments/${envId}/plugins/${p.id}`, { name: "rate-limiting", scope: { serviceId: svc.id }, config: redis(rotated) })).status).toBe(200);
     const { rows } = await h.sql.query("select config from plugins where id = $1", [p.id]);
-    expect(rows[0].config.redis.password).toBe(rotated);
+    expect(rows[0]!.config.redis.password).toMatch(/^enc:v1:k1:/); // sealed at rest; the agent gets it in clear
+    expect(JSON.stringify(rows)).not.toContain(rotated);
+    await create(`/environments/${envId}/snapshots`, {});
+    expect((await agentConfig(envId)).plugins[0]!.config.redis.password).toBe(rotated);
 
     // Leaving the field out removes the secret, as any other field in a PUT.
     const without = await h.api("PUT", `/environments/${envId}/plugins/${p.id}`, { name: "rate-limiting", scope: { serviceId: svc.id }, config: { minute: 5, policy: "redis", redis: { host: "redis.internal" } } });

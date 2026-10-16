@@ -72,6 +72,16 @@ export class PluginCatalog {
     return { config, missing };
   }
 
+  /** Copy of `config` with every string at a secret path replaced by `fn(value)` (seal or open at rest). */
+  mapSecrets(name: string, config: Record<string, unknown>, fn: (value: string) => string): Record<string, unknown> {
+    let out = config;
+    for (const path of this.secretPaths(name)) {
+      const current = valueAt(out, path);
+      if (typeof current === "string" && current !== SECRET_PLACEHOLDER) out = setPath(out, path, fn(current));
+    }
+    return out;
+  }
+
   /** Paths of the `encrypted` fields, relative to `config`, for a plugin of the catalog (none for unknown names). */
   private secretPaths(name: string): string[][] {
     if (!this.find(name)) return [];

@@ -8,6 +8,7 @@ import { Ctx, RequiredRole, type RequestContext } from "../auth/auth.js";
 import { contractBody, inlineBody } from "../common/contract.js";
 import { decodeCursor, parseLimit, toPage } from "../common/pagination.js";
 import { notFound, unprocessable } from "../common/problem.js";
+import { ENCRYPTOR, Encryptor, fingerprint } from "../crypto/crypto.js";
 import { DB, type Db, type Executor } from "../db/db.js";
 import { consumers, keyAuthCredentials, type ConsumerRow, type KeyAuthCredentialRow } from "../db/schema.js";
 import { markDraftChanged, requireEnvironment, uuidParam } from "../environments/environments.js";
@@ -26,16 +27,18 @@ export function toConsumer(r: ConsumerRow) {
 }
 
 /** The only shape a credential leaves the service in, except the creation response. */
-export function toKeyAuthCredential(r: KeyAuthCredentialRow) {
-  return { id: r.id, consumerId: r.consumerId, keyHint: `…${r.key.slice(-4)}`, tags: r.tags, createdAt: r.createdAt.toISOString() };
+/** `plainKey` is the opened key: the row holds the sealed one. */
+export function toKeyAuthCredential(r: KeyAuthCredentialRow, plainKey: string) {
+  return { id: r.id, consumerId: r.consumerId, keyHint: `…${plainKey.slice(-4)}`, tags: r.tags, createdAt: r.createdAt.toISOString() };
 }
 
 export function consumerValues(body: ConsumerWrite | Consumer) {
   return { username: body.username ?? null, customId: body.customId ?? null, tags: body.tags ?? [] };
 }
 
-export function keyAuthValues(c: KeyAuthCredential) {
-  return { consumerId: c.consumerId, key: c.key, tags: c.tags ?? [] };
+/** Column values for a credential whose `key` is in clear: sealed, plus its fingerprint for uniqueness. */
+export function keyAuthValues(c: KeyAuthCredential, enc: Encryptor) {
+  return { consumerId: c.consumerId, key: enc.seal(c.key), keyHash: fingerprint(c.key), tags: c.tags ?? [] };
 }
 
 /** Sort and search key: username, or customId for consumers without one. */
@@ -45,7 +48,10 @@ const consumerName = sql<string>`coalesce(${consumers.username}, ${consumers.cus
 
 @Injectable()
 export class ConsumersService {
-  constructor(@Inject(DB) private readonly db: Db) {}
+  constructor(
+    @Inject(DB) private readonly db: Db,
+    @Inject(ENCRYPTOR) private readonly enc: Encryptor,
+  ) {}
 
   async list(envId: string, query: Record<string, unknown>) {
     await requireEnvironment(this.db, envId);
@@ -117,7 +123,7 @@ export class ConsumersService {
       .from(keyAuthCredentials)
       .where(eq(keyAuthCredentials.consumerId, consumerId))
       .orderBy(asc(keyAuthCredentials.createdAt), asc(keyAuthCredentials.id));
-    return { items: rows.map(toKeyAuthCredential) };
+    return { items: rows.map((r) => toKeyAuthCredential(r, this.enc.open(r.key))) };
   }
 
   async createKeyAuth(ctx: RequestContext, envId: string, consumerId: string, body: KeyAuthCredentialWrite) {
@@ -126,9 +132,9 @@ export class ConsumersService {
       const key = body.key ?? randomBytes(32).toString("base64url");
       const [row] = await tx
         .insert(keyAuthCredentials)
-        .values({ environmentId: envId, consumerId, key, tags: body.tags ?? [] })
+        .values({ environmentId: envId, ...keyAuthValues({ id: "", consumerId, key, tags: body.tags ?? [] }, this.enc) })
         .returning();
-      const after = toKeyAuthCredential(row!);
+      const after = toKeyAuthCredential(row!, key);
       await markDraftChanged(tx, envId);
       await audit(tx, ctx, { action: "keyauth.create", entityType: "keyauth_credential", entityId: after.id, environmentId: envId, after });
       return { ...after, key };
@@ -150,7 +156,7 @@ export class ConsumersService {
         entityType: "keyauth_credential",
         entityId: credentialId,
         environmentId: envId,
-        before: toKeyAuthCredential(row),
+        before: toKeyAuthCredential(row, this.enc.open(row.key)),
       });
     });
   }

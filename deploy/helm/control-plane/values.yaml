@@ -66,10 +66,12 @@ clickhouse:
   databaseKey: database
 
 encryption:
-  # W8-C1: inject GROMESH_ENCRYPTION_KEY only when this Secret is explicitly set.
-  # The future app expects a base64-encoded 32-byte key; preserve it across upgrades.
+  # Required: the control plane refuses to start without GROMESH_ENCRYPTION_KEY. The Secret's `key` holds
+  # `<keyId>:<base64 of 32 bytes>`; keep it across upgrades (losing it loses every stored secret). For a rotation,
+  # put the previous keys in `readKeysKey` (comma-separated), run `node dist/crypto/rotate-cli.js`, then drop them.
   existingSecret: ""
   key: key
+  readKeysKey: ""
 
 # Development HTTP only. Production cookies remain Secure unless explicitly opted out.
 insecureCookies: false

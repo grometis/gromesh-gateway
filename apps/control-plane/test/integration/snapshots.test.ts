@@ -190,14 +190,14 @@ describe("credential masking", () => {
   const redact = (_name: string, c: Record<string, unknown>) => ({ ...c, secret: "REDACTED" });
 
   it("hides key-auth keys from non-admins only", () => {
-    expect(maskConfigFor("admin", config).keyauth_credentials[0]!.key).toBe("s3cr3t");
+    expect(maskConfigFor("admin", config).keyauth_credentials[0]!.key).toBe("REDACTED"); // admins included (W5-C0 contract)
     expect(maskConfigFor("editor", config).keyauth_credentials[0]!.key).toBe("REDACTED");
     expect(maskConfigFor("viewer", config).keyauth_credentials[0]!.key).toBe("REDACTED");
     expect(config.keyauth_credentials[0]!.key).toBe("s3cr3t");
   });
 
   it("hides plugin secrets from non-admins only", () => {
-    expect(maskConfigFor("admin", config, redact).plugins[0]!.config).toEqual({ secret: "p4ss", cookie_name: "s" });
+    expect(maskConfigFor("admin", config, redact).plugins[0]!.config).toEqual({ secret: "REDACTED", cookie_name: "s" });
     expect(maskConfigFor("viewer", config, redact).plugins[0]!.config).toEqual({ secret: "REDACTED", cookie_name: "s" });
   });
 });

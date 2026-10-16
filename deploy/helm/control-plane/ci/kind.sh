@@ -27,6 +27,9 @@ mask "$admin_password"
 k create secret generic ci-db-auth --from-literal="password=$db_password"
 k create secret generic ci-database --from-literal="url=postgres://gromesh:$db_password@postgres:5432/gromesh"
 k create secret generic ci-admin --from-literal=email=admin@example.test --from-literal="password=$admin_password"
+encryption_key="ci:$(openssl rand -base64 32)"
+mask "$encryption_key"
+k create secret generic ci-encryption --from-literal="key=$encryption_key"
 k apply -f "$chart/ci/kind-resources.yaml"
 k rollout status deployment/postgres --timeout=120s
 k rollout status deployment/echo --timeout=90s

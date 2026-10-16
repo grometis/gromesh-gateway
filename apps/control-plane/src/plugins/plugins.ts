@@ -11,6 +11,7 @@ import { notFound, unprocessable, type FieldError } from "../common/problem.js";
 import { DB, type Db, type Executor } from "../db/db.js";
 import { consumers, plugins, routes, services, type PluginRow } from "../db/schema.js";
 import { markDraftChanged, requireEnvironment, uuidParam } from "../environments/environments.js";
+import { ENCRYPTOR, Encryptor } from "../crypto/crypto.js";
 import { PluginCatalog, PluginCatalogModule, SECRET_PLACEHOLDER } from "../plugin-catalog/catalog.js";
 import { KongValidator } from "./kong-validator.js";
 
@@ -30,14 +31,15 @@ export function toPlugin(r: PluginRow) {
   };
 }
 
-export function pluginValues(body: PluginWrite | Plugin) {
+/** Column values for a plugin whose config is in clear: its secret fields are sealed. */
+export function pluginValues(body: PluginWrite | Plugin, enc: Encryptor, catalog: PluginCatalog) {
   return {
     name: body.name,
     enabled: body.enabled ?? true,
     serviceId: body.scope?.serviceId ?? null,
     routeId: body.scope?.routeId ?? null,
     consumerId: body.scope?.consumerId ?? null,
-    config: body.config ?? {},
+    config: catalog.mapSecrets(body.name, body.config ?? {}, (v) => enc.seal(v)),
     protocols: body.protocols && body.protocols.length > 0 ? body.protocols : null,
     tags: body.tags ?? [],
   };
@@ -49,6 +51,7 @@ export function pluginValues(body: PluginWrite | Plugin) {
 export class PluginsService {
   constructor(
     @Inject(DB) private readonly db: Db,
+    @Inject(ENCRYPTOR) private readonly enc: Encryptor,
     private readonly catalog: PluginCatalog,
     private readonly validator: KongValidator,
   ) {}
@@ -88,7 +91,7 @@ export class PluginsService {
     return this.db.transaction(async (tx) => {
       await requireEnvironment(tx, envId);
       await this.checkScope(tx, envId, merged);
-      const [row] = await tx.insert(plugins).values({ id, environmentId: envId, ...pluginValues(merged) }).returning();
+      const [row] = await tx.insert(plugins).values({ id, environmentId: envId, ...pluginValues(merged, this.enc, this.catalog) }).returning();
       const after = this.publicPlugin(row!);
       await markDraftChanged(tx, envId);
       await audit(tx, ctx, { action: "plugin.create", entityType: "plugin", entityId: id, environmentId: envId, after });
@@ -106,7 +109,7 @@ export class PluginsService {
       await this.checkScope(tx, envId, merged);
       const [row] = await tx
         .update(plugins)
-        .set({ ...pluginValues(merged), updatedAt: sql`now()` })
+        .set({ ...pluginValues(merged, this.enc, this.catalog), updatedAt: sql`now()` })
         .where(eq(plugins.id, pluginId))
         .returning();
       const after = this.publicPlugin(row!);
@@ -121,7 +124,7 @@ export class PluginsService {
    * validates it. A new plugin, a renamed one or a secret never set has nothing to keep: 422 on that field.
    */
   private withSecrets(body: PluginWrite, current: PluginRow | null): PluginWrite {
-    const stored = current && current.name === body.name ? current.config : null;
+    const stored = current && current.name === body.name ? this.catalog.mapSecrets(current.name, current.config, (v) => this.enc.open(v)) : null;
     const { config, missing } = this.catalog.mergeSecrets(body.name, body.config ?? {}, stored);
     if (missing.length > 0) {
       throw unprocessable(

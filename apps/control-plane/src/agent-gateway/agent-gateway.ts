@@ -21,6 +21,8 @@ import { audit } from "../audit/audit.js";
 import { Public, type RequestContext } from "../auth/auth.js";
 import { HEARTBEAT_SECONDS, newToken, tokenHash } from "../clusters/clusters.js";
 import { ProblemException, unprocessable } from "../common/problem.js";
+import type { GatewayState } from "@gromesh/compiler";
+import { ENCRYPTOR, Encryptor } from "../crypto/crypto.js";
 import { DB, type Db, type Executor } from "../db/db.js";
 import { clusterNodes, clusters, environments, snapshots, type SnapshotRow } from "../db/schema.js";
 import { PluginCatalog, PluginCatalogModule } from "../plugin-catalog/catalog.js";
@@ -49,6 +51,7 @@ function agentContext(req: Request, nodeId: string): RequestContext {
 export class AgentGatewayService {
   constructor(
     @Inject(DB) private readonly db: Db,
+    @Inject(ENCRYPTOR) private readonly enc: Encryptor,
     private readonly catalog: PluginCatalog,
   ) {}
 
@@ -146,7 +149,8 @@ export class AgentGatewayService {
       version: row.version,
       hash: row.hash,
       createdAt: row.createdAt.toISOString(),
-      config: row.config,
+      // Opened only here, on the way to the agent: the row holds it sealed.
+      config: this.enc.openJson(row.config),
     });
   }
 
@@ -219,7 +223,7 @@ export class AgentGatewayService {
         .innerJoin(environments, and(eq(environments.id, snapshots.environmentId), eq(environments.currentVersion, snapshots.version)))
         .where(eq(snapshots.environmentId, envId));
     }
-    return redactAgentError(body.error, snapshot?.state, this.catalog, nodeToken, registrationTokenHash);
+    return redactAgentError(body.error, snapshot && this.enc.openJson<GatewayState>(snapshot.state), this.catalog, nodeToken, registrationTokenHash);
   }
 
   async stream(req: Request, res: Response, events: AgentEvents) {
