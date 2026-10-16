@@ -2,8 +2,10 @@ Proxy: {{ include "data-plane.fullname" . }}.{{ .Release.Namespace }}:8000 / :84
 Agent control plane: {{ .Values.agent.controlPlaneUrl }} (appends /agent/v1; no /api/v1).
 Registration Secret: {{ include "data-plane.secretName" . }} / {{ .Values.agent.existingSecretKey }}.
 Publish a snapshot before waiting for /status/ready; the empty boot config stays NotReady.
-{{- if .Values.collector.httpLogEndpoint }}
-Publish platformPlugins.httpLogEndpoint={{ .Values.collector.httpLogEndpoint }} through the control plane/compiler.
+{{- if .Values.collector.enabled }}
+Collector: gromesh-collector.{{ .Release.Namespace }}:8080 tags rows with cluster {{ .Values.collector.clusterId }}; the control plane's PLATFORM_HTTP_LOG_ENDPOINT must be http://gromesh-collector:8080/kong.
+{{- else if .Values.collector.httpLogEndpoint }}
+External collector: {{ .Values.collector.httpLogEndpoint }} (must match the control plane's PLATFORM_HTTP_LOG_ENDPOINT).
 {{- end }}
 {{- if .Values.metrics.enabled }}
 Scrape pod :8100/metrics after publishing the platform prometheus plugin.

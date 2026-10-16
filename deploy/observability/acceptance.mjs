@@ -196,7 +196,8 @@ async function host() {
   const { compile, platformPlugins } = await import("../../packages/compiler/dist/index.js");
   const state = JSON.parse(readFileSync(new URL("../../packages/compiler/test/fixtures/basic.state.json", import.meta.url), "utf8"));
   const environmentId = randomUUID();
-  const clusterId = randomUUID();
+  // The collector tags every row with its own cluster id (GROMESH_CLUSTER_ID): use the compose default.
+  const clusterId = process.env.GROMESH_CLUSTER_ID ?? "00000000-0000-4000-8000-00000000c0c0";
   const base = `/observability-${randomUUID()}`;
   const secrets = Array.from({ length: 9 }, () => `acceptance-${randomBytes(24).toString("hex")}`);
   const keys = secrets.slice(0, 4);
@@ -206,7 +207,7 @@ async function host() {
   state.plugins[0].config = { key_names: ["apikey", "x-api-key"], hide_credentials: false };
   state.keyAuthCredentials = keys.map((key) => ({ id: randomUUID(), consumerId: ids.consumer, key }));
   const config = compile(state, { platformPlugins: platformPlugins({
-    httpLogEndpoint: "http://vector:8080/kong", environmentId, clusterId,
+    httpLogEndpoint: "http://gromesh-collector:8080/kong", environmentId,
   }) });
   const compose = ["compose", "-f", "deploy/compose/docker-compose.yml", "--profile", "observability", "--profile", "tools"];
   let output;

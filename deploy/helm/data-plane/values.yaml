@@ -80,12 +80,35 @@ service:
   loadBalancerSourceRanges: []
 
 collector:
-  # Set this same URL as platformPlugins.httpLogEndpoint when publishing through
-  # the control plane/compiler (e.g. http://vector.observability:8080/kong).
-  # This chart cannot inject http-log plugins: snapshots exclusively own config.
-  # With NetworkPolicy enabled, this URL also determines the collector TCP port;
-  # configure matching destination peers under networkPolicy.collectorPeers.
+  # The cluster's own Vector: receives Kong's http-log at http://gromesh-collector:8080/kong (the fixed name the
+  # control plane's PLATFORM_HTTP_LOG_ENDPOINT points at), strips credentials and writes gromesh.requests in
+  # ClickHouse tagged with this cluster's id. Off: point httpLogEndpoint at an external collector instead.
+  enabled: false
+  # Only needed when enabled is false and an external collector serves the fixed name; informs NetworkPolicy.
   httpLogEndpoint: ""
+  # UUID of this cluster in the control plane (POST /environments/{envId}/clusters). Required when enabled:
+  # the collector refuses to start without it, and every row it writes carries it.
+  clusterId: ""
+  image:
+    repository: timberio/vector
+    tag: "0.53.0-alpine"
+    digest: ""
+    pullPolicy: IfNotPresent
+  # key-auth key_names used on this cluster, stripped from headers and query strings before anything is stored.
+  keyNames: [apikey]
+  clickhouse:
+    endpoint: http://clickhouse.observability.svc.cluster.local:8123
+    database: gromesh
+    # Secret holding the INSERT-only user's password (gromesh_writer); required when enabled.
+    existingSecret: ""
+    existingSecretKey: writer-password
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
 
 metrics:
   # Adds pod scrape annotations for :8100/metrics. Publish the platform prometheus
