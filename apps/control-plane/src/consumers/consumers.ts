@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { Body, Controller, Delete, Get, HttpCode, Inject, Injectable, Module, Param, Post, Put, Query } from "@nestjs/common";
 import type { Consumer, KeyAuthCredential } from "@gromesh/compiler";
 import { and, asc, eq, gt, ilike, or, sql, type SQL } from "drizzle-orm";
@@ -8,7 +8,7 @@ import { Ctx, RequiredRole, type RequestContext } from "../auth/auth.js";
 import { contractBody, inlineBody } from "../common/contract.js";
 import { decodeCursor, parseLimit, toPage } from "../common/pagination.js";
 import { notFound, unprocessable } from "../common/problem.js";
-import { ENCRYPTOR, Encryptor } from "../crypto/crypto.js";
+import { credentialContext, ENCRYPTOR, Encryptor } from "../crypto/crypto.js";
 import { DB, type Db, type Executor } from "../db/db.js";
 import { consumers, keyAuthCredentials, type ConsumerRow, type KeyAuthCredentialRow } from "../db/schema.js";
 import { markDraftChanged, requireEnvironment, uuidParam } from "../environments/environments.js";
@@ -38,7 +38,7 @@ export function consumerValues(body: ConsumerWrite | Consumer) {
 
 /** Column values for a credential whose `key` is in clear: sealed, plus its fingerprint for uniqueness. */
 export function keyAuthValues(c: KeyAuthCredential, enc: Encryptor) {
-  return { consumerId: c.consumerId, key: enc.seal(c.key), keyHash: enc.fingerprint(c.key), tags: c.tags ?? [] };
+  return { id: c.id, consumerId: c.consumerId, key: enc.seal(c.key, credentialContext(c.id)), keyHash: enc.fingerprint(c.key), tags: c.tags ?? [] };
 }
 
 /** Sort and search key: username, or customId for consumers without one. */
@@ -123,7 +123,7 @@ export class ConsumersService {
       .from(keyAuthCredentials)
       .where(eq(keyAuthCredentials.consumerId, consumerId))
       .orderBy(asc(keyAuthCredentials.createdAt), asc(keyAuthCredentials.id));
-    return { items: rows.map((r) => toKeyAuthCredential(r, this.enc.open(r.key))) };
+    return { items: rows.map((r) => toKeyAuthCredential(r, this.enc.open(r.key, credentialContext(r.id)))) };
   }
 
   async createKeyAuth(ctx: RequestContext, envId: string, consumerId: string, body: KeyAuthCredentialWrite) {
@@ -132,7 +132,7 @@ export class ConsumersService {
       const key = body.key ?? randomBytes(32).toString("base64url");
       const [row] = await tx
         .insert(keyAuthCredentials)
-        .values({ environmentId: envId, ...keyAuthValues({ id: "", consumerId, key, tags: body.tags ?? [] }, this.enc) })
+        .values({ environmentId: envId, ...keyAuthValues({ id: randomUUID(), consumerId, key, tags: body.tags ?? [] }, this.enc) })
         .returning();
       const after = toKeyAuthCredential(row!, key);
       await markDraftChanged(tx, envId);
@@ -156,7 +156,7 @@ export class ConsumersService {
         entityType: "keyauth_credential",
         entityId: credentialId,
         environmentId: envId,
-        before: toKeyAuthCredential(row, this.enc.open(row.key)),
+        before: toKeyAuthCredential(row, this.enc.open(row.key, credentialContext(row.id))),
       });
     });
   }

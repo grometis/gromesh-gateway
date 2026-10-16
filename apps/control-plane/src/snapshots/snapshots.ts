@@ -38,7 +38,7 @@ import { requireEnvironment, uuidParam } from "../environments/environments.js";
 import { loadGatewayState, restoreGatewayState } from "../gateway/gateway.js";
 import { AGENT_CHANNEL } from "../clusters/clusters.js";
 import { PluginCatalog, PluginCatalogModule } from "../plugin-catalog/catalog.js";
-import { ENCRYPTOR, Encryptor } from "../crypto/crypto.js";
+import { ENCRYPTOR, Encryptor, snapshotContext } from "../crypto/crypto.js";
 
 type OpenSnapshot = Omit<SnapshotRow, "config" | "state"> & { config: KongDeclarativeConfig; state: GatewayState };
 
@@ -284,8 +284,8 @@ export class SnapshotsService {
         environmentId: env.id,
         version: envelope.version,
         hash: envelope.hash,
-        config: this.enc.sealJson(envelope.config),
-        state: this.enc.sealJson(state),
+        config: this.enc.sealJson(envelope.config, snapshotContext(env.id, envelope.version, "config")),
+        state: this.enc.sealJson(state, snapshotContext(env.id, envelope.version, "state")),
         message: opts.message,
         createdBy: ctx.actor,
         rollbackOf: opts.rollbackOf,
@@ -315,7 +315,11 @@ export class SnapshotsService {
       .select()
       .from(snapshots)
       .where(and(eq(snapshots.environmentId, envId), eq(snapshots.version, version)));
-    return row && { ...row, config: this.enc.openJson<KongDeclarativeConfig>(row.config), state: this.enc.openJson<GatewayState>(row.state) };
+    return row && {
+      ...row,
+      config: this.enc.openJson<KongDeclarativeConfig>(row.config, snapshotContext(envId, version, "config")),
+      state: this.enc.openJson<GatewayState>(row.state, snapshotContext(envId, version, "state")),
+    };
   }
 
   private async requireSnapshot(tx: Executor, envId: string, version: number): Promise<OpenSnapshot> {

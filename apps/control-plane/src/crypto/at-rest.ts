@@ -4,7 +4,7 @@ import type pg from "pg";
 import { DB, PG_POOL, type Db } from "../db/db.js";
 import { keyAuthCredentials, plugins, snapshots } from "../db/schema.js";
 import { PluginCatalog } from "../plugin-catalog/catalog.js";
-import { ENCRYPTOR, Encryptor, isSealed } from "./crypto.js";
+import { credentialContext, ENCRYPTOR, Encryptor, isLegacySealed, isSealed, isSealedJson, pluginSecretContext, snapshotContext } from "./crypto.js";
 
 export interface AtRestReport {
   credentials: number;
@@ -39,10 +39,17 @@ export class AtRestService {
     private readonly catalog: PluginCatalog,
   ) {}
 
-  /** Seals rows still in clear and finishes migration 0005 (fingerprints, NOT NULL, index swap). Idempotent. */
+  /**
+   * Seals rows still in clear or in the previous format (v1 → v2, bound to the row) and finishes migration 0005
+   * (fingerprints, NOT NULL, index swap). Idempotent. Rows sealed as v2 with an older key are left to `rotate`.
+   */
   encryptExisting(hooks: AtRestHooks = {}): Promise<AtRestReport> {
     return this.locked(async () => {
-      const report = await this.reseal((stored) => !isSealed(stored), (doc) => !isSealedDoc(doc), hooks);
+      const report = await this.reseal(
+        (stored) => !isSealed(stored) || isLegacySealed(stored),
+        (doc) => !isSealedJson(doc) || isLegacySealed(doc.$enc),
+        hooks,
+      );
       await this.finishKeyHashMigration();
       return report;
     });
@@ -76,11 +83,11 @@ export class AtRestService {
       await this.retry("credentials", id, async () => {
         const [row] = await this.db.select().from(keyAuthCredentials).where(eq(keyAuthCredentials.id, id));
         if (!row || (!needsText(row.key) && row.keyHash !== null)) return true;
-        const plain = this.enc.open(row.key);
+        const plain = this.enc.open(row.key, credentialContext(id));
         await hooks.beforeWrite?.("credentials", id);
         const written = await this.db
           .update(keyAuthCredentials)
-          .set({ key: this.enc.seal(plain), keyHash: this.enc.fingerprint(plain) })
+          .set({ key: this.enc.seal(plain, credentialContext(id)), keyHash: this.enc.fingerprint(plain) })
           .where(and(eq(keyAuthCredentials.id, id), eq(keyAuthCredentials.key, row.key)))
           .returning({ id: keyAuthCredentials.id });
         if (written.length === 0) return false;
@@ -98,10 +105,11 @@ export class AtRestService {
           .where(eq(plugins.id, id));
         if (!row) return true;
         let touched = false;
-        const sealed = this.catalog.mapSecrets(row.name, row.config, (value) => {
+        const sealed = this.catalog.mapSecrets(row.name, row.config, (value, path) => {
           if (!needsText(value)) return value;
           touched = true;
-          return this.enc.seal(this.enc.open(value));
+          const ctx = pluginSecretContext(id, path);
+          return this.enc.seal(this.enc.open(value, ctx), ctx);
         });
         if (!touched) return true;
         await hooks.beforeWrite?.("plugins", id);
@@ -127,7 +135,10 @@ export class AtRestService {
         await hooks.beforeWrite?.("snapshots", `${environmentId}:${version}`);
         const written = await this.db
           .update(snapshots)
-          .set({ config: this.enc.sealJson(this.enc.openJson(row.config)), state: this.enc.sealJson(this.enc.openJson(row.state)) })
+          .set({
+            config: this.enc.sealJson(this.enc.openJson(row.config, snapshotContext(environmentId, version, "config")), snapshotContext(environmentId, version, "config")),
+            state: this.enc.sealJson(this.enc.openJson(row.state, snapshotContext(environmentId, version, "state")), snapshotContext(environmentId, version, "state")),
+          })
           .where(and(eq(snapshots.environmentId, environmentId), eq(snapshots.version, version), sql`${snapshots.config} = ${JSON.stringify(row.config)}::jsonb`))
           .returning({ version: snapshots.version });
         if (written.length === 0) return false;
@@ -157,5 +168,3 @@ export class AtRestService {
     await this.db.execute(sql`drop index if exists keyauth_env_key_uq`);
   }
 }
-
-const isSealedDoc = (doc: unknown) => typeof doc === "object" && doc !== null && "$enc" in (doc as object);

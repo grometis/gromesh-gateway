@@ -2,8 +2,26 @@ import { createCipheriv, createDecipheriv, createHmac, randomBytes } from "node:
 import { Global, Module } from "@nestjs/common";
 import { APP_CONFIG, type AppConfig } from "../config.js";
 
-/** Stored form of a secret: `enc:v1:<keyId>:<iv>:<ciphertext>:<tag>`, all base64url. */
-const PREFIX = "enc:v1:";
+/**
+ * Stored form of a secret: `enc:v2:<keyId>:<iv>:<ciphertext>:<tag>`, all base64url. v2 binds the ciphertext to its
+ * row (table, column, id) through the associated data, so a sealed value copied to another row no longer opens;
+ * v1 (key id only as associated data) is still read and re-sealed as v2 by the next start or rotation.
+ */
+const PREFIX_V2 = "enc:v2:";
+const PREFIX_V1 = "enc:v1:";
+
+/** Where a sealed value lives: part of the associated data of v2. */
+export interface SealContext {
+  table: string;
+  column: string;
+  id: string;
+}
+
+export const credentialContext = (id: string): SealContext => ({ table: "keyauth_credentials", column: "key", id });
+export const pluginSecretContext = (id: string, path: string[]): SealContext => ({ table: "plugins", column: `config.${path.join(".")}`, id });
+export const snapshotContext = (environmentId: string, version: number, column: "config" | "state"): SealContext => ({ table: "snapshots", column, id: `${environmentId}:${version}` });
+
+const aad = (keyId: string, ctx: SealContext | null) => Buffer.from(ctx ? [keyId, ctx.table, ctx.column, ctx.id].join("\0") : keyId);
 
 /** A JSON column holding one sealed document. */
 export interface SealedJson {
@@ -52,38 +70,46 @@ export class Encryptor {
     return createHmac("sha256", this.fingerprintKey).update(value).digest("hex");
   }
 
-  seal(plain: string): string {
+  seal(plain: string, ctx: SealContext): string {
     const iv = randomBytes(12);
     const cipher = createCipheriv("aes-256-gcm", this.keys.get(this.writeKeyId)!, iv);
-    cipher.setAAD(Buffer.from(this.writeKeyId));
+    cipher.setAAD(aad(this.writeKeyId, ctx));
     const body = Buffer.concat([cipher.update(plain, "utf8"), cipher.final()]);
-    return `${PREFIX}${this.writeKeyId}:${iv.toString("base64url")}:${body.toString("base64url")}:${cipher.getAuthTag().toString("base64url")}`;
+    return `${PREFIX_V2}${this.writeKeyId}:${iv.toString("base64url")}:${body.toString("base64url")}:${cipher.getAuthTag().toString("base64url")}`;
   }
 
-  /** Plain text passes through: rows written before the encryption migration are read until it re-seals them. */
-  open(stored: string): string {
+  /**
+   * Plain text passes through: rows written before the encryption migration are read until it re-seals them.
+   * A v2 value opens only in the row it was sealed for; a v1 value opens anywhere its key is known.
+   */
+  open(stored: string, ctx: SealContext): string {
     if (!isSealed(stored)) return stored;
-    const [keyId, iv, body, tag] = stored.slice(PREFIX.length).split(":");
+    const v2 = stored.startsWith(PREFIX_V2);
+    const [keyId, iv, body, tag] = stored.slice(PREFIX_V2.length).split(":");
     const key = keyId ? this.keys.get(keyId) : undefined;
     if (!keyId || !key || !iv || !body || !tag) throw new Error(`Cannot decrypt: unknown key ${keyId ?? "?"}`);
     const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(iv, "base64url"));
-    decipher.setAAD(Buffer.from(keyId));
+    decipher.setAAD(aad(keyId, v2 ? ctx : null));
     decipher.setAuthTag(Buffer.from(tag, "base64url"));
-    return Buffer.concat([decipher.update(Buffer.from(body, "base64url")), decipher.final()]).toString("utf8");
+    try {
+      return Buffer.concat([decipher.update(Buffer.from(body, "base64url")), decipher.final()]).toString("utf8");
+    } catch {
+      throw new Error(`Cannot decrypt ${ctx.table}.${ctx.column} of ${ctx.id}: the value does not belong to this row`);
+    }
   }
 
-  /** Whether `stored` is already sealed with the current write key (nothing to do on rotation). */
+  /** Whether `stored` is sealed in the current format with the current write key (nothing to do on rotation). */
   current(stored: string): boolean {
-    return isSealed(stored) && keyIdOf(stored) === this.writeKeyId;
+    return stored.startsWith(PREFIX_V2) && keyIdOf(stored) === this.writeKeyId;
   }
 
-  sealJson(value: unknown): SealedJson {
-    return { $enc: this.seal(JSON.stringify(value)) };
+  sealJson(value: unknown, ctx: SealContext): SealedJson {
+    return { $enc: this.seal(JSON.stringify(value), ctx) };
   }
 
   /** A sealed document, or (before the migration ran) the plain document itself. */
-  openJson<T>(stored: unknown): T {
-    if (isSealedJson(stored)) return JSON.parse(this.open(stored.$enc)) as T;
+  openJson<T>(stored: unknown, ctx: SealContext): T {
+    if (isSealedJson(stored)) return JSON.parse(this.open(stored.$enc, ctx)) as T;
     return stored as T;
   }
 
@@ -92,9 +118,12 @@ export class Encryptor {
   }
 }
 
-export const isSealed = (v: unknown): v is string => typeof v === "string" && v.startsWith(PREFIX);
+export const isSealed = (v: unknown): v is string => typeof v === "string" && (v.startsWith(PREFIX_V2) || v.startsWith(PREFIX_V1));
+/** Sealed in the previous format (no row context): re-sealed as v2 by the next start, whatever the key. */
+export const isLegacySealed = (v: unknown): boolean => typeof v === "string" && v.startsWith(PREFIX_V1);
 export const isSealedJson = (v: unknown): v is SealedJson => typeof v === "object" && v !== null && isSealed((v as SealedJson).$enc);
-const keyIdOf = (stored: string) => stored.slice(PREFIX.length).split(":")[0];
+// Both prefixes have the same length.
+const keyIdOf = (stored: string) => stored.slice(PREFIX_V2.length).split(":")[0];
 
 export const ENCRYPTOR = Symbol("ENCRYPTOR");
 
