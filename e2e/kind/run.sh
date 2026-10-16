@@ -4,6 +4,8 @@
 # gromesh-control-plane:ci, gromesh-ui:ci, gromesh-agent:ci, ghcr.io/grometis/gromesh-kong:3.9.4-ac22d11c5ee912f9caeaf03a0305faca16aa5ca7, postgres:16-alpine, traefik/whoami:v1.10.3,
 # clickhouse/clickhouse-server:25.8.16.34-alpine, timberio/vector:0.53.0-alpine), helm, kubectl, jq, pnpm with the
 # e2e workspace installed and Chromium (`pnpm --filter @gromesh/e2e exec playwright install chromium`).
+# Docker must reach the kind node containers: the restart step stops only the agent through crictl
+# (the scratch agent image has no shell/kill), then waits for kubelet and checks the cluster's sole nodeId.
 # From the repo root: bash e2e/kind/run.sh
 set -euo pipefail
 umask 077
@@ -118,5 +120,6 @@ forward mvp-data-plane 18000 8000
 curl --silent --max-time 10 -b "$work/cookies" -H "X-CSRF-Token: $csrf" -X POST "$base/auth/logout" > /dev/null || true
 export UI_URL=http://127.0.0.1:18080 CP_URL="$base" KONG_PROXY_URL=http://127.0.0.1:18000
 export E2E_ADMIN_EMAIL=admin@example.test E2E_ADMIN_PASSWORD="$admin_password" E2E_ENV_ID="$env_id" E2E_CLUSTER_ID="$cluster_id"
+export E2E_NAMESPACE="$namespace" E2E_DATA_PLANE_SELECTOR=app.kubernetes.io/instance=dp,app.kubernetes.io/name=data-plane
 pnpm --filter @gromesh/e2e exec playwright test --config kind/playwright.config.ts
-echo 'PASS: MVP acceptance in kind (install → login → publish → converge → traffic → dashboard → rollback → audit)'
+echo 'PASS: MVP acceptance in kind (install → login → publish → converge → agent restart with one node → traffic → dashboard → rollback → audit)'
