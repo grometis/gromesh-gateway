@@ -69,18 +69,16 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -B "$BRANCH"
-          git commit -am "chore: pin gromesh-kong ${TAG}
-
-Digest ${DIGEST}, published by the kong-image workflow."
+          git commit -am "chore: pin gromesh-kong ${TAG}" -m "Digest ${DIGEST}, published by the kong-image workflow."
           # One branch per image, rewritten on every new build: the open PR follows it.
           git push --force origin "$BRANCH"
 
       - name: Open or refresh the PR and run ci on it
         if: steps.bump.outputs.changed == 'true'
         run: |
-          body="Pins \`${IMAGE}:${TAG}\` by digest \`${DIGEST}\` in the compose default, both charts, the ci workflow and the security checklist.
-
-          Opened by the image-digests workflow; the ci run below (mvp-e2e included) was dispatched on this branch. Re-run the security checklist locally before merging if the row A2 matters to you."
+          body="$(printf '%s\n\n%s' \
+            "Pins \`${IMAGE}:${TAG}\` by digest \`${DIGEST}\` in the compose default, both charts, the ci workflow, the security checklist and the kind script comment." \
+            "Opened by the image-digests workflow; the ci run on this branch (mvp-e2e included) was dispatched explicitly. Re-run e2e/security-checklist.sh locally before merging to refresh row A2 with a real run.")"
           number="$(gh pr list --head "$BRANCH" --base main --state open --json number --jq '.[0].number')"
           if [ -z "$number" ]; then
             gh pr create --base main --head "$BRANCH" --title "chore: pin gromesh-kong ${TAG}" --body "$body"
