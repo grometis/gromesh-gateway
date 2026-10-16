@@ -123,7 +123,8 @@ export interface paths {
         put?: never;
         /**
          * @description Creates an API token for the caller. The token itself is returned once, here, and never again: the server keeps
-         *     only a keyed hash and the hint. `role` may not exceed the caller's role (422 on `role`).
+         *     only a keyed hash and the hint. `role` may not exceed the caller's role (422 on `role`). A user may hold at most
+         *     50 active tokens (neither revoked nor expired): the 51st answers 422 with path `(body)` and a message saying so.
          */
         post: operations["createMyToken"];
         delete?: never;
@@ -144,7 +145,10 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        /** @description Revokes one of the caller's tokens; it stops working immediately. Idempotent on an already revoked token. */
+        /**
+         * @description Revokes one of the caller's tokens; it stops working immediately. Idempotent on an already revoked token.
+         *     Another user's token is not visible here: 404, never 403.
+         */
         delete: operations["revokeMyToken"];
         options?: never;
         head?: never;
@@ -777,7 +781,7 @@ export interface components {
             };
         };
         ApiTokenCreated: components["schemas"]["ApiToken"] & {
-            /** @description `ggt_` plus 43 base64url characters; shown only in this response */
+            /** @description `ggt_` plus 32 random bytes in unpadded base64url (43 characters); shown only in this response */
             token: string;
         };
         ApiTokenPage: {
@@ -1635,7 +1639,7 @@ export interface operations {
                      *           "id": "5f0c1d2e-3a4b-4c5d-8e6f-7a8b9c0d1e2f",
                      *           "name": "ci-deploy",
                      *           "role": "editor",
-                     *           "tokenHint": "…k7Qp",
+                     *           "tokenHint": "…Ubok",
                      *           "createdAt": "2026-10-16T12:00:00Z",
                      *           "expiresAt": "2027-01-14T12:00:00Z",
                      *           "lastUsedAt": "2026-10-16T13:05:00Z",
@@ -1679,7 +1683,7 @@ export interface operations {
                      *       "id": "5f0c1d2e-3a4b-4c5d-8e6f-7a8b9c0d1e2f",
                      *       "name": "ci-deploy",
                      *       "role": "editor",
-                     *       "tokenHint": "…k7Qp",
+                     *       "tokenHint": "…Ubok",
                      *       "createdAt": "2026-10-16T12:00:00Z",
                      *       "expiresAt": "2027-01-14T12:00:00Z",
                      *       "lastUsedAt": null,
@@ -1688,7 +1692,7 @@ export interface operations {
                      *         "id": "33333333-3333-4333-8333-333333333333",
                      *         "name": "Ana"
                      *       },
-                     *       "token": "ggt_2n9vL0Qx7c8d1KpR4sTfWz6yHb3mJ5aVe8uNq1oLk7Qp"
+                     *       "token": "ggt_iCXWerLvtnlqVo5U92Mo6dN-H6L0ZWmq1HCVAjMUbok"
                      *     }
                      */
                     "application/json": components["schemas"]["ApiTokenCreated"];
