@@ -123,7 +123,8 @@ jobs:
       - name: Publish tested image
         run: |
           docker push "$KONG_IMAGE"
-          digest="$(docker buildx imagetools inspect "$KONG_IMAGE" --format '{{.Manifest.Digest}}')"
+          # The manifest digest is the sha256 of the raw manifest; --format is not honoured by every buildx release.
+          digest="sha256:$(docker buildx imagetools inspect --raw "$KONG_IMAGE" | sha256sum | cut -d' ' -f1)"
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "Unexpected image digest: ${digest}" >&2; exit 1; }
           mkdir -p "$RUNNER_TEMP/kong-digests"
           printf '%s\n' "$digest" > "$RUNNER_TEMP/kong-digests/${TARGET_ARCH}.txt"
@@ -188,4 +189,4 @@ jobs:
           docker buildx imagetools create -t "${image}:${tag}" \
             "${image}@${AMD64_DIGEST}" "${image}@${ARM64_DIGEST}"
           docker buildx imagetools inspect "${image}:${tag}"
-          docker buildx imagetools inspect "${image}:${tag}" --format '{{.Manifest.Digest}}'
+          echo "manifest list digest: sha256:$(docker buildx imagetools inspect --raw "${image}:${tag}" | sha256sum | cut -d' ' -f1)"
