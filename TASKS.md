@@ -1,4 +1,4 @@
-# Tarefas — semanas 1 a 6
+# Tarefas — semanas 1 a 8
 
 Duas frentes em paralelo: **[Claude]** = Claude Code, **[Codex]** = Codex. Cada tarefa = 1 branch + 1 PR + 1 worktree.
 Pronto = teste de aceite verde no CI + checklist de `CLAUDE.md`. Revisão cruzada: o PR do Claude é revisado pelo Codex e vice-versa.
@@ -30,10 +30,18 @@ git worktree add ../gg-codex  -b task/W1-X1-kong-image
 | W6-X1 | Codex | — | `packages/compiler/` (só opções de plugins de plataforma), `deploy/compose/`, `deploy/observability/` |
 | W6-C0 | Claude | W6-X1 (schema da tabela) | `contracts/` |
 | W6-C1 | Claude | W6-C0 | `apps/control-plane/src/analytics/`, `apps/ui/` |
+| W7-X1 | Codex | — | `deploy/helm/data-plane/`, `.github/workflows/` (job helm-dp) |
+| W7-C1 | Claude | — | `deploy/helm/control-plane/`, `.github/workflows/` (job helm-cp) |
+| W7-X2 | Codex | repositório no GitHub | `apps/*/Dockerfile`, `images/`, `.github/workflows/` (jobs de imagem) |
+| W8-C1 | Claude | — | `apps/control-plane/` (crypto, migração), `packages/compiler/` só se precisar |
+| W8-X1 | Codex | W7-X1, W7-C1 | `tests/load/`, `deploy/helm/*/templates/backup*`, `scripts/` |
+| W8-C2 | Claude | todas | `e2e/`, `.github/workflows/`, `TASKS.md` |
 
 Ordem de merge na semana 3: W2-C2 → W3-X1 → W3-C1 → W3-X2. Quem mergeia depois faz rebase; `src/db/schema.ts` e `drizzle/` são alterados por uma frente por vez.
 
-Ordem de merge: semana 4 → W4-C1 antes de W4-X1 (W4-X1 faz rebase em `router.tsx`); W4-C2 mergeia antes de começar a semana 5. Semana 5 → W5-C0 → W5-C1 → W5-X1, todos na branch `integration/w5-auth` (criada da `main`), que entra na `main` num único merge quando a CI inteira estiver verde; a `main` é mergeada nela, nunca o contrário. Semana 6 → W6-X1 → W6-C0 → W6-C1.
+Ordem de merge: semana 4 → W4-C1 antes de W4-X1 (W4-X1 faz rebase em `router.tsx`); W4-C2 mergeia antes de começar a semana 5. Semana 5 → W5-C0 → W5-C1 → W5-X1, todos na branch `integration/w5-auth` (criada da `main`), que entra na `main` num único merge quando a CI inteira estiver verde; a `main` é mergeada nela, nunca o contrário. Semana 6 → W6-X1 → W6-C0 → W6-C1. Semanas 7 e 8 → W7-X1 e W7-C1 em paralelo (charts diferentes), depois o job conjunto em kind; W7-X2 assim que o repositório estiver no GitHub; W8-C1 em paralelo; W8-X1 depois dos charts; W8-C2 por último.
+
+**Pré-requisito (decisão do Fabrício):** repositório privado no GitHub com a `main` publicada. Sem isso, o build da imagem Kong 3.9.4, o CI e o job em kind não rodam de verdade.
 
 ---
 
@@ -203,8 +211,67 @@ Aceite: requisição via Kong aparece no ClickHouse em até 10 s; teste prova qu
 ### W6-C1 [Claude] Analytics no control plane e dashboards na UI
 - Módulo `analytics` lendo do ClickHouse (`@clickhouse/client`), consultas parametrizadas, limite de período (30 dias) e de linhas.
 - UI: dashboard do environment (requisições, erros e latência p95 ao longo do tempo, top rotas por volume e por erro) e explorador de requisições com filtros e detalhe.
+- ClickHouse com usuários separados: o control plane usa um usuário só `SELECT` na tabela `requests`; o Vector usa um usuário só `INSERT`. Nenhum dos dois usa o `default`. Senhas por variável de ambiente.
+- A máscara de IP de `clientIp` para viewer/editor (contrato da W6-C0) é aplicada no servidor, não na UI.
 
 Aceite: testes de integração com ClickHouse real e dados de fixture conhecidos (números conferidos); Playwright contra o Prism: dashboard renderiza séries e o explorador filtra por status.
+
+---
+
+## Semana 7 — Kubernetes e imagens de produção
+
+### W7-X1 [Codex] Helm chart do data plane
+- Pod = Kong (imagem própria) + agente (sidecar), volume `emptyDir` compartilhado para o snapshot; Admin API só em 127.0.0.1; Service do proxy (LoadBalancer/ClusterIP configurável) expõe só 8000/8443.
+- Token de registro vindo de Secret (`agent.existingSecret` ou `agent.token`); nunca em ConfigMap.
+- Readiness do Kong por `/status/ready` (só fica pronto depois de carregar um snapshot); liveness separada.
+- HPA (CPU), PodDisruptionBudget, `securityContext` não-root, `readOnlyRootFilesystem` onde der, `resources` com padrões sensatos, NetworkPolicy que bloqueia tudo exceto proxy de entrada e saída para o control plane, upstreams e coletor.
+- Valores para o coletor de logs (endpoint do http-log) e para as métricas.
+
+Aceite: `helm lint` e `helm template` sem erro; no job conjunto em kind (W7-C1), um pod sem snapshot fica NotReady e passa a Ready depois da primeira publicação.
+
+### W7-C1 [Claude] Helm chart do control plane
+- Deployments: control plane (2 réplicas), UI (nginx não-root), kong-validator; Job de migração como hook `pre-install,pre-upgrade`.
+- Postgres externo obrigatório (`database.existingSecret`); URL separada para o LISTEN com conexão direta (documentada no `values.yaml`, nunca via PgBouncer em modo transação).
+- Ingress com anotações para o SSE do agente (idle timeout > 15 s, buffering desligado), `TRUST_PROXY` = CIDR do ingress (nunca `uniquelocal`), `COOKIE_SECURE=true`.
+- Secrets: bootstrap admin, ClickHouse (usuário só leitura), chave de cifragem (W8-C1).
+- Job do CI `helm-e2e` em kind: instala Postgres de teste + os dois charts, cria cluster pela API, sobe o data plane com o token, publica uma rota, verifica `converged` e 200 no proxy.
+
+Aceite: o job `helm-e2e` verde.
+
+### W7-X2 [Codex] Imagens de produção
+- Control plane: multi-stage com `pnpm deploy --prod`, sem devDependencies, usuário não-root.
+- UI: nginx não-root (porta 8080) com os headers da W5-X1.
+- Rodar de verdade o workflow `kong-image` (imagem própria 3.9.4); se o tempo estourar, aplicar a troca de `--jobs=2` por `--jobs=4`.
+- Todas as imagens: Trivy (falha em CRITICAL), SBOM com syft anexado, tags por SHA, digest fixado nos charts.
+- Regerar o catálogo de plugins a partir da imagem 3.9.4 (`catalog:generate`) e trocar o padrão do compose para a imagem própria.
+
+Aceite: os quatro workflows de imagem verdes no GitHub; `docker run <cp> node -e "require('vitest')"` falha (prova que devDependencies saíram).
+
+---
+
+## Semana 8 — Segurança de dados, carga, backup e aceite final
+
+### W8-C1 [Claude] Cifragem em repouso dos segredos
+- AES-256-GCM com chave de `GROMESH_ENCRYPTION_KEY` (32 bytes, base64), com `keyId` gravado junto para permitir rotação (várias chaves de leitura, uma de escrita).
+- Cifrar: chaves key-auth, campos `encrypted` de plugins **e** as colunas `state` e `config` da tabela `snapshots` (elas também carregam segredos).
+- Migração que cifra os dados existentes; comando de rotação de chave que recifra tudo.
+- O endpoint do agente decifra só no momento de servir; nada decifrado em log ou audit.
+
+Aceite: depois da migração, `select` direto no Postgres não encontra nenhuma chave nem segredo em claro (teste varre as tabelas); publicar e rollback continuam funcionando; rotação de chave sem downtime.
+
+### W8-X1 [Codex] Carga e backup
+- k6 em `tests/load/`: 1.000 req/s via Kong com key-auth + rate-limiting; publicar 5 vezes durante a carga.
+- Teste de reconexão: 200 agentes simulados (cpmock invertido ou cliente leve em Go) conectando no SSE do control plane ao mesmo tempo.
+- Backup: CronJob de `pg_dump` no chart do control plane + `scripts/restore-drill.sh` que restaura num banco novo e confere que snapshots e usuários batem.
+
+Aceite: p95 do overhead do Kong registrado como baseline; **zero 5xx** durante as publicações sob carga; 200 agentes convergem em até 30 s; o restore drill passa.
+
+### W8-C2 [Claude] Aceite final do MVP
+- E2E em kind cobrindo o critério de pronto: instalar via Helm → login do admin → service + route + key-auth + rate-limiting → publicar → cluster converge → requisições aparecem no dashboard → rollback → audit mostra tudo.
+- Checklist de segurança executado e registrado: headers, cookie, matriz RBAC, segredos nunca devolvidos, logs sanitizados, imagens sem CRITICAL, segredos cifrados.
+- Atualizar `TASKS.md`: MVP fechado e backlog priorizado para o pós-MVP.
+
+Aceite: o job do e2e final verde no CI e o checklist sem pendências.
 
 ---
 
