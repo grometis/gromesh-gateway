@@ -182,6 +182,41 @@ describe("login", () => {
     }
   });
 
+  it("locks password login independently of the bearer's per-address limiter", async () => {
+    const strict = await startHarness({ loginMaxFailuresPerIp: 3, loginLockoutMs: 60_000, trustProxy: true });
+    const ip = "192.0.2.180";
+    const from = { "x-forwarded-for": ip };
+    const user = await strict.as("viewer");
+    try {
+      const created = await user.api("POST", "/users/me/tokens", { name: uniq("login-isolation"), role: "viewer", expiresInDays: 1 });
+      expect(created.status).toBe(201);
+      const valid = { authorization: `Bearer ${created.body.token}`, ...from };
+      const invalid = { authorization: `Bearer ggt_${"x".repeat(43)}`, ...from };
+      for (let i = 0; i < 3; i++) {
+        expect((await strict.anonymous("POST", "/auth/login", { email: user.email, password: "wrong-password-123" }, from)).status).toBe(401);
+      }
+      const locked = await strict.anonymous("POST", "/auth/login", strict.admin, from);
+      expect(locked.status).toBe(429);
+      expect(Number(locked.headers.get("retry-after"))).toBeGreaterThan(0);
+      const { rows: before } = await strict.sql.query("select key, failures from login_attempts where key = any($1::text[])", [[`ip:${ip}`, `bearer-ip:${ip}`]]);
+      expect(before).toEqual([{ key: `ip:${ip}`, failures: 3 }]);
+      for (let i = 0; i < 3; i++) {
+        expect((await strict.anonymous("GET", "/me", undefined, valid)).status).toBe(200);
+        const rejected = await strict.anonymous("GET", "/me", undefined, invalid);
+        expect(rejected.status).toBe(401);
+        expect(rejected.headers.get("retry-after")).toBeNull();
+      }
+      const bearerLocked = await strict.anonymous("GET", "/me", undefined, invalid);
+      expect(bearerLocked.status).toBe(429);
+      expect(Number(bearerLocked.headers.get("retry-after"))).toBeGreaterThan(0);
+      const { rows: after } = await strict.sql.query("select key, failures from login_attempts where key = any($1::text[]) order by key", [[`ip:${ip}`, `bearer-ip:${ip}`]]);
+      expect(after).toEqual([{ key: `bearer-ip:${ip}`, failures: 3 }, { key: `ip:${ip}`, failures: 3 }]);
+    } finally {
+      await strict.sql.query("delete from login_attempts where key = any($1::text[])", [[`ip:${ip}`, `bearer-ip:${ip}`, `email:${user.email}`, `email_ip:${user.email}|${ip}`]]);
+      await strict.close();
+    }
+  });
+
   it("writes auth.login to the audit log without the password", async () => {
     const password = `pw-${uniq("very-secret")}`;
     const user = await newUser("viewer", { password });

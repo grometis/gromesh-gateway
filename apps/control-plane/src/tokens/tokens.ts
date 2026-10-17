@@ -101,11 +101,11 @@ export class TokensService implements BearerResolver {
   }
 
   /**
-   * A bearer value → its owner and effective role, or null. Invalid values count as login failures of the client
-   * address; a locked address gets 429 before anything is looked up.
+   * A bearer value → its owner and effective role, or null. Bearer failures have their own per-address counter
+   * so a pipeline with an expired token cannot lock password login; a locked address gets 429 before lookup.
    */
   async resolve(bearer: string, ip: string | null): Promise<ResolvedBearer | null> {
-    const key = ip ? `ip:${ip}` : null;
+    const key = ip ? `bearer-ip:${ip}` : null;
     if (key) {
       const [attempt] = await this.db.select().from(loginAttempts).where(eq(loginAttempts.key, key));
       const lockedFor = Math.ceil(Math.max(0, (attempt?.lockedUntil?.getTime() ?? 0) - Date.now()) / 1000);
@@ -163,7 +163,7 @@ export class TokensService implements BearerResolver {
     });
   }
 
-  /** Same counter as the login's per-address limit: a bearer guess costs as much as a password guess. */
+  /** Independent bearer counter with the same threshold and window as the login's per-address limit. */
   private async recordFailure(tx: Executor, key: string): Promise<void> {
     const lockout = this.config.loginLockoutMs;
     const now = new Date();
