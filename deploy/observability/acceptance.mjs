@@ -188,6 +188,10 @@ async function inside() {
 }
 
 async function host() {
+  // observability-acceptance runs this image (deploy/compose): pulled first, so the 90 s below cover only the run.
+  // Imported here, not at the top: this file also runs inside that container, where e2e/ is not mounted.
+  const { NODE_IMAGE, pullImages } = await import("../../e2e/docker-images.mjs");
+  await pullImages([NODE_IMAGE]);
   const env = { ...process.env, POSTGRES_PORT: process.env.POSTGRES_PORT ?? "55433" };
   const run = (command, args, input) => execFileSync(command, args, {
     cwd: root, env, encoding: "utf8", input, timeout: 90000, maxBuffer: 16 * 1024 * 1024, stdio: ["pipe", "pipe", "pipe"],

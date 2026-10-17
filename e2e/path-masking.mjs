@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { NODE_IMAGE, pullImages, VECTOR_IMAGE } from "./docker-images.mjs";
 
 const exec = promisify(execFile);
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -22,7 +23,7 @@ const check = (ok, message) => assert.ok(ok, message);
 async function insideGateway(endpoint, method, body) {
   const { stdout: id } = await compose("ps", "-q", "kong");
   const child = execFile("docker", ["run", "--rm", "-i", "--network", `container:${id.trim()}`,
-    "node:24.18.0-alpine", "node", "--input-type=module", "-e", `
+    NODE_IMAGE, "node", "--input-type=module", "-e", `
       import { readFileSync } from 'node:fs';
       const body = readFileSync(0, 'utf8');
       const response = await fetch(process.argv[1], {
@@ -46,9 +47,11 @@ async function insideGateway(endpoint, method, body) {
 const admin = (method, body) => insideGateway("http://127.0.0.1:8001/config", method, body);
 
 async function main() {
+  // The timeouts below cover only the runs: the images are pulled first, with retries.
+  await pullImages([VECTOR_IMAGE, NODE_IMAGE]);
   await run(["run", "--rm", "-e", "CLICKHOUSE_PASSWORD=unit-test",
     "-e", "GROMESH_CLUSTER_ID=00000000-0000-4000-8000-00000000c0c0", "-e", 'GROMESH_KEY_NAMES=["legacy-key"]',
-    "-v", `${root}deploy/observability/vector:/etc/vector:ro`, "timberio/vector:0.53.0-alpine",
+    "-v", `${root}deploy/observability/vector:/etc/vector:ro`, VECTOR_IMAGE,
     "test", "/etc/vector/vector.yaml", "/etc/vector/path-masking.tests.yaml", "/etc/vector/key-names.tests.yaml"]);
   await exec("pnpm", ["--filter", "@gromesh/compiler", "build"], { cwd: root, env, timeout: 60_000 });
   const { compile, platformPlugins } = await import("../packages/compiler/dist/index.js");
