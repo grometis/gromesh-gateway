@@ -45,6 +45,8 @@ function ClusterList({ envId }: { envId: string }) {
     queryFn: () => unwrap(api.GET("/environments/{envId}/clusters", { params: { path: { envId } } })),
     refetchInterval: visible ? 10_000 : false,
     refetchIntervalInBackground: false,
+    // Shared with the publish strip: a read it just made is reused instead of repeated on arrival.
+    staleTime: 10_000,
   });
 
   return (

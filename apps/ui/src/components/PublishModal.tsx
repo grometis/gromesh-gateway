@@ -19,7 +19,8 @@ const KIND_LABEL: Record<Schemas["EntityChange"]["kind"], string> = {
   certificates: "Certificado",
 };
 
-export function PublishModal({ env, onClose }: { env: Environment; onClose: () => void }) {
+/** `readOnly` (viewers) shows the pending changes without the publish action. */
+export function PublishModal({ env, onClose, readOnly = false }: { env: Environment; onClose: () => void; readOnly?: boolean }) {
   const queryClient = useQueryClient();
   const [message, setMessage] = useState("");
   const preview = useQuery({
@@ -37,6 +38,7 @@ export function PublishModal({ env, onClose }: { env: Environment; onClose: () =
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["environment", env.id] });
       void queryClient.invalidateQueries({ queryKey: ["preview", env.id] });
+      void queryClient.invalidateQueries({ queryKey: ["clusters", env.id] });
       onClose();
     },
   });
@@ -44,17 +46,19 @@ export function PublishModal({ env, onClose }: { env: Environment; onClose: () =
   const issues = preview.isError ? toFormErrors(preview.error, []) : null;
   return (
     <Modal
-      title={`Publicar ${env.name}`}
+      title={readOnly ? `Alterações em ${env.name}` : `Publicar ${env.name}`}
       onClose={onClose}
       footer={
-        <>
-          <button type="button" onClick={onClose}>
-            Cancelar
-          </button>
-          <button type="button" className="primary" disabled={!preview.data?.hasChanges || publish.isPending} onClick={() => publish.mutate()}>
-            {publish.isPending ? "Publicando…" : "Publicar"}
-          </button>
-        </>
+        readOnly ? undefined : (
+          <>
+            <button type="button" onClick={onClose}>
+              Cancelar
+            </button>
+            <button type="button" className="primary" disabled={!preview.data?.hasChanges || publish.isPending} onClick={() => publish.mutate()}>
+              {publish.isPending ? "Publicando…" : "Publicar"}
+            </button>
+          </>
+        )
       }
     >
       {preview.isPending && <p className="muted">Calculando as alterações…</p>}
@@ -78,10 +82,12 @@ export function PublishModal({ env, onClose }: { env: Environment; onClose: () =
           ))}
         </ul>
       )}
-      <label className="field">
-        <span>Mensagem (opcional)</span>
-        <input value={message} maxLength={500} onChange={(e) => setMessage(e.target.value)} placeholder="O que muda nesta versão?" />
-      </label>
+      {!readOnly && (
+        <label className="field">
+          <span>Mensagem (opcional)</span>
+          <input value={message} maxLength={500} onChange={(e) => setMessage(e.target.value)} placeholder="O que muda nesta versão?" />
+        </label>
+      )}
       {publish.isError && (
         <p className="error" role="alert">
           {statusMessage(publish.error)}

@@ -237,7 +237,7 @@ test("publicação pela barra superior atualiza o histórico já aberto", async 
   });
   await page.getByRole("link", { name: "Publicações", exact: true }).click();
   await expect(page.getByRole("link", { name: "v2", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Publicar", exact: true }).click();
+  await page.getByRole("region", { name: "Publicação" }).getByRole("button", { name: /^Publicar v\d+$/ }).click();
   const modal = page.getByRole("dialog", { name: "Publicar Produção" });
   await modal.getByRole("button", { name: "Publicar", exact: true }).click();
   await expect(modal).toBeHidden();

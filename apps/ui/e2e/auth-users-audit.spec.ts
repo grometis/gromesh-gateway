@@ -239,7 +239,7 @@ test("login por cookie → service → route → publicação → audit com o me
   await route.getByRole("button", { name: "Salvar" }).click();
   expect((await routeCreated).status()).toBe(201);
   await expect(route).toBeHidden();
-  await page.getByRole("button", { name: "Publicar", exact: true }).click();
+  await page.getByRole("region", { name: "Publicação" }).getByRole("button", { name: /^Publicar v\d+$/ }).click();
   const publish = page.getByRole("dialog", { name: /^Publicar/ });
   await expect(publish.locator('[data-change="added"]')).toHaveCount(2);
   await publish.getByLabel("Mensagem").fill("Publicação da UI");

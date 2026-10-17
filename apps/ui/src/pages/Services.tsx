@@ -1,11 +1,14 @@
 import { useDeferredValue, useState, type FormEvent } from "react";
-import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, unwrap, type Service, type ServiceWrite } from "../api/client";
 import { statusMessage, toFormErrors, type FormErrors } from "../api/errors";
 import { useCanEdit } from "../auth";
 import { Field, FormErrorList } from "../components/Field";
 import { ConfirmDialog, Modal } from "../components/Modal";
-import { useEnvId } from "../components/Shell";
+import { useEnvId, useEnvironment } from "../components/Shell";
+import { DraftBadge } from "../components/Badge";
+import { Button } from "../components/Button";
+import { Table } from "../components/Table";
 import { ScopedPlugins } from "./Plugins";
 import { useUpstreams } from "./Upstreams";
 
@@ -36,74 +39,114 @@ export function useServices(envId: string, q = "") {
   });
 }
 
+/** Which services the draft adds or changes, from the publish preview (the strip loads the same query). */
+function useServiceDraft(envId: string): Map<string, "added" | "modified"> {
+  const env = useEnvironment(envId);
+  const pending = env.data?.hasUnpublishedChanges ?? false;
+  const preview = useQuery({
+    queryKey: ["preview", envId],
+    queryFn: () => unwrap(api.GET("/environments/{envId}/publish-preview", { params: { path: { envId } } })),
+    enabled: pending,
+  });
+  const draft = new Map<string, "added" | "modified">();
+  if (!pending) return draft;
+  for (const c of preview.data?.changes ?? []) if (c.kind === "services" && c.change !== "removed") draft.set(c.id, c.change);
+  return draft;
+}
+
 export function ServicesPage() {
   const envId = useEnvId();
   const canEdit = useCanEdit();
   const [search, setSearch] = useState("");
+  const [onlyChanged, setOnlyChanged] = useState(false);
   const q = useDeferredValue(search.trim());
   const services = useServices(envId, q);
+  const draft = useServiceDraft(envId);
   const [editing, setEditing] = useState<Service | "new" | null>(null);
   const [deleting, setDeleting] = useState<Service | null>(null);
   const [plugins, setPlugins] = useState<Service | null>(null);
-  const items = services.data?.pages.flatMap((p) => p.items) ?? [];
+  const all = services.data?.pages.flatMap((p) => p.items) ?? [];
+  const changed = all.filter((s) => draft.has(s.id));
+  const items = onlyChanged ? changed : all;
 
   return (
     <section>
       <div className="page-head">
-        <h1>Services</h1>
+        <div>
+          <h1>Services</h1>
+          <p className="lede">Os destinos para onde o gateway encaminha as requisições.</p>
+        </div>
         {canEdit && (
-          <button type="button" className="primary" onClick={() => setEditing("new")}>
+          <Button variant="primary" onClick={() => setEditing("new")}>
             Novo service
-          </button>
+          </Button>
         )}
+      </div>
+      <div className="pills" role="group" aria-label="Filtrar services">
+        <button type="button" aria-pressed={!onlyChanged} onClick={() => setOnlyChanged(false)}>
+          Todos <span className="count">{all.length}</span>
+        </button>
+        <button type="button" aria-pressed={onlyChanged} onClick={() => setOnlyChanged(true)}>
+          Com alterações <span className="count">{changed.length}</span>
+        </button>
       </div>
       <input type="search" className="search" placeholder="Buscar por nome" aria-label="Buscar services" value={search} onChange={(e) => setSearch(e.target.value)} />
       {services.isPending && <p className="muted">Carregando…</p>}
       {services.isError && <p className="error">{statusMessage(services.error)}</p>}
-      {services.isSuccess && items.length === 0 && <p className="muted">{q ? "Nenhum service encontrado." : "Nenhum service ainda."}</p>}
+      {services.isSuccess && items.length === 0 && (
+        <p className="muted">{onlyChanged ? "Nenhum service com alterações não publicadas." : q ? "Nenhum service encontrado." : "Nenhum service ainda. Crie o primeiro para começar a rotear tráfego."}</p>
+      )}
       {items.length > 0 && (
-        <table>
+        <Table label="Services" cards>
           <thead>
             <tr>
-              <th>Nome</th>
-              <th>Destino</th>
-              <th>Ativo</th>
-              <th aria-label="Ações" />
+              <th>Service → destino</th>
+              <th>
+                <span className="visually-hidden">Situação</span>
+              </th>
+              <th>
+                <span className="visually-hidden">Ações</span>
+              </th>
             </tr>
           </thead>
           <tbody>
             {items.map((s) => (
               <tr key={s.id}>
-                <td>{s.name}</td>
-                <td className="mono">
-                  {s.protocol}://{s.host}:{s.port}
-                  {s.path ?? ""}
+                <td>
+                  <div className="service-route">
+                    <span className="service-name">{s.name}</span>
+                    <DraftBadge change={draft.get(s.id)} />
+                    <span className="arrow" aria-hidden="true">
+                      →
+                    </span>
+                    <span className="visually-hidden">destino</span>
+                    <span className="target mono">
+                      {s.protocol}://{s.host}:{s.port}
+                      {s.path ?? ""}
+                    </span>
+                  </div>
                 </td>
-                <td>{s.enabled === false ? "Não" : "Sim"}</td>
+                <td>{s.enabled === false && <span className="service-off">Desativado</span>}</td>
                 <td className="actions">
-                  <button type="button" onClick={() => setPlugins(s)}>
-                    Plugins
-                  </button>
+                  <Button onClick={() => setPlugins(s)}>Plugins</Button>
                   {canEdit && (
                     <>
-                      <button type="button" onClick={() => setEditing(s)}>
-                        Editar
-                      </button>
-                      <button type="button" className="danger" onClick={() => setDeleting(s)}>
+                      <Button onClick={() => setEditing(s)}>Editar</Button>
+                      <Button variant="danger" onClick={() => setDeleting(s)}>
                         Excluir
-                      </button>
+                      </Button>
                     </>
                   )}
                 </td>
               </tr>
             ))}
           </tbody>
-        </table>
+        </Table>
       )}
-      {services.hasNextPage && (
-        <button type="button" onClick={() => void services.fetchNextPage()} disabled={services.isFetchingNextPage}>
+      {services.hasNextPage && !onlyChanged && (
+        <Button onClick={() => void services.fetchNextPage()} disabled={services.isFetchingNextPage}>
           Carregar mais
-        </button>
+        </Button>
       )}
       {editing && <ServiceForm envId={envId} service={editing === "new" ? null : editing} onClose={() => setEditing(null)} />}
       {deleting && <DeleteService envId={envId} service={deleting} onClose={() => setDeleting(null)} />}
