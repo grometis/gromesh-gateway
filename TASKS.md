@@ -44,6 +44,11 @@ git worktree add ../gg-codex  -b task/W1-X1-kong-image
 | P1-C1 | Claude | P1-C0 | `apps/control-plane/`, `apps/ui/`, `e2e/security-checklist.*`, `contracts/` (só remover `x-gromesh-planned`) |
 | P1-X1 | Codex | — | `apps/agent/`, `deploy/helm/data-plane/`, `deploy/compose/`, `e2e/kind/` |
 | P1-X2 | Codex | P1-X1 | `.github/workflows/`, `e2e/kind/`, `deploy/helm/`, `deploy/compose/` |
+| P2-C0 | Claude | — | `contracts/` (+ `apps/ui/src/api/schema.d.ts` gerado e rótulos de tipo da UI) |
+| P2-C1 | Claude | P2-C0 | `apps/control-plane/`, `packages/compiler/`, `e2e/security-checklist.*`, `contracts/` (só remover `x-gromesh-planned`) |
+| P2-C2 | Claude | P2-C1 | `apps/ui/` |
+| P2-X1 | Codex | — | `deploy/observability/`, `deploy/helm/data-plane/files/vector/`, `e2e/` |
+| P2-X2 | Codex | P2-X1 | `apps/control-plane/src/tokens/`, `apps/control-plane/src/auth/` (só o limitador), testes correspondentes |
 
 Ordem de merge na semana 3: W2-C2 → W3-X1 → W3-C1 → W3-X2. Quem mergeia depois faz rebase; `src/db/schema.ts` e `drizzle/` são alterados por uma frente por vez.
 
@@ -334,6 +339,38 @@ Aceite: `go test` com o cpmock prova reinício sem novo register, token revogado
 - `GROMESH_KEY_NAMES`/`collector.keyNames` deixa de ser Secret e vira valor opcional comum (só fallback); remover o que ficou sem uso.
 
 Aceite: artefato presente num job forçado a falhar (ou verificação por renderização do workflow) e charts/compose sem o Secret.
+
+---
+
+## P2 — Upstreams, targets, certificados e SNIs
+
+### P2-C0 [Claude] Contrato
+- Upstreams por environment (editor): `name` hostname único (um service com `host` igual balanceia por ele), `algorithm` (round-robin | least-connections | consistent-hashing | latency), `hashOn`/`hashFallback` (none | consumer | ip | header | cookie, com `hashOnHeader`/`hashOnCookie`), `healthchecks.active` e `healthchecks.passive` opcionais, desligados por padrão.
+- Targets (sub-recurso): `target` "host:port", `weight` 0..65535 (0 = fora), único por upstream.
+- Certificates (editor): `cert` PEM, `key` PEM write-only (`REDACTED` na leitura; `REDACTED` no PUT mantém), `snis[]` únicos no environment (curinga só como prefixo `*.`), e só leitura `subject`, `issuer`, `notBefore`, `notAfter`, `fingerprintSha256`.
+- 422 com `path`: PEM inválido, chave que não corresponde, certificado expirado, SNI duplicado, target fora do formato; service apontando para upstream inexistente é válido (DNS). Operações novas com `x-gromesh-planned: true`.
+
+Aceite: lint válido, diff aprovado antes do P2-C1.
+
+### P2-C1 [Claude] Control plane + compilador
+- Tabelas, CRUD, audit e `markDraftChanged` como os demais recursos. Chave privada cifrada em repouso (`enc:v2`, contexto `certificates.key` + id), redigida em audit, diff, preview e envelope do snapshot para todos os papéis; o agente recebe em claro.
+- Validação com `node:crypto` (`X509Certificate` + `checkPrivateKey`), sem dependência nova.
+- Compilador: upstreams/targets/certificates/snis no formato do Kong, determinístico, tag `managed-by:gromesh`; diff do compilador redige `key`.
+
+Aceite (integração com o Kong do compose): upstream com 2 targets echo alterna o `Hostname`, peso 0 manda tudo ao outro; certificado autoassinado + SNI → `curl --resolve` no 8443 recebe o certificado certo (fingerprint confere); select direto no Postgres não acha a chave em claro (no S5 do checklist).
+
+### P2-C2 [Claude] UI
+- Telas Upstreams (com targets e saúde configurável) e Certificados (upload de PEM, chave nunca reexibida, aviso quando `notAfter` < 30 dias). No formulário de Service, sugestão de upstreams no campo `host`.
+
+Aceite: Playwright contra o Prism.
+
+### P2-X1 [Codex] Máscara de path por segmento (backlog 14)
+Aceite: vector tests com `/mvp-629762c6` → `/{id}`, `/orders/507f1f77bcf86cd799439011` → `/orders/{id}`, `/v1/pedidos/123` intacto, casos do B5 mantidos; e2e de mascaramento verde.
+
+### P2-X2 [Codex] Contador próprio para falhas de bearer (backlog 15)
+- Chave `bearer-ip:<ip>` separada da do login, mesmo limiar e janela.
+
+Aceite: N falhas de bearer bloqueiam só o bearer daquele IP (429) e o login por senha continua; e vice-versa.
 
 ---
 
