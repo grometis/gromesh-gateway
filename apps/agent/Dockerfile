@@ -5,10 +5,12 @@ COPY apps/agent/go.mod ./
 COPY apps/agent/cmd ./cmd
 COPY apps/agent/internal ./internal
 RUN CGO_ENABLED=0 GOTOOLCHAIN=local go build -trimpath -ldflags="-s -w" -o /out/gromesh-agent ./cmd/gromesh-agent
+RUN mkdir -p /out/state
 
 FROM scratch
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /out/gromesh-agent /gromesh-agent
+COPY --from=build --chown=1001:1001 /out/state /var/lib/gromesh/
 USER 1001:1001
 EXPOSE 9100
 ENTRYPOINT ["/gromesh-agent"]

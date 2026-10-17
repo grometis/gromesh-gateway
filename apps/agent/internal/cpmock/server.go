@@ -36,17 +36,19 @@ type Status struct {
 }
 
 type Server struct {
-	HTTP             *httptest.Server
-	Registrations    chan Registration
-	Statuses         chan Status
-	SnapshotRequests chan string
-	EventConnections chan string
-	mu               sync.Mutex
-	snapshot         []byte
-	hash             string
-	sseDown          bool
-	subscribers      map[chan string]struct{}
-	closed           chan struct{}
+	HTTP              *httptest.Server
+	Registrations     chan Registration
+	Statuses          chan Status
+	SnapshotRequests  chan string
+	EventConnections  chan string
+	mu                sync.Mutex
+	snapshot          []byte
+	hash              string
+	sseDown           bool
+	subscribers       map[chan string]struct{}
+	closed            chan struct{}
+	nodeToken         string
+	registrationToken string
 }
 
 func New() *Server {
@@ -54,6 +56,8 @@ func New() *Server {
 		Registrations: make(chan Registration, 128), Statuses: make(chan Status, 128),
 		SnapshotRequests: make(chan string, 128), EventConnections: make(chan string, 128),
 		subscribers: make(map[chan string]struct{}), closed: make(chan struct{}),
+		nodeToken:         NodeToken,
+		registrationToken: RegistrationToken,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /agent/v1/register", s.register)
@@ -67,6 +71,24 @@ func New() *Server {
 func (s *Server) Close() {
 	close(s.closed)
 	s.HTTP.Close()
+}
+
+func (s *Server) SetNodeToken(token string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nodeToken = token
+}
+
+func (s *Server) currentNodeToken() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.nodeToken
+}
+
+func (s *Server) SetRegistrationToken(token string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.registrationToken = token
 }
 
 func (s *Server) SetSSEDown(down bool) {
@@ -115,7 +137,10 @@ func authorized(w http.ResponseWriter, r *http.Request, token string) bool {
 }
 
 func (s *Server) register(w http.ResponseWriter, r *http.Request) {
-	if !authorized(w, r, RegistrationToken) {
+	s.mu.Lock()
+	token := s.registrationToken
+	s.mu.Unlock()
+	if !authorized(w, r, token) {
 		return
 	}
 	var registration Registration
@@ -126,13 +151,13 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 	s.Registrations <- registration
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"nodeToken": NodeToken, "clusterId": ClusterID, "environmentId": EnvironmentID,
+		"nodeToken": s.currentNodeToken(), "clusterId": ClusterID, "environmentId": EnvironmentID,
 		"pollIntervalSeconds": 5, "heartbeatIntervalSeconds": 5,
 	})
 }
 
 func (s *Server) current(w http.ResponseWriter, r *http.Request) {
-	if !authorized(w, r, NodeToken) {
+	if !authorized(w, r, s.currentNodeToken()) {
 		return
 	}
 	defer func() {
@@ -157,7 +182,7 @@ func (s *Server) current(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) status(w http.ResponseWriter, r *http.Request) {
-	if !authorized(w, r, NodeToken) {
+	if !authorized(w, r, s.currentNodeToken()) {
 		return
 	}
 	var status Status
@@ -183,7 +208,7 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
-	if !authorized(w, r, NodeToken) {
+	if !authorized(w, r, s.currentNodeToken()) {
 		return
 	}
 	s.mu.Lock()

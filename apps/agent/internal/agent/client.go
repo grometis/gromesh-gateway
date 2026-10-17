@@ -15,10 +15,11 @@ import (
 const maxSnapshotBytes = 64 << 20
 
 type client struct {
-	config    Config
-	http      *http.Client
-	applyHTTP *http.Client
-	token     string
+	config       Config
+	http         *http.Client
+	applyHTTP    *http.Client
+	token        string
+	unauthorized chan struct{}
 }
 
 type applyError struct {
@@ -52,6 +53,17 @@ func (c *client) request(ctx context.Context, method, endpoint, token string, bo
 
 func endpoint(base, path string) string { return strings.TrimRight(base, "/") + path }
 
+func (c *client) nodeRequest(ctx context.Context, method, path string, body []byte, headers map[string]string) (*http.Response, error) {
+	res, err := c.request(ctx, method, endpoint(c.config.ControlPlaneURL, path), c.token, body, headers)
+	if err == nil && res.StatusCode == http.StatusUnauthorized {
+		select {
+		case c.unauthorized <- struct{}{}:
+		default:
+		}
+	}
+	return res, err
+}
+
 func (c *client) register(ctx context.Context) (Registration, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -80,7 +92,7 @@ func (c *client) register(ctx context.Context) (Registration, error) {
 	if err := json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(&r); err != nil {
 		return r, fmt.Errorf("invalid registration response")
 	}
-	if r.NodeToken == "" || strings.ContainsAny(r.NodeToken, "\r\n") || !uuidPattern.MatchString(r.ClusterID) || !uuidPattern.MatchString(r.EnvironmentID) || r.PollIntervalSeconds < 5 || r.HeartbeatIntervalSeconds < 5 {
+	if !validRegistration(r) {
 		return r, fmt.Errorf("invalid registration fields or intervals")
 	}
 	c.token = r.NodeToken
@@ -94,7 +106,7 @@ func (c *client) snapshot(ctx context.Context, hash string) (*Snapshot, error) {
 	if hash != "" {
 		headers["If-None-Match"] = hash
 	}
-	res, err := c.request(ctx, "GET", endpoint(c.config.ControlPlaneURL, "/agent/v1/snapshots/current"), c.token, nil, headers)
+	res, err := c.nodeRequest(ctx, "GET", "/agent/v1/snapshots/current", nil, headers)
 	if err != nil {
 		return nil, err
 	}
@@ -168,7 +180,7 @@ func (c *client) report(ctx context.Context, status StatusReport) error {
 	body, _ := json.Marshal(status)
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	res, err = c.request(ctx, "POST", endpoint(c.config.ControlPlaneURL, "/agent/v1/status"), c.token, body, nil)
+	res, err = c.nodeRequest(ctx, "POST", "/agent/v1/status", body, nil)
 	if err != nil {
 		return err
 	}

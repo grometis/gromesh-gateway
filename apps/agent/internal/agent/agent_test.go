@@ -130,7 +130,7 @@ func newTestAgent(t *testing.T, cp *cpmock.Server, k *kongMock, path string) *Ag
 	a, err := New(Config{
 		ControlPlaneURL: cp.HTTP.URL, RegistrationToken: cpmock.RegistrationToken,
 		NodeID: "node-1", Hostname: "host-1", KongAdminURL: k.server.URL,
-		KongStatusURL: k.server.URL, SnapshotPath: path,
+		KongStatusURL: k.server.URL, SnapshotPath: path, StateDir: filepath.Join(filepath.Dir(path), "state"),
 	}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)

@@ -154,6 +154,8 @@ spec:
               value: http://127.0.0.1:8100
             - name: SNAPSHOT_PATH
               value: /kong/declarative/kong.json
+            - name: GROMESH_STATE_DIR
+              value: /var/lib/gromesh
           ports:
             - name: agent-metrics
               containerPort: 9100
@@ -162,8 +164,12 @@ spec:
           volumeMounts:
             - name: snapshot
               mountPath: /kong/declarative
+            - name: agent-state
+              mountPath: /var/lib/gromesh
       volumes:
         - name: snapshot
+          emptyDir: {}
+        - name: agent-state
           emptyDir: {}
         - name: kong-prefix
           emptyDir: {}

@@ -103,11 +103,14 @@ services:
       GROMESH_CP_URL: http://control-plane:3000
       GROMESH_REGISTRATION_TOKEN: ${GROMESH_REGISTRATION_TOKEN:-}
       GROMESH_NODE_ID: ${GROMESH_NODE_ID:-compose-node}
+      GROMESH_STATE_DIR: /var/lib/gromesh
       KONG_ADMIN_URL: http://127.0.0.1:8001
       KONG_STATUS_URL: http://127.0.0.1:8100
       SNAPSHOT_PATH: /kong/declarative/kong.json
     volumes:
       - kong-config:/kong/declarative
+      - agent-state:/var/lib/gromesh
+    read_only: true
     depends_on:
       kong:
         condition: service_healthy
@@ -295,5 +298,6 @@ services:
 volumes:
   pg-data:
   kong-config:
+  agent-state:
   clickhouse-data:
   prometheus-data:

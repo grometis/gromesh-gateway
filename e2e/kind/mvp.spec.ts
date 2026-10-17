@@ -1,4 +1,6 @@
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { promisify } from "node:util";
 import { expect, test, type APIRequestContext, type Browser, type Page } from "@playwright/test";
 
 // The MVP's definition of done, on a Helm install in kind (e2e/kind/run.sh prepares the cluster and the ids):
@@ -9,10 +11,42 @@ const PROXY = process.env.KONG_PROXY_URL!;
 const ADMIN = { email: process.env.E2E_ADMIN_EMAIL!, password: process.env.E2E_ADMIN_PASSWORD! };
 const envId = process.env.E2E_ENV_ID!;
 const clusterId = process.env.E2E_CLUSTER_ID!;
+const exec = promisify(execFile);
+const namespace = process.env.E2E_NAMESPACE!;
+const selector = process.env.E2E_DATA_PLANE_SELECTOR!;
 
 interface Entity { id: string }
-interface Cluster { status: string; nodes: { appliedVersion: number | null; online: boolean }[] }
+interface Cluster { status: string; nodes: { nodeId: string; lastSeenAt: string; appliedVersion: number | null; online: boolean }[] }
 interface Publication { version: number; rollbackOf: number | null }
+interface Pod {
+  metadata: { name: string; uid: string };
+  spec: { nodeName: string };
+  status: { containerStatuses: { name: string; containerID: string; restartCount: number; state: { running?: unknown } }[] };
+}
+
+async function dataPlanePod(): Promise<Pod> {
+  const { stdout } = await exec("kubectl", ["-n", namespace, "get", "pods", "-l", selector, "-o", "json"], { timeout: 15_000 });
+  const { items } = JSON.parse(stdout) as { items: Pod[] };
+  expect(items).toHaveLength(1);
+  return items[0]!;
+}
+
+async function restartAgent() {
+  const before = await dataPlanePod();
+  const agent = before.status.containerStatuses.find((c) => c.name === "agent")!;
+  const kong = before.status.containerStatuses.find((c) => c.name === "kong")!;
+  expect(agent.containerID).toMatch(/^containerd:\/\//);
+  // The agent uses scratch (no shell/kill). Stop only its container through kind's CRI;
+  // kubelet restarts it in the same pod, preserving emptyDir and the running gateway.
+  await exec("docker", ["exec", before.spec.nodeName, "crictl", "stop", "--timeout", "1", agent.containerID.replace(/^containerd:\/\//, "")], { timeout: 30_000 });
+  await expect.poll(async () => {
+    const after = await dataPlanePod();
+    expect(after.metadata.uid).toBe(before.metadata.uid);
+    expect(after.status.containerStatuses.find((c) => c.name === "kong")!.containerID).toBe(kong.containerID);
+    const restarted = after.status.containerStatuses.find((c) => c.name === "agent")!;
+    return restarted.restartCount > agent.restartCount && restarted.containerID !== agent.containerID && Boolean(restarted.state.running);
+  }, { timeout: 60_000, intervals: [500, 1000, 2000], message: "kubelet must restart only the agent container" }).toBe(true);
+}
 
 async function login(browser: Browser) {
   const context = await browser.newContext({ baseURL: CP });
@@ -89,6 +123,19 @@ test("MVP: install → publish → converge → traffic in the dashboard → rol
     const v1 = (await (await published).json()) as Publication;
     await expect(publish).toBeHidden();
     await converge(api, v1.version);
+
+    await test.step("agent container restart preserves nodeId without duplicating the cluster node", async () => {
+      const before = await api<Cluster>("GET", `/clusters/${clusterId}`, 200);
+      expect(before.nodes).toHaveLength(1);
+      await restartAgent();
+      await expect.poll(async () => {
+        const after = await api<Cluster>("GET", `/clusters/${clusterId}`, 200);
+        expect(after.nodes).toHaveLength(1);
+        expect(after.nodes[0]!.nodeId).toBe(before.nodes[0]!.nodeId);
+        return after.nodes[0]!.lastSeenAt > before.nodes[0]!.lastSeenAt;
+      }, { timeout: 30_000, intervals: [500, 1000], message: "the same node must report after restart" }).toBe(true);
+      await converge(api, v1.version);
+    });
 
     // Traffic: rejected without the key, served with it, rate-limit headers present.
     expect((await proxy(traffic, path)).status()).toBe(401);

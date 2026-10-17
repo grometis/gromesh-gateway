@@ -17,6 +17,7 @@ type Config struct {
 	KongAdminURL      string
 	KongStatusURL     string
 	SnapshotPath      string
+	StateDir          string
 }
 
 func ConfigFromEnv() (Config, error) {
@@ -36,6 +37,7 @@ func ConfigFromEnv() (Config, error) {
 		KongAdminURL:  value("KONG_ADMIN_URL", "http://127.0.0.1:8001"),
 		KongStatusURL: value("KONG_STATUS_URL", "http://127.0.0.1:8100"),
 		SnapshotPath:  value("SNAPSHOT_PATH", "/kong/declarative/kong.json"),
+		StateDir:      value("GROMESH_STATE_DIR", defaultStateDir),
 	}
 	return c, c.validate()
 }

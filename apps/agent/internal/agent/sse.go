@@ -58,7 +58,7 @@ func (a *Agent) stream(ctx context.Context, lastID *string, wake chan<- struct{}
 		headers["Last-Event-ID"] = *lastID
 	}
 	// Unlike ordinary requests, a healthy SSE connection has no total timeout.
-	res, err := a.client.request(ctx, "GET", endpoint(a.config.ControlPlaneURL, "/agent/v1/events"), a.client.token, nil, headers)
+	res, err := a.client.nodeRequest(ctx, "GET", "/agent/v1/events", nil, headers)
 	if err != nil {
 		return false, err
 	}

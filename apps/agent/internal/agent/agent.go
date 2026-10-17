@@ -35,6 +35,9 @@ type Agent struct {
 }
 
 func New(config Config, logger *slog.Logger) (*Agent, error) {
+	if config.StateDir == "" {
+		config.StateDir = defaultStateDir
+	}
 	if err := config.validate(); err != nil {
 		return nil, err
 	}
@@ -50,7 +53,7 @@ func New(config Config, logger *slog.Logger) (*Agent, error) {
 	applyHTTP := *httpClient
 	applyHTTP.Transport = applyTransport
 	return &Agent{
-		config: config, client: &client{config: config, http: httpClient, applyHTTP: &applyHTTP},
+		config: config, client: &client{config: config, http: httpClient, applyHTTP: &applyHTTP, unauthorized: make(chan struct{}, 1)},
 		store: store{path: config.SnapshotPath}, log: logger,
 		status:     StatusReport{NodeID: config.NodeID, State: "idle"},
 		streamIdle: 45 * time.Second, retry: retryDelay, applyRetry: applyRetryDelay,
@@ -75,20 +78,52 @@ func (a *Agent) Run(ctx context.Context) error {
 		a.log.Warn("ignoring unusable persisted snapshot", "error", err)
 		saved = nil
 	}
-	var registration Registration
-	for attempt := 0; ; attempt++ {
-		if ctx.Err() != nil {
-			return nil
-		}
-		registration, err = a.client.register(ctx)
-		if err == nil {
-			break
-		}
-		a.log.Warn("registration failed; retrying", "error", err)
-		if !wait(ctx, a.retry(attempt)) {
-			return nil
-		}
+	identity := identityStore{dir: a.config.StateDir}
+	registration, err := identity.load(a.config, a.log)
+	if err != nil {
+		return err
 	}
+	if registration != nil {
+		a.client.token = registration.NodeToken
+	}
+	for ctx.Err() == nil {
+		if registration == nil {
+			for attempt := 0; ; attempt++ {
+				if ctx.Err() != nil {
+					return nil
+				}
+				registered, err := a.client.register(ctx)
+				if err == nil {
+					if err := identity.save(a.config, registered); err != nil {
+						return err
+					}
+					registration = &registered
+					break
+				}
+				a.log.Warn("registration failed; retrying", "error", err)
+				if !wait(ctx, a.retry(attempt)) {
+					return nil
+				}
+			}
+		}
+		if a.runSession(ctx, *registration, saved) {
+			return nil
+		}
+		// All requests from this session have stopped before the token changes.
+		if err := identity.revoke(); err != nil {
+			return err
+		}
+		a.client.token = ""
+		a.client.unauthorized = make(chan struct{}, 1)
+		registration = nil
+		saved = a.applied
+		a.log.Warn("node token rejected; registering again")
+	}
+	return nil
+}
+
+// runSession returns false only when a node request received 401.
+func (a *Agent) runSession(ctx context.Context, registration Registration, saved *Snapshot) bool {
 	if saved != nil && saved.EnvironmentID != registration.EnvironmentID {
 		a.log.Warn("ignoring persisted snapshot from another environment")
 		saved = nil
@@ -96,13 +131,15 @@ func (a *Agent) Run(ctx context.Context) error {
 	if saved != nil {
 		a.accept(saved, false)
 	}
-	if a.poll == 0 {
-		a.poll = time.Duration(registration.PollIntervalSeconds) * time.Second
+	pollInterval := a.poll
+	if pollInterval == 0 {
+		pollInterval = time.Duration(registration.PollIntervalSeconds) * time.Second
 	}
-	if a.heartbeat == 0 {
-		a.heartbeat = time.Duration(registration.HeartbeatIntervalSeconds) * time.Second
+	heartbeatInterval := a.heartbeat
+	if heartbeatInterval == 0 {
+		heartbeatInterval = time.Duration(registration.HeartbeatIntervalSeconds) * time.Second
 	}
-	a.log.Info("node registered", "nodeId", a.config.NodeID)
+	a.log.Info("node authenticated", "nodeId", a.config.NodeID)
 	a.report(ctx)
 	ctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
@@ -119,11 +156,11 @@ func (a *Agent) Run(ctx context.Context) error {
 		a.client.http.CloseIdleConnections()
 		a.client.applyHTTP.CloseIdleConnections()
 	}()
-	poll := time.NewTicker(a.poll)
+	poll := time.NewTicker(pollInterval)
 	defer poll.Stop()
 	go func() {
 		defer close(heartbeatDone)
-		ticker := time.NewTicker(a.heartbeat)
+		ticker := time.NewTicker(heartbeatInterval)
 		defer ticker.Stop()
 		for {
 			select {
@@ -138,7 +175,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			return nil
+			return true
+		case <-a.client.unauthorized:
+			return false
 		case <-wake:
 			a.refresh(ctx, registration.EnvironmentID)
 		case <-poll.C:
