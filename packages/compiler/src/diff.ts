@@ -1,7 +1,7 @@
 import { canonicalJson } from "./hash.js";
 import type { KongDeclarativeConfig } from "./model.js";
 
-export const ENTITY_KINDS = ["services", "routes", "consumers", "keyauth_credentials", "plugins"] as const;
+export const ENTITY_KINDS = ["services", "routes", "consumers", "keyauth_credentials", "plugins", "upstreams", "targets", "certificates"] as const;
 export type EntityKind = (typeof ENTITY_KINDS)[number];
 
 export interface EntityChange {
@@ -18,12 +18,8 @@ export interface EntityChange {
 export function diffConfigs(before: KongDeclarativeConfig | null, after: KongDeclarativeConfig): EntityChange[] {
   const changes: EntityChange[] = [];
   for (const kind of ENTITY_KINDS) {
-    const prev = new Map<string, Record<string, unknown>>(
-      ((before?.[kind] ?? []) as unknown as Record<string, unknown>[]).map((e) => [e.id as string, e]),
-    );
-    const next = new Map<string, Record<string, unknown>>(
-      (after[kind] as unknown as Record<string, unknown>[]).map((e) => [e.id as string, e]),
-    );
+    const prev = new Map<string, Record<string, unknown>>(entities(before, kind).map((e) => [e.id as string, e]));
+    const next = new Map<string, Record<string, unknown>>(entities(after, kind).map((e) => [e.id as string, e]));
     for (const [id, entity] of next) {
       const old = prev.get(id);
       if (!old) changes.push({ kind, id, label: label(kind, entity), change: "added", after: redact(kind, entity) });
@@ -37,12 +33,29 @@ export function diffConfigs(before: KongDeclarativeConfig | null, after: KongDec
   return changes;
 }
 
+/** A certificate is compared together with its SNIs (a separate Kong entity), so renaming a server name shows up. */
+function entities(config: KongDeclarativeConfig | null, kind: EntityKind): Record<string, unknown>[] {
+  if (!config) return [];
+  if (kind === "certificates") {
+    return (config.certificates ?? []).map((c) => ({
+      ...c,
+      snis: (config.snis ?? []).filter((s) => s.certificate === c.id).map((s) => s.name).sort(),
+    }));
+  }
+  return ((config[kind] ?? []) as unknown as Record<string, unknown>[]);
+}
+
 function label(kind: EntityKind, e: Record<string, unknown>): string {
   if (kind === "consumers") return String(e.username ?? e.custom_id ?? e.id);
   if (kind === "keyauth_credentials") return `key-auth credential of consumer ${String(e.consumer)}`;
+  if (kind === "targets") return String(e.target);
+  if (kind === "certificates") {
+    const snis = e.snis as string[];
+    return snis.length > 0 ? `certificate ${snis.join(", ")}` : `certificate ${String(e.id)}`;
+  }
   return String(e.name ?? e.id);
 }
 
 function redact(kind: EntityKind, e: Record<string, unknown>): Record<string, unknown> {
-  return kind === "keyauth_credentials" ? { ...e, key: "REDACTED" } : e;
+  return kind === "keyauth_credentials" || kind === "certificates" ? { ...e, key: "REDACTED" } : e;
 }

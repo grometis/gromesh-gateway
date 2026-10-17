@@ -674,7 +674,6 @@ paths:
       tags: [upstreams]
       operationId: listUpstreams
       x-required-role: viewer
-      x-gromesh-planned: true
       parameters:
         - { $ref: "#/components/parameters/Limit" }
         - { $ref: "#/components/parameters/Cursor" }
@@ -692,7 +691,6 @@ paths:
       operationId: createUpstream
       security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
-      x-gromesh-planned: true
       description: |
         A load-balancing pool. A service whose `host` equals the upstream's `name` balances across its targets;
         any other host stays ordinary DNS (a service pointing at an upstream that does not exist is valid). 409 on a
@@ -719,7 +717,6 @@ paths:
       tags: [upstreams]
       operationId: getUpstream
       x-required-role: viewer
-      x-gromesh-planned: true
       responses:
         "200":
           description: Upstream
@@ -733,7 +730,6 @@ paths:
       operationId: replaceUpstream
       security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
-      x-gromesh-planned: true
       description: |
         409 when the name changes while services of the environment use the current name as `host`; the problem
         `detail` lists those services. Same 409/422 rules as the creation otherwise.
@@ -757,7 +753,6 @@ paths:
       operationId: deleteUpstream
       security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
-      x-gromesh-planned: true
       description: |
         Deletes the upstream and its targets. 409 while services of the environment use its name as `host`; the
         problem `detail` lists those services.
@@ -771,7 +766,6 @@ paths:
       tags: [upstreams]
       operationId: listTargets
       x-required-role: viewer
-      x-gromesh-planned: true
       parameters:
         - { $ref: "#/components/parameters/Limit" }
         - { $ref: "#/components/parameters/Cursor" }
@@ -788,7 +782,6 @@ paths:
       operationId: createTarget
       security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
-      x-gromesh-planned: true
       description: 409 when the same `target` already exists in this upstream; 422 on `target` with a port outside 1..65535.
       requestBody:
         required: true
@@ -812,7 +805,6 @@ paths:
       operationId: replaceTarget
       security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
-      x-gromesh-planned: true
       requestBody:
         required: true
         content:
@@ -833,7 +825,6 @@ paths:
       operationId: deleteTarget
       security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
-      x-gromesh-planned: true
       responses:
         "204": { description: Deleted }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -843,7 +834,6 @@ paths:
       tags: [certificates]
       operationId: listCertificates
       x-required-role: viewer
-      x-gromesh-planned: true
       parameters:
         - { $ref: "#/components/parameters/Limit" }
         - { $ref: "#/components/parameters/Cursor" }
@@ -860,7 +850,6 @@ paths:
       operationId: createCertificate
       security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
-      x-gromesh-planned: true
       description: |
         A TLS certificate with its private key and the server names (SNIs) it answers. `cert` may be a PEM chain, leaf
         first then intermediates; the whole chain is served. The key is checked against the leaf, and `subject`,
@@ -890,7 +879,6 @@ paths:
       tags: [certificates]
       operationId: getCertificate
       x-required-role: viewer
-      x-gromesh-planned: true
       responses:
         "200":
           description: Certificate; `key` is always "REDACTED"
@@ -904,7 +892,6 @@ paths:
       operationId: replaceCertificate
       security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
-      x-gromesh-planned: true
       description: |
         `key: "REDACTED"` keeps the stored key, which must then still match the leaf of the new `cert` (422 on `key`
         otherwise). Same 422 rules as the creation; an unchanged `cert` is not judged on expiry.
@@ -927,7 +914,6 @@ paths:
       operationId: deleteCertificate
       security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
-      x-gromesh-planned: true
       description: Deletes the certificate and its SNIs.
       responses:
         "204": { description: Deleted }

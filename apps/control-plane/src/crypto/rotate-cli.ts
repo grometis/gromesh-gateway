@@ -7,5 +7,5 @@ import { AtRestService } from "./at-rest.js";
 // on every replica, run this once, then drop the old keys from GROMESH_ENCRYPTION_KEYS.
 const app = await createApp(loadConfig(), { logger: false });
 const report = await app.get(AtRestService).rotate();
-console.log(`re-sealed ${report.credentials} credentials, ${report.plugins} plugin configs, ${report.snapshots} snapshots`);
+console.log(`re-sealed ${report.credentials} credentials, ${report.plugins} plugin configs, ${report.snapshots} snapshots, ${report.certificates} certificate keys`);
 await app.close();

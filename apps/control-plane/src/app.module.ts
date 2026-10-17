@@ -17,6 +17,8 @@ import { PluginsModule } from "./plugins/plugins.js";
 import { SnapshotsModule } from "./snapshots/snapshots.js";
 import { UsersModule } from "./users/users.js";
 import { TokensModule } from "./tokens/tokens.js";
+import { UpstreamsModule } from "./upstreams/upstreams.js";
+import { CertificatesModule } from "./certificates/certificates.js";
 import { AnalyticsModule } from "./analytics/analytics.js";
 import { AtRestModule } from "./crypto/at-rest.module.js";
 import { CryptoModule } from "./crypto/crypto.js";
@@ -44,6 +46,8 @@ export class AppModule {
         SnapshotsModule,
         UsersModule,
         TokensModule,
+        UpstreamsModule,
+        CertificatesModule,
         AnalyticsModule,
       ],
       providers: [
