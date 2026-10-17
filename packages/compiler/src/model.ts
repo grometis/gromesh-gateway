@@ -40,6 +40,8 @@ export interface Consumer {
   id: string;
   username?: string | null;
   customId?: string | null;
+  /** ACL group names (`^[a-z0-9_-]{1,64}$`), matched by the acl plugin's allow/deny. */
+  aclGroups?: string[];
   tags?: string[];
 }
 
@@ -47,6 +49,29 @@ export interface KeyAuthCredential {
   id: string;
   consumerId: string;
   key: string;
+  tags?: string[];
+}
+
+export type JwtAlgorithm = "HS256" | "RS256" | "ES256";
+
+/** HS256 verifies with the shared `secret`; RS256/ES256 with `rsaPublicKey` (an EC key for ES256). */
+export interface JwtCredential {
+  id: string;
+  consumerId: string;
+  /** Matched against the token's `iss` claim. */
+  key: string;
+  algorithm: JwtAlgorithm;
+  secret?: string | null;
+  rsaPublicKey?: string | null;
+  tags?: string[];
+}
+
+export interface BasicAuthCredential {
+  id: string;
+  consumerId: string;
+  username: string;
+  /** Kong's salted hash (see basicAuthPasswordHash), never the password itself. */
+  passwordHash: string;
   tags?: string[];
 }
 
@@ -120,6 +145,9 @@ export interface GatewayState {
   routes: Route[];
   consumers: Consumer[];
   keyAuthCredentials: KeyAuthCredential[];
+  /** Absent in states stored before JWT and basic-auth existed: treated as empty. */
+  jwtCredentials?: JwtCredential[];
+  basicAuthCredentials?: BasicAuthCredential[];
   plugins: Plugin[];
   /** Absent in states stored before load balancing and TLS existed: treated as empty. */
   upstreams?: Upstream[];
@@ -182,6 +210,32 @@ export interface KongKeyAuthCredential {
   tags: string[];
 }
 
+export interface KongJwtSecret {
+  id: string;
+  consumer: string;
+  key: string;
+  algorithm: string;
+  secret?: string;
+  rsa_public_key?: string;
+  tags: string[];
+}
+
+export interface KongBasicAuthCredential {
+  id: string;
+  consumer: string;
+  username: string;
+  /** Already hashed: the config is applied with `_transform: false`. */
+  password: string;
+  tags: string[];
+}
+
+export interface KongAcl {
+  id: string;
+  consumer: string;
+  group: string;
+  tags: string[];
+}
+
 export interface KongPlugin {
   id: string;
   name: string;
@@ -230,14 +284,20 @@ export interface KongSni {
   tags: string[];
 }
 
-/** The load-balancing and TLS arrays are emitted only when non-empty, so older configs keep their hash. */
+/**
+ * The credential, load-balancing and TLS arrays are emitted only when non-empty, so older configs keep their hash.
+ * `_transform` is false only when basic-auth credentials are present (their passwords are already hashed).
+ */
 export interface KongDeclarativeConfig {
   _format_version: "3.0";
-  _transform: true;
+  _transform: boolean;
   services: KongService[];
   routes: KongRoute[];
   consumers: KongConsumer[];
   keyauth_credentials: KongKeyAuthCredential[];
+  jwt_secrets?: KongJwtSecret[];
+  basicauth_credentials?: KongBasicAuthCredential[];
+  acls?: KongAcl[];
   plugins: KongPlugin[];
   upstreams?: KongUpstream[];
   targets?: KongTarget[];

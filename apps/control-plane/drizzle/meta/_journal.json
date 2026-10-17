@@ -57,6 +57,13 @@
       "when": 1792201244974,
       "tag": "0007_upstreams_certificates",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1792262040759,
+      "tag": "0008_jwt_basic_auth_acl",
+      "breakpoints": true
     }
   ]
 }

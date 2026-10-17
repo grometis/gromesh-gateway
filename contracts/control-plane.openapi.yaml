@@ -675,7 +675,6 @@ paths:
       tags: [consumers]
       operationId: listJwtCredentials
       x-required-role: viewer
-      x-gromesh-planned: true
       responses:
         "200":
           description: JWT credentials (an HS256 `secret` is never returned)
@@ -694,7 +693,6 @@ paths:
       operationId: createJwtCredential
       security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
-      x-gromesh-planned: true
       description: |
         HS256 signs with a shared `secret`: if omitted a random 32-byte secret is generated, and it is returned only in
         this response. RS256 and ES256 verify with `rsaPublicKey` (an RSA or EC P-256 public key, despite Kong's field
@@ -732,7 +730,6 @@ paths:
       operationId: deleteJwtCredential
       security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
-      x-gromesh-planned: true
       responses:
         "204": { description: Deleted }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -742,7 +739,6 @@ paths:
       tags: [consumers]
       operationId: listBasicAuthCredentials
       x-required-role: viewer
-      x-gromesh-planned: true
       responses:
         "200":
           description: Basic-auth credentials (the password is never returned)
@@ -761,7 +757,6 @@ paths:
       operationId: createBasicAuthCredential
       security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
-      x-gromesh-planned: true
       description: |
         The password is write-only and never returned, not even here. The control plane keeps only Kong's salted hash of it
         (`sha1(password + consumerId)`), and the snapshot carries that hash (applied with `_transform: false`), never the
@@ -794,7 +789,6 @@ paths:
       operationId: deleteBasicAuthCredential
       security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
-      x-gromesh-planned: true
       responses:
         "204": { description: Deleted }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -804,7 +798,6 @@ paths:
       tags: [consumers]
       operationId: getConsumerAclGroups
       x-required-role: viewer
-      x-gromesh-planned: true
       responses:
         "200":
           description: The consumer's ACL groups (empty when it has none)
@@ -817,7 +810,6 @@ paths:
       operationId: replaceConsumerAclGroups
       security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
-      x-gromesh-planned: true
       description: Replaces the whole set; `[]` removes the consumer from every group. The `acl` plugin matches these names in `allow`/`deny`.
       requestBody:
         required: true

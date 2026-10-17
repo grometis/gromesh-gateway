@@ -46,17 +46,22 @@ async function agentConfig(server: Harness, envId: string) {
   const { nodeToken } = (await registered.json()) as { nodeToken: string };
   const res = await fetch(`${base}/snapshots/current`, { headers: { authorization: `Bearer ${nodeToken}` } });
   expect(res.status).toBe(200);
-  return ((await res.json()) as { hash: string; config: { keyauth_credentials: { key: string }[]; plugins: { name: string; config: Record<string, any> }[] } });
+  return ((await res.json()) as {
+    hash: string;
+    config: { keyauth_credentials: { key: string }[]; jwt_secrets?: { secret: string }[]; basicauth_credentials?: { password: string }[]; plugins: { name: string; config: Record<string, any> }[] };
+  });
 }
 
 /** The sealed columns of one environment's rows, as one string (other test files write their own rows meanwhile). */
 async function rowsOf(server: Harness, envId: string): Promise<string> {
-  const [keys, configs, snaps] = await Promise.all([
+  const [keys, configs, snaps, jwts, basics] = await Promise.all([
     server.sql.query("select key from keyauth_credentials where environment_id = $1", [envId]),
     server.sql.query("select config::text as v from plugins where environment_id = $1", [envId]),
     server.sql.query("select config::text as c, state::text as s from snapshots where environment_id = $1", [envId]),
+    server.sql.query("select secret as v from jwt_credentials where environment_id = $1", [envId]),
+    server.sql.query("select password_hash as v from basicauth_credentials where environment_id = $1", [envId]),
   ]);
-  return [...keys.rows.map((r) => r.key), ...configs.rows.map((r) => r.v), ...snaps.rows.flatMap((r) => [r.c, r.s])].join("\n");
+  return [...keys.rows.map((r) => r.key), ...configs.rows.map((r) => r.v), ...snaps.rows.flatMap((r) => [r.c, r.s]), ...jwts.rows.map((r) => r.v), ...basics.rows.map((r) => r.v)].join("\n");
 }
 
 /** A consumer with a chosen key and a rate-limiting plugin with a redis password, published. */
@@ -72,9 +77,22 @@ async function secrets(server: Harness) {
   const password = `redis-${uniq("pw")}`;
   const plugin = await server.api("POST", `/environments/${envId}/plugins`, { name: "rate-limiting", scope: { serviceId: svc.body.id }, config: { minute: 5, policy: "redis", redis: { host: "redis.internal", password } } });
   expect(plugin.status, JSON.stringify(plugin.body)).toBe(201);
+  const jwt = await server.api("POST", `/environments/${envId}/consumers/${consumer.body.id}/jwt`, {});
+  expect(jwt.status).toBe(201);
+  const basic = await server.api("POST", `/environments/${envId}/consumers/${consumer.body.id}/basic-auth`, { username: uniq("basic"), password: "basic-password" });
+  expect(basic.status).toBe(201);
   const published = await server.api("POST", `/environments/${envId}/snapshots`, {});
   expect(published.status).toBe(201);
-  return { envId, consumerId: consumer.body.id as string, credentialId: credential.body.id as string, key, password, version: published.body.version as number };
+  return {
+    envId,
+    consumerId: consumer.body.id as string,
+    credentialId: credential.body.id as string,
+    key,
+    password,
+    jwtSecret: jwt.body.secret as string,
+    basicHash: createHash("sha1").update("basic-password" + consumer.body.id).digest("hex"),
+    version: published.body.version as number,
+  };
 }
 
 describe("secrets at rest", () => {
@@ -175,7 +193,7 @@ describe("secrets at rest", () => {
   });
 
   it("rotates keys without downtime: new write key, old key still readable, everything re-sealed", async () => {
-    const { envId, key, password } = await secrets(h);
+    const { envId, key, password, jwtSecret, basicHash } = await secrets(h);
     // Replicas restarted with the new key as write key and the old one for reading can serve everything.
     const rotating = await startHarness({ encryption: { writeKey: ENCRYPTION_KEYS.k2, readKeys: [ENCRYPTION_KEYS.k1], fingerprintKey: ENCRYPTION_KEYS.fingerprint } });
     try {
@@ -187,7 +205,12 @@ describe("secrets at rest", () => {
       expect(mine).not.toContain(":k1:");
       expect(mine).toContain("enc:v2:k2:");
       expect(mine).not.toContain(key);
-      expect(await dump(rotating)).not.toContain(key);
+      expect(mine).not.toContain(jwtSecret);
+      expect(mine).not.toContain(basicHash);
+      const all = await dump(rotating);
+      expect(all).not.toContain(key);
+      expect(all).not.toContain(jwtSecret);
+      expect(all).not.toContain(basicHash);
     } finally {
       await rotating.close();
     }
@@ -197,6 +220,8 @@ describe("secrets at rest", () => {
       const served = await agentConfig(after, envId);
       expect(served.config.keyauth_credentials[0]!.key).toBe(key);
       expect(served.config.plugins[0]!.config.redis.password).toBe(password);
+      expect(served.config.jwt_secrets![0]!.secret).toBe(jwtSecret);
+      expect(served.config.basicauth_credentials![0]!.password).toBe(basicHash);
       expect((await after.api("GET", `/environments/${envId}/snapshots/1`)).status).toBe(200);
     } finally {
       await after.close();

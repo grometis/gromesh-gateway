@@ -8,6 +8,7 @@ import { useCanEdit } from "../auth";
 import { Field, FormErrorList } from "../components/Field";
 import { ConfirmDialog, Modal } from "../components/Modal";
 import { useEnvId } from "../components/Shell";
+import { AclGroupsPanel, BasicAuthCredentials, JwtCredentials } from "./ConsumerCredentials";
 import { ScopedPlugins } from "./Plugins";
 import { splitList, useInvalidateDraft } from "./Services";
 
@@ -133,11 +134,56 @@ export function ConsumerDetailPage() {
         <dt>Tags</dt>
         <dd>{c.tags?.join(", ") || "—"}</dd>
       </dl>
-      <KeyAuthCredentials envId={envId} consumer={c} canEdit={canEdit} />
+      <CredentialTabs envId={envId} consumer={c} canEdit={canEdit} />
       <ScopedPlugins envId={envId} scope={{ kind: "consumer", id: c.id }} title="Plugins do consumer" />
       {editing && <ConsumerForm envId={envId} consumer={c} onClose={() => setEditing(false)} />}
       {deleting && <DeleteConsumer envId={envId} consumer={c} onClose={() => setDeleting(false)} onDeleted={() => navigate("..")} />}
     </section>
+  );
+}
+
+const TABS = [
+  { id: "key-auth", label: "Key-auth", Panel: KeyAuthCredentials },
+  { id: "jwt", label: "JWT", Panel: JwtCredentials },
+  { id: "basic-auth", label: "Basic-auth", Panel: BasicAuthCredentials },
+  { id: "groups", label: "Grupos", Panel: AclGroupsPanel },
+] as const;
+
+/** Credentials and ACL groups of the consumer, one panel at a time (WAI-ARIA tabs, arrow keys move between them). */
+function CredentialTabs({ envId, consumer, canEdit }: { envId: string; consumer: Consumer; canEdit: boolean }) {
+  const [active, setActive] = useState<(typeof TABS)[number]["id"]>("key-auth");
+  const { Panel } = TABS.find((t) => t.id === active)!;
+  const move = (from: number, delta: number) => {
+    const next = TABS[(from + delta + TABS.length) % TABS.length]!;
+    setActive(next.id);
+    document.getElementById(`consumer-tab-${next.id}`)?.focus();
+  };
+  return (
+    <div>
+      <div role="tablist" aria-label="Credenciais do consumer" className="tabs">
+        {TABS.map((t, i) => (
+          <button
+            key={t.id}
+            id={`consumer-tab-${t.id}`}
+            type="button"
+            role="tab"
+            aria-selected={t.id === active}
+            aria-controls={`consumer-panel-${t.id}`}
+            tabIndex={t.id === active ? 0 : -1}
+            onClick={() => setActive(t.id)}
+            onKeyDown={(e) => {
+              if (e.key === "ArrowRight") move(i, 1);
+              if (e.key === "ArrowLeft") move(i, -1);
+            }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      <div role="tabpanel" id={`consumer-panel-${active}`} aria-labelledby={`consumer-tab-${active}`}>
+        <Panel envId={envId} consumer={consumer} canEdit={canEdit} />
+      </div>
+    </div>
   );
 }
 
@@ -302,13 +348,15 @@ function KeyAuthCredentials({ envId, consumer, canEdit }: { envId: string; consu
 
 /**
  * The full key exists only in this component's state: it is shown once after the 201, and closing the dialog
- * drops it (nothing goes to the query cache or to storage). From then on only `keyHint` is visible.
+ * drops it (nothing stays in the query or mutation cache, nor in storage). From then on only `keyHint` is visible.
  */
 function NewKey({ envId, consumerId, onDone }: { envId: string; consumerId: string; onDone: () => void }) {
   const [custom, setCustom] = useState("");
   const [errors, setErrors] = useState<FormErrors>({ fields: {}, form: [] });
   const [copied, setCopied] = useState(false);
   const create = useMutation({
+    // The response carries the secret: evict it from the mutation cache as soon as the dialog lets go of it.
+    gcTime: 0,
     mutationFn: () =>
       unwrap(
         api.POST("/environments/{envId}/consumers/{consumerId}/key-auth", {

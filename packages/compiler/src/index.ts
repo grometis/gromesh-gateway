@@ -1,6 +1,6 @@
 export * from "./model.js";
 export { platformPlugins, type PlatformPluginOptions } from "./platform-plugins.js";
-export { compile, validate, hashIssues, DEFAULT_MANAGED_TAG } from "./compile.js";
+export { basicAuthPasswordHash, compile, validate, hashIssues, DEFAULT_MANAGED_TAG } from "./compile.js";
 export { CompileError, type CompileIssue } from "./errors.js";
 export { canonicalJson, hashConfig } from "./hash.js";
 export { buildSnapshot, type SnapshotMeta } from "./snapshot.js";
