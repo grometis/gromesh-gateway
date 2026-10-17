@@ -150,22 +150,36 @@ describe("API tokens", () => {
     expect((await viewer.api("POST", "/users/me/tokens", { name: "t50", role: "viewer", expiresInDays: 30 })).status).toBe(201);
   });
 
-  it("counts invalid bearers in the login's per-address limiter", async () => {
+  it.each(["invalid", "expired"])("locks %s bearers independently of password login", async (kind) => {
     // Own replica trusting X-Forwarded-For, so this address is nobody else's (other test files share the database).
-    const strict = await startHarness({ loginMaxFailuresPerIp: 3, trustProxy: true });
-    const from = { "x-forwarded-for": "203.0.113.77" };
+    const strict = await startHarness({ loginMaxFailuresPerIp: 3, loginLockoutMs: 60_000, trustProxy: true });
+    const ip = kind === "invalid" ? "192.0.2.177" : "192.0.2.178";
+    const from = { "x-forwarded-for": ip };
     try {
+      const valid = await tokenFor(strict.api, "viewer");
+      let rejected = `ggt_${"x".repeat(43)}`;
+      if (kind === "expired") {
+        const expired = await tokenFor(strict.api, "viewer");
+        await strict.sql.query("update api_tokens set expires_at = now() - interval '1 second' where id = $1", [expired.id]);
+        rejected = expired.token;
+      }
       for (let i = 0; i < 3; i++) {
-        const res = await strict.anonymous("GET", "/environments", undefined, { authorization: `Bearer ggt_${"x".repeat(43)}`, ...from });
+        const res = await strict.anonymous("GET", "/environments", undefined, { authorization: `Bearer ${rejected}`, ...from });
         expect(res.status).toBe(401);
+        expect(res.headers.get("retry-after")).toBeNull();
       }
       const locked = await strict.anonymous("GET", "/environments", undefined, { authorization: "Bearer nonsense", ...from });
       expect(locked.status).toBe(429);
-      expect(locked.headers.get("retry-after")).toMatch(/^\d+$/);
-      // The same lock applies to the login from that address.
-      expect((await strict.anonymous("POST", "/auth/login", { email: strict.admin.email, password: strict.admin.password }, from)).status).toBe(429);
+      expect(Number(locked.headers.get("retry-after"))).toBeGreaterThan(0);
+      expect(Number(locked.headers.get("retry-after"))).toBeLessThanOrEqual(60);
+      const { rows } = await strict.sql.query("select key, failures, locked_until from login_attempts where key = any($1::text[])", [[`ip:${ip}`, `bearer-ip:${ip}`]]);
+      expect(rows).toEqual([{ key: `bearer-ip:${ip}`, failures: 3, locked_until: expect.any(Date) }]);
+      expect((await strict.anonymous("POST", "/auth/login", strict.admin, from)).status).toBe(200);
+      // A successful login does not clear the bearer lock; the lock is confined to this address.
+      expect((await strict.anonymous("GET", "/me", undefined, { authorization: `Bearer ${valid.token}`, ...from })).status).toBe(429);
+      expect((await strict.anonymous("GET", "/me", undefined, { authorization: `Bearer ${valid.token}`, "x-forwarded-for": "192.0.2.179" })).status).toBe(200);
     } finally {
-      await strict.sql.query("delete from login_attempts where key = 'ip:203.0.113.77'");
+      await strict.sql.query("delete from login_attempts where key = any($1::text[])", [[`ip:${ip}`, `bearer-ip:${ip}`]]);
       await strict.close();
     }
   });
