@@ -61,27 +61,33 @@ plugin="$(api -d '{"name":"rate-limiting","scope":{"serviceId":"'"$svc_id"'"},"c
 consumer_id="$(api -d '{"username":"seccheck"}' "$CP/environments/$env_id/consumers" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')"
 key="$(api -d '{}' "$CP/environments/$env_id/consumers/$consumer_id/key-auth" | sed -n 's/.*"key":"\([^"]*\)".*/\1/p')"
 [[ -n "$env_id" && -n "$svc_id" && -n "$consumer_id" && ${#key} -ge 20 ]] || { echo "fixture creation failed" >&2; exit 2; }
+# A JWT secret (shown once) and a basic-auth password, whose Kong hash is a secret too.
+jwt_secret="$(api -d '{}' "$CP/environments/$env_id/consumers/$consumer_id/jwt" | sed -n 's/.*"secret":"\([^"]*\)".*/\1/p')"
+bpw="seccheck-$(openssl rand -hex 12)"
+bhash="$(printf '%s%s' "$bpw" "$consumer_id" | openssl dgst -sha1 | sed 's/^.*= //')"
+basic="$(api -d '{"username":"seccheck-'"$RANDOM"'","password":"'"$bpw"'"}' "$CP/environments/$env_id/consumers/$consumer_id/basic-auth")"
+[[ ${#jwt_secret} -ge 32 && "$basic" == *'"username"'* && "$basic" != *"$bpw"* && "$basic" != *"$bhash"* ]] || { echo "credential creation failed" >&2; exit 2; }
 listed="$(api "$CP/environments/$env_id/consumers/$consumer_id/key-auth")"
 [[ "$listed" != *"$key"* && "$listed" == *keyHint* ]] && check S2 "Chave key-auth só na criação; depois só keyHint" PASS "" || check S2 "Chave key-auth" FAIL ""
 version="$(api -d '{}' "$CP/environments/$env_id/snapshots" | sed -n 's/.*"version":\([0-9]*\).*/\1/p')"
 snapshot="$(api "$CP/environments/$env_id/snapshots/$version")"
-[[ "$snapshot" != *"$key"* && "$snapshot" != *"$pw"* ]] && check S3 "Envelope do snapshot redigido para admin" PASS "" || check S3 "Envelope do snapshot" FAIL ""
+[[ "$snapshot" != *"$key"* && "$snapshot" != *"$pw"* && "$snapshot" != *"$jwt_secret"* && "$snapshot" != *"$bpw"* && "$snapshot" != *"$bhash"* ]] && check S3 "Envelope do snapshot redigido para admin" PASS "" || check S3 "Envelope do snapshot" FAIL ""
 audit="$(api "$CP/audit-events?environmentId=$env_id&limit=200")"
-[[ "$audit" != *"$key"* && "$audit" != *"$pw"* ]] && check S4 "Audit sem segredos" PASS "" || check S4 "Audit" FAIL ""
+[[ "$audit" != *"$key"* && "$audit" != *"$pw"* && "$audit" != *"$jwt_secret"* && "$audit" != *"$bpw"* && "$audit" != *"$bhash"* ]] && check S4 "Audit sem segredos" PASS "" || check S4 "Audit" FAIL ""
 # A certificate with its private key: the key must be sealed too (and never stored in clear).
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout "$work/tls.key" -out "$work/tls.pem" -days 2 -subj "/CN=seccheck.test" 2>/dev/null
 key_line="$(sed -n 2p "$work/tls.key")"
 cert_body="$(node -e 'const fs=require("fs");process.stdout.write(JSON.stringify({cert:fs.readFileSync(process.argv[1],"utf8"),key:fs.readFileSync(process.argv[2],"utf8"),snis:["seccheck-'"$RANDOM"'.test"]}))' "$work/tls.pem" "$work/tls.key")"
 cert_created="$(api -d "$cert_body" "$CP/environments/$env_id/certificates")"
 [[ "$cert_created" == *'"key":"REDACTED"'* && "$cert_created" != *"$key_line"* ]] || { echo "certificate creation failed" >&2; exit 2; }
-stored="$(docker compose -f deploy/compose/docker-compose.yml exec -T postgres psql -U gromesh -d gromesh -tAc "select count(*) from keyauth_credentials where key not like 'enc:v2:%' union all select count(*) from plugins where config::text like '%$pw%' union all select count(*) from snapshots where config::text not like '{\"\$enc\"%' or state::text not like '{\"\$enc\"%' union all select count(*) from certificates where key not like 'enc:v2:%' or key like '%$key_line%'" | tr '\n' ' ')"
-[[ "$stored" == "0 0 0 0 " ]] && check S5 "Segredos cifrados em repouso (credenciais, plugins, snapshots, chaves de certificado)" PASS "" || check S5 "Cifragem em repouso" FAIL "$stored"
+stored="$(docker compose -f deploy/compose/docker-compose.yml exec -T postgres psql -U gromesh -d gromesh -tAc "select count(*) from keyauth_credentials where key not like 'enc:v2:%' union all select count(*) from plugins where config::text like '%$pw%' union all select count(*) from snapshots where config::text not like '{\"\$enc\"%' or state::text not like '{\"\$enc\"%' union all select count(*) from certificates where key not like 'enc:v2:%' or key like '%$key_line%' union all select count(*) from jwt_credentials where secret not like 'enc:v2:%' or secret like '%$jwt_secret%' union all select count(*) from basicauth_credentials where password_hash not like 'enc:v2:%' or password_hash like '%$bhash%' or password_hash like '%$bpw%' union all select count(*) from audit_events where concat(before::text, after::text) like '%$bpw%' or concat(before::text, after::text) like '%$bhash%' or concat(before::text, after::text) like '%$jwt_secret%'" | tr '\n' ' ')"
+[[ "$stored" == "0 0 0 0 0 0 0 " ]] && check S5 "Segredos cifrados em repouso (credenciais, plugins, snapshots, chaves de certificado, segredo JWT, hash do basic-auth; senha nunca guardada)" PASS "" || check S5 "Cifragem em repouso" FAIL "$stored"
 api -X DELETE "$CP/environments/$env_id" > /dev/null
 
 # 5. Logs sanitized: the observability acceptance proves apikey never reaches ClickHouse or the Vector log.
 if node deploy/observability/acceptance.mjs > "$work/obs.log" 2>&1; then check L1 "Pipeline de logs sem credenciais (deploy/observability/acceptance.mjs)" PASS "$(tail -1 "$work/obs.log" | cut -c1-80)"; else check L1 "Pipeline de logs" FAIL "$(tail -1 "$work/obs.log")"; fi
 cp_logs="$(docker compose -f deploy/compose/docker-compose.yml logs --no-color control-plane 2>/dev/null)"
-[[ "$cp_logs" != *"$pw"* && "$cp_logs" != *"$key"* && "$cp_logs" != *"$ADMIN_PASSWORD"* ]] && check L2 "Log do control plane sem segredos nem senhas" PASS "" || check L2 "Log do control plane" FAIL ""
+[[ "$cp_logs" != *"$pw"* && "$cp_logs" != *"$key"* && "$cp_logs" != *"$ADMIN_PASSWORD"* && "$cp_logs" != *"$jwt_secret"* && "$cp_logs" != *"$bpw"* && "$cp_logs" != *"$bhash"* ]] && check L2 "Log do control plane sem segredos nem senhas" PASS "" || check L2 "Log do control plane" FAIL ""
 
 # 6. Images without CRITICAL: scripts/scan-images.sh (W7-X2) when present.
 if [[ -x scripts/scan-images.sh ]]; then
