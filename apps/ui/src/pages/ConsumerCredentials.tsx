@@ -90,7 +90,7 @@ export function JwtCredentials({ envId, consumer, canEdit }: { envId: string; co
 
 /**
  * Like the key-auth key, an HS256 secret exists only in this component's state: shown once after the 201, dropped
- * when the dialog closes (never in the query cache or in storage).
+ * when the dialog closes (never in the query or mutation cache, nor in storage).
  */
 function NewJwt({ envId, consumerId, onDone }: { envId: string; consumerId: string; onDone: () => void }) {
   const [form, setForm] = useState({ key: "", algorithm: "HS256" as JwtCredential["algorithm"], secret: "", rsaPublicKey: "" });
@@ -98,6 +98,8 @@ function NewJwt({ envId, consumerId, onDone }: { envId: string; consumerId: stri
   const [copied, setCopied] = useState(false);
   const hs = form.algorithm === "HS256";
   const create = useMutation({
+    // The response carries the secret: evict it from the mutation cache as soon as the dialog lets go of it.
+    gcTime: 0,
     mutationFn: () =>
       unwrap(
         api.POST("/environments/{envId}/consumers/{consumerId}/jwt", {

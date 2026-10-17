@@ -348,13 +348,15 @@ function KeyAuthCredentials({ envId, consumer, canEdit }: { envId: string; consu
 
 /**
  * The full key exists only in this component's state: it is shown once after the 201, and closing the dialog
- * drops it (nothing goes to the query cache or to storage). From then on only `keyHint` is visible.
+ * drops it (nothing stays in the query or mutation cache, nor in storage). From then on only `keyHint` is visible.
  */
 function NewKey({ envId, consumerId, onDone }: { envId: string; consumerId: string; onDone: () => void }) {
   const [custom, setCustom] = useState("");
   const [errors, setErrors] = useState<FormErrors>({ fields: {}, form: [] });
   const [copied, setCopied] = useState(false);
   const create = useMutation({
+    // The response carries the secret: evict it from the mutation cache as soon as the dialog lets go of it.
+    gcTime: 0,
     mutationFn: () =>
       unwrap(
         api.POST("/environments/{envId}/consumers/{consumerId}/key-auth", {
