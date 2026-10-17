@@ -66,6 +66,54 @@ export interface Plugin {
   tags?: string[];
 }
 
+export type UpstreamAlgorithm = "round-robin" | "least-connections" | "consistent-hashing" | "latency";
+export type HashOn = "none" | "consumer" | "ip" | "header" | "cookie";
+
+export interface UpstreamHealthchecks {
+  active?: {
+    type: "http" | "https" | "tcp";
+    httpPath?: string;
+    intervalSeconds?: number;
+    healthyThreshold?: number;
+    unhealthyThreshold?: number;
+    timeoutSeconds?: number;
+  } | null;
+  passive?: { unhealthyHttpFailures?: number; unhealthyTimeouts?: number } | null;
+}
+
+/** A load-balancing pool: a service whose host equals `name` balances across its targets. */
+export interface Upstream {
+  id: string;
+  name: string;
+  algorithm?: UpstreamAlgorithm;
+  hashOn?: HashOn;
+  hashFallback?: HashOn;
+  hashOnHeader?: string | null;
+  hashFallbackHeader?: string | null;
+  hashOnCookie?: string | null;
+  hashOnCookiePath?: string | null;
+  healthchecks?: UpstreamHealthchecks;
+  tags?: string[];
+}
+
+export interface Target {
+  id: string;
+  upstreamId: string;
+  /** host:port, IPv6 in brackets */
+  target: string;
+  weight?: number;
+  tags?: string[];
+}
+
+/** A TLS certificate (leaf first, then intermediates) with its private key and server names. */
+export interface Certificate {
+  id: string;
+  cert: string;
+  key: string;
+  snis: string[];
+  tags?: string[];
+}
+
 /** Everything that affects traffic in one environment, at one point in time. */
 export interface GatewayState {
   services: Service[];
@@ -73,6 +121,10 @@ export interface GatewayState {
   consumers: Consumer[];
   keyAuthCredentials: KeyAuthCredential[];
   plugins: Plugin[];
+  /** Absent in states stored before load balancing and TLS existed: treated as empty. */
+  upstreams?: Upstream[];
+  targets?: Target[];
+  certificates?: Certificate[];
 }
 
 export interface CompileOptions {
@@ -142,6 +194,43 @@ export interface KongPlugin {
   tags: string[];
 }
 
+export interface KongUpstream {
+  id: string;
+  name: string;
+  algorithm: string;
+  hash_on?: string;
+  hash_fallback?: string;
+  hash_on_header?: string;
+  hash_fallback_header?: string;
+  hash_on_cookie?: string;
+  hash_on_cookie_path?: string;
+  healthchecks?: Record<string, unknown>;
+  tags: string[];
+}
+
+export interface KongTarget {
+  id: string;
+  upstream: string;
+  target: string;
+  weight: number;
+  tags: string[];
+}
+
+export interface KongCertificate {
+  id: string;
+  cert: string;
+  key: string;
+  tags: string[];
+}
+
+export interface KongSni {
+  id: string;
+  name: string;
+  certificate: string;
+  tags: string[];
+}
+
+/** The load-balancing and TLS arrays are emitted only when non-empty, so older configs keep their hash. */
 export interface KongDeclarativeConfig {
   _format_version: "3.0";
   _transform: true;
@@ -150,6 +239,10 @@ export interface KongDeclarativeConfig {
   consumers: KongConsumer[];
   keyauth_credentials: KongKeyAuthCredential[];
   plugins: KongPlugin[];
+  upstreams?: KongUpstream[];
+  targets?: KongTarget[];
+  certificates?: KongCertificate[];
+  snis?: KongSni[];
 }
 
 /** What the agent downloads and applies. See contracts/snapshot.schema.json. */

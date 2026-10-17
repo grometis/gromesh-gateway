@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { CompileError, type CompileIssue } from "./errors.js";
 import { keyNameIssues, resolvePlatformKeyNames } from "./platform-plugins.js";
 import type {
@@ -9,7 +10,13 @@ import type {
   KongPlugin,
   KongRoute,
   KongService,
+  KongSni,
+  KongTarget,
+  KongUpstream,
+  KongCertificate,
   Plugin,
+  Upstream,
+  UpstreamHealthchecks,
 } from "./model.js";
 
 export const DEFAULT_MANAGED_TAG = "managed-by:gromesh";
@@ -19,6 +26,13 @@ const NAME_RE = /^[A-Za-z0-9._~-]+$/;
 const SERVICE_PROTOCOLS = new Set(["http", "https", "grpc", "grpcs", "tcp", "tls"]);
 const ROUTE_PROTOCOLS = new Set(["http", "https", "grpc", "grpcs"]);
 const HTTP_METHODS = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE", "CONNECT"]);
+const HOSTNAME_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/;
+const SNI_RE = /^(\*\.)?[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
+const TARGET_RE = /^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+):([0-9]{1,5})$/;
+const ALGORITHMS = new Set(["round-robin", "least-connections", "consistent-hashing", "latency"]);
+const HASH_ON = new Set(["none", "consumer", "ip", "header", "cookie"]);
+const HEADER_RE = /^[A-Za-z0-9-]+$/;
+const COOKIE_RE = /^[A-Za-z0-9_-]+$/;
 
 /**
  * Compiles a Gromesh GatewayState into a Kong declarative config (format 3.0, flat).
@@ -96,6 +110,20 @@ export function compile(state: GatewayState, options: CompileOptions = {}): Kong
     }),
   );
 
+  const upstreams: KongUpstream[] = byId(state.upstreams ?? []).map((u) => kongUpstream(u, tags(u.tags)));
+  const targets: KongTarget[] = byId(state.targets ?? []).map((t) => ({
+    id: t.id,
+    upstream: t.upstreamId,
+    target: t.target,
+    weight: t.weight ?? 100,
+    tags: tags(t.tags),
+  }));
+  const certificates: KongCertificate[] = byId(state.certificates ?? []).map((c) => ({ id: c.id, cert: c.cert, key: c.key, tags: tags(c.tags) }));
+  // SNIs are their own Kong entity; their ids derive from (certificate, name) so the output stays deterministic.
+  const snis: KongSni[] = byId(
+    (state.certificates ?? []).flatMap((c) => c.snis.map((name) => ({ id: derivedId(`sni:${c.id}:${name}`), name, certificate: c.id, tags: tags(c.tags) }))),
+  );
+
   return {
     _format_version: "3.0",
     _transform: true,
@@ -104,7 +132,61 @@ export function compile(state: GatewayState, options: CompileOptions = {}): Kong
     consumers,
     keyauth_credentials,
     plugins: kongPlugins,
+    ...(upstreams.length > 0 ? { upstreams } : {}),
+    ...(targets.length > 0 ? { targets } : {}),
+    ...(certificates.length > 0 ? { certificates } : {}),
+    ...(snis.length > 0 ? { snis } : {}),
   };
+}
+
+function kongUpstream(u: Upstream, tags: string[]): KongUpstream {
+  const algorithm = u.algorithm ?? "round-robin";
+  const hashing = algorithm === "consistent-hashing";
+  const hashOn = hashing ? (u.hashOn ?? "none") : undefined;
+  const hashFallback = hashing ? (u.hashFallback ?? "none") : undefined;
+  return clean({
+    id: u.id,
+    name: u.name,
+    algorithm,
+    hash_on: hashOn,
+    hash_fallback: hashFallback,
+    hash_on_header: hashOn === "header" ? (u.hashOnHeader ?? undefined) : undefined,
+    hash_fallback_header: hashFallback === "header" ? (u.hashFallbackHeader ?? undefined) : undefined,
+    hash_on_cookie: hashOn === "cookie" ? (u.hashOnCookie ?? undefined) : undefined,
+    hash_on_cookie_path: hashOn === "cookie" ? (u.hashOnCookiePath ?? "/") : undefined,
+    healthchecks: kongHealthchecks(u.healthchecks),
+    tags,
+  });
+}
+
+/** Absent checks keep Kong's defaults, which disable them (interval 0, failure thresholds 0). */
+function kongHealthchecks(h: UpstreamHealthchecks | undefined): Record<string, unknown> | undefined {
+  const out: Record<string, unknown> = {};
+  if (h?.active) {
+    const a = h.active;
+    const unhealthy = a.unhealthyThreshold ?? 3;
+    const interval = a.intervalSeconds ?? 10;
+    out.active = clean({
+      type: a.type,
+      http_path: a.type === "tcp" ? undefined : (a.httpPath ?? "/"),
+      timeout: a.timeoutSeconds ?? 1,
+      healthy: { interval, successes: a.healthyThreshold ?? 2 },
+      unhealthy: a.type === "tcp" ? { interval, tcp_failures: unhealthy, timeouts: unhealthy } : { interval, http_failures: unhealthy, tcp_failures: unhealthy, timeouts: unhealthy },
+    });
+  }
+  if (h?.passive) {
+    out.passive = { unhealthy: { http_failures: h.passive.unhealthyHttpFailures ?? 5, timeouts: h.passive.unhealthyTimeouts ?? 3 } };
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** A UUID derived from a name (version 5 layout over SHA-1), stable across compilations. */
+function derivedId(name: string): string {
+  const h = createHash("sha1").update(`gromesh:${name}`).digest();
+  h[6] = (h[6]! & 0x0f) | 0x50;
+  h[8] = (h[8]! & 0x3f) | 0x80;
+  const x = h.subarray(0, 16).toString("hex");
+  return `${x.slice(0, 8)}-${x.slice(8, 12)}-${x.slice(12, 16)}-${x.slice(16, 20)}-${x.slice(20, 32)}`;
 }
 
 export function validate(state: GatewayState): CompileIssue[] {
@@ -207,6 +289,70 @@ export function validate(state: GatewayState): CompileIssue[] {
     pluginScopes.add(scopeKey);
   });
 
+  const upstreamIds = new Set<string>();
+  const upstreamNames = new Set<string>();
+  (state.upstreams ?? []).forEach((u, i) => {
+    const p = `upstreams[${i}]`;
+    checkId(p, u.id);
+    if (!HOSTNAME_RE.test(u.name) || u.name.length > 253) add(`${p}.name`, "must be a lowercase hostname");
+    if (upstreamNames.has(u.name)) add(`${p}.name`, `duplicate name "${u.name}"`);
+    upstreamNames.add(u.name);
+    const algorithm = u.algorithm ?? "round-robin";
+    if (!ALGORITHMS.has(algorithm)) add(`${p}.algorithm`, `unsupported algorithm "${algorithm}"`);
+    issues.push(...hashIssues(u, p));
+    upstreamIds.add(u.id);
+  });
+
+  const targetKeys = new Set<string>();
+  (state.targets ?? []).forEach((t, i) => {
+    const p = `targets[${i}]`;
+    checkId(p, t.id);
+    if (!upstreamIds.has(t.upstreamId)) add(`${p}.upstreamId`, `unknown upstream ${t.upstreamId}`);
+    const m = TARGET_RE.exec(t.target);
+    if (!m || Number(m[2]) < 1 || Number(m[2]) > 65535) add(`${p}.target`, "must be host:port with a port between 1 and 65535");
+    const weight = t.weight ?? 100;
+    if (!Number.isInteger(weight) || weight < 0 || weight > 65535) add(`${p}.weight`, "must be an integer between 0 and 65535");
+    const key = `${t.upstreamId}|${t.target}`;
+    if (targetKeys.has(key)) add(`${p}.target`, `duplicate target "${t.target}" in the upstream`);
+    targetKeys.add(key);
+  });
+
+  const sniNames = new Set<string>();
+  (state.certificates ?? []).forEach((c, i) => {
+    const p = `certificates[${i}]`;
+    checkId(p, c.id);
+    if (!c.cert) add(`${p}.cert`, "is required");
+    if (!c.key) add(`${p}.key`, "is required");
+    c.snis.forEach((name, j) => {
+      if (!SNI_RE.test(name) || name.length > 253) add(`${p}.snis[${j}]`, "must be a lowercase server name; a wildcard only as the '*.' prefix");
+      if (sniNames.has(name)) add(`${p}.snis[${j}]`, `duplicate SNI "${name}"`);
+      sniNames.add(name);
+    });
+  });
+
+  return issues;
+}
+
+/** The hashing rules of an upstream; shared with the control plane, which reports them as 422. */
+export function hashIssues(u: Pick<Upstream, "algorithm" | "hashOn" | "hashFallback" | "hashOnHeader" | "hashFallbackHeader" | "hashOnCookie">, p: string): CompileIssue[] {
+  const issues: CompileIssue[] = [];
+  const add = (path: string, message: string) => issues.push({ path: p ? `${p}.${path}` : path, message });
+  const hashOn = u.hashOn ?? "none";
+  const hashFallback = u.hashFallback ?? "none";
+  if (!HASH_ON.has(hashOn)) add("hashOn", `unsupported value "${hashOn}"`);
+  if (!HASH_ON.has(hashFallback)) add("hashFallback", `unsupported value "${hashFallback}"`);
+  if ((u.algorithm ?? "round-robin") !== "consistent-hashing") {
+    if (hashOn !== "none") add("hashOn", "only applies with algorithm consistent-hashing");
+    if (hashFallback !== "none") add("hashFallback", "only applies with algorithm consistent-hashing");
+    return issues;
+  }
+  if (hashOn === "header" && !(u.hashOnHeader && HEADER_RE.test(u.hashOnHeader))) add("hashOnHeader", "is required when hashOn is header");
+  if (hashOn === "cookie" && !(u.hashOnCookie && COOKIE_RE.test(u.hashOnCookie))) add("hashOnCookie", "is required when hashOn is cookie");
+  if (hashFallback === "header" && !(u.hashFallbackHeader && HEADER_RE.test(u.hashFallbackHeader))) add("hashFallbackHeader", "is required when hashFallback is header");
+  if (hashOn === "cookie" && hashFallback !== "none") add("hashFallback", "must be none when hashOn is cookie");
+  if (hashFallback === "cookie") add("hashFallback", "cookie is only valid in hashOn");
+  if (hashOn === "none" && hashFallback !== "none") add("hashFallback", "requires hashOn other than none");
+  if (hashOn !== "none" && hashOn === hashFallback && hashOn !== "header") add("hashFallback", "must differ from hashOn");
   return issues;
 }
 
