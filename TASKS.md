@@ -49,6 +49,9 @@ git worktree add ../gg-codex  -b task/W1-X1-kong-image
 | P2-C2 | Claude | P2-C1 | `apps/ui/` |
 | P2-X1 | Codex | — | `deploy/observability/`, `deploy/helm/data-plane/files/vector/`, `e2e/` |
 | P2-X2 | Codex | P2-X1 | `apps/control-plane/src/tokens/`, `apps/control-plane/src/auth/` (só o limitador), testes correspondentes |
+| P3-C0 | Claude | — | `contracts/` (+ `apps/ui/src/api/schema.d.ts` gerado e rótulos de tipo da UI) |
+| P3-C1 | Claude | P3-C0 | `apps/control-plane/`, `packages/compiler/`, `apps/ui/`, `e2e/security-checklist.*`, `contracts/` (só remover `x-gromesh-planned`) |
+| P3-X1 | Codex | — | `apps/control-plane/src/auth/`, `apps/control-plane/test/`, `scripts/` (só o gerador, se precisar) |
 
 Ordem de merge na semana 3: W2-C2 → W3-X1 → W3-C1 → W3-X2. Quem mergeia depois faz rebase; `src/db/schema.ts` e `drizzle/` são alterados por uma frente por vez.
 
@@ -374,6 +377,33 @@ Aceite: N falhas de bearer bloqueiam só o bearer daquele IP (429) e o login por
 
 ---
 
+## P3 — Credenciais JWT, basic-auth e grupos ACL; 401 antes de 404
+
+### P3-C0 [Claude] Contrato
+- Sub-recursos do consumer, no mesmo padrão do key-auth:
+  - `jwt`: `key` (issuer/kid), `algorithm` (HS256 | RS256 | ES256), `secret` (HS256; write-only, gerado se ausente, exibido só no 201) ou `rsaPublicKey` (PEM; RS256/ES256).
+  - `basic-auth`: `username` (único no environment), `password` (write-only, nunca devolvida).
+  - `acl`: `groups[]` (nomes `^[a-z0-9_-]{1,64}$`).
+- Plugins `jwt`, `basic-auth` e `acl` no catálogo com `supportedInDbless` conferido.
+- 409 para `key` de jwt e `username` duplicados no environment. Operações novas com `x-gromesh-planned: true`.
+
+Aceite: lint válido, diff aprovado antes do P3-C1.
+
+### P3-C1 [Claude] Control plane + compilador + UI
+- Segredos (`secret` do jwt, `password` do basic-auth) cifrados em repouso (`enc:v2` com contexto), redigidos em audit, diff e envelope.
+- Compilador: `jwt_secrets`, `basicauth_credentials` e `acls` no formato do Kong 3.9, determinístico. A senha do basic-auth nunca fica em claro no snapshot persistido no Postgres.
+- UI: abas JWT, Basic-auth e Grupos na tela do consumer; segredos exibidos uma única vez.
+
+Aceite (Kong real do compose): JWT HS256 assinado no teste → 200, assinatura errada → 401; RS256 com par gerado no teste → 200; basic-auth certo → 200, errado → 401; `acl` com `allow: [grupo]` → consumer do grupo 200, fora do grupo 403. S5 do checklist cobre as novas colunas.
+
+### P3-X1 [Codex] 401 antes de 404 para anônimos (backlog 10)
+- Lista de rotas públicas gerada do contrato em build/teste (operações sem `security` ou com `security` vazio, mais os endpoints do agente do `agent-protocol`).
+- Middleware antes do roteamento: requisição a `/api/v1/*` sem sessão nem bearer, fora dessa lista → 401; o resto segue como hoje.
+
+Aceite: anônimo em rota inexistente → 401 (não 404); anônimo em rota pública → comportamento atual; agente com node token continua funcionando (e2e do compose e kind); teste que falha se a lista divergir do contrato.
+
+---
+
 ## Backlog (pós-MVP, em ordem de prioridade)
 
 1. **Observabilidade resiliente:** feito (B1, PR #5). `dns_not_found_ttl`/`dns_error_ttl` = 1 s no compose e no chart (NXDOMAIN frio do coletor: 80,6 s → 10,3 s nas duas imagens), fila do http-log cobrindo 60 s, alerta `CollectorWithoutEvents` no Prometheus (compose e chart) e aceite automatizado em `e2e/observability.spec.ts` (reinício do coletor e NXDOMAIN frio perdem 0 s de eventos).
@@ -385,9 +415,9 @@ Aceite: N falhas de bearer bloqueiam só o bearer daquele IP (429) e o login por
 7. **Observabilidade:** feito (B7). O compilador injeta no http-log a união dos `key_names` dos key-auth publicados (validados por `^[A-Za-z0-9._-]{1,64}$`, 422 em `config.key_names` na API); o Vector remove esses nomes de header e query por evento; `GROMESH_KEY_NAMES` fica como fallback/união. Aceite em `e2e/key-names.spec.ts`.
 8. **Snapshot por cluster:** em andamento como P1-X1 (persistir o node token do agente).
 9. **Proteção da `main` no GitHub:** aplicar `.github/rulesets/main.json` (`gh api -X POST repos/grometis/gromesh-gateway/rulesets --input .github/rulesets/main.json`) quando a conta tiver GitHub Pro; até lá vale o hook `pre-push` de `.githooks/` (CLAUDE.md, regra 10).
-10. **401 antes de 404 para anônimos:** hoje uma rota sem handler responde 404 mesmo sem sessão (um anônimo descobre quais rotas existem). Rejeitar com 401 antes do roteamento, com allowlist de rotas públicas gerada do contrato (incluindo os endpoints do agente).
+10. **401 antes de 404 para anônimos:** em andamento como P3-X1. Hoje uma rota sem handler responde 404 mesmo sem sessão (um anônimo descobre quais rotas existem). Rejeitar com 401 antes do roteamento, com allowlist de rotas públicas gerada do contrato (incluindo os endpoints do agente).
 11. **Retenção por rota no ClickHouse:** o `path` pode ser sensível mesmo mascarado; permitir retenção menor (TTL) para rotas marcadas, em vez dos 7 dias globais da tabela `requests`.
-12. **P2: upstreams/targets + certificados/SNIs:** entidades do Kong ainda não cobertas pelo modelo (balanceamento por upstream/targets, certificados e SNIs); contrato depois do P1-C0.
+12. **P2: upstreams/targets + certificados/SNIs:** feito (P2-C0..C2, PRs #27, #31, #32). Entidades do Kong ainda não cobertas pelo modelo (balanceamento por upstream/targets, certificados e SNIs); contrato depois do P1-C0.
 13. **Flake do `mvp-e2e` em kind:** causa encontrada e corrigida (PR #25). "traffic must reach the analytics API" em 5 execuções em 2026-10-16 (runs 38960971263, 38967623348, 38968335996, 38969548580, 38978312100): o spec usava `/mvp-<8 hex>`, e desde a máscara de dado pessoal (B5) uma sequência de 6+ dígitos vira `{num}` no ClickHouse (~10% das execuções; ex.: `/mvp-629762c6`). O spec passou a usar o UUID inteiro. Fica a lição: paths de teste com sufixo aleatório devem usar UUID completo. Os logs dos pods como artefato do job em falha seguem no P1-X2.
 14. **Máscara de path por segmento:** feito (P2-X1). Um segmento com 6+ dígitos seguidos que não é UUID vira `{id}` inteiro (`/mvp-629762c6` → `/{id}`, `/orders/507f1f77bcf86cd799439011` → `/orders/{id}`); CPF/CNPJ completos e segmentos com e-mail mantêm `{cpf}`, `{cnpj}`, `{email}`; UUIDs e ids curtos intactos.
 15. **Contador separado para falhas de bearer:** feito (P2-X2). Falhas de token usam a chave própria `bearer-ip:<ip>` (mesmo limiar e janela do login por endereço); um pipeline com token expirado não bloqueia mais o login por senha do mesmo IP, e vice-versa.
