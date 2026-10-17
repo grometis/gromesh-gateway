@@ -76,3 +76,44 @@ export interface UserUpdate {
   active?: boolean;
   password?: string;
 }
+
+export type HashOn = "none" | "consumer" | "ip" | "header" | "cookie";
+
+export interface UpstreamHealthchecks {
+  active?: {
+    type: "http" | "https" | "tcp";
+    httpPath?: string;
+    intervalSeconds?: number;
+    healthyThreshold?: number;
+    unhealthyThreshold?: number;
+    timeoutSeconds?: number;
+  } | null;
+  passive?: { unhealthyHttpFailures?: number; unhealthyTimeouts?: number } | null;
+}
+
+export interface UpstreamWrite {
+  name: string;
+  algorithm?: "round-robin" | "least-connections" | "consistent-hashing" | "latency";
+  hashOn?: HashOn;
+  hashFallback?: HashOn;
+  hashOnHeader?: string;
+  hashFallbackHeader?: string;
+  hashOnCookie?: string;
+  hashOnCookiePath?: string;
+  healthchecks?: UpstreamHealthchecks;
+  tags?: string[];
+}
+
+export interface TargetWrite {
+  target: string;
+  weight?: number;
+  tags?: string[];
+}
+
+export interface CertificateWrite {
+  cert: string;
+  key: string;
+  snis: string[];
+  tags?: string[];
+}
+

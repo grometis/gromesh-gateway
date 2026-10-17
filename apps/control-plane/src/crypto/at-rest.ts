@@ -2,21 +2,22 @@ import { Inject, Injectable, Logger } from "@nestjs/common";
 import { and, eq, isNull, or, sql } from "drizzle-orm";
 import type pg from "pg";
 import { DB, PG_POOL, type Db } from "../db/db.js";
-import { keyAuthCredentials, plugins, snapshots } from "../db/schema.js";
+import { certificates, keyAuthCredentials, plugins, snapshots } from "../db/schema.js";
 import { PluginCatalog } from "../plugin-catalog/catalog.js";
-import { credentialContext, ENCRYPTOR, Encryptor, isLegacySealed, isSealed, isSealedJson, pluginSecretContext, snapshotContext } from "./crypto.js";
+import { certificateKeyContext, credentialContext, ENCRYPTOR, Encryptor, isLegacySealed, isSealed, isSealedJson, pluginSecretContext, snapshotContext } from "./crypto.js";
 
 export interface AtRestReport {
   credentials: number;
   plugins: number;
   snapshots: number;
+  certificates: number;
   /** Another replica held the lock: nothing was done here. */
   skipped: boolean;
 }
 
 /** Test hook: runs before each row is written back, so a concurrent edit can be interposed deterministically. */
 export interface AtRestHooks {
-  beforeWrite?: (table: "credentials" | "plugins" | "snapshots", id: string) => Promise<void>;
+  beforeWrite?: (table: "credentials" | "plugins" | "snapshots" | "certificates", id: string) => Promise<void>;
 }
 
 /** One replica re-seals at a time: the others skip. */
@@ -65,7 +66,7 @@ export class AtRestService {
     const client = await this.created.pool.connect();
     try {
       const { rows } = await client.query<{ locked: boolean }>("select pg_try_advisory_lock($1) as locked", [LOCK_KEY]);
-      if (!rows[0]?.locked) return { credentials: 0, plugins: 0, snapshots: 0, skipped: true };
+      if (!rows[0]?.locked) return { credentials: 0, plugins: 0, snapshots: 0, certificates: 0, skipped: true };
       try {
         return { ...(await work()), skipped: false };
       } finally {
@@ -77,7 +78,7 @@ export class AtRestService {
   }
 
   private async reseal(needsText: (stored: string) => boolean, needsDoc: (doc: unknown) => boolean, hooks: AtRestHooks): Promise<Omit<AtRestReport, "skipped">> {
-    const report = { credentials: 0, plugins: 0, snapshots: 0 };
+    const report = { credentials: 0, plugins: 0, snapshots: 0, certificates: 0 };
 
     for (const { id } of await this.db.select({ id: keyAuthCredentials.id }).from(keyAuthCredentials).where(or(isNull(keyAuthCredentials.keyHash), sql`true`))) {
       await this.retry("credentials", id, async () => {
@@ -147,8 +148,25 @@ export class AtRestService {
       });
     }
 
-    if (report.credentials + report.plugins + report.snapshots > 0) {
-      this.logger.log(`Sealed ${report.credentials} credentials, ${report.plugins} plugin configs, ${report.snapshots} snapshots`);
+    for (const { id } of await this.db.select({ id: certificates.id }).from(certificates)) {
+      await this.retry("certificates", id, async () => {
+        const [row] = await this.db.select({ key: certificates.key }).from(certificates).where(eq(certificates.id, id));
+        if (!row || !needsText(row.key)) return true;
+        const ctx = certificateKeyContext(id);
+        await hooks.beforeWrite?.("certificates", id);
+        const written = await this.db
+          .update(certificates)
+          .set({ key: this.enc.seal(this.enc.open(row.key, ctx), ctx) })
+          .where(and(eq(certificates.id, id), eq(certificates.key, row.key)))
+          .returning({ id: certificates.id });
+        if (written.length === 0) return false;
+        report.certificates++;
+        return true;
+      });
+    }
+
+    if (report.credentials + report.plugins + report.snapshots + report.certificates > 0) {
+      this.logger.log(`Sealed ${report.credentials} credentials, ${report.plugins} plugin configs, ${report.snapshots} snapshots, ${report.certificates} certificate keys`);
     }
     return report;
   }

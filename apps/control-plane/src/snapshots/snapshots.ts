@@ -59,12 +59,13 @@ export function toSnapshotSummary(r: SnapshotSummaryRow, isCurrent: boolean, cha
 
 type RedactPluginConfig = (name: string, config: Record<string, unknown>) => Record<string, unknown>;
 
-/** Credential keys and plugin secrets never leave through the API, admin included (contract: getSnapshot). */
+/** Credential keys, plugin secrets and certificate keys never leave through the API, admin included (contract: getSnapshot). */
 export function maskConfigFor(_role: Role, config: KongDeclarativeConfig, redact: RedactPluginConfig = (_n, c) => c): KongDeclarativeConfig {
   return {
     ...config,
     keyauth_credentials: config.keyauth_credentials.map((c) => ({ ...c, key: "REDACTED" })),
     plugins: config.plugins.map((p) => ({ ...p, config: redact(p.name, p.config) })),
+    ...(config.certificates ? { certificates: config.certificates.map((c) => ({ ...c, key: "REDACTED" })) } : {}),
   };
 }
 

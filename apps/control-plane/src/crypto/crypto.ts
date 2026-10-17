@@ -19,6 +19,7 @@ export interface SealContext {
 
 export const credentialContext = (id: string): SealContext => ({ table: "keyauth_credentials", column: "key", id });
 export const pluginSecretContext = (id: string, path: string[]): SealContext => ({ table: "plugins", column: `config.${path.join(".")}`, id });
+export const certificateKeyContext = (id: string): SealContext => ({ table: "certificates", column: "key", id });
 export const snapshotContext = (environmentId: string, version: number, column: "config" | "state"): SealContext => ({ table: "snapshots", column, id: `${environmentId}:${version}` });
 
 const aad = (keyId: string, ctx: SealContext | null) => Buffer.from(ctx ? [keyId, ctx.table, ctx.column, ctx.id].join("\0") : keyId);

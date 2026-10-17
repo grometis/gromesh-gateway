@@ -28,6 +28,11 @@ export function redactAgentError(
   const secrets = new Set<string>([nodeToken]);
   if (state) {
     for (const credential of state.keyAuthCredentials) collectSecrets(credential.key, "REDACTED", secrets);
+    for (const certificate of state.certificates ?? []) {
+      collectSecrets(certificate.key, "REDACTED", secrets);
+      // The base64 body of the key, in case Kong quotes it without the PEM armour.
+      for (const line of certificate.key.split("\n")) if (line.length >= 32 && !line.startsWith("-----")) secrets.add(line);
+    }
     for (const plugin of state.plugins) {
       const config = plugin.config ?? {};
       collectSecrets(config, catalog.redactConfig(plugin.name, config), secrets);

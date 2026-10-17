@@ -10,7 +10,9 @@ import { decodeCursor, parseLimit, toPage } from "../common/pagination.js";
 import { conflict, notFound, unprocessable } from "../common/problem.js";
 import { DB, type Db, type Executor } from "../db/db.js";
 import { consumerValues, keyAuthValues } from "../consumers/consumers.js";
-import { consumers, keyAuthCredentials, plugins, routes, services, type RouteRow, type ServiceRow } from "../db/schema.js";
+import { consumers, keyAuthCredentials, plugins, routes, services, targets, upstreams, type RouteRow, type ServiceRow } from "../db/schema.js";
+import { loadCertificates, restoreCertificates } from "../certificates/certificates.js";
+import { targetState, targetValues, upstreamState, upstreamValues } from "../upstreams/upstreams.js";
 import { pluginValues } from "../plugins/plugins.js";
 import { credentialContext, type Encryptor, pluginSecretContext } from "../crypto/crypto.js";
 import type { PluginCatalog } from "../plugin-catalog/catalog.js";
@@ -104,12 +106,15 @@ function listFilter(envCol: PgColumn, nameCol: PgColumn, idCol: PgColumn, envId:
 
 /** Everything in the environment's draft that affects traffic, in the compiler's domain model. */
 export async function loadGatewayState(tx: Executor, envId: string, enc: Encryptor, catalog: PluginCatalog): Promise<GatewayState> {
-  const [svcRows, routeRows, consumerRows, keyRows, pluginRows] = await Promise.all([
+  const [svcRows, routeRows, consumerRows, keyRows, pluginRows, upstreamRows, targetRows, certs] = await Promise.all([
     tx.select().from(services).where(eq(services.environmentId, envId)),
     tx.select().from(routes).where(eq(routes.environmentId, envId)),
     tx.select().from(consumers).where(eq(consumers.environmentId, envId)),
     tx.select().from(keyAuthCredentials).where(eq(keyAuthCredentials.environmentId, envId)),
     tx.select().from(plugins).where(eq(plugins.environmentId, envId)),
+    tx.select().from(upstreams).where(eq(upstreams.environmentId, envId)),
+    tx.select().from(targets).where(eq(targets.environmentId, envId)),
+    loadCertificates(tx, envId, enc),
   ]);
   return {
     services: svcRows.map((s) => {
@@ -131,6 +136,9 @@ export async function loadGatewayState(tx: Executor, envId: string, enc: Encrypt
       protocols: optional(p.protocols),
       tags: p.tags,
     })),
+    upstreams: upstreamRows.map(upstreamState),
+    targets: targetRows.map(targetState),
+    certificates: certs,
   };
 }
 
@@ -142,6 +150,15 @@ export async function restoreGatewayState(tx: Executor, envId: string, state: Ga
   await tx.delete(routes).where(eq(routes.environmentId, envId));
   await tx.delete(consumers).where(eq(consumers.environmentId, envId));
   await tx.delete(services).where(eq(services.environmentId, envId));
+  // Targets go with their upstream (ON DELETE CASCADE); SNIs with their certificate.
+  await tx.delete(upstreams).where(eq(upstreams.environmentId, envId));
+  if ((state.upstreams ?? []).length > 0) {
+    await tx.insert(upstreams).values(state.upstreams!.map((u) => ({ id: u.id, environmentId: envId, ...upstreamValues(u) })));
+  }
+  if ((state.targets ?? []).length > 0) {
+    await tx.insert(targets).values(state.targets!.map((t) => ({ id: t.id, environmentId: envId, upstreamId: t.upstreamId, ...targetValues(t) })));
+  }
+  await restoreCertificates(tx, envId, state.certificates ?? [], enc);
   if (state.services.length > 0) {
     await tx.insert(services).values(state.services.map((s) => ({ id: s.id, environmentId: envId, ...serviceValues(s) })));
   }

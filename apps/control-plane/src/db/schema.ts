@@ -12,7 +12,7 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
-import type { GatewayState, KongDeclarativeConfig } from "@gromesh/compiler";
+import type { GatewayState, KongDeclarativeConfig, UpstreamHealthchecks } from "@gromesh/compiler";
 import type { SealedJson } from "../crypto/crypto.js";
 
 const timestamps = {
@@ -131,6 +131,84 @@ export const services = pgTable(
     ...timestamps,
   },
   (t) => [uniqueIndex("services_env_name_uq").on(t.environmentId, t.name)],
+);
+
+/** Load-balancing pools; a service whose host equals `name` balances across the targets. */
+export const upstreams = pgTable(
+  "upstreams",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    environmentId: uuid("environment_id")
+      .notNull()
+      .references(() => environments.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    algorithm: text("algorithm").notNull().default("round-robin"),
+    hashOn: text("hash_on").notNull().default("none"),
+    hashFallback: text("hash_fallback").notNull().default("none"),
+    hashOnHeader: text("hash_on_header"),
+    hashFallbackHeader: text("hash_fallback_header"),
+    hashOnCookie: text("hash_on_cookie"),
+    hashOnCookiePath: text("hash_on_cookie_path"),
+    // { active, passive } with defaults filled in; null halves are off.
+    healthchecks: jsonb("healthchecks").$type<{ active: NonNullable<UpstreamHealthchecks["active"]> | null; passive: NonNullable<UpstreamHealthchecks["passive"]> | null }>().notNull(),
+    tags: text("tags").array().notNull().default(sql`'{}'::text[]`),
+    ...timestamps,
+  },
+  (t) => [uniqueIndex("upstreams_env_name_uq").on(t.environmentId, t.name)],
+);
+
+export const targets = pgTable(
+  "targets",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    environmentId: uuid("environment_id")
+      .notNull()
+      .references(() => environments.id, { onDelete: "cascade" }),
+    upstreamId: uuid("upstream_id")
+      .notNull()
+      .references(() => upstreams.id, { onDelete: "cascade" }),
+    target: text("target").notNull(),
+    weight: integer("weight").notNull().default(100),
+    tags: text("tags").array().notNull().default(sql`'{}'::text[]`),
+    ...timestamps,
+  },
+  (t) => [uniqueIndex("targets_upstream_target_uq").on(t.upstreamId, t.target), index("targets_env_idx").on(t.environmentId)],
+);
+
+/** TLS certificates; `key` is sealed (enc:v2, context certificates.key + id) and never leaves the API. */
+export const certificates = pgTable(
+  "certificates",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    environmentId: uuid("environment_id")
+      .notNull()
+      .references(() => environments.id, { onDelete: "cascade" }),
+    cert: text("cert").notNull(),
+    key: text("key").notNull(),
+    subject: text("subject").notNull(),
+    issuer: text("issuer").notNull(),
+    notBefore: timestamp("not_before", { withTimezone: true }).notNull(),
+    notAfter: timestamp("not_after", { withTimezone: true }).notNull(),
+    fingerprintSha256: text("fingerprint_sha256").notNull(),
+    tags: text("tags").array().notNull().default(sql`'{}'::text[]`),
+    ...timestamps,
+  },
+  (t) => [index("certificates_env_idx").on(t.environmentId)],
+);
+
+/** One row per server name: the unique index keeps SNIs unique in the environment, races included. */
+export const certificateSnis = pgTable(
+  "certificate_snis",
+  {
+    environmentId: uuid("environment_id")
+      .notNull()
+      .references(() => environments.id, { onDelete: "cascade" }),
+    certificateId: uuid("certificate_id")
+      .notNull()
+      .references(() => certificates.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.environmentId, t.name] }), index("certificate_snis_cert_idx").on(t.certificateId)],
 );
 
 export const routes = pgTable(
@@ -294,3 +372,7 @@ export const clusterNodes = pgTable("cluster_nodes", {
 
 export type ClusterRow = typeof clusters.$inferSelect;
 export type ClusterNodeRow = typeof clusterNodes.$inferSelect;
+
+export type UpstreamRow = typeof upstreams.$inferSelect;
+export type TargetRow = typeof targets.$inferSelect;
+export type CertificateRow = typeof certificates.$inferSelect;
