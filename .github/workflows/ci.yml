@@ -232,6 +232,14 @@ jobs:
           name: ui-acceptance-failure
           path: apps/ui/test-results/
           retention-days: 7
+      # Services and the publish strip at 1440 and 390 (e2e/visual.spec.ts), for design review.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-screenshots
+          path: apps/ui/test-results/screenshots/
+          if-no-files-found: error
+          retention-days: 30
 
   agent:
     needs: changes
