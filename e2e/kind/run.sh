@@ -128,10 +128,50 @@ k exec deployment/cp-control-plane -- node -e \
   "http://$pod_ip:8100/status/ready"
 forward mvp-data-plane 18000 8000
 
+# A second data plane with the chart's defaults (no collector, two replicas), in its own namespace and cluster: the
+# default install path the former helm-e2e job covered. Only what kind needs is set (local images, the control
+# plane in the other namespace); every feature keeps its default.
+ns2="${namespace}-defaults"
+kubectl create namespace "$ns2"
+env2_id="$(api POST /environments 201 '{"name":"chart-defaults","publishMode":"manual"}' | jq -er .id)"
+cluster2="$(api POST "/environments/$env2_id/clusters" 201 '{"name":"defaults-edge"}')"
+cluster2_id="$(jq -er .id <<< "$cluster2")"
+token2="$(jq -er .registrationToken <<< "$cluster2")"
+mask "$token2"
+kubectl -n "$ns2" create secret generic dp-agent --from-literal="registration-token=$token2"
+unset cluster2 token2
+helm install dp-defaults "$dp_chart" -n "$ns2" --timeout 2m \
+  --set agent.existingSecret=dp-agent --set agent.controlPlaneUrl="http://control-plane.$namespace.svc.cluster.local:3000" \
+  --set agent.image.repository=gromesh-agent --set agent.image.tag=ci --set agent.image.digest= --set agent.image.pullPolicy=Never \
+  --set kong.image.digest= --set kong.image.pullPolicy=Never
+service2_id="$(api POST "/environments/$env2_id/services" 201 \
+  "$(jq -n --arg host "echo.$namespace.svc.cluster.local" '{name:"echo",protocol:"http",host:$host,port:80}')" | jq -er .id)"
+api POST "/environments/$env2_id/routes" 201 "$(jq -n --arg id "$service2_id" '{name:"echo",serviceId:$id,paths:["/defaults"]}')" > /dev/null
+version2="$(api POST "/environments/$env2_id/snapshots" 201 '{}' | jq -er .version)"
+converged2=false
+for ((attempt=0; attempt<90; attempt++)); do
+  if api GET "/clusters/$cluster2_id" 200 | jq -e --argjson version "$version2" \
+    '.status == "converged" and (.nodes | length == 2) and all(.nodes[]; .online and .appliedVersion == $version)' > /dev/null; then
+    converged2=true
+    break
+  fi
+  sleep 2
+done
+[[ "$converged2" == true ]]
+kubectl -n "$ns2" wait --for=condition=Ready pod -l app.kubernetes.io/instance=dp-defaults --timeout=90s
+kubectl -n "$ns2" port-forward svc/dp-defaults-data-plane 18001:8000 > "$work/forward-18001.log" 2>&1 &
+forwards+=("$!")
+curl --fail --silent --show-error --retry 15 --retry-all-errors --retry-delay 1 --max-time 10 \
+  http://127.0.0.1:18001/defaults > "$work/defaults"
+grep -q 'Hostname:' "$work/defaults"
+helm uninstall dp-defaults -n "$ns2" --wait --timeout 2m > /dev/null
+api DELETE "/clusters/$cluster2_id" 204 > /dev/null
+echo 'PASS: data plane with the chart defaults (no collector, 2 replicas) converged, Ready and proxying'
+
 # Log out the shell session; the scenario logs in through the UI with the same admin.
 curl --silent --max-time 10 -b "$work/cookies" -H "X-CSRF-Token: $csrf" -X POST "$base/auth/logout" > /dev/null || true
 export UI_URL=http://127.0.0.1:18080 CP_URL="$base" KONG_PROXY_URL=http://127.0.0.1:18000
 export E2E_ADMIN_EMAIL=admin@example.test E2E_ADMIN_PASSWORD="$admin_password" E2E_ENV_ID="$env_id" E2E_CLUSTER_ID="$cluster_id"
 export E2E_NAMESPACE="$namespace" E2E_DATA_PLANE_SELECTOR=app.kubernetes.io/instance=dp,app.kubernetes.io/name=data-plane
 pnpm --filter @gromesh/e2e exec playwright test --config kind/playwright.config.ts
-echo 'PASS: MVP acceptance in kind (install → login → publish → converge → agent restart with one node → traffic → dashboard → rollback → audit)'
+echo 'PASS: MVP acceptance in kind (install → defaults data plane → login → publish → converge → agent restart with one node → traffic → dashboard → rollback → audit)'
