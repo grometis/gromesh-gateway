@@ -68,8 +68,14 @@ snapshot="$(api "$CP/environments/$env_id/snapshots/$version")"
 [[ "$snapshot" != *"$key"* && "$snapshot" != *"$pw"* ]] && check S3 "Envelope do snapshot redigido para admin" PASS "" || check S3 "Envelope do snapshot" FAIL ""
 audit="$(api "$CP/audit-events?environmentId=$env_id&limit=200")"
 [[ "$audit" != *"$key"* && "$audit" != *"$pw"* ]] && check S4 "Audit sem segredos" PASS "" || check S4 "Audit" FAIL ""
-stored="$(docker compose -f deploy/compose/docker-compose.yml exec -T postgres psql -U gromesh -d gromesh -tAc "select count(*) from keyauth_credentials where key not like 'enc:v2:%' union all select count(*) from plugins where config::text like '%$pw%' union all select count(*) from snapshots where config::text not like '{\"\$enc\"%' or state::text not like '{\"\$enc\"%'" | tr '\n' ' ')"
-[[ "$stored" == "0 0 0 " ]] && check S5 "Segredos cifrados em repouso (credenciais, plugins, snapshots)" PASS "" || check S5 "Cifragem em repouso" FAIL "$stored"
+# A certificate with its private key: the key must be sealed too (and never stored in clear).
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout "$work/tls.key" -out "$work/tls.pem" -days 2 -subj "/CN=seccheck.test" 2>/dev/null
+key_line="$(sed -n 2p "$work/tls.key")"
+cert_body="$(node -e 'const fs=require("fs");process.stdout.write(JSON.stringify({cert:fs.readFileSync(process.argv[1],"utf8"),key:fs.readFileSync(process.argv[2],"utf8"),snis:["seccheck-'"$RANDOM"'.test"]}))' "$work/tls.pem" "$work/tls.key")"
+cert_created="$(api -d "$cert_body" "$CP/environments/$env_id/certificates")"
+[[ "$cert_created" == *'"key":"REDACTED"'* && "$cert_created" != *"$key_line"* ]] || { echo "certificate creation failed" >&2; exit 2; }
+stored="$(docker compose -f deploy/compose/docker-compose.yml exec -T postgres psql -U gromesh -d gromesh -tAc "select count(*) from keyauth_credentials where key not like 'enc:v2:%' union all select count(*) from plugins where config::text like '%$pw%' union all select count(*) from snapshots where config::text not like '{\"\$enc\"%' or state::text not like '{\"\$enc\"%' union all select count(*) from certificates where key not like 'enc:v2:%' or key like '%$key_line%'" | tr '\n' ' ')"
+[[ "$stored" == "0 0 0 0 " ]] && check S5 "Segredos cifrados em repouso (credenciais, plugins, snapshots, chaves de certificado)" PASS "" || check S5 "Cifragem em repouso" FAIL "$stored"
 api -X DELETE "$CP/environments/$env_id" > /dev/null
 
 # 5. Logs sanitized: the observability acceptance proves apikey never reaches ClickHouse or the Vector log.
