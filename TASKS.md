@@ -52,6 +52,8 @@ git worktree add ../gg-codex  -b task/W1-X1-kong-image
 | P3-C0 | Claude | — | `contracts/` (+ `apps/ui/src/api/schema.d.ts` gerado e rótulos de tipo da UI) |
 | P3-C1 | Claude | P3-C0 | `apps/control-plane/`, `packages/compiler/`, `apps/ui/`, `e2e/security-checklist.*`, `contracts/` (só remover `x-gromesh-planned`) |
 | P3-X1 | Codex | — | `apps/control-plane/src/auth/`, `apps/control-plane/test/`, `scripts/` (só o gerador, se precisar) |
+| P4-C1 | Claude | — | `apps/ui/` (+ `.github/workflows/` só para anexar screenshots ao job da UI) |
+| P4-X0 | Codex | — | `contracts/` (+ `apps/ui/src/api/schema.d.ts` gerado) |
 
 Ordem de merge na semana 3: W2-C2 → W3-X1 → W3-C1 → W3-X2. Quem mergeia depois faz rebase; `src/db/schema.ts` e `drizzle/` são alterados por uma frente por vez.
 
@@ -401,6 +403,29 @@ Aceite (Kong real do compose): JWT HS256 assinado no teste → 200, assinatura e
 - Middleware antes do roteamento: requisição a `/api/v1/*` sem sessão nem bearer, fora dessa lista → 401; o resto segue como hoje.
 
 Aceite: anônimo em rota inexistente → 401 (não 404); anônimo em rota pública → comportamento atual; agente com node token continua funcionando (e2e do compose e kind); teste que falha se a lista divergir do contrato.
+
+---
+
+## P4 — Nova identidade visual; exportar/importar configuração
+
+### P4-C1 [Claude] Nova identidade visual — base + tela de Services
+Referência: Direção 3, "Contraste".
+- Cores: menu lateral #0B2A2A (texto #CFE0DD, título de grupo #86AAA5, item ativo fundo #FFFFFF texto #0B2A2A); select do menu fundo #133A39 borda #275453; conteúdo fundo #FFFFFF, texto #0B2A2A, secundário #3E5452/#4A5D5B; superfície #F2F5F4, bordas #E4ECEA/#D3DEDC; acento #C93A1E (botão primário, texto branco); rascunho #FFF1EC/#FFE2D8 com texto #8E2A15; sucesso #16A36A com texto #0B5D3A.
+- Tipografia: Space Grotesk (texto e títulos; h1 34px/700, letter-spacing -0.03em) e JetBrains Mono (hosts, versões, ids, números), self-hosted via @fontsource em versões exatas (a CSP não permite Google Fonts). Nada de Inter/Roboto.
+- Layout: menu lateral de 248px com "gromesh" (21px/700), select de environment, grupos Gateway / Operação / Conta. Faixa de publicação em 3 blocos: "Rascunho · N alterações · Ver diff" (#FFF1EC) → "Publicar vN+1 →" (#C93A1E) → "No ar · vN · x/y nós" (#0B2A2A). Botões com raio 10px e altura ≥ 44px; badges NOVO (#C93A1E) e ALTERADO (#FFE2D8, texto #8E2A15).
+- Services: linhas como cartões (#F2F5F4, raio 10, border-spacing 8px), "nome → destino" com destino em mono, filtros "Todos N" / "Com alterações N" como pílulas.
+- Responsivo: abaixo de ~900px o menu vira faixa no topo; tabelas largas com rolagem horizontal própria.
+- Entregas: tokens em CSS variables num só lugar; componentes Shell/menu, PublishStrip (hasUnpublishedChanges/currentVersion + status agregado dos clusters), Button, Badge, Table, Tabs, Field; `<Brand/>` único (o logo futuro entra só ali); favicon provisório "g" em #0B2A2A. Base aplicada a todas as telas; Services no visual final.
+
+Aceite: Playwright atual verde (seletores por role/label); @axe-core/playwright (versão exata) nas telas existentes contra o Prism, falhando em violações serious/critical; contraste AA; screenshots de Services e da faixa de publicação (1440 e 390) como artefato do job.
+
+### P4-X0 [Codex] Contrato: exportar/importar configuração
+- `GET /environments/{envId}/export?format=yaml|json` → configuração declarativa própria, versionada (`gromesh/v1`; não é o formato do Kong). Segredos sempre REDACTED; credenciais só com keyHint.
+- `POST /environments/{envId}/import` (editor) com `{document, mode: "merge"|"replace", dryRun}` → `{ added, modified, removed, errors[] }` no formato do diff; dryRun não grava; import grava no rascunho (nunca publica) e gera audit.
+- `sourceFormat: "kong-declarative-3.0"` como fonte alternativa; entidades fora do modelo → `errors[]` com `path`, nunca ignoradas em silêncio.
+- REDACTED no documento = manter o segredo atual (regra do PUT); credencial nova sem segredo → 422. Operações novas com `x-gromesh-planned: true`.
+
+Aceite: lint válido, diff aprovado antes da implementação.
 
 ---
 
