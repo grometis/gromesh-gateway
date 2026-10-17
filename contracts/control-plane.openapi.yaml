@@ -19,8 +19,8 @@ info:
         wrong token is a 403. Agents authenticate differently (see agent-protocol.openapi.yaml).
       - Secrets are write-only: credential keys, JWT secrets, `encrypted` plugin fields and certificate private keys
         read back as `"REDACTED"` for every role. Only the agent endpoint delivers the real values. Basic-auth
-        passwords are never returned anywhere; snapshots carry only Kong's salted hash, also `"REDACTED"` outside
-        the agent endpoint.
+        passwords are never returned anywhere; the control plane keeps only Kong's salted hash, which is a secret too:
+        encrypted at rest and `"REDACTED"` outside the agent endpoint.
 servers:
   - url: http://localhost:3000/api/v1
 security:
@@ -763,9 +763,11 @@ paths:
       x-required-role: editor
       x-gromesh-planned: true
       description: |
-        The password is write-only and never returned, not even here. The snapshot carries only Kong's salted hash of it
-        (`sha1(password + consumerId)`, applied with `_transform: false`), never the password itself. 409 when `username`
-        is already used by a basic-auth credential in the environment.
+        The password is write-only and never returned, not even here. The control plane keeps only Kong's salted hash of it
+        (`sha1(password + consumerId)`), and the snapshot carries that hash (applied with `_transform: false`), never the
+        password itself. The hash is treated as a secret: encrypted at rest in the control plane's table and `"REDACTED"`
+        everywhere except the agent endpoint (API, audit, diff, preview and snapshot envelope). 409 when `username` is
+        already used by a basic-auth credential in the environment.
       requestBody:
         required: true
         content:

@@ -437,9 +437,11 @@ export interface paths {
         get: operations["listBasicAuthCredentials"];
         put?: never;
         /**
-         * @description The password is write-only and never returned, not even here. The snapshot carries only Kong's salted hash of it
-         *     (`sha1(password + consumerId)`, applied with `_transform: false`), never the password itself. 409 when `username`
-         *     is already used by a basic-auth credential in the environment.
+         * @description The password is write-only and never returned, not even here. The control plane keeps only Kong's salted hash of it
+         *     (`sha1(password + consumerId)`), and the snapshot carries that hash (applied with `_transform: false`), never the
+         *     password itself. The hash is treated as a secret: encrypted at rest in the control plane's table and `"REDACTED"`
+         *     everywhere except the agent endpoint (API, audit, diff, preview and snapshot envelope). 409 when `username` is
+         *     already used by a basic-auth credential in the environment.
          */
         post: operations["createBasicAuthCredential"];
         delete?: never;
@@ -1615,7 +1617,7 @@ export interface components {
             id: components["schemas"]["uuid"];
             consumer: components["schemas"]["uuid"];
             username: string;
-            /** @description Kong's salted hash, sha1(password + consumer id) in hex; never the password. REDACTED outside the agent endpoint */
+            /** @description Kong's salted hash, sha1(password + consumer id) in hex; never the password. Treated as a secret: encrypted at rest in the control plane and REDACTED outside the agent endpoint */
             password: string;
             tags: components["schemas"]["tags"];
         };
@@ -1782,7 +1784,7 @@ export interface components {
                     id: components["schemas"]["uuid"];
                     consumer: components["schemas"]["uuid"];
                     username: string;
-                    /** @description Kong's salted hash, sha1(password + consumer id) in hex; never the password. REDACTED outside the agent endpoint */
+                    /** @description Kong's salted hash, sha1(password + consumer id) in hex; never the password. Treated as a secret: encrypted at rest in the control plane and REDACTED outside the agent endpoint */
                     password: string;
                     tags: components["schemas"]["tags"];
                 };
