@@ -130,7 +130,8 @@ forward mvp-data-plane 18000 8000
 
 # A second data plane with the chart's defaults (no collector, two replicas), in its own namespace and cluster: the
 # default install path the former helm-e2e job covered. Only what kind needs is set (local images, the control
-# plane in the other namespace); every feature keeps its default.
+# plane in the other namespace, and a smaller CPU request: the single kind node has no room for two more 250m
+# gateways); every feature keeps its default.
 ns2="${namespace}-defaults"
 kubectl create namespace "$ns2"
 env2_id="$(api POST /environments 201 '{"name":"chart-defaults","publishMode":"manual"}' | jq -er .id)"
@@ -143,7 +144,7 @@ unset cluster2 token2
 helm install dp-defaults "$dp_chart" -n "$ns2" --timeout 2m \
   --set agent.existingSecret=dp-agent --set agent.controlPlaneUrl="http://control-plane.$namespace.svc.cluster.local:3000" \
   --set agent.image.repository=gromesh-agent --set agent.image.tag=ci --set agent.image.digest= --set agent.image.pullPolicy=Never \
-  --set kong.image.digest= --set kong.image.pullPolicy=Never
+  --set kong.image.digest= --set kong.image.pullPolicy=Never --set kong.resources.requests.cpu=50m
 service2_id="$(api POST "/environments/$env2_id/services" 201 \
   "$(jq -n --arg host "echo.$namespace.svc.cluster.local" '{name:"echo",protocol:"http",host:$host,port:80}')" | jq -er .id)"
 api POST "/environments/$env2_id/routes" 201 "$(jq -n --arg id "$service2_id" '{name:"echo",serviceId:$id,paths:["/defaults"]}')" > /dev/null
