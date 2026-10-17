@@ -9,6 +9,9 @@ const KIND_LABEL: Record<EntityChange["kind"], string> = {
   consumers: "Consumer",
   keyauth_credentials: "Credencial",
   plugins: "Plugin",
+  upstreams: "Upstream",
+  targets: "Target",
+  certificates: "Certificado",
 };
 
 export function Diff({ changes, from, to }: { changes: EntityChange[]; from: number; to: number }) {

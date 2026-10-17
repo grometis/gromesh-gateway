@@ -17,8 +17,8 @@ info:
       - Authentication is a session cookie set by `POST /auth/login` (`httpOnly; Secure; SameSite=Strict`).
         Every mutation also needs the `X-CSRF-Token` header, obtained from `GET /auth/csrf`; a missing or
         wrong token is a 403. Agents authenticate differently (see agent-protocol.openapi.yaml).
-      - Secrets are write-only: credential keys and `encrypted` plugin fields read back as `"REDACTED"`
-        for every role. Only the agent endpoint delivers the real values.
+      - Secrets are write-only: credential keys, `encrypted` plugin fields and certificate private keys read back
+        as `"REDACTED"` for every role. Only the agent endpoint delivers the real values.
 servers:
   - url: http://localhost:3000/api/v1
 security:
@@ -33,6 +33,8 @@ tags:
   - name: routes
   - name: consumers
   - name: plugins
+  - name: upstreams
+  - name: certificates
   - name: snapshots
   - name: clusters
   - name: audit
@@ -666,6 +668,270 @@ paths:
         "204": { description: Deleted }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /environments/{envId}/upstreams:
+    parameters: [{ $ref: "#/components/parameters/EnvId" }]
+    get:
+      tags: [upstreams]
+      operationId: listUpstreams
+      x-required-role: viewer
+      x-gromesh-planned: true
+      parameters:
+        - { $ref: "#/components/parameters/Limit" }
+        - { $ref: "#/components/parameters/Cursor" }
+        - { $ref: "#/components/parameters/Search" }
+      responses:
+        "200":
+          description: Upstreams
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UpstreamPage" }
+              example: {"items": [{"id": "8a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "name": "orders.upstream", "algorithm": "round-robin", "hashOn": "none", "hashFallback": "none", "healthchecks": {"active": null, "passive": null}, "tags": [], "createdAt": "2026-10-15T12:00:00Z", "updatedAt": "2026-10-15T12:00:00Z"}], "nextCursor": null}
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [upstreams]
+      operationId: createUpstream
+      security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
+      x-required-role: editor
+      x-gromesh-planned: true
+      description: |
+        A load-balancing pool. A service whose `host` equals the upstream's `name` balances across its targets;
+        any other host stays ordinary DNS (a service pointing at an upstream that does not exist is valid). 409 on a
+        name already used in the environment; 422 with `path` when `hashOn`/`hashFallback` are set without
+        `algorithm: consistent-hashing`, when `hashOnHeader`/`hashOnCookie`/`hashFallbackHeader` is missing for the
+        chosen hash, or when `hashOn: cookie` has a fallback other than `none`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpstreamWrite" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Upstream" }
+              example: {"id": "8a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "name": "orders.upstream", "algorithm": "round-robin", "hashOn": "none", "hashFallback": "none", "healthchecks": {"active": null, "passive": null}, "tags": [], "createdAt": "2026-10-15T12:00:00Z", "updatedAt": "2026-10-15T12:00:00Z"}
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /environments/{envId}/upstreams/{upstreamId}:
+    parameters: [{ $ref: "#/components/parameters/EnvId" }, { $ref: "#/components/parameters/UpstreamId" }]
+    get:
+      tags: [upstreams]
+      operationId: getUpstream
+      x-required-role: viewer
+      x-gromesh-planned: true
+      responses:
+        "200":
+          description: Upstream
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Upstream" }
+              example: {"id": "8a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "name": "orders.upstream", "algorithm": "round-robin", "hashOn": "none", "hashFallback": "none", "healthchecks": {"active": null, "passive": null}, "tags": [], "createdAt": "2026-10-15T12:00:00Z", "updatedAt": "2026-10-15T12:00:00Z"}
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [upstreams]
+      operationId: replaceUpstream
+      security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
+      x-required-role: editor
+      x-gromesh-planned: true
+      description: |
+        409 when the name changes while services of the environment use the current name as `host`; the problem
+        `detail` lists those services. Same 409/422 rules as the creation otherwise.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpstreamWrite" }
+      responses:
+        "200":
+          description: Replaced
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Upstream" }
+              example: {"id": "8a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "name": "orders.upstream", "algorithm": "round-robin", "hashOn": "none", "hashFallback": "none", "healthchecks": {"active": null, "passive": null}, "tags": [], "createdAt": "2026-10-15T12:00:00Z", "updatedAt": "2026-10-15T12:00:00Z"}
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+    delete:
+      tags: [upstreams]
+      operationId: deleteUpstream
+      security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
+      x-required-role: editor
+      x-gromesh-planned: true
+      description: |
+        Deletes the upstream and its targets. 409 while services of the environment use its name as `host`; the
+        problem `detail` lists those services.
+      responses:
+        "204": { description: Deleted }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /environments/{envId}/upstreams/{upstreamId}/targets:
+    parameters: [{ $ref: "#/components/parameters/EnvId" }, { $ref: "#/components/parameters/UpstreamId" }]
+    get:
+      tags: [upstreams]
+      operationId: listTargets
+      x-required-role: viewer
+      x-gromesh-planned: true
+      parameters:
+        - { $ref: "#/components/parameters/Limit" }
+        - { $ref: "#/components/parameters/Cursor" }
+      responses:
+        "200":
+          description: Targets of the upstream
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TargetPage" }
+              example: {"items": [{"id": "9b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e", "upstreamId": "8a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "target": "10.0.0.11:8080", "weight": 100, "tags": [], "createdAt": "2026-10-15T12:00:00Z", "updatedAt": "2026-10-15T12:00:00Z"}], "nextCursor": null}
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [upstreams]
+      operationId: createTarget
+      security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
+      x-required-role: editor
+      x-gromesh-planned: true
+      description: 409 when the same `target` already exists in this upstream; 422 on `target` with a port outside 1..65535.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TargetWrite" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Target" }
+              example: {"id": "9b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e", "upstreamId": "8a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "target": "10.0.0.11:8080", "weight": 100, "tags": [], "createdAt": "2026-10-15T12:00:00Z", "updatedAt": "2026-10-15T12:00:00Z"}
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /environments/{envId}/upstreams/{upstreamId}/targets/{targetId}:
+    parameters: [{ $ref: "#/components/parameters/EnvId" }, { $ref: "#/components/parameters/UpstreamId" }, { $ref: "#/components/parameters/TargetId" }]
+    put:
+      tags: [upstreams]
+      operationId: replaceTarget
+      security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
+      x-required-role: editor
+      x-gromesh-planned: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TargetWrite" }
+      responses:
+        "200":
+          description: Replaced
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Target" }
+              example: {"id": "9b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e", "upstreamId": "8a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "target": "10.0.0.11:8080", "weight": 100, "tags": [], "createdAt": "2026-10-15T12:00:00Z", "updatedAt": "2026-10-15T12:00:00Z"}
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+    delete:
+      tags: [upstreams]
+      operationId: deleteTarget
+      security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
+      x-required-role: editor
+      x-gromesh-planned: true
+      responses:
+        "204": { description: Deleted }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /environments/{envId}/certificates:
+    parameters: [{ $ref: "#/components/parameters/EnvId" }]
+    get:
+      tags: [certificates]
+      operationId: listCertificates
+      x-required-role: viewer
+      x-gromesh-planned: true
+      parameters:
+        - { $ref: "#/components/parameters/Limit" }
+        - { $ref: "#/components/parameters/Cursor" }
+      responses:
+        "200":
+          description: Certificates; `key` is always "REDACTED"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CertificatePage" }
+              example: {"items": [{"id": "0c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f", "cert": "-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIUExample\n-----END CERTIFICATE-----\n", "key": "REDACTED", "snis": ["api.example.com", "*.example.com"], "tags": [], "subject": "CN=api.example.com", "issuer": "CN=Example CA", "notBefore": "2026-10-01T00:00:00Z", "notAfter": "2027-10-01T00:00:00Z", "fingerprintSha256": "3A:7F:1C:9D:4E:2B:8A:6F:0D:5C:1E:9B:7A:3F:2D:8C:6E:4B:1A:9F:0C:7D:5E:3B:2A:8F:6C:4D:1B:9E:0F:7A", "createdAt": "2026-10-15T12:00:00Z", "updatedAt": "2026-10-15T12:00:00Z"}], "nextCursor": null}
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [certificates]
+      operationId: createCertificate
+      security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
+      x-required-role: editor
+      x-gromesh-planned: true
+      description: |
+        A TLS certificate with its private key and the server names (SNIs) it answers. `cert` may be a PEM chain, leaf
+        first then intermediates; the whole chain is served. The key is checked against the leaf, and `subject`,
+        `issuer`, `notBefore`, `notAfter` and `fingerprintSha256` describe the leaf. The key is write-only: it is
+        stored encrypted and reads back as "REDACTED". 422 with `path`: `cert` when it is not a PEM certificate chain or
+        its leaf has expired; `key` when it is not a PEM private key, does not match the leaf, or is "REDACTED" here;
+        `snis.<i>` when a name is repeated in the request, already belongs to another certificate of the environment,
+        or has a wildcard anywhere but as the `*.` prefix.
+        Expiry is judged only when `cert` is created or replaced: publishing, rolling back and editing only the `snis`
+        of a certificate that has since expired keep working.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CertificateWrite" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Certificate" }
+              example: {"id": "0c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f", "cert": "-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIUExample\n-----END CERTIFICATE-----\n", "key": "REDACTED", "snis": ["api.example.com", "*.example.com"], "tags": [], "subject": "CN=api.example.com", "issuer": "CN=Example CA", "notBefore": "2026-10-01T00:00:00Z", "notAfter": "2027-10-01T00:00:00Z", "fingerprintSha256": "3A:7F:1C:9D:4E:2B:8A:6F:0D:5C:1E:9B:7A:3F:2D:8C:6E:4B:1A:9F:0C:7D:5E:3B:2A:8F:6C:4D:1B:9E:0F:7A", "createdAt": "2026-10-15T12:00:00Z", "updatedAt": "2026-10-15T12:00:00Z"}
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /environments/{envId}/certificates/{certificateId}:
+    parameters: [{ $ref: "#/components/parameters/EnvId" }, { $ref: "#/components/parameters/CertificateId" }]
+    get:
+      tags: [certificates]
+      operationId: getCertificate
+      x-required-role: viewer
+      x-gromesh-planned: true
+      responses:
+        "200":
+          description: Certificate; `key` is always "REDACTED"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Certificate" }
+              example: {"id": "0c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f", "cert": "-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIUExample\n-----END CERTIFICATE-----\n", "key": "REDACTED", "snis": ["api.example.com", "*.example.com"], "tags": [], "subject": "CN=api.example.com", "issuer": "CN=Example CA", "notBefore": "2026-10-01T00:00:00Z", "notAfter": "2027-10-01T00:00:00Z", "fingerprintSha256": "3A:7F:1C:9D:4E:2B:8A:6F:0D:5C:1E:9B:7A:3F:2D:8C:6E:4B:1A:9F:0C:7D:5E:3B:2A:8F:6C:4D:1B:9E:0F:7A", "createdAt": "2026-10-15T12:00:00Z", "updatedAt": "2026-10-15T12:00:00Z"}
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [certificates]
+      operationId: replaceCertificate
+      security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
+      x-required-role: editor
+      x-gromesh-planned: true
+      description: |
+        `key: "REDACTED"` keeps the stored key, which must then still match the leaf of the new `cert` (422 on `key`
+        otherwise). Same 422 rules as the creation; an unchanged `cert` is not judged on expiry.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CertificateWrite" }
+      responses:
+        "200":
+          description: Replaced
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Certificate" }
+              example: {"id": "0c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f", "cert": "-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIUExample\n-----END CERTIFICATE-----\n", "key": "REDACTED", "snis": ["api.example.com", "*.example.com"], "tags": [], "subject": "CN=api.example.com", "issuer": "CN=Example CA", "notBefore": "2026-10-01T00:00:00Z", "notAfter": "2027-10-01T00:00:00Z", "fingerprintSha256": "3A:7F:1C:9D:4E:2B:8A:6F:0D:5C:1E:9B:7A:3F:2D:8C:6E:4B:1A:9F:0C:7D:5E:3B:2A:8F:6C:4D:1B:9E:0F:7A", "createdAt": "2026-10-15T12:00:00Z", "updatedAt": "2026-10-15T12:00:00Z"}
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+    delete:
+      tags: [certificates]
+      operationId: deleteCertificate
+      security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
+      x-required-role: editor
+      x-gromesh-planned: true
+      description: Deletes the certificate and its SNIs.
+      responses:
+        "204": { description: Deleted }
+        "404": { $ref: "#/components/responses/NotFound" }
   /environments/{envId}/plugins:
     parameters: [{ $ref: "#/components/parameters/EnvId" }]
     get:
@@ -846,7 +1112,7 @@ paths:
       operationId: getSnapshot
       x-required-role: viewer
       description: |
-        Full envelope with credential keys and `encrypted` plugin fields replaced by `"REDACTED"`, for every role
+        Full envelope with credential keys, `encrypted` plugin fields and certificate keys replaced by `"REDACTED"`, for every role
         including admin. Only the agent endpoint (`GET /agent/v1/snapshots/current`) delivers the real values.
       responses:
         "200":
@@ -1205,6 +1471,21 @@ components:
       in: path
       required: true
       schema: { type: string, format: uuid }
+    UpstreamId:
+      name: upstreamId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    TargetId:
+      name: targetId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    CertificateId:
+      name: certificateId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
     ServiceId:
       name: serviceId
       in: path
@@ -1404,7 +1685,7 @@ components:
       properties:
         name: { $ref: "#/components/schemas/Name" }
         protocol: { type: string, enum: [http, https, grpc, grpcs, tcp, tls] }
-        host: { type: string }
+        host: { type: string, description: An upstream's name balances across its targets; any other host is resolved by DNS }
         port: { type: integer, minimum: 1, maximum: 65535 }
         path: { type: [string, "null"], pattern: "^/" }
         retries: { type: integer, minimum: 0, maximum: 32767 }
@@ -1491,6 +1772,110 @@ components:
         keyHint: { type: string, description: Last 4 characters, example: "…k123" }
         tags: { $ref: "#/components/schemas/Tags" }
         createdAt: { type: string, format: date-time }
+    HashOn:
+      type: string
+      enum: [none, consumer, ip, header, cookie]
+    UpstreamWrite:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, maxLength: 253, pattern: "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$", description: "A lowercase hostname, unique in the environment" }
+        algorithm: { type: string, enum: [round-robin, least-connections, consistent-hashing, latency], default: round-robin }
+        hashOn: { allOf: [{ $ref: "#/components/schemas/HashOn" }], default: none, description: Only with consistent-hashing }
+        hashFallback: { allOf: [{ $ref: "#/components/schemas/HashOn" }], default: none, description: Only with consistent-hashing; must be none when hashOn is cookie }
+        hashOnHeader: { type: string, maxLength: 128, pattern: "^[A-Za-z0-9-]+$", description: Required when hashOn is header }
+        hashFallbackHeader: { type: string, maxLength: 128, pattern: "^[A-Za-z0-9-]+$", description: Required when hashFallback is header }
+        hashOnCookie: { type: string, maxLength: 128, pattern: "^[A-Za-z0-9_-]+$", description: Required when hashOn is cookie }
+        hashOnCookiePath: { type: string, pattern: "^/", default: "/" }
+        healthchecks: { $ref: "#/components/schemas/Healthchecks" }
+        tags: { $ref: "#/components/schemas/Tags" }
+    Healthchecks:
+      type: object
+      description: Both checks are off unless present (null or absent = off).
+      properties:
+        active:
+          type: [object, "null"]
+          required: [type]
+          properties:
+            type: { type: string, enum: [http, https, tcp] }
+            httpPath: { type: string, pattern: "^/", default: "/", description: Ignored for tcp }
+            intervalSeconds: { type: integer, minimum: 1, maximum: 3600, default: 10 }
+            healthyThreshold: { type: integer, minimum: 1, maximum: 255, default: 2, description: Consecutive successes to mark a target healthy }
+            unhealthyThreshold: { type: integer, minimum: 1, maximum: 255, default: 3, description: Consecutive failures (HTTP errors or timeouts) to mark it unhealthy }
+            timeoutSeconds: { type: number, exclusiveMinimum: 0, maximum: 60, default: 1 }
+        passive:
+          type: [object, "null"]
+          properties:
+            unhealthyHttpFailures: { type: integer, minimum: 1, maximum: 255, default: 5, description: 5xx responses in proxied traffic before a target is marked unhealthy }
+            unhealthyTimeouts: { type: integer, minimum: 1, maximum: 255, default: 3 }
+    Upstream:
+      allOf:
+        - type: object
+          required: [id, algorithm, hashOn, hashFallback, healthchecks]
+          properties:
+            id: { type: string, format: uuid }
+        - { $ref: "#/components/schemas/UpstreamWrite" }
+        - { $ref: "#/components/schemas/Timestamps" }
+    UpstreamPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Upstream" } }
+        nextCursor: { type: [string, "null"] }
+    TargetWrite:
+      type: object
+      required: [target]
+      properties:
+        target: { type: string, maxLength: 260, pattern: "^(\\[[0-9A-Fa-f:.]+\\]|[A-Za-z0-9.-]+):[0-9]{1,5}$", description: "host:port, IPv6 in brackets; unique in the upstream" }
+        weight: { type: integer, minimum: 0, maximum: 65535, default: 100, description: 0 takes the target out of the balancing }
+        tags: { $ref: "#/components/schemas/Tags" }
+    Target:
+      allOf:
+        - type: object
+          required: [id, upstreamId, weight]
+          properties:
+            id: { type: string, format: uuid }
+            upstreamId: { type: string, format: uuid }
+        - { $ref: "#/components/schemas/TargetWrite" }
+        - { $ref: "#/components/schemas/Timestamps" }
+    TargetPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Target" } }
+        nextCursor: { type: [string, "null"] }
+    CertificateWrite:
+      type: object
+      required: [cert, key, snis]
+      properties:
+        cert: { type: string, minLength: 1, maxLength: 65536, description: "PEM certificate chain, leaf first, at most 64 KiB" }
+        key: { type: string, minLength: 1, maxLength: 16384, description: "PEM private key of the leaf, at most 16 KiB, write-only; REDACTED on a PUT keeps the stored one" }
+        snis:
+          type: array
+          maxItems: 100
+          description: Server names this certificate answers, unique in the environment; a wildcard only as the `*.` prefix
+          items: { type: string, maxLength: 253, pattern: "^(\\*\\.)?[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$" }
+        tags: { $ref: "#/components/schemas/Tags" }
+    Certificate:
+      allOf:
+        - type: object
+          required: [id, subject, issuer, notBefore, notAfter, fingerprintSha256]
+          properties:
+            id: { type: string, format: uuid }
+            key: { const: REDACTED }
+            subject: { type: string, readOnly: true }
+            issuer: { type: string, readOnly: true }
+            notBefore: { type: string, format: date-time, readOnly: true }
+            notAfter: { type: string, format: date-time, readOnly: true }
+            fingerprintSha256: { type: string, readOnly: true, pattern: "^([0-9A-F]{2}:){31}[0-9A-F]{2}$" }
+        - { $ref: "#/components/schemas/CertificateWrite" }
+        - { $ref: "#/components/schemas/Timestamps" }
+    CertificatePage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Certificate" } }
+        nextCursor: { type: [string, "null"] }
     PluginScope:
       type: object
       description: Empty scope = global plugin.
@@ -1538,7 +1923,7 @@ components:
       type: object
       required: [kind, id, label, change]
       properties:
-        kind: { type: string, enum: [services, routes, consumers, keyauth_credentials, plugins] }
+        kind: { type: string, enum: [services, routes, consumers, keyauth_credentials, plugins, upstreams, targets, certificates] }
         id: { type: string, format: uuid }
         label: { type: string }
         change: { type: string, enum: [added, removed, modified] }

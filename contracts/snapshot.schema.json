@@ -5,100 +5,489 @@
   "description": "Unit of configuration published by the control plane and applied by the agent. `config` is a Kong declarative config (format 3.0, flat) applied as-is via POST /config. `hash` is sha256 over the canonical JSON (recursively sorted keys) of `config`.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["version", "hash", "environmentId", "createdAt", "config"],
+  "required": [
+    "version",
+    "hash",
+    "environmentId",
+    "createdAt",
+    "config"
+  ],
   "properties": {
-    "version": { "type": "integer", "minimum": 1, "description": "Monotonic per environment. Rollback publishes a NEW version with old content." },
-    "hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
-    "environmentId": { "type": "string", "format": "uuid" },
-    "createdAt": { "type": "string", "format": "date-time" },
-    "config": { "$ref": "#/$defs/kongConfig" }
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Monotonic per environment. Rollback publishes a NEW version with old content."
+    },
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "environmentId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "config": {
+      "$ref": "#/$defs/kongConfig"
+    }
   },
   "$defs": {
-    "uuid": { "type": "string", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" },
-    "tags": { "type": "array", "items": { "type": "string" }, "contains": { "const": "managed-by:gromesh" } },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "contains": {
+        "const": "managed-by:gromesh"
+      }
+    },
     "kongConfig": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["_format_version", "_transform", "services", "routes", "consumers", "keyauth_credentials", "plugins"],
+      "required": [
+        "_format_version",
+        "_transform",
+        "services",
+        "routes",
+        "consumers",
+        "keyauth_credentials",
+        "plugins"
+      ],
       "properties": {
-        "_format_version": { "const": "3.0" },
-        "_transform": { "const": true },
-        "services": { "type": "array", "items": { "$ref": "#/$defs/service" } },
-        "routes": { "type": "array", "items": { "$ref": "#/$defs/route" } },
-        "consumers": { "type": "array", "items": { "$ref": "#/$defs/consumer" } },
-        "keyauth_credentials": { "type": "array", "items": { "$ref": "#/$defs/keyauthCredential" } },
-        "plugins": { "type": "array", "items": { "$ref": "#/$defs/plugin" } }
+        "_format_version": {
+          "const": "3.0"
+        },
+        "_transform": {
+          "const": true
+        },
+        "services": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/service"
+          }
+        },
+        "routes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/route"
+          }
+        },
+        "consumers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/consumer"
+          }
+        },
+        "keyauth_credentials": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/keyauthCredential"
+          }
+        },
+        "plugins": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/plugin"
+          }
+        },
+        "upstreams": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/upstream"
+          }
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/target"
+          }
+        },
+        "certificates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/certificate"
+          }
+        },
+        "snis": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/sni"
+          }
+        }
       }
     },
     "service": {
       "type": "object",
-      "required": ["id", "name", "protocol", "host", "port", "tags"],
+      "required": [
+        "id",
+        "name",
+        "protocol",
+        "host",
+        "port",
+        "tags"
+      ],
       "properties": {
-        "id": { "$ref": "#/$defs/uuid" },
-        "name": { "type": "string" },
-        "protocol": { "enum": ["http", "https", "grpc", "grpcs", "tcp", "tls"] },
-        "host": { "type": "string" },
-        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
-        "path": { "type": "string" },
-        "retries": { "type": "integer", "minimum": 0 },
-        "connect_timeout": { "type": "integer", "minimum": 1 },
-        "read_timeout": { "type": "integer", "minimum": 1 },
-        "write_timeout": { "type": "integer", "minimum": 1 },
-        "enabled": { "type": "boolean" },
-        "tags": { "$ref": "#/$defs/tags" }
+        "id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "protocol": {
+          "enum": [
+            "http",
+            "https",
+            "grpc",
+            "grpcs",
+            "tcp",
+            "tls"
+          ]
+        },
+        "host": {
+          "type": "string"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "path": {
+          "type": "string"
+        },
+        "retries": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "connect_timeout": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "read_timeout": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "write_timeout": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "tags": {
+          "$ref": "#/$defs/tags"
+        }
       }
     },
     "route": {
       "type": "object",
-      "required": ["id", "name", "service", "tags"],
+      "required": [
+        "id",
+        "name",
+        "service",
+        "tags"
+      ],
       "properties": {
-        "id": { "$ref": "#/$defs/uuid" },
-        "name": { "type": "string" },
-        "service": { "$ref": "#/$defs/uuid", "description": "Service id (Kong flat format references foreign entities by key)." },
-        "protocols": { "type": "array", "items": { "enum": ["http", "https", "grpc", "grpcs"] } },
-        "methods": { "type": "array", "items": { "type": "string" } },
-        "hosts": { "type": "array", "items": { "type": "string" } },
-        "paths": { "type": "array", "items": { "type": "string" } },
-        "headers": { "type": "object", "additionalProperties": { "type": "array", "items": { "type": "string" } } },
-        "strip_path": { "type": "boolean" },
-        "preserve_host": { "type": "boolean" },
-        "tags": { "$ref": "#/$defs/tags" }
+        "id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "service": {
+          "$ref": "#/$defs/uuid",
+          "description": "Service id (Kong flat format references foreign entities by key)."
+        },
+        "protocols": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "http",
+              "https",
+              "grpc",
+              "grpcs"
+            ]
+          }
+        },
+        "methods": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "hosts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "strip_path": {
+          "type": "boolean"
+        },
+        "preserve_host": {
+          "type": "boolean"
+        },
+        "tags": {
+          "$ref": "#/$defs/tags"
+        }
       }
     },
     "consumer": {
       "type": "object",
-      "required": ["id", "tags"],
-      "anyOf": [{ "required": ["username"] }, { "required": ["custom_id"] }],
+      "required": [
+        "id",
+        "tags"
+      ],
+      "anyOf": [
+        {
+          "required": [
+            "username"
+          ]
+        },
+        {
+          "required": [
+            "custom_id"
+          ]
+        }
+      ],
       "properties": {
-        "id": { "$ref": "#/$defs/uuid" },
-        "username": { "type": "string" },
-        "custom_id": { "type": "string" },
-        "tags": { "$ref": "#/$defs/tags" }
+        "id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "username": {
+          "type": "string"
+        },
+        "custom_id": {
+          "type": "string"
+        },
+        "tags": {
+          "$ref": "#/$defs/tags"
+        }
       }
     },
     "keyauthCredential": {
       "type": "object",
-      "required": ["id", "consumer", "key", "tags"],
+      "required": [
+        "id",
+        "consumer",
+        "key",
+        "tags"
+      ],
       "properties": {
-        "id": { "$ref": "#/$defs/uuid" },
-        "consumer": { "$ref": "#/$defs/uuid" },
-        "key": { "type": "string", "minLength": 1 },
-        "tags": { "$ref": "#/$defs/tags" }
+        "id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "consumer": {
+          "$ref": "#/$defs/uuid"
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tags": {
+          "$ref": "#/$defs/tags"
+        }
       }
     },
     "plugin": {
       "type": "object",
-      "required": ["id", "name", "enabled", "config", "tags"],
+      "required": [
+        "id",
+        "name",
+        "enabled",
+        "config",
+        "tags"
+      ],
       "properties": {
-        "id": { "$ref": "#/$defs/uuid" },
-        "name": { "type": "string" },
-        "enabled": { "type": "boolean" },
-        "service": { "$ref": "#/$defs/uuid" },
-        "route": { "$ref": "#/$defs/uuid" },
-        "consumer": { "$ref": "#/$defs/uuid" },
-        "config": { "type": "object" },
-        "protocols": { "type": "array", "items": { "type": "string" } },
-        "tags": { "$ref": "#/$defs/tags" }
+        "id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "service": {
+          "$ref": "#/$defs/uuid"
+        },
+        "route": {
+          "$ref": "#/$defs/uuid"
+        },
+        "consumer": {
+          "$ref": "#/$defs/uuid"
+        },
+        "config": {
+          "type": "object"
+        },
+        "protocols": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tags": {
+          "$ref": "#/$defs/tags"
+        }
+      }
+    },
+    "upstream": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "algorithm",
+        "tags"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "algorithm": {
+          "enum": [
+            "round-robin",
+            "least-connections",
+            "consistent-hashing",
+            "latency"
+          ]
+        },
+        "hash_on": {
+          "enum": [
+            "none",
+            "consumer",
+            "ip",
+            "header",
+            "cookie"
+          ]
+        },
+        "hash_fallback": {
+          "enum": [
+            "none",
+            "consumer",
+            "ip",
+            "header",
+            "cookie"
+          ]
+        },
+        "hash_on_header": {
+          "type": "string"
+        },
+        "hash_fallback_header": {
+          "type": "string"
+        },
+        "hash_on_cookie": {
+          "type": "string"
+        },
+        "hash_on_cookie_path": {
+          "type": "string"
+        },
+        "healthchecks": {
+          "type": "object"
+        },
+        "tags": {
+          "$ref": "#/$defs/tags"
+        }
+      }
+    },
+    "target": {
+      "type": "object",
+      "required": [
+        "id",
+        "upstream",
+        "target",
+        "weight",
+        "tags"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "upstream": {
+          "$ref": "#/$defs/uuid"
+        },
+        "target": {
+          "type": "string"
+        },
+        "weight": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "tags": {
+          "$ref": "#/$defs/tags"
+        }
+      }
+    },
+    "certificate": {
+      "type": "object",
+      "required": [
+        "id",
+        "cert",
+        "key",
+        "tags"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "cert": {
+          "type": "string",
+          "minLength": 1
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tags": {
+          "$ref": "#/$defs/tags"
+        }
+      }
+    },
+    "sni": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "certificate",
+        "tags"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "certificate": {
+          "$ref": "#/$defs/uuid"
+        },
+        "tags": {
+          "$ref": "#/$defs/tags"
+        }
       }
     }
   }

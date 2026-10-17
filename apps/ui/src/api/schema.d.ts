@@ -378,6 +378,151 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/environments/{envId}/upstreams": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+            };
+            cookie?: never;
+        };
+        get: operations["listUpstreams"];
+        put?: never;
+        /**
+         * @description A load-balancing pool. A service whose `host` equals the upstream's `name` balances across its targets;
+         *     any other host stays ordinary DNS (a service pointing at an upstream that does not exist is valid). 409 on a
+         *     name already used in the environment; 422 with `path` when `hashOn`/`hashFallback` are set without
+         *     `algorithm: consistent-hashing`, when `hashOnHeader`/`hashOnCookie`/`hashFallbackHeader` is missing for the
+         *     chosen hash, or when `hashOn: cookie` has a fallback other than `none`.
+         */
+        post: operations["createUpstream"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/environments/{envId}/upstreams/{upstreamId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+                upstreamId: components["parameters"]["UpstreamId"];
+            };
+            cookie?: never;
+        };
+        get: operations["getUpstream"];
+        /**
+         * @description 409 when the name changes while services of the environment use the current name as `host`; the problem
+         *     `detail` lists those services. Same 409/422 rules as the creation otherwise.
+         */
+        put: operations["replaceUpstream"];
+        post?: never;
+        /**
+         * @description Deletes the upstream and its targets. 409 while services of the environment use its name as `host`; the
+         *     problem `detail` lists those services.
+         */
+        delete: operations["deleteUpstream"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/environments/{envId}/upstreams/{upstreamId}/targets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+                upstreamId: components["parameters"]["UpstreamId"];
+            };
+            cookie?: never;
+        };
+        get: operations["listTargets"];
+        put?: never;
+        /** @description 409 when the same `target` already exists in this upstream; 422 on `target` with a port outside 1..65535. */
+        post: operations["createTarget"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/environments/{envId}/upstreams/{upstreamId}/targets/{targetId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+                upstreamId: components["parameters"]["UpstreamId"];
+                targetId: components["parameters"]["TargetId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["replaceTarget"];
+        post?: never;
+        delete: operations["deleteTarget"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/environments/{envId}/certificates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+            };
+            cookie?: never;
+        };
+        get: operations["listCertificates"];
+        put?: never;
+        /**
+         * @description A TLS certificate with its private key and the server names (SNIs) it answers. `cert` may be a PEM chain, leaf
+         *     first then intermediates; the whole chain is served. The key is checked against the leaf, and `subject`,
+         *     `issuer`, `notBefore`, `notAfter` and `fingerprintSha256` describe the leaf. The key is write-only: it is
+         *     stored encrypted and reads back as "REDACTED". 422 with `path`: `cert` when it is not a PEM certificate chain or
+         *     its leaf has expired; `key` when it is not a PEM private key, does not match the leaf, or is "REDACTED" here;
+         *     `snis.<i>` when a name is repeated in the request, already belongs to another certificate of the environment,
+         *     or has a wildcard anywhere but as the `*.` prefix.
+         *     Expiry is judged only when `cert` is created or replaced: publishing, rolling back and editing only the `snis`
+         *     of a certificate that has since expired keep working.
+         */
+        post: operations["createCertificate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/environments/{envId}/certificates/{certificateId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+                certificateId: components["parameters"]["CertificateId"];
+            };
+            cookie?: never;
+        };
+        get: operations["getCertificate"];
+        /**
+         * @description `key: "REDACTED"` keeps the stored key, which must then still match the leaf of the new `cert` (422 on `key`
+         *     otherwise). Same 422 rules as the creation; an unchanged `cert` is not judged on expiry.
+         */
+        put: operations["replaceCertificate"];
+        post?: never;
+        /** @description Deletes the certificate and its SNIs. */
+        delete: operations["deleteCertificate"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/environments/{envId}/plugins": {
         parameters: {
             query?: never;
@@ -505,7 +650,7 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * @description Full envelope with credential keys and `encrypted` plugin fields replaced by `"REDACTED"`, for every role
+         * @description Full envelope with credential keys, `encrypted` plugin fields and certificate keys replaced by `"REDACTED"`, for every role
          *     including admin. Only the agent endpoint (`GET /agent/v1/snapshots/current`) delivers the real values.
          */
         get: operations["getSnapshot"];
@@ -811,6 +956,7 @@ export interface components {
             name: components["schemas"]["Name"];
             /** @enum {string} */
             protocol: "http" | "https" | "grpc" | "grpcs" | "tcp" | "tls";
+            /** @description An upstream's name balances across its targets; any other host is resolved by DNS */
             host: string;
             port: number;
             path?: string | null;
@@ -890,6 +1036,126 @@ export interface components {
             /** Format: date-time */
             createdAt: string;
         };
+        /** @enum {string} */
+        HashOn: "none" | "consumer" | "ip" | "header" | "cookie";
+        UpstreamWrite: {
+            /** @description A lowercase hostname, unique in the environment */
+            name: string;
+            /**
+             * @default round-robin
+             * @enum {string}
+             */
+            algorithm: "round-robin" | "least-connections" | "consistent-hashing" | "latency";
+            /**
+             * @description Only with consistent-hashing
+             * @default none
+             */
+            hashOn: components["schemas"]["HashOn"];
+            /**
+             * @description Only with consistent-hashing; must be none when hashOn is cookie
+             * @default none
+             */
+            hashFallback: components["schemas"]["HashOn"];
+            /** @description Required when hashOn is header */
+            hashOnHeader?: string;
+            /** @description Required when hashFallback is header */
+            hashFallbackHeader?: string;
+            /** @description Required when hashOn is cookie */
+            hashOnCookie?: string;
+            /** @default / */
+            hashOnCookiePath: string;
+            healthchecks?: components["schemas"]["Healthchecks"];
+            tags?: components["schemas"]["Tags"];
+        };
+        /** @description Both checks are off unless present (null or absent = off). */
+        Healthchecks: {
+            active?: {
+                /** @enum {string} */
+                type: "http" | "https" | "tcp";
+                /**
+                 * @description Ignored for tcp
+                 * @default /
+                 */
+                httpPath: string;
+                /** @default 10 */
+                intervalSeconds: number;
+                /**
+                 * @description Consecutive successes to mark a target healthy
+                 * @default 2
+                 */
+                healthyThreshold: number;
+                /**
+                 * @description Consecutive failures (HTTP errors or timeouts) to mark it unhealthy
+                 * @default 3
+                 */
+                unhealthyThreshold: number;
+                /** @default 1 */
+                timeoutSeconds: number;
+            } | null;
+            passive?: {
+                /**
+                 * @description 5xx responses in proxied traffic before a target is marked unhealthy
+                 * @default 5
+                 */
+                unhealthyHttpFailures: number;
+                /** @default 3 */
+                unhealthyTimeouts: number;
+            } | null;
+        };
+        Upstream: {
+            /** Format: uuid */
+            id: string;
+        } & components["schemas"]["UpstreamWrite"] & components["schemas"]["Timestamps"];
+        UpstreamPage: {
+            items: components["schemas"]["Upstream"][];
+            nextCursor: string | null;
+        };
+        TargetWrite: {
+            /** @description host:port, IPv6 in brackets; unique in the upstream */
+            target: string;
+            /**
+             * @description 0 takes the target out of the balancing
+             * @default 100
+             */
+            weight: number;
+            tags?: components["schemas"]["Tags"];
+        };
+        Target: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            upstreamId: string;
+        } & components["schemas"]["TargetWrite"] & components["schemas"]["Timestamps"];
+        TargetPage: {
+            items: components["schemas"]["Target"][];
+            nextCursor: string | null;
+        };
+        CertificateWrite: {
+            /** @description PEM certificate chain, leaf first, at most 64 KiB */
+            cert: string;
+            /** @description PEM private key of the leaf, at most 16 KiB, write-only; REDACTED on a PUT keeps the stored one */
+            key: string;
+            /** @description Server names this certificate answers, unique in the environment; a wildcard only as the `*.` prefix */
+            snis: string[];
+            tags?: components["schemas"]["Tags"];
+        };
+        Certificate: {
+            /** Format: uuid */
+            id: string;
+            /** @constant */
+            key?: "REDACTED";
+            readonly subject: string;
+            readonly issuer: string;
+            /** Format: date-time */
+            readonly notBefore: string;
+            /** Format: date-time */
+            readonly notAfter: string;
+            readonly fingerprintSha256: string;
+        } & components["schemas"]["CertificateWrite"] & components["schemas"]["Timestamps"];
+        CertificatePage: {
+            items: components["schemas"]["Certificate"][];
+            nextCursor: string | null;
+        };
         /** @description Empty scope = global plugin. */
         PluginScope: {
             /** Format: uuid */
@@ -928,7 +1194,7 @@ export interface components {
         };
         EntityChange: {
             /** @enum {string} */
-            kind: "services" | "routes" | "consumers" | "keyauth_credentials" | "plugins";
+            kind: "services" | "routes" | "consumers" | "keyauth_credentials" | "plugins" | "upstreams" | "targets" | "certificates";
             /** Format: uuid */
             id: string;
             label: string;
@@ -1188,6 +1454,41 @@ export interface components {
             protocols?: string[];
             tags: components["schemas"]["tags"];
         };
+        upstream: {
+            id: components["schemas"]["uuid"];
+            name: string;
+            /** @enum {unknown} */
+            algorithm: "round-robin" | "least-connections" | "consistent-hashing" | "latency";
+            /** @enum {unknown} */
+            hash_on?: "none" | "consumer" | "ip" | "header" | "cookie";
+            /** @enum {unknown} */
+            hash_fallback?: "none" | "consumer" | "ip" | "header" | "cookie";
+            hash_on_header?: string;
+            hash_fallback_header?: string;
+            hash_on_cookie?: string;
+            hash_on_cookie_path?: string;
+            healthchecks?: Record<string, never>;
+            tags: components["schemas"]["tags"];
+        };
+        target: {
+            id: components["schemas"]["uuid"];
+            upstream: components["schemas"]["uuid"];
+            target: string;
+            weight: number;
+            tags: components["schemas"]["tags"];
+        };
+        certificate: {
+            id: components["schemas"]["uuid"];
+            cert: string;
+            key: string;
+            tags: components["schemas"]["tags"];
+        };
+        sni: {
+            id: components["schemas"]["uuid"];
+            name: string;
+            certificate: components["schemas"]["uuid"];
+            tags: components["schemas"]["tags"];
+        };
         kongConfig: {
             /** @constant */
             _format_version: "3.0";
@@ -1198,6 +1499,10 @@ export interface components {
             consumers: components["schemas"]["consumer"][];
             keyauth_credentials: components["schemas"]["keyauthCredential"][];
             plugins: components["schemas"]["plugin"][];
+            upstreams?: components["schemas"]["upstream"][];
+            targets?: components["schemas"]["target"][];
+            certificates?: components["schemas"]["certificate"][];
+            snis?: components["schemas"]["sni"][];
         };
         /**
          * Gromesh Gateway snapshot envelope
@@ -1225,6 +1530,10 @@ export interface components {
                     consumers: components["schemas"]["consumer"][];
                     keyauth_credentials: components["schemas"]["keyauthCredential"][];
                     plugins: components["schemas"]["plugin"][];
+                    upstreams?: components["schemas"]["upstream"][];
+                    targets?: components["schemas"]["target"][];
+                    certificates?: components["schemas"]["certificate"][];
+                    snis?: components["schemas"]["sni"][];
                 };
                 service: {
                     id: components["schemas"]["uuid"];
@@ -1278,6 +1587,41 @@ export interface components {
                     consumer?: components["schemas"]["uuid"];
                     config: Record<string, never>;
                     protocols?: string[];
+                    tags: components["schemas"]["tags"];
+                };
+                upstream: {
+                    id: components["schemas"]["uuid"];
+                    name: string;
+                    /** @enum {unknown} */
+                    algorithm: "round-robin" | "least-connections" | "consistent-hashing" | "latency";
+                    /** @enum {unknown} */
+                    hash_on?: "none" | "consumer" | "ip" | "header" | "cookie";
+                    /** @enum {unknown} */
+                    hash_fallback?: "none" | "consumer" | "ip" | "header" | "cookie";
+                    hash_on_header?: string;
+                    hash_fallback_header?: string;
+                    hash_on_cookie?: string;
+                    hash_on_cookie_path?: string;
+                    healthchecks?: Record<string, never>;
+                    tags: components["schemas"]["tags"];
+                };
+                target: {
+                    id: components["schemas"]["uuid"];
+                    upstream: components["schemas"]["uuid"];
+                    target: string;
+                    weight: number;
+                    tags: components["schemas"]["tags"];
+                };
+                certificate: {
+                    id: components["schemas"]["uuid"];
+                    cert: string;
+                    key: string;
+                    tags: components["schemas"]["tags"];
+                };
+                sni: {
+                    id: components["schemas"]["uuid"];
+                    name: string;
+                    certificate: components["schemas"]["uuid"];
                     tags: components["schemas"]["tags"];
                 };
             };
@@ -1364,6 +1708,9 @@ export interface components {
         ServiceFilter: string;
         TokenId: string;
         UserId: string;
+        UpstreamId: string;
+        TargetId: string;
+        CertificateId: string;
         ServiceId: string;
         RouteId: string;
         ConsumerId: string;
@@ -2523,6 +2870,566 @@ export interface operations {
                 envId: components["parameters"]["EnvId"];
                 consumerId: components["parameters"]["ConsumerId"];
                 credentialId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    listUpstreams: {
+        parameters: {
+            query?: {
+                limit?: components["parameters"]["Limit"];
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Case-insensitive match on name (and paths/hosts for routes) */
+                q?: components["parameters"]["Search"];
+            };
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Upstreams */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "items": [
+                     *         {
+                     *           "id": "8a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+                     *           "name": "orders.upstream",
+                     *           "algorithm": "round-robin",
+                     *           "hashOn": "none",
+                     *           "hashFallback": "none",
+                     *           "healthchecks": {
+                     *             "active": null,
+                     *             "passive": null
+                     *           },
+                     *           "tags": [],
+                     *           "createdAt": "2026-10-15T12:00:00Z",
+                     *           "updatedAt": "2026-10-15T12:00:00Z"
+                     *         }
+                     *       ],
+                     *       "nextCursor": null
+                     *     }
+                     */
+                    "application/json": components["schemas"]["UpstreamPage"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    createUpstream: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpstreamWrite"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "id": "8a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+                     *       "name": "orders.upstream",
+                     *       "algorithm": "round-robin",
+                     *       "hashOn": "none",
+                     *       "hashFallback": "none",
+                     *       "healthchecks": {
+                     *         "active": null,
+                     *         "passive": null
+                     *       },
+                     *       "tags": [],
+                     *       "createdAt": "2026-10-15T12:00:00Z",
+                     *       "updatedAt": "2026-10-15T12:00:00Z"
+                     *     }
+                     */
+                    "application/json": components["schemas"]["Upstream"];
+                };
+            };
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+        };
+    };
+    getUpstream: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+                upstreamId: components["parameters"]["UpstreamId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Upstream */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "id": "8a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+                     *       "name": "orders.upstream",
+                     *       "algorithm": "round-robin",
+                     *       "hashOn": "none",
+                     *       "hashFallback": "none",
+                     *       "healthchecks": {
+                     *         "active": null,
+                     *         "passive": null
+                     *       },
+                     *       "tags": [],
+                     *       "createdAt": "2026-10-15T12:00:00Z",
+                     *       "updatedAt": "2026-10-15T12:00:00Z"
+                     *     }
+                     */
+                    "application/json": components["schemas"]["Upstream"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    replaceUpstream: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+                upstreamId: components["parameters"]["UpstreamId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpstreamWrite"];
+            };
+        };
+        responses: {
+            /** @description Replaced */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "id": "8a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+                     *       "name": "orders.upstream",
+                     *       "algorithm": "round-robin",
+                     *       "hashOn": "none",
+                     *       "hashFallback": "none",
+                     *       "healthchecks": {
+                     *         "active": null,
+                     *         "passive": null
+                     *       },
+                     *       "tags": [],
+                     *       "createdAt": "2026-10-15T12:00:00Z",
+                     *       "updatedAt": "2026-10-15T12:00:00Z"
+                     *     }
+                     */
+                    "application/json": components["schemas"]["Upstream"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+        };
+    };
+    deleteUpstream: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+                upstreamId: components["parameters"]["UpstreamId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+        };
+    };
+    listTargets: {
+        parameters: {
+            query?: {
+                limit?: components["parameters"]["Limit"];
+                cursor?: components["parameters"]["Cursor"];
+            };
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+                upstreamId: components["parameters"]["UpstreamId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Targets of the upstream */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "items": [
+                     *         {
+                     *           "id": "9b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e",
+                     *           "upstreamId": "8a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+                     *           "target": "10.0.0.11:8080",
+                     *           "weight": 100,
+                     *           "tags": [],
+                     *           "createdAt": "2026-10-15T12:00:00Z",
+                     *           "updatedAt": "2026-10-15T12:00:00Z"
+                     *         }
+                     *       ],
+                     *       "nextCursor": null
+                     *     }
+                     */
+                    "application/json": components["schemas"]["TargetPage"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    createTarget: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+                upstreamId: components["parameters"]["UpstreamId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TargetWrite"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "id": "9b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e",
+                     *       "upstreamId": "8a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+                     *       "target": "10.0.0.11:8080",
+                     *       "weight": 100,
+                     *       "tags": [],
+                     *       "createdAt": "2026-10-15T12:00:00Z",
+                     *       "updatedAt": "2026-10-15T12:00:00Z"
+                     *     }
+                     */
+                    "application/json": components["schemas"]["Target"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+        };
+    };
+    replaceTarget: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+                upstreamId: components["parameters"]["UpstreamId"];
+                targetId: components["parameters"]["TargetId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TargetWrite"];
+            };
+        };
+        responses: {
+            /** @description Replaced */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "id": "9b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e",
+                     *       "upstreamId": "8a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+                     *       "target": "10.0.0.11:8080",
+                     *       "weight": 100,
+                     *       "tags": [],
+                     *       "createdAt": "2026-10-15T12:00:00Z",
+                     *       "updatedAt": "2026-10-15T12:00:00Z"
+                     *     }
+                     */
+                    "application/json": components["schemas"]["Target"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+        };
+    };
+    deleteTarget: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+                upstreamId: components["parameters"]["UpstreamId"];
+                targetId: components["parameters"]["TargetId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    listCertificates: {
+        parameters: {
+            query?: {
+                limit?: components["parameters"]["Limit"];
+                cursor?: components["parameters"]["Cursor"];
+            };
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Certificates; `key` is always "REDACTED" */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "items": [
+                     *         {
+                     *           "id": "0c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f",
+                     *           "cert": "-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIUExample\n-----END CERTIFICATE-----\n",
+                     *           "key": "REDACTED",
+                     *           "snis": [
+                     *             "api.example.com",
+                     *             "*.example.com"
+                     *           ],
+                     *           "tags": [],
+                     *           "subject": "CN=api.example.com",
+                     *           "issuer": "CN=Example CA",
+                     *           "notBefore": "2026-10-01T00:00:00Z",
+                     *           "notAfter": "2027-10-01T00:00:00Z",
+                     *           "fingerprintSha256": "3A:7F:1C:9D:4E:2B:8A:6F:0D:5C:1E:9B:7A:3F:2D:8C:6E:4B:1A:9F:0C:7D:5E:3B:2A:8F:6C:4D:1B:9E:0F:7A",
+                     *           "createdAt": "2026-10-15T12:00:00Z",
+                     *           "updatedAt": "2026-10-15T12:00:00Z"
+                     *         }
+                     *       ],
+                     *       "nextCursor": null
+                     *     }
+                     */
+                    "application/json": components["schemas"]["CertificatePage"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    createCertificate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CertificateWrite"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "id": "0c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f",
+                     *       "cert": "-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIUExample\n-----END CERTIFICATE-----\n",
+                     *       "key": "REDACTED",
+                     *       "snis": [
+                     *         "api.example.com",
+                     *         "*.example.com"
+                     *       ],
+                     *       "tags": [],
+                     *       "subject": "CN=api.example.com",
+                     *       "issuer": "CN=Example CA",
+                     *       "notBefore": "2026-10-01T00:00:00Z",
+                     *       "notAfter": "2027-10-01T00:00:00Z",
+                     *       "fingerprintSha256": "3A:7F:1C:9D:4E:2B:8A:6F:0D:5C:1E:9B:7A:3F:2D:8C:6E:4B:1A:9F:0C:7D:5E:3B:2A:8F:6C:4D:1B:9E:0F:7A",
+                     *       "createdAt": "2026-10-15T12:00:00Z",
+                     *       "updatedAt": "2026-10-15T12:00:00Z"
+                     *     }
+                     */
+                    "application/json": components["schemas"]["Certificate"];
+                };
+            };
+            422: components["responses"]["ValidationError"];
+        };
+    };
+    getCertificate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+                certificateId: components["parameters"]["CertificateId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Certificate; `key` is always "REDACTED" */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "id": "0c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f",
+                     *       "cert": "-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIUExample\n-----END CERTIFICATE-----\n",
+                     *       "key": "REDACTED",
+                     *       "snis": [
+                     *         "api.example.com",
+                     *         "*.example.com"
+                     *       ],
+                     *       "tags": [],
+                     *       "subject": "CN=api.example.com",
+                     *       "issuer": "CN=Example CA",
+                     *       "notBefore": "2026-10-01T00:00:00Z",
+                     *       "notAfter": "2027-10-01T00:00:00Z",
+                     *       "fingerprintSha256": "3A:7F:1C:9D:4E:2B:8A:6F:0D:5C:1E:9B:7A:3F:2D:8C:6E:4B:1A:9F:0C:7D:5E:3B:2A:8F:6C:4D:1B:9E:0F:7A",
+                     *       "createdAt": "2026-10-15T12:00:00Z",
+                     *       "updatedAt": "2026-10-15T12:00:00Z"
+                     *     }
+                     */
+                    "application/json": components["schemas"]["Certificate"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    replaceCertificate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+                certificateId: components["parameters"]["CertificateId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CertificateWrite"];
+            };
+        };
+        responses: {
+            /** @description Replaced */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "id": "0c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f",
+                     *       "cert": "-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIUExample\n-----END CERTIFICATE-----\n",
+                     *       "key": "REDACTED",
+                     *       "snis": [
+                     *         "api.example.com",
+                     *         "*.example.com"
+                     *       ],
+                     *       "tags": [],
+                     *       "subject": "CN=api.example.com",
+                     *       "issuer": "CN=Example CA",
+                     *       "notBefore": "2026-10-01T00:00:00Z",
+                     *       "notAfter": "2027-10-01T00:00:00Z",
+                     *       "fingerprintSha256": "3A:7F:1C:9D:4E:2B:8A:6F:0D:5C:1E:9B:7A:3F:2D:8C:6E:4B:1A:9F:0C:7D:5E:3B:2A:8F:6C:4D:1B:9E:0F:7A",
+                     *       "createdAt": "2026-10-15T12:00:00Z",
+                     *       "updatedAt": "2026-10-15T12:00:00Z"
+                     *     }
+                     */
+                    "application/json": components["schemas"]["Certificate"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+        };
+    };
+    deleteCertificate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+                certificateId: components["parameters"]["CertificateId"];
             };
             cookie?: never;
         };
