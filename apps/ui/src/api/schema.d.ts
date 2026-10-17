@@ -226,6 +226,122 @@ export interface paths {
         patch: operations["updateEnvironment"];
         trace?: never;
     };
+    "/environments/{envId}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+            };
+            cookie?: never;
+        };
+        /**
+         * Export the current draft as a Gromesh configuration document
+         * @description Exports every managed draft entity, without pagination, as `apiVersion: gromesh/v1`.
+         *     This is Gromesh's declarative model, not a Kong config or a published snapshot. Environment settings,
+         *     users, API tokens, clusters, audit events and platform-injected plugins are outside this document.
+         *     `format` selects both serialization and Content-Type, independently of Accept; the default is yaml.
+         *     Both representations conform to GromeshConfigV1Export. No state is changed.
+         *     Plugin fields marked `encrypted` by the plugin schema, certificate private keys and HS256 JWT secrets
+         *     are always the literal `REDACTED`, for every role. Key-auth credentials contain only identity, tags
+         *     and `keyHint`, never `key`. Basic-auth credentials never contain a password or its hash.
+         *     Reimporting an export into the same environment preserves matched secrets; importing it into another
+         *     environment requires supplying real secrets for new entities. The output has no document size limit;
+         *     a document larger than the import limit must be split before import.
+         */
+        get: operations["exportEnvironmentConfig"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/environments/{envId}/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Validate, preview or import configuration into the draft
+         * @description Accepts a parsed document object or a UTF-8 YAML/JSON document string inside the JSON request envelope.
+         *     `sourceFormat` defaults to `gromesh/v1`; it selects the model, not the serialization. Reject multiple
+         *     YAML documents, duplicate mapping keys, custom YAML tags and alias expansion. The document limit is
+         *     5 MiB (5,242,880 bytes): UTF-8 bytes of a string before parsing, or UTF-8 bytes of compact JSON for an
+         *     object, and of the decoded compact JSON in either case. Exceeding either limit returns 422 at `document`.
+         *
+         *     Merge upserts services, routes and upstreams by name; consumers by username or customId. When both
+         *     consumer identifiers are supplied, either may match an existing consumer; if both resolve, they must resolve
+         *     to the same consumer. Resolving to different consumers is 409. Certificates match by an existing target-environment id or by
+         *     their exact non-empty SNI set (order-independent); disagreeing matches are 409. An empty SNI set has
+         *     no natural key and requires an existing id to update. SNI overlap with another certificate that would remain
+         *     in the resulting draft is a uniqueness conflict.
+         *     Plugins match by (name, resolved service, route, consumer scope), targets by (upstream, target), JWT
+         *     credentials by issuer key and basic-auth credentials by username (both unique within the environment).
+         *     Key-auth matches by existing id within the resolved consumer or by the supplied full key; `keyHint`
+         *     is display-only and MUST NOT be used to match a credential. A credential belonging to another consumer,
+         *     or an id disagreeing with a natural-key match, is 409. Credential ids only match within the resolved
+         *     consumer; unmatched ids are source identities, not requested ids for creation. New ids are generated
+         *     by the control plane. Matched entities retain their ids. ACL membership matches by (consumer, group).
+         *     Merge never deletes, including nested credentials, targets and ACL groups: omitted entities remain,
+         *     and supplied ACL groups are unioned. Supplied entities replace their non-secret attributes, with omitted
+         *     optional attributes taking the same defaults as their write schemas (nullable values default to null,
+         *     arrays to empty, plugin scope to global, and plugin protocols to the plugin schema's default).
+         *     A removed ACL membership requires replace mode or the existing ACL API.
+         *
+         *     Replace uses the same matching rules but makes the draft exactly the document, deleting every entity
+         *     and nested membership absent from it, subject only to retained ids and preserved secrets of matched
+         *     entities. References in replace must resolve inside the document; in merge they may also resolve to
+         *     existing draft entities. Unknown references are 422 with their source path. A service host matching
+         *     an upstream name keeps the existing upstream-resolution semantics; other hosts use DNS.
+         *
+         *     A supplied `REDACTED`, or an omitted secret on a matched entity, keeps the current secret in either mode,
+         *     as with certificate PUT. For a NEW credential/certificate/plugin secret, `REDACTED` or a missing value
+         *     is 422 at that secret path; import never auto-generates credentials. This applies to key-auth keys,
+         *     basic-auth passwords, HS256 JWT secrets, certificate keys and plugin fields marked `encrypted` that
+         *     the selected plugin configuration requires. Optional inactive plugin secret fields may remain absent.
+         *     A secret slot without a stored value is new even on a matched plugin or credential.
+         *     RS256/ES256 JWT credentials require a valid public key and must not supply a secret. Existing certificate
+         *     keys must still match the leaf; all current entity write validations, including certificate expiry on
+         *     creation or a changed cert, apply. Basic-auth hashes are never accepted in the Gromesh document.
+         *
+         *     For `kong-declarative-3.0`, `_format_version` must be the string `3.0`. Normalize only entities and fields
+         *     representable in GromeshConfigV1, including nested or flat services/routes/plugins, consumers with
+         *     keyauth_credentials/jwt_secrets/basicauth_credentials/acls, upstreams/targets and certificates/snis.
+         *     Resolve source ids and named references before assigning target ids. Translate supported snake_case
+         *     fields and relationships to the Gromesh model; do not pass this config directly to the data plane.
+         *     Every unsupported entity or field, including nested fields and unknown plugin config fields, produces
+         *     an `errors[]` entry at its original document path; nothing is silently ignored, even default-valued fields.
+         *     `_transform` may be absent or true for plaintext basic-auth passwords. False with basic-auth credentials
+         *     is unsupported (422 at `document._transform`): importing prehashed passwords is not supported.
+         *
+         *     `dryRun: true` never writes anything (including audit, draft revision or snapshots) and returns the same
+         *     redacted diff a real import would apply, plus semantic validation/conversion errors. Invalid request
+         *     envelopes, malformed serialization or document schema violations return ValidationError 422 even in
+         *     dry-run; uniqueness conflicts return 409 in either mode. Other document/conversion errors return a
+         *     200 report in dry-run; if errors[] is non-empty the diff arrays are empty because there is no valid plan.
+         *     With `dryRun: false`, errors[] non-empty means NOTHING is written and the response is ValidationError
+         *     422 with those path/message errors, never a partial success. On success the entire change, draft revision
+         *     update and a redacted import audit event commit in ONE transaction. Import NEVER publishes or notifies
+         *     agents, even when publishMode is auto; a separate explicit publish is required.
+         *     Reports diff against the current draft, not the published snapshot. Diff labels/before/after and errors
+         *     never expose secrets, plaintext passwords, password hashes or submitted secret values. Error paths use
+         *     dot-separated properties and zero-based indexes rooted at `document`, e.g. `document.consumers.0.jwtCredentials.0.secret`.
+         */
+        post: operations["importEnvironmentConfig"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/environments/{envId}/services": {
         parameters: {
             query?: never;
@@ -964,10 +1080,11 @@ export interface components {
             title: string;
             status: number;
             detail?: string;
-            errors?: {
-                path: string;
-                message: string;
-            }[];
+            errors?: components["schemas"]["FieldError"][];
+        };
+        FieldError: {
+            path: string;
+            message: string;
         };
         Name: string;
         Tags: string[];
@@ -1350,6 +1467,227 @@ export interface components {
             /** @description False for plugins that need Kong's database (e.g. oauth2). */
             supportedInDbless?: boolean;
         };
+        /**
+         * @description Gromesh's own declarative draft format. All six top-level collections are required, even if empty,
+         *     so replace cannot accidentally interpret an omitted collection as a request to keep it.
+         *     References use natural keys, not database foreign keys. Only credentials and certificates carry optional
+         *     source ids for matching otherwise unidentifiable redacted entities. New ids are always generated by the
+         *     target control plane. Timestamps and computed certificate metadata are excluded. Unknown fields at any
+         *     depth are validation errors, including healthcheck and plugin config fields validated against their schemas.
+         *     Secret properties support input values and the literal REDACTED; see the import operation for preservation
+         *     rules. Export further restricts this schema to GromeshConfigV1Export.
+         */
+        GromeshConfigV1: {
+            /** @constant */
+            apiVersion: "gromesh/v1";
+            services: components["schemas"]["GromeshConfigService"][];
+            routes: components["schemas"]["GromeshConfigRoute"][];
+            consumers: components["schemas"]["GromeshConfigConsumer"][];
+            plugins: components["schemas"]["GromeshConfigPlugin"][];
+            upstreams: components["schemas"]["GromeshConfigUpstream"][];
+            certificates: components["schemas"]["GromeshConfigCertificate"][];
+        };
+        GromeshConfigService: components["schemas"]["ServiceWrite"];
+        /** @description Same route attributes and match requirements as RouteWrite; service is the service name. */
+        GromeshConfigRoute: {
+            name: components["schemas"]["Name"];
+            service: components["schemas"]["Name"];
+            protocols?: components["schemas"]["RouteWrite"]["protocols"];
+            methods?: components["schemas"]["RouteWrite"]["methods"];
+            hosts?: components["schemas"]["RouteWrite"]["hosts"];
+            paths?: components["schemas"]["RouteWrite"]["paths"];
+            headers?: components["schemas"]["RouteWrite"]["headers"];
+            stripPath?: components["schemas"]["RouteWrite"]["stripPath"];
+            preserveHost?: components["schemas"]["RouteWrite"]["preserveHost"];
+            tags?: components["schemas"]["Tags"];
+        };
+        /** @description At least one non-empty identifier; if both are supplied they must identify the same consumer. */
+        GromeshConfigConsumerRef: {
+            username?: string | null;
+            customId?: string | null;
+        } & ({
+            username: string;
+        } | {
+            customId: string;
+        });
+        GromeshConfigConsumer: components["schemas"]["ConsumerWrite"] & {
+            aclGroups: components["schemas"]["AclGroups"]["groups"];
+            keyAuthCredentials: components["schemas"]["GromeshConfigKeyAuthCredential"][];
+            jwtCredentials: components["schemas"]["GromeshConfigJwtCredential"][];
+            basicAuthCredentials: components["schemas"]["GromeshConfigBasicAuthCredential"][];
+        } & ({
+            username: string;
+        } | {
+            customId: string;
+        });
+        /** @description Import matches by id or a supplied full key, never by keyHint. Export omits key entirely. */
+        GromeshConfigKeyAuthCredential: {
+            /** Format: uuid */
+            id?: string;
+            /** @description Display-only hint; not a secret or a matching key */
+            keyHint?: string;
+            /** @description Import only; required for a new credential, omitted or REDACTED preserves a matched key */
+            key?: string & ("REDACTED" | unknown);
+            tags?: components["schemas"]["Tags"];
+        };
+        /** @description HS256 exports secret as REDACTED; RS256/ES256 export only their public key and no secret. */
+        GromeshConfigJwtCredential: {
+            /** Format: uuid */
+            id?: string;
+            key: components["schemas"]["JwtCredentialCreate"]["key"];
+            algorithm: components["schemas"]["JwtAlgorithm"];
+            secret?: string & ("REDACTED" | unknown);
+            rsaPublicKey?: components["schemas"]["JwtCredentialCreate"]["rsaPublicKey"];
+            tags?: components["schemas"]["Tags"];
+        } & unknown;
+        /** @description Export omits password entirely. Hashes are neither exported nor accepted. */
+        GromeshConfigBasicAuthCredential: {
+            /** Format: uuid */
+            id?: string;
+            username: components["schemas"]["BasicAuthCredentialCreate"]["username"];
+            /** @description Import only; a new credential requires plaintext, omitted or REDACTED preserves a matched password */
+            password?: string;
+            tags?: components["schemas"]["Tags"];
+        };
+        /** @description Empty or absent scope is global; references resolve by service/route name and consumer identifiers. */
+        GromeshConfigPluginScope: {
+            service?: components["schemas"]["Name"];
+            route?: components["schemas"]["Name"];
+            consumer?: components["schemas"]["GromeshConfigConsumerRef"];
+        };
+        GromeshConfigPlugin: {
+            name: components["schemas"]["PluginWrite"]["name"];
+            enabled?: components["schemas"]["PluginWrite"]["enabled"];
+            scope?: components["schemas"]["GromeshConfigPluginScope"];
+            /**
+             * @description Validated against the pinned catalog schema for name, including unknown fields at every depth.
+             *     Fields marked encrypted are always REDACTED on export. Import accepts actual secrets or REDACTED;
+             *     missing/REDACTED required secrets on new plugins fail at the exact config field path.
+             */
+            config: {
+                [key: string]: unknown;
+            };
+            protocols?: components["schemas"]["PluginWrite"]["protocols"];
+            tags?: components["schemas"]["Tags"];
+        };
+        GromeshConfigUpstream: components["schemas"]["UpstreamWrite"] & {
+            healthchecks?: components["schemas"]["GromeshConfigHealthchecks"];
+            targets: components["schemas"]["GromeshConfigTarget"][];
+        };
+        GromeshConfigHealthchecks: components["schemas"]["Healthchecks"] & {
+            active?: components["schemas"]["Healthchecks"]["active"];
+            passive?: components["schemas"]["Healthchecks"]["passive"];
+        };
+        GromeshConfigTarget: components["schemas"]["TargetWrite"];
+        /**
+         * @description Match by an existing target id or exact non-empty SNI set. Export includes id and REDACTED key.
+         *     Import requires a real key for a new certificate; on a match, omitted or REDACTED keeps the current key.
+         */
+        GromeshConfigCertificate: {
+            /** Format: uuid */
+            id?: string;
+            cert: components["schemas"]["CertificateWrite"]["cert"];
+            key?: components["schemas"]["CertificateWrite"]["key"];
+            snis: components["schemas"]["CertificateWrite"]["snis"];
+            tags?: components["schemas"]["Tags"];
+        };
+        /** @description Secret-safe export view of GromeshConfigV1, identical for YAML and JSON responses. */
+        GromeshConfigV1Export: components["schemas"]["GromeshConfigV1"] & {
+            consumers?: {
+                keyAuthCredentials?: ({
+                    /** Format: uuid */
+                    id: string;
+                    keyHint: string;
+                } & {
+                    [key: string]: unknown;
+                })[];
+                jwtCredentials?: ({
+                    /** Format: uuid */
+                    id: string;
+                    /** @constant */
+                    secret?: "REDACTED";
+                } & {
+                    [key: string]: unknown;
+                })[];
+                basicAuthCredentials?: ({
+                    /** Format: uuid */
+                    id: string;
+                } & {
+                    [key: string]: unknown;
+                })[];
+            }[];
+            certificates?: ({
+                /** Format: uuid */
+                id: string;
+                /** @constant */
+                key: "REDACTED";
+            } & {
+                [key: string]: unknown;
+            })[];
+        };
+        /**
+         * @description Alternative source document, not the Gromesh export format. Source fields are retained for conversion
+         *     diagnostics; additionalProperties does NOT authorize ignoring unknown data. Only fields representable
+         *     by GromeshConfigV1 are accepted semantically. Unsupported entities/fields at any depth produce errors[]
+         *     at their original paths; with dryRun false any such error aborts the entire import with 422.
+         */
+        KongDeclarativeConfigV3: {
+            /** @constant */
+            _format_version: "3.0";
+            /** @description Defaults to true; false with basic-auth credentials is unsupported */
+            _transform?: boolean;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * @description A single YAML mapping or JSON object encoded as a string. maxLength is a character ceiling; the import
+         *     operation also enforces the stricter 5 MiB UTF-8 byte and decoded size limits. Parsed content must conform
+         *     to GromeshConfigV1 or KongDeclarativeConfigV3 according to sourceFormat, with no duplicate keys or YAML aliases.
+         */
+        SerializedConfigDocument: string;
+        /**
+         * @default gromesh/v1
+         * @constant
+         */
+        GromeshConfigSourceFormat: "gromesh/v1";
+        EnvironmentImportRequest: {
+            sourceFormat?: components["schemas"]["GromeshConfigSourceFormat"];
+            document: components["schemas"]["GromeshConfigV1"] | components["schemas"]["SerializedConfigDocument"];
+            mode: components["schemas"]["EnvironmentImportMode"];
+            dryRun: boolean;
+        } | {
+            /** @constant */
+            sourceFormat: "kong-declarative-3.0";
+            document: components["schemas"]["KongDeclarativeConfigV3"] | components["schemas"]["SerializedConfigDocument"];
+            mode: components["schemas"]["EnvironmentImportMode"];
+            dryRun: boolean;
+        };
+        /**
+         * @description Merge never deletes; replace makes the draft exactly the document, preserving matched secrets and ids.
+         * @enum {string}
+         */
+        EnvironmentImportMode: "merge" | "replace";
+        /**
+         * @description Diff against the current draft. Each array contains EntityChange items whose change value matches the
+         *     array name. Merge always has removed empty. Secrets are redacted as in publish diff; basic-auth passwords
+         *     and hashes are never included. On semantic errors in dry-run all change arrays are empty.
+         *     Ids for proposed additions in a dry-run are provisional and do not reserve persisted ids.
+         */
+        EnvironmentImportReport: {
+            added: (components["schemas"]["EntityChange"] & {
+                /** @constant */
+                change?: "added";
+            })[];
+            modified: (components["schemas"]["EntityChange"] & {
+                /** @constant */
+                change?: "modified";
+            })[];
+            removed: (components["schemas"]["EntityChange"] & {
+                /** @constant */
+                change?: "removed";
+            })[];
+            errors: components["schemas"]["FieldError"][];
+        } & unknown;
         EntityChange: {
             /** @enum {string} */
             kind: "services" | "routes" | "consumers" | "keyauth_credentials" | "jwt_secrets" | "basicauth_credentials" | "acls" | "plugins" | "upstreams" | "targets" | "certificates";
@@ -2479,6 +2817,67 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+        };
+    };
+    exportEnvironmentConfig: {
+        parameters: {
+            query?: {
+                /** @description Serialization of the response document */
+                format?: "yaml" | "json";
+            };
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Complete draft with secrets redacted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/yaml": components["schemas"]["GromeshConfigV1Export"];
+                    "application/json": components["schemas"]["GromeshConfigV1Export"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+        };
+    };
+    importEnvironmentConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EnvironmentImportRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful draft import, or a dry-run report; a real import always has an empty errors array */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnvironmentImportReport"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
             422: components["responses"]["ValidationError"];
         };
     };

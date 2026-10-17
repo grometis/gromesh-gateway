@@ -1,0 +1,104 @@
+apiVersion: gromesh/v1
+services:
+  - name: orders
+    protocol: http
+    host: orders.internal
+    port: 8080
+    path: null
+    retries: 5
+    connectTimeoutMs: 60000
+    readTimeoutMs: 60000
+    writeTimeoutMs: 60000
+    enabled: true
+    tags:
+      - example
+routes:
+  - name: orders-api
+    service: orders
+    protocols:
+      - http
+      - https
+    methods:
+      - GET
+    hosts:
+      - api.example.com
+    paths:
+      - /orders
+    headers:
+      x-api-version:
+        - v1
+    stripPath: true
+    preserveHost: false
+    tags: []
+consumers:
+  - username: partner
+    customId: partner-001
+    tags: []
+    aclGroups:
+      - partners
+    keyAuthCredentials:
+      - id: 00000000-0000-4000-8000-000000000001
+        keyHint: …k123
+        tags: []
+    jwtCredentials:
+      - id: 00000000-0000-4000-8000-000000000002
+        key: partner-issuer
+        algorithm: HS256
+        secret: REDACTED
+        tags: []
+    basicAuthCredentials:
+      - id: 00000000-0000-4000-8000-000000000003
+        username: partner-basic
+        tags: []
+plugins:
+  - name: rate-limiting
+    enabled: true
+    scope:
+      service: orders
+      route: orders-api
+      consumer:
+        username: partner
+    config:
+      minute: 60
+      policy: redis
+      redis:
+        host: redis.internal
+        port: 6379
+        password: REDACTED
+    protocols:
+      - http
+      - https
+    tags: []
+upstreams:
+  - name: orders.internal
+    algorithm: consistent-hashing
+    hashOn: header
+    hashFallback: ip
+    hashOnHeader: X-Request-Id
+    healthchecks:
+      active:
+        type: http
+        httpPath: /health
+        intervalSeconds: 10
+        healthyThreshold: 2
+        unhealthyThreshold: 3
+        timeoutSeconds: 1
+      passive:
+        unhealthyHttpFailures: 5
+        unhealthyTimeouts: 3
+    tags: []
+    targets:
+      - target: orders-1.internal:8080
+        weight: 100
+        tags: []
+certificates:
+  - id: 00000000-0000-4000-8000-000000000004
+    cert: |
+      -----BEGIN CERTIFICATE-----
+      MIIBszCCAVmgAwIBAgIUExample
+      -----END CERTIFICATE-----
+    key: REDACTED
+    snis:
+      - api.example.com
+      - "*.example.com"
+    tags: []
