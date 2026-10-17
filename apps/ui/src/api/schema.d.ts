@@ -378,6 +378,118 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/environments/{envId}/consumers/{consumerId}/jwt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+                consumerId: components["parameters"]["ConsumerId"];
+            };
+            cookie?: never;
+        };
+        get: operations["listJwtCredentials"];
+        put?: never;
+        /**
+         * @description HS256 signs with a shared `secret`: if omitted a random 32-byte secret is generated, and it is returned only in
+         *     this response. RS256 and ES256 verify with `rsaPublicKey` (an RSA or EC P-256 public key, despite Kong's field
+         *     name). If `key` is omitted a random one is generated. 409 when `key` is already used by a JWT credential in the
+         *     environment. 422 with `path`: `secret` given with RS256/ES256; `rsaPublicKey` missing with RS256/ES256, given
+         *     with HS256, not a PEM public key, or of the wrong type for the algorithm (RSA for RS256, EC P-256 for ES256).
+         */
+        post: operations["createJwtCredential"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/environments/{envId}/consumers/{consumerId}/jwt/{credentialId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+                consumerId: components["parameters"]["ConsumerId"];
+                credentialId: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["deleteJwtCredential"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/environments/{envId}/consumers/{consumerId}/basic-auth": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+                consumerId: components["parameters"]["ConsumerId"];
+            };
+            cookie?: never;
+        };
+        get: operations["listBasicAuthCredentials"];
+        put?: never;
+        /**
+         * @description The password is write-only and never returned, not even here. The control plane keeps only Kong's salted hash of it
+         *     (`sha1(password + consumerId)`), and the snapshot carries that hash (applied with `_transform: false`), never the
+         *     password itself. The hash is treated as a secret: encrypted at rest in the control plane's table and `"REDACTED"`
+         *     everywhere except the agent endpoint (API, audit, diff, preview and snapshot envelope). 409 when `username` is
+         *     already used by a basic-auth credential in the environment.
+         */
+        post: operations["createBasicAuthCredential"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/environments/{envId}/consumers/{consumerId}/basic-auth/{credentialId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+                consumerId: components["parameters"]["ConsumerId"];
+                credentialId: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["deleteBasicAuthCredential"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/environments/{envId}/consumers/{consumerId}/acl-groups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+                consumerId: components["parameters"]["ConsumerId"];
+            };
+            cookie?: never;
+        };
+        get: operations["getConsumerAclGroups"];
+        /** @description Replaces the whole set; `[]` removes the consumer from every group. The `acl` plugin matches these names in `allow`/`deny`. */
+        put: operations["replaceConsumerAclGroups"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/environments/{envId}/upstreams": {
         parameters: {
             query?: never;
@@ -650,8 +762,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * @description Full envelope with credential keys, `encrypted` plugin fields and certificate keys replaced by `"REDACTED"`, for every role
-         *     including admin. Only the agent endpoint (`GET /agent/v1/snapshots/current`) delivers the real values.
+         * @description Full envelope with credential keys, JWT secrets, basic-auth password hashes, `encrypted` plugin fields and certificate
+         *     keys replaced by `"REDACTED"`, for every role including admin. Only the agent endpoint (`GET /agent/v1/snapshots/current`) delivers the real values.
          */
         get: operations["getSnapshot"];
         put?: never;
@@ -1037,6 +1149,52 @@ export interface components {
             createdAt: string;
         };
         /** @enum {string} */
+        JwtAlgorithm: "HS256" | "RS256" | "ES256";
+        JwtCredentialCreate: {
+            /** @description Matched against the token's `iss` claim; unique in the environment */
+            key?: string;
+            /** @default HS256 */
+            algorithm: components["schemas"]["JwtAlgorithm"];
+            /** @description HS256 only, write-only */
+            secret?: string;
+            /** @description RS256/ES256 only: PEM public key, at most 16 KiB */
+            rsaPublicKey?: string;
+            tags?: components["schemas"]["Tags"];
+        };
+        JwtCredential: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            consumerId: string;
+            key: string;
+            algorithm: components["schemas"]["JwtAlgorithm"];
+            /** @description RS256/ES256 only; public, so it is returned */
+            rsaPublicKey?: string;
+            tags?: components["schemas"]["Tags"];
+            /** Format: date-time */
+            createdAt: string;
+        };
+        BasicAuthCredentialCreate: {
+            /** @description Unique in the environment */
+            username: string;
+            /** @description Write-only */
+            password: string;
+            tags?: components["schemas"]["Tags"];
+        };
+        BasicAuthCredential: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            consumerId: string;
+            username: string;
+            tags?: components["schemas"]["Tags"];
+            /** Format: date-time */
+            createdAt: string;
+        };
+        AclGroups: {
+            groups: string[];
+        };
+        /** @enum {string} */
         HashOn: "none" | "consumer" | "ip" | "header" | "cookie";
         UpstreamWrite: {
             /** @description A lowercase hostname, unique in the environment */
@@ -1194,7 +1352,7 @@ export interface components {
         };
         EntityChange: {
             /** @enum {string} */
-            kind: "services" | "routes" | "consumers" | "keyauth_credentials" | "plugins" | "upstreams" | "targets" | "certificates";
+            kind: "services" | "routes" | "consumers" | "keyauth_credentials" | "jwt_secrets" | "basicauth_credentials" | "acls" | "plugins" | "upstreams" | "targets" | "certificates";
             /** Format: uuid */
             id: string;
             label: string;
@@ -1443,6 +1601,32 @@ export interface components {
             key: string;
             tags: components["schemas"]["tags"];
         };
+        jwtSecret: {
+            id: components["schemas"]["uuid"];
+            consumer: components["schemas"]["uuid"];
+            key: string;
+            /** @enum {unknown} */
+            algorithm: "HS256" | "RS256" | "ES256";
+            /** @description HS256 only */
+            secret?: string;
+            /** @description RS256/ES256 only (an EC key for ES256) */
+            rsa_public_key?: string;
+            tags: components["schemas"]["tags"];
+        };
+        basicauthCredential: {
+            id: components["schemas"]["uuid"];
+            consumer: components["schemas"]["uuid"];
+            username: string;
+            /** @description Kong's salted hash, sha1(password + consumer id) in hex; never the password. Treated as a secret: encrypted at rest in the control plane and REDACTED outside the agent endpoint */
+            password: string;
+            tags: components["schemas"]["tags"];
+        };
+        acl: {
+            id: components["schemas"]["uuid"];
+            consumer: components["schemas"]["uuid"];
+            group: string;
+            tags: components["schemas"]["tags"];
+        };
         plugin: {
             id: components["schemas"]["uuid"];
             name: string;
@@ -1492,12 +1676,15 @@ export interface components {
         kongConfig: {
             /** @constant */
             _format_version: "3.0";
-            /** @constant */
-            _transform: true;
+            /** @description false since P3: the compiler emits basic-auth passwords already hashed (Kong's sha1(password + consumer id)), so Kong must not hash them again on load. Snapshots published earlier carry true; nothing else in the model has a Kong transformation. */
+            _transform: boolean;
             services: components["schemas"]["service"][];
             routes: components["schemas"]["route"][];
             consumers: components["schemas"]["consumer"][];
             keyauth_credentials: components["schemas"]["keyauthCredential"][];
+            jwt_secrets?: components["schemas"]["jwtSecret"][];
+            basicauth_credentials?: components["schemas"]["basicauthCredential"][];
+            acls?: components["schemas"]["acl"][];
             plugins: components["schemas"]["plugin"][];
             upstreams?: components["schemas"]["upstream"][];
             targets?: components["schemas"]["target"][];
@@ -1523,12 +1710,15 @@ export interface components {
                 kongConfig: {
                     /** @constant */
                     _format_version: "3.0";
-                    /** @constant */
-                    _transform: true;
+                    /** @description false since P3: the compiler emits basic-auth passwords already hashed (Kong's sha1(password + consumer id)), so Kong must not hash them again on load. Snapshots published earlier carry true; nothing else in the model has a Kong transformation. */
+                    _transform: boolean;
                     services: components["schemas"]["service"][];
                     routes: components["schemas"]["route"][];
                     consumers: components["schemas"]["consumer"][];
                     keyauth_credentials: components["schemas"]["keyauthCredential"][];
+                    jwt_secrets?: components["schemas"]["jwtSecret"][];
+                    basicauth_credentials?: components["schemas"]["basicauthCredential"][];
+                    acls?: components["schemas"]["acl"][];
                     plugins: components["schemas"]["plugin"][];
                     upstreams?: components["schemas"]["upstream"][];
                     targets?: components["schemas"]["target"][];
@@ -1576,6 +1766,32 @@ export interface components {
                     id: components["schemas"]["uuid"];
                     consumer: components["schemas"]["uuid"];
                     key: string;
+                    tags: components["schemas"]["tags"];
+                };
+                jwtSecret: {
+                    id: components["schemas"]["uuid"];
+                    consumer: components["schemas"]["uuid"];
+                    key: string;
+                    /** @enum {unknown} */
+                    algorithm: "HS256" | "RS256" | "ES256";
+                    /** @description HS256 only */
+                    secret?: string;
+                    /** @description RS256/ES256 only (an EC key for ES256) */
+                    rsa_public_key?: string;
+                    tags: components["schemas"]["tags"];
+                };
+                basicauthCredential: {
+                    id: components["schemas"]["uuid"];
+                    consumer: components["schemas"]["uuid"];
+                    username: string;
+                    /** @description Kong's salted hash, sha1(password + consumer id) in hex; never the password. Treated as a secret: encrypted at rest in the control plane and REDACTED outside the agent endpoint */
+                    password: string;
+                    tags: components["schemas"]["tags"];
+                };
+                acl: {
+                    id: components["schemas"]["uuid"];
+                    consumer: components["schemas"]["uuid"];
+                    group: string;
                     tags: components["schemas"]["tags"];
                 };
                 plugin: {
@@ -2883,6 +3099,218 @@ export interface operations {
                 content?: never;
             };
             404: components["responses"]["NotFound"];
+        };
+    };
+    listJwtCredentials: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+                consumerId: components["parameters"]["ConsumerId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description JWT credentials (an HS256 `secret` is never returned) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["JwtCredential"][];
+                    };
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    createJwtCredential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+                consumerId: components["parameters"]["ConsumerId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["JwtCredentialCreate"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JwtCredential"] & {
+                        /** @description HS256 only: the full secret, shown once */
+                        secret?: string;
+                    };
+                };
+            };
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+        };
+    };
+    deleteJwtCredential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+                consumerId: components["parameters"]["ConsumerId"];
+                credentialId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    listBasicAuthCredentials: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+                consumerId: components["parameters"]["ConsumerId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Basic-auth credentials (the password is never returned) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["BasicAuthCredential"][];
+                    };
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    createBasicAuthCredential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+                consumerId: components["parameters"]["ConsumerId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BasicAuthCredentialCreate"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BasicAuthCredential"];
+                };
+            };
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+        };
+    };
+    deleteBasicAuthCredential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+                consumerId: components["parameters"]["ConsumerId"];
+                credentialId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    getConsumerAclGroups: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+                consumerId: components["parameters"]["ConsumerId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The consumer's ACL groups (empty when it has none) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AclGroups"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    replaceConsumerAclGroups: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+                consumerId: components["parameters"]["ConsumerId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AclGroups"];
+            };
+        };
+        responses: {
+            /** @description Replaced */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AclGroups"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
         };
     };
     listUpstreams: {

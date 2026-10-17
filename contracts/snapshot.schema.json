@@ -65,7 +65,8 @@
           "const": "3.0"
         },
         "_transform": {
-          "const": true
+          "type": "boolean",
+          "description": "false since P3: the compiler emits basic-auth passwords already hashed (Kong's sha1(password + consumer id)), so Kong must not hash them again on load. Snapshots published earlier carry true; nothing else in the model has a Kong transformation."
         },
         "services": {
           "type": "array",
@@ -89,6 +90,24 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/keyauthCredential"
+          }
+        },
+        "jwt_secrets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/jwtSecret"
+          }
+        },
+        "basicauth_credentials": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/basicauthCredential"
+          }
+        },
+        "acls": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/acl"
           }
         },
         "plugins": {
@@ -304,6 +323,102 @@
         "key": {
           "type": "string",
           "minLength": 1
+        },
+        "tags": {
+          "$ref": "#/$defs/tags"
+        }
+      }
+    },
+    "jwtSecret": {
+      "type": "object",
+      "required": [
+        "id",
+        "consumer",
+        "key",
+        "algorithm",
+        "tags"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "consumer": {
+          "$ref": "#/$defs/uuid"
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "algorithm": {
+          "enum": [
+            "HS256",
+            "RS256",
+            "ES256"
+          ]
+        },
+        "secret": {
+          "type": "string",
+          "minLength": 1,
+          "description": "HS256 only"
+        },
+        "rsa_public_key": {
+          "type": "string",
+          "minLength": 1,
+          "description": "RS256/ES256 only (an EC key for ES256)"
+        },
+        "tags": {
+          "$ref": "#/$defs/tags"
+        }
+      }
+    },
+    "basicauthCredential": {
+      "type": "object",
+      "required": [
+        "id",
+        "consumer",
+        "username",
+        "password",
+        "tags"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "consumer": {
+          "$ref": "#/$defs/uuid"
+        },
+        "username": {
+          "type": "string",
+          "minLength": 1
+        },
+        "password": {
+          "type": "string",
+          "pattern": "^([0-9a-f]{40}|REDACTED)$",
+          "description": "Kong's salted hash, sha1(password + consumer id) in hex; never the password. Treated as a secret: encrypted at rest in the control plane and REDACTED outside the agent endpoint"
+        },
+        "tags": {
+          "$ref": "#/$defs/tags"
+        }
+      }
+    },
+    "acl": {
+      "type": "object",
+      "required": [
+        "id",
+        "consumer",
+        "group",
+        "tags"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "consumer": {
+          "$ref": "#/$defs/uuid"
+        },
+        "group": {
+          "type": "string",
+          "pattern": "^[a-z0-9_-]{1,64}$"
         },
         "tags": {
           "$ref": "#/$defs/tags"
