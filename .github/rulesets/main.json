@@ -3,10 +3,21 @@
   "target": "branch",
   "enforcement": "active",
   "bypass_actors": [],
-  "conditions": { "ref_name": { "include": ["refs/heads/main"], "exclude": [] } },
+  "conditions": {
+    "ref_name": {
+      "include": [
+        "refs/heads/main"
+      ],
+      "exclude": []
+    }
+  },
   "rules": [
-    { "type": "deletion" },
-    { "type": "non_fast_forward" },
+    {
+      "type": "deletion"
+    },
+    {
+      "type": "non_fast_forward"
+    },
     {
       "type": "pull_request",
       "parameters": {
@@ -22,14 +33,9 @@
       "parameters": {
         "strict_required_status_checks_policy": true,
         "required_status_checks": [
-          { "context": "checks" },
-          { "context": "ui-acceptance" },
-          { "context": "agent" },
-          { "context": "e2e" },
-          { "context": "helm-dp" },
-          { "context": "helm-cp" },
-          { "context": "helm-e2e" },
-          { "context": "mvp-e2e" }
+          {
+            "context": "ci-ok"
+          }
         ]
       }
     }

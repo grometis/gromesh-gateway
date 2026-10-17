@@ -62,6 +62,10 @@ helm install cp "$cp_chart" -n "$namespace" -f "$cp_chart/ci/values-kind.yaml" \
   --set platform.httpLogEndpoint=http://gromesh-collector:8080/kong \
   --wait --timeout 4m
 k wait --for=condition=Available deployment/cp-control-plane --timeout=60s
+# Folded in from the former helm-e2e job: two API replicas ready, and the successful migration hook deleted
+# (a failed or unfinished one would remain).
+[[ "$(k get deployment cp-control-plane -o jsonpath='{.status.readyReplicas}')" == 2 ]]
+[[ -z "$(k get jobs -l app.kubernetes.io/instance=cp -o name)" ]]
 
 forward() {
   local service="$1" port="$2" remote="$3" pid
@@ -78,6 +82,9 @@ forward() {
 }
 forward control-plane 13000 3000
 forward cp-control-plane-ui 18080 8080
+# The UI image serves its static files and proxies /api to the API through its hardcoded nginx upstream.
+curl --fail --silent --show-error --max-time 10 http://127.0.0.1:18080/ | grep -q '<html'
+[[ "$(curl --silent --max-time 10 -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/api/v1/environments)" == 401 ]]
 base=http://127.0.0.1:13000/api/v1
 jq -n --arg password "$admin_password" '{email:"admin@example.test",password:$password}' > "$work/login.json"
 curl --fail --silent --show-error --max-time 10 -c "$work/cookies" -H 'Content-Type: application/json' -d @"$work/login.json" "$base/auth/login" > /dev/null
@@ -114,6 +121,11 @@ for ((attempt=0; attempt<60; attempt++)); do
 done
 api GET "/clusters/$cluster_id" 200 | jq -e '.nodes | length == 1' > /dev/null
 k wait --for=condition=Ready=false pod -l app.kubernetes.io/instance=dp,app.kubernetes.io/name=data-plane --timeout=30s
+# NotReady because the snapshot is empty (readiness answers 503), not because a container is crashing.
+pod_ip="$(k get pod -l app.kubernetes.io/instance=dp,app.kubernetes.io/name=data-plane -o jsonpath='{.items[0].status.podIP}')"
+k exec deployment/cp-control-plane -- node -e \
+  'fetch(process.argv[1]).then(r => { if (r.status !== 503) process.exit(1); console.log("Empty data plane: readiness HTTP 503"); }).catch(() => process.exit(1))' \
+  "http://$pod_ip:8100/status/ready"
 forward mvp-data-plane 18000 8000
 
 # Log out the shell session; the scenario logs in through the UI with the same admin.
