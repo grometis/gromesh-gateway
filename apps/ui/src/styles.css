@@ -122,6 +122,13 @@ td.actions button + button { margin-left: 6px; }
 .badge.converging { color: var(--modified); }
 .badge.degraded { color: var(--removed); }
 .badge.no-nodes { color: var(--muted); }
+.badge.warning, .badge.danger { text-transform: none; min-width: 0; }
+.badge.warning { color: var(--modified); }
+.badge.danger { color: var(--removed); }
+.file { display: block; font-size: 13px; margin: -4px 0 12px; }
+.file input { margin-left: 8px; }
+fieldset { border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; margin: 0 0 12px; }
+fieldset legend { font-weight: 600; padding: 0 4px; }
 .cluster-actions { margin-bottom: 12px; }
 .state-failed { color: var(--removed); }
 .node-error { min-width: 160px; max-width: 360px; white-space: pre-wrap; overflow-wrap: anywhere; }

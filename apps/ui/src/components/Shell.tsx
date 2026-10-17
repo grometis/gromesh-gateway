@@ -52,6 +52,8 @@ const MENU = [
   ["routes", "Routes"],
   ["consumers", "Consumers"],
   ["plugins", "Plugins"],
+  ["upstreams", "Upstreams"],
+  ["certificates", "Certificados"],
   ["publications", "Publicações"],
   ["clusters", "Clusters"],
   ["analytics", "Dashboard"],

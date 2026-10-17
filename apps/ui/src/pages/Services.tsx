@@ -7,6 +7,7 @@ import { Field, FormErrorList } from "../components/Field";
 import { ConfirmDialog, Modal } from "../components/Modal";
 import { useEnvId } from "../components/Shell";
 import { ScopedPlugins } from "./Plugins";
+import { useUpstreams } from "./Upstreams";
 
 const PROTOCOLS: ServiceWrite["protocol"][] = ["http", "https", "grpc", "grpcs", "tcp", "tls"];
 const FIELDS = ["name", "protocol", "host", "port", "path", "enabled", "tags"] as const;
@@ -117,6 +118,8 @@ export function ServicesPage() {
 
 function ServiceForm({ envId, service, onClose }: { envId: string; service: Service | null; onClose: () => void }) {
   const invalidate = useInvalidateDraft(envId);
+  const upstreams = useUpstreams(envId);
+  const upstreamNames = upstreams.data?.pages.flatMap((p) => p.items.map((u) => u.name)) ?? [];
   const [form, setForm] = useState({
     name: service?.name ?? "",
     protocol: service?.protocol ?? "http",
@@ -176,8 +179,18 @@ function ServiceForm({ envId, service, onClose }: { envId: string; service: Serv
               </select>
             )}
           </Field>
-          <Field label="Host" errors={errors.fields.host}>
-            {(id, invalid) => <input id={id} aria-invalid={invalid} value={form.host} onChange={(e) => set("host", e.target.value)} placeholder="orders.internal" />}
+          <Field label="Host" errors={errors.fields.host} hint={upstreamNames.includes(form.host.trim()) ? "Balanceado pelo upstream de mesmo nome" : undefined}>
+            {(id, invalid) => (
+              <>
+                <input id={id} aria-invalid={invalid} list="upstream-names" value={form.host} onChange={(e) => set("host", e.target.value)} placeholder="orders.internal" />
+                {/* Upstreams of the environment as suggestions; any other host is resolved by DNS. */}
+                <datalist id="upstream-names">
+                  {upstreamNames.map((name) => (
+                    <option key={name} value={name} />
+                  ))}
+                </datalist>
+              </>
+            )}
           </Field>
           <Field label="Porta" errors={errors.fields.port}>
             {(id, invalid) => <input id={id} aria-invalid={invalid} inputMode="numeric" value={form.port} onChange={(e) => set("port", e.target.value)} />}

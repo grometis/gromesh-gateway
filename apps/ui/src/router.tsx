@@ -8,6 +8,8 @@ import { PluginsPage } from "./pages/Plugins";
 import { SnapshotsPage, SnapshotDetailPage } from "./pages/Snapshots";
 import { ClustersPage } from "./pages/Clusters";
 import { TokensPage } from "./pages/Tokens";
+import { UpstreamsPage } from "./pages/Upstreams";
+import { CertificatesPage } from "./pages/Certificates";
 import { UsersPage } from "./pages/Users";
 import { AuditPage } from "./pages/Audit";
 import { AnalyticsPage } from "./pages/Analytics";
@@ -39,6 +41,8 @@ export const router = createBrowserRouter([
               { path: "consumers", element: <ConsumersPage /> },
               { path: "consumers/:consumerId", element: <ConsumerDetailPage /> },
               { path: "plugins", element: <PluginsPage /> },
+              { path: "upstreams", element: <UpstreamsPage /> },
+              { path: "certificates", element: <CertificatesPage /> },
               { path: "publications", element: <SnapshotsPage /> },
               { path: "publications/:version", element: <SnapshotDetailPage /> },
               { path: "clusters", element: <ClustersPage /> },
