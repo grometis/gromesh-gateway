@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Final MVP acceptance in kind: both charts, observability, then the Playwright scenario in e2e/kind/mvp.spec.ts.
+# Final MVP acceptance in kind: both charts, observability, then the Playwright scenario in e2e/kind/mvp.spec.ts,
+# then a second data plane with the chart defaults.
 # Prerequisites: a kind cluster with the images loaded (see the mvp-e2e job in .github/workflows/ci.yml:
 # gromesh-control-plane:ci, gromesh-ui:ci, gromesh-agent:ci, ghcr.io/grometis/gromesh-kong:3.9.4-ac22d11c5ee912f9caeaf03a0305faca16aa5ca7, postgres:16-alpine, traefik/whoami:v1.10.3,
 # clickhouse/clickhouse-server:25.8.16.34-alpine, timberio/vector:0.53.0-alpine), helm, kubectl, jq, pnpm with the
@@ -128,11 +129,22 @@ k exec deployment/cp-control-plane -- node -e \
   "http://$pod_ip:8100/status/ready"
 forward mvp-data-plane 18000 8000
 
+# Log out the shell session; the scenario logs in through the UI with the same admin.
+curl --silent --max-time 10 -b "$work/cookies" -H "X-CSRF-Token: $csrf" -X POST "$base/auth/logout" > /dev/null || true
+export UI_URL=http://127.0.0.1:18080 CP_URL="$base" KONG_PROXY_URL=http://127.0.0.1:18000
+export E2E_ADMIN_EMAIL=admin@example.test E2E_ADMIN_PASSWORD="$admin_password" E2E_ENV_ID="$env_id" E2E_CLUSTER_ID="$cluster_id"
+export E2E_NAMESPACE="$namespace" E2E_DATA_PLANE_SELECTOR=app.kubernetes.io/instance=dp,app.kubernetes.io/name=data-plane
+pnpm --filter @gromesh/e2e exec playwright test --config kind/playwright.config.ts
+echo 'PASS: MVP acceptance in kind (install → login → publish → converge → agent restart with one node → traffic → dashboard → rollback → audit)'
+
 # A second data plane with the chart's defaults (no collector, two replicas), in its own namespace and cluster: the
 # default install path the former helm-e2e job covered. Only what kind needs is set (local images, the control
-# plane in the other namespace, and a smaller CPU request: the single kind node has no room for two more 250m
-# gateways); every feature keeps its default.
+# plane in the other namespace, and a smaller CPU request); every feature keeps its default. It runs last, after the
+# scenario's data plane is gone: the single kind node has no CPU left for two more gateways next to it.
 ns2="${namespace}-defaults"
+helm uninstall dp -n "$namespace" --wait --timeout 2m > /dev/null
+curl --fail --silent --show-error --max-time 10 -c "$work/cookies" -H 'Content-Type: application/json' -d @"$work/login.json" "$base/auth/login" > /dev/null
+csrf="$(curl --fail --silent --show-error --max-time 10 -b "$work/cookies" "$base/auth/csrf" | jq -er .csrfToken)"
 kubectl create namespace "$ns2"
 env2_id="$(api POST /environments 201 '{"name":"chart-defaults","publishMode":"manual"}' | jq -er .id)"
 cluster2="$(api POST "/environments/$env2_id/clusters" 201 '{"name":"defaults-edge"}')"
@@ -168,11 +180,3 @@ grep -q 'Hostname:' "$work/defaults"
 helm uninstall dp-defaults -n "$ns2" --wait --timeout 2m > /dev/null
 api DELETE "/clusters/$cluster2_id" 204 > /dev/null
 echo 'PASS: data plane with the chart defaults (no collector, 2 replicas) converged, Ready and proxying'
-
-# Log out the shell session; the scenario logs in through the UI with the same admin.
-curl --silent --max-time 10 -b "$work/cookies" -H "X-CSRF-Token: $csrf" -X POST "$base/auth/logout" > /dev/null || true
-export UI_URL=http://127.0.0.1:18080 CP_URL="$base" KONG_PROXY_URL=http://127.0.0.1:18000
-export E2E_ADMIN_EMAIL=admin@example.test E2E_ADMIN_PASSWORD="$admin_password" E2E_ENV_ID="$env_id" E2E_CLUSTER_ID="$cluster_id"
-export E2E_NAMESPACE="$namespace" E2E_DATA_PLANE_SELECTOR=app.kubernetes.io/instance=dp,app.kubernetes.io/name=data-plane
-pnpm --filter @gromesh/e2e exec playwright test --config kind/playwright.config.ts
-echo 'PASS: MVP acceptance in kind (install → defaults data plane → login → publish → converge → agent restart with one node → traffic → dashboard → rollback → audit)'
