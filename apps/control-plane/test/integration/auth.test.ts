@@ -335,8 +335,10 @@ describe("RBAC matrix from the contract", () => {
   interface Operation { method: string; path: string; role: "viewer" | "editor" | "admin"; id: string }
   const RANK = { viewer: 1, editor: 2, admin: 3 };
   const contract = parse(readFileSync(new URL("../../../../contracts/control-plane.openapi.yaml", import.meta.url), "utf8")) as {
-    paths: Record<string, Record<string, { operationId: string; "x-required-role"?: Operation["role"]; "x-gromesh-planned"?: boolean; security?: unknown[] }>>;
+    paths: Record<string, Record<string, { operationId: string; "x-required-role"?: Operation["role"]; "x-gromesh-planned"?: boolean; security?: Record<string, unknown>[] }>>;
   };
+  /** Operations whose own `security` leaves the bearer scheme out: a session only (token and user management). */
+  const sessionOnly = new Set<string>();
   // logout ends the session it is called with, so the sessions tests cover it instead of the matrix.
   const SKIP = new Set(["logout"]);
   const operations: Operation[] = [];
@@ -347,6 +349,7 @@ describe("RBAC matrix from the contract", () => {
       if (method === "parameters" || !op["x-required-role"] || SKIP.has(op.operationId)) continue;
       const operation = { method: method.toUpperCase(), path, role: op["x-required-role"], id: op.operationId };
       (op["x-gromesh-planned"] ? planned : operations).push(operation);
+      if (op.security && !op.security.some((s) => "bearerApiToken" in s)) sessionOnly.add(op.operationId);
     }
   }
   /** Routes registered in Nest, as "METHOD /api/v1/path/:param", from the Express router. */
@@ -399,6 +402,27 @@ describe("RBAC matrix from the contract", () => {
         const res = await clients[role](op.method, concrete(op.path), mutation(op.method) ? {} : undefined);
         if (RANK[role] < RANK[op.role]) expect(res.status, `${role} on ${op.id}`).toBe(403);
         else expect([401, 403], `${role} on ${op.id} → ${res.status}`).not.toContain(res.status);
+      }
+    }
+  });
+
+  it("accepts an API token wherever the contract allows the bearer scheme, with the token's role, and never where it does not", async () => {
+    expect(sessionOnly.size).toBeGreaterThan(5);
+    expect([...sessionOnly]).toEqual(expect.arrayContaining(["createMyToken", "revokeMyToken", "listTokens", "revokeToken", "listUsers", "createUser", "getCsrfToken"]));
+    const clients: Record<Operation["role"], ApiClient> = { viewer: null!, editor: null!, admin: null! };
+    for (const role of ["viewer", "editor", "admin"] as const) {
+      const user = await h.as(role);
+      const token = await user.api("POST", "/users/me/tokens", { name: `matrix-${role}`, role, expiresInDays: 1 });
+      expect(token.status, JSON.stringify(token.body)).toBe(201);
+      clients[role] = (method, path, body, headers = {}) => h.anonymous(method, path, body, { authorization: `Bearer ${token.body.token}`, ...headers });
+    }
+    for (const op of operations) {
+      for (const role of ["viewer", "editor", "admin"] as const) {
+        // No CSRF header on mutations: a bearer never needs one.
+        const res = await clients[role](op.method, concrete(op.path), mutation(op.method) ? {} : undefined);
+        if (sessionOnly.has(op.id)) expect(res.status, `${role} by token on ${op.id}`).toBe(401);
+        else if (RANK[role] < RANK[op.role]) expect(res.status, `${role} by token on ${op.id}`).toBe(403);
+        else expect([401, 403], `${role} by token on ${op.id} → ${res.status}`).not.toContain(res.status);
       }
     }
   });

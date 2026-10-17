@@ -91,6 +91,7 @@ export function Shell() {
         <span className="muted">
           {user?.name} ({user?.role})
         </span>
+        <NavLink to="/tokens">Tokens de API</NavLink>
         <button type="button" disabled={signOut.isPending} onClick={() => signOut.mutate()}>
           {signOut.isPending ? "Saindo…" : "Sair"}
         </button>

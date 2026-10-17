@@ -24,6 +24,10 @@ export interface Actor {
   type: "user" | "system" | "agent";
   id: string;
   name?: string;
+  /** How a user authenticated; a token also names itself, so the audit log says which one acted. */
+  via?: "session" | "token";
+  tokenId?: string;
+  tokenName?: string;
 }
 
 export const users = pgTable(
@@ -58,6 +62,28 @@ export const sessions = pgTable(
 );
 
 /** Failed logins per key ("ip:<addr>" or "email:<addr>"), shared by every replica. */
+/** API tokens: only the keyed hash of the value is stored; the role is capped by the owner's current role at use. */
+export const apiTokens = pgTable(
+  "api_tokens",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    role: text("role", { enum: ["viewer", "editor", "admin"] }).notNull(),
+    // HMAC-SHA256 of the token with GROMESH_FINGERPRINT_KEY: a database read never yields a usable token.
+    tokenHash: text("token_hash").notNull(),
+    tokenHint: text("token_hint").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (t) => [uniqueIndex("api_tokens_hash_uq").on(t.tokenHash), index("api_tokens_user_idx").on(t.userId)],
+);
+export type ApiTokenRow = typeof apiTokens.$inferSelect;
+
 export const loginAttempts = pgTable("login_attempts", {
   key: text("key").primaryKey(),
   failures: integer("failures").notNull().default(0),

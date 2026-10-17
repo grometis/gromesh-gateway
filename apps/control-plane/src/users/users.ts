@@ -3,7 +3,7 @@ import { hash } from "@node-rs/argon2";
 import { and, asc, count, eq, gt, ne, or, sql } from "drizzle-orm";
 import type { UserCreate, UserUpdate } from "../api-types.js";
 import { audit } from "../audit/audit.js";
-import { Ctx, RequiredRole, type RequestContext } from "../auth/auth.js";
+import { Ctx, RequiredRole, type RequestContext, SessionOnly } from "../auth/auth.js";
 import { SessionService } from "../auth/sessions.js";
 import { contractBody } from "../common/contract.js";
 import { decodeCursor, parseLimit, toPage } from "../common/pagination.js";
@@ -112,6 +112,7 @@ export class UsersService {
 }
 
 @Controller("users")
+@SessionOnly()
 export class UsersController {
   constructor(private readonly users: UsersService) {}
 

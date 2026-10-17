@@ -3,6 +3,7 @@ import {
   createParamDecorator,
   type ExecutionContext,
   HttpStatus,
+  Inject,
   Injectable,
   SetMetadata,
 } from "@nestjs/common";
@@ -12,6 +13,22 @@ import type { Request, Response } from "express";
 import type { Actor, UserRow } from "../db/schema.js";
 import { ProblemException } from "../common/problem.js";
 import { sessionCookie, SessionService } from "./sessions.js";
+
+/** `ggt_` plus 32 random bytes in unpadded base64url (43 characters), as the contract's pattern says. */
+export const TOKEN_PATTERN = /^ggt_[A-Za-z0-9_-]{43}$/;
+
+/** What a bearer token resolves to: the owner, the token, and the lower of the two roles. */
+export interface ResolvedBearer {
+  user: UserRow;
+  token: { id: string; name: string; role: Role };
+  role: Role;
+}
+
+/** Provided by the tokens module; injected by symbol so the guard does not import it (no module cycle). */
+export const BEARER_RESOLVER = Symbol("BEARER_RESOLVER");
+export interface BearerResolver {
+  resolve(bearer: string, ip: string | null): Promise<ResolvedBearer | null>;
+}
 
 export type Role = "viewer" | "editor" | "admin";
 const RANK: Record<Role, number> = { viewer: 1, editor: 2, admin: 3 };
@@ -26,9 +43,12 @@ export interface RequestContext {
 export interface AuthenticatedRequest extends Request {
   user?: UserRow;
   session?: { idHash: string; csrfToken: string };
+  /** How the request authenticated: a session, or an API token (then the effective role is capped by it). */
+  auth?: { via: "session" } | { via: "token"; tokenId: string; tokenName: string; role: Role };
 }
 
 const ROLE_KEY = "gromesh:required-role";
+const SESSION_ONLY_KEY = "gromesh:session-only";
 export const CSRF_HEADER = "x-csrf-token";
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
@@ -38,15 +58,21 @@ export const RequiredRole = (role: Role) => SetMetadata(ROLE_KEY, role);
 /** Explicitly unauthenticated endpoints (health probes, login, the agent protocol with its own guard). */
 export const Public = () => SetMetadata(ROLE_KEY, "public");
 
+/** Operations an API token may not call (token and user management, the session itself): a session only. */
+export const SessionOnly = () => SetMetadata(SESSION_ONLY_KEY, true);
+
 /**
  * Session cookie → user, then the contract's role ladder. Mutations additionally need the session's CSRF
  * token in `X-CSRF-Token` (double submit: the browser sends the cookie on its own, only our client the header).
+ * `Authorization: Bearer ggt_…` is an API token: it is used alone (any cookie is ignored), needs no CSRF token
+ * because a browser never sends it on its own, and acts with the lower of its role and its owner's current role.
  */
 @Injectable()
 export class AuthGuard implements CanActivate {
   constructor(
     private readonly reflector: Reflector,
     private readonly sessions: SessionService,
+    @Inject(BEARER_RESOLVER) private readonly tokens: BearerResolver,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -57,6 +83,19 @@ export class AuthGuard implements CanActivate {
       throw new ProblemException(HttpStatus.FORBIDDEN, "Endpoint has no role requirement");
     }
     const req = context.switchToHttp().getRequest<AuthenticatedRequest>();
+    const authorization = req.header("authorization");
+    if (authorization !== undefined) {
+      const sessionOnly = this.reflector.getAllAndOverride<boolean | undefined>(SESSION_ONLY_KEY, [context.getHandler(), context.getClass()]);
+      if (sessionOnly) throw new ProblemException(HttpStatus.UNAUTHORIZED, "This operation requires a session, not an API token");
+      const bearer = /^Bearer\s+(\S+)$/i.exec(authorization)?.[1] ?? "";
+      // An unparsable value is resolved as any other invalid token: same answer, same failure counter.
+      const resolved = await this.tokens.resolve(TOKEN_PATTERN.test(bearer) ? bearer : "ggt_invalid", req.ip ?? null);
+      if (!resolved) throw new ProblemException(HttpStatus.UNAUTHORIZED, "Invalid or expired API token");
+      if (RANK[resolved.role] < RANK[required]) throw new ProblemException(HttpStatus.FORBIDDEN, `Requires role ${required}`);
+      req.user = resolved.user;
+      req.auth = { via: "token", tokenId: resolved.token.id, tokenName: resolved.token.name, role: resolved.role };
+      return true;
+    }
     const id = sessionCookie(req.headers.cookie);
     const session = id ? await this.sessions.resolve(id) : null;
     if (!session) throw new ProblemException(HttpStatus.UNAUTHORIZED, "Authentication required");
@@ -68,6 +107,7 @@ export class AuthGuard implements CanActivate {
     if (session.renewed && id) context.switchToHttp().getResponse<Response>().setHeader("Set-Cookie", this.sessions.cookie(id));
     req.user = session.user;
     req.session = { idHash: session.idHash, csrfToken: session.csrfToken };
+    req.auth = { via: "session" };
     return true;
   }
 }
@@ -84,5 +124,14 @@ function sameToken(given: string | undefined, expected: string): boolean {
 export const Ctx = createParamDecorator((_data: unknown, context: ExecutionContext): RequestContext => {
   const req = context.switchToHttp().getRequest<AuthenticatedRequest>();
   if (!req.user) throw new ProblemException(HttpStatus.UNAUTHORIZED, "Authentication required");
-  return { actor: { type: "user", id: req.user.id, name: req.user.name }, ip: req.ip ?? null, role: req.user.role };
+  return contextOf(req);
 });
+
+/** The audit actor names the token a request came through; the role is the effective one. */
+export function contextOf(req: AuthenticatedRequest): RequestContext {
+  const user = req.user!;
+  if (req.auth?.via === "token") {
+    return { actor: { type: "user", id: user.id, name: user.name, via: "token", tokenId: req.auth.tokenId, tokenName: req.auth.tokenName }, ip: req.ip ?? null, role: req.auth.role };
+  }
+  return { actor: { type: "user", id: user.id, name: user.name }, ip: req.ip ?? null, role: user.role };
+}
