@@ -81,7 +81,9 @@ jobs:
             charts:
               - *workflow
               - deploy/helm/**
-            # Helm install in kind: charts, the agent, the kind scenario, the images themselves or any workflow.
+            # Helm install in kind: charts, the agent, the kind scenario, the images themselves or any workflow; and what
+            # the charts must keep up with in the control plane: the environment it reads at start (all of it in
+            # src/config.ts), its migrations (run by the chart's hook) and the agent protocol, both sides.
             kind:
               - .github/workflows/**
               - deploy/helm/**
@@ -89,6 +91,10 @@ jobs:
               - e2e/kind/**
               - images/**
               - apps/*/Dockerfile
+              - apps/control-plane/src/config.ts
+              - apps/control-plane/drizzle/**
+              - apps/control-plane/src/agent-gateway/**
+              - contracts/agent-protocol.openapi.yaml
             heavy:
               - *workflow
               - apps/**
