@@ -88,7 +88,12 @@ func TestRevokedNodeTokenIsDeletedBeforeReregister(t *testing.T) {
 			// Revoke just one endpoint, so recovery cannot rely on a different request's 401.
 			upstream := cp.HTTP.Config.Handler
 			var revoked atomic.Bool
+			authorizations := make(chan string, 128)
 			proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				select {
+				case authorizations <- r.Header.Get("Authorization"):
+				default:
+				}
 				if r.URL.Path == endpoint && revoked.CompareAndSwap(false, true) {
 					w.WriteHeader(http.StatusUnauthorized)
 					return
@@ -123,6 +128,9 @@ func TestRevokedNodeTokenIsDeletedBeforeReregister(t *testing.T) {
 			waitState(t, cp, "idle", 0)
 			receive(t, cp.EventConnections, nil)
 			receive(t, cp.SnapshotRequests, nil)
+			// The requests above may still come from the revoked session; only one carrying the refreshed token
+			// proves the new registration was saved before the agent stops.
+			receive(t, authorizations, func(a string) bool { return a == "Bearer refreshed-node-token" })
 			stopRestart()
 			restored, err := os.ReadFile(tokenPath)
 			if err != nil || string(restored) != "refreshed-node-token" {
