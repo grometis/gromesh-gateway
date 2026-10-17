@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { X509Certificate } from "node:crypto";
-import { connect, type PeerCertificate } from "node:tls";
+import { connect, type DetailedPeerCertificate } from "node:tls";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
@@ -61,29 +61,29 @@ async function publishAndConverge(envId: string, clusterId: string) {
   throw new Error(`cluster did not converge to version ${published.body.version}`);
 }
 
-/** Which backend answered: whoami prints "Hostname:", the UI's nginx serves the SPA's HTML. */
+/** Which backend answered: each whoami container prints its own "Hostname:". */
 async function backends(path: string, n: number): Promise<string[]> {
   const out: string[] = [];
   for (let i = 0; i < n; i++) {
     const res = await fetch(`${PROXY}${path}`, { signal: AbortSignal.timeout(3000) });
     const text = await res.text();
     expect(res.status).toBe(200);
-    out.push(text.includes("Hostname:") ? "echo" : text.toLowerCase().includes("<html") ? "ui" : "other");
+    out.push(/^Hostname: (.+)$/m.exec(text)?.[1]?.trim() ?? "not whoami");
   }
   return out;
 }
 
 /** The certificate chain the gateway presents for `servername` (no verification: the chain is a test root). */
-function presentedChain(servername: string): Promise<PeerCertificate[]> {
+function presentedChain(servername: string): Promise<DetailedPeerCertificate[]> {
   return new Promise((resolve, reject) => {
     const socket = connect({ host: "127.0.0.1", port: TLS_PORT, servername, rejectUnauthorized: false }, () => {
-      const chainOut: PeerCertificate[] = [];
+      const chainOut: DetailedPeerCertificate[] = [];
       let cert = socket.getPeerCertificate(true);
       const seen = new Set<string>();
       while (cert && cert.fingerprint256 && !seen.has(cert.fingerprint256)) {
         seen.add(cert.fingerprint256);
         chainOut.push(cert);
-        cert = (cert as PeerCertificate & { issuerCertificate?: PeerCertificate }).issuerCertificate!;
+        cert = cert.issuerCertificate;
       }
       socket.end();
       resolve(chainOut);
@@ -106,22 +106,25 @@ describe("upstreams and certificates on the real gateway", () => {
       agentStarted = true;
       await compose(["up", "-d", "--no-deps", "--force-recreate", "agent"], cluster.body.registrationToken);
 
-      // (a) Two different backends behind one upstream: the whoami echo and the UI's nginx.
+      // (a) Two whoami containers behind one upstream: the answers alternate between their hostnames.
       const upstream = await api("POST", `/environments/${envId}/upstreams`, { name: "e2e-pool.upstream" });
       expect(upstream.status, JSON.stringify(upstream.body)).toBe(201);
       const echoTarget = await api("POST", `/environments/${envId}/upstreams/${upstream.body.id}/targets`, { target: "echo:80" });
-      const uiTarget = await api("POST", `/environments/${envId}/upstreams/${upstream.body.id}/targets`, { target: "ui:8080" });
-      expect([echoTarget.status, uiTarget.status]).toEqual([201, 201]);
+      const echo2Target = await api("POST", `/environments/${envId}/upstreams/${upstream.body.id}/targets`, { target: "echo-2:80" });
+      expect([echoTarget.status, echo2Target.status]).toEqual([201, 201]);
       const svc = await api("POST", `/environments/${envId}/services`, { name: "pool", protocol: "http", host: "e2e-pool.upstream", port: 80 });
       expect((await api("POST", `/environments/${envId}/routes`, { name: "pool", serviceId: svc.body.id, paths: ["/lb"] })).status).toBe(201);
       await publishAndConverge(envId, clusterId);
       const mixed = await backends("/lb", 12);
-      expect(new Set(mixed)).toEqual(new Set(["echo", "ui"]));
+      expect(mixed).not.toContain("not whoami");
+      expect(new Set(mixed).size).toBe(2);
 
-      // Weight 0 takes the UI out of the balancing: every request goes to the echo.
-      expect((await api("PUT", `/environments/${envId}/upstreams/${upstream.body.id}/targets/${uiTarget.body.id}`, { target: "ui:8080", weight: 0 })).status).toBe(200);
+      // Weight 0 takes echo-2 out of the balancing: every request goes to the same container.
+      expect((await api("PUT", `/environments/${envId}/upstreams/${upstream.body.id}/targets/${echo2Target.body.id}`, { target: "echo-2:80", weight: 0 })).status).toBe(200);
       await publishAndConverge(envId, clusterId);
-      expect(new Set(await backends("/lb", 12))).toEqual(new Set(["echo"]));
+      const pinned = await backends("/lb", 12);
+      expect(new Set(pinned).size).toBe(1);
+      expect(mixed).toContain(pinned[0]);
 
       // (d) The service still uses the upstream by name: deleting it is refused and names the service.
       const del = await api<{ detail: string }>("DELETE", `/environments/${envId}/upstreams/${upstream.body.id}`);

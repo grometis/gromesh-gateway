@@ -183,6 +183,10 @@ services:
     ports:
       - "127.0.0.1:8080:80"
 
+  # A second upstream backend for the load-balancing acceptance: whoami answers with its own Hostname.
+  echo-2:
+    image: traefik/whoami:v1.10.3
+
   clickhouse:
     profiles: [observability]
     image: clickhouse/clickhouse-server:25.8.16.34-alpine
