@@ -141,7 +141,7 @@ test("UI publication, key-auth traffic, viewer limits, audit and rollback on the
     const createdRoute = await routeResponse.json() as Entity;
     await expect(route).toBeHidden();
 
-    await page.getByRole("button", { name: "Publicar", exact: true }).click();
+    await page.getByRole("region", { name: "Publicação" }).getByRole("button", { name: /^Publicar v\d+$/ }).click();
     const publish = page.getByRole("dialog", { name: /^Publicar/ });
     await expect(publish.locator('[data-change="added"]')).toHaveCount(2);
     const published = page.waitForResponse((r) => r.request().method() === "POST" && r.url().endsWith(`/environments/${env.id}/snapshots`));
@@ -195,7 +195,7 @@ test("UI publication, key-auth traffic, viewer limits, audit and rollback on the
       await viewerPage.getByRole("button", { name: "Entrar" }).click();
       await viewerPage.getByLabel("Environment", { exact: true }).selectOption(env.id);
       await expect(viewerPage.getByRole("heading", { name: "Services", exact: true })).toBeVisible();
-      await expect(viewerPage.getByRole("cell", { name, exact: true })).toBeVisible();
+      await expect(viewerPage.getByRole("table", { name: "Services" }).getByText(name, { exact: true })).toBeVisible();
       await expect(viewerPage.getByRole("button", { name: /Novo service|Editar|Excluir|Publicar/ })).toHaveCount(0);
       await expect(viewerPage.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: /Usuários|Auditoria/ })).toHaveCount(0);
       await viewerPage.context().close();
