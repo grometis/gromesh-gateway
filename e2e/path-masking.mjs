@@ -47,9 +47,9 @@ const admin = (method, body) => insideGateway("http://127.0.0.1:8001/config", me
 
 async function main() {
   await run(["run", "--rm", "-e", "CLICKHOUSE_PASSWORD=unit-test",
-    "-e", "GROMESH_CLUSTER_ID=00000000-0000-4000-8000-00000000c0c0",
+    "-e", "GROMESH_CLUSTER_ID=00000000-0000-4000-8000-00000000c0c0", "-e", 'GROMESH_KEY_NAMES=["legacy-key"]',
     "-v", `${root}deploy/observability/vector:/etc/vector:ro`, "timberio/vector:0.53.0-alpine",
-    "test", "/etc/vector/vector.yaml", "/etc/vector/path-masking.tests.yaml"]);
+    "test", "/etc/vector/vector.yaml", "/etc/vector/path-masking.tests.yaml", "/etc/vector/key-names.tests.yaml"]);
   await exec("pnpm", ["--filter", "@gromesh/compiler", "build"], { cwd: root, env, timeout: 60_000 });
   const { compile, platformPlugins } = await import("../packages/compiler/dist/index.js");
   const { stdout: agents } = await compose("ps", "--status", "running", "-q", "agent");
@@ -66,8 +66,14 @@ async function main() {
     ["cnpj-punctuated", "12.345.678/0001-95", "{cnpj}"],
     ["cnpj", "12345678000195", "{cnpj}"],
     ["email", "test.12345678909+tag@example.test", "{email}"],
-    ["number-six", "654321", "{num}"],
-    ["number-long", "98765432109876543210", "{num}"],
+    ["number-six", "654321", "{id}"],
+    ["number-long", "98765432109876543210", "{id}"],
+    ["hex-segment", "mvp-629762c6", "{id}"],
+    ["object-id", "507f1f77bcf86cd799439011", "{id}"],
+    ["adjacent-numbers", "123456-654321", "{id}"],
+    ["embedded-cpf", "prefix-12345678909", "{id}"],
+    ["embedded-cnpj", "12345678000195-suffix", "{id}"],
+    ["email-precedence", "654321(test@example.test)987654", "{email}"],
   ];
   const percentEncode = (value) => [...Buffer.from(value)].map((byte) => `%${byte.toString(16).padStart(2, "0")}`).join("");
   const privateValues = new Set(patterns.flatMap(([, value]) => [value, encodeURIComponent(value), percentEncode(value)]));
@@ -79,7 +85,16 @@ async function main() {
     { label: `${label}-encoded`, uri: `${base}/${label}-encoded/${percentEncode(value)}`, expected: `${base}/${label}-encoded/${marker}` },
     { label: `${label}-query`, uri: `${base}/${label}-query?value=${encodeURIComponent(value)}`, expected: `${base}/${label}-query` },
   ]);
+  // Numeric UUIDs make regressions deterministic, including UUIDs with a test prefix.
+  const controlUuid = "12345678-1234-1234-1234-123456789012";
+  const controlPaths = [`/mvp-${controlUuid}`, `/e2e-${controlUuid}/traffic-0`];
   cases.push(
+    { label: "root-hex-segment", uri: "/mvp-629762c6", expected: "/{id}" },
+    { label: "root-object-id", uri: "/orders/507f1f77bcf86cd799439011", expected: "/orders/{id}" },
+    ...controlPaths.flatMap((path, i) => [
+      { label: `prefixed-uuid-${i}`, uri: path, expected: path },
+      { label: `prefixed-uuid-encoded-${i}`, uri: path.replace(controlUuid, percentEncode(controlUuid)), expected: path },
+    ]),
     { label: "short-id", uri: "/v1/pedidos/123", expected: "/v1/pedidos/123" },
     { label: "five-digits", uri: "/v1/pedidos/12345", expected: "/v1/pedidos/12345" },
     ...["12345678-1234-1234-1234-123456789012", "ABCDEF12-3456-7890-ABCD-123456789012"].map((uuid, i) => ({
@@ -90,7 +105,7 @@ async function main() {
   );
   const config = compile({
     services: [{ id: serviceId, name: "path-masking", protocol: "http", host: "echo", port: 80 }],
-    routes: [{ id: randomUUID(), name: "path-masking", serviceId, paths: [base, "/v1/pedidos"] }],
+    routes: [{ id: randomUUID(), name: "path-masking", serviceId, paths: [base, "/v1/pedidos", "/mvp-629762c6", "/orders", ...controlPaths] }],
     consumers: [], keyAuthCredentials: [], plugins: [],
   }, { platformPlugins: platformPlugins({ environmentId, httpLogEndpoint: "http://gromesh-collector:8080/kong" }) });
   const headers = { authorization: `Basic ${Buffer.from(`${process.env.CLICKHOUSE_USER ?? "gromesh"}:${process.env.CLICKHOUSE_PASSWORD ?? "gromesh-dev-observability"}`).toString("base64")}` };
