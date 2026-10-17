@@ -273,8 +273,16 @@ jobs:
       - name: Dump Kubernetes diagnostics
         if: failure()
         run: |
-          bash deploy/helm/control-plane/ci/diagnostics.sh
-          kind export logs --name "$KIND_CLUSTER_NAME" "$RUNNER_TEMP/kind-logs" || true
+          bash deploy/helm/control-plane/ci/diagnostics.sh gromesh-helm "$RUNNER_TEMP/kind-diagnostics"
+          kind export logs --name "$KIND_CLUSTER_NAME" "$RUNNER_TEMP/kind-diagnostics/kind-logs" || true
+      - name: Upload Kubernetes diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: helm-e2e-kind-diagnostics
+          path: ${{ runner.temp }}/kind-diagnostics/
+          if-no-files-found: warn
+          retention-days: 7
       - name: Delete throwaway cluster
         if: always()
         run: kind delete cluster --name "$KIND_CLUSTER_NAME"
@@ -357,8 +365,16 @@ jobs:
       - name: Dump Kubernetes diagnostics
         if: failure()
         run: |
-          bash deploy/helm/control-plane/ci/diagnostics.sh gromesh-mvp
-          kind export logs --name "$KIND_CLUSTER_NAME" "$RUNNER_TEMP/kind-logs" || true
+          bash deploy/helm/control-plane/ci/diagnostics.sh gromesh-mvp "$RUNNER_TEMP/kind-diagnostics"
+          kind export logs --name "$KIND_CLUSTER_NAME" "$RUNNER_TEMP/kind-diagnostics/kind-logs" || true
+      - name: Upload Kubernetes diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mvp-e2e-kind-diagnostics
+          path: ${{ runner.temp }}/kind-diagnostics/
+          if-no-files-found: warn
+          retention-days: 7
       - name: Delete throwaway cluster
         if: always()
         run: kind delete cluster --name "$KIND_CLUSTER_NAME"
