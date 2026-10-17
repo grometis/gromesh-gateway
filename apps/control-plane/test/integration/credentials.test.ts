@@ -1,6 +1,5 @@
 import { createHash, generateKeyPairSync } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { AtRestService } from "../../src/crypto/at-rest.js";
 import { basicAuthHashContext, Encryptor, jwtSecretContext } from "../../src/crypto/crypto.js";
 import { ENCRYPTION_KEYS, startHarness, uniq, type Harness } from "./harness.js";
 
@@ -185,8 +184,8 @@ describe("ACL groups", () => {
   });
 });
 
-describe("rollback, deletion and rotation", () => {
-  it("restores credentials and groups on rollback, deletes them with the consumer, and re-seals them on rotation", async () => {
+describe("rollback and deletion", () => {
+  it("restores credentials and groups on rollback and deletes them with the consumer (rotation: encryption.test.ts)", async () => {
     const { envId, consumerId } = await consumer();
     const base = `/environments/${envId}/consumers/${consumerId}`;
     const jwt = (await h.api("POST", `${base}/jwt`, { key: "roll-issuer" })).body;
@@ -206,26 +205,6 @@ describe("rollback, deletion and rotation", () => {
     const served = await agentConfig(h, envId);
     expect(served.jwt_secrets![0]!.secret).toBe(jwt.secret);
     expect(served.basicauth_credentials![0]!.password).toBe(createHash("sha1").update("roll-password" + consumerId).digest("hex"));
-
-    const rotating = await startHarness({ encryption: { writeKey: ENCRYPTION_KEYS.k2, readKeys: [ENCRYPTION_KEYS.k1], fingerprintKey: ENCRYPTION_KEYS.fingerprint } });
-    try {
-      // Other test files share the database and may rotate it first: what counts is that these rows end up on k2.
-      let report = await rotating.app.get(AtRestService).rotate();
-      for (let i = 0; report.skipped && i < 50; i++) {
-        await new Promise((r) => setTimeout(r, 100));
-        report = await rotating.app.get(AtRestService).rotate();
-      }
-      expect(report.skipped).toBe(false);
-      const sealed = await rotating.sql.query(
-        "select (select secret from jwt_credentials where id = $1) as s, (select password_hash from basicauth_credentials where id = $2) as p",
-        [jwt.id, basic.id],
-      );
-      expect(sealed.rows[0].s).toMatch(/^enc:v2:k2:/);
-      expect(sealed.rows[0].p).toMatch(/^enc:v2:k2:/);
-      expect((await agentConfig(rotating, envId)).jwt_secrets![0]!.secret).toBe(jwt.secret);
-    } finally {
-      await rotating.close();
-    }
 
     expect((await h.api("DELETE", base)).status).toBe(204);
     const left = await h.sql.query("select (select count(*) from jwt_credentials where consumer_id = $1)::int + (select count(*) from basicauth_credentials where consumer_id = $1)::int as n", [consumerId]);
