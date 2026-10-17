@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { test } from "@playwright/test";
 
-test("analytics masks personal paths without changing UUIDs or short numeric ids", async () => {
+test("analytics masks whole ID segments with specific PII precedence and preserves UUIDs and short ids", async () => {
   test.setTimeout(180_000);
   const { stdout } = await promisify(execFile)(process.execPath,
     [fileURLToPath(new URL("./path-masking.mjs", import.meta.url))], {

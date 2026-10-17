@@ -41,16 +41,35 @@ transforms:
       # Queries are never stored. Decode the path before matching encoded PII.
       path = decode_percent(string!(split(uri, "?", limit: 2)[0]))
       if !starts_with(path, "/") { abort }
-      # One pass keeps UUIDs opaque, including all-numeric UUIDs. Specific
-      # patterns win over the generic digit run; unpunctuated IDs use its length.
-      .request.uri = replace_with(path, r'(?i)(?P<email>[a-z0-9.!#%&*+=^_`{|}~\x24\x27-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+)|(?P<uuid>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})|(?P<cnpj>[0-9]{2}\.[0-9]{3}\.[0-9]{3}/[0-9]{4}-[0-9]{2})|(?P<cpf>[0-9]{3}\.[0-9]{3}\.[0-9]{3}-[0-9]{2})|(?P<num>[0-9]{6,})') -> |m| {
-        if m.email != null { "{email}" } else if m.uuid != null { string!(m.uuid) } else if m.cnpj != null {
-          "{cnpj}"
-        } else if m.cpf != null { "{cpf}" } else {
-          digits = string!(m.num)
-          if length(digits) == 14 { "{cnpj}" } else if length(digits) == 11 { "{cpf}" } else { "{num}" }
+      # Precedence: an entire CPF/CNPJ or a segment containing an email keeps
+      # its specific marker. Punctuated CNPJ spans two slash-delimited parts.
+      # Otherwise mask the whole segment for 6+ consecutive digits outside UUIDs;
+      # UUID spans stay opaque even in /mvp-<uuid> and /e2e-<uuid> paths.
+      segments = split(path, "/")
+      masked = []
+      for_each(segments) -> |index, value| {
+        segment = value
+        previous = string(get(segments, [index - 1]) ?? null) ?? ""
+        # The preceding iteration already emitted a complete punctuated CNPJ.
+        cnpj_tail = match(previous, r'^[0-9]{2}\.[0-9]{3}\.[0-9]{3}$') && match(segment, r'^[0-9]{4}-[0-9]{2}$')
+        if !cnpj_tail {
+          next = string(get(segments, [index + 1]) ?? null) ?? ""
+          if match(segment, r'^[0-9]{2}\.[0-9]{3}\.[0-9]{3}$') && match(next, r'^[0-9]{4}-[0-9]{2}$') {
+            segment = "{cnpj}"
+          } else if match(segment, r'(?i)[a-z0-9.!#%&*+=^_`{|}~\x24\x27-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+') {
+            segment = "{email}"
+          } else if match(segment, r'^(?:[0-9]{3}\.[0-9]{3}\.[0-9]{3}-[0-9]{2}|[0-9]{11})$') {
+            segment = "{cpf}"
+          } else if match(segment, r'^[0-9]{14}$') {
+            segment = "{cnpj}"
+          } else {
+            without_uuids = replace(segment, r'(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b', "")
+            if match(without_uuids, r'[0-9]{6,}') { segment = "{id}" }
+          }
+          masked = push(masked, segment)
         }
       }
+      .request.uri = join!(masked, "/")
 
   sanitize:
     type: remap

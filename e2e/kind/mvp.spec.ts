@@ -81,7 +81,7 @@ async function uiLogin(page: Page) {
 }
 
 test("MVP: install → publish → converge → traffic in the dashboard → rollback → audit", async ({ page, browser, playwright }) => {
-  // A full UUID: the collector masks runs of 6+ digits in paths ({num}), and an 8-hex suffix holds one ~10% of the time.
+  // Full UUIDs remain intact; an 8-hex suffix can trigger whole-segment ID masking.
   const name = `mvp-${randomUUID()}`;
   const path = `/${name}`;
   const admin = await login(browser);

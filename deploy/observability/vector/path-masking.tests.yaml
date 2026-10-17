@@ -66,7 +66,7 @@ tests:
         type: log
         log_fields:
           request: {"uri": "/ids/123456/9876543210/123456789012345/123456-654321"}
-          expected: "/ids/{num}/{num}/{num}/{num}-{num}"
+          expected: "/ids/{id}/{id}/{id}/{id}"
     outputs:
       - extract_from: mask_path
         conditions:
@@ -90,7 +90,7 @@ tests:
         type: log
         log_fields:
           request: {"uri": "/ids/12345678-1234-1234-1234-123456789012/ABCDEF12-3456-7890-ABCD-123456789012/123456"}
-          expected: "/ids/12345678-1234-1234-1234-123456789012/ABCDEF12-3456-7890-ABCD-123456789012/{num}"
+          expected: "/ids/12345678-1234-1234-1234-123456789012/ABCDEF12-3456-7890-ABCD-123456789012/{id}"
     outputs:
       - extract_from: mask_path
         conditions:
@@ -126,7 +126,7 @@ tests:
         type: log
         log_fields:
           request: {"uri": "/v1/a%3Fb/123456"}
-          expected: "/v1/a?b/{num}"
+          expected: "/v1/a?b/{id}"
     outputs:
       - extract_from: mask_path
         conditions:
@@ -138,7 +138,151 @@ tests:
         type: log
         log_fields:
           request: {"uri": "/123.456.789-09/12.345.678/0001-95/12345678909/12345678000195/test@example.test/123456"}
-          expected: "/{cpf}/{cnpj}/{cpf}/{cnpj}/{email}/{num}"
+          expected: "/{cpf}/{cnpj}/{cpf}/{cnpj}/{email}/{id}"
+    outputs:
+      - extract_from: mask_path
+        conditions:
+          - type: vrl
+            source: assert!(.request.uri == .expected, "Unexpected masked path")
+  - name: hex-segment
+    inputs:
+      - insert_at: mask_path
+        type: log
+        log_fields:
+          request: {"uri": "/mvp-629762c6"}
+          expected: "/{id}"
+    outputs:
+      - extract_from: mask_path
+        conditions:
+          - type: vrl
+            source: assert!(.request.uri == .expected, "Unexpected masked path")
+  - name: object-id
+    inputs:
+      - insert_at: mask_path
+        type: log
+        log_fields:
+          request: {"uri": "/orders/507f1f77bcf86cd799439011"}
+          expected: "/orders/{id}"
+    outputs:
+      - extract_from: mask_path
+        conditions:
+          - type: vrl
+            source: assert!(.request.uri == .expected, "Unexpected masked path")
+  - name: short-order-id
+    inputs:
+      - insert_at: mask_path
+        type: log
+        log_fields:
+          request: {"uri": "/v1/pedidos/123"}
+          expected: "/v1/pedidos/123"
+    outputs:
+      - extract_from: mask_path
+        conditions:
+          - type: vrl
+            source: assert!(.request.uri == .expected, "Unexpected masked path")
+  - name: embedded-cpf-cnpj-digits
+    inputs:
+      - insert_at: mask_path
+        type: log
+        log_fields:
+          request: {"uri": "/ids/prefix-12345678909/12345678000195-suffix"}
+          expected: "/ids/{id}/{id}"
+    outputs:
+      - extract_from: mask_path
+        conditions:
+          - type: vrl
+            source: assert!(.request.uri == .expected, "Unexpected masked path")
+  - name: email-segment-precedence
+    inputs:
+      - insert_at: mask_path
+        type: log
+        log_fields:
+          request: {"uri": "/contacts/654321(test@example.test)987654"}
+          expected: "/contacts/{email}"
+    outputs:
+      - extract_from: mask_path
+        conditions:
+          - type: vrl
+            source: assert!(.request.uri == .expected, "Unexpected masked path")
+  - name: adjacent-punctuated-cnpjs
+    inputs:
+      - insert_at: mask_path
+        type: log
+        log_fields:
+          request: {"uri": "/12.345.678/0001-95/12.345.678/0001-95/"}
+          expected: "/{cnpj}/{cnpj}/"
+    outputs:
+      - extract_from: mask_path
+        conditions:
+          - type: vrl
+            source: assert!(.request.uri == .expected, "Unexpected masked path")
+  - name: punctuated-cnpj-must-be-complete
+    inputs:
+      - insert_at: mask_path
+        type: log
+        log_fields:
+          request: {"uri": "/companies/prefix-12.345.678/0001-95/12.345.678/0001-95-suffix"}
+          expected: "/companies/prefix-12.345.678/0001-95/12.345.678/0001-95-suffix"
+    outputs:
+      - extract_from: mask_path
+        conditions:
+          - type: vrl
+            source: assert!(.request.uri == .expected, "Unexpected masked path")
+  - name: prefixed-uuids
+    inputs:
+      - insert_at: mask_path
+        type: log
+        log_fields:
+          request: {"uri": "/mvp-12345678-1234-1234-1234-123456789012/e2e-ABCDEF12-3456-7890-ABCD-123456789012/traffic-0"}
+          expected: "/mvp-12345678-1234-1234-1234-123456789012/e2e-ABCDEF12-3456-7890-ABCD-123456789012/traffic-0"
+    outputs:
+      - extract_from: mask_path
+        conditions:
+          - type: vrl
+            source: assert!(.request.uri == .expected, "Unexpected masked path")
+  - name: uuid-does-not-exempt-other-digits
+    inputs:
+      - insert_at: mask_path
+        type: log
+        log_fields:
+          request: {"uri": "/mvp-12345678-1234-1234-1234-123456789012-654321"}
+          expected: "/{id}"
+    outputs:
+      - extract_from: mask_path
+        conditions:
+          - type: vrl
+            source: assert!(.request.uri == .expected, "Unexpected masked path")
+  - name: encoded-id-and-separator
+    inputs:
+      - insert_at: mask_path
+        type: log
+        log_fields:
+          request: {"uri": "/orders%2F507f1f77bcf86cd799439011/mvp-%36%32%39%37%36%32c6"}
+          expected: "/orders/{id}/{id}"
+    outputs:
+      - extract_from: mask_path
+        conditions:
+          - type: vrl
+            source: assert!(.request.uri == .expected, "Unexpected masked path")
+  - name: encoded-prefixed-uuid
+    inputs:
+      - insert_at: mask_path
+        type: log
+        log_fields:
+          request: {"uri": "/mvp-%31%32%33%34%35%36%37%38%2D1234%2D1234%2D1234%2D123456789012"}
+          expected: "/mvp-12345678-1234-1234-1234-123456789012"
+    outputs:
+      - extract_from: mask_path
+        conditions:
+          - type: vrl
+            source: assert!(.request.uri == .expected, "Unexpected masked path")
+  - name: preserve-separators
+    inputs:
+      - insert_at: mask_path
+        type: log
+        log_fields:
+          request: {"uri": "//orders//507f1f77bcf86cd799439011///12345/"}
+          expected: "//orders//{id}///12345/"
     outputs:
       - extract_from: mask_path
         conditions:
