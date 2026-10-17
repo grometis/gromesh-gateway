@@ -12,6 +12,7 @@ import { credentialContext, ENCRYPTOR, Encryptor } from "../crypto/crypto.js";
 import { DB, type Db, type Executor } from "../db/db.js";
 import { consumers, keyAuthCredentials, type ConsumerRow, type KeyAuthCredentialRow } from "../db/schema.js";
 import { markDraftChanged, requireEnvironment, uuidParam } from "../environments/environments.js";
+import { CredentialsController, CredentialsService } from "./credentials.js";
 
 /* ---------------- mapping ---------------- */
 
@@ -104,7 +105,7 @@ export class ConsumersService {
     });
   }
 
-  /** Credentials and consumer-scoped plugins go with it (FK cascade). */
+  /** Credentials (key-auth, JWT, basic-auth) and consumer-scoped plugins go with it (FK cascade). */
   async remove(ctx: RequestContext, envId: string, consumerId: string) {
     await this.db.transaction(async (tx) => {
       const before = toConsumer(await requireConsumer(tx, envId, consumerId));
@@ -250,5 +251,5 @@ export class ConsumersController {
   }
 }
 
-@Module({ controllers: [ConsumersController], providers: [ConsumersService] })
+@Module({ controllers: [ConsumersController, CredentialsController], providers: [ConsumersService, CredentialsService] })
 export class ConsumersModule {}

@@ -48,6 +48,24 @@ export interface KeyAuthCredentialWrite {
   tags?: string[];
 }
 
+export interface JwtCredentialCreate {
+  key?: string;
+  algorithm: "HS256" | "RS256" | "ES256";
+  secret?: string;
+  rsaPublicKey?: string;
+  tags?: string[];
+}
+
+export interface BasicAuthCredentialCreate {
+  username: string;
+  password: string;
+  tags?: string[];
+}
+
+export interface AclGroups {
+  groups: string[];
+}
+
 export interface PluginScope {
   serviceId?: string | null;
   routeId?: string | null;

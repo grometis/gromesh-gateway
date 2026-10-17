@@ -10,7 +10,8 @@ import { decodeCursor, parseLimit, toPage } from "../common/pagination.js";
 import { conflict, notFound, unprocessable } from "../common/problem.js";
 import { DB, type Db, type Executor } from "../db/db.js";
 import { consumerValues, keyAuthValues } from "../consumers/consumers.js";
-import { consumers, keyAuthCredentials, plugins, routes, services, targets, upstreams, type RouteRow, type ServiceRow } from "../db/schema.js";
+import { basicAuthCredentials, consumers, jwtCredentials, keyAuthCredentials, plugins, routes, services, targets, upstreams, type RouteRow, type ServiceRow } from "../db/schema.js";
+import { basicAuthState, basicAuthValues, jwtState, jwtValues } from "../consumers/credentials.js";
 import { loadCertificates, restoreCertificates } from "../certificates/certificates.js";
 import { targetState, targetValues, upstreamState, upstreamValues } from "../upstreams/upstreams.js";
 import { pluginValues } from "../plugins/plugins.js";
@@ -106,11 +107,13 @@ function listFilter(envCol: PgColumn, nameCol: PgColumn, idCol: PgColumn, envId:
 
 /** Everything in the environment's draft that affects traffic, in the compiler's domain model. */
 export async function loadGatewayState(tx: Executor, envId: string, enc: Encryptor, catalog: PluginCatalog): Promise<GatewayState> {
-  const [svcRows, routeRows, consumerRows, keyRows, pluginRows, upstreamRows, targetRows, certs] = await Promise.all([
+  const [svcRows, routeRows, consumerRows, keyRows, jwtRows, basicRows, pluginRows, upstreamRows, targetRows, certs] = await Promise.all([
     tx.select().from(services).where(eq(services.environmentId, envId)),
     tx.select().from(routes).where(eq(routes.environmentId, envId)),
     tx.select().from(consumers).where(eq(consumers.environmentId, envId)),
     tx.select().from(keyAuthCredentials).where(eq(keyAuthCredentials.environmentId, envId)),
+    tx.select().from(jwtCredentials).where(eq(jwtCredentials.environmentId, envId)),
+    tx.select().from(basicAuthCredentials).where(eq(basicAuthCredentials.environmentId, envId)),
     tx.select().from(plugins).where(eq(plugins.environmentId, envId)),
     tx.select().from(upstreams).where(eq(upstreams.environmentId, envId)),
     tx.select().from(targets).where(eq(targets.environmentId, envId)),
@@ -125,8 +128,10 @@ export async function loadGatewayState(tx: Executor, envId: string, enc: Encrypt
       const { createdAt: _c, updatedAt: _u, ...route } = toRoute(r);
       return route;
     }),
-    consumers: consumerRows.map((c) => ({ id: c.id, username: c.username, customId: c.customId, tags: c.tags })),
+    consumers: consumerRows.map((c) => ({ id: c.id, username: c.username, customId: c.customId, aclGroups: c.aclGroups, tags: c.tags })),
     keyAuthCredentials: keyRows.map((k) => ({ id: k.id, consumerId: k.consumerId, key: enc.open(k.key, credentialContext(k.id)), tags: k.tags })),
+    jwtCredentials: jwtRows.map((j) => jwtState(j, enc)),
+    basicAuthCredentials: basicRows.map((b) => basicAuthState(b, enc)),
     plugins: pluginRows.map((p) => ({
       id: p.id,
       name: p.name,
@@ -147,6 +152,8 @@ export async function restoreGatewayState(tx: Executor, envId: string, state: Ga
   // Dependents first: plugins and credentials reference the rest, routes reference services (ON DELETE RESTRICT).
   await tx.delete(plugins).where(eq(plugins.environmentId, envId));
   await tx.delete(keyAuthCredentials).where(eq(keyAuthCredentials.environmentId, envId));
+  await tx.delete(jwtCredentials).where(eq(jwtCredentials.environmentId, envId));
+  await tx.delete(basicAuthCredentials).where(eq(basicAuthCredentials.environmentId, envId));
   await tx.delete(routes).where(eq(routes.environmentId, envId));
   await tx.delete(consumers).where(eq(consumers.environmentId, envId));
   await tx.delete(services).where(eq(services.environmentId, envId));
@@ -166,12 +173,18 @@ export async function restoreGatewayState(tx: Executor, envId: string, state: Ga
     await tx.insert(routes).values(state.routes.map((r) => ({ id: r.id, environmentId: envId, ...routeValues(r) })));
   }
   if (state.consumers.length > 0) {
-    await tx.insert(consumers).values(state.consumers.map((c) => ({ id: c.id, environmentId: envId, ...consumerValues(c) })));
+    await tx.insert(consumers).values(state.consumers.map((c) => ({ id: c.id, environmentId: envId, ...consumerValues(c), aclGroups: c.aclGroups ?? [] })));
   }
   if (state.keyAuthCredentials.length > 0) {
     await tx
       .insert(keyAuthCredentials)
       .values(state.keyAuthCredentials.map((k) => ({ environmentId: envId, ...keyAuthValues(k, enc) })));
+  }
+  if ((state.jwtCredentials ?? []).length > 0) {
+    await tx.insert(jwtCredentials).values(state.jwtCredentials!.map((j) => ({ environmentId: envId, ...jwtValues(j, enc) })));
+  }
+  if ((state.basicAuthCredentials ?? []).length > 0) {
+    await tx.insert(basicAuthCredentials).values(state.basicAuthCredentials!.map((b) => ({ environmentId: envId, ...basicAuthValues(b, enc) })));
   }
   if (state.plugins.length > 0) {
     await tx.insert(plugins).values(state.plugins.map((p) => ({ id: p.id, environmentId: envId, ...pluginValues(p.id, p, enc, catalog) })));

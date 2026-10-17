@@ -28,6 +28,8 @@ export function redactAgentError(
   const secrets = new Set<string>([nodeToken]);
   if (state) {
     for (const credential of state.keyAuthCredentials) collectSecrets(credential.key, "REDACTED", secrets);
+    for (const credential of state.jwtCredentials ?? []) if (credential.secret) collectSecrets(credential.secret, "REDACTED", secrets);
+    for (const credential of state.basicAuthCredentials ?? []) collectSecrets(credential.passwordHash, "REDACTED", secrets);
     for (const certificate of state.certificates ?? []) {
       collectSecrets(certificate.key, "REDACTED", secrets);
       // The base64 body of the key, in case Kong quotes it without the PEM armour.

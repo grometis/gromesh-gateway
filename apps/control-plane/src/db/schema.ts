@@ -249,6 +249,8 @@ export const consumers = pgTable(
     username: text("username"),
     customId: text("custom_id"),
     tags: text("tags").array().notNull().default(sql`'{}'::text[]`),
+    // Replaced as a whole by PUT acl-groups; the compiler emits one Kong acl per group.
+    aclGroups: text("acl_groups").array().notNull().default(sql`'{}'::text[]`),
     ...timestamps,
   },
   (t) => [
@@ -275,6 +277,48 @@ export const keyAuthCredentials = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [uniqueIndex("keyauth_env_key_hash_uq").on(t.environmentId, t.keyHash), index("keyauth_consumer_idx").on(t.consumerId)],
+);
+
+export const jwtCredentials = pgTable(
+  "jwt_credentials",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    environmentId: uuid("environment_id")
+      .notNull()
+      .references(() => environments.id, { onDelete: "cascade" }),
+    consumerId: uuid("consumer_id")
+      .notNull()
+      .references(() => consumers.id, { onDelete: "cascade" }),
+    // The issuer: public, matched against the token's iss claim.
+    key: text("key").notNull(),
+    algorithm: text("algorithm").notNull(),
+    // HS256 only; sealed (enc:v2, context jwt_credentials.secret + id) because Kong needs it in clear.
+    secret: text("secret"),
+    rsaPublicKey: text("rsa_public_key"),
+    tags: text("tags").array().notNull().default(sql`'{}'::text[]`),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("jwt_env_key_uq").on(t.environmentId, t.key), index("jwt_consumer_idx").on(t.consumerId)],
+);
+
+export const basicAuthCredentials = pgTable(
+  "basicauth_credentials",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    environmentId: uuid("environment_id")
+      .notNull()
+      .references(() => environments.id, { onDelete: "cascade" }),
+    consumerId: uuid("consumer_id")
+      .notNull()
+      .references(() => consumers.id, { onDelete: "cascade" }),
+    username: text("username").notNull(),
+    // Kong's salted hash, never the password; still a secret, so sealed (enc:v2, context
+    // basicauth_credentials.password_hash + id).
+    passwordHash: text("password_hash").notNull(),
+    tags: text("tags").array().notNull().default(sql`'{}'::text[]`),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("basicauth_env_username_uq").on(t.environmentId, t.username), index("basicauth_consumer_idx").on(t.consumerId)],
 );
 
 export const plugins = pgTable(
@@ -341,6 +385,8 @@ export type ServiceRow = typeof services.$inferSelect;
 export type RouteRow = typeof routes.$inferSelect;
 export type ConsumerRow = typeof consumers.$inferSelect;
 export type KeyAuthCredentialRow = typeof keyAuthCredentials.$inferSelect;
+export type JwtCredentialRow = typeof jwtCredentials.$inferSelect;
+export type BasicAuthCredentialRow = typeof basicAuthCredentials.$inferSelect;
 export type PluginRow = typeof plugins.$inferSelect;
 export type SnapshotRow = typeof snapshots.$inferSelect;
 
