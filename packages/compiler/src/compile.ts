@@ -4,8 +4,11 @@ import { keyNameIssues, resolvePlatformKeyNames } from "./platform-plugins.js";
 import type {
   CompileOptions,
   GatewayState,
+  KongAcl,
+  KongBasicAuthCredential,
   KongConsumer,
   KongDeclarativeConfig,
+  KongJwtSecret,
   KongKeyAuthCredential,
   KongPlugin,
   KongRoute,
@@ -33,6 +36,17 @@ const ALGORITHMS = new Set(["round-robin", "least-connections", "consistent-hash
 const HASH_ON = new Set(["none", "consumer", "ip", "header", "cookie"]);
 const HEADER_RE = /^[A-Za-z0-9-]+$/;
 const COOKIE_RE = /^[A-Za-z0-9_-]+$/;
+const ACL_GROUP_RE = /^[a-z0-9_-]{1,64}$/;
+const JWT_ALGORITHMS = new Set(["HS256", "RS256", "ES256"]);
+const PASSWORD_HASH_RE = /^[0-9a-f]{40}$/;
+
+/**
+ * Kong's basic-auth hash: sha1 of the password salted with the consumer id, in hex (kong/plugins/basic-auth/crypto.lua).
+ * The config carries only this value and is applied with `_transform: false`, so Kong does not hash it again.
+ */
+export function basicAuthPasswordHash(consumerId: string, password: string): string {
+  return createHash("sha1").update(password + consumerId).digest("hex");
+}
 
 /**
  * Compiles a Gromesh GatewayState into a Kong declarative config (format 3.0, flat).
@@ -96,6 +110,29 @@ export function compile(state: GatewayState, options: CompileOptions = {}): Kong
     tags: tags(k.tags),
   }));
 
+  const jwt_secrets: KongJwtSecret[] = byId(state.jwtCredentials ?? []).map((j) =>
+    clean({
+      id: j.id,
+      consumer: j.consumerId,
+      key: j.key,
+      algorithm: j.algorithm,
+      secret: j.algorithm === "HS256" ? (j.secret ?? undefined) : undefined,
+      rsa_public_key: j.algorithm === "HS256" ? undefined : (j.rsaPublicKey ?? undefined),
+      tags: tags(j.tags),
+    }),
+  );
+  const basicauth_credentials: KongBasicAuthCredential[] = byId(state.basicAuthCredentials ?? []).map((b) => ({
+    id: b.id,
+    consumer: b.consumerId,
+    username: b.username,
+    password: b.passwordHash,
+    tags: tags(b.tags),
+  }));
+  // One Kong acl entity per (consumer, group); the id derives from both so the output stays deterministic.
+  const acls: KongAcl[] = byId(
+    state.consumers.flatMap((c) => sortedUnique(c.aclGroups ?? []).map((group) => ({ id: derivedId(`acl:${c.id}:${group}`), consumer: c.id, group, tags: tags(c.tags) }))),
+  );
+
   const kongPlugins: KongPlugin[] = byId(plugins).map((p) =>
     clean({
       id: p.id,
@@ -126,11 +163,16 @@ export function compile(state: GatewayState, options: CompileOptions = {}): Kong
 
   return {
     _format_version: "3.0",
-    _transform: true,
+    // Only basic-auth has a Kong transformation in this model, and its passwords are already hashed. Kept true
+    // without them so configs published before basic-auth keep their hash.
+    _transform: basicauth_credentials.length === 0,
     services,
     routes,
     consumers,
     keyauth_credentials,
+    ...(jwt_secrets.length > 0 ? { jwt_secrets } : {}),
+    ...(basicauth_credentials.length > 0 ? { basicauth_credentials } : {}),
+    ...(acls.length > 0 ? { acls } : {}),
     plugins: kongPlugins,
     ...(upstreams.length > 0 ? { upstreams } : {}),
     ...(targets.length > 0 ? { targets } : {}),
@@ -260,6 +302,12 @@ export function validate(state: GatewayState): CompileIssue[] {
       if (customIds.has(c.customId)) add(`${p}.customId`, `duplicate customId "${c.customId}"`);
       customIds.add(c.customId);
     }
+    const groups = new Set<string>();
+    (c.aclGroups ?? []).forEach((group, j) => {
+      if (!ACL_GROUP_RE.test(group)) add(`${p}.aclGroups[${j}]`, "must match ^[a-z0-9_-]{1,64}$");
+      if (groups.has(group)) add(`${p}.aclGroups[${j}]`, `duplicate group "${group}"`);
+      groups.add(group);
+    });
     consumerIds.add(c.id);
   });
 
@@ -271,6 +319,36 @@ export function validate(state: GatewayState): CompileIssue[] {
     if (!k.key) add(`${p}.key`, "is required");
     else if (keys.has(k.key)) add(`${p}.key`, "duplicate key");
     keys.add(k.key);
+  });
+
+  const jwtKeys = new Set<string>();
+  (state.jwtCredentials ?? []).forEach((j, i) => {
+    const p = `jwtCredentials[${i}]`;
+    checkId(p, j.id);
+    if (!consumerIds.has(j.consumerId)) add(`${p}.consumerId`, `unknown consumer ${j.consumerId}`);
+    if (!j.key) add(`${p}.key`, "is required");
+    else if (jwtKeys.has(j.key)) add(`${p}.key`, `duplicate key "${j.key}"`);
+    jwtKeys.add(j.key);
+    if (!JWT_ALGORITHMS.has(j.algorithm)) add(`${p}.algorithm`, `unsupported algorithm "${j.algorithm}"`);
+    else if (j.algorithm === "HS256") {
+      if (!j.secret) add(`${p}.secret`, "is required for HS256");
+      if (j.rsaPublicKey) add(`${p}.rsaPublicKey`, "only applies to RS256 and ES256");
+    } else {
+      if (!j.rsaPublicKey) add(`${p}.rsaPublicKey`, `is required for ${j.algorithm}`);
+      if (j.secret) add(`${p}.secret`, "only applies to HS256");
+    }
+  });
+
+  const basicUsernames = new Set<string>();
+  (state.basicAuthCredentials ?? []).forEach((b, i) => {
+    const p = `basicAuthCredentials[${i}]`;
+    checkId(p, b.id);
+    if (!consumerIds.has(b.consumerId)) add(`${p}.consumerId`, `unknown consumer ${b.consumerId}`);
+    if (!b.username) add(`${p}.username`, "is required");
+    else if (basicUsernames.has(b.username)) add(`${p}.username`, `duplicate username "${b.username}"`);
+    basicUsernames.add(b.username);
+    // Never echo the value: it is the stored hash.
+    if (!PASSWORD_HASH_RE.test(b.passwordHash)) add(`${p}.passwordHash`, "must be Kong's 40-character hex hash");
   });
 
   const pluginScopes = new Set<string>();
