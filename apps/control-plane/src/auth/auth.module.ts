@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Inject, Injectable, Module, Post, Req, Res } from "@nestjs/common";
+import { Body, Controller, Get, HttpCode, HttpStatus, Inject, Injectable, type MiddlewareConsumer, Module, type NestModule, Post, Req, Res } from "@nestjs/common";
 import { hash, verify } from "@node-rs/argon2";
 import { eq, inArray } from "drizzle-orm";
 import type { Response } from "express";
@@ -11,6 +11,7 @@ import { loginAttempts, users, type UserRow } from "../db/schema.js";
 import { normalizeEmail, toUser } from "../users/users.js";
 import { type AuthenticatedRequest, Public, RequiredRole, type RequestContext, SessionOnly } from "./auth.js";
 import { sessionCookie, SessionService } from "./sessions.js";
+import { AnonymousMiddleware } from "./anonymous.middleware.js";
 
 interface LoginBody {
   email: string;
@@ -154,4 +155,8 @@ class AuthController {
 }
 
 @Module({ controllers: [AuthController], providers: [AuthService, SessionService], exports: [SessionService] })
-export class AuthModule {}
+export class AuthModule implements NestModule {
+  configure(consumer: MiddlewareConsumer): void {
+    consumer.apply(AnonymousMiddleware).forRoutes("*");
+  }
+}
