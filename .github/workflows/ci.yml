@@ -7,15 +7,102 @@ on:
   # image-digests dispatches ci on its PR branch: a PR opened with GITHUB_TOKEN gets no pull_request event.
   workflow_dispatch:
 
+# A new push to a PR (or a new dispatch on the bot's branch) cancels the run it replaces; pushes to main always finish.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 permissions:
   contents: read
 
 jobs:
+  # What a PR touches decides which jobs run. Pushes to main run everything; the digest bot's branches run only
+  # the jobs that use the images it pins (compose e2e and the Helm install in kind, which also renders the charts).
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      all: ${{ steps.mode.outputs.all }}
+      bot: ${{ steps.mode.outputs.bot }}
+      code: ${{ steps.filter.outputs.code || 'false' }}
+      ui: ${{ steps.filter.outputs.ui || 'false' }}
+      agent: ${{ steps.filter.outputs.agent || 'false' }}
+      charts: ${{ steps.filter.outputs.charts || 'false' }}
+      heavy: ${{ steps.filter.outputs.heavy || 'false' }}
+      kind: ${{ steps.filter.outputs.kind || 'false' }}
+    steps:
+      - name: Mode
+        id: mode
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref_name }}
+        run: |
+          bot=false
+          case "$REF" in chore/app-image-digests|chore/kong-image-digest) bot=true ;; esac
+          all=false
+          # main, or a manual dispatch on any branch that is not the bot's: everything.
+          if [ "$EVENT" = push ] || { [ "$EVENT" = workflow_dispatch ] && [ "$bot" = false ]; }; then all=true; fi
+          echo "all=$all" >> "$GITHUB_OUTPUT"
+          echo "bot=$bot" >> "$GITHUB_OUTPUT"
+      - name: Changed paths
+        id: filter
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          filters: |
+            workflow: &workflow
+              - .github/workflows/ci.yml
+            code:
+              - *workflow
+              - apps/**
+              - packages/**
+              - contracts/**
+              - scripts/**
+              # The e2e package is typechecked with the rest.
+              - e2e/**
+              - package.json
+              - pnpm-lock.yaml
+              - pnpm-workspace.yaml
+              - turbo.json
+              - .nvmrc
+            ui:
+              - *workflow
+              - apps/ui/**
+              - contracts/**
+              - package.json
+              - pnpm-lock.yaml
+              - .nvmrc
+            agent:
+              - *workflow
+              - apps/agent/**
+            charts:
+              - *workflow
+              - deploy/helm/**
+            # Helm install in kind: charts, the agent, the kind scenario, the images themselves or any workflow.
+            kind:
+              - .github/workflows/**
+              - deploy/helm/**
+              - apps/agent/**
+              - e2e/kind/**
+              - images/**
+              - apps/*/Dockerfile
+            heavy:
+              - *workflow
+              - apps/**
+              - packages/**
+              - deploy/**
+              - e2e/**
+              - contracts/**
+              - scripts/**
+              - pnpm-lock.yaml
+
+  # Code checks and the chart lint/render (formerly helm-dp and helm-cp) in one job: each half runs when its paths change.
   checks:
+    needs: changes
+    if: needs.changes.outputs.all == 'true' || (needs.changes.outputs.bot != 'true' && (needs.changes.outputs.code == 'true' || needs.changes.outputs.charts == 'true'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -47,33 +134,79 @@ jobs:
       # No init scripts in a CI service: the tests create the table and read it with the admin user.
       TEST_CLICKHOUSE_USER: gromesh
       TEST_CLICKHOUSE_PASSWORD: gromesh-dev-observability
+      RUN_CODE: ${{ needs.changes.outputs.all == 'true' || needs.changes.outputs.code == 'true' }}
+      RUN_CHARTS: ${{ needs.changes.outputs.all == 'true' || needs.changes.outputs.charts == 'true' }}
     steps:
       - uses: actions/checkout@v4
+      - name: Lint and render the data-plane chart (defaults and full)
+        if: env.RUN_CHARTS == 'true'
+        shell: bash
+        run: |
+          helm() {
+            docker run --rm -v "$PWD:/w:ro" -w /w alpine/helm:3.16.2 "$@"
+          }
+          # A synthetic token exercises Secret creation without committing credentials.
+          helm lint deploy/helm/data-plane --strict --set-string agent.token=ci-placeholder
+          helm template dp deploy/helm/data-plane --set-string agent.token=ci-placeholder > /dev/null
+          helm lint deploy/helm/data-plane --strict -f deploy/helm/data-plane/ci/values-full.yaml
+          helm template dp deploy/helm/data-plane -f deploy/helm/data-plane/ci/values-full.yaml > /dev/null
+          if helm template dp deploy/helm/data-plane > /dev/null 2> /tmp/helm-dp-missing-token.log; then
+            echo 'Chart unexpectedly accepted missing registration credentials' >&2
+            exit 1
+          fi
+          grep -q 'Set agent.existingSecret' /tmp/helm-dp-missing-token.log
+      - name: Install Helm 3.19.0
+        if: env.RUN_CHARTS == 'true'
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/helm" "$RUNNER_TEMP/bin"
+          cd "$RUNNER_TEMP/helm"
+          curl -fsSLO --retry 3 https://get.helm.sh/helm-v3.19.0-linux-amd64.tar.gz
+          curl -fsSLO --retry 3 https://get.helm.sh/helm-v3.19.0-linux-amd64.tar.gz.sha256sum
+          sha256sum -c helm-v3.19.0-linux-amd64.tar.gz.sha256sum
+          tar -xzf helm-v3.19.0-linux-amd64.tar.gz
+          install linux-amd64/helm "$RUNNER_TEMP/bin/helm"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: "Control-plane chart: strict lint, render, rejection tests and Kubernetes schema validation"
+        if: env.RUN_CHARTS == 'true'
+        env:
+          KUBECONFORM: 'true'
+        run: bash deploy/helm/control-plane/ci/check.sh
       - uses: pnpm/action-setup@v4
+        if: env.RUN_CODE == 'true'
       - uses: actions/setup-node@v4
+        if: env.RUN_CODE == 'true'
         with:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+        if: env.RUN_CODE == 'true'
       # Plugin configs are validated by a real Kong (control-plane integration tests). A step, not a service: the
       # image is read from the compose default so image-digests never has to edit this workflow.
       - name: Start the Kong validator (compose default image)
+        if: env.RUN_CODE == 'true'
         run: |
           read -r kong_ref _ < <(node scripts/kong-image-ref.mjs)
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           docker run -d --name kong-validator -p 127.0.0.1:8011:8001 \
             -e KONG_DATABASE=off -e KONG_ADMIN_LISTEN=0.0.0.0:8001 -e KONG_PLUGINS=bundled "$kong_ref"
-          for i in $(seq 1 40); do docker exec kong-validator kong health >/dev/null 2>&1 && break; sleep 3; done
+          for _ in $(seq 1 40); do docker exec kong-validator kong health >/dev/null 2>&1 && break; sleep 3; done
           docker exec kong-validator kong health
       - name: Generated UI client matches the contract
+        if: env.RUN_CODE == 'true'
         run: |
           pnpm --filter @gromesh/ui gen:api
           git diff --exit-code -- apps/ui/src/api/schema.d.ts
       - run: pnpm lint:contracts
+        if: env.RUN_CODE == 'true'
       - run: pnpm typecheck
+        if: env.RUN_CODE == 'true'
       - run: pnpm test
+        if: env.RUN_CODE == 'true'
 
   ui-acceptance:
+    needs: changes
+    if: needs.changes.outputs.all == 'true' || (needs.changes.outputs.bot != 'true' && needs.changes.outputs.ui == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -95,6 +228,8 @@ jobs:
           retention-days: 7
 
   agent:
+    needs: changes
+    if: needs.changes.outputs.all == 'true' || (needs.changes.outputs.bot != 'true' && needs.changes.outputs.agent == 'true')
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -111,7 +246,9 @@ jobs:
 
   e2e:
     runs-on: ubuntu-latest
-    needs: checks
+    needs: [changes, checks]
+    # After checks when they run; on the bot's branches checks are skipped and this still runs.
+    if: ${{ !cancelled() && !failure() && (needs.changes.outputs.all == 'true' || needs.changes.outputs.bot == 'true' || needs.changes.outputs.heavy == 'true') }}
     timeout-minutes: 25
     permissions:
       contents: read
@@ -125,10 +262,54 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @gromesh/e2e exec playwright install --with-deps chromium
-      - run: docker compose -f deploy/compose/docker-compose.yml build agent
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+        with:
+          version: v0.25.0
+          driver-opts: image=moby/buildkit:v0.23.2@sha256:ddd1ca44b21eda906e81ab14a3d467fa6c39cd73b9a39df1196210edcb8db59e
+      - name: Build control-plane image (layer cache)
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          file: apps/control-plane/Dockerfile
+          load: true
+          push: false
+          tags: gromesh-control-plane
+          # The images workflow fills images-<name> on main; PR runs read it and keep their own scope.
+          cache-from: |
+            type=gha,scope=images-control-plane
+            type=gha,scope=ci-control-plane
+          cache-to: type=gha,mode=max,scope=ci-control-plane,ignore-error=true
+      - name: Build ui image (layer cache)
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          file: apps/ui/Dockerfile
+          load: true
+          push: false
+          tags: gromesh-ui
+          # The images workflow fills images-<name> on main; PR runs read it and keep their own scope.
+          cache-from: |
+            type=gha,scope=images-ui
+            type=gha,scope=ci-ui
+          cache-to: type=gha,mode=max,scope=ci-ui,ignore-error=true
+      - name: Build agent image (layer cache)
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          file: apps/agent/Dockerfile
+          load: true
+          push: false
+          tags: gromesh-agent
+          # The images workflow fills images-<name> on main; PR runs read it and keep their own scope.
+          cache-from: |
+            type=gha,scope=images-agent
+            type=gha,scope=ci-agent
+          cache-to: type=gha,mode=max,scope=ci-agent,ignore-error=true
       # The compose default Kong image is our own build, published privately on GHCR.
       - run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-      - run: docker compose -f deploy/compose/docker-compose.yml up -d --build --wait
+      # The three images above carry compose's default names, so up does not rebuild them.
+      - run: docker compose -f deploy/compose/docker-compose.yml up -d --wait
       # The gateway caches a failed lookup of gromesh-collector for about a minute, and the steps below send traffic
       # right away (the control-plane e2e even restarts the gateway): the collector must exist before any of them.
       - name: Start the collector before any gateway traffic
@@ -159,137 +340,11 @@ jobs:
         if: always()
         run: docker compose -f deploy/compose/docker-compose.yml down
 
-  helm-dp:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          persist-credentials: false
-      - name: Lint and render data-plane chart (defaults and full)
-        shell: bash
-        run: |
-          helm() {
-            docker run --rm -v "$PWD:/w:ro" -w /w alpine/helm:3.16.2 "$@"
-          }
-          # A synthetic token exercises Secret creation without committing credentials.
-          helm lint deploy/helm/data-plane --strict --set-string agent.token=ci-placeholder
-          helm template dp deploy/helm/data-plane --set-string agent.token=ci-placeholder > /dev/null
-          helm lint deploy/helm/data-plane --strict -f deploy/helm/data-plane/ci/values-full.yaml
-          helm template dp deploy/helm/data-plane -f deploy/helm/data-plane/ci/values-full.yaml > /dev/null
-          if helm template dp deploy/helm/data-plane > /dev/null 2> /tmp/helm-dp-missing-token.log; then
-            echo 'Chart unexpectedly accepted missing registration credentials' >&2
-            exit 1
-          fi
-          grep -q 'Set agent.existingSecret' /tmp/helm-dp-missing-token.log
-
-  helm-cp:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          persist-credentials: false
-      - name: Install Helm 3.19.0
-        shell: bash
-        run: |
-          mkdir -p "$RUNNER_TEMP/helm" "$RUNNER_TEMP/bin"
-          cd "$RUNNER_TEMP/helm"
-          curl -fsSLO --retry 3 https://get.helm.sh/helm-v3.19.0-linux-amd64.tar.gz
-          curl -fsSLO --retry 3 https://get.helm.sh/helm-v3.19.0-linux-amd64.tar.gz.sha256sum
-          sha256sum -c helm-v3.19.0-linux-amd64.tar.gz.sha256sum
-          tar -xzf helm-v3.19.0-linux-amd64.tar.gz
-          install linux-amd64/helm "$RUNNER_TEMP/bin/helm"
-          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      - name: Strict lint, render, rejection tests and Kubernetes schema validation
-        env:
-          KUBECONFORM: 'true'
-        run: bash deploy/helm/control-plane/ci/check.sh
-
-  helm-e2e:
-    runs-on: ubuntu-latest
-    needs: helm-cp
-    timeout-minutes: 25
-    permissions:
-      contents: read
-      packages: read
-    env:
-      KIND_CLUSTER_NAME: gromesh-helm
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          persist-credentials: false
-      - name: Install pinned Helm, kind and kubectl
-        shell: bash
-        run: |
-          mkdir -p "$RUNNER_TEMP/tools" "$RUNNER_TEMP/bin"
-          cd "$RUNNER_TEMP/tools"
-          curl -fsSLO --retry 3 https://get.helm.sh/helm-v3.19.0-linux-amd64.tar.gz
-          curl -fsSLO --retry 3 https://get.helm.sh/helm-v3.19.0-linux-amd64.tar.gz.sha256sum
-          sha256sum -c helm-v3.19.0-linux-amd64.tar.gz.sha256sum
-          tar -xzf helm-v3.19.0-linux-amd64.tar.gz
-          install linux-amd64/helm "$RUNNER_TEMP/bin/helm"
-          curl -fsSLo kind-linux-amd64 --retry 3 https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
-          curl -fsSLO --retry 3 https://github.com/kubernetes-sigs/kind/releases/download/v0.27.0/kind-linux-amd64.sha256sum
-          sha256sum -c kind-linux-amd64.sha256sum
-          install kind-linux-amd64 "$RUNNER_TEMP/bin/kind"
-          curl -fsSLo kubectl --retry 3 https://dl.k8s.io/release/v1.32.2/bin/linux/amd64/kubectl
-          curl -fsSLo kubectl.sha256 --retry 3 https://dl.k8s.io/release/v1.32.2/bin/linux/amd64/kubectl.sha256
-          echo "$(cat kubectl.sha256)  kubectl" | sha256sum -c -
-          install kubectl "$RUNNER_TEMP/bin/kubectl"
-          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      - name: Build repository images and pull test dependencies
-        run: |
-          docker build -t gromesh-control-plane:ci -f apps/control-plane/Dockerfile .
-          docker build -t gromesh-ui:ci -f apps/ui/Dockerfile .
-          docker build -t gromesh-agent:ci -f apps/agent/Dockerfile .
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          read -r kong_ref kong_tag < <(node scripts/kong-image-ref.mjs)
-          docker pull "$kong_ref"
-          docker tag "$kong_ref" "$kong_tag"
-          echo "KONG_TAG=$kong_tag" >> "$GITHUB_ENV"
-          docker pull postgres:16-alpine
-          docker pull traefik/whoami:v1.10.3
-      - name: Create kind cluster and preload images
-        run: |
-          kind create cluster --name "$KIND_CLUSTER_NAME" --image kindest/node:v1.32.2 --wait 120s
-          if ! kind load docker-image --name "$KIND_CLUSTER_NAME" \
-            gromesh-control-plane:ci gromesh-ui:ci gromesh-agent:ci \
-            "$KONG_TAG" postgres:16-alpine traefik/whoami:v1.10.3; then
-            # Docker's containerd store may retain indexes for unloaded platforms.
-            docker save --platform=linux/amd64 -o "$RUNNER_TEMP/images.tar" \
-              gromesh-control-plane:ci gromesh-ui:ci gromesh-agent:ci \
-              "$KONG_TAG" postgres:16-alpine traefik/whoami:v1.10.3
-            kind load image-archive --name "$KIND_CLUSTER_NAME" "$RUNNER_TEMP/images.tar"
-            rm -f "$RUNNER_TEMP/images.tar"
-          fi
-          kubectl wait --for=condition=Ready nodes --all --timeout=60s
-      - name: Install both charts and verify API → agent → proxy
-        run: bash deploy/helm/control-plane/ci/kind.sh
-      - name: Dump Kubernetes diagnostics
-        if: failure()
-        run: |
-          bash deploy/helm/control-plane/ci/diagnostics.sh gromesh-helm "$RUNNER_TEMP/kind-diagnostics"
-          kind export logs --name "$KIND_CLUSTER_NAME" "$RUNNER_TEMP/kind-diagnostics/kind-logs" || true
-      - name: Upload Kubernetes diagnostics
-        if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: helm-e2e-kind-diagnostics
-          path: ${{ runner.temp }}/kind-diagnostics/
-          if-no-files-found: warn
-          retention-days: 7
-      - name: Delete throwaway cluster
-        if: always()
-        run: kind delete cluster --name "$KIND_CLUSTER_NAME"
-
+  # The Helm install in kind (formerly also helm-e2e, whose extra checks now live in e2e/kind/run.sh).
   mvp-e2e:
     runs-on: ubuntu-latest
-    needs: [helm-cp, helm-dp]
+    needs: [changes, checks]
+    if: ${{ !cancelled() && !failure() && (needs.changes.outputs.all == 'true' || needs.changes.outputs.bot == 'true' || needs.changes.outputs.kind == 'true') }}
     timeout-minutes: 30
     permissions:
       contents: read
@@ -326,11 +381,52 @@ jobs:
           echo "$(cat kubectl.sha256)  kubectl" | sha256sum -c -
           install kubectl "$RUNNER_TEMP/bin/kubectl"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      - name: Build repository images and pull test dependencies
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+        with:
+          version: v0.25.0
+          driver-opts: image=moby/buildkit:v0.23.2@sha256:ddd1ca44b21eda906e81ab14a3d467fa6c39cd73b9a39df1196210edcb8db59e
+      - name: Build control-plane image (layer cache)
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          file: apps/control-plane/Dockerfile
+          load: true
+          push: false
+          tags: gromesh-control-plane:ci
+          # The images workflow fills images-<name> on main; PR runs read it and keep their own scope.
+          cache-from: |
+            type=gha,scope=images-control-plane
+            type=gha,scope=ci-control-plane
+          cache-to: type=gha,mode=max,scope=ci-control-plane,ignore-error=true
+      - name: Build ui image (layer cache)
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          file: apps/ui/Dockerfile
+          load: true
+          push: false
+          tags: gromesh-ui:ci
+          # The images workflow fills images-<name> on main; PR runs read it and keep their own scope.
+          cache-from: |
+            type=gha,scope=images-ui
+            type=gha,scope=ci-ui
+          cache-to: type=gha,mode=max,scope=ci-ui,ignore-error=true
+      - name: Build agent image (layer cache)
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          file: apps/agent/Dockerfile
+          load: true
+          push: false
+          tags: gromesh-agent:ci
+          # The images workflow fills images-<name> on main; PR runs read it and keep their own scope.
+          cache-from: |
+            type=gha,scope=images-agent
+            type=gha,scope=ci-agent
+          cache-to: type=gha,mode=max,scope=ci-agent,ignore-error=true
+      - name: Pull test dependencies
         run: |
-          docker build -t gromesh-control-plane:ci -f apps/control-plane/Dockerfile .
-          docker build -t gromesh-ui:ci -f apps/ui/Dockerfile .
-          docker build -t gromesh-agent:ci -f apps/agent/Dockerfile .
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           read -r kong_ref kong_tag < <(node scripts/kong-image-ref.mjs)
           docker pull "$kong_ref"
@@ -378,3 +474,19 @@ jobs:
       - name: Delete throwaway cluster
         if: always()
         run: kind delete cluster --name "$KIND_CLUSTER_NAME"
+
+  # One check that is green when every job that had to run passed (skipped jobs are fine): what a ruleset should
+  # require, since the per-job checks are skipped on docs-only PRs.
+  ci-ok:
+    needs: [changes, checks, ui-acceptance, agent, e2e, mvp-e2e]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every required job passed or was skipped
+        env:
+          RESULTS: ${{ toJSON(needs.*.result) }}
+        run: |
+          echo "$RESULTS"
+          if echo "$RESULTS" | grep -Eq '"(failure|cancelled)"'; then exit 1; fi
+
