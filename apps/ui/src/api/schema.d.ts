@@ -414,9 +414,16 @@ export interface paths {
             cookie?: never;
         };
         get: operations["getUpstream"];
+        /**
+         * @description 409 when the name changes while services of the environment use the current name as `host`; the problem
+         *     `detail` lists those services. Same 409/422 rules as the creation otherwise.
+         */
         put: operations["replaceUpstream"];
         post?: never;
-        /** @description Deletes the upstream and its targets. Services with that host fall back to DNS. */
+        /**
+         * @description Deletes the upstream and its targets. 409 while services of the environment use its name as `host`; the
+         *     problem `detail` lists those services.
+         */
         delete: operations["deleteUpstream"];
         options?: never;
         head?: never;
@@ -475,11 +482,15 @@ export interface paths {
         get: operations["listCertificates"];
         put?: never;
         /**
-         * @description A TLS certificate with its private key and the server names (SNIs) it answers. The key is write-only: it is
-         *     stored encrypted and reads back as "REDACTED". 422 with `path`: `cert` when it is not a PEM certificate or has
-         *     expired; `key` when it is not a PEM private key, does not match the certificate, or is "REDACTED" here;
+         * @description A TLS certificate with its private key and the server names (SNIs) it answers. `cert` may be a PEM chain, leaf
+         *     first then intermediates; the whole chain is served. The key is checked against the leaf, and `subject`,
+         *     `issuer`, `notBefore`, `notAfter` and `fingerprintSha256` describe the leaf. The key is write-only: it is
+         *     stored encrypted and reads back as "REDACTED". 422 with `path`: `cert` when it is not a PEM certificate chain or
+         *     its leaf has expired; `key` when it is not a PEM private key, does not match the leaf, or is "REDACTED" here;
          *     `snis.<i>` when a name is repeated in the request, already belongs to another certificate of the environment,
          *     or has a wildcard anywhere but as the `*.` prefix.
+         *     Expiry is judged only when `cert` is created or replaced: publishing, rolling back and editing only the `snis`
+         *     of a certificate that has since expired keep working.
          */
         post: operations["createCertificate"];
         delete?: never;
@@ -500,8 +511,8 @@ export interface paths {
         };
         get: operations["getCertificate"];
         /**
-         * @description `key: "REDACTED"` keeps the stored key, which must then still match the new `cert` (422 on `key` otherwise).
-         *     Same 422 rules as the creation.
+         * @description `key: "REDACTED"` keeps the stored key, which must then still match the leaf of the new `cert` (422 on `key`
+         *     otherwise). Same 422 rules as the creation; an unchanged `cert` is not judged on expiry.
          */
         put: operations["replaceCertificate"];
         post?: never;
@@ -1120,9 +1131,9 @@ export interface components {
             nextCursor: string | null;
         };
         CertificateWrite: {
-            /** @description PEM certificate (a chain may follow the leaf) */
+            /** @description PEM certificate chain, leaf first, at most 64 KiB */
             cert: string;
-            /** @description PEM private key, write-only; REDACTED on a PUT keeps the stored one */
+            /** @description PEM private key of the leaf, at most 16 KiB, write-only; REDACTED on a PUT keeps the stored one */
             key: string;
             /** @description Server names this certificate answers, unique in the environment; a wildcard only as the `*.` prefix */
             snis: string[];
@@ -3073,6 +3084,7 @@ export interface operations {
                 content?: never;
             };
             404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
         };
     };
     listTargets: {
