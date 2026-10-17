@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { NODE_IMAGE, pullImages } from "./docker-images.mjs";
 
 const exec = promisify(execFile);
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -21,7 +22,7 @@ const request = (url, options = {}) => fetch(url, { ...options, signal: AbortSig
 async function admin(method, body) {
   const { stdout: id } = await compose("ps", "-q", "kong");
   const child = execFile("docker", ["run", "--rm", "-i", "--network", `container:${id.trim()}`,
-    "node:24.18.0-alpine", "node", "--input-type=module", "-e", `
+    NODE_IMAGE, "node", "--input-type=module", "-e", `
       import { readFileSync } from 'node:fs';
       const body = readFileSync(0, 'utf8');
       const response = await fetch('http://127.0.0.1:8001/config', {
@@ -41,6 +42,8 @@ async function admin(method, body) {
 }
 
 async function main() {
+  // The timeouts below cover only the runs: the helper image is pulled first, with retries.
+  await pullImages([NODE_IMAGE]);
   await exec("pnpm", ["--filter", "@gromesh/compiler", "build"], { cwd: root, env, timeout: 60_000 });
   const { compile, platformPlugins } = await import("../packages/compiler/dist/index.js");
   const { stdout: agents } = await compose("ps", "--status", "running", "-q", "agent");
