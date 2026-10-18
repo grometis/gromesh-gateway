@@ -8,7 +8,8 @@ COPY apps/ui apps/ui
 RUN pnpm --filter @gromesh/ui build \
     && rm -rf node_modules apps/ui/node_modules
 
-FROM nginxinc/nginx-unprivileged:1.28.2-alpine
+# 1.28.2 carries CVE-2026-42945 (CRITICAL); back to the 1.28.0 build the published images used, until 1.28.3-alpine.
+FROM nginxinc/nginx-unprivileged:1.28.0-alpine@sha256:c97ff0bf7cbae369953c6da1232ec14ad9f971d66360c5698db0856a4cd657a0
 USER root
 RUN apk upgrade --no-cache
 COPY apps/ui/nginx.conf /etc/nginx/conf.d/default.conf
