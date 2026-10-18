@@ -15,7 +15,7 @@ spec:
       automountServiceAccountToken: false
       containers:
         - name: clickhouse
-          image: clickhouse/clickhouse-server:25.8.16.34-alpine
+          image: clickhouse/clickhouse-server:25.8.33.6-alpine
           imagePullPolicy: Never
           env:
             - {name: CLICKHOUSE_DB, value: gromesh}
@@ -62,7 +62,7 @@ spec:
       automountServiceAccountToken: false
       containers:
         - name: init
-          image: clickhouse/clickhouse-server:25.8.16.34-alpine
+          image: clickhouse/clickhouse-server:25.8.33.6-alpine
           imagePullPolicy: Never
           command: [sh, /init/users.sh]
           env:

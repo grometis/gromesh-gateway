@@ -5,4 +5,6 @@ case "${GROMESH_CLUSTER_ID:-}" in
   [0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]) ;;
   *) echo "GROMESH_CLUSTER_ID must be the UUID of this cluster" >&2; exit 64 ;;
 esac
-exec vector --config /etc/vector/vector.yaml --log-format json "$@"
+# This repository-owned config uses env defaults and the writer password in the sink.
+# Vector 0.57 requires explicit opt-in to preserve that interpolation.
+exec vector --dangerously-allow-env-var-interpolation --config /etc/vector/vector.yaml --log-format json "$@"

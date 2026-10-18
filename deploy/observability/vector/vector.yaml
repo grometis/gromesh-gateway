@@ -8,6 +8,8 @@ api:
 sources:
   internal_metrics:
     type: internal_metrics
+    # Keep the metric names consumed by CollectorWithoutEvents stable.
+    namespace: vector
 
   kong:
     type: http_server
@@ -142,6 +144,7 @@ sinks:
   requests:
     type: clickhouse
     inputs: [sanitize]
+    # Vector 0.57 requires --dangerously-allow-env-var-interpolation (entrypoint and test runners).
     endpoint: "${CLICKHOUSE_ENDPOINT:-http://clickhouse:8123}"
     database: "${CLICKHOUSE_DATABASE:-gromesh}"
     table: requests
