@@ -350,16 +350,19 @@ export interface paths {
          *     fields and relationships to the Gromesh model; do not pass this config directly to the data plane.
          *     Every unsupported entity or field, including nested fields and unknown plugin config fields, produces
          *     an `errors[]` entry at its original document path; nothing is silently ignored, even default-valued fields.
-         *     `_transform` may be absent or true for plaintext basic-auth passwords, including documents mixing
-         *     basic-auth with other credential types. Such passwords keep today's plaintext handling even if they
-         *     happen to contain 40 lowercase hex characters. `_transform` is document-wide, not per credential.
+         *     `_transform` may be absent or true for plaintext basic-auth passwords. Such passwords keep today's
+         *     plaintext handling even if they happen to contain 40 lowercase hex characters. `_transform` is
+         *     document-wide, not per credential; `_transform: false` without basic-auth credentials is accepted.
          *
          *     Planned: accept prehashed `basicauth_credentials` only for `sourceFormat: kong-declarative-3.0` with
          *     `_transform: false`. Each supplied password must match `^[0-9a-f]{40}$` and is already Kong's
          *     `sha1(password + consumer_id)` hash; store it unchanged, without hashing it again. Acceptance requires
-         *     the credential's consumer to be present in the source document with a UUID `id`, and that exact id
-         *     to be preserved as the consumer's id in the target environment. This applies to nested credentials and
-         *     flat credentials resolved to that source consumer. A reference to an existing consumer alone does not suffice.
+         *     the credential's consumer to be present in the source document with an `id` in lowercase canonical UUID
+         *     form (`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`; the salt is that exact string, so
+         *     any other form is rejected as invalid), and that exact id to be preserved as the consumer's id in the
+         *     target environment. This applies to nested credentials and to flat credentials whose consumer reference
+         *     resolves to a consumer entry of the same document carrying such an `id`. A reference to an existing
+         *     target consumer that is not in the document does not suffice.
          *
          *     Planned: for each such consumer, in both merge and replace, resolve its UUID globally before any
          *     username/customId matching. If that id exists in the TARGET environment, that consumer is the match
@@ -380,7 +383,19 @@ export interface paths {
          *     without echoing the hash or submitted password. Invalid UUIDs and cross-environment id collisions also
          *     produce an error at the source consumer's id path. Existing omitted/REDACTED-secret preservation on
          *     matched credentials still applies; it does not authorize creating a credential without a valid hash
-         *     or bypassing the consumer-id rule. All-or-nothing and dry-run error/report semantics below still apply.
+         *     or bypassing the consumer-id rule: under `_transform: false`, an omitted or REDACTED password still requires
+         *     its consumer's id to be preserved. All-or-nothing and dry-run error/report semantics below still apply.
+         *
+         *     Planned: error paths, with one error per affected credential at its password path and no other paths:
+         *       * hash not 40 lowercase hex: the password path.
+         *       * consumer without `id`: the password path.
+         *       * `id` not a lowercase canonical UUID: the password path and `document.consumers.N.id`.
+         *       * `id` used by a consumer of another environment: the password path and `document.consumers.N.id`.
+         *       * `id` repeated by two source consumers: the password path and `document.consumers.N.id` of the repeat.
+         *       * username/customId resolving to another consumer: the password path and that identifier's path.
+         *     The message at the id path is fixed ("consumer id cannot be preserved because it is already in use" for an
+         *     id in use) and reveals only that the id is unavailable, never where; this availability signal, also
+         *     visible through dry-run, is accepted since consumer ids are random UUIDs.
          *
          *     Planned: imported hashes are sealed at rest with `enc:v2`, bound to table `basicauth_credentials`,
          *     column `password_hash` and the target credential's id, like other basic-auth hashes. They are treated
