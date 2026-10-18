@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, Navigate } from "react-router";
 import { useQuery } from "@tanstack/react-query";
-import { api, ApiError, unwrap, type Schemas } from "../api/client";
+import { api, ApiError, retryNetworkErrorsOnly, unwrap, type Schemas } from "../api/client";
 import { statusMessage } from "../api/errors";
 import { useRouteList } from "../api/lists";
 import { LineChart } from "../components/Chart";
@@ -135,6 +135,7 @@ function Dashboard({ envId }: { envId: string }) {
           },
         }),
       ),
+    retry: retryNetworkErrorsOnly,
     refetchInterval: visible ? 60_000 : false,
   });
   const data = summary.data;
@@ -219,6 +220,7 @@ export function TopRoutes({ envId, range, tick, visible }: { envId: string; rang
   const top = useQuery({
     queryKey: ["top-routes", envId, by, range.to, tick],
     queryFn: () => unwrap(api.GET("/environments/{envId}/analytics/top-routes", { params: { path: { envId }, query: { ...range, by, limit: 10 } } })),
+    retry: retryNetworkErrorsOnly,
     refetchInterval: visible ? 60_000 : false,
   });
   return (

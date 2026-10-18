@@ -78,6 +78,13 @@ export const api = createClient<paths>({ baseUrl: "/api/v1", credentials: "inclu
 api.use(auth);
 
 /** Thrown by `unwrap` so TanStack Query sees a failed request with its problem details. */
+/**
+ * Retry only when the request never got an answer: fetch rejects with a TypeError on a network failure. An HTTP
+ * error (5xx included) or an unreadable body (a SyntaxError from the JSON parser) is the server's answer:
+ * repeating it only delays what the screen should say (e.g. the analytics store is down).
+ */
+export const retryNetworkErrorsOnly = (count: number, err: unknown) => err instanceof TypeError && count < 2;
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
