@@ -87,6 +87,11 @@ export function PublishStrip({ envId }: { envId: string }) {
           </>
         )}
       </div>
+      {env.data.autoPublishPausedReason === "import" && (
+        <p className="strip-notice" role="note">
+          Publicação automática pausada após importação — publique para retomar.
+        </p>
+      )}
     </section>
   );
 }

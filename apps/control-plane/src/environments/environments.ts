@@ -18,6 +18,8 @@ export function toEnvironment(r: EnvironmentRow) {
     publishMode: r.publishMode,
     currentVersion: r.currentVersion,
     hasUnpublishedChanges: r.hasUnpublishedChanges,
+    // An imported draft waits for an explicit publish; only auto mode has something to pause.
+    autoPublishPausedReason: r.publishMode === "auto" && r.draftRequiresPublish ? ("import" as const) : null,
     createdAt: r.createdAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
   };

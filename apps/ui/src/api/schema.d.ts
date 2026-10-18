@@ -1183,10 +1183,10 @@ export interface components {
              *     came from an import (POST /environments/{envId}/import), which never publishes by itself, so
              *     publishMode auto does not publish this draft, nor later edits to it. Automatic publication resumes
              *     after the next explicit publish (POST /environments/{envId}/snapshots). Always null with publishMode
-             *     manual. Read-only: it cannot be set through EnvironmentWrite. Planned: absent until implemented.
+             *     manual. Read-only: it cannot be set through EnvironmentWrite.
              * @enum {string|null}
              */
-            readonly autoPublishPausedReason?: "import" | null;
+            readonly autoPublishPausedReason: "import" | null;
         } & components["schemas"]["Timestamps"];
         EnvironmentWrite: {
             name: components["schemas"]["Name"];
@@ -2722,6 +2722,7 @@ export interface operations {
                      *           "publishMode": "manual",
                      *           "currentVersion": 3,
                      *           "hasUnpublishedChanges": true,
+                     *           "autoPublishPausedReason": null,
                      *           "createdAt": "2026-10-15T12:00:00Z",
                      *           "updatedAt": "2026-10-15T12:00:00Z"
                      *         }
@@ -2786,6 +2787,7 @@ export interface operations {
                      *       "publishMode": "manual",
                      *       "currentVersion": 3,
                      *       "hasUnpublishedChanges": true,
+                     *       "autoPublishPausedReason": null,
                      *       "createdAt": "2026-10-15T12:00:00Z",
                      *       "updatedAt": "2026-10-15T12:00:00Z"
                      *     }

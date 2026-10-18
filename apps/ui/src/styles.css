@@ -220,6 +220,7 @@ table.cards td:last-child { border-radius: 0 var(--radius) var(--radius) 0; }
 .publish-strip { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: stretch; gap: var(--space-2); margin-bottom: var(--space-6); }
 .publish-strip.read-only { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 .publish-strip > * { border-radius: var(--radius); }
+.strip-notice { grid-column: 1 / -1; margin: 0; padding: var(--space-2) var(--space-4); background: var(--draft-strong); color: var(--draft-text); font-weight: 600; }
 .strip-draft, .strip-live { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; min-height: 56px; padding: var(--space-2) var(--space-4); }
 .strip-draft { background: var(--draft); color: var(--draft-text); }
 .strip-draft strong, .strip-live strong { font-weight: 700; }

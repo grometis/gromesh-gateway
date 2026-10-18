@@ -308,7 +308,7 @@ paths:
                   items:
                     type: array
                     items: { $ref: "#/components/schemas/Environment" }
-              example: {"items": [{"id": "0b3c6b5e-8d1f-4a51-9c64-2f0f6d1f8a11", "name": "producao", "description": "Tráfego de produção", "publishMode": "manual", "currentVersion": 3, "hasUnpublishedChanges": true, "createdAt": "2026-10-15T12:00:00Z", "updatedAt": "2026-10-15T12:00:00Z"}]}
+              example: {"items": [{"id": "0b3c6b5e-8d1f-4a51-9c64-2f0f6d1f8a11", "name": "producao", "description": "Tráfego de produção", "publishMode": "manual", "currentVersion": 3, "hasUnpublishedChanges": true, "autoPublishPausedReason": null, "createdAt": "2026-10-15T12:00:00Z", "updatedAt": "2026-10-15T12:00:00Z"}]}
     post:
       tags: [environments]
       operationId: createEnvironment
@@ -339,7 +339,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Environment" }
-              example: {"id": "0b3c6b5e-8d1f-4a51-9c64-2f0f6d1f8a11", "name": "producao", "description": "Tráfego de produção", "publishMode": "manual", "currentVersion": 3, "hasUnpublishedChanges": true, "createdAt": "2026-10-15T12:00:00Z", "updatedAt": "2026-10-15T12:00:00Z"}
+              example: {"id": "0b3c6b5e-8d1f-4a51-9c64-2f0f6d1f8a11", "name": "producao", "description": "Tráfego de produção", "publishMode": "manual", "currentVersion": 3, "hasUnpublishedChanges": true, "autoPublishPausedReason": null, "createdAt": "2026-10-15T12:00:00Z", "updatedAt": "2026-10-15T12:00:00Z"}
         "404": { $ref: "#/components/responses/NotFound" }
     patch:
       tags: [environments]
@@ -1967,7 +1967,7 @@ components:
     Environment:
       allOf:
         - type: object
-          required: [id, name, publishMode, currentVersion, hasUnpublishedChanges]
+          required: [id, name, publishMode, currentVersion, hasUnpublishedChanges, autoPublishPausedReason]
           properties:
             id: { type: string, format: uuid }
             name: { $ref: "#/components/schemas/Name" }
@@ -1979,13 +1979,12 @@ components:
               type: [string, "null"]
               enum: [import, null]
               readOnly: true
-              x-gromesh-planned: true
               description: |
                 Why automatic publication is paused for this environment, or null when it is not. "import": the draft
                 came from an import (POST /environments/{envId}/import), which never publishes by itself, so
                 publishMode auto does not publish this draft, nor later edits to it. Automatic publication resumes
                 after the next explicit publish (POST /environments/{envId}/snapshots). Always null with publishMode
-                manual. Read-only: it cannot be set through EnvironmentWrite. Planned: absent until implemented.
+                manual. Read-only: it cannot be set through EnvironmentWrite.
         - { $ref: "#/components/schemas/Timestamps" }
     EnvironmentWrite:
       type: object
