@@ -175,15 +175,28 @@ async function inside() {
   // Check every column of the table, including events outside this run.
   noSecrets(await sql("SELECT * FROM gromesh.requests FORMAT JSONEachRow"), secrets, "ClickHouse table");
 
-  let scraped = false;
-  for (let attempt = 0; attempt < 60; attempt++) {
-    const response = await request("http://prometheus:9090/api/v1/query?query=kong_http_requests_total");
+  const query = async (expression) => {
+    const response = await request(`http://prometheus:9090/api/v1/query?query=${encodeURIComponent(expression)}`);
+    check(response.ok, "Prometheus query must succeed");
     const metrics = await response.json();
-    scraped = metrics.data?.result?.some((series) => series.metric.service === "echo" && Number(series.value[1]) > 0);
-    if (scraped) break;
+    check(metrics.status === "success", "Prometheus query must return metrics");
+    return metrics.data.result;
+  };
+  let scraped = false;
+  let collectorScraped = false;
+  for (let attempt = 0; attempt < 60; attempt++) {
+    const [gateway, collector] = await Promise.all([
+      query("kong_http_requests_total"),
+      // Use the exact series consumed by CollectorWithoutEvents, including its namespace and labels.
+      query('vector_component_sent_events_total{job="collector",component_id="sanitize"}'),
+    ]);
+    scraped = gateway.some((series) => series.metric.service === "echo" && Number(series.value[1]) > 0);
+    collectorScraped = collector.some((series) => Number(series.value[1]) > 0);
+    if (scraped && collectorScraped) break;
     await sleep(250);
   }
   check(scraped, "Prometheus did not scrape Kong request metrics through the status listener");
+  check(collectorScraped, "Prometheus did not scrape the sanitized event counter used by CollectorWithoutEvents");
   console.log(JSON.stringify({ kongRows: expected.size, syntheticRows: extra.size, elapsedMs, prometheus: "OK", kongVersion: info.version }));
 }
 

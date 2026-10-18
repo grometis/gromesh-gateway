@@ -189,7 +189,7 @@ services:
 
   clickhouse:
     profiles: [observability]
-    image: clickhouse/clickhouse-server:25.8.16.34-alpine
+    image: clickhouse/clickhouse-server:25.8.33.6-alpine@sha256:87e0a5b72f5465b18eacca7c76850e7ff551c9795c50e451f5646299e5e24146
     environment:
       CLICKHOUSE_DB: gromesh
       CLICKHOUSE_USER: gromesh
@@ -210,7 +210,7 @@ services:
   # Creates the INSERT-only (Vector) and SELECT-only (control plane) users; idempotent, runs before Vector.
   clickhouse-init:
     profiles: [observability]
-    image: clickhouse/clickhouse-server:25.8.16.34-alpine
+    image: clickhouse/clickhouse-server:25.8.33.6-alpine@sha256:87e0a5b72f5465b18eacca7c76850e7ff551c9795c50e451f5646299e5e24146
     entrypoint: ["sh", "/init/users.sh"]
     environment:
       CLICKHOUSE_USER: gromesh
@@ -227,7 +227,7 @@ services:
   # Reached by Kong as http://gromesh-collector:8080/kong (compose network only).
   vector:
     profiles: [observability]
-    image: timberio/vector:0.53.0-alpine
+    image: timberio/vector:0.57.0-alpine@sha256:19e3526faf4d4b1ed0c28a0d68d4cc3a1e13e437099986a5b7a768707907497c
     user: "65534:65534"
     # entrypoint.sh refuses to start without a UUID in GROMESH_CLUSTER_ID: every row is tagged with it.
     entrypoint: ["sh", "/etc/vector/entrypoint.sh"]

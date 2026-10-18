@@ -96,9 +96,9 @@ collector:
   clusterId: ""
   image:
     repository: timberio/vector
-    tag: "0.53.0-alpine"
+    tag: "0.57.0-alpine"
     # Pinned by digest; bump by hand with `docker buildx imagetools inspect timberio/vector:<tag>`.
-    digest: "sha256:ca92d617e905953c3f852e7e88061f7039460e733522e3f0c21bc6ae946b2558"
+    digest: "sha256:19e3526faf4d4b1ed0c28a0d68d4cc3a1e13e437099986a5b7a768707907497c"
     pullPolicy: IfNotPresent
   # Optional non-secret fallback/union with each http-log event's key_names. Vector always strips apikey.
   keyNames: []
