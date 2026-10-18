@@ -158,3 +158,14 @@ describe("cookie session client", () => {
     expect(requests).toEqual(["GET"]);
   });
 });
+
+describe("retryNetworkErrorsOnly", () => {
+  it("retries a network failure twice, never an answer of the server", async () => {
+    const { retryNetworkErrorsOnly, ApiError } = await import("./client");
+    expect(retryNetworkErrorsOnly(0, new TypeError("Failed to fetch"))).toBe(true);
+    expect(retryNetworkErrorsOnly(1, new TypeError("Failed to fetch"))).toBe(true);
+    expect(retryNetworkErrorsOnly(2, new TypeError("Failed to fetch"))).toBe(false);
+    expect(retryNetworkErrorsOnly(0, new ApiError(503, undefined))).toBe(false);
+    expect(retryNetworkErrorsOnly(0, new SyntaxError("Unexpected token < in JSON"))).toBe(false);
+  });
+});
