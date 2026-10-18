@@ -1,11 +1,12 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, unwrap, type Schemas } from "../api/client";
 import { statusMessage, toFormErrors, type FormErrors } from "../api/errors";
 import { useAuth } from "../auth";
 import { Field, FormErrorList } from "../components/Field";
 import { ConfirmDialog, Modal } from "../components/Modal";
-import { useEnvId } from "../components/Shell";
+import { RowMenu } from "../components/RowMenu";
+import { useEnvId, useEnvironment } from "../components/Shell";
 
 type Cluster = Schemas["Cluster"];
 type Node = Cluster["nodes"][number];
@@ -40,6 +41,7 @@ function ClusterList({ envId }: { envId: string }) {
   const [creating, setCreating] = useState(false);
   const [rotating, setRotating] = useState<Cluster | null>(null);
   const [deleting, setDeleting] = useState<Cluster | null>(null);
+  const env = useEnvironment(envId);
   const clusters = useQuery({
     queryKey: ["clusters", envId],
     queryFn: () => unwrap(api.GET("/environments/{envId}/clusters", { params: { path: { envId } } })),
@@ -52,14 +54,16 @@ function ClusterList({ envId }: { envId: string }) {
   return (
     <section>
       <div className="page-head">
-        <h1>Clusters</h1>
+        <div>
+          <h1>Clusters</h1>
+          <p className="lede">Os gateways de cada cluster e a versão que cada um serve. Atualiza a cada 10 segundos com esta aba visível.</p>
+        </div>
         {canAdmin && (
           <button type="button" className="primary" onClick={() => setCreating(true)}>
             Novo cluster
           </button>
         )}
       </div>
-      <p className="muted">Atualização a cada 10 segundos enquanto esta aba estiver visível.</p>
       {clusters.isPending && <p className="muted">Carregando clusters…</p>}
       {clusters.isError && (
         <p className="error" role="alert">
@@ -67,25 +71,26 @@ function ClusterList({ envId }: { envId: string }) {
         </p>
       )}
       {clusters.isSuccess && clusters.data.items.length === 0 && <p className="muted">Nenhum cluster ainda.</p>}
-      {clusters.data?.items.map((cluster) => (
-        <section key={cluster.id} aria-label={`Cluster ${cluster.name}`} className="block">
-          <div className="page-head">
-            <h2>{cluster.name}</h2>
-            <span className={`badge ${cluster.status}`}>{STATUS_LABEL[cluster.status]}</span>
-          </div>
-          {canAdmin && (
-            <div className="form-actions cluster-actions">
-              <button type="button" onClick={() => setRotating(cluster)}>
-                Rotacionar token
-              </button>
-              <button type="button" className="danger" onClick={() => setDeleting(cluster)}>
-                Excluir
-              </button>
-            </div>
-          )}
-          {cluster.nodes.length === 0 ? <p className="muted">Nenhum nó registrado.</p> : <NodeTable nodes={cluster.nodes} />}
-        </section>
-      ))}
+      <div className="cluster-cards">
+        {clusters.data?.items.map((cluster) => (
+          <ClusterCard
+            key={cluster.id}
+            cluster={cluster}
+            current={env.data?.currentVersion ?? null}
+            actions={
+              canAdmin && (
+                <RowMenu
+                  label={`Mais ações para ${cluster.name}`}
+                  items={[
+                    { label: "Rotacionar token", onSelect: () => setRotating(cluster) },
+                    { label: "Excluir", danger: true, onSelect: () => setDeleting(cluster) },
+                  ]}
+                />
+              )
+            }
+          />
+        ))}
+      </div>
       {creating && <ClusterToken envId={envId} onClose={() => setCreating(false)} />}
       {rotating && <ClusterToken envId={envId} cluster={rotating} onClose={() => setRotating(null)} />}
       {deleting && <DeleteCluster envId={envId} cluster={deleting} onClose={() => setDeleting(null)} />}
@@ -93,39 +98,124 @@ function ClusterList({ envId }: { envId: string }) {
   );
 }
 
-function NodeTable({ nodes }: { nodes: Node[] }) {
+/** Where a node stands against the live version: what its bar segment and its row say. */
+function nodeStanding(node: Node, current: number | null): { tone: "ok" | "behind" | "failed" | "offline"; label: string } {
+  if (!node.online) return { tone: "offline", label: "Offline" };
+  if (node.state === "failed") return { tone: "failed", label: "Falhou ao aplicar" };
+  if (current !== null && node.appliedVersion === current) return { tone: "ok", label: "Na versão no ar" };
+  return { tone: "behind", label: node.state === "applying" ? "Aplicando" : "Atrás da versão no ar" };
+}
+
+function ClusterCard({ cluster, current, actions }: { cluster: Cluster; current: number | null; actions: ReactNode }) {
+  const online = cluster.nodes.filter((n) => n.online);
+  const synced = online.filter((n) => current !== null && n.appliedVersion === current).length;
   return (
-    <div className="scroll-x">
-      <table>
+    <section aria-label={`Cluster ${cluster.name}`} className="cluster-card">
+      <div className="cluster-head">
+        <h2 className="title-with-badges">
+          <span>{cluster.name}</span> <span className={`badge ${cluster.status}`}>{STATUS_LABEL[cluster.status]}</span>
+        </h2>
+        {actions}
+      </div>
+      {cluster.nodes.length === 0 ? (
+        <p className="muted">Nenhum nó registrado. Use o token de registro para conectar o primeiro gateway.</p>
+      ) : (
+        <>
+          <p className="cluster-summary">
+            <span className="mono">
+              {synced}/{online.length}
+            </span>{" "}
+            nós online na versão no ar{current !== null && <span className="mono"> v{current}</span>}
+            {cluster.nodes.length > online.length && (
+              <span className="muted">
+                {" "}
+                · <span className="mono">{cluster.nodes.length - online.length}</span> offline
+              </span>
+            )}
+          </p>
+          <ol className="node-bar" aria-label={`Nós de ${cluster.name}`}>
+            {cluster.nodes.map((node) => {
+              const standing = nodeStanding(node, current);
+              return (
+                <li key={node.nodeId} className={`node-seg ${standing.tone}`} title={`${node.hostname}: ${standing.label}`}>
+                  <span className="visually-hidden">
+                    {node.hostname}: {standing.label}
+                  </span>
+                </li>
+              );
+            })}
+          </ol>
+          <NodeTable nodes={cluster.nodes} current={current} label={`Nós do cluster ${cluster.name}`} />
+        </>
+      )}
+    </section>
+  );
+}
+
+function NodeTable({ nodes, current, label }: { nodes: Node[]; current: number | null; label: string }) {
+  return (
+    <div className="table-scroll">
+      <table aria-label={label} className="node-table">
         <thead>
           <tr>
-            <th>Nó / hostname</th>
-            <th>Versão aplicada</th>
-            <th>Estado</th>
-            <th>Saúde do gateway</th>
-            <th>Último contato</th>
-            <th>Conexão</th>
-            <th>Erro</th>
+            <th scope="col">Nó</th>
+            <th scope="col">Versão</th>
+            <th scope="col">Situação</th>
+            <th scope="col">Gateway</th>
+            <th scope="col">Último contato</th>
           </tr>
         </thead>
         <tbody>
-          {nodes.map((node) => (
-            <tr key={node.nodeId}>
-              <td>
-                <strong>{node.nodeId}</strong>
-                <br />
-                {node.hostname}
-              </td>
-              <td>{node.appliedVersion == null ? "—" : `v${node.appliedVersion}`}</td>
-              <td className={node.state === "failed" ? "state-failed" : undefined}>{NODE_STATE[node.state]}</td>
-              <td>{node.kongHealthy ? "Saudável" : "Indisponível"}</td>
-              <td>
-                <time dateTime={node.lastSeenAt}>{new Date(node.lastSeenAt).toLocaleString("pt-BR")}</time>
-              </td>
-              <td>{node.online ? "Online" : "Offline"}</td>
-              <td className="node-error">{node.error || "—"}</td>
-            </tr>
-          ))}
+          {nodes.map((node) => {
+            const standing = nodeStanding(node, current);
+            return (
+              <tr key={node.nodeId} className={standing.tone === "failed" ? "node-failed" : undefined}>
+                <td data-label="Nó">
+                  <div>
+                    <strong>{node.hostname}</strong>
+                    <br />
+                    <span className="mono muted">{node.nodeId}</span>
+                  </div>
+                </td>
+                <td className="mono" data-label="Versão">
+                  <div>{node.appliedVersion == null ? "—" : `v${node.appliedVersion}`}</div>
+                </td>
+                <td data-label="Situação">
+                  <div>
+                    <span className={`node-dot ${standing.tone}`} aria-hidden="true" /> {standing.label}
+                    {standing.tone === "failed" && (
+                      <div className="node-failure">
+                        <p>
+                          {node.appliedVersion == null ? (
+                            "Ainda não aplicou nenhuma versão."
+                          ) : (
+                            <>
+                              Segue servindo <span className="mono">v{node.appliedVersion}</span>, a última versão boa.
+                            </>
+                          )}
+                        </p>
+                        {node.error && (
+                          <p>
+                            Erro do gateway: <code className="node-error">{node.error}</code>
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </td>
+                <td data-label="Gateway">
+                  <div>{!node.online ? "—" : node.kongHealthy ? "Saudável" : "Indisponível"}</div>
+                </td>
+                <td data-label="Último contato">
+                  <div>
+                    <time dateTime={node.lastSeenAt}>{new Date(node.lastSeenAt).toLocaleString("pt-BR")}</time>
+                    <br />
+                    <span className="muted">{node.online ? "Online" : "Offline"}</span>
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>

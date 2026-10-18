@@ -120,7 +120,8 @@ test("cluster: token único, copiar, comandos, nó com falha, rotação e exclus
   await expect(page.locator('input[value="one-time-registration-token"]')).toHaveCount(0);
   await expect(page.getByText("Invalid configuration: key=REDACTED", { exact: true })).toBeVisible();
   await expect(page.getByText("Degradado", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Rotacionar token" }).click();
+  await page.getByRole("button", { name: "Mais ações para edge-prod" }).click();
+  await page.getByRole("menuitem", { name: "Rotacionar token" }).click();
   const rotate = page.getByRole("dialog", { name: "Rotacionar token" });
   expect(rotated).toBe(0);
   await rotate.getByRole("button", { name: "Rotacionar", exact: true }).click();
@@ -130,7 +131,8 @@ test("cluster: token único, copiar, comandos, nó com falha, rotação e exclus
   await page.getByRole("link", { name: "Publicações", exact: true }).click();
   await page.getByRole("link", { name: "Clusters", exact: true }).click();
   await expect(page.locator("input, textarea")).toHaveCount(0);
-  await page.getByRole("button", { name: "Excluir", exact: true }).click();
+  await page.getByRole("button", { name: "Mais ações para edge-prod" }).click();
+  await page.getByRole("menuitem", { name: "Excluir" }).click();
   expect(deleted).toBe(0);
   await page.getByRole("dialog", { name: "Excluir cluster" }).getByRole("button", { name: "Excluir", exact: true }).click();
   await expect(page.getByText("Nenhum cluster ainda.")).toBeVisible();
@@ -144,7 +146,7 @@ test("editor pode restaurar publicações, mas não administrar clusters", async
   await login(page, "editor");
   await page.getByRole("link", { name: "Clusters", exact: true }).click();
   await expect(page.getByText("edge-prod", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: /Novo cluster|Rotacionar token|Excluir/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /Novo cluster|Rotacionar token|Excluir|Mais ações/ })).toHaveCount(0);
   await page.getByRole("link", { name: "Publicações", exact: true }).click();
   await page.getByRole("button", { name: "Carregar mais" }).click();
   await expect(page.getByRole("button", { name: "Restaurar v1" })).toBeVisible();
