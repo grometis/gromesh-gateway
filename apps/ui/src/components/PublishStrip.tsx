@@ -32,10 +32,10 @@ export function PublishStrip({ envId }: { envId: string }) {
   const count = preview.data?.changes.length;
   const nodes = (clusters.data?.items ?? []).flatMap((c) => c.nodes).filter((n) => n.online);
   const synced = nodes.filter((n) => current !== null && n.appliedVersion === current).length;
-  const dot = nodes.length === 0 ? "none" : synced === nodes.length ? "" : "partial";
-  // Not only the dot's colour: a rollout that has not reached every node says so in words.
-  const lagging = nodes.length > 0 && synced < nodes.length;
-  const state = !lagging ? null : (clusters.data?.items ?? []).some((c) => c.status === "degraded") ? "degradado" : "convergindo";
+  // The dot's colour and, when not every node is there, the same state in words.
+  const live: "ok" | "converging" | "degraded" | "none" =
+    nodes.length === 0 ? "none" : synced === nodes.length ? "ok" : (clusters.data?.items ?? []).some((c) => c.status === "degraded") ? "degraded" : "converging";
+  const state = live === "degraded" ? "degradado" : live === "converging" ? "convergindo" : null;
 
   return (
     <section className={canEdit ? "publish-strip" : "publish-strip read-only"} aria-label="Publicação">
@@ -59,7 +59,7 @@ export function PublishStrip({ envId }: { envId: string }) {
         </button>
       )}
       <div className="strip-live">
-        <span className={`dot ${dot}`} aria-hidden="true" />
+        <span className={`dot ${live}`} data-state={live} aria-hidden="true" />
         <strong>No ar</strong>
         <span className="sep" aria-hidden="true">·</span>
         {current === null ? (

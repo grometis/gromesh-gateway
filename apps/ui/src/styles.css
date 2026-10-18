@@ -27,6 +27,8 @@
   --draft: #fff1ec;
   --draft-strong: #ffe2d8;
   --draft-text: #8e2a15;
+  /* converging: a rollout under way */
+  --warn: #b7791f;
   /* success */
   --ok: #16a36a;
   --ok-bg: #e3f4ec;
@@ -227,8 +229,12 @@ table.cards td:last-child { border-radius: 0 var(--radius) var(--radius) 0; }
 .publish-strip > button.publish { min-height: 56px; padding: 0 var(--space-5); font-size: 16px; }
 .strip-live { background: var(--ink); color: var(--ink-text); }
 .strip-live strong, .strip-live .mono { color: var(--bg); }
-.strip-live .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); flex: none; }
-.strip-live .dot.partial { background: var(--accent); }
+/* Every node on the live version, a rollout under way, a failed node, no node: each 3:1 or more on the ink. */
+.strip-live .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.strip-live .dot.ok { background: var(--ok); }
+.strip-live .dot.converging { background: var(--warn); }
+/* The accent alone is 2.98:1 on the ink: a light ring keeps the dot distinguishable. */
+.strip-live .dot.degraded { background: var(--accent); box-shadow: 0 0 0 2px var(--draft-strong); }
 .strip-live .dot.none { background: var(--ink-muted); }
 .strip-live .strip-state { color: var(--draft-strong); font-weight: 600; }
 .strip-live .strip-state.bad { color: var(--on-accent); background: var(--accent); border-radius: var(--radius-sm); padding: 0 var(--space-2); }
