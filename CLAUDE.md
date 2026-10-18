@@ -58,6 +58,7 @@ Go: `cd apps/agent && go test ./... && go vet ./...`
 9. **Sem documentação extra.** Nada de README por pasta, ADR ou guias. Código claro, testes e o contrato bastam. Comente só o "porquê" não óbvio.
 10. **`main` só por PR** com a CI verde e aprovação do Fabrício, documentação inclusive. O plano do GitHub não protege a branch, então a trava é local: todo clone novo (e cada worktree) roda `git config core.hooksPath .githooks` logo após o clone; o hook `pre-push` recusa push para `main` (emergência: `GROMESH_ALLOW_MAIN_PUSH=1`). O ruleset em `.github/rulesets/main.json` é aplicado quando houver GitHub Pro.
 11. **PR só de contrato marca operações novas com `x-gromesh-planned: true`; o PR de implementação remove a marca.** A matriz RBAC e a cobertura contrato↔handlers pulam as marcadas, e um teste falha se uma operação marcada já tiver handler.
+12. **PRs do bot de digests (`image-digests`) podem ser mergeados pelo agente sem perguntar**, desde que a CI completa esteja verde e o PR só altere digests das nossas imagens (as referências fixadas, tag e digest, das imagens `gromesh-*`). Qualquer outra mudança no PR: perguntar ao Fabrício.
 
 ## Convenções
 
