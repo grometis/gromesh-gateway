@@ -33,6 +33,7 @@ jobs:
       charts: ${{ steps.filter.outputs.charts || 'false' }}
       heavy: ${{ steps.filter.outputs.heavy || 'false' }}
       kind: ${{ steps.filter.outputs.kind || 'false' }}
+      images: ${{ steps.filter.outputs.images || 'false' }}
     steps:
       - name: Mode
         id: mode
@@ -95,6 +96,17 @@ jobs:
               - apps/control-plane/drizzle/**
               - apps/control-plane/src/agent-gateway/**
               - contracts/agent-protocol.openapi.yaml
+            # Dockerfiles, the Kong build and every pinned image reference: the image-scan job builds or pulls what
+            # changed and runs Trivy with the images workflow's rule.
+            images:
+              - apps/*/Dockerfile
+              - images/**
+              - deploy/compose/docker-compose.yml
+              - deploy/helm/*/values.yaml
+              - e2e/kind/*.yaml
+              - e2e/docker-images.mjs
+              - scripts/scan-changed-images.mjs
+              - .github/workflows/ci.yml
             heavy:
               - *workflow
               - apps/**
@@ -494,8 +506,33 @@ jobs:
 
   # One check that is green when every job that had to run passed (skipped jobs are fine): what a ruleset should
   # require, since the per-job checks are skipped on docs-only PRs.
+  # The images workflow only scans after the merge: a base image with a CRITICAL vulnerability must fail the PR instead.
+  # Runs on pull requests that touch an image (Dependabot's included) and on the digest bot's branches.
+  image-scan:
+    needs: changes
+    if: needs.changes.outputs.images == 'true' || needs.changes.outputs.bot == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+      # Pinned gromesh-* references are private on GHCR.
+      - run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Build or pull the images this change touches and fail on CRITICAL (Trivy, as in the images workflow)
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || 'origin/main' }}
+        run: node scripts/scan-changed-images.mjs "$BASE"
+
   ci-ok:
-    needs: [changes, checks, ui-acceptance, agent, e2e, mvp-e2e]
+    needs: [changes, checks, ui-acceptance, agent, e2e, mvp-e2e, image-scan]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
