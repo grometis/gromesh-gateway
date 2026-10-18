@@ -9,7 +9,7 @@ import { contracts } from "../common/contract.js";
 import { unprocessable } from "../common/problem.js";
 import { ENCRYPTOR, Encryptor } from "../crypto/crypto.js";
 import { DB, type Db } from "../db/db.js";
-import { environments } from "../db/schema.js";
+import { consumers, environments } from "../db/schema.js";
 import { markDraftChanged, requireEnvironment, uuidParam } from "../environments/environments.js";
 import { loadGatewayState, restoreGatewayState } from "../gateway/gateway.js";
 import { PluginCatalog, PluginCatalogModule } from "../plugin-catalog/catalog.js";
@@ -40,17 +40,30 @@ export class ConfigTransferService {
           const converted = request.sourceFormat === "kong-declarative-3.0" ? convertKongConfig(request.document, request.mode === "merge" ? current : undefined) : null;
           const document = converted?.document ?? request.document as ConfigDocument;
           const errors: { path: string; message: string }[] = [];
+          const conversionErrorPaths = new Set(converted?.errors.map(e => e.path));
           if (converted) {
             const checked = structuredClone(document);
             // Legacy Kong keys may be shorter than the new-credential Gromesh API constraint.
             checked.consumers.forEach(c => c.keyAuthCredentials.forEach(k => { if (typeof k.key === "string" && k.key.length > 0 && k.key !== "REDACTED") k.key = k.key.padEnd(16, "_"); }));
+            // The converter already diagnosed these secret slots; avoid secondary write-schema errors.
+            checked.consumers.forEach((c, i) => c.basicAuthCredentials.forEach((k, j) => {
+              const path = converted.sourcePath(`document.consumers.${i}.basicAuthCredentials.${j}.password`);
+              if (conversionErrorPaths.has(path)) k.password = "REDACTED";
+            }));
             const validate = contracts.validator("GromeshConfigV1");
             if (!validate(checked)) errors.push(...schemaErrors(validate.errors));
           }
           // A malformed converted shape cannot be planned safely, but all converter/schema diagnostics survive.
           const checkedSchema = errors.length > 0;
+          const invalidPrehashedPassword = converted && [...converted.identity.prehashedPasswords].some(path => conversionErrorPaths.has(converted.sourcePath(path)));
           let plan: Awaited<ReturnType<typeof planImport>> | undefined;
-          if (!checkedSchema) { plan = await planImport(document, current, request.mode, this.catalog, this.plugins); errors.push(...plan.errors); }
+          if (!checkedSchema && !invalidPrehashedPassword) {
+            plan = await planImport(document, current, request.mode, this.catalog, this.plugins, converted ? {
+              identity: converted.identity,
+              consumerIdExists: async id => (await tx.select({ id: consumers.id }).from(consumers).where(eq(consumers.id, id)).limit(1)).length > 0,
+            } : undefined);
+            errors.push(...plan.errors);
+          }
           const mapped = [...(converted?.errors ?? []), ...errors.map(e => ({ ...e, path: converted?.sourcePath(e.path) ?? e.path }))];
           if (mapped.length) {
             const redacted = checkedSchema ? mapped : redactImportErrors(mapped, document, current, this.catalog);
@@ -77,6 +90,8 @@ export class ConfigTransferService {
             const code = String(pg.code);
             // SSI conflicts can also come from the at-rest key rotator. Re-plan from a fresh snapshot.
             if (["40001", "40P01"].includes(code) && attempt < 3) continue retry;
+            // An import into another environment may claim a free UUID after our serializable snapshot.
+            if (code === "23505" && "constraint" in pg && pg.constraint === "consumers_pkey" && attempt < 3) continue retry;
             if (["23505", "23503", "40001", "40P01"].includes(code)) throw importFailure([{ path: "document", message: "the resulting draft conflicts with existing or concurrent changes; retry after resolving the conflict" }]);
           }
         }

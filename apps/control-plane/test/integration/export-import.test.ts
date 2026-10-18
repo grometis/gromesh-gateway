@@ -317,7 +317,7 @@ test("reuses JWT key types, ACL/hash rules, certificate expiry/matching and plug
   }
 });
 
-test("Kong merge resolves existing natural references, supports nested additions and rejects prehashed basic-auth", async () => {
+test("Kong merge resolves existing natural references, supports nested additions and requires ids for prehashed basic-auth", async () => {
   const base = await fixture();
   const before = await stateOf(base);
   // A key that cannot occur by chance: "abc" (hex) showed up inside the export's random UUIDs and PEMs (~4% of runs).
@@ -338,7 +338,7 @@ test("Kong merge resolves existing natural references, supports nested additions
   const baseAfter = await stateOf(base);
   const prehashed = await importDocument(base, { _format_version: "3.0", _transform: false, consumers: [{ username: "partner", basicauth_credentials: [{ username: "hashed", password: "a".repeat(40) }] }] }, { sourceFormat: "kong-declarative-3.0", mode: "merge" });
   expect(prehashed.status).toBe(422);
-  expect(prehashed.body.errors).toContainEqual(expect.objectContaining({ path: "document._transform" }));
+  expect(prehashed.body.errors).toContainEqual(expect.objectContaining({ path: "document.consumers.0.basicauth_credentials.0.password" }));
   expect(await stateOf(base)).toEqual(baseAfter);
 });
 

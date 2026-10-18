@@ -6,11 +6,21 @@ import type { CompileIssue } from "./errors.js";
 type Obj = Record<string, unknown>;
 const record = (v: unknown): v is Obj => !!v && typeof v === "object" && !Array.isArray(v);
 
+/** Domain paths only: these flags cannot be supplied through a Gromesh import document. */
+export interface ImportIdentity {
+  consumerIds: Map<number, string>;
+  prehashedPasswords: Set<string>;
+}
+
 /** Conversion retains a path map so later domain/schema diagnostics point to the original source. */
-export function convertKongConfig(input: unknown, existing?: GatewayState): { document: ConfigDocument; errors: CompileIssue[]; sourcePath: (path: string) => string } {
+export function convertKongConfig(input: unknown, existing?: GatewayState): { document: ConfigDocument; errors: CompileIssue[]; identity: ImportIdentity; sourcePath: (path: string) => string } {
   const errors: CompileIssue[] = [];
+  const identity: ImportIdentity = { consumerIds: new Map(), prehashedPasswords: new Set() };
   const paths = new Map<string, string>();
-  const error = (path: string, message = "is not supported by the Gromesh model") => errors.push({ path, message });
+  const errorPaths = new Set<string>();
+  const error = (path: string, message = "is not supported by the Gromesh model") => {
+    if (!errorPaths.has(path)) { errorPaths.add(path); errors.push({ path, message }); }
+  };
   const obj = (v: unknown, p: string): Obj => { if (record(v)) return v; error(p, "must be an object"); return {}; };
   const array = (v: unknown, p: string): Obj[] => {
     if (v === undefined) return [];
@@ -64,7 +74,7 @@ export function convertKongConfig(input: unknown, existing?: GatewayState): { do
     if (kind === "upstreams" && raw.healthchecks !== undefined) out.healthchecks = healthchecks(raw.healthchecks, `${p}.healthchecks`, `${dest}.healthchecks`);
     return out;
   }
-  function ref(kind: string, value: unknown, p: string): Obj | undefined {
+  function ref(kind: string, value: unknown, p: string, prehashed = false): Obj | undefined {
     let field: string | undefined;
     if (record(value)) {
       only(value, ["id", "name", "username", "custom_id"], p);
@@ -74,18 +84,32 @@ export function convertKongConfig(input: unknown, existing?: GatewayState): { do
     }
     const matches = typeof value === "string" ? (identities[kind] ?? []).filter(e => field ? e.raw[field] === value : [e.raw.id, e.raw.name, e.raw.username, e.raw.custom_id].includes(value)) : [];
     const targets = [...new Set(matches.map(m => m.out))];
+    // Repeated consumer ids are diagnosed below at the repeated id and each affected password.
+    if (prehashed && targets.length > 1 && typeof matches[0]?.raw.id === "string" && matches.every(m => m.raw.id === matches[0]!.raw.id)) return targets[0];
     if (targets.length !== 1) { error(p, targets.length > 1 ? "ambiguous source reference" : "unknown source reference"); return; }
     return targets[0];
   }
   const consumerRef = (c: Obj) => ({ ...(c.username ? { username: c.username } : {}), ...(c.customId ? { customId: c.customId } : {}) });
   for (const kind of ["services", "routes", "consumers", "upstreams", "certificates", "plugins"]) for (const [i, value] of array(root[kind], `document.${kind}`).entries()) entity(kind, value, `document.${kind}.${i}`);
+  // Resolve prehashed credentials before adding aliases from the target: their consumer must be in the source.
+  const prehashedEntries = root._transform === false ? [
+    ...array(root.basicauth_credentials, "document.basicauth_credentials").map((raw, i) => ({ raw, path: `document.basicauth_credentials.${i}`, parent: undefined as Obj | undefined })),
+    ...nested.filter(n => n.kind === "basicauth_credentials"),
+  ] : [];
+  const prehashedParents = new Map<Obj, Obj | undefined>();
+  for (const entry of prehashedEntries) {
+    const explicit = entry.raw.consumer == null ? undefined : ref("consumers", entry.raw.consumer, `${entry.path}.consumer`, true);
+    prehashedParents.set(entry.raw, explicit ?? entry.parent);
+  }
+  const prehashedConsumers = new Set(prehashedParents.values());
   if (existing) {
     const exported = exportConfig(existing, (_name, config) => config);
     for (const kind of ["services", "routes", "consumers", "upstreams", "certificates"] as const) {
       const old = existing[kind] ?? [];
       const docs = exported[kind];
       old.forEach((entity, i) => {
-        const source = sources[kind]?.find(e => kind === "consumers" ?
+        const byPreservedId = kind === "consumers" ? sources[kind]?.find(e => e.raw.id === entity.id && prehashedConsumers.has(e.out)) : undefined;
+        const source = byPreservedId ?? sources[kind]?.find(e => kind === "consumers" ?
           (("username" in entity && entity.username && entity.username === e.out.username) || ("customId" in entity && entity.customId && entity.customId === e.out.customId)) :
           ("name" in entity ? entity.name === e.out.name : entity.id === e.out.id));
         const out = source?.out ?? structuredClone(docs[i]) as unknown as Obj;
@@ -118,12 +142,17 @@ export function convertKongConfig(input: unknown, existing?: GatewayState): { do
   for (const kind of leafKinds) {
     const relation = relations[kind]![0]!;
     const parentKind = { consumer: "consumers", upstream: "upstreams", certificate: "certificates" }[relation]!;
-    const entries = [...array(root[kind], `document.${kind}`).map((raw, i) => ({ raw, path: `document.${kind}.${i}`, parent: undefined as Obj | undefined })), ...nested.filter(n => n.kind === kind)];
+    const entries = kind === "basicauth_credentials" && root._transform === false ? prehashedEntries : [...array(root[kind], `document.${kind}`).map((raw, i) => ({ raw, path: `document.${kind}.${i}`, parent: undefined as Obj | undefined })), ...nested.filter(n => n.kind === kind)];
     for (const { raw, path, parent: implicit } of entries) {
-      const explicit = raw[relation] == null ? undefined : ref(parentKind, raw[relation], `${path}.${relation}`);
+      const prehashed = kind === "basicauth_credentials" && root._transform === false;
+      const explicit = prehashed ? prehashedParents.get(raw) : raw[relation] == null ? undefined : ref(parentKind, raw[relation], `${path}.${relation}`);
       if (implicit && explicit && implicit !== explicit) error(`${path}.${relation}`, "disagrees with nesting");
       const parent = explicit ?? implicit;
-      if (!parent) { error(`${path}.${relation}`, "is required"); continue; }
+      if (!parent) {
+        if (raw[relation] == null) error(`${path}.${relation}`, "is required");
+        if (prehashed) error(`${path}.password`, "Kong's hash is salted with the consumer id; a source consumer UUID must be preserved exactly");
+        continue;
+      }
       const field = { keyauth_credentials: "keyAuthCredentials", jwt_secrets: "jwtCredentials", basicauth_credentials: "basicAuthCredentials", acls: "aclGroups", targets: "targets", snis: "snis" }[kind]!;
       if (!collection(parentKind).includes(parent)) collection(parentKind).push(parent);
       const list = parent[field] as unknown[];
@@ -135,9 +164,40 @@ export function convertKongConfig(input: unknown, existing?: GatewayState): { do
       if ((kind === "acls" || kind === "snis") && raw.tags !== undefined &&
         (!Array.isArray(raw.tags) || raw.tags.some(tag => !(parent.tags as unknown[] | undefined)?.includes(tag)))) error(`${path}.tags`, "independent membership tags cannot be represented");
       if (kind === "acls" || kind === "snis") paths.set(dest, `${path}.${kind === "acls" ? "group" : "name"}`);
-      if (kind === "basicauth_credentials" && root._transform === false) error("document._transform", "prehashed basic-auth credentials cannot be imported");
+      if (prehashed) {
+        identity.prehashedPasswords.add(`${dest}.password`);
+        const source = sources.consumers?.find(c => c.out === parent);
+        const id = source?.raw.id;
+        const reason = "Kong's hash is salted with the consumer id; a source consumer UUID must be preserved exactly";
+        if (typeof id !== "string" || id.length !== 36 || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id)) {
+          error(`${path}.password`, reason);
+          if (source && id !== undefined) error(`${source.path}.id`, "must be a lowercase canonical UUID");
+        } else {
+          identity.consumerIds.set(pi, id);
+        }
+        if (raw.password !== undefined && raw.password !== "REDACTED" && (typeof raw.password !== "string" || raw.password.length !== 40 || !/^[0-9a-f]{40}$/.test(raw.password))) {
+          error(`${path}.password`, `must be a 40-character lowercase hex hash; ${reason}`);
+        }
+      }
       list.push(kind === "acls" ? out.group : kind === "snis" ? out.name : out);
     }
+  }
+  const consumerGroups = new Map<string, { out: Obj; path: string }[]>();
+  for (const source of sources.consumers ?? []) {
+    const id = source.raw.id;
+    if (typeof id !== "string") continue;
+    const group = consumerGroups.get(id) ?? [];
+    group.push(source);
+    consumerGroups.set(id, group);
+  }
+  const repeatedConsumers = new Set<Obj>();
+  for (const group of consumerGroups.values()) if (group.length > 1 && group.some(c => prehashedConsumers.has(c.out))) {
+    group.slice(1).forEach(c => error(`${c.path}.id`, "consumer id is repeated in the source document"));
+    group.forEach(c => repeatedConsumers.add(c.out));
+  }
+  for (const entry of prehashedEntries) {
+    const parent = prehashedParents.get(entry.raw);
+    if (parent && repeatedConsumers.has(parent)) error(`${entry.path}.password`, "Kong's hash is salted with the consumer id; a source consumer UUID must be preserved exactly");
   }
   function healthchecks(value: unknown, p: string, dest: string): Obj {
     const h = obj(value, p), out: Obj = {};
@@ -169,5 +229,5 @@ export function convertKongConfig(input: unknown, existing?: GatewayState): { do
     while (prefix) { const source = paths.get(prefix); if (source) return source + path.slice(prefix.length); prefix = prefix.slice(0, prefix.lastIndexOf(".")); }
     return path;
   };
-  return { document: doc as unknown as ConfigDocument, errors, sourcePath };
+  return { document: doc as unknown as ConfigDocument, errors, identity, sourcePath };
 }
