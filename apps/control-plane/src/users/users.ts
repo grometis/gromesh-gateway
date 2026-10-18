@@ -107,6 +107,8 @@ export class UsersService {
       // The lock serialises with a concurrent promotion to admin.
       const user = await this.require(tx, userId, true);
       if (user.role === "admin") throw unprocessable("Invalid environment roles", [{ path: "(body)", message: "a global admin is admin in every environment" }]);
+      // Postgres compares UUIDs case-insensitively and returns them lowercase: compare and store the same form.
+      body = { items: body.items.map((item) => ({ ...item, environmentId: item.environmentId.toLowerCase() })) };
       const seen = new Set<string>();
       const errors: { path: string; message: string }[] = [];
       body.items.forEach((item, i) => {

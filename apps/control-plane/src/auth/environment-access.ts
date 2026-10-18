@@ -13,7 +13,10 @@ export const lower = (a: Role, b: Role): Role => (RANK[a] <= RANK[b] ? a : b);
 
 /** A global admin is admin everywhere; anyone else gets the environment's role if one is set, else the global one. */
 export function effectiveRole(user: Pick<UserRow, "role">, override: EnvironmentRole | undefined): EnvironmentRole {
-  return user.role === "admin" ? "admin" : (override ?? user.role);
+  if (user.role === "admin") return "admin";
+  // An unknown stored value hides the environment rather than granting anything.
+  if (override !== undefined && override !== "none" && !(override in RANK)) return "none";
+  return override ?? user.role;
 }
 
 /** The user's environment roles, in a stable order. */

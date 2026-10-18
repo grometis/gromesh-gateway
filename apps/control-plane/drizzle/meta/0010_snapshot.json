@@ -1,5 +1,5 @@
 {
-  "id": "b297aae9-7013-4d48-b1b7-929b57b5cfa1",
+  "id": "d4e19d13-5fe5-4f76-ab18-76897cb43f1d",
   "prevId": "c35b7a93-205d-4a42-97c4-41193bb58184",
   "version": "7",
   "dialect": "postgresql",
@@ -1010,7 +1010,12 @@
       },
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "environment_roles_role_ck": {
+          "name": "environment_roles_role_ck",
+          "value": "\"environment_roles\".\"role\" in ('viewer', 'editor', 'admin', 'none')"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.environments": {

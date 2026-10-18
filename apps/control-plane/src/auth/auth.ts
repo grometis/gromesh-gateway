@@ -97,7 +97,7 @@ export class AuthGuard implements CanActivate {
       if (!resolved) throw new ProblemException(HttpStatus.UNAUTHORIZED, "Invalid or expired API token");
       const access = await environmentAccess(this.db, resolved.user, req.params);
       const role = access ? lower(resolved.token.role, access.role) : resolved.role;
-      if (RANK[role] < RANK[required]) throw new ProblemException(HttpStatus.FORBIDDEN, `Requires role ${required}`);
+      if (!atLeast(role, required)) throw new ProblemException(HttpStatus.FORBIDDEN, `Requires role ${required}`);
       req.user = resolved.user;
       req.auth = { via: "token", tokenId: resolved.token.id, tokenName: resolved.token.name, role };
       return true;
@@ -110,7 +110,7 @@ export class AuthGuard implements CanActivate {
     }
     const access = await environmentAccess(this.db, session.user, req.params);
     const role = access?.role ?? session.user.role;
-    if (RANK[role] < RANK[required]) throw new ProblemException(HttpStatus.FORBIDDEN, `Requires role ${required}`);
+    if (!atLeast(role, required)) throw new ProblemException(HttpStatus.FORBIDDEN, `Requires role ${required}`);
     // A slid expiry goes back to the browser, so the cookie's own Max-Age slides with it.
     if (session.renewed && id) context.switchToHttp().getResponse<Response>().setHeader("Set-Cookie", this.sessions.cookie(id));
     req.user = session.user;
@@ -118,6 +118,11 @@ export class AuthGuard implements CanActivate {
     req.auth = { via: "session", role };
     return true;
   }
+}
+
+/** Fail closed: a role the ladder does not know (a malformed row, say) never passes. */
+function atLeast(role: Role, required: Role): boolean {
+  return RANK[role] >= RANK[required];
 }
 
 /** Constant-time comparison; a missing header or a different length is simply invalid. */

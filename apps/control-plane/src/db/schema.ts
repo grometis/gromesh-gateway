@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   boolean,
+  check,
   index,
   integer,
   jsonb,
@@ -125,7 +126,11 @@ export const environmentRoles = pgTable(
     role: text("role", { enum: ["viewer", "editor", "admin", "none"] }).notNull(),
     ...timestamps,
   },
-  (t) => [primaryKey({ columns: [t.userId, t.environmentId] }), index("environment_roles_env_idx").on(t.environmentId)],
+  (t) => [
+    primaryKey({ columns: [t.userId, t.environmentId] }),
+    index("environment_roles_env_idx").on(t.environmentId),
+    check("environment_roles_role_ck", sql`${t.role} in ('viewer', 'editor', 'admin', 'none')`),
+  ],
 );
 
 export const services = pgTable(

@@ -105,4 +105,34 @@ describe("environment roles", () => {
     expect(hidden.body.detail).toBe(missing.body.detail);
     expect((await user.api("GET", `/environments/not-a-uuid/services`)).status).toBe(404);
   });
+
+  it("an environment role really grants its operations: create, rotate and delete in A, refused in B", async () => {
+    const [a, b] = [await newEnvironment(), await newEnvironment()];
+    const user = await h.as("viewer");
+    await h.api("PUT", `/users/${user.id}/environment-roles`, { items: [{ environmentId: a, role: "admin" }] });
+    const service = { name: uniq("svc"), protocol: "http", host: "echo", port: 80 };
+    expect((await user.api("POST", `/environments/${a}/services`, service)).status).toBe(201);
+    expect((await user.api("POST", `/environments/${b}/services`, service)).status).toBe(403);
+    const cluster = await user.api("POST", `/environments/${a}/clusters`, { name: uniq("c") });
+    expect(cluster.status).toBe(201);
+    expect((await user.api("POST", `/clusters/${cluster.body.id}/rotate-token`)).status).toBe(200);
+    expect((await user.api("DELETE", `/clusters/${cluster.body.id}`)).status).toBe(204);
+    const other = (await h.api("POST", `/environments/${b}/clusters`, { name: uniq("c") })).body.id;
+    expect((await user.api("POST", `/clusters/${other}/rotate-token`)).status).toBe(403);
+    expect((await user.api("GET", `/clusters/${other}`)).status).toBe(200);
+  });
+
+  it("accepts an environment id in upper case as the same environment", async () => {
+    const env = await newEnvironment();
+    const user = await h.as("viewer");
+    const res = await h.api("PUT", `/users/${user.id}/environment-roles`, { items: [{ environmentId: env.toUpperCase(), role: "editor" }] });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.items).toEqual([{ environmentId: env, role: "editor" }]);
+  });
+
+  it("the database refuses a role outside the ladder", async () => {
+    const env = await newEnvironment();
+    const user = await h.as("viewer");
+    await expect(h.sql.query("insert into environment_roles (user_id, environment_id, role) values ($1, $2, 'viewr')", [user.id, env])).rejects.toThrow(/environment_roles_role_ck/);
+  });
 });

@@ -509,7 +509,10 @@ describe("RBAC matrix from the contract", () => {
         const what = `global ${global}, ${roleInA} in A, by ${via}: ${op.id} in ${scoped(op) ? name : "no environment"} → ${res.status}`;
         if (effective === "none") expect(res.status, what).toBe(404);
         else if (RANK[effective] < RANK[op.role]) expect(res.status, what).toBe(403);
-        else expect([401, 403], what).not.toContain(res.status);
+        else {
+          expect([401, 403], what).not.toContain(res.status);
+          expect(res.status, what).toBeLessThan(500);
+        }
       }
     }
     const listed = (await client("GET", "/environments")).body.items.map((e: { id: string }) => e.id);
