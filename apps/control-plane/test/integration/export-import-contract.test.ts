@@ -36,7 +36,9 @@ test('new operations are planned, have the required roles and session/token secu
   assert.deepEqual(exported.security, [{ cookieAuth: [] }, { bearerApiToken: [] }]);
   assert.deepEqual(imported.security, [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]);
   assert.deepEqual(exported.responses[200].content['application/yaml'].schema, exported.responses[200].content['application/json'].schema);
-  for (const status of [401, 403, 404, 409, 422]) assert.ok(imported.responses[status]);
+  for (const status of [401, 403, 404, 422]) assert.ok(imported.responses[status]);
+  // Conflicts are errors[] entries of the 422 report, not a separate 409.
+  assert.equal(imported.responses[409], undefined);
 });
 
 test('YAML and JSON export examples are identical and reusable as an import document', () => {
@@ -161,4 +163,18 @@ test('report uses EntityChange objects in the correct partitions and path/messag
   validate('EnvironmentImportReport', { ...report, modified: [], errors: [{ path: 'document.services.0.host', message: 'Invalid host' }] });
   validate('EnvironmentImportReport', { ...report, errors: [{ path: 'document.services.0.host', message: 'Invalid host' }] }, false);
   validate('EnvironmentImportReport', { ...report, errors: [{ message: 'Invalid host' }] }, false);
+});
+
+test('a real import is all or nothing: any error is a 422 with the same report and nothing applied', () => {
+  const failure = contract.paths['/environments/{envId}/import'].post.responses[422].content['application/problem+json'];
+  assert.equal(failure.schema.$ref, '#/components/schemas/EnvironmentImportFailure');
+  const problem = { type: 'https://gromesh.dev/problems/422', title: 'Unprocessable Content', status: 422, detail: 'The import was not applied' };
+  const errors = [{ path: 'document.services.0.port', message: 'must be <= 65535' }, { path: 'document.routes.0.name', message: 'conflicts with an existing route' }];
+  validate('EnvironmentImportFailure', { ...problem, added: [], modified: [], removed: [], errors });
+  validate('EnvironmentImportFailure', failure.examples.missingSecret.value);
+  // Nothing applied: a failure never carries changes, and always says why.
+  validate('EnvironmentImportFailure', { ...problem, added: [{ kind: 'services', id: '00000000-0000-4000-8000-000000000001', label: 'orders', change: 'added' }], modified: [], removed: [], errors }, false);
+  validate('EnvironmentImportFailure', { ...problem, added: [], modified: [], removed: [], errors: [] }, false);
+  validate('EnvironmentImportFailure', { ...problem, errors }, false);
+  assert.match(contract.paths['/environments/{envId}/import'].post.description, /ALL OR NOTHING/);
 });

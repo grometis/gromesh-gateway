@@ -279,15 +279,15 @@ export interface paths {
          *
          *     Merge upserts services, routes and upstreams by name; consumers by username or customId. When both
          *     consumer identifiers are supplied, either may match an existing consumer; if both resolve, they must resolve
-         *     to the same consumer. Resolving to different consumers is 409. Certificates match by an existing target-environment id or by
-         *     their exact non-empty SNI set (order-independent); disagreeing matches are 409. An empty SNI set has
+         *     to the same consumer. Resolving to different consumers is a conflict. Certificates match by an existing target-environment id or by
+         *     their exact non-empty SNI set (order-independent); disagreeing matches are a conflict. An empty SNI set has
          *     no natural key and requires an existing id to update. SNI overlap with another certificate that would remain
          *     in the resulting draft is a uniqueness conflict.
          *     Plugins match by (name, resolved service, route, consumer scope), targets by (upstream, target), JWT
          *     credentials by issuer key and basic-auth credentials by username (both unique within the environment).
          *     Key-auth matches by existing id within the resolved consumer or by the supplied full key; `keyHint`
          *     is display-only and MUST NOT be used to match a credential. A credential belonging to another consumer,
-         *     or an id disagreeing with a natural-key match, is 409. Credential ids only match within the resolved
+         *     or an id disagreeing with a natural-key match, is a conflict. Credential ids only match within the resolved
          *     consumer; unmatched ids are source identities, not requested ids for creation. New ids are generated
          *     by the control plane. Matched entities retain their ids. ACL membership matches by (consumer, group).
          *     Merge never deletes, including nested credentials, targets and ACL groups: omitted entities remain,
@@ -322,14 +322,21 @@ export interface paths {
          *     `_transform` may be absent or true for plaintext basic-auth passwords. False with basic-auth credentials
          *     is unsupported (422 at `document._transform`): importing prehashed passwords is not supported.
          *
+         *     Conflicts (the matching conflicts above and uniqueness violations in the resulting draft) are errors like any
+         *     other: an `errors[]` entry at the conflicting path, never a separate 409.
+         *
+         *     A real import (`dryRun: false`) is ALL OR NOTHING. With any error (invalid envelope, malformed
+         *     serialization, schema violation, conversion or semantic error, conflict, size limit) NOTHING is written:
+         *     no entity, draft revision, audit event or snapshot. The response is then 422 with the same report
+         *     `{ added, modified, removed, errors[] }` (EnvironmentImportFailure, inside a problem+json body), where
+         *     errors[] lists every error found and the change arrays are empty because there is no valid plan; never a
+         *     partial success. On success the entire change, draft revision update and a redacted import audit event
+         *     commit in ONE transaction and the response is 200 with errors[] empty.
+         *
          *     `dryRun: true` never writes anything (including audit, draft revision or snapshots) and returns the same
-         *     redacted diff a real import would apply, plus semantic validation/conversion errors. Invalid request
-         *     envelopes, malformed serialization or document schema violations return ValidationError 422 even in
-         *     dry-run; uniqueness conflicts return 409 in either mode. Other document/conversion errors return a
-         *     200 report in dry-run; if errors[] is non-empty the diff arrays are empty because there is no valid plan.
-         *     With `dryRun: false`, errors[] non-empty means NOTHING is written and the response is ValidationError
-         *     422 with those path/message errors, never a partial success. On success the entire change, draft revision
-         *     update and a redacted import audit event commit in ONE transaction. Import NEVER publishes or notifies
+         *     redacted diff a real import would apply. Its document/conversion/semantic errors and conflicts return a 200
+         *     report with errors[] (change arrays empty); an invalid request envelope, malformed serialization or a
+         *     document schema violation is the same 422 EnvironmentImportFailure as a real import. Import NEVER publishes or notifies
          *     agents, even when publishMode is auto; a separate explicit publish is required.
          *     Reports diff against the current draft, not the published snapshot. Diff labels/before/after and errors
          *     never expose secrets, plaintext passwords, password hashes or submitted secret values. Error paths use
@@ -1668,6 +1675,16 @@ export interface components {
          */
         EnvironmentImportMode: "merge" | "replace";
         /**
+         * @description The 422 of an import: problem details plus the import report. Nothing was written (all or nothing), so the
+         *     change arrays are empty and errors[] lists every error found, at its document path.
+         */
+        EnvironmentImportFailure: components["schemas"]["Problem"] & {
+            added: unknown[];
+            modified: unknown[];
+            removed: unknown[];
+            errors: components["schemas"]["FieldError"][];
+        };
+        /**
          * @description Diff against the current draft. Each array contains EntityChange items whose change value matches the
          *     array name. Merge always has removed empty. Secrets are redacted as in publish diff; basic-auth passwords
          *     and hashes are never included. On semantic errors in dry-run all change arrays are empty.
@@ -2877,8 +2894,15 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
-            422: components["responses"]["ValidationError"];
+            /** @description Nothing was written (all or nothing); errors[] lists every error and the change arrays are empty */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["EnvironmentImportFailure"];
+                };
+            };
         };
     };
     listServices: {
