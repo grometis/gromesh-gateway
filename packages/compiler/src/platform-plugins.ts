@@ -1,5 +1,5 @@
 import { CompileError } from "./errors.js";
-import type { Plugin } from "./model.js";
+import type { Plugin, Route } from "./model.js";
 
 const HTTP_LOG_ID = "14f9de7e-3701-4c69-b7f7-b8b5622c0102";
 const KEY_NAME_RE = /^[A-Za-z0-9._-]{1,64}$/;
@@ -23,6 +23,20 @@ export function resolvePlatformKeyNames(platform: Plugin[], configured: Plugin[]
     ...plugin,
     config: { ...plugin.config, custom_fields_by_lua: {
       ...(plugin.config?.custom_fields_by_lua as Record<string, string>), key_names: lua,
+    } },
+  } : plugin);
+}
+
+export function resolvePlatformRetention(platform: Plugin[], routes: Route[]): Plugin[] {
+  const retained = routes.filter((route) => route.analyticsRetentionDays != null).sort((a, b) => a.id.localeCompare(b.id));
+  // Preserve existing snapshots and hashes until a route explicitly opts into retention.
+  if (retained.length === 0) return platform;
+  const entries = retained.map((route) => `["${route.id.toLowerCase()}"]=${route.analyticsRetentionDays}`).join(",");
+  const lua = `local days = {${entries}}; local route = kong.router.get_route(); return (route and days[route.id]) or 7`;
+  return platform.map((plugin) => plugin.id === HTTP_LOG_ID && plugin.name === "http-log" ? {
+    ...plugin,
+    config: { ...plugin.config, custom_fields_by_lua: {
+      ...(plugin.config?.custom_fields_by_lua as Record<string, string>), retention_days: lua,
     } },
   } : plugin);
 }

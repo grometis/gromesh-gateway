@@ -33,6 +33,7 @@ export interface Route {
   headers?: Record<string, string[]>;
   stripPath?: boolean;
   preserveHost?: boolean;
+  analyticsRetentionDays?: number | null;
   tags?: string[];
 }
 

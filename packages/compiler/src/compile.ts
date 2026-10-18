@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { diffConfigs } from "./diff.js";
 import { CompileError, type CompileIssue } from "./errors.js";
-import { keyNameIssues, resolvePlatformKeyNames } from "./platform-plugins.js";
+import { keyNameIssues, resolvePlatformKeyNames, resolvePlatformRetention } from "./platform-plugins.js";
 import type {
   CompileOptions,
   GatewayState,
@@ -62,13 +62,21 @@ export function compile(state: GatewayState, options: CompileOptions = {}): Kong
 
 /** An invalid existing draft must still be comparable when an import repairs it; only the proposal is compiled. */
 export function diffGatewayStates(before: GatewayState, after: GatewayState) {
-  return diffConfigs(declarativeConfig(before, {}), compile(after));
+  // Retention is domain metadata transported by a platform plugin, absent from Kong's route schema.
+  // Include it only in this comparison so a retention-only import is persisted and audited.
+  const compared = (state: GatewayState, config: KongDeclarativeConfig) => ({
+    ...config,
+    routes: config.routes.map((route) => ({
+      ...route, analyticsRetentionDays: state.routes.find((r) => r.id === route.id)?.analyticsRetentionDays ?? null,
+    })),
+  });
+  return diffConfigs(compared(before, declarativeConfig(before, {})), compared(after, compile(after)));
 }
 
 /** Projection is private: every config that can be published goes through compile's validation. */
 function declarativeConfig(state: GatewayState, options: CompileOptions): KongDeclarativeConfig {
   const managedTag = options.managedTag ?? DEFAULT_MANAGED_TAG;
-  const plugins = [...state.plugins, ...resolvePlatformKeyNames(options.platformPlugins ?? [], state.plugins)];
+  const plugins = [...state.plugins, ...resolvePlatformRetention(resolvePlatformKeyNames(options.platformPlugins ?? [], state.plugins), state.routes)];
 
   const tags = (own: string[] | undefined) => sortedUnique([...(own ?? []), managedTag]);
 
@@ -281,6 +289,9 @@ export function validate(state: GatewayState): CompileIssue[] {
     checkId(p, r.id);
     checkName(p, r.name, routeNames);
     if (!serviceIds.has(r.serviceId)) add(`${p}.serviceId`, `unknown service ${r.serviceId}`);
+    if (r.analyticsRetentionDays != null && (!Number.isInteger(r.analyticsRetentionDays) || r.analyticsRetentionDays < 1 || r.analyticsRetentionDays > 7)) {
+      add(`${p}.analyticsRetentionDays`, "must be an integer between 1 and 7 or null");
+    }
     const hasMatcher =
       (r.paths?.length ?? 0) > 0 ||
       (r.hosts?.length ?? 0) > 0 ||
