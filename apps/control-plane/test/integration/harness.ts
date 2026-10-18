@@ -102,7 +102,7 @@ export async function startHarness(overrides: Partial<AppConfig> = {}): Promise<
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     const text = await res.text();
-    return { status: res.status, body: text ? JSON.parse(text) : undefined, contentType: res.headers.get("content-type"), headers: res.headers };
+    return { status: res.status, body: text ? (res.headers.get("content-type")?.includes("json") ? JSON.parse(text) : text) : undefined, contentType: res.headers.get("content-type"), headers: res.headers };
   };
   const anonymous = client(null, null);
 

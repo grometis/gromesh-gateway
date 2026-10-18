@@ -26,11 +26,11 @@ const changed = (mutate: (doc: Doc) => void) => {
   return doc;
 };
 
-test('new operations are planned, have the required roles and session/token security', () => {
+test('implemented operations are active, have the required roles and session/token security', () => {
   const exported = contract.paths['/environments/{envId}/export'].get;
   const imported = contract.paths['/environments/{envId}/import'].post;
-  assert.equal(exported['x-gromesh-planned'], true);
-  assert.equal(imported['x-gromesh-planned'], true);
+  assert.equal(exported['x-gromesh-planned'], undefined);
+  assert.equal(imported['x-gromesh-planned'], undefined);
   assert.equal(exported['x-required-role'], 'viewer');
   assert.equal(imported['x-required-role'], 'editor');
   assert.deepEqual(exported.security, [{ cookieAuth: [] }, { bearerApiToken: [] }]);
