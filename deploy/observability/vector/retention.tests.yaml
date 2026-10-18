@@ -1,0 +1,271 @@
+tests:
+  - name: retention-missing
+    inputs:
+      - insert_at: decode
+        type: log
+        log_fields:
+          message: "{\"environment_id\": \"00000000-0000-4000-8000-000000000001\", \"started_at\": 1792100000123, \"request\": {\"uri\": \"/sensitive?secret=discarded\", \"method\": \"GET\", \"size\": 100}, \"response\": {\"status\": 200, \"size\": 200}, \"client_ip\": \"127.0.0.1\", \"latencies\": {\"kong\": 1, \"proxy\": 2, \"request\": 3}}"
+    outputs:
+      - extract_from: sanitize
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.retention_days == 7, "Retention must be an integer in 1..7, otherwise 7")
+              assert!(is_integer(.retention_days))
+              assert!(.path == "/sensitive")
+              assert!(!exists(.request) && !exists(.response))
+  - name: retention-null
+    inputs:
+      - insert_at: decode
+        type: log
+        log_fields:
+          message: "{\"environment_id\": \"00000000-0000-4000-8000-000000000001\", \"started_at\": 1792100000123, \"request\": {\"uri\": \"/sensitive?secret=discarded\", \"method\": \"GET\", \"size\": 100}, \"response\": {\"status\": 200, \"size\": 200}, \"client_ip\": \"127.0.0.1\", \"latencies\": {\"kong\": 1, \"proxy\": 2, \"request\": 3}, \"retention_days\": null}"
+    outputs:
+      - extract_from: sanitize
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.retention_days == 7, "Retention must be an integer in 1..7, otherwise 7")
+              assert!(is_integer(.retention_days))
+              assert!(.path == "/sensitive")
+              assert!(!exists(.request) && !exists(.response))
+  - name: retention-days-1
+    inputs:
+      - insert_at: decode
+        type: log
+        log_fields:
+          message: "{\"environment_id\": \"00000000-0000-4000-8000-000000000001\", \"started_at\": 1792100000123, \"request\": {\"uri\": \"/sensitive?secret=discarded\", \"method\": \"GET\", \"size\": 100}, \"response\": {\"status\": 200, \"size\": 200}, \"client_ip\": \"127.0.0.1\", \"latencies\": {\"kong\": 1, \"proxy\": 2, \"request\": 3}, \"retention_days\": 1}"
+    outputs:
+      - extract_from: sanitize
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.retention_days == 1, "Retention must be an integer in 1..7, otherwise 7")
+              assert!(is_integer(.retention_days))
+              assert!(.path == "/sensitive")
+              assert!(!exists(.request) && !exists(.response))
+  - name: retention-days-2
+    inputs:
+      - insert_at: decode
+        type: log
+        log_fields:
+          message: "{\"environment_id\": \"00000000-0000-4000-8000-000000000001\", \"started_at\": 1792100000123, \"request\": {\"uri\": \"/sensitive?secret=discarded\", \"method\": \"GET\", \"size\": 100}, \"response\": {\"status\": 200, \"size\": 200}, \"client_ip\": \"127.0.0.1\", \"latencies\": {\"kong\": 1, \"proxy\": 2, \"request\": 3}, \"retention_days\": 2}"
+    outputs:
+      - extract_from: sanitize
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.retention_days == 2, "Retention must be an integer in 1..7, otherwise 7")
+              assert!(is_integer(.retention_days))
+              assert!(.path == "/sensitive")
+              assert!(!exists(.request) && !exists(.response))
+  - name: retention-days-3
+    inputs:
+      - insert_at: decode
+        type: log
+        log_fields:
+          message: "{\"environment_id\": \"00000000-0000-4000-8000-000000000001\", \"started_at\": 1792100000123, \"request\": {\"uri\": \"/sensitive?secret=discarded\", \"method\": \"GET\", \"size\": 100}, \"response\": {\"status\": 200, \"size\": 200}, \"client_ip\": \"127.0.0.1\", \"latencies\": {\"kong\": 1, \"proxy\": 2, \"request\": 3}, \"retention_days\": 3}"
+    outputs:
+      - extract_from: sanitize
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.retention_days == 3, "Retention must be an integer in 1..7, otherwise 7")
+              assert!(is_integer(.retention_days))
+              assert!(.path == "/sensitive")
+              assert!(!exists(.request) && !exists(.response))
+  - name: retention-days-4
+    inputs:
+      - insert_at: decode
+        type: log
+        log_fields:
+          message: "{\"environment_id\": \"00000000-0000-4000-8000-000000000001\", \"started_at\": 1792100000123, \"request\": {\"uri\": \"/sensitive?secret=discarded\", \"method\": \"GET\", \"size\": 100}, \"response\": {\"status\": 200, \"size\": 200}, \"client_ip\": \"127.0.0.1\", \"latencies\": {\"kong\": 1, \"proxy\": 2, \"request\": 3}, \"retention_days\": 4}"
+    outputs:
+      - extract_from: sanitize
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.retention_days == 4, "Retention must be an integer in 1..7, otherwise 7")
+              assert!(is_integer(.retention_days))
+              assert!(.path == "/sensitive")
+              assert!(!exists(.request) && !exists(.response))
+  - name: retention-days-5
+    inputs:
+      - insert_at: decode
+        type: log
+        log_fields:
+          message: "{\"environment_id\": \"00000000-0000-4000-8000-000000000001\", \"started_at\": 1792100000123, \"request\": {\"uri\": \"/sensitive?secret=discarded\", \"method\": \"GET\", \"size\": 100}, \"response\": {\"status\": 200, \"size\": 200}, \"client_ip\": \"127.0.0.1\", \"latencies\": {\"kong\": 1, \"proxy\": 2, \"request\": 3}, \"retention_days\": 5}"
+    outputs:
+      - extract_from: sanitize
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.retention_days == 5, "Retention must be an integer in 1..7, otherwise 7")
+              assert!(is_integer(.retention_days))
+              assert!(.path == "/sensitive")
+              assert!(!exists(.request) && !exists(.response))
+  - name: retention-days-6
+    inputs:
+      - insert_at: decode
+        type: log
+        log_fields:
+          message: "{\"environment_id\": \"00000000-0000-4000-8000-000000000001\", \"started_at\": 1792100000123, \"request\": {\"uri\": \"/sensitive?secret=discarded\", \"method\": \"GET\", \"size\": 100}, \"response\": {\"status\": 200, \"size\": 200}, \"client_ip\": \"127.0.0.1\", \"latencies\": {\"kong\": 1, \"proxy\": 2, \"request\": 3}, \"retention_days\": 6}"
+    outputs:
+      - extract_from: sanitize
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.retention_days == 6, "Retention must be an integer in 1..7, otherwise 7")
+              assert!(is_integer(.retention_days))
+              assert!(.path == "/sensitive")
+              assert!(!exists(.request) && !exists(.response))
+  - name: retention-days-7
+    inputs:
+      - insert_at: decode
+        type: log
+        log_fields:
+          message: "{\"environment_id\": \"00000000-0000-4000-8000-000000000001\", \"started_at\": 1792100000123, \"request\": {\"uri\": \"/sensitive?secret=discarded\", \"method\": \"GET\", \"size\": 100}, \"response\": {\"status\": 200, \"size\": 200}, \"client_ip\": \"127.0.0.1\", \"latencies\": {\"kong\": 1, \"proxy\": 2, \"request\": 3}, \"retention_days\": 7}"
+    outputs:
+      - extract_from: sanitize
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.retention_days == 7, "Retention must be an integer in 1..7, otherwise 7")
+              assert!(is_integer(.retention_days))
+              assert!(.path == "/sensitive")
+              assert!(!exists(.request) && !exists(.response))
+  - name: retention-zero
+    inputs:
+      - insert_at: decode
+        type: log
+        log_fields:
+          message: "{\"environment_id\": \"00000000-0000-4000-8000-000000000001\", \"started_at\": 1792100000123, \"request\": {\"uri\": \"/sensitive?secret=discarded\", \"method\": \"GET\", \"size\": 100}, \"response\": {\"status\": 200, \"size\": 200}, \"client_ip\": \"127.0.0.1\", \"latencies\": {\"kong\": 1, \"proxy\": 2, \"request\": 3}, \"retention_days\": 0}"
+    outputs:
+      - extract_from: sanitize
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.retention_days == 7, "Retention must be an integer in 1..7, otherwise 7")
+              assert!(is_integer(.retention_days))
+              assert!(.path == "/sensitive")
+              assert!(!exists(.request) && !exists(.response))
+  - name: retention-negative
+    inputs:
+      - insert_at: decode
+        type: log
+        log_fields:
+          message: "{\"environment_id\": \"00000000-0000-4000-8000-000000000001\", \"started_at\": 1792100000123, \"request\": {\"uri\": \"/sensitive?secret=discarded\", \"method\": \"GET\", \"size\": 100}, \"response\": {\"status\": 200, \"size\": 200}, \"client_ip\": \"127.0.0.1\", \"latencies\": {\"kong\": 1, \"proxy\": 2, \"request\": 3}, \"retention_days\": -1}"
+    outputs:
+      - extract_from: sanitize
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.retention_days == 7, "Retention must be an integer in 1..7, otherwise 7")
+              assert!(is_integer(.retention_days))
+              assert!(.path == "/sensitive")
+              assert!(!exists(.request) && !exists(.response))
+  - name: retention-eight
+    inputs:
+      - insert_at: decode
+        type: log
+        log_fields:
+          message: "{\"environment_id\": \"00000000-0000-4000-8000-000000000001\", \"started_at\": 1792100000123, \"request\": {\"uri\": \"/sensitive?secret=discarded\", \"method\": \"GET\", \"size\": 100}, \"response\": {\"status\": 200, \"size\": 200}, \"client_ip\": \"127.0.0.1\", \"latencies\": {\"kong\": 1, \"proxy\": 2, \"request\": 3}, \"retention_days\": 8}"
+    outputs:
+      - extract_from: sanitize
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.retention_days == 7, "Retention must be an integer in 1..7, otherwise 7")
+              assert!(is_integer(.retention_days))
+              assert!(.path == "/sensitive")
+              assert!(!exists(.request) && !exists(.response))
+  - name: retention-fraction
+    inputs:
+      - insert_at: decode
+        type: log
+        log_fields:
+          message: "{\"environment_id\": \"00000000-0000-4000-8000-000000000001\", \"started_at\": 1792100000123, \"request\": {\"uri\": \"/sensitive?secret=discarded\", \"method\": \"GET\", \"size\": 100}, \"response\": {\"status\": 200, \"size\": 200}, \"client_ip\": \"127.0.0.1\", \"latencies\": {\"kong\": 1, \"proxy\": 2, \"request\": 3}, \"retention_days\": 1.5}"
+    outputs:
+      - extract_from: sanitize
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.retention_days == 7, "Retention must be an integer in 1..7, otherwise 7")
+              assert!(is_integer(.retention_days))
+              assert!(.path == "/sensitive")
+              assert!(!exists(.request) && !exists(.response))
+  - name: retention-float
+    inputs:
+      - insert_at: decode
+        type: log
+        log_fields:
+          message: "{\"environment_id\": \"00000000-0000-4000-8000-000000000001\", \"started_at\": 1792100000123, \"request\": {\"uri\": \"/sensitive?secret=discarded\", \"method\": \"GET\", \"size\": 100}, \"response\": {\"status\": 200, \"size\": 200}, \"client_ip\": \"127.0.0.1\", \"latencies\": {\"kong\": 1, \"proxy\": 2, \"request\": 3}, \"retention_days\": 1.0}"
+    outputs:
+      - extract_from: sanitize
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.retention_days == 7, "Retention must be an integer in 1..7, otherwise 7")
+              assert!(is_integer(.retention_days))
+              assert!(.path == "/sensitive")
+              assert!(!exists(.request) && !exists(.response))
+  - name: retention-string
+    inputs:
+      - insert_at: decode
+        type: log
+        log_fields:
+          message: "{\"environment_id\": \"00000000-0000-4000-8000-000000000001\", \"started_at\": 1792100000123, \"request\": {\"uri\": \"/sensitive?secret=discarded\", \"method\": \"GET\", \"size\": 100}, \"response\": {\"status\": 200, \"size\": 200}, \"client_ip\": \"127.0.0.1\", \"latencies\": {\"kong\": 1, \"proxy\": 2, \"request\": 3}, \"retention_days\": \"1\"}"
+    outputs:
+      - extract_from: sanitize
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.retention_days == 7, "Retention must be an integer in 1..7, otherwise 7")
+              assert!(is_integer(.retention_days))
+              assert!(.path == "/sensitive")
+              assert!(!exists(.request) && !exists(.response))
+  - name: retention-boolean
+    inputs:
+      - insert_at: decode
+        type: log
+        log_fields:
+          message: "{\"environment_id\": \"00000000-0000-4000-8000-000000000001\", \"started_at\": 1792100000123, \"request\": {\"uri\": \"/sensitive?secret=discarded\", \"method\": \"GET\", \"size\": 100}, \"response\": {\"status\": 200, \"size\": 200}, \"client_ip\": \"127.0.0.1\", \"latencies\": {\"kong\": 1, \"proxy\": 2, \"request\": 3}, \"retention_days\": true}"
+    outputs:
+      - extract_from: sanitize
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.retention_days == 7, "Retention must be an integer in 1..7, otherwise 7")
+              assert!(is_integer(.retention_days))
+              assert!(.path == "/sensitive")
+              assert!(!exists(.request) && !exists(.response))
+  - name: retention-array
+    inputs:
+      - insert_at: decode
+        type: log
+        log_fields:
+          message: "{\"environment_id\": \"00000000-0000-4000-8000-000000000001\", \"started_at\": 1792100000123, \"request\": {\"uri\": \"/sensitive?secret=discarded\", \"method\": \"GET\", \"size\": 100}, \"response\": {\"status\": 200, \"size\": 200}, \"client_ip\": \"127.0.0.1\", \"latencies\": {\"kong\": 1, \"proxy\": 2, \"request\": 3}, \"retention_days\": [1]}"
+    outputs:
+      - extract_from: sanitize
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.retention_days == 7, "Retention must be an integer in 1..7, otherwise 7")
+              assert!(is_integer(.retention_days))
+              assert!(.path == "/sensitive")
+              assert!(!exists(.request) && !exists(.response))
+  - name: retention-object
+    inputs:
+      - insert_at: decode
+        type: log
+        log_fields:
+          message: "{\"environment_id\": \"00000000-0000-4000-8000-000000000001\", \"started_at\": 1792100000123, \"request\": {\"uri\": \"/sensitive?secret=discarded\", \"method\": \"GET\", \"size\": 100}, \"response\": {\"status\": 200, \"size\": 200}, \"client_ip\": \"127.0.0.1\", \"latencies\": {\"kong\": 1, \"proxy\": 2, \"request\": 3}, \"retention_days\": {\"days\": 1}}"
+    outputs:
+      - extract_from: sanitize
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.retention_days == 7, "Retention must be an integer in 1..7, otherwise 7")
+              assert!(is_integer(.retention_days))
+              assert!(.path == "/sensitive")
+              assert!(!exists(.request) && !exists(.response))

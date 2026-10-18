@@ -73,7 +73,7 @@ async function main() {
   await run(["run", "--rm", "-e", "CLICKHOUSE_PASSWORD=unit-test",
     "-e", "GROMESH_CLUSTER_ID=00000000-0000-4000-8000-00000000c0c0", "-e", 'GROMESH_KEY_NAMES=["legacy-key"]',
     "-v", `${root}deploy/observability/vector:/etc/vector:ro`, VECTOR_IMAGE,
-    "test", "/etc/vector/vector.yaml", "/etc/vector/key-names.tests.yaml", "/etc/vector/path-masking.tests.yaml"]);
+    "test", "/etc/vector/vector.yaml", "/etc/vector/key-names.tests.yaml", "/etc/vector/path-masking.tests.yaml", "/etc/vector/retention.tests.yaml"]);
   await exec("pnpm", ["--filter", "@gromesh/compiler", "build"], { cwd: root, env, timeout: 60_000 });
   const { compile, platformPlugins } = await import("../packages/compiler/dist/index.js");
   const { stdout: agents } = await compose("ps", "--status", "running", "-q", "agent");
@@ -115,7 +115,11 @@ async function main() {
     const base = `/key-names-${environmentId}`;
     const config = compile({
       services: [{ id: serviceId, name: "key-names", protocol: "http", host: "echo", port: 80 }],
-      routes: [{ id: routeId, name: "key-names", serviceId, paths: [base] }],
+      routes: [
+        { id: routeId, name: "key-names", serviceId, paths: [base], analyticsRetentionDays: 1 },
+        { id: randomUUID(), name: "retention-default", serviceId, paths: [`${base}/default`] },
+        { id: randomUUID(), name: "retention-seven", serviceId, paths: [`${base}/seven`], analyticsRetentionDays: 7 },
+      ],
       consumers: [{ id: consumerId, username: "key-names" }],
       keyAuthCredentials: secrets.slice(0, 2).map((key) => ({ id: randomUUID(), consumerId, key })),
       plugins: [{ id: randomUUID(), name: "key-auth", scope: { routeId }, config: { key_names: ["x-token"], hide_credentials: false } }],
@@ -133,9 +137,12 @@ async function main() {
       { label: "header", query: "", headers: { "X-ToKeN": secrets[0] }, status: 200, secret: secrets[0] },
       { label: "query", query: `?%78-token=${secrets[1]}`, headers: {}, status: 200, secret: secrets[1] },
       { label: "rejected", query: `?x-token=${secrets[2]}`, headers: {}, status: 401 },
+      { label: "default/traffic", query: "", headers: {}, status: 200 },
+      { label: "seven/traffic", query: "", headers: {}, status: 200 },
+      { label: "unmatched", path: `/unmatched-${environmentId}`, query: "", headers: {}, status: 404 },
     ];
-    for (const { label, query, headers, status, secret } of cases) {
-      const response = await request(`${proxy}${base}/${label}${query}`, { headers });
+    for (const { label, path = `${base}/${label}`, query, headers, status, secret } of cases) {
+      const response = await request(`${proxy}${path}${query}`, { headers });
       const body = await response.text();
       check(response.status === status, `Gateway ${label} request must return ${status}`);
       if (secret) check(body.includes(secret), "hide_credentials=false must leave credentials visible at the upstream");
@@ -153,8 +160,9 @@ async function main() {
       const text = (await response.text()).trim();
       noSecrets(text, "ClickHouse columns");
       const rows = text ? text.split("\n").map((line) => JSON.parse(line)) : [];
-      check(rows.every((row) => ["ready", ...cases.map(({ label }) => label)].some((label) => row.path === `${base}/${label}`)), "Unexpected analytics path or unsanitized query");
-      if (cases.every(({ label, status }) => rows.some((row) => row.path === `${base}/${label}` && row.status === status))) break;
+      check(rows.every((row) => [`${base}/ready`, ...cases.map(({ label, path = `${base}/${label}` }) => path)].includes(row.path)), "Unexpected analytics path or unsanitized query");
+      check(rows.every((row) => row.retention_days === (row.route_id === routeId ? 1 : 7)), "Matched retention and default/unmatched fallback must reach ClickHouse");
+      if (cases.every(({ label, path = `${base}/${label}`, status }) => rows.some((row) => row.path === path && row.status === status))) break;
       check(attempt < 120, "Header, query and rejected requests must arrive in ClickHouse within 30 seconds");
       await sleep(250);
     }

@@ -2,6 +2,10 @@
 # One-shot `clickhouse-init` compose service, run with the admin user after the server is healthy and before Vector
 # starts. Idempotent. Neither the control plane nor Vector ever use the admin (or `default`): one reader, one writer.
 set -eu
+# Run on every init job, including upgrades of an existing ClickHouse volume, in filename order.
+for migration in /migrations/*.sql; do
+  clickhouse-client --host "${CLICKHOUSE_HOST:-clickhouse}" -u "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" -n < "$migration"
+done
 clickhouse-client --host "${CLICKHOUSE_HOST:-clickhouse}" -u "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" -n <<SQL
 CREATE USER IF NOT EXISTS gromesh_writer IDENTIFIED WITH sha256_password BY '${CLICKHOUSE_WRITER_PASSWORD}';
 GRANT INSERT ON gromesh.requests TO gromesh_writer;

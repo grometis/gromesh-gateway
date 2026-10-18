@@ -219,6 +219,7 @@ services:
       CLICKHOUSE_READER_PASSWORD: ${CLICKHOUSE_READER_PASSWORD:-gromesh-dev-reader}
     volumes:
       - ../observability/clickhouse-init:/init:ro
+      - ../observability/clickhouse:/migrations:ro
     depends_on:
       clickhouse:
         condition: service_healthy

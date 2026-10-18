@@ -48,7 +48,7 @@ k create secret generic ci-clickhouse-admin --from-literal="password=$ch_admin"
 k create secret generic ci-clickhouse-writer --from-literal="writer-password=$ch_writer"
 k create secret generic ci-clickhouse-reader --from-literal="url=http://clickhouse:8123" --from-literal=user=gromesh_reader \
   --from-literal="password=$ch_reader" --from-literal=database=gromesh
-k create configmap clickhouse-init-sql --from-file=deploy/observability/clickhouse/001-requests.sql
+k create configmap clickhouse-init-sql --from-file=deploy/observability/clickhouse/001-requests.sql --from-file=deploy/observability/clickhouse/002-retention.sql
 k create configmap clickhouse-init-users --from-file=deploy/observability/clickhouse-init/users.sh
 
 k apply -f "$cp_chart/ci/kind-resources.yaml"
