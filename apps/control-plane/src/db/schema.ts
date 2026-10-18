@@ -112,6 +112,22 @@ export const environments = pgTable(
   (t) => [uniqueIndex("environments_name_uq").on(t.name)],
 );
 
+/** A role that replaces the user's global role in one environment; `none` hides the environment. */
+export const environmentRoles = pgTable(
+  "environment_roles",
+  {
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    environmentId: uuid("environment_id")
+      .notNull()
+      .references(() => environments.id, { onDelete: "cascade" }),
+    role: text("role", { enum: ["viewer", "editor", "admin", "none"] }).notNull(),
+    ...timestamps,
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.environmentId] }), index("environment_roles_env_idx").on(t.environmentId)],
+);
+
 export const services = pgTable(
   "services",
   {
@@ -383,6 +399,7 @@ export const auditEvents = pgTable(
 );
 
 export type EnvironmentRow = typeof environments.$inferSelect;
+export type EnvironmentRoleRow = typeof environmentRoles.$inferSelect;
 export type ServiceRow = typeof services.$inferSelect;
 export type RouteRow = typeof routes.$inferSelect;
 export type ConsumerRow = typeof consumers.$inferSelect;

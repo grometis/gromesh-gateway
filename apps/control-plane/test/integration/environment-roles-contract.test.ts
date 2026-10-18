@@ -5,7 +5,7 @@ import addFormats from "ajv-formats";
 import { test } from "vitest";
 import { parse } from "yaml";
 
-// P5-C0: environment roles in the contract, before any handler exists.
+// Environment roles in the contract (P5-C0, implemented in P5-C1).
 type Doc = any;
 const contract: Doc = parse(readFileSync(new URL("../../../../contracts/control-plane.openapi.yaml", import.meta.url), "utf8"));
 const ajv = new Ajv2020.default({ allErrors: true, strict: false });
@@ -14,10 +14,10 @@ ajv.addSchema({ ...contract, $id: "control-plane" });
 const valid = (name: string, value: unknown) => ajv.getSchema(`control-plane#/components/schemas/${name}`)!(value);
 const env = "0b3c6b5e-8d1f-4a51-9c64-2f0f6d1f8a11";
 
-test("the new operations are planned, global-admin only, and the write needs CSRF", () => {
+test("the operations are implemented, global-admin only, and the write needs CSRF", () => {
   const path = contract.paths["/users/{userId}/environment-roles"];
   for (const op of [path.get, path.put]) {
-    assert.equal(op["x-gromesh-planned"], true);
+    assert.equal(op["x-gromesh-planned"], undefined);
     assert.equal(op["x-required-role"], "admin");
   }
   assert.deepEqual(path.get.security, [{ cookieAuth: [] }]);

@@ -227,7 +227,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description The environments where the caller's effective role is at least viewer (planned; today every environment). A global admin sees all. */
+        /** @description The environments where the caller's effective role is at least viewer. A global admin sees all. */
         get: operations["listEnvironments"];
         put?: never;
         post: operations["createEnvironment"];
@@ -1147,7 +1147,7 @@ export interface components {
             items: components["schemas"]["EnvironmentRoleAssignment"][];
         };
         Me: components["schemas"]["User"] & {
-            /** @description Planned. The caller's environment roles (the same set as GET /users/{userId}/environment-roles); absent until implemented. */
+            /** @description The caller's environment roles (the same set as GET /users/{userId}/environment-roles). */
             environmentRoles?: components["schemas"]["EnvironmentRoleAssignment"][];
         };
         User: {

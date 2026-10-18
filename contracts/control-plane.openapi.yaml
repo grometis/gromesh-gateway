@@ -11,7 +11,7 @@ info:
       - Lists are cursor-paginated: `?limit=50&cursor=<opaque>` → `{ items, nextCursor }`.
       - Errors are RFC 9457 problem details (`application/problem+json`).
       - `x-required-role` is the minimum role: viewer < editor < admin. Enforced by the API, not only by the UI.
-      - Roles per environment (planned): a user has a global role and may have, per environment, a role that
+      - Roles per environment: a user has a global role and may have, per environment, a role that
         replaces it in that environment (`viewer`, `editor`, `admin`, or `none` = no access). The role checked
         against `x-required-role` is the effective role:
           * operations with `{envId}` in the path, and those on a resource that belongs to one environment
@@ -218,7 +218,6 @@ paths:
       operationId: getUserEnvironmentRoles
       security: [{ cookieAuth: [] }]
       x-required-role: admin
-      x-gromesh-planned: true
       description: The roles that replace the user's global role in specific environments. Global role only (an environment admin cannot read this).
       responses:
         "200":
@@ -234,7 +233,6 @@ paths:
       operationId: replaceUserEnvironmentRoles
       security: [{ cookieAuth: [], csrfToken: [] }]
       x-required-role: admin
-      x-gromesh-planned: true
       description: |
         Replaces the whole set; an environment left out goes back to the global role, `{ "items": [] }` clears every
         override. One entry per environment. Audited with the set before and after. 422 with `path`: an unknown
@@ -361,7 +359,7 @@ paths:
       tags: [environments]
       operationId: listEnvironments
       x-required-role: viewer
-      description: The environments where the caller's effective role is at least viewer (planned; today every environment). A global admin sees all.
+      description: The environments where the caller's effective role is at least viewer. A global admin sees all.
       responses:
         "200":
           description: Environments
@@ -2006,8 +2004,7 @@ components:
           properties:
             environmentRoles:
               type: array
-              x-gromesh-planned: true
-              description: Planned. The caller's environment roles (the same set as GET /users/{userId}/environment-roles); absent until implemented.
+              description: The caller's environment roles (the same set as GET /users/{userId}/environment-roles).
               items: { $ref: "#/components/schemas/EnvironmentRoleAssignment" }
     User:
       allOf:
