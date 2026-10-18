@@ -242,7 +242,7 @@ export function TopRoutes({ envId, range, tick, visible }: { envId: string; rang
           <table aria-label="Top rotas" className="numeric">
             <thead>
               <tr>
-                <th scope="col">Route</th>
+                <th scope="col">Rota</th>
                 <th scope="col">Requisições</th>
                 <th scope="col">Erros</th>
                 <th scope="col">Taxa de erro</th>

@@ -7,13 +7,14 @@ import { Field, FormErrorList } from "../components/Field";
 import { ConfirmDialog, Modal } from "../components/Modal";
 import { RowMenu } from "../components/RowMenu";
 import { useEnvId, useEnvironment } from "../components/Shell";
+import { fullDateTime, relativeTime } from "../time";
 
 type Cluster = Schemas["Cluster"];
 type Node = Cluster["nodes"][number];
 
 const STATUS_LABEL: Record<Cluster["status"], string> = {
   "no-nodes": "Sem nós",
-  converged: "Convergente",
+  converged: "Convergido",
   converging: "Convergindo",
   degraded: "Degradado",
 };
@@ -208,7 +209,11 @@ function NodeTable({ nodes, current, label }: { nodes: Node[]; current: number |
                 </td>
                 <td data-label="Último contato">
                   <div>
-                    <time dateTime={node.lastSeenAt}>{new Date(node.lastSeenAt).toLocaleString("pt-BR")}</time>
+                    {/* Relative for a quick read; the full date as a tooltip and for screen readers. */}
+                    <time dateTime={node.lastSeenAt} title={fullDateTime(node.lastSeenAt)}>
+                      {relativeTime(node.lastSeenAt)}
+                      <span className="visually-hidden"> ({fullDateTime(node.lastSeenAt)})</span>
+                    </time>
                     <br />
                     <span className="muted">{node.online ? "Online" : "Offline"}</span>
                   </div>
