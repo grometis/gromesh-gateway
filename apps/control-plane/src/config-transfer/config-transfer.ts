@@ -40,17 +40,24 @@ export class ConfigTransferService {
           const converted = request.sourceFormat === "kong-declarative-3.0" ? convertKongConfig(request.document, request.mode === "merge" ? current : undefined) : null;
           const document = converted?.document ?? request.document as ConfigDocument;
           const errors: { path: string; message: string }[] = [];
+          const conversionErrorPaths = new Set(converted?.errors.map(e => e.path));
           if (converted) {
             const checked = structuredClone(document);
             // Legacy Kong keys may be shorter than the new-credential Gromesh API constraint.
             checked.consumers.forEach(c => c.keyAuthCredentials.forEach(k => { if (typeof k.key === "string" && k.key.length > 0 && k.key !== "REDACTED") k.key = k.key.padEnd(16, "_"); }));
+            // The converter already diagnosed these secret slots; avoid secondary write-schema errors.
+            checked.consumers.forEach((c, i) => c.basicAuthCredentials.forEach((k, j) => {
+              const path = converted.sourcePath(`document.consumers.${i}.basicAuthCredentials.${j}.password`);
+              if (conversionErrorPaths.has(path)) k.password = "REDACTED";
+            }));
             const validate = contracts.validator("GromeshConfigV1");
             if (!validate(checked)) errors.push(...schemaErrors(validate.errors));
           }
           // A malformed converted shape cannot be planned safely, but all converter/schema diagnostics survive.
           const checkedSchema = errors.length > 0;
+          const invalidPrehashedPassword = converted && [...converted.identity.prehashedPasswords].some(path => conversionErrorPaths.has(converted.sourcePath(path)));
           let plan: Awaited<ReturnType<typeof planImport>> | undefined;
-          if (!checkedSchema) {
+          if (!checkedSchema && !invalidPrehashedPassword) {
             plan = await planImport(document, current, request.mode, this.catalog, this.plugins, converted ? {
               identity: converted.identity,
               consumerIdExists: async id => (await tx.select({ id: consumers.id }).from(consumers).where(eq(consumers.id, id)).limit(1)).length > 0,

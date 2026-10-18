@@ -386,7 +386,7 @@ export interface paths {
          *     or bypassing the consumer-id rule: under `_transform: false`, an omitted or REDACTED password still requires
          *     its consumer's id to be preserved. All-or-nothing and dry-run error/report semantics below still apply.
          *
-         *     Planned: error paths, with one error per affected credential at its password path and no other paths:
+         *     error paths, with one error per affected credential at its password path and no other paths:
          *       * hash not 40 lowercase hex: the password path.
          *       * consumer without `id`: the password path.
          *       * `id` not a lowercase canonical UUID: the password path and `document.consumers.N.id`.

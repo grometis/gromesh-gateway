@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
-import { afterAll, beforeAll, expect, test } from "vitest";
+import { afterAll, beforeAll, expect, test, vi } from "vitest";
 import type { EntityChange, KongDeclarativeConfig } from "@gromesh/compiler";
 import { basicAuthHashContext, ENCRYPTOR, Encryptor } from "../../src/crypto/crypto.js";
+import { DB, type Db } from "../../src/db/db.js";
 import { startHarness, uniq, type Harness } from "./harness.js";
 
 let h: Harness;
@@ -21,6 +22,30 @@ async function environment() {
   return result.body.id;
 }
 const imported = (envId: string, document: unknown, mode = "merge", dryRun = false) => h.api<Report>("POST", `/environments/${envId}/import`, { sourceFormat: "kong-declarative-3.0", document, mode, dryRun });
+const saltReason = "Kong's hash is salted with the consumer id; a source consumer UUID must be preserved exactly";
+const unavailableSalt = "Kong's hash is salted with the consumer id; the source consumer UUID cannot be preserved";
+const passwordPath = "document.consumers.0.basicauth_credentials.0.password";
+async function expectErrors(envId: string, document: unknown, errors: Report["errors"], mode = "merge") {
+  const before = await state(envId);
+  const secrets = [password];
+  function collect(value: unknown) {
+    if (!value || typeof value !== "object") return;
+    for (const [key, child] of Object.entries(value)) {
+      if (key === "password" && typeof child === "string" && child !== "REDACTED") secrets.push(child);
+      else collect(child);
+    }
+  }
+  collect(document);
+  const ordered = (values: Report["errors"]) => [...values].sort((a, b) => a.path.localeCompare(b.path));
+  for (const dryRun of [false, true]) {
+    const result = await imported(envId, document, mode, dryRun);
+    expect(result.status).toBe(dryRun ? 200 : 422);
+    expect(ordered(result.body.errors)).toEqual(ordered(errors));
+    for (const name of ["added", "modified", "removed"] as const) expect(result.body[name]).toEqual([]);
+    for (const secret of secrets) expect(JSON.stringify(result.body)).not.toContain(secret);
+    expect(await state(envId)).toEqual(before);
+  }
+}
 async function state(envId: string) {
   const counts: Record<string, number> = {};
   for (const table of ["consumers", "basicauth_credentials", "services", "routes", "plugins", "snapshots", "audit_events"]) {
@@ -110,22 +135,78 @@ test("matches the target UUID before natural identifiers in merge and replace, a
 
 test("rejects missing or invalid source UUIDs and malformed hashes at original password paths without writing or echoing secrets", async () => {
   const envId = await environment();
-  const before = await state(envId);
-  for (const document of [source(undefined), source("invalid"), source(randomUUID(), "A".repeat(40)), source(randomUUID(), "too-short"), source(randomUUID(), "REDACTED"), source("AAAAAAAA-0000-4000-8000-000000000016")]) {
-    const result = await imported(envId, document);
-    expect(result.status).toBe(422);
-    expect(result.body.errors).toContainEqual(expect.objectContaining({ path: "document.consumers.0.basicauth_credentials.0.password" }));
-    for (const error of result.body.errors.filter(e => e.path.endsWith(".password") && document.consumers[0]?.id !== undefined && document.consumers[0].basicauth_credentials[0]!.password !== "REDACTED")) expect(error.message).toContain("salted");
-    expect(await state(envId)).toEqual(before);
-    const submitted = document.consumers[0]!.basicauth_credentials[0]!.password;
-    if (submitted !== "REDACTED") expect(JSON.stringify(result.body)).not.toContain(submitted);
-    const dry = await imported(envId, document, "merge", true);
-    expect(dry.status).toBe(200);
-    expect(dry.body).toEqual({ added: [], modified: [], removed: [], errors: result.body.errors });
-    expect(await state(envId)).toEqual(before);
+  await expectErrors(envId, source(undefined), [{ path: passwordPath, message: saltReason }]);
+  for (const id of ["invalid", "AAAAAAAA-0000-4000-8000-000000000016", randomUUID().replaceAll("-", ""), randomUUID() + "\n"]) {
+    await expectErrors(envId, source(id), [
+      { path: passwordPath, message: saltReason },
+      { path: "document.consumers.0.id", message: "must be a lowercase canonical UUID" },
+    ]);
   }
-  const invalid = await imported(envId, source("invalid"));
-  expect(invalid.body.errors).toContainEqual(expect.objectContaining({ path: "document.consumers.0.id" }));
+  for (const suppliedHash of ["A".repeat(40), "g".repeat(40), "a".repeat(39), "a".repeat(40) + "\n", "Q7", "too-short"]) {
+    await expectErrors(envId, source(randomUUID(), suppliedHash), [{ path: passwordPath, message: `must be a 40-character lowercase hex hash; ${saltReason}` }]);
+  }
+  for (const suppliedHash of [23, null, [], { toString: null }]) {
+    const document = source(randomUUID());
+    await expectErrors(envId, { ...document, consumers: [{ ...document.consumers[0], basicauth_credentials: [{ username: "login", password: suppliedHash }] }] }, [{ path: passwordPath, message: `must be a 40-character lowercase hex hash; ${saltReason}` }]);
+  }
+  await expectErrors(envId, source(undefined, "invalid-hash"), [{ path: passwordPath, message: saltReason }]);
+  await expectErrors(envId, source(randomUUID(), "REDACTED"), [{ path: passwordPath, message: "a real secret is required for a new secret slot" }]);
+});
+
+test.each(["nested", "flat"])("repeated source ids report every affected %s password and only the repeated consumer id", async layout => {
+  const envId = await environment();
+  const id = randomUUID();
+  const credentials = ["first-login", "second-login", "third-login"].map(username => ({ username, password: hash(id) }));
+  const document = {
+    _format_version: "3.0", _transform: false,
+    consumers: [
+      { id, username: "first", ...(layout === "nested" ? { basicauth_credentials: credentials.slice(0, 2) } : {}) },
+      { id, username: "second", ...(layout === "nested" ? { basicauth_credentials: credentials.slice(2) } : {}) },
+    ],
+    ...(layout === "flat" ? { basicauth_credentials: credentials.map((credential, i) => ({ ...credential, consumer: i < 2 ? { id } : { username: "second" } })) } : {}),
+  };
+  const paths = layout === "nested" ? [passwordPath, "document.consumers.0.basicauth_credentials.1.password", "document.consumers.1.basicauth_credentials.0.password"] : credentials.map((_credential, i) => `document.basicauth_credentials.${i}.password`);
+  for (const mode of ["merge", "replace"]) await expectErrors(envId, document, [
+    ...paths.map(path => ({ path, message: saltReason })),
+    { path: "document.consumers.1.id", message: "consumer id is repeated in the source document" },
+  ], mode);
+});
+
+test("a repeated source id is rejected even when the repeated consumer carries no credentials", async () => {
+  const envId = await environment();
+  const id = randomUUID();
+  const document = source(id);
+  document.consumers.push({ id, username: "second", basicauth_credentials: [] });
+  await expectErrors(envId, document, [
+    { path: passwordPath, message: saltReason },
+    { path: "document.consumers.1.id", message: "consumer id is repeated in the source document" },
+  ]);
+});
+
+test("unresolved flat consumer references produce one reference diagnostic and one password diagnostic", async () => {
+  const envId = await environment();
+  const consumer = await h.api<{ id: string }>("POST", `/environments/${envId}/consumers`, { username: "target-only" });
+  for (const id of [randomUUID(), consumer.body.id]) {
+    await expectErrors(envId, { _format_version: "3.0", _transform: false, basicauth_credentials: [{ consumer: { id }, username: "flat-login", password: hash(id) }] }, [
+      { path: "document.basicauth_credentials.0.consumer", message: "unknown source reference" },
+      { path: "document.basicauth_credentials.0.password", message: saltReason },
+    ]);
+  }
+});
+
+test("REDACTED and omitted passwords still require a preserved source id on matched credentials", async () => {
+  const envId = await environment();
+  const id = `a${randomUUID().slice(1)}`;
+  expect((await imported(envId, source(id))).status).toBe(200);
+  for (const marker of ["REDACTED", undefined]) {
+    for (const sourceId of [undefined, id.toUpperCase()]) {
+      const document = { ...source(sourceId), consumers: [{ ...source(sourceId).consumers[0], basicauth_credentials: [{ username: "login", password: marker }] }] };
+      await expectErrors(envId, document, [
+        { path: passwordPath, message: saltReason },
+        ...(sourceId ? [{ path: "document.consumers.0.id", message: "must be a lowercase canonical UUID" }] : []),
+      ]);
+    }
+  }
 });
 
 test("rejects globally used UUIDs without disclosure, preserving row counts and draft state in both environments", async () => {
@@ -143,27 +224,30 @@ test("rejects globally used UUIDs without disclosure, preserving row counts and 
     expect(JSON.stringify(result.body)).not.toContain(hash(consumer.body.id));
     expect(await state(envId)).toEqual(before);
     expect(await state(owner)).toEqual(ownerBefore);
-    const dry = await imported(envId, document, mode, true);
-    expect(dry.status).toBe(200);
-    expect(dry.body.errors).toEqual(result.body.errors);
+    await expectErrors(envId, document, [
+      { path: passwordPath, message: unavailableSalt },
+      { path: "document.consumers.0.id", message: "consumer id cannot be preserved because it is already in use" },
+    ], mode);
   }
 });
 
 test("never falls back to a natural match with another id, even when replace would delete it", async () => {
   const envId = await environment();
   const existing = await h.api<{ id: string }>("POST", `/environments/${envId}/consumers`, { username: "imported", customId: "taken" });
+  expect((await h.api("POST", `/environments/${envId}/consumers/${existing.body.id}/basic-auth`, { username: "login", password })).status).toBe(201);
   const other = await h.api<{ id: string }>("POST", `/environments/${envId}/consumers`, { username: "other" });
   const before = await state(envId);
   for (const mode of ["merge", "replace"]) for (const id of [randomUUID(), other.body.id]) {
     const document = source(id);
-    const result = await imported(envId, document, mode);
-    expect(result.status).toBe(422);
-    expect(result.body.errors).toContainEqual(expect.objectContaining({ path: "document.consumers.0.username" }));
-    expect(result.body.errors).toContainEqual(expect.objectContaining({ path: "document.consumers.0.basicauth_credentials.0.password", message: expect.stringContaining("salted") }));
+    await expectErrors(envId, document, [
+      { path: passwordPath, message: unavailableSalt },
+      { path: "document.consumers.0.username", message: "consumer identifier conflicts with the consumer id to preserve" },
+    ], mode);
     const customIdConflict = { ...document, consumers: [{ ...document.consumers[0], username: "new-name", custom_id: "taken" }] };
-    const custom = await imported(envId, customIdConflict, mode);
-    expect(custom.status).toBe(422);
-    expect(custom.body.errors).toContainEqual(expect.objectContaining({ path: "document.consumers.0.custom_id" }));
+    await expectErrors(envId, customIdConflict, [
+      { path: passwordPath, message: unavailableSalt },
+      { path: "document.consumers.0.custom_id", message: "consumer identifier conflicts with the consumer id to preserve" },
+    ], mode);
     expect(await state(envId)).toEqual(before);
   }
   expect(existing.body.id).not.toBe(other.body.id);
@@ -187,12 +271,22 @@ test("keeps absent/true transform passwords as plaintext and generates consumer 
 test("concurrent imports cannot claim the same globally free UUID in different environments", async () => {
   const ids = await Promise.all([environment(), environment()]);
   const id = randomUUID();
-  const results = await Promise.all(ids.map(envId => imported(envId, source(id))));
-  expect(results.map(r => r.status).sort()).toEqual([200, 422]);
-  const rejected = results.find(r => r.status === 422)!;
-  expect(rejected.body.errors).toContainEqual(expect.objectContaining({ path: "document.consumers.0.id" }));
-  const loser = ids[results.findIndex(r => r.status === 422)]!;
-  expect((await state(loser)).counts).toEqual({ consumers: 0, basicauth_credentials: 0, services: 0, routes: 0, plugins: 0, snapshots: 0, audit_events: 1 });
+  // Force the insert race before allowing real transactions: a missing consumers_pkey retry returns a
+  // generic document error, so the exact error-array assertion below must fail without that branch.
+  const transaction = vi.spyOn(h.app.get<Db>(DB), "transaction").mockRejectedValueOnce({ cause: { code: "23505", constraint: "consumers_pkey" } });
+  try {
+    const results = await Promise.all(ids.map(envId => imported(envId, source(id))));
+    expect(results.map(r => r.status).sort()).toEqual([200, 422]);
+    expect(transaction.mock.calls.length).toBeGreaterThanOrEqual(3);
+    const rejected = results.find(r => r.status === 422)!;
+    expect([...rejected.body.errors].sort((a, b) => a.path.localeCompare(b.path))).toEqual([
+      { path: passwordPath, message: unavailableSalt },
+      { path: "document.consumers.0.id", message: "consumer id cannot be preserved because it is already in use" },
+    ]);
+    expect(JSON.stringify(rejected.body)).not.toContain(hash(id));
+    const loser = ids[results.findIndex(r => r.status === 422)]!;
+    expect((await state(loser)).counts).toEqual({ consumers: 0, basicauth_credentials: 0, services: 0, routes: 0, plugins: 0, snapshots: 0, audit_events: 1 });
+  } finally { transaction.mockRestore(); }
 });
 
 test("rechecks a UUID after a successful dry-run if another environment claimed it meanwhile", async () => {

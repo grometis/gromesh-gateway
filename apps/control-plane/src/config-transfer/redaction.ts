@@ -5,7 +5,7 @@ import type { PluginCatalog } from "../plugin-catalog/catalog.js";
 /** Validators can interpolate invalid values: redact both submitted and retained secret material in diagnostics. */
 export function redactImportErrors(errors: FieldError[], document: ConfigDocument, current: GatewayState, catalog: PluginCatalog): FieldError[] {
   const values = new Set<string>();
-  const collect = (value: string | null | undefined) => { if (value && value !== "REDACTED") values.add(value); };
+  const collect = (value: unknown) => { if (typeof value === "string" && value && value !== "REDACTED") values.add(value); };
   for (const c of document.consumers) {
     c.keyAuthCredentials.forEach(k => collect(k.key));
     c.jwtCredentials.forEach(j => collect(j.secret));

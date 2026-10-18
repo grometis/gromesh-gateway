@@ -17,7 +17,10 @@ export function convertKongConfig(input: unknown, existing?: GatewayState): { do
   const errors: CompileIssue[] = [];
   const identity: ImportIdentity = { consumerIds: new Map(), prehashedPasswords: new Set() };
   const paths = new Map<string, string>();
-  const error = (path: string, message = "is not supported by the Gromesh model") => errors.push({ path, message });
+  const errorPaths = new Set<string>();
+  const error = (path: string, message = "is not supported by the Gromesh model") => {
+    if (!errorPaths.has(path)) { errorPaths.add(path); errors.push({ path, message }); }
+  };
   const obj = (v: unknown, p: string): Obj => { if (record(v)) return v; error(p, "must be an object"); return {}; };
   const array = (v: unknown, p: string): Obj[] => {
     if (v === undefined) return [];
@@ -71,7 +74,7 @@ export function convertKongConfig(input: unknown, existing?: GatewayState): { do
     if (kind === "upstreams" && raw.healthchecks !== undefined) out.healthchecks = healthchecks(raw.healthchecks, `${p}.healthchecks`, `${dest}.healthchecks`);
     return out;
   }
-  function ref(kind: string, value: unknown, p: string): Obj | undefined {
+  function ref(kind: string, value: unknown, p: string, prehashed = false): Obj | undefined {
     let field: string | undefined;
     if (record(value)) {
       only(value, ["id", "name", "username", "custom_id"], p);
@@ -81,6 +84,8 @@ export function convertKongConfig(input: unknown, existing?: GatewayState): { do
     }
     const matches = typeof value === "string" ? (identities[kind] ?? []).filter(e => field ? e.raw[field] === value : [e.raw.id, e.raw.name, e.raw.username, e.raw.custom_id].includes(value)) : [];
     const targets = [...new Set(matches.map(m => m.out))];
+    // Repeated consumer ids are diagnosed below at the repeated id and each affected password.
+    if (prehashed && targets.length > 1 && typeof matches[0]?.raw.id === "string" && matches.every(m => m.raw.id === matches[0]!.raw.id)) return targets[0];
     if (targets.length !== 1) { error(p, targets.length > 1 ? "ambiguous source reference" : "unknown source reference"); return; }
     return targets[0];
   }
@@ -93,7 +98,7 @@ export function convertKongConfig(input: unknown, existing?: GatewayState): { do
   ] : [];
   const prehashedParents = new Map<Obj, Obj | undefined>();
   for (const entry of prehashedEntries) {
-    const explicit = entry.raw.consumer == null ? undefined : ref("consumers", entry.raw.consumer, `${entry.path}.consumer`);
+    const explicit = entry.raw.consumer == null ? undefined : ref("consumers", entry.raw.consumer, `${entry.path}.consumer`, true);
     prehashedParents.set(entry.raw, explicit ?? entry.parent);
   }
   const prehashedConsumers = new Set(prehashedParents.values());
@@ -144,7 +149,7 @@ export function convertKongConfig(input: unknown, existing?: GatewayState): { do
       if (implicit && explicit && implicit !== explicit) error(`${path}.${relation}`, "disagrees with nesting");
       const parent = explicit ?? implicit;
       if (!parent) {
-        error(`${path}.${relation}`, "is required");
+        if (raw[relation] == null) error(`${path}.${relation}`, "is required");
         if (prehashed) error(`${path}.password`, "Kong's hash is salted with the consumer id; a source consumer UUID must be preserved exactly");
         continue;
       }
@@ -164,12 +169,9 @@ export function convertKongConfig(input: unknown, existing?: GatewayState): { do
         const source = sources.consumers?.find(c => c.out === parent);
         const id = source?.raw.id;
         const reason = "Kong's hash is salted with the consumer id; a source consumer UUID must be preserved exactly";
-        if (typeof id !== "string" || id.length !== 36 || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+        if (typeof id !== "string" || id.length !== 36 || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id)) {
           error(`${path}.password`, reason);
-          if (source && id !== undefined) error(`${source.path}.id`, "must be a UUID");
-        } else if (id !== id.toLowerCase()) {
-          // Postgres canonicalizes UUID text; changing its case changes Kong's salt.
-          error(`${path}.password`, reason);
+          if (source && id !== undefined) error(`${source.path}.id`, "must be a lowercase canonical UUID");
         } else {
           identity.consumerIds.set(pi, id);
         }
@@ -179,6 +181,23 @@ export function convertKongConfig(input: unknown, existing?: GatewayState): { do
       }
       list.push(kind === "acls" ? out.group : kind === "snis" ? out.name : out);
     }
+  }
+  const consumerGroups = new Map<string, { out: Obj; path: string }[]>();
+  for (const source of sources.consumers ?? []) {
+    const id = source.raw.id;
+    if (typeof id !== "string") continue;
+    const group = consumerGroups.get(id) ?? [];
+    group.push(source);
+    consumerGroups.set(id, group);
+  }
+  const repeatedConsumers = new Set<Obj>();
+  for (const group of consumerGroups.values()) if (group.length > 1 && group.some(c => prehashedConsumers.has(c.out))) {
+    group.slice(1).forEach(c => error(`${c.path}.id`, "consumer id is repeated in the source document"));
+    group.forEach(c => repeatedConsumers.add(c.out));
+  }
+  for (const entry of prehashedEntries) {
+    const parent = prehashedParents.get(entry.raw);
+    if (parent && repeatedConsumers.has(parent)) error(`${entry.path}.password`, "Kong's hash is salted with the consumer id; a source consumer UUID must be preserved exactly");
   }
   function healthchecks(value: unknown, p: string, dest: string): Obj {
     const h = obj(value, p), out: Obj = {};

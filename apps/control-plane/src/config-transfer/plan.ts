@@ -65,6 +65,7 @@ export async function planImport(document: ConfigDocument, current: GatewayState
     upsert(result.routes, value, path);
   }
   retain(result.routes, current.routes);
+  let preservationConflict = false;
   for (const [i, c] of document.consumers.entries()) {
     const path = `document.consumers.${i}`;
     const requestedId = preservation?.identity.consumerIds.get(i);
@@ -75,16 +76,20 @@ export async function planImport(document: ConfigDocument, current: GatewayState
         add(`${path}.id`, "consumer id cannot be preserved because it is already in use");
         conflict = true;
       }
-      for (const field of ["username", "customId"] as const) {
+      if (!conflict) for (const field of ["username", "customId"] as const) {
         if (c[field] && current.consumers.some(v => v.id !== requestedId && v[field] === c[field])) {
           add(`${path}.${field}`, "consumer identifier conflicts with the consumer id to preserve");
           conflict = true;
         }
       }
-      if (conflict) c.basicAuthCredentials.forEach((_k, j) => {
-        const passwordPath = `${path}.basicAuthCredentials.${j}.password`;
-        if (preservation.identity.prehashedPasswords.has(passwordPath)) add(passwordPath, "Kong's hash is salted with the consumer id; the source consumer UUID cannot be preserved");
-      });
+      if (conflict) {
+        preservationConflict = true;
+        c.basicAuthCredentials.forEach((_k, j) => {
+          const passwordPath = `${path}.basicAuthCredentials.${j}.password`;
+          if (preservation.identity.prehashedPasswords.has(passwordPath)) add(passwordPath, "Kong's hash is salted with the consumer id; the source consumer UUID cannot be preserved");
+        });
+        continue;
+      }
     }
     const value: Consumer = { id: requestedId ?? old?.id ?? randomUUID(), ...consumerValues(c), aclGroups: mode === "merge" ? [...new Set([...(old?.aclGroups ?? []), ...c.aclGroups])] : c.aclGroups };
     upsert(result.consumers, value, path);
@@ -111,6 +116,7 @@ export async function planImport(document: ConfigDocument, current: GatewayState
       const p = `${path}.basicAuthCredentials.${j}`;
       const old = credentialMatch(current.basicAuthCredentials ?? [], k.id, v => v.username === k.username, p);
       const passwordHash = k.password === undefined || k.password === "REDACTED" ? secret(undefined, old?.passwordHash, `${p}.password`) : preservation?.identity.prehashedPasswords.has(`${p}.password`) ? k.password : basicAuthPasswordHash(value.id, k.password);
+      if (!passwordHash) continue;
       upsert(result.basicAuthCredentials!, { id: old?.id ?? randomUUID(), consumerId: value.id, username: k.username, passwordHash, tags: k.tags ?? [] }, p);
     }
   }
@@ -118,6 +124,7 @@ export async function planImport(document: ConfigDocument, current: GatewayState
   retain(result.keyAuthCredentials, current.keyAuthCredentials);
   retain(result.jwtCredentials!, current.jwtCredentials ?? []);
   retain(result.basicAuthCredentials!, current.basicAuthCredentials ?? []);
+  if (preservationConflict) return { state: result, errors };
   for (const [i, u] of document.upstreams.entries()) {
     const path = `document.upstreams.${i}`;
     const { targets, ...body } = u;
