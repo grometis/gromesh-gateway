@@ -28,6 +28,10 @@
     "ignoredBuiltDependencies": [
       "@nestjs/core",
       "core-js"
-    ]
+    ],
+    "overrides": {
+      "@nestjs/platform-express>multer": "2.4.0",
+      "express>path-to-regexp": "0.1.13"
+    }
   }
 }
