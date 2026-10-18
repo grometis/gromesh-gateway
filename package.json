@@ -16,9 +16,9 @@
     "smoke": "docker compose -f deploy/compose/docker-compose.yml run --rm smoke"
   },
   "devDependencies": {
-    "@redocly/cli": "1.34.21",
-    "turbo": "2.3.3",
-    "typescript": "5.7.2"
+    "@redocly/cli": "2.64.0",
+    "turbo": "2.11.8",
+    "typescript": "7.0.2"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
