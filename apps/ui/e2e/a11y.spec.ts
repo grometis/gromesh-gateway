@@ -5,7 +5,7 @@ import { expect, mockSession, test } from "./fixtures";
 // P4-C1: every existing screen, against the contract mock, has no serious or critical axe violation (WCAG 2.1 A/AA,
 // colour contrast included). Screens are reached by URL, as an admin so the admin-only ones are covered too.
 const admin = { id: "7c1d2e3f-4a5b-4c6d-8e7f-000000000001", name: "Ana Souza", email: "ana@gromesh.dev", role: "admin" as const, active: true, createdAt: "2026-10-15T12:00:00Z", updatedAt: "2026-10-15T12:00:00Z" };
-const ENV_SCREENS = ["overview", "publish", "services", "routes", "consumers", "plugins", "upstreams", "certificates", "publications", "clusters", "analytics", "requests"];
+const ENV_SCREENS = ["overview", "publish", "services", "routes", "consumers", "plugins", "upstreams", "certificates", "publications", "clusters", "metrics", "requests"];
 const GLOBAL_SCREENS = ["tokens", "users", "audit"];
 
 async function audit(page: Page, name: string) {

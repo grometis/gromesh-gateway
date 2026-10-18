@@ -59,7 +59,7 @@ const OPERATION = [
   ["overview", "Visão geral"],
   ["publications", "Publicações"],
   ["clusters", "Clusters"],
-  ["analytics", "Dashboard"],
+  ["metrics", "Métricas"],
   ["requests", "Requisições"],
 ] as const;
 
