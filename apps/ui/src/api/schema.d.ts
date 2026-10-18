@@ -1178,6 +1178,15 @@ export interface components {
             publishMode: "manual" | "auto";
             currentVersion: number | null;
             hasUnpublishedChanges: boolean;
+            /**
+             * @description Why automatic publication is paused for this environment, or null when it is not. "import": the draft
+             *     came from an import (POST /environments/{envId}/import), which never publishes by itself, so
+             *     publishMode auto does not publish this draft, nor later edits to it. Automatic publication resumes
+             *     after the next explicit publish (POST /environments/{envId}/snapshots). Always null with publishMode
+             *     manual. Read-only: it cannot be set through EnvironmentWrite. Planned: absent until implemented.
+             * @enum {string|null}
+             */
+            readonly autoPublishPausedReason?: "import" | null;
         } & components["schemas"]["Timestamps"];
         EnvironmentWrite: {
             name: components["schemas"]["Name"];
