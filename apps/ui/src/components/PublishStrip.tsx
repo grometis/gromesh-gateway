@@ -68,12 +68,16 @@ export function PublishStrip({ envId }: { envId: string }) {
           <>
             <span className="mono">v{current}</span>
             <span className="sep" aria-hidden="true">·</span>
-            <span>
-              <span className="mono">
-                {synced}/{nodes.length}
-              </span>{" "}
-              {nodes.length === 1 ? "nó" : "nós"}
-            </span>
+            {nodes.length === 0 ? (
+              <span>nenhum nó online</span>
+            ) : (
+              <span>
+                <span className="mono">
+                  {synced}/{nodes.length}
+                </span>{" "}
+                {nodes.length === 1 ? "nó" : "nós"}
+              </span>
+            )}
             {state && (
               <>
                 <span className="sep" aria-hidden="true">·</span>

@@ -115,13 +115,13 @@ for (const { label, nodes, status, color, words } of [
   { label: "every node on the live version", nodes: [node(1, 3), node(2, 3)], status: "converged", color: "rgb(22, 163, 106)", words: null },
   { label: "a rollout under way", nodes: [node(1, 3), node(2, 2)], status: "converging", color: "rgb(183, 121, 31)", words: "convergindo" },
   { label: "a failed node", nodes: [node(1, 3), { ...node(2, 2), state: "failed", error: "invalid configuration" }], status: "degraded", color: "rgb(201, 58, 30)", words: "degradado" },
-  { label: "no node", nodes: [], status: "no-nodes", color: "rgb(134, 170, 165)", words: null },
+  { label: "no node", nodes: [], status: "no-nodes", color: "rgb(134, 170, 165)", words: "nenhum nó online" },
 ]) {
   test(`the strip's dot and words for ${label}`, async ({ page }) => {
     await openServices(page, [{ ...converging[0]!, status, nodes }]);
     const strip = page.getByRole("region", { name: "Publicação" });
     await expect(strip.locator(".dot")).toHaveCSS("background-color", color);
     if (words) await expect(strip.getByText(words, { exact: true })).toBeVisible();
-    else await expect(strip.getByText(/convergindo|degradado/)).toHaveCount(0);
+    if (words !== "convergindo" && words !== "degradado") await expect(strip.getByText(/convergindo|degradado/)).toHaveCount(0);
   });
 }
