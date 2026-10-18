@@ -54,6 +54,7 @@ git worktree add ../gg-codex  -b task/W1-X1-kong-image
 | P3-X1 | Codex | — | `apps/control-plane/src/auth/`, `apps/control-plane/test/`, `scripts/` (só o gerador, se precisar) |
 | P4-C1 | Claude | — | `apps/ui/` (+ `.github/workflows/` só para anexar screenshots ao job da UI) |
 | P4-X0 | Codex | — | `contracts/` (+ `apps/ui/src/api/schema.d.ts` gerado) |
+| P4-X1 | Codex | P4-X0 | `packages/compiler/` (conversão Kong → modelo), `apps/control-plane/`, `contracts/` (só remover `x-gromesh-planned`) |
 
 Ordem de merge na semana 3: W2-C2 → W3-X1 → W3-C1 → W3-X2. Quem mergeia depois faz rebase; `src/db/schema.ts` e `drizzle/` são alterados por uma frente por vez.
 
@@ -427,6 +428,11 @@ Aceite: Playwright atual verde (seletores por role/label); @axe-core/playwright 
 
 Aceite: lint válido, diff aprovado antes da implementação.
 
+### P4-X1 [Codex] Exportar/importar configuração
+Implementação do contrato do P4-X0 (PR #44). A conversão da config declarativa do Kong para o modelo do Gromesh fica no compilador.
+
+Aceite: (a) export → import em environment vazio → publicar → snapshot equivalente ao original (ids e campos de plugin de plataforma específicos do environment normalizados, já que o import gera ids novos); (b) import do `contracts/examples/snapshot.example.json` (`kong-declarative-3.0`) → rascunho equivalente, com entidades e campos desconhecidos em `errors[]`; (c) import com erro não grava nada (contagem de linhas igual antes e depois); (d) REDACTED mantém o segredo, conferido decifrando no teste; (e) export nunca contém segredo em claro (varredura pelos valores conhecidos).
+
 ---
 
 ## Backlog (pós-MVP, em ordem de prioridade)
@@ -446,5 +452,6 @@ Aceite: lint válido, diff aprovado antes da implementação.
 13. **Flake do `mvp-e2e` em kind:** causa encontrada e corrigida (PR #25). "traffic must reach the analytics API" em 5 execuções em 2026-10-16 (runs 38960971263, 38967623348, 38968335996, 38969548580, 38978312100): o spec usava `/mvp-<8 hex>`, e desde a máscara de dado pessoal (B5) uma sequência de 6+ dígitos vira `{num}` no ClickHouse (~10% das execuções; ex.: `/mvp-629762c6`). O spec passou a usar o UUID inteiro. Fica a lição: paths de teste com sufixo aleatório devem usar UUID completo. Os logs dos pods como artefato do job em falha seguem no P1-X2.
 14. **Máscara de path por segmento:** feito (P2-X1). Um segmento com 6+ dígitos seguidos que não é UUID vira `{id}` inteiro (`/mvp-629762c6` → `/{id}`, `/orders/507f1f77bcf86cd799439011` → `/orders/{id}`); CPF/CNPJ completos e segmentos com e-mail mantêm `{cpf}`, `{cnpj}`, `{email}`; UUIDs e ids curtos intactos.
 15. **Contador separado para falhas de bearer:** feito (P2-X2). Falhas de token usam a chave própria `bearer-ip:<ip>` (mesmo limiar e janela do login por endereço); um pipeline com token expirado não bloqueia mais o login por senha do mesmo IP, e vice-versa.
+16. **Import de basic-auth com hash do Kong:** aceitar `_transform: false` quando o id original do consumer for preservado (o hash depende dele). Hoje é recusado, e quem migra precisa redefinir as senhas.
 
 Regras de produção já codificadas nos charts e que continuam valendo: `TRUST_PROXY` é o IP/CIDR exato do ingress (nunca `uniquelocal`); o `LISTEN` do control plane usa conexão direta ao Postgres (nunca PgBouncer em modo transação); o ingress na frente do SSE do agente precisa de idle timeout acima de 15 s e buffering desligado; `COOKIE_SECURE` só é falso no compose de desenvolvimento.

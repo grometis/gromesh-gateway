@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { Body, Controller, Delete, Get, HttpCode, Inject, Injectable, Module, Param, Post, Put, Query } from "@nestjs/common";
-import type { Consumer, KeyAuthCredential } from "@gromesh/compiler";
+import { credentialKeyHint, type Consumer, type KeyAuthCredential } from "@gromesh/compiler";
 import { and, asc, eq, gt, ilike, or, sql, type SQL } from "drizzle-orm";
 import type { ConsumerWrite, KeyAuthCredentialWrite } from "../api-types.js";
 import { audit } from "../audit/audit.js";
@@ -30,7 +30,7 @@ export function toConsumer(r: ConsumerRow) {
 /** The only shape a credential leaves the service in, except the creation response. */
 /** `plainKey` is the opened key: the row holds the sealed one. */
 export function toKeyAuthCredential(r: KeyAuthCredentialRow, plainKey: string) {
-  return { id: r.id, consumerId: r.consumerId, keyHint: `…${plainKey.slice(-4)}`, tags: r.tags, createdAt: r.createdAt.toISOString() };
+  return { id: r.id, consumerId: r.consumerId, keyHint: credentialKeyHint(plainKey), tags: r.tags, createdAt: r.createdAt.toISOString() };
 }
 
 export function consumerValues(body: ConsumerWrite | Consumer) {

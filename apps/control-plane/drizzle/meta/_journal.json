@@ -64,6 +64,13 @@
       "when": 1792262040759,
       "tag": "0008_jwt_basic_auth_acl",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1792283485190,
+      "tag": "0009_import_explicit_publish",
+      "breakpoints": true
     }
   ]
 }

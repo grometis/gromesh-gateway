@@ -40,7 +40,7 @@ export function pluginValues(id: string, body: PluginWrite | Plugin, enc: Encryp
     routeId: body.scope?.routeId ?? null,
     consumerId: body.scope?.consumerId ?? null,
     config: catalog.mapSecrets(body.name, body.config ?? {}, (v, path) => enc.seal(v, pluginSecretContext(id, path))),
-    protocols: body.protocols && body.protocols.length > 0 ? body.protocols : null,
+    protocols: body.protocols && body.protocols.length > 0 ? body.protocols : catalog.defaultProtocols(body.name) ?? null,
     tags: body.tags ?? [],
   };
 }
@@ -158,7 +158,7 @@ export class PluginsService {
   }
 
   /** Catalog rules (ours), then the config itself is validated by Kong — outside any transaction. */
-  private async validate(id: string, body: PluginWrite): Promise<void> {
+  async validate(id: string, body: PluginWrite): Promise<void> {
     const entry = this.catalog.find(body.name);
     if (!entry) throw unprocessable("Invalid plugin", [{ path: "name", message: `unknown plugin "${body.name}"` }]);
     if (!entry.supportedInDbless) {
@@ -227,5 +227,5 @@ export class PluginsController {
   }
 }
 
-@Module({ imports: [PluginCatalogModule], controllers: [PluginsController], providers: [PluginsService, KongValidator] })
+@Module({ imports: [PluginCatalogModule], controllers: [PluginsController], providers: [PluginsService, KongValidator], exports: [PluginsService] })
 export class PluginsModule {}

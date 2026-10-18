@@ -72,7 +72,7 @@ export function maskConfigFor(_role: Role, config: KongDeclarativeConfig, redact
 }
 
 /** Diffs never carry plugin secrets (the compiler already redacts credential keys). */
-function redactChanges(changes: EntityChange[], redact: RedactPluginConfig): EntityChange[] {
+export function redactChanges(changes: EntityChange[], redact: RedactPluginConfig): EntityChange[] {
   const plugin = (e: unknown) => {
     if (!e || typeof e !== "object") return e;
     const { name, config } = e as { name?: unknown; config?: unknown };
@@ -158,6 +158,7 @@ export class SnapshotsService {
             eq(environments.id, envId),
             eq(environments.publishMode, "auto"),
             eq(environments.hasUnpublishedChanges, true),
+            eq(environments.draftRequiresPublish, false),
             isDue(delayMs),
           ),
         )
@@ -297,7 +298,7 @@ export class SnapshotsService {
       .returning();
     await tx
       .update(environments)
-      .set({ currentVersion: envelope.version, hasUnpublishedChanges: false, updatedAt: sql`now()` })
+      .set({ currentVersion: envelope.version, hasUnpublishedChanges: false, draftRequiresPublish: false, updatedAt: sql`now()` })
       .where(eq(environments.id, env.id));
     const changeCount = diffConfigs(current?.config ?? null, envelope.config).length;
     await audit(tx, ctx, {
@@ -375,7 +376,7 @@ export class AutoPublisher implements OnApplicationBootstrap, OnModuleDestroy {
     const due = await this.db
       .select({ id: environments.id, draftChangedAt: environments.draftChangedAt })
       .from(environments)
-      .where(and(eq(environments.publishMode, "auto"), eq(environments.hasUnpublishedChanges, true), isDue(delay)));
+      .where(and(eq(environments.publishMode, "auto"), eq(environments.hasUnpublishedChanges, true), eq(environments.draftRequiresPublish, false), isDue(delay)));
     for (const env of due) {
       const editedAt = env.draftChangedAt?.getTime() ?? 0;
       if (this.broken.get(env.id) === editedAt) continue;

@@ -21,6 +21,7 @@ import { UpstreamsModule } from "./upstreams/upstreams.js";
 import { CertificatesModule } from "./certificates/certificates.js";
 import { AnalyticsModule } from "./analytics/analytics.js";
 import { AtRestModule } from "./crypto/at-rest.module.js";
+import { ConfigTransferModule } from "./config-transfer/config-transfer.js";
 import { CryptoModule } from "./crypto/crypto.js";
 
 @Module({})
@@ -49,6 +50,7 @@ export class AppModule {
         UpstreamsModule,
         CertificatesModule,
         AnalyticsModule,
+        ConfigTransferModule,
       ],
       providers: [
         { provide: APP_CONFIG, useValue: config },

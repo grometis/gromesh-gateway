@@ -103,6 +103,8 @@ export const environments = pgTable(
     publishMode: text("publish_mode", { enum: ["manual", "auto"] }).notNull().default("manual"),
     currentVersion: integer("current_version"),
     hasUnpublishedChanges: boolean("has_unpublished_changes").notNull().default(false),
+    // Imports remain drafts until an explicit publish, even after subsequent edits or a replica restart.
+    draftRequiresPublish: boolean("draft_requires_publish").notNull().default(false),
     // Last draft edit; auto-publish fires once it is older than the debounce delay.
     draftChangedAt: timestamp("draft_changed_at", { withTimezone: true }),
     ...timestamps,

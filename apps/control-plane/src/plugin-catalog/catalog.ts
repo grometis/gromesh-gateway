@@ -45,6 +45,12 @@ export class PluginCatalog {
     return this.schemas.get(name);
   }
 
+  defaultProtocols(name: string): string[] | undefined {
+    if (!this.find(name)) return undefined;
+    const schema = this.schema(name) as { fields: Record<string, { default?: string[] }>[] };
+    return schema.fields.find(f => f.protocols)?.protocols?.default;
+  }
+
   /**
    * Copy of `config` with every field Kong marks `encrypted` (passwords, API keys, secrets) set to "REDACTED".
    * Used wherever a plugin config leaves the control plane (API responses, audit, publish-preview, snapshot diff):
@@ -70,6 +76,42 @@ export class PluginCatalog {
       else config = setPath(config, path, kept);
     }
     return { config, missing };
+  }
+
+  /** Import replaces non-secret attributes, but omission may preserve an existing encrypted slot. */
+  preserveImportSecrets(name: string, incoming: Record<string, unknown>, current: Record<string, unknown> | null) {
+    let config = structuredClone(incoming);
+    for (const path of this.secretPaths(name)) {
+      const value = current ? valueAt(current, path) : undefined;
+      if (valueAt(config, path) !== undefined || typeof value !== "string") continue;
+      let target = config;
+      for (const key of path.slice(0, -1)) {
+        if (!isRecord(target[key])) target[key] = {};
+        target = target[key] as Record<string, unknown>;
+      }
+      target[path.at(-1)!] = value;
+    }
+    return this.mergeSecrets(name, config, current);
+  }
+
+  /** The pinned schema is also the allow-list: Kong may accept fields our pinned model does not know. */
+  importConfigErrors(name: string, config: Record<string, unknown>): { path: string; message: string }[] {
+    if (!this.find(name)) return [];
+    type Def = { fields?: Record<string, Def>[]; elements?: Def; type?: string };
+    const schema = this.schema(name) as Def;
+    const definition = schema.fields?.find(f => f.config)?.config;
+    const errors: { path: string; message: string }[] = [];
+    const walk = (value: unknown, def: Def | undefined, path: string) => {
+      if (isRecord(value) && def?.fields) {
+        const fields = Object.assign({}, ...def.fields) as Record<string, Def>;
+        for (const [key, child] of Object.entries(value)) {
+          if (!Object.hasOwn(fields, key)) errors.push({ path: `${path}.${key}`, message: "unknown plugin config field" });
+          else walk(child, fields[key], `${path}.${key}`);
+        }
+      } else if (Array.isArray(value) && def?.elements) value.forEach((child, i) => walk(child, def.elements, `${path}.${i}`));
+    };
+    walk(config, definition, "config");
+    return errors;
   }
 
   /** Copy of `config` with every string at a secret path replaced by `fn(value)` (seal or open at rest). */
