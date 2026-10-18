@@ -442,3 +442,28 @@ test("unchanged real imports audit without changing the draft or blocking later 
   expect(afterEdit.env.has_unpublished_changes).toBe(false);
   expect(afterEdit.env.draft_requires_publish).toBe(false);
 });
+
+test("autoPublishPausedReason is import while an imported draft waits in auto mode, and null after an explicit publish or in manual mode", async () => {
+  const auto = await createEnvironment("auto");
+  const source = await createEnvironment("manual");
+  expect((await h.api("POST", `${source}/services`, { name: "paused", protocol: "http", host: "echo", port: 80 })).status).toBe(201);
+  const document = await exportDocument(source);
+  const env = async (base: string) => (await h.api("GET", base)).body as { autoPublishPausedReason: string | null; hasUnpublishedChanges: boolean };
+  expect((await env(auto)).autoPublishPausedReason).toBeNull();
+
+  expect((await importDocument(auto, document, { mode: "replace" })).status).toBe(200);
+  expect(await env(auto)).toMatchObject({ autoPublishPausedReason: "import", hasUnpublishedChanges: true });
+  // The list carries it too, and auto-publication leaves the imported draft alone.
+  const listed = (await h.api("GET", "/environments")).body.items.find((e: { id: string }) => auto.endsWith(e.id));
+  expect(listed.autoPublishPausedReason).toBe("import");
+  await h.app.get(SnapshotsService).autoPublish(auto.split("/").at(-1)!, 0);
+  expect((await env(auto)).autoPublishPausedReason).toBe("import");
+
+  expect((await h.api("POST", `${auto}/snapshots`, {})).status).toBe(201);
+  expect((await env(auto)).autoPublishPausedReason).toBeNull();
+
+  // Manual mode never auto-publishes: nothing to pause.
+  const manual = await createEnvironment("manual");
+  expect((await importDocument(manual, document, { mode: "replace" })).status).toBe(200);
+  expect((await env(manual)).autoPublishPausedReason).toBeNull();
+});
