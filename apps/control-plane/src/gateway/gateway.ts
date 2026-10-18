@@ -62,7 +62,7 @@ export function toRoute(r: RouteRow) {
   });
 }
 
-function serviceValues(body: ServiceWrite | Service) {
+export function serviceValues(body: ServiceWrite | Service) {
   return {
     name: body.name,
     protocol: body.protocol,
@@ -78,7 +78,7 @@ function serviceValues(body: ServiceWrite | Service) {
   };
 }
 
-function routeValues(body: RouteWrite | Route) {
+export function routeValues(body: RouteWrite | Route) {
   const list = (v: string[] | undefined) => (v && v.length > 0 ? v : null);
   return {
     name: body.name,
@@ -138,7 +138,7 @@ export async function loadGatewayState(tx: Executor, envId: string, enc: Encrypt
       enabled: p.enabled,
       scope: { serviceId: p.serviceId, routeId: p.routeId, consumerId: p.consumerId },
       config: catalog.mapSecrets(p.name, p.config, (v, path) => enc.open(v, pluginSecretContext(p.id, path))),
-      protocols: optional(p.protocols),
+      protocols: optional(p.protocols) ?? catalog.defaultProtocols(p.name),
       tags: p.tags,
     })),
     upstreams: upstreamRows.map(upstreamState),
@@ -189,6 +189,20 @@ export async function restoreGatewayState(tx: Executor, envId: string, state: Ga
   if (state.plugins.length > 0) {
     await tx.insert(plugins).values(state.plugins.map((p) => ({ id: p.id, environmentId: envId, ...pluginValues(p.id, p, enc, catalog) })));
   }
+}
+
+export function routeErrors(body: RouteWrite) {
+  const errors: { path: string; message: string }[] = [];
+  const hasMatcher =
+    (body.paths?.length ?? 0) > 0 ||
+    (body.hosts?.length ?? 0) > 0 ||
+    (body.methods?.length ?? 0) > 0 ||
+    Object.keys(body.headers ?? {}).length > 0;
+  if (!hasMatcher) errors.push({ path: "(body)", message: "must define at least one of paths, hosts, methods or headers" });
+  body.paths?.forEach((p, i) => {
+    if (!p.startsWith("/") && !p.startsWith("~/")) errors.push({ path: `paths.${i}`, message: "must start with '/' (or '~/' for a regex)" });
+  });
+  return errors;
 }
 
 /* ---------------- service ---------------- */
@@ -332,15 +346,7 @@ export class GatewayService {
   /** Rules the contract states in prose (JSON Schema cannot express them). */
   private async checkRoute(tx: Executor, envId: string, body: RouteWrite): Promise<void> {
     const errors: { path: string; message: string }[] = [];
-    const hasMatcher =
-      (body.paths?.length ?? 0) > 0 ||
-      (body.hosts?.length ?? 0) > 0 ||
-      (body.methods?.length ?? 0) > 0 ||
-      Object.keys(body.headers ?? {}).length > 0;
-    if (!hasMatcher) errors.push({ path: "(body)", message: "must define at least one of paths, hosts, methods or headers" });
-    body.paths?.forEach((p, i) => {
-      if (!p.startsWith("/") && !p.startsWith("~/")) errors.push({ path: `paths.${i}`, message: "must start with '/' (or '~/' for a regex)" });
-    });
+    errors.push(...routeErrors(body));
     const [svc] = await tx
       .select({ id: services.id })
       .from(services)

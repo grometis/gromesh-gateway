@@ -1,0 +1,1 @@
+ALTER TABLE "environments" ADD COLUMN "draft_requires_publish" boolean DEFAULT false NOT NULL;

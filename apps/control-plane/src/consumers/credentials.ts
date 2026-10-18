@@ -68,7 +68,7 @@ export function basicAuthState(r: BasicAuthCredentialRow, enc: Encryptor): Basic
 }
 
 /** The contract's 422 rules for a JWT credential that its schema cannot express. */
-function checkJwt(body: JwtCredentialCreate): void {
+export function checkJwt(body: JwtCredentialCreate): void {
   const errors: { path: string; message: string }[] = [];
   if (body.algorithm === "HS256") {
     if (body.rsaPublicKey !== undefined) errors.push({ path: "rsaPublicKey", message: "only applies to RS256 and ES256" });

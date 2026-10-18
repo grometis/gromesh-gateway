@@ -376,7 +376,6 @@ paths:
       tags: [environments]
       operationId: exportEnvironmentConfig
       x-required-role: viewer
-      x-gromesh-planned: true
       security: [{ cookieAuth: [] }, { bearerApiToken: [] }]
       summary: Export the current draft as a Gromesh configuration document
       description: |
@@ -418,7 +417,6 @@ paths:
       tags: [environments]
       operationId: importEnvironmentConfig
       x-required-role: editor
-      x-gromesh-planned: true
       security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       summary: Validate, preview or import configuration into the draft
       description: |
