@@ -8,6 +8,8 @@ const exec = promisify(execFile);
 
 export const VECTOR_IMAGE = "timberio/vector:0.53.0-alpine";
 export const NODE_IMAGE = "node:24.18.0-alpine";
+// The same ClickHouse as deploy/compose: bumped together.
+export const CLICKHOUSE_IMAGE = "clickhouse/clickhouse-server:25.8.16.34-alpine";
 
 export async function pullImages(images, { attempts = 4, timeoutMs = 300_000 } = {}) {
   for (const image of images) {
