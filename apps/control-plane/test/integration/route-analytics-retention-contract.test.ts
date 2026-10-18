@@ -43,6 +43,11 @@ test.each([0, 8, 1.5, -1, "1", true])("route contracts reject analyticsRetention
   validateRetention(value, false);
 });
 
+test("an exported route still rejects unknown fields next to the new one", () => {
+  const validator = contracts.validator("GromeshConfigRoute");
+  expect(validator({ name: "sensitive", service: "api", paths: ["/sensitive"], analyticsRetentionDays: 1, bogus: 1 })).toBe(false);
+});
+
 test("retention remains an optional planned property in both route models", () => {
   type Schema = { required?: string[]; properties: Record<string, Record<string, unknown>> };
   const contract = parse(readFileSync(new URL("../../../../contracts/control-plane.openapi.yaml", import.meta.url), "utf8")) as {

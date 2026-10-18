@@ -1292,8 +1292,10 @@ export interface components {
             preserveHost: boolean;
             /**
              * @description How long this route's request analytics are kept, in days. Null or omitted uses the 7-day default;
-             *     retention can never exceed 7 days. Applies only to rows written after the next publication,
-             *     without changing retention for existing rows. Does not change path masking.
+             *     retention can never exceed 7 days. Responses and exports return `null` when unset (never the default).
+             *     Applies only to rows written after the next publication, without changing retention for existing rows.
+             *     Does not change path masking. The value reaches the data plane inside the compiled gateway
+             *     configuration (compiler-internal); no other contract changes.
              */
             analyticsRetentionDays?: number | null;
             tags?: components["schemas"]["Tags"];
