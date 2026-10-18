@@ -1290,6 +1290,14 @@ export interface components {
             stripPath: boolean;
             /** @default false */
             preserveHost: boolean;
+            /**
+             * @description How long this route's request analytics are kept, in days. Null or omitted uses the 7-day default;
+             *     retention can never exceed 7 days. Responses and exports return `null` when unset (never the default).
+             *     Applies only to rows written after the next publication, without changing retention for existing rows.
+             *     Does not change path masking. The value reaches the data plane inside the compiled gateway
+             *     configuration (compiler-internal); no other contract changes.
+             */
+            analyticsRetentionDays?: number | null;
             tags?: components["schemas"]["Tags"];
         };
         Route: {
@@ -1562,6 +1570,7 @@ export interface components {
             headers?: components["schemas"]["RouteWrite"]["headers"];
             stripPath?: components["schemas"]["RouteWrite"]["stripPath"];
             preserveHost?: components["schemas"]["RouteWrite"]["preserveHost"];
+            analyticsRetentionDays?: components["schemas"]["RouteWrite"]["analyticsRetentionDays"];
             tags?: components["schemas"]["Tags"];
         };
         /** @description At least one non-empty identifier; if both are supplied they must identify the same consumer. */
