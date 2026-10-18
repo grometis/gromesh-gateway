@@ -27,8 +27,11 @@ async function main() {
     "-e", "CLICKHOUSE_ENDPOINT=http://127.0.0.1:8123", "-e", "CLICKHOUSE_DATABASE_BASE64=Z3JvbWVzaA==",
     "-e", "CLICKHOUSE_PASSWORD=synthetic-writer-password", "-v", `${schemaCheck}:/check-schema.sh:ro`,
     "--entrypoint", "sh", VECTOR_IMAGE, "/check-schema.sh"]);
-  const blocked = async () => {
-    await assert.rejects(check(), (error) => error.code === 1 && error.stderr.includes("001-requests.sql then 002-retention.sql"));
+  // The hook names the missing migration and the command that applies it.
+  const blocked = async (migration) => {
+    await assert.rejects(check(), (error) => error.code === 1
+      && error.stderr.includes(`migration ${migration} is missing`)
+      && error.stderr.includes(`-n < deploy/observability/clickhouse/${migration}`));
   };
   try {
     await run(["run", "--rm", "-d", "--name", name, "--network", "none", CLICKHOUSE_IMAGE]);
@@ -38,12 +41,14 @@ async function main() {
         await sleep(250);
       }
     }
-    await sql(read("deploy/observability/clickhouse/001-requests.sql") + `
+    await sql(`CREATE DATABASE gromesh;
       CREATE USER gromesh_writer IDENTIFIED BY 'synthetic-writer-password';
-      GRANT INSERT ON gromesh.requests TO gromesh_writer;
+      GRANT INSERT ON gromesh.requests TO gromesh_writer;`);
+    await blocked("001-requests.sql");
+    await sql(read("deploy/observability/clickhouse/001-requests.sql") + `
       INSERT INTO gromesh.requests (id, ts, environment_id, cluster_id, path)
       VALUES ('${randomUUID()}', now(), '${randomUUID()}', '${randomUUID()}', '/legacy');`);
-    await blocked();
+    await blocked("002-retention.sql");
     const migration = read("deploy/observability/clickhouse/002-retention.sql");
     await sql(migration);
     await sql(migration);
@@ -51,11 +56,11 @@ async function main() {
     assert.equal(await sql("SELECT retention_days FROM gromesh.requests"), "7", "Existing rows must retain the seven-day default");
     await check();
     await sql("ALTER TABLE gromesh.requests MODIFY TTL ts + INTERVAL 7 DAY SETTINGS materialize_ttl_after_modify = 0");
-    await blocked();
+    await blocked("002-retention.sql");
     await sql(migration);
     await sql("ALTER TABLE gromesh.requests MODIFY COLUMN retention_days UInt8 DEFAULT 1");
-    await blocked();
-    console.log("Retention upgrade OK: old schema, wrong TTL and wrong default blocked; migrated schema accepted by INSERT-only user; repeated migration created no mutations");
+    await blocked("002-retention.sql");
+    console.log("Retention upgrade OK: missing 001 and 002 named with their commands; old schema, wrong TTL and wrong default blocked; migrated schema accepted by INSERT-only user; repeated migration created no mutations");
   } finally {
     await run(["rm", "-f", name]).catch(() => {});
   }

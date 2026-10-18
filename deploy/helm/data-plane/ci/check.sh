@@ -26,8 +26,9 @@ const pod = hook.spec.template;
 assert.equal(pod.spec.automountServiceAccountToken, false);
 const container = pod.spec.containers[0];
 assert.deepEqual(container.command, ['sh', '-ec']);
-assert.ok(container.args[0].includes('001-requests.sql then 002-retention.sql'));
-assert.ok(container.args[0].includes("[ \"$ready\" != 1 ]"));
+assert.ok(container.args[0].includes('missing 001-requests.sql'));
+assert.ok(container.args[0].includes('missing 002-retention.sql'));
+assert.ok(container.args[0].includes('< deploy/observability/clickhouse/$1'));
 assert.equal(container.env.find(env => env.name === 'CLICKHOUSE_PASSWORD').valueFrom.secretKeyRef.name, 'clickhouse-writer');
 for (const service of full.filter(resource => resource.kind === 'Service')) {
   assert.ok(Object.entries(service.spec.selector).some(([key, value]) => pod.metadata.labels[key] !== value), 'Schema job must not receive live gateway or collector traffic');
