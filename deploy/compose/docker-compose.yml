@@ -1,4 +1,6 @@
 # Gromesh Gateway — local development stack.
+# Every password and key in this file is a local-development placeholder (names say "dev"): never reuse one
+# anywhere else. The Helm charts ship no credentials; production secrets come from existing Kubernetes Secrets.
 # The agent shares the data plane network namespace and persistent boot configuration.
 name: gromesh
 
