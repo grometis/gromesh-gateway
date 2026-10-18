@@ -46,6 +46,7 @@ for (const viewport of [{ name: "desktop-1440", width: 1440, height: 900 }, { na
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     await openConsumer(page);
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(viewport.width);
+    await expect(page.getByRole("region", { name: "Publicação" })).toContainText("nenhum nó online");
     const axe = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
     expect(axe.violations.filter((v) => v.impact === "serious" || v.impact === "critical").map((v) => v.id)).toEqual([]);
     const dir = testInfo.config.rootDir.replace(/\/e2e$/, "") + "/test-results/screenshots";

@@ -44,6 +44,13 @@ for (const viewport of [{ name: "desktop-1440", width: 1440, height: 900 }, { na
     const review = page.getByRole("region", { name: "Revisar e publicar" });
     await expect(review.getByRole("list", { name: "Alterações" }).getByRole("listitem")).toHaveCount(4);
     await expect(review.getByRole("button", { name: "Publicar v8" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Publicação" })).toContainText("nenhum nó online");
+    if (viewport.width < 600) {
+      // Phones list only the changed fields, as "campo: antes → depois".
+      const changed = review.getByRole("list", { name: "Campos alterados" }).getByRole("listitem");
+      await expect(changed).toHaveText(["port: 8080 → 8443", 'protocol: "http" → "https"']);
+      await expect(review.locator("table.diff-fields")).toBeHidden();
+    }
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(viewport.width);
     const dir = testInfo.config.rootDir.replace(/\/e2e$/, "") + "/test-results/screenshots";
     await page.screenshot({ path: `${dir}/review-publish-${viewport.name}.png`, fullPage: true });
@@ -57,6 +64,10 @@ test("the selected change shows field by field what differs from the live versio
   await expect(diff).toContainText("2 campos alterados");
   await expect(diff.locator("tr.changed")).toHaveCount(2);
   await expect(diff.locator("tr.changed").first()).toContainText("port");
+  await expect(diff.locator("tr.changed").first().locator("td.before del")).toHaveText("8080");
+  await expect(diff.locator("tr.changed").first().locator("td.after ins")).toHaveText("8443");
+  await expect(diff.locator("tr.changed").first().locator("td.before")).toHaveCSS("background-color", "rgb(255, 241, 236)");
+  await expect(diff.locator("tr.changed").first().locator("td.after")).toHaveCSS("background-color", "rgb(227, 242, 239)");
   await expect(diff.locator("tr.same").filter({ hasText: "host" })).toContainText('"orders.internal"');
 
   // Nested config fields are compared one by one; a secret stays REDACTED on both sides and is not a change.
@@ -68,8 +79,11 @@ test("the selected change shows field by field what differs from the live versio
   await expect(review).toContainText("Segredos aparecem como REDACTED");
   await expect(review).toContainText("o rollback publica uma nova versão com o conteúdo antigo");
 
-  await review.getByRole("button", { name: /Credencial/ }).click();
-  await expect(review.getByRole("region", { name: /Diff de Credencial/ })).toContainText("Sai do gateway quando você publicar.");
+  // Labels are pt-BR end to end, rebuilt from the compiler's English ones.
+  await expect(review.getByRole("list", { name: "Alterações" })).toContainText("Credencial key-auth do consumer partner");
+  await expect(review.getByRole("list", { name: "Alterações" })).not.toContainText("credential of");
+  await review.getByRole("button", { name: /Credencial key-auth/ }).click();
+  await expect(review.getByRole("region", { name: "Diff de Credencial key-auth do consumer partner" })).toContainText("Sai do gateway quando você publicar.");
 });
 
 test("publishing sends the message and the expected version, then opens Publicações", async ({ page }) => {

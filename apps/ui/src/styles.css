@@ -33,6 +33,9 @@
   --ok: #16a36a;
   --ok-bg: #e3f4ec;
   --ok-text: #0b5d3a;
+  /* inserted value in a diff */
+  --ins-bg: #e3f2ef;
+  --ins-text: #0b4a44;
 
   --font-sans: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -107,6 +110,8 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 /* The accent is reserved for publishing; every other main action is the ink outline. */
 button.publish { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
 button.publish:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
+/* Nothing to publish: a calm, legible state rather than a faded accent. */
+button.publish:disabled { opacity: 1; background: var(--line); border-color: var(--line); color: var(--control-line); }
 button.primary, .button.primary { border: 2px solid var(--ink); background: var(--bg); color: var(--ink); font-weight: 600; }
 button.primary:hover:not(:disabled), .button.primary:hover { background: var(--surface); }
 button.quiet { border-color: transparent; background: transparent; color: var(--text-2); }
@@ -269,7 +274,18 @@ table.cards tr:hover td { background: var(--line); }
 .field-diff h2 { font-size: var(--h2); }
 .diff-fields th[scope="row"] { font-weight: 500; color: var(--text-2); }
 .diff-fields td { overflow-wrap: anywhere; }
-.diff-fields tr.changed th, .diff-fields tr.changed td { background: var(--draft); color: var(--draft-text); }
+/* Live version struck through on the draft colours; the draft inserted on a calm teal. */
+.diff-fields tr.changed th { color: var(--text); font-weight: 600; }
+.diff-fields tr.changed td.before, .diff-narrow del { background: var(--draft); color: var(--draft-text); }
+.diff-fields tr.changed td.after, .diff-narrow ins { background: var(--ins-bg); color: var(--ins-text); }
+.diff-fields ins, .diff-narrow ins { text-decoration: none; }
+.diff-narrow { display: none; list-style: none; margin: 0; padding: 0; flex-direction: column; gap: var(--space-2); }
+.diff-narrow li { overflow-wrap: anywhere; }
+.diff-narrow del, .diff-narrow ins { padding: 1px var(--space-1); border-radius: var(--radius-sm); }
+@media (max-width: 600px) {
+  .diff-wide { display: none; }
+  .diff-narrow { display: flex; }
+}
 .diff-fields tr.same th, .diff-fields tr.same td { color: var(--text-3); }
 .note { background: var(--surface); border-radius: var(--radius); padding: var(--space-2) var(--space-3); color: var(--text-2); }
 .publish-box { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-3); align-items: end; padding-top: var(--space-4); border-top: 1px solid var(--line); }

@@ -20,6 +20,8 @@ const clusters = [
 ];
 
 async function openClusters(page: Page) {
+  // "Último contato" is relative to now: pin the clock 4 s after the nodes' last heartbeat.
+  await page.clock.setFixedTime(new Date("2026-10-17T12:00:04Z"));
   await mockSession(page, { id: id(30), name: "Ana Souza", email: "ana@gromesh.dev", role: "admin", active: true, createdAt: "2026-10-15T12:00:00Z", updatedAt: "2026-10-15T12:00:00Z" });
   await page.route("**/api/v1/environments", (route) => route.fulfill({ json: { items: [environment] } }));
   await page.route(`**/api/v1/environments/${envId}`, (route) => route.fulfill({ json: environment }));
@@ -59,5 +61,13 @@ test("each cluster shows its nodes against the live version, and a failed node k
   await expect(failed).toContainText('Erro do gateway: declarative config is invalid: {routes={{paths={"invalid path"}}}}');
 
   await expect(page.getByRole("region", { name: "Cluster edge-rj" })).toContainText("2/2 nós online na versão no ar v8");
+  await expect(page.getByRole("region", { name: "Cluster edge-rj" }).getByText("Convergido", { exact: true })).toBeVisible();
+
+  // Last contact reads relative, with the full date as the tooltip and for screen readers.
+  const table = sp.getByRole("table", { name: "Nós do cluster edge-sp" });
+  const first = table.getByRole("row").filter({ hasText: "edge-sp-1" }).locator("time");
+  await expect(first).toContainText("há 4 s");
+  await expect(first).toHaveAttribute("title", new Date("2026-10-17T12:00:00Z").toLocaleString("pt-BR"));
+  await expect(table.getByRole("row").filter({ hasText: "edge-sp-4" }).locator("time")).toContainText("há 2 h");
   await expect(page.getByRole("region", { name: "Cluster edge-poa" })).toContainText("Nenhum nó registrado");
 });

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router";
+import { Link, Navigate } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { api, ApiError, unwrap, type Schemas } from "../api/client";
 import { statusMessage } from "../api/errors";
@@ -105,6 +105,12 @@ const number = (v: number) => v.toLocaleString("pt-BR");
 const percent = (v: number) => `${(v * 100).toLocaleString("pt-BR", { maximumFractionDigits: 2 })}%`;
 const ms = (v: number | null) => (v === null ? "—" : `${v.toLocaleString("pt-BR", { maximumFractionDigits: 1 })} ms`);
 
+/** The screen was called Dashboard at /analytics: old links and bookmarks land on Métricas. */
+export function AnalyticsRedirect() {
+  const envId = useEnvId();
+  return <Navigate to={`/e/${envId}/metrics`} replace />;
+}
+
 export function AnalyticsPage() {
   const envId = useEnvId();
   return <Dashboard key={envId} envId={envId} />;
@@ -136,7 +142,7 @@ function Dashboard({ envId }: { envId: string }) {
   return (
     <section>
       <div className="page-head">
-        <h1>Dashboard</h1>
+        <h1>Métricas</h1>
         <button type="button" onClick={() => setTick((t) => t + 1)} disabled={summary.isFetching}>
           {summary.isFetching ? "Atualizando…" : "Atualizar"}
         </button>
@@ -242,7 +248,7 @@ export function TopRoutes({ envId, range, tick, visible }: { envId: string; rang
           <table aria-label="Top rotas" className="numeric">
             <thead>
               <tr>
-                <th scope="col">Route</th>
+                <th scope="col">Rota</th>
                 <th scope="col">Requisições</th>
                 <th scope="col">Erros</th>
                 <th scope="col">Taxa de erro</th>

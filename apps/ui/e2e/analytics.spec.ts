@@ -22,7 +22,7 @@ const menu = (page: Page) => page.getByRole("navigation", { name: "Menu principa
 test("o dashboard renderiza os totais e as séries do período", async ({ page }) => {
   await login(page);
   const summary = page.waitForRequest((r) => r.url().includes("/analytics/summary?"));
-  await menu(page).getByRole("link", { name: "Dashboard" }).click();
+  await menu(page).getByRole("link", { name: "Métricas" }).click();
   const url = new URL((await summary).url());
   expect(url.searchParams.get("interval")).toBe("5m"); // the 6 h preset
   expect(Date.parse(url.searchParams.get("to")!) - Date.parse(url.searchParams.get("from")!)).toBe(6 * 3_600_000);
@@ -45,7 +45,7 @@ test("o dashboard renderiza os totais e as séries do período", async ({ page }
 test("o card Top rotas ranqueia pelo critério escolhido e leva ao explorador filtrado pela rota", async ({ page }) => {
   await login(page);
   const top = page.waitForRequest((r) => r.url().includes("/analytics/top-routes?"));
-  await menu(page).getByRole("link", { name: "Dashboard" }).click();
+  await menu(page).getByRole("link", { name: "Métricas" }).click();
   const url = new URL((await top).url());
   expect(url.searchParams.get("by")).toBe("requests");
   expect(url.searchParams.get("limit")).toBe("10");
@@ -94,6 +94,16 @@ test("o dashboard explica quando o coletor está fora do ar", async ({ page }) =
     route.fulfill({ status: 502, contentType: "application/problem+json", body: JSON.stringify({ type: "https://gromesh.dev/problems/502", title: "Bad Gateway", status: 502, detail: "Analytics store is unavailable" }) }),
   );
   await login(page);
-  await menu(page).getByRole("link", { name: "Dashboard" }).click();
+  await menu(page).getByRole("link", { name: "Métricas" }).click();
   await expect(page.getByRole("alert")).toContainText("não estão disponíveis");
+});
+
+test("Métricas is the former Dashboard: the old /analytics address redirects to it", async ({ page }) => {
+  await login(page);
+  const envId = /\/e\/([^/]+)\//.exec(new URL(page.url()).pathname)![1]!;
+  await page.goto(`/e/${envId}/analytics`);
+  await expect(page).toHaveURL(new RegExp(`/e/${envId}/metrics$`));
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Métricas");
+  await expect(menu(page).getByRole("link", { name: "Métricas" })).toHaveAttribute("aria-current", "page");
+  await expect(menu(page).getByRole("link", { name: "Dashboard" })).toHaveCount(0);
 });

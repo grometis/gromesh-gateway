@@ -52,6 +52,10 @@ for (const viewport of [{ name: "desktop-1440", width: 1440, height: 900 }, { na
     await expect(page.getByLabel("Indicadores das últimas 24 horas")).toContainText(totals.requests.toLocaleString("pt-BR"));
     await expect(tiles.filter({ hasText: "3/3" })).toBeVisible();
     await expect(page.getByRole("img", { name: /Requisições por hora/ })).toBeVisible();
+    const nothing = page.getByRole("region", { name: "Publicação" }).getByRole("button", { name: "Nada para publicar" });
+    await expect(nothing).toBeDisabled();
+    await expect(nothing).toHaveCSS("background-color", "rgb(228, 236, 234)");
+    await expect(nothing).toHaveCSS("color", "rgb(111, 132, 129)");
     await expect(page.getByRole("list", { name: "Legenda" })).toContainText("Sucesso");
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(viewport.width);
     const dir = testInfo.config.rootDir.replace(/\/e2e$/, "") + "/test-results/screenshots";

@@ -12,7 +12,7 @@ import { UpstreamsPage } from "./pages/Upstreams";
 import { CertificatesPage } from "./pages/Certificates";
 import { UsersPage } from "./pages/Users";
 import { AuditPage } from "./pages/Audit";
-import { AnalyticsPage } from "./pages/Analytics";
+import { AnalyticsPage, AnalyticsRedirect } from "./pages/Analytics";
 import { RequestsPage } from "./pages/Requests";
 import { OverviewPage } from "./pages/Overview";
 import { ReviewPublishPage } from "./pages/ReviewPublish";
@@ -51,7 +51,8 @@ export const router = createBrowserRouter([
               { path: "publications/:version", element: <SnapshotDetailPage /> },
               { path: "clusters", element: <ClustersPage /> },
               { path: "overview", element: <OverviewPage /> },
-              { path: "analytics", element: <AnalyticsPage /> },
+              { path: "metrics", element: <AnalyticsPage /> },
+              { path: "analytics", element: <AnalyticsRedirect /> },
               { path: "requests", element: <RequestsPage /> },
             ],
           },

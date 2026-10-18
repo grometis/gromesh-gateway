@@ -54,8 +54,14 @@ export function PublishStrip({ envId }: { envId: string }) {
       </div>
       {canEdit && (
         <button type="button" className="publish" disabled={!pending} onClick={review}>
-          Publicar v{(current ?? 0) + 1}
-          <span aria-hidden="true">→</span>
+          {pending ? (
+            <>
+              Publicar v{(current ?? 0) + 1}
+              <span aria-hidden="true">→</span>
+            </>
+          ) : (
+            "Nada para publicar"
+          )}
         </button>
       )}
       <div className="strip-live">

@@ -5,7 +5,7 @@ import { api, unwrap, type Schemas } from "../api/client";
 import { statusMessage, toFormErrors } from "../api/errors";
 import { useCanEdit } from "../auth";
 import { DraftBadge, Badge } from "../components/Badge";
-import { KIND_LABEL } from "../components/Diff";
+import { changeTitle } from "../components/Diff";
 import { useEnvId, useEnvironment } from "../components/Shell";
 
 type EntityChange = Schemas["EntityChange"];
@@ -28,9 +28,9 @@ function FieldDiff({ change, current }: { change: EntityChange; current: number 
   const fields = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter((f) => f !== "id").sort();
   const changed = fields.filter((f) => before[f] !== after[f]).length;
   return (
-    <section className="field-diff" aria-label={`Diff de ${KIND_LABEL[change.kind]} ${change.label}`}>
+    <section className="field-diff" aria-label={`Diff de ${changeTitle(change)}`}>
       <h2 className="title-with-badges">
-        {KIND_LABEL[change.kind]} {change.label} <ChangeBadge change={change.change} />
+        {changeTitle(change)} <ChangeBadge change={change.change} />
       </h2>
       <p className="muted">
         {change.change === "added"
@@ -39,7 +39,7 @@ function FieldDiff({ change, current }: { change: EntityChange; current: number 
             ? "Sai do gateway quando você publicar."
             : `${changed} ${changed === 1 ? "campo alterado" : "campos alterados"}`}
       </p>
-      <div className="table-scroll">
+      <div className="table-scroll diff-wide">
         <table className="diff-fields">
           <thead>
             <tr>
@@ -56,14 +56,29 @@ function FieldDiff({ change, current }: { change: EntityChange; current: number 
                   <th scope="row" className="mono">
                     {f}
                   </th>
-                  <td className="mono">{before[f] ?? "—"}</td>
-                  <td className="mono">{after[f] ?? "—"}</td>
+                  <td className="mono before">{differs && before[f] !== undefined ? <del>{before[f]}</del> : (before[f] ?? "—")}</td>
+                  <td className="mono after">{differs && after[f] !== undefined ? <ins>{after[f]}</ins> : (after[f] ?? "—")}</td>
                 </tr>
               );
             })}
           </tbody>
         </table>
       </div>
+      {/* Phones: only the changed fields, as "campo: antes → depois". */}
+      <ul className="diff-narrow" aria-label="Campos alterados">
+        {fields
+          .filter((f) => before[f] !== after[f])
+          .map((f) => (
+            <li key={f}>
+              <span className="mono field">{f}:</span>{" "}
+              {before[f] !== undefined && (
+                <del className="mono">{before[f]}</del>
+              )}
+              {before[f] !== undefined && after[f] !== undefined && <span aria-hidden="true"> → </span>}
+              {after[f] !== undefined && <ins className="mono">{after[f]}</ins>}
+            </li>
+          ))}
+      </ul>
     </section>
   );
 }
@@ -139,7 +154,7 @@ export function ReviewPublishPage() {
                 <button type="button" aria-current={c === active ? "true" : undefined} onClick={() => setSelected(i)}>
                   <ChangeBadge change={c.change} />
                   <span>
-                    <span className="review-kind">{KIND_LABEL[c.kind]}</span> <strong>{c.label}</strong>
+                    <strong>{changeTitle(c)}</strong>
                   </span>
                 </button>
               </li>

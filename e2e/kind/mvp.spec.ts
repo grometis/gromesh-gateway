@@ -153,7 +153,7 @@ test("MVP: install → publish → converge → traffic in the dashboard → rol
       const rows = page.items.filter((r) => r.path === path && r.status === 200);
       return rows.length >= 5 && rows.every((r) => r.environmentId === envId && r.clusterId === clusterId);
     }, { timeout: 30_000, intervals: [1000, 2000], message: "traffic must reach the analytics API" }).toBe(true);
-    await page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Dashboard" }).click();
+    await page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Métricas" }).click();
     await page.getByLabel("Período", { exact: true }).selectOption("1h");
     await expect(page.locator("dl.stat-cards")).toContainText(/Requisições\s*[1-9]/);
     await page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Requisições" }).click();
