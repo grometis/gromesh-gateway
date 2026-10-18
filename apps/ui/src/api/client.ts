@@ -78,6 +78,12 @@ export const api = createClient<paths>({ baseUrl: "/api/v1", credentials: "inclu
 api.use(auth);
 
 /** Thrown by `unwrap` so TanStack Query sees a failed request with its problem details. */
+/**
+ * Retry only when the request never got an answer (network). An HTTP error, 5xx included, is the server's answer:
+ * repeating it only delays what the screen should say (e.g. the analytics store is down).
+ */
+export const retryNetworkErrorsOnly = (count: number, err: unknown) => !(err instanceof ApiError) && count < 2;
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,

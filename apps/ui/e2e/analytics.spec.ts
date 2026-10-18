@@ -89,13 +89,17 @@ test("o explorador filtra por classe de status e abre o detalhe de uma requisiç
   await expect(detail).toBeHidden();
 });
 
-test("o dashboard explica quando o coletor está fora do ar", async ({ page }) => {
-  await page.route("**/api/v1/environments/*/analytics/summary?*", (route) =>
-    route.fulfill({ status: 502, contentType: "application/problem+json", body: JSON.stringify({ type: "https://gromesh.dev/problems/502", title: "Bad Gateway", status: 502, detail: "Analytics store is unavailable" }) }),
-  );
+test("métricas explica na hora quando o coletor está fora do ar (5xx sem nova tentativa)", async ({ page }) => {
+  let summaries = 0;
+  await page.route("**/api/v1/environments/*/analytics/summary?*", (route) => {
+    summaries++;
+    return route.fulfill({ status: 502, contentType: "application/problem+json", body: JSON.stringify({ type: "https://gromesh.dev/problems/502", title: "Bad Gateway", status: 502, detail: "Analytics store is unavailable" }) });
+  });
   await login(page);
   await menu(page).getByRole("link", { name: "Métricas" }).click();
-  await expect(page.getByRole("alert")).toContainText("não estão disponíveis");
+  // The server answered: no retry delays the message (the default would retry twice, about 3 s).
+  await expect(page.getByRole("alert")).toContainText("não estão disponíveis", { timeout: 1500 });
+  expect(summaries).toBe(1);
 });
 
 test("Métricas is the former Dashboard: the old /analytics address redirects to it", async ({ page }) => {

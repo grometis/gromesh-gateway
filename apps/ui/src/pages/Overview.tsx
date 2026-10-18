@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { api, ApiError, unwrap } from "../api/client";
+import { api, ApiError, retryNetworkErrorsOnly, unwrap } from "../api/client";
 import { statusMessage } from "../api/errors";
 import { HourlyBars } from "../components/HourlyBars";
 import { useEnvId, useEnvironment } from "../components/Shell";
@@ -22,6 +22,7 @@ function Overview({ envId }: { envId: string }) {
   const summary = useQuery({
     queryKey: ["analytics", envId, "overview", range.to],
     queryFn: () => unwrap(api.GET("/environments/{envId}/analytics/summary", { params: { path: { envId }, query: { ...range, interval: "1h" } } })),
+    retry: retryNetworkErrorsOnly,
     refetchInterval: visible ? 60_000 : false,
   });
   // Shared with the publish strip and the Clusters screen.
