@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { diffConfigs } from "./diff.js";
 import { CompileError, type CompileIssue } from "./errors.js";
 import { keyNameIssues, resolvePlatformKeyNames } from "./platform-plugins.js";
 import type {
@@ -54,9 +55,19 @@ export function basicAuthPasswordHash(consumerId: string, password: string): str
  * Throws CompileError with every issue found (never only the first one).
  */
 export function compile(state: GatewayState, options: CompileOptions = {}): KongDeclarativeConfig {
-  const managedTag = options.managedTag ?? DEFAULT_MANAGED_TAG;
   const issues = validate({ ...state, plugins: [...state.plugins, ...(options.platformPlugins ?? [])] });
   if (issues.length > 0) throw new CompileError(issues);
+  return declarativeConfig(state, options);
+}
+
+/** An invalid existing draft must still be comparable when an import repairs it; only the proposal is compiled. */
+export function diffGatewayStates(before: GatewayState, after: GatewayState) {
+  return diffConfigs(declarativeConfig(before, {}), compile(after));
+}
+
+/** Projection is private: every config that can be published goes through compile's validation. */
+function declarativeConfig(state: GatewayState, options: CompileOptions): KongDeclarativeConfig {
+  const managedTag = options.managedTag ?? DEFAULT_MANAGED_TAG;
   const plugins = [...state.plugins, ...resolvePlatformKeyNames(options.platformPlugins ?? [], state.plugins)];
 
   const tags = (own: string[] | undefined) => sortedUnique([...(own ?? []), managedTag]);
