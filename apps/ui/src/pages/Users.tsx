@@ -1,12 +1,16 @@
-import { useState, type FormEvent } from "react";
-import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, unwrap, type User, type UserCreate, type UserUpdate } from "../api/client";
+import { useRef, useState, type FormEvent } from "react";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { api, ApiError, unwrap, type EnvironmentRole, type EnvironmentRoles, type User, type UserCreate, type UserUpdate } from "../api/client";
 import { statusMessage, toFormErrors, type FormErrors } from "../api/errors";
 import { Field, FormErrorList } from "../components/Field";
 import { ConfirmDialog, Modal } from "../components/Modal";
+import { environmentsQuery } from "../components/Shell";
 
 const ROLES: Record<User["role"], string> = { viewer: "Leitor", editor: "Editor", admin: "Administrador" };
 const FIELDS = ["email", "name", "role", "active", "password"] as const;
+const ENV_ROLES: Record<EnvironmentRole, string> = { ...ROLES, none: "Sem acesso" };
+const GLOBAL = "global";
+const ROW_MESSAGES: Record<string, string> = { "is not an environment": "não é mais um environment", "is repeated": "aparece mais de uma vez" };
 
 export function UsersPage() {
   const users = useInfiniteQuery({
@@ -17,6 +21,7 @@ export function UsersPage() {
   });
   const [editing, setEditing] = useState<User | "new" | null>(null);
   const [deleting, setDeleting] = useState<User | null>(null);
+  const [scoping, setScoping] = useState<User | null>(null);
   const items = users.data?.pages.flatMap((page) => page.items) ?? [];
 
   return (
@@ -53,6 +58,9 @@ export function UsersPage() {
                     <button type="button" onClick={() => setEditing(user)}>
                       Editar
                     </button>
+                    <button type="button" aria-label={`Papéis de ${user.name} por environment`} onClick={() => setScoping(user)}>
+                      Environments
+                    </button>
                     <button type="button" className="danger" onClick={() => setDeleting(user)}>
                       Excluir
                     </button>
@@ -70,6 +78,7 @@ export function UsersPage() {
       )}
       {editing && <UserForm user={editing === "new" ? null : editing} onClose={() => setEditing(null)} />}
       {deleting && <DeleteUser user={deleting} onClose={() => setDeleting(null)} />}
+      {scoping && <EnvironmentRolesForm user={scoping} onClose={() => setScoping(null)} />}
     </section>
   );
 }
@@ -146,6 +155,112 @@ function UserForm({ user, onClose }: { user: User | null; onClose: () => void })
             Cancelar
           </button>
           <button type="submit" className="primary" disabled={save.isPending}>
+            {save.isPending ? "Salvando…" : "Salvar"}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+/** One row per environment: the global role applies unless a role replaces it there ("Sem acesso" hides it). */
+function EnvironmentRolesForm({ user, onClose }: { user: User; onClose: () => void }) {
+  const queryClient = useQueryClient();
+  const envs = useQuery(environmentsQuery);
+  const roles = useQuery({
+    queryKey: ["environment-roles", user.id],
+    queryFn: () => unwrap(api.GET("/users/{userId}/environment-roles", { params: { path: { userId: user.id } } })),
+    enabled: user.role !== "admin",
+  });
+  const [draft, setDraft] = useState<Record<string, EnvironmentRole | typeof GLOBAL>>({});
+  const [errors, setErrors] = useState<string[]>([]);
+  const valueOf = (envId: string) => draft[envId] ?? roles.data?.items.find((r) => r.environmentId === envId)?.role ?? GLOBAL;
+  // The names of the rows sent, so an error at items.N names the environment instead of an index.
+  const sent = useRef<string[]>([]);
+  const save = useMutation({
+    mutationFn: () => {
+      const rows = (envs.data?.items ?? []).flatMap((e) => {
+        const role = valueOf(e.id);
+        return role === GLOBAL ? [] : [{ name: e.name, item: { environmentId: e.id, role } }];
+      });
+      sent.current = rows.map((r) => r.name);
+      const body: EnvironmentRoles = { items: rows.map((r) => r.item) };
+      return unwrap(api.PUT("/users/{userId}/environment-roles", { params: { path: { userId: user.id } }, body }));
+    },
+    onSuccess: (data) => {
+      queryClient.setQueryData(["environment-roles", user.id], data);
+      onClose();
+    },
+    onError: (err) => {
+      const rows = err instanceof ApiError ? (err.problem?.errors ?? []).flatMap(({ path, message }) => {
+        const name = sent.current[Number(/^items\.(\d+)\./.exec(path)?.[1] ?? NaN)];
+        return name ? [`${name}: ${ROW_MESSAGES[message] ?? message}`] : [];
+      }) : [];
+      setErrors(rows.length > 0 ? rows : toFormErrors(err, []).form);
+    },
+  });
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    setErrors([]);
+    save.mutate();
+  };
+
+  if (user.role === "admin") {
+    return (
+      <Modal title={`Environments de ${user.name}`} onClose={onClose}>
+        <p>Administradores globais são administradores em todos os environments. Para limitar o acesso, mude o papel global primeiro.</p>
+        <div className="form-actions">
+          <button type="button" onClick={onClose}>Fechar</button>
+        </div>
+      </Modal>
+    );
+  }
+  const failed = envs.error ?? roles.error;
+  return (
+    <Modal title={`Environments de ${user.name}`} onClose={onClose} wide>
+      <form onSubmit={submit} className="form" noValidate>
+        <p className="muted">
+          Papel global: <strong>{ROLES[user.role]}</strong>. Um papel escolhido aqui substitui o global só naquele environment; “Sem acesso” esconde o environment.
+        </p>
+        {(envs.isPending || roles.isPending) && <p className="muted">Carregando…</p>}
+        {failed && <p className="error" role="alert">{statusMessage(failed)}</p>}
+        {envs.data && roles.data && (envs.data.items.length === 0 ? <p className="muted">Nenhum environment cadastrado.</p> : (
+          <div className="scroll-x">
+            <table>
+              <thead>
+                <tr>
+                  <th>Environment</th>
+                  <th>Papel</th>
+                </tr>
+              </thead>
+              <tbody>
+                {envs.data.items.map((env) => (
+                  <tr key={env.id}>
+                    <td>{env.name}</td>
+                    <td>
+                      <select
+                        aria-label={`Papel em ${env.name}`}
+                        value={valueOf(env.id)}
+                        onChange={(event) => setDraft({ ...draft, [env.id]: event.target.value as EnvironmentRole | typeof GLOBAL })}
+                      >
+                        <option value={GLOBAL}>Usa o global ({ROLES[user.role]})</option>
+                        {(Object.keys(ENV_ROLES) as EnvironmentRole[]).map((value) => (
+                          <option key={value} value={value}>{ENV_ROLES[value]}</option>
+                        ))}
+                      </select>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ))}
+        <FormErrorList messages={errors} />
+        <div className="form-actions">
+          <button type="button" onClick={onClose}>
+            Cancelar
+          </button>
+          <button type="submit" className="primary" disabled={save.isPending || !envs.data || !roles.data}>
             {save.isPending ? "Salvando…" : "Salvar"}
           </button>
         </div>
