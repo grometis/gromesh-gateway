@@ -1,0 +1,1 @@
+ALTER TABLE "routes" ADD COLUMN "analytics_retention_days" integer;

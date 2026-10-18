@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+chart=deploy/helm/data-plane
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+helm lint "$chart" --strict --set-string agent.token=ci-placeholder
+helm template dp "$chart" --set-string agent.token=ci-placeholder > "$work/default.yaml"
+helm lint "$chart" --strict -f "$chart/ci/values-full.yaml"
+helm template dp "$chart" -f "$chart/ci/values-full.yaml" > "$work/full.yaml"
+pnpm --filter @gromesh/control-plane exec node --input-type=module - "$work/default.yaml" "$work/full.yaml" <<'JS'
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { parseAllDocuments } from 'yaml';
+const read = path => parseAllDocuments(readFileSync(path, 'utf8')).map(doc => {
+  assert.equal(doc.errors.length, 0);
+  return doc.toJSON();
+});
+const [plain, full] = process.argv.slice(2).map(read);
+assert.ok(!plain.some(resource => resource.kind === 'Job'));
+const hook = full.find(resource => resource.kind === 'Job');
+assert.equal(hook.metadata.annotations['helm.sh/hook'], 'pre-install,pre-upgrade');
+assert.ok(hook.metadata.annotations['helm.sh/hook-delete-policy'].includes('before-hook-creation'));
+assert.equal(hook.spec.backoffLimit, 0);
+assert.equal(hook.spec.activeDeadlineSeconds, 60);
+const pod = hook.spec.template;
+assert.equal(pod.spec.automountServiceAccountToken, false);
+const container = pod.spec.containers[0];
+assert.deepEqual(container.command, ['sh', '-ec']);
+assert.ok(container.args[0].includes('missing 001-requests.sql'));
+assert.ok(container.args[0].includes('missing 002-retention.sql'));
+assert.ok(container.args[0].includes('< deploy/observability/clickhouse/$1'));
+assert.equal(container.env.find(env => env.name === 'CLICKHOUSE_PASSWORD').valueFrom.secretKeyRef.name, 'clickhouse-writer');
+for (const service of full.filter(resource => resource.kind === 'Service')) {
+  assert.ok(Object.entries(service.spec.selector).some(([key, value]) => pod.metadata.labels[key] !== value), 'Schema job must not receive live gateway or collector traffic');
+}
+console.log('Data-plane lint/render passed: collector disabled has no hook; enabled collector blocks install/upgrade before resources change, using only its writer secret');
+JS

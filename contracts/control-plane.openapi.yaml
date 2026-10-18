@@ -2157,7 +2157,6 @@ components:
           type: [integer, "null"]
           minimum: 1
           maximum: 7
-          x-gromesh-planned: true
           description: |
             How long this route's request analytics are kept, in days. Null or omitted uses the 7-day default;
             retention can never exceed 7 days. Responses and exports return `null` when unset (never the default).
@@ -2444,7 +2443,6 @@ components:
         preserveHost: { $ref: "#/components/schemas/RouteWrite/properties/preserveHost" }
         analyticsRetentionDays:
           $ref: "#/components/schemas/RouteWrite/properties/analyticsRetentionDays"
-          x-gromesh-planned: true
         tags: { $ref: "#/components/schemas/Tags" }
     GromeshConfigConsumerRef:
       type: object

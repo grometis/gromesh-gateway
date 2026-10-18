@@ -253,6 +253,7 @@ export const routes = pgTable(
     headers: jsonb("headers").$type<Record<string, string[]>>(),
     stripPath: boolean("strip_path").notNull().default(true),
     preserveHost: boolean("preserve_host").notNull().default(false),
+    analyticsRetentionDays: integer("analytics_retention_days"),
     tags: text("tags").array().notNull().default(sql`'{}'::text[]`),
     ...timestamps,
   },

@@ -48,7 +48,7 @@ test("an exported route still rejects unknown fields next to the new one", () =>
   expect(validator({ name: "sensitive", service: "api", paths: ["/sensitive"], analyticsRetentionDays: 1, bogus: 1 })).toBe(false);
 });
 
-test("retention remains an optional planned property in both route models", () => {
+test("retention is an optional implemented property in both route models", () => {
   type Schema = { required?: string[]; properties: Record<string, Record<string, unknown>> };
   const contract = parse(readFileSync(new URL("../../../../contracts/control-plane.openapi.yaml", import.meta.url), "utf8")) as {
     components: { schemas: Record<string, Schema> };
@@ -56,7 +56,7 @@ test("retention remains an optional planned property in both route models", () =
   for (const name of ["RouteWrite", "GromeshConfigRoute"]) {
     const schema = contract.components.schemas[name]!;
     expect(schema.required).not.toContain("analyticsRetentionDays");
-    expect(schema.properties.analyticsRetentionDays!["x-gromesh-planned"]).toBe(true);
+    expect(schema.properties.analyticsRetentionDays!["x-gromesh-planned"]).toBeUndefined();
   }
   expect(contract.components.schemas.GromeshConfigRoute!.properties.analyticsRetentionDays!.$ref)
     .toBe("#/components/schemas/RouteWrite/properties/analyticsRetentionDays");

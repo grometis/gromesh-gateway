@@ -78,6 +78,13 @@
       "when": 1792301691710,
       "tag": "0010_environment_roles",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1792309444102,
+      "tag": "0011_route_analytics_retention",
+      "breakpoints": true
     }
   ]
 }

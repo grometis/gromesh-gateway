@@ -79,6 +79,9 @@ spec:
                 secretKeyRef: {name: ci-clickhouse-reader, key: password}
           volumeMounts:
             - {name: init, mountPath: /init, readOnly: true}
+            - {name: migrations, mountPath: /migrations, readOnly: true}
       volumes:
         - name: init
           configMap: {name: clickhouse-init-users}
+        - name: migrations
+          configMap: {name: clickhouse-init-sql}

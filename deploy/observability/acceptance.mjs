@@ -10,7 +10,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const columns = ["id", "ts", "environment_id", "cluster_id", "service_id", "route_id", "consumer_id",
   "method", "path", "status", "latency_kong_ms", "latency_upstream_ms", "latency_total_ms",
-  "client_ip", "request_size", "response_size"];
+  "client_ip", "request_size", "response_size", "retention_days"];
 // Assertions never print raw events, responses, credentials, or subprocess output.
 function check(ok, message) {
   if (!ok) throw new Error(message);
@@ -171,7 +171,7 @@ async function inside() {
   const ddl = JSON.parse(await sql("SHOW CREATE TABLE gromesh.requests FORMAT JSON")).data[0].statement;
   check(ddl.includes("`id` UUID") && ddl.includes("`ts` DateTime64(3, 'UTC')")
     && ddl.includes("`latency_upstream_ms` Nullable(Float64)"), "Incorrect request identity, timestamp or upstream latency column types");
-  check(ddl.includes("ORDER BY (environment_id, ts)") && ddl.includes("TTL ts + toIntervalDay(7)"), "Incorrect sorting or TTL");
+  check(ddl.includes("ORDER BY (environment_id, ts)") && ddl.includes("TTL ts + toIntervalDay(retention_days)"), "Incorrect sorting or TTL");
   // Check every column of the table, including events outside this run.
   noSecrets(await sql("SELECT * FROM gromesh.requests FORMAT JSONEachRow"), secrets, "ClickHouse table");
 
