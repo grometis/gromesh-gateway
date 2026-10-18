@@ -95,6 +95,10 @@ export interface UserUpdate {
   password?: string;
 }
 
+export interface EnvironmentRoles {
+  items: { environmentId: string; role: "viewer" | "editor" | "admin" | "none" }[];
+}
+
 export type HashOn = "none" | "consumer" | "ip" | "header" | "cookie";
 
 export interface UpstreamHealthchecks {

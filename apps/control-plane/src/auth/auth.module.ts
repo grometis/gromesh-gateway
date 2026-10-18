@@ -12,6 +12,7 @@ import { normalizeEmail, toUser } from "../users/users.js";
 import { type AuthenticatedRequest, Public, RequiredRole, type RequestContext, SessionOnly } from "./auth.js";
 import { sessionCookie, SessionService } from "./sessions.js";
 import { AnonymousMiddleware } from "./anonymous.middleware.js";
+import { environmentRolesOf } from "./environment-access.js";
 
 interface LoginBody {
   email: string;
@@ -119,6 +120,7 @@ class AuthController {
   constructor(
     private readonly auth: AuthService,
     private readonly sessions: SessionService,
+    @Inject(DB) private readonly db: Db,
   ) {}
 
   @Post("auth/login")
@@ -149,8 +151,8 @@ class AuthController {
 
   @Get("me")
   @RequiredRole("viewer")
-  me(@Req() req: AuthenticatedRequest) {
-    return toUser(req.user!);
+  async me(@Req() req: AuthenticatedRequest) {
+    return { ...toUser(req.user!), environmentRoles: await environmentRolesOf(this.db, req.user!.id) };
   }
 }
 

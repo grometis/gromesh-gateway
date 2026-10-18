@@ -402,6 +402,21 @@ describe("RBAC matrix from the contract", () => {
   const nestPath = (path: string) => `/api/v1${path.replace(/\{([a-zA-Z]+)\}/g, ":$1")}`;
   const concrete = (path: string) => path.replace(/\{version\}/g, "1").replace(/\{pluginName\}/g, "cors").replace(/\{[a-zA-Z]+\}/g, () => randomUUID());
   const mutation = (method: string) => !["GET", "HEAD"].includes(method);
+  /** Operations of one environment: the role checked there is the effective one, and a missing environment is a 404. */
+  const scoped = (op: Operation) => op.path.includes("{envId}") || op.path.includes("{clusterId}");
+  /** A real environment with a cluster, so the guard finds them (and deleting the environment answers 409). */
+  interface Place { envId: string; clusterId: string }
+  const newCluster = async (envId: string): Promise<string> => (await h.api("POST", `/environments/${envId}/clusters`, { name: uniq("matrix") })).body.id;
+  const newPlace = async (): Promise<Place> => {
+    const env = await h.api("POST", "/environments", { name: uniq("matrix") });
+    expect(env.status, JSON.stringify(env.body)).toBe(201);
+    return { envId: env.body.id, clusterId: await newCluster(env.body.id) };
+  };
+  /** The operation's path in `place`; deleting a cluster gets a fresh one, so the shared one survives the matrix. */
+  const at = async (op: Operation, place: Place) => {
+    const clusterId = op.id === "deleteCluster" ? await newCluster(place.envId) : place.clusterId;
+    return concrete(op.path.replace("{envId}", place.envId).replace("{clusterId}", clusterId));
+  };
 
   it("covers every operation of the contract", () => {
     expect(operations.length).toBeGreaterThan(40);
@@ -434,9 +449,10 @@ describe("RBAC matrix from the contract", () => {
 
   it("applies x-required-role: 403 below the role, never 401/403 at or above it", async () => {
     const clients: Record<Operation["role"], ApiClient> = { viewer: (await h.as("viewer")).api, editor: (await h.as("editor")).api, admin: (await h.as("admin")).api };
+    const place = await newPlace();
     for (const op of operations) {
       for (const role of ["viewer", "editor", "admin"] as const) {
-        const res = await clients[role](op.method, concrete(op.path), mutation(op.method) ? {} : undefined);
+        const res = await clients[role](op.method, await at(op, place), mutation(op.method) ? {} : undefined);
         if (RANK[role] < RANK[op.role]) expect(res.status, `${role} on ${op.id}`).toBe(403);
         else expect([401, 403], `${role} on ${op.id} → ${res.status}`).not.toContain(res.status);
       }
@@ -453,14 +469,90 @@ describe("RBAC matrix from the contract", () => {
       expect(token.status, JSON.stringify(token.body)).toBe(201);
       clients[role] = (method, path, body, headers = {}) => h.anonymous(method, path, body, { authorization: `Bearer ${token.body.token}`, ...headers });
     }
+    const place = await newPlace();
     for (const op of operations) {
       for (const role of ["viewer", "editor", "admin"] as const) {
         // No CSRF header on mutations: a bearer never needs one.
-        const res = await clients[role](op.method, concrete(op.path), mutation(op.method) ? {} : undefined);
+        const res = await clients[role](op.method, await at(op, place), mutation(op.method) ? {} : undefined);
         if (sessionOnly.has(op.id)) expect(res.status, `${role} by token on ${op.id}`).toBe(401);
         else if (RANK[role] < RANK[op.role]) expect(res.status, `${role} by token on ${op.id}`).toBe(403);
         else expect([401, 403], `${role} by token on ${op.id} → ${res.status}`).not.toContain(res.status);
       }
     }
+  });
+  /**
+   * Every operation, for a user with `global` and per-environment roles, in environment A (with a role) and B
+   * (without one): scoped operations follow the effective role there (404 where it is `none`), every other operation
+   * the global role only. `cap` is an API token's role, which lowers the effective role and never raises it.
+   */
+  const environmentMatrix = async (global: Operation["role"], roleInA: Operation["role"] | "none", via: "session" | "token") => {
+    const [a, b] = [await newPlace(), await newPlace()];
+    const user = await h.as(global);
+    const put = await h.api("PUT", `/users/${user.id}/environment-roles`, { items: [{ environmentId: a.envId, role: roleInA }] });
+    expect(put.status, JSON.stringify(put.body)).toBe(200);
+    let client = user.api;
+    const lower = (x: Operation["role"], y: Operation["role"]) => (RANK[x] <= RANK[y] ? x : y);
+    // A token may reach the owner's highest role anywhere; each request lowers it to the owner's role there.
+    const tokenRole = roleInA !== "none" && RANK[roleInA] > RANK[global] ? roleInA : global;
+    if (via === "token") {
+      const token = await user.api("POST", "/users/me/tokens", { name: uniq("env-matrix"), role: tokenRole, expiresInDays: 1 });
+      expect(token.status, JSON.stringify(token.body)).toBe(201);
+      client = (method, path, body, headers = {}) => h.anonymous(method, path, body, { authorization: `Bearer ${token.body.token}`, ...headers });
+    }
+    for (const op of operations) {
+      if (via === "token" && sessionOnly.has(op.id)) continue;
+      for (const [name, place, role] of [["A", a, roleInA], ["B", b, global]] as const) {
+        if (!scoped(op) && name === "B") continue;
+        const owner = !scoped(op) ? global : role;
+        const effective = owner === "none" ? "none" : via === "token" ? lower(tokenRole, owner) : owner;
+        const res = await client(op.method, await at(op, place), mutation(op.method) ? {} : undefined);
+        const what = `global ${global}, ${roleInA} in A, by ${via}: ${op.id} in ${scoped(op) ? name : "no environment"} → ${res.status}`;
+        if (effective === "none") expect(res.status, what).toBe(404);
+        else if (RANK[effective] < RANK[op.role]) expect(res.status, what).toBe(403);
+        else {
+          expect([401, 403], what).not.toContain(res.status);
+          expect(res.status, what).toBeLessThan(500);
+        }
+      }
+    }
+    const listed = (await client("GET", "/environments")).body.items.map((e: { id: string }) => e.id);
+    expect(listed.includes(a.envId)).toBe(roleInA !== "none");
+    expect(listed).toContain(b.envId);
+  };
+
+  it("an environment role elevates only in its environment: global viewer, editor in A", async () => {
+    await environmentMatrix("viewer", "editor", "session");
+  });
+
+  it("an environment role lowers only in its environment: global editor, viewer in A", async () => {
+    await environmentMatrix("editor", "viewer", "session");
+  });
+
+  it("an environment admin manages that environment, never users or tokens: global viewer, admin in A", async () => {
+    await environmentMatrix("viewer", "admin", "session");
+  });
+
+  it("none hides the environment: 404 on every operation there, missing from the list", async () => {
+    await environmentMatrix("editor", "none", "session");
+  });
+
+  it("a token may reach the owner's highest role anywhere, never above it", async () => {
+    const [a] = [await newPlace()];
+    const user = await h.as("viewer");
+    await h.api("PUT", `/users/${user.id}/environment-roles`, { items: [{ environmentId: a.envId, role: "editor" }] });
+    expect((await user.api("POST", "/users/me/tokens", { name: uniq("too-high"), role: "admin", expiresInDays: 1 })).body.errors).toEqual([
+      { path: "role", message: "cannot exceed your highest role (editor)" },
+    ]);
+    const hidden = await h.as("viewer");
+    await h.api("PUT", `/users/${hidden.id}/environment-roles`, { items: [{ environmentId: a.envId, role: "none" }] });
+    expect((await hidden.api("POST", "/users/me/tokens", { name: uniq("none"), role: "editor", expiresInDays: 1 })).status).toBe(422);
+  });
+
+  it("the same matrices through an API token act with min(token role, effective role)", async () => {
+    // Global viewer + editor in A holds an editor token: editor in A, viewer in B and everywhere else.
+    await environmentMatrix("viewer", "editor", "token");
+    await environmentMatrix("viewer", "admin", "token");
+    await environmentMatrix("editor", "viewer", "token");
+    await environmentMatrix("editor", "none", "token");
   });
 });

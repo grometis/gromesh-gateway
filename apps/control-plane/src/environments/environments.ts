@@ -1,12 +1,12 @@
-import { Body, Controller, Delete, Get, HttpCode, Inject, Injectable, Module, Param, ParseUUIDPipe, Patch, Post } from "@nestjs/common";
-import { asc, eq, sql } from "drizzle-orm";
+import { Body, Controller, Delete, Get, HttpCode, Inject, Injectable, Module, Param, ParseUUIDPipe, Patch, Post, Req } from "@nestjs/common";
+import { and, asc, eq, sql } from "drizzle-orm";
 import type { EnvironmentWrite } from "../api-types.js";
 import { audit } from "../audit/audit.js";
-import { Ctx, RequiredRole, type RequestContext } from "../auth/auth.js";
+import { type AuthenticatedRequest, Ctx, RequiredRole, type RequestContext } from "../auth/auth.js";
 import { contractBody } from "../common/contract.js";
 import { conflict, notFound } from "../common/problem.js";
 import { DB, type Db, type Executor } from "../db/db.js";
-import { clusters, environments, type EnvironmentRow } from "../db/schema.js";
+import { clusters, environmentRoles, environments, type EnvironmentRow, type UserRow } from "../db/schema.js";
 
 export const uuidParam = () => new ParseUUIDPipe({ errorHttpStatusCode: 404 });
 
@@ -45,9 +45,14 @@ export async function markDraftChanged(tx: Executor, envId: string): Promise<voi
 export class EnvironmentsService {
   constructor(@Inject(DB) private readonly db: Db) {}
 
-  async list() {
-    const rows = await this.db.select().from(environments).orderBy(asc(environments.name));
-    return { items: rows.map(toEnvironment) };
+  /** Only the environments the user may see: a global admin sees all, anyone else all but those set to `none`. */
+  async list(user: UserRow) {
+    const rows = await this.db
+      .select({ env: environments, role: environmentRoles.role })
+      .from(environments)
+      .leftJoin(environmentRoles, and(eq(environmentRoles.environmentId, environments.id), eq(environmentRoles.userId, user.id)))
+      .orderBy(asc(environments.name));
+    return { items: rows.filter((r) => user.role === "admin" || r.role !== "none").map((r) => toEnvironment(r.env)) };
   }
 
   async get(envId: string) {
@@ -102,8 +107,8 @@ export class EnvironmentsController {
 
   @Get()
   @RequiredRole("viewer")
-  list() {
-    return this.envs.list();
+  list(@Req() req: AuthenticatedRequest) {
+    return this.envs.list(req.user!);
   }
 
   @Post()

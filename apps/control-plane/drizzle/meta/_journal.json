@@ -71,6 +71,13 @@
       "when": 1792283485190,
       "tag": "0009_import_explicit_publish",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1792301691710,
+      "tag": "0010_environment_roles",
+      "breakpoints": true
     }
   ]
 }

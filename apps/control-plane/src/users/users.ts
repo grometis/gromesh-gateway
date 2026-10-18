@@ -1,15 +1,16 @@
-import { Body, Controller, Delete, Get, HttpCode, HttpStatus, Inject, Injectable, Module, Param, Patch, Post, Query } from "@nestjs/common";
+import { Body, Controller, Delete, Get, HttpCode, HttpStatus, Inject, Injectable, Module, Param, Patch, Post, Put, Query } from "@nestjs/common";
 import { hash } from "@node-rs/argon2";
-import { and, asc, count, eq, gt, ne, or, sql } from "drizzle-orm";
-import type { UserCreate, UserUpdate } from "../api-types.js";
+import { and, asc, count, eq, gt, inArray, ne, or, sql } from "drizzle-orm";
+import type { EnvironmentRoles, UserCreate, UserUpdate } from "../api-types.js";
 import { audit } from "../audit/audit.js";
 import { Ctx, RequiredRole, type RequestContext, SessionOnly } from "../auth/auth.js";
 import { SessionService } from "../auth/sessions.js";
+import { environmentRolesOf } from "../auth/environment-access.js";
 import { contractBody } from "../common/contract.js";
 import { decodeCursor, parseLimit, toPage } from "../common/pagination.js";
-import { conflict, notFound } from "../common/problem.js";
+import { conflict, notFound, unprocessable } from "../common/problem.js";
 import { DB, type Db, type Executor } from "../db/db.js";
-import { users, type UserRow } from "../db/schema.js";
+import { environmentRoles, environments, users, type UserRow } from "../db/schema.js";
 import { uuidParam } from "../environments/environments.js";
 
 /** The contract's User: never the password hash. */
@@ -81,6 +82,8 @@ export class UsersService {
       if (next.role !== current.role || !next.active || passwordHash) await this.sessions.revokeAllForUser(tx, userId);
       const after = toUser(row!);
       await audit(tx, ctx, { action: "user.update", entityType: "user", entityId: userId, before: toUser(current), after });
+      // A global admin is admin everywhere and holds no environment roles; a later demotion starts from none.
+      if (next.role === "admin" && current.role !== "admin") await this.writeEnvironmentRoles(tx, ctx, userId, []);
       return after;
     });
   }
@@ -92,6 +95,44 @@ export class UsersService {
       await tx.delete(users).where(eq(users.id, userId));
       await audit(tx, ctx, { action: "user.delete", entityType: "user", entityId: userId, before: toUser(current) });
     });
+  }
+
+  async environmentRoles(userId: string): Promise<EnvironmentRoles> {
+    await this.require(this.db, userId);
+    return { items: await environmentRolesOf(this.db, userId) };
+  }
+
+  async replaceEnvironmentRoles(ctx: RequestContext, userId: string, body: EnvironmentRoles): Promise<EnvironmentRoles> {
+    return this.db.transaction(async (tx) => {
+      // The lock serialises with a concurrent promotion to admin.
+      const user = await this.require(tx, userId, true);
+      if (user.role === "admin") throw unprocessable("Invalid environment roles", [{ path: "(body)", message: "a global admin is admin in every environment" }]);
+      // Postgres compares UUIDs case-insensitively and returns them lowercase: compare and store the same form.
+      body = { items: body.items.map((item) => ({ ...item, environmentId: item.environmentId.toLowerCase() })) };
+      const seen = new Set<string>();
+      const errors: { path: string; message: string }[] = [];
+      body.items.forEach((item, i) => {
+        if (seen.has(item.environmentId)) errors.push({ path: `items.${i}.environmentId`, message: "is repeated" });
+        seen.add(item.environmentId);
+      });
+      const known = seen.size === 0 ? [] : await tx.select({ id: environments.id }).from(environments).where(inArray(environments.id, [...seen]));
+      const knownIds = new Set(known.map((e) => e.id));
+      body.items.forEach((item, i) => {
+        if (!knownIds.has(item.environmentId)) errors.push({ path: `items.${i}.environmentId`, message: "is not an environment" });
+      });
+      if (errors.length > 0) throw unprocessable("Invalid environment roles", errors);
+      return { items: await this.writeEnvironmentRoles(tx, ctx, userId, body.items) };
+    });
+  }
+
+  private async writeEnvironmentRoles(tx: Executor, ctx: RequestContext, userId: string, items: EnvironmentRoles["items"]) {
+    const before = await environmentRolesOf(tx, userId);
+    if (before.length === 0 && items.length === 0) return before;
+    await tx.delete(environmentRoles).where(eq(environmentRoles.userId, userId));
+    if (items.length > 0) await tx.insert(environmentRoles).values(items.map((item) => ({ userId, environmentId: item.environmentId, role: item.role })));
+    const after = await environmentRolesOf(tx, userId);
+    await audit(tx, ctx, { action: "user.environment_roles.replace", entityType: "user", entityId: userId, before: { items: before }, after: { items: after } });
+    return after;
   }
 
   private async require(tx: Executor, userId: string, lock = false): Promise<UserRow> {
@@ -132,6 +173,18 @@ export class UsersController {
   @RequiredRole("admin")
   update(@Ctx() ctx: RequestContext, @Param("userId", uuidParam()) userId: string, @Body(contractBody("UserUpdate")) body: UserUpdate) {
     return this.users.update(ctx, userId, body);
+  }
+
+  @Get(":userId/environment-roles")
+  @RequiredRole("admin")
+  environmentRoles(@Param("userId", uuidParam()) userId: string) {
+    return this.users.environmentRoles(userId);
+  }
+
+  @Put(":userId/environment-roles")
+  @RequiredRole("admin")
+  replaceEnvironmentRoles(@Ctx() ctx: RequestContext, @Param("userId", uuidParam()) userId: string, @Body(contractBody("EnvironmentRoles")) body: EnvironmentRoles) {
+    return this.users.replaceEnvironmentRoles(ctx, userId, body);
   }
 
   @Delete(":userId")
