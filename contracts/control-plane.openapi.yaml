@@ -370,6 +370,167 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
 
+  /environments/{envId}/export:
+    parameters: [{ $ref: "#/components/parameters/EnvId" }]
+    get:
+      tags: [environments]
+      operationId: exportEnvironmentConfig
+      x-required-role: viewer
+      x-gromesh-planned: true
+      security: [{ cookieAuth: [] }, { bearerApiToken: [] }]
+      summary: Export the current draft as a Gromesh configuration document
+      description: |
+        Exports every managed draft entity, without pagination, as `apiVersion: gromesh/v1`.
+        This is Gromesh's declarative model, not a Kong config or a published snapshot. Environment settings,
+        users, API tokens, clusters, audit events and platform-injected plugins are outside this document.
+        `format` selects both serialization and Content-Type, independently of Accept; the default is yaml.
+        Both representations conform to GromeshConfigV1Export. No state is changed.
+        Plugin fields marked `encrypted` by the plugin schema, certificate private keys and HS256 JWT secrets
+        are always the literal `REDACTED`, for every role. Key-auth credentials contain only identity, tags
+        and `keyHint`, never `key`. Basic-auth credentials never contain a password or its hash.
+        Reimporting an export into the same environment preserves matched secrets; importing it into another
+        environment requires supplying real secrets for new entities. The output has no document size limit;
+        a document larger than the import limit must be split before import.
+      parameters:
+        - name: format
+          in: query
+          description: Serialization of the response document
+          schema: { type: string, enum: [yaml, json], default: yaml }
+      responses:
+        "200":
+          description: Complete draft with secrets redacted
+          content:
+            application/yaml:
+              schema: { $ref: "#/components/schemas/GromeshConfigV1Export" }
+              examples:
+                draft: { externalValue: ./examples/gromesh-config-v1.example.yaml }
+            application/json:
+              schema: { $ref: "#/components/schemas/GromeshConfigV1Export" }
+              examples:
+                draft: { externalValue: ./examples/gromesh-config-v1.example.json }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /environments/{envId}/import:
+    parameters: [{ $ref: "#/components/parameters/EnvId" }]
+    post:
+      tags: [environments]
+      operationId: importEnvironmentConfig
+      x-required-role: editor
+      x-gromesh-planned: true
+      security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
+      summary: Validate, preview or import configuration into the draft
+      description: |
+        Accepts a parsed document object or a UTF-8 YAML/JSON document string inside the JSON request envelope.
+        `sourceFormat` defaults to `gromesh/v1`; it selects the model, not the serialization. Reject multiple
+        YAML documents, duplicate mapping keys, custom YAML tags and alias expansion. The document limit is
+        5 MiB (5,242,880 bytes): UTF-8 bytes of a string before parsing, or UTF-8 bytes of compact JSON for an
+        object, and of the decoded compact JSON in either case. Exceeding either limit returns 422 at `document`.
+
+        Merge upserts services, routes and upstreams by name; consumers by username or customId. When both
+        consumer identifiers are supplied, either may match an existing consumer; if both resolve, they must resolve
+        to the same consumer. Resolving to different consumers is a conflict. Certificates match by an existing target-environment id or by
+        their exact non-empty SNI set (order-independent); disagreeing matches are a conflict. An empty SNI set has
+        no natural key and requires an existing id to update. SNI overlap with another certificate that would remain
+        in the resulting draft is a uniqueness conflict.
+        Plugins match by (name, resolved service, route, consumer scope), targets by (upstream, target), JWT
+        credentials by issuer key and basic-auth credentials by username (both unique within the environment).
+        Key-auth matches by existing id within the resolved consumer or by the supplied full key; `keyHint`
+        is display-only and MUST NOT be used to match a credential. A credential belonging to another consumer,
+        or an id disagreeing with a natural-key match, is a conflict. Credential ids only match within the resolved
+        consumer; unmatched ids are source identities, not requested ids for creation. New ids are generated
+        by the control plane. Matched entities retain their ids. ACL membership matches by (consumer, group).
+        Merge never deletes, including nested credentials, targets and ACL groups: omitted entities remain,
+        and supplied ACL groups are unioned. Supplied entities replace their non-secret attributes, with omitted
+        optional attributes taking the same defaults as their write schemas (nullable values default to null,
+        arrays to empty, plugin scope to global, and plugin protocols to the plugin schema's default).
+        A removed ACL membership requires replace mode or the existing ACL API.
+
+        Replace uses the same matching rules but makes the draft exactly the document, deleting every entity
+        and nested membership absent from it, subject only to retained ids and preserved secrets of matched
+        entities. References in replace must resolve inside the document; in merge they may also resolve to
+        existing draft entities. Unknown references are 422 with their source path. A service host matching
+        an upstream name keeps the existing upstream-resolution semantics; other hosts use DNS.
+
+        A supplied `REDACTED`, or an omitted secret on a matched entity, keeps the current secret in either mode,
+        as with certificate PUT. For a NEW credential/certificate/plugin secret, `REDACTED` or a missing value
+        is 422 at that secret path; import never auto-generates credentials. This applies to key-auth keys,
+        basic-auth passwords, HS256 JWT secrets, certificate keys and plugin fields marked `encrypted` that
+        the selected plugin configuration requires. Optional inactive plugin secret fields may remain absent.
+        A secret slot without a stored value is new even on a matched plugin or credential.
+        RS256/ES256 JWT credentials require a valid public key and must not supply a secret. Existing certificate
+        keys must still match the leaf; all current entity write validations, including certificate expiry on
+        creation or a changed cert, apply. Basic-auth hashes are never accepted in the Gromesh document.
+
+        For `kong-declarative-3.0`, `_format_version` must be the string `3.0`. Normalize only entities and fields
+        representable in GromeshConfigV1, including nested or flat services/routes/plugins, consumers with
+        keyauth_credentials/jwt_secrets/basicauth_credentials/acls, upstreams/targets and certificates/snis.
+        Resolve source ids and named references before assigning target ids. Translate supported snake_case
+        fields and relationships to the Gromesh model; do not pass this config directly to the data plane.
+        Every unsupported entity or field, including nested fields and unknown plugin config fields, produces
+        an `errors[]` entry at its original document path; nothing is silently ignored, even default-valued fields.
+        `_transform` may be absent or true for plaintext basic-auth passwords. False with basic-auth credentials
+        is unsupported (422 at `document._transform`): importing prehashed passwords is not supported.
+
+        Conflicts (the matching conflicts above and uniqueness violations in the resulting draft) are errors like any
+        other: an `errors[]` entry at the conflicting path, never a separate 409.
+
+        A real import (`dryRun: false`) is ALL OR NOTHING. With any error (invalid envelope, malformed
+        serialization, schema violation, conversion or semantic error, conflict, size limit) NOTHING is written:
+        no entity, draft revision, audit event or snapshot. The response is then 422 with the same report
+        `{ added, modified, removed, errors[] }` (EnvironmentImportFailure, inside a problem+json body), where
+        errors[] lists every error found and the change arrays are empty because there is no valid plan; never a
+        partial success. On success the entire change, draft revision update and a redacted import audit event
+        commit in ONE transaction and the response is 200 with errors[] empty.
+
+        `dryRun: true` never writes anything (including audit, draft revision or snapshots) and returns the same
+        redacted diff a real import would apply. Its document/conversion/semantic errors and conflicts return a 200
+        report with errors[] (change arrays empty); an invalid request envelope, malformed serialization or a
+        document schema violation is the same 422 EnvironmentImportFailure as a real import. Import NEVER publishes or notifies
+        agents, even when publishMode is auto; a separate explicit publish is required.
+        Reports diff against the current draft, not the published snapshot. Diff labels/before/after and errors
+        never expose secrets, plaintext passwords, password hashes or submitted secret values. Error paths use
+        dot-separated properties and zero-based indexes rooted at `document`, e.g. `document.consumers.0.jwtCredentials.0.secret`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EnvironmentImportRequest" }
+      responses:
+        "200":
+          description: Successful draft import, or a dry-run report; a real import always has an empty errors array
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EnvironmentImportReport" }
+              examples:
+                unchanged:
+                  value: { added: [], modified: [], removed: [], errors: [] }
+                invalidDryRun:
+                  value:
+                    added: []
+                    modified: []
+                    removed: []
+                    errors: [{ path: document.consumers.0.jwtCredentials.0.secret, message: A new HS256 credential requires a secret }]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422":
+          description: Nothing was written (all or nothing); errors[] lists every error and the change arrays are empty
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/EnvironmentImportFailure" }
+              examples:
+                missingSecret:
+                  value:
+                    type: https://gromesh.dev/problems/422
+                    title: Unprocessable Content
+                    status: 422
+                    detail: The import was not applied
+                    added: []
+                    modified: []
+                    removed: []
+                    errors: [{ path: document.consumers.0.jwtCredentials.0.secret, message: A new HS256 credential requires a secret }]
   /environments/{envId}/services:
     parameters: [{ $ref: "#/components/parameters/EnvId" }]
     get:
@@ -1711,11 +1872,13 @@ components:
         errors:
           type: array
           items:
-            type: object
-            required: [path, message]
-            properties:
-              path: { type: string }
-              message: { type: string }
+            $ref: "#/components/schemas/FieldError"
+    FieldError:
+      type: object
+      required: [path, message]
+      properties:
+        path: { type: string }
+        message: { type: string }
     Name:
       type: string
       pattern: "^[A-Za-z0-9._~-]+$"
@@ -2109,6 +2272,355 @@ components:
         supportedInDbless:
           type: boolean
           description: False for plugins that need Kong's database (e.g. oauth2).
+    GromeshConfigV1:
+      type: object
+      additionalProperties: false
+      required: [apiVersion, services, routes, consumers, plugins, upstreams, certificates]
+      description: |
+        Gromesh's own declarative draft format. All six top-level collections are required, even if empty,
+        so replace cannot accidentally interpret an omitted collection as a request to keep it.
+        References use natural keys, not database foreign keys. Only credentials and certificates carry optional
+        source ids for matching otherwise unidentifiable redacted entities. New ids are always generated by the
+        target control plane. Timestamps and computed certificate metadata are excluded. Unknown fields at any
+        depth are validation errors, including healthcheck and plugin config fields validated against their schemas.
+        Secret properties support input values and the literal REDACTED; see the import operation for preservation
+        rules. Export further restricts this schema to GromeshConfigV1Export.
+      properties:
+        apiVersion: { type: string, const: gromesh/v1 }
+        services: { type: array, items: { $ref: "#/components/schemas/GromeshConfigService" } }
+        routes: { type: array, items: { $ref: "#/components/schemas/GromeshConfigRoute" } }
+        consumers: { type: array, items: { $ref: "#/components/schemas/GromeshConfigConsumer" } }
+        plugins: { type: array, items: { $ref: "#/components/schemas/GromeshConfigPlugin" } }
+        upstreams: { type: array, items: { $ref: "#/components/schemas/GromeshConfigUpstream" } }
+        certificates: { type: array, items: { $ref: "#/components/schemas/GromeshConfigCertificate" } }
+    GromeshConfigService:
+      allOf: [{ $ref: "#/components/schemas/ServiceWrite" }]
+      unevaluatedProperties: false
+    GromeshConfigRoute:
+      type: object
+      additionalProperties: false
+      required: [name, service]
+      description: Same route attributes and match requirements as RouteWrite; service is the service name.
+      properties:
+        name: { $ref: "#/components/schemas/Name" }
+        service: { $ref: "#/components/schemas/Name" }
+        protocols: { $ref: "#/components/schemas/RouteWrite/properties/protocols" }
+        methods: { $ref: "#/components/schemas/RouteWrite/properties/methods" }
+        hosts: { $ref: "#/components/schemas/RouteWrite/properties/hosts" }
+        paths: { $ref: "#/components/schemas/RouteWrite/properties/paths" }
+        headers: { $ref: "#/components/schemas/RouteWrite/properties/headers" }
+        stripPath: { $ref: "#/components/schemas/RouteWrite/properties/stripPath" }
+        preserveHost: { $ref: "#/components/schemas/RouteWrite/properties/preserveHost" }
+        tags: { $ref: "#/components/schemas/Tags" }
+    GromeshConfigConsumerRef:
+      type: object
+      additionalProperties: false
+      description: At least one non-empty identifier; if both are supplied they must identify the same consumer.
+      allOf:
+        - anyOf:
+            - type: object
+              required: [username]
+              properties: { username: { type: string, minLength: 1 } }
+            - type: object
+              required: [customId]
+              properties: { customId: { type: string, minLength: 1 } }
+      properties:
+        username: { type: [string, "null"], minLength: 1 }
+        customId: { type: [string, "null"], minLength: 1 }
+    GromeshConfigConsumer:
+      allOf:
+        - { $ref: "#/components/schemas/ConsumerWrite" }
+        - type: object
+          required: [aclGroups, keyAuthCredentials, jwtCredentials, basicAuthCredentials]
+          properties:
+            aclGroups: { $ref: "#/components/schemas/AclGroups/properties/groups" }
+            keyAuthCredentials: { type: array, items: { $ref: "#/components/schemas/GromeshConfigKeyAuthCredential" } }
+            jwtCredentials: { type: array, items: { $ref: "#/components/schemas/GromeshConfigJwtCredential" } }
+            basicAuthCredentials: { type: array, items: { $ref: "#/components/schemas/GromeshConfigBasicAuthCredential" } }
+        - anyOf:
+            - type: object
+              required: [username]
+              properties: { username: { type: string, minLength: 1 } }
+            - type: object
+              required: [customId]
+              properties: { customId: { type: string, minLength: 1 } }
+      unevaluatedProperties: false
+    GromeshConfigKeyAuthCredential:
+      type: object
+      additionalProperties: false
+      description: Import matches by id or a supplied full key, never by keyHint. Export omits key entirely.
+      properties:
+        id: { type: string, format: uuid }
+        keyHint: { type: string, description: Display-only hint; not a secret or a matching key }
+        key:
+          type: string
+          writeOnly: true
+          oneOf:
+            - { const: REDACTED }
+            - { minLength: 16, not: { const: REDACTED } }
+          description: Import only; required for a new credential, omitted or REDACTED preserves a matched key
+        tags: { $ref: "#/components/schemas/Tags" }
+    GromeshConfigJwtCredential:
+      type: object
+      additionalProperties: false
+      required: [key, algorithm]
+      description: HS256 exports secret as REDACTED; RS256/ES256 export only their public key and no secret.
+      properties:
+        id: { type: string, format: uuid }
+        key: { $ref: "#/components/schemas/JwtCredentialCreate/properties/key" }
+        algorithm: { $ref: "#/components/schemas/JwtAlgorithm" }
+        secret:
+          type: string
+          oneOf:
+            - { const: REDACTED }
+            - { minLength: 32, maxLength: 512, not: { const: REDACTED } }
+        rsaPublicKey: { $ref: "#/components/schemas/JwtCredentialCreate/properties/rsaPublicKey" }
+        tags: { $ref: "#/components/schemas/Tags" }
+      allOf:
+        - if: { properties: { algorithm: { const: HS256 } } }
+          then: { not: { required: [rsaPublicKey] } }
+          else:
+            required: [rsaPublicKey]
+            not: { required: [secret] }
+    GromeshConfigBasicAuthCredential:
+      type: object
+      additionalProperties: false
+      required: [username]
+      description: Export omits password entirely. Hashes are neither exported nor accepted.
+      properties:
+        id: { type: string, format: uuid }
+        username: { $ref: "#/components/schemas/BasicAuthCredentialCreate/properties/username" }
+        password:
+          type: string
+          writeOnly: true
+          minLength: 8
+          maxLength: 256
+          description: Import only; a new credential requires plaintext, omitted or REDACTED preserves a matched password
+        tags: { $ref: "#/components/schemas/Tags" }
+    GromeshConfigPluginScope:
+      type: object
+      additionalProperties: false
+      description: Empty or absent scope is global; references resolve by service/route name and consumer identifiers.
+      properties:
+        service: { $ref: "#/components/schemas/Name" }
+        route: { $ref: "#/components/schemas/Name" }
+        consumer: { $ref: "#/components/schemas/GromeshConfigConsumerRef" }
+    GromeshConfigPlugin:
+      type: object
+      additionalProperties: false
+      required: [name, config]
+      properties:
+        name: { $ref: "#/components/schemas/PluginWrite/properties/name" }
+        enabled: { $ref: "#/components/schemas/PluginWrite/properties/enabled" }
+        scope: { $ref: "#/components/schemas/GromeshConfigPluginScope" }
+        config:
+          type: object
+          additionalProperties: true
+          description: |
+            Validated against the pinned catalog schema for name, including unknown fields at every depth.
+            Fields marked encrypted are always REDACTED on export. Import accepts actual secrets or REDACTED;
+            missing/REDACTED required secrets on new plugins fail at the exact config field path.
+        protocols: { $ref: "#/components/schemas/PluginWrite/properties/protocols" }
+        tags: { $ref: "#/components/schemas/Tags" }
+    GromeshConfigUpstream:
+      allOf:
+        - { $ref: "#/components/schemas/UpstreamWrite" }
+        - type: object
+          required: [targets]
+          properties:
+            healthchecks: { $ref: "#/components/schemas/GromeshConfigHealthchecks" }
+            targets: { type: array, items: { $ref: "#/components/schemas/GromeshConfigTarget" } }
+      unevaluatedProperties: false
+    GromeshConfigHealthchecks:
+      allOf:
+        - { $ref: "#/components/schemas/Healthchecks" }
+        - type: object
+          properties:
+            active:
+              allOf: [{ $ref: "#/components/schemas/Healthchecks/properties/active" }]
+              unevaluatedProperties: false
+            passive:
+              allOf: [{ $ref: "#/components/schemas/Healthchecks/properties/passive" }]
+              unevaluatedProperties: false
+      unevaluatedProperties: false
+    GromeshConfigTarget:
+      allOf: [{ $ref: "#/components/schemas/TargetWrite" }]
+      unevaluatedProperties: false
+    GromeshConfigCertificate:
+      type: object
+      additionalProperties: false
+      required: [cert, snis]
+      description: |
+        Match by an existing target id or exact non-empty SNI set. Export includes id and REDACTED key.
+        Import requires a real key for a new certificate; on a match, omitted or REDACTED keeps the current key.
+      properties:
+        id: { type: string, format: uuid }
+        cert: { $ref: "#/components/schemas/CertificateWrite/properties/cert" }
+        key: { $ref: "#/components/schemas/CertificateWrite/properties/key" }
+        snis: { $ref: "#/components/schemas/CertificateWrite/properties/snis" }
+        tags: { $ref: "#/components/schemas/Tags" }
+    GromeshConfigV1Export:
+      description: Secret-safe export view of GromeshConfigV1, identical for YAML and JSON responses.
+      allOf:
+        - { $ref: "#/components/schemas/GromeshConfigV1" }
+        - type: object
+          properties:
+            consumers:
+              type: array
+              items:
+                type: object
+                properties:
+                  keyAuthCredentials:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, keyHint]
+                      additionalProperties: true
+                      properties:
+                        id: { type: string, format: uuid }
+                        keyHint: { type: string }
+                      not: { required: [key] }
+                  jwtCredentials:
+                    type: array
+                    items:
+                      type: object
+                      required: [id]
+                      additionalProperties: true
+                      properties:
+                        id: { type: string, format: uuid }
+                        secret: { type: string, const: REDACTED }
+                      if: { properties: { algorithm: { const: HS256 } } }
+                      then: { required: [secret] }
+                  basicAuthCredentials:
+                    type: array
+                    items:
+                      type: object
+                      required: [id]
+                      additionalProperties: true
+                      properties:
+                        id: { type: string, format: uuid }
+                      not: { required: [password] }
+            certificates:
+              type: array
+              items:
+                type: object
+                required: [id, key]
+                additionalProperties: true
+                properties:
+                  id: { type: string, format: uuid }
+                  key: { type: string, const: REDACTED }
+    KongDeclarativeConfigV3:
+      type: object
+      required: [_format_version]
+      additionalProperties: true
+      description: |
+        Alternative source document, not the Gromesh export format. Source fields are retained for conversion
+        diagnostics; additionalProperties does NOT authorize ignoring unknown data. Only fields representable
+        by GromeshConfigV1 are accepted semantically. Unsupported entities/fields at any depth produce errors[]
+        at their original paths; with dryRun false any such error aborts the entire import with 422.
+      properties:
+        _format_version: { type: string, const: "3.0" }
+        _transform: { type: boolean, description: Defaults to true; false with basic-auth credentials is unsupported }
+    SerializedConfigDocument:
+      type: string
+      minLength: 1
+      maxLength: 5242880
+      description: |
+        A single YAML mapping or JSON object encoded as a string. maxLength is a character ceiling; the import
+        operation also enforces the stricter 5 MiB UTF-8 byte and decoded size limits. Parsed content must conform
+        to GromeshConfigV1 or KongDeclarativeConfigV3 according to sourceFormat, with no duplicate keys or YAML aliases.
+    GromeshConfigSourceFormat:
+      type: string
+      const: gromesh/v1
+      default: gromesh/v1
+    EnvironmentImportRequest:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [document, mode, dryRun]
+          properties:
+            sourceFormat: { $ref: "#/components/schemas/GromeshConfigSourceFormat" }
+            document:
+              oneOf:
+                - { $ref: "#/components/schemas/GromeshConfigV1" }
+                - { $ref: "#/components/schemas/SerializedConfigDocument" }
+            mode: { $ref: "#/components/schemas/EnvironmentImportMode" }
+            dryRun: { type: boolean }
+        - type: object
+          additionalProperties: false
+          required: [sourceFormat, document, mode, dryRun]
+          properties:
+            sourceFormat: { type: string, const: kong-declarative-3.0 }
+            document:
+              oneOf:
+                - { $ref: "#/components/schemas/KongDeclarativeConfigV3" }
+                - { $ref: "#/components/schemas/SerializedConfigDocument" }
+            mode: { $ref: "#/components/schemas/EnvironmentImportMode" }
+            dryRun: { type: boolean }
+    EnvironmentImportMode:
+      type: string
+      enum: [merge, replace]
+      description: Merge never deletes; replace makes the draft exactly the document, preserving matched secrets and ids.
+    EnvironmentImportFailure:
+      description: |
+        The 422 of an import: problem details plus the import report. Nothing was written (all or nothing), so the
+        change arrays are empty and errors[] lists every error found, at its document path.
+      allOf:
+        - { $ref: "#/components/schemas/Problem" }
+        - type: object
+          required: [added, modified, removed, errors]
+          properties:
+            added: { type: array, maxItems: 0 }
+            modified: { type: array, maxItems: 0 }
+            removed: { type: array, maxItems: 0 }
+            errors: { type: array, minItems: 1, items: { $ref: "#/components/schemas/FieldError" } }
+    EnvironmentImportReport:
+      type: object
+      additionalProperties: false
+      required: [added, modified, removed, errors]
+      description: |
+        Diff against the current draft. Each array contains EntityChange items whose change value matches the
+        array name. Merge always has removed empty. Secrets are redacted as in publish diff; basic-auth passwords
+        and hashes are never included. On semantic errors in dry-run all change arrays are empty.
+        Ids for proposed additions in a dry-run are provisional and do not reserve persisted ids.
+      allOf:
+        - if:
+            properties:
+              errors: { minItems: 1 }
+          then:
+            properties:
+              added: { maxItems: 0 }
+              modified: { maxItems: 0 }
+              removed: { maxItems: 0 }
+              errors: { type: array, items: { $ref: "#/components/schemas/FieldError" } }
+      properties:
+        added:
+          type: array
+          items:
+            allOf:
+              - { $ref: "#/components/schemas/EntityChange" }
+              - type: object
+                properties:
+                  change: { const: added }
+        modified:
+          type: array
+          items:
+            allOf:
+              - { $ref: "#/components/schemas/EntityChange" }
+              - type: object
+                properties:
+                  change: { const: modified }
+        removed:
+          type: array
+          items:
+            allOf:
+              - { $ref: "#/components/schemas/EntityChange" }
+              - type: object
+                properties:
+                  change: { const: removed }
+        errors:
+          type: array
+          items: { $ref: "#/components/schemas/FieldError" }
     EntityChange:
       type: object
       required: [kind, id, label, change]
