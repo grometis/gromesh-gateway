@@ -1,4 +1,4 @@
-FROM node:24.18.0-alpine AS build
+FROM node:26.12.0-alpine AS build
 RUN corepack enable
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
@@ -8,7 +8,7 @@ COPY apps/ui apps/ui
 RUN pnpm --filter @gromesh/ui build \
     && rm -rf node_modules apps/ui/node_modules
 
-FROM nginxinc/nginx-unprivileged:1.28.0-alpine
+FROM nginxinc/nginx-unprivileged:1.31.7-alpine
 USER root
 RUN apk upgrade --no-cache
 COPY apps/ui/nginx.conf /etc/nginx/conf.d/default.conf
