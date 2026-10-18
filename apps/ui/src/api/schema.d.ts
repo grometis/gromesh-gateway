@@ -149,8 +149,10 @@ export interface paths {
         put?: never;
         /**
          * @description Creates an API token for the caller. The token itself is returned once, here, and never again: the server keeps
-         *     only a keyed hash and the hint. `role` may not exceed the caller's global role (422 on `role`); in each
-         *     environment the token then acts with min(its role, the owner's effective role there). A user may hold at most
+         *     only a keyed hash and the hint. `role` may not exceed the caller's highest role: the global role or the
+         *     highest of the caller's environment roles (`none` counts as nothing), 422 on `role` otherwise. In an
+         *     operation of one environment the token acts with min(its role, the owner's effective role there); in any
+         *     other operation, with min(its role, the owner's global role). A user may hold at most
          *     50 active tokens (neither revoked nor expired): the 51st answers 422 with path `(body)` and a message saying so.
          */
         post: operations["createMyToken"];

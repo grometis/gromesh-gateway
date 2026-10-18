@@ -22,7 +22,11 @@ info:
           * every other operation (users, API tokens, audit events, creating environments, `/me`, the plugin
             catalog): the global role only. An environment `admin` does not manage users or other users' tokens.
           * a global `admin` is `admin` in every environment; environment roles cannot be assigned to one.
-          * an API token acts with min(the token's role, its owner's effective role for that operation).
+          * an API token acts with min(the token's role, its owner's effective role for that operation): in an
+            operation with `{envId}` (or on a resource of one environment), the owner's role in that environment;
+            in every other operation, the owner's global role. A token may be created with a role up to the owner's
+            highest role anywhere (the global role or any environment role), so a global viewer who is editor in one
+            environment can hold an editor token that edits only there.
         `GET /environments` lists only the environments where the caller's effective role is at least `viewer`
         (a global admin sees all).
       - Every mutation is written to the audit log in the same transaction.
@@ -279,8 +283,10 @@ paths:
       x-required-role: viewer
       description: |
         Creates an API token for the caller. The token itself is returned once, here, and never again: the server keeps
-        only a keyed hash and the hint. `role` may not exceed the caller's global role (422 on `role`); in each
-        environment the token then acts with min(its role, the owner's effective role there). A user may hold at most
+        only a keyed hash and the hint. `role` may not exceed the caller's highest role: the global role or the
+        highest of the caller's environment roles (`none` counts as nothing), 422 on `role` otherwise. In an
+        operation of one environment the token acts with min(its role, the owner's effective role there); in any
+        other operation, with min(its role, the owner's global role). A user may hold at most
         50 active tokens (neither revoked nor expired): the 51st answers 422 with path `(body)` and a message saying so.
       requestBody:
         required: true

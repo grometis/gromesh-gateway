@@ -40,7 +40,13 @@ test("/me keeps the user and adds environmentRoles; the conventions state the ef
   assert.equal(valid("Me", me.example), true);
   assert.equal(valid("Me", { ...me.example, environmentRoles: undefined }), true);
   const text: string = contract.info.description;
-  for (const rule of ["answers 404, never 403", "An environment `admin` does not manage users", "min(the token's role, its owner's effective role", "a global admin sees all"]) {
+  for (const rule of ["answers 404, never 403", "An environment `admin` does not manage users", "min(the token's role, its owner's effective role", "a global admin sees all", "highest role anywhere (the global role or any environment role)"]) {
     assert.ok(text.includes(rule), rule);
   }
+});
+
+test("a token may be created up to the caller's highest role, global or per environment", () => {
+  const text: string = contract.paths["/users/me/tokens"].post.description;
+  assert.ok(text.includes("may not exceed the caller's highest role"));
+  assert.ok(text.includes("min(its role, the owner's global role)"));
 });
