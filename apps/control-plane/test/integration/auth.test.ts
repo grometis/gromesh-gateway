@@ -165,19 +165,21 @@ describe("login", () => {
   });
 
   it("locks a client address after too many failures across accounts", async () => {
-    // The lockout table is shared by every replica, so this replica sees the failures made through `h` too:
-    // use fresh keys (new e-mails) and a threshold the test can reach on its own.
-    const strict = await startHarness({ loginMaxFailuresPerIp: 3, loginLockoutMs: 60_000 });
+    // The lockout table is shared by every replica and by every test file of the run: lock an address of its own
+    // (through trust proxy), never 127.0.0.1, or the harness logins of the other files get 429 for a minute.
+    const strict = await startHarness({ trustProxy: true, loginMaxFailuresPerIp: 3, loginLockoutMs: 60_000 });
+    const fromX = { "x-forwarded-for": "198.51.100.91" };
     try {
-      await h.sql.query("delete from login_attempts where key like 'ip:%'");
       for (let i = 0; i < 3; i++) {
-        expect((await strict.anonymous("POST", "/auth/login", { email: `${uniq("x")}@example.test`, password: "wrong-password-123" })).status).toBe(401);
+        expect((await strict.anonymous("POST", "/auth/login", { email: `${uniq("x")}@example.test`, password: "wrong-password-123" }, fromX)).status).toBe(401);
       }
-      const locked = await strict.anonymous("POST", "/auth/login", BOOTSTRAP_ADMIN);
+      const locked = await strict.anonymous("POST", "/auth/login", BOOTSTRAP_ADMIN, fromX);
       expect(locked.status).toBe(429);
       expect(Number(locked.headers.get("retry-after"))).toBeGreaterThan(0);
+      // The bootstrap admin still logs in from the address every other test uses.
+      expect((await strict.anonymous("POST", "/auth/login", BOOTSTRAP_ADMIN)).status).toBe(200);
     } finally {
-      await h.sql.query("delete from login_attempts where key like 'ip:%'");
+      await h.sql.query("delete from login_attempts where key like $1", ["%198.51.100.91"]);
       await strict.close();
     }
   });

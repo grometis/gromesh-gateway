@@ -320,7 +320,9 @@ test("reuses JWT key types, ACL/hash rules, certificate expiry/matching and plug
 test("Kong merge resolves existing natural references, supports nested additions and rejects prehashed basic-auth", async () => {
   const base = await fixture();
   const before = await stateOf(base);
-  const source = { _format_version: "3.0", routes: [{ name: "second", service: { name: "backend" }, paths: ["/second"] }], plugins: [{ name: "key-auth", route: "second", config: {} }], keyauth_credentials: [{ consumer: { username: "partner" }, key: "abc" }], targets: [{ upstream: "pool.test", target: "echo-2:80" }] };
+  // A key that cannot occur by chance: "abc" (hex) showed up inside the export's random UUIDs and PEMs (~4% of runs).
+  const key = uniq("merge-key");
+  const source = { _format_version: "3.0", routes: [{ name: "second", service: { name: "backend" }, paths: ["/second"] }], plugins: [{ name: "key-auth", route: "second", config: {} }], keyauth_credentials: [{ consumer: { username: "partner" }, key }], targets: [{ upstream: "pool.test", target: "echo-2:80" }] };
   const dry = await importDocument(base, source, { mode: "merge", dryRun: true, sourceFormat: "kong-declarative-3.0" });
   expect(dry.status, JSON.stringify(dry.body)).toBe(200);
   expect(dry.body.errors).toEqual([]);
@@ -328,9 +330,9 @@ test("Kong merge resolves existing natural references, supports nested additions
   const imported = await importDocument(base, source, { mode: "merge", sourceFormat: "kong-declarative-3.0" });
   expect(imported.status, JSON.stringify(imported.body)).toBe(200);
   const doc = await exportDocument(base);
-  expect(JSON.stringify(doc)).not.toContain("abc");
+  expect(JSON.stringify(doc)).not.toContain(key);
   expect(doc.consumers[0]!.keyAuthCredentials).toHaveLength(2);
-  expect(doc.consumers[0]!.keyAuthCredentials.some(k => k.keyHint === "…")).toBe(true);
+  expect(doc.consumers[0]!.keyAuthCredentials.some(k => k.keyHint === `…${key.slice(-4)}`)).toBe(true);
   expect(doc.upstreams[0]!.targets).toHaveLength(2);
   expect(doc.routes).toHaveLength(2);
   const baseAfter = await stateOf(base);
