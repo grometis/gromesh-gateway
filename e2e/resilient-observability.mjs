@@ -41,6 +41,24 @@ async function admin(method, body) {
   });
 }
 
+/**
+ * Probes the collector's http-log endpoint (/kong) with the compose healthcheck's own request until it accepts, so a
+ * restart from a previous scenario is never measured as this one's loss. The probe runs directly: Docker's health
+ * status can stay stale after a `compose restart`.
+ */
+async function collectorReady(timeoutMs = 60_000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      await compose("exec", "-T", "vector", "wget", "-q", "-O", "/dev/null", "--post-data=[]", "http://127.0.0.1:8080/kong");
+      return;
+    } catch {
+      assert.ok(Date.now() < deadline, `Collector must accept on its http-log endpoint within ${timeoutMs / 1000} s`);
+      await sleep(500);
+    }
+  }
+}
+
 async function main() {
   // The timeouts below cover only the runs: the helper image is pulled first, with retries.
   await pullImages([NODE_IMAGE]);
@@ -73,6 +91,7 @@ async function main() {
   let started;
   let collectorStopped = false;
   try {
+    await collectorReady();
     if (coldDns) {
       await compose("stop", "vector");
       collectorStopped = true;
@@ -156,6 +175,8 @@ async function main() {
     await traffic;
     if (collectorStopped) await compose("restart", "--no-deps", "vector");
     await admin("POST", prior);
+    // The next scenario (or test file) starts from a ready collector.
+    await collectorReady();
   }
 }
 
