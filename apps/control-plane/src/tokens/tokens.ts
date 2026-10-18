@@ -11,6 +11,7 @@ import { ENCRYPTOR, Encryptor } from "../crypto/crypto.js";
 import { DB, type Db, type Executor } from "../db/db.js";
 import { type ApiTokenRow, apiTokens, loginAttempts, users, type UserRow } from "../db/schema.js";
 import { uuidParam } from "../environments/environments.js";
+import { environmentRolesOf } from "../auth/environment-access.js";
 
 export const TOKEN_PREFIX = "ggt_";
 const RANK: Record<Role, number> = { viewer: 1, editor: 2, admin: 3 };
@@ -52,16 +53,23 @@ export class TokensService implements BearerResolver {
     @Inject(ENCRYPTOR) private readonly enc: Encryptor,
   ) {}
 
-  /** The token is generated here, hashed for storage and returned once. */
+  /**
+   * The token is generated here, hashed for storage and returned once. Its role may reach the owner's highest role,
+   * global or in any environment; each request then lowers it to the owner's role where it acts.
+   */
   async create(ctx: RequestContext, owner: UserRow, body: TokenCreate) {
-    if (RANK[body.role] > RANK[owner.role]) {
-      throw unprocessable("Invalid token", [{ path: "role", message: `cannot exceed your role (${owner.role})` }]);
-    }
     const now = new Date();
     const token = `${TOKEN_PREFIX}${randomBytes(32).toString("base64url")}`;
     return this.db.transaction(async (tx) => {
       // Counted inside the transaction, with the owner's row locked, so two concurrent creations cannot both pass.
       await tx.select({ id: users.id }).from(users).where(eq(users.id, owner.id)).for("update");
+      const highest = (await environmentRolesOf(tx, owner.id)).reduce<Role>(
+        (max, { role }) => (role !== "none" && RANK[role] > RANK[max] ? role : max),
+        owner.role,
+      );
+      if (RANK[body.role] > RANK[highest]) {
+        throw unprocessable("Invalid token", [{ path: "role", message: `cannot exceed your highest role (${highest})` }]);
+      }
       const [count] = await tx.select({ n: sql<number>`count(*)::int` }).from(apiTokens).where(and(eq(apiTokens.userId, owner.id), activeNow(now)));
       if ((count?.n ?? 0) >= MAX_ACTIVE_TOKENS) {
         throw unprocessable("Too many active tokens", [{ path: "(body)", message: `you already hold ${MAX_ACTIVE_TOKENS} active tokens: revoke one first` }]);

@@ -491,18 +491,20 @@ describe("RBAC matrix from the contract", () => {
     const put = await h.api("PUT", `/users/${user.id}/environment-roles`, { items: [{ environmentId: a.envId, role: roleInA }] });
     expect(put.status, JSON.stringify(put.body)).toBe(200);
     let client = user.api;
+    const lower = (x: Operation["role"], y: Operation["role"]) => (RANK[x] <= RANK[y] ? x : y);
+    // A token may reach the owner's highest role anywhere; each request lowers it to the owner's role there.
+    const tokenRole = roleInA !== "none" && RANK[roleInA] > RANK[global] ? roleInA : global;
     if (via === "token") {
-      // A token may not exceed the owner's global role, so it never carries the elevation of an environment role.
-      const token = await user.api("POST", "/users/me/tokens", { name: uniq("env-matrix"), role: global, expiresInDays: 1 });
+      const token = await user.api("POST", "/users/me/tokens", { name: uniq("env-matrix"), role: tokenRole, expiresInDays: 1 });
       expect(token.status, JSON.stringify(token.body)).toBe(201);
       client = (method, path, body, headers = {}) => h.anonymous(method, path, body, { authorization: `Bearer ${token.body.token}`, ...headers });
     }
-    const lower = (x: Operation["role"], y: Operation["role"]) => (RANK[x] <= RANK[y] ? x : y);
     for (const op of operations) {
       if (via === "token" && sessionOnly.has(op.id)) continue;
       for (const [name, place, role] of [["A", a, roleInA], ["B", b, global]] as const) {
         if (!scoped(op) && name === "B") continue;
-        const effective = !scoped(op) ? global : role === "none" ? "none" : via === "token" ? lower(global, role) : role;
+        const owner = !scoped(op) ? global : role;
+        const effective = owner === "none" ? "none" : via === "token" ? lower(tokenRole, owner) : owner;
         const res = await client(op.method, await at(op, place), mutation(op.method) ? {} : undefined);
         const what = `global ${global}, ${roleInA} in A, by ${via}: ${op.id} in ${scoped(op) ? name : "no environment"} → ${res.status}`;
         if (effective === "none") expect(res.status, what).toBe(404);
@@ -531,8 +533,22 @@ describe("RBAC matrix from the contract", () => {
     await environmentMatrix("editor", "none", "session");
   });
 
+  it("a token may reach the owner's highest role anywhere, never above it", async () => {
+    const [a] = [await newPlace()];
+    const user = await h.as("viewer");
+    await h.api("PUT", `/users/${user.id}/environment-roles`, { items: [{ environmentId: a.envId, role: "editor" }] });
+    expect((await user.api("POST", "/users/me/tokens", { name: uniq("too-high"), role: "admin", expiresInDays: 1 })).body.errors).toEqual([
+      { path: "role", message: "cannot exceed your highest role (editor)" },
+    ]);
+    const hidden = await h.as("viewer");
+    await h.api("PUT", `/users/${hidden.id}/environment-roles`, { items: [{ environmentId: a.envId, role: "none" }] });
+    expect((await hidden.api("POST", "/users/me/tokens", { name: uniq("none"), role: "editor", expiresInDays: 1 })).status).toBe(422);
+  });
+
   it("the same matrices through an API token act with min(token role, effective role)", async () => {
+    // Global viewer + editor in A holds an editor token: editor in A, viewer in B and everywhere else.
     await environmentMatrix("viewer", "editor", "token");
+    await environmentMatrix("viewer", "admin", "token");
     await environmentMatrix("editor", "viewer", "token");
     await environmentMatrix("editor", "none", "token");
   });
