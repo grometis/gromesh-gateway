@@ -19,11 +19,47 @@ describe("Kong declarative conversion", () => {
     const { errors } = convertKongConfig(config);
     expect(errors.map(e => e.path)).toEqual(expect.arrayContaining(["document.vaults", "document.services.0.client_certificate"]));
   });
-  it("rejects prehashed basic-auth while accepting plaintext", () => {
+  it("requires a source UUID for prehashed basic-auth while accepting plaintext", () => {
     const config = { _format_version: "3.0", _transform: false, consumers: [{ username: "u", basicauth_credentials: [{ username: "b", password: "password" }] }] };
-    expect(convertKongConfig(config).errors.map(e => e.path)).toContain("document._transform");
+    expect(convertKongConfig(config).errors.map(e => e.path)).toContain("document.consumers.0.basicauth_credentials.0.password");
     config._transform = true;
     expect(convertKongConfig(config).document.consumers[0]?.basicAuthCredentials[0]?.password).toBe("password");
+  });
+  it("carries prehashed password and consumer identity separately from the public document", () => {
+    const id = "00000000-0000-4000-8000-000000000016";
+    const password = "a".repeat(40);
+    const converted = convertKongConfig({ _format_version: "3.0", _transform: false, consumers: [{ id, username: "hashed" }, { id: "ignored", username: "ordinary" }], basicauth_credentials: [{ consumer: { id }, username: "login", password }] });
+    expect(converted.errors).toEqual([]);
+    expect(converted.identity.consumerIds).toEqual(new Map([[0, id]]));
+    expect(converted.identity.prehashedPasswords).toEqual(new Set(["document.consumers.0.basicAuthCredentials.0.password"]));
+    expect(converted.document.consumers[0]?.basicAuthCredentials[0]?.password).toBe(password);
+    expect(converted.document.consumers[0]).not.toHaveProperty("id");
+    expect(converted.sourcePath("document.consumers.0.id")).toBe("document.consumers.0.id");
+    expect(converted.sourcePath("document.consumers.0.basicAuthCredentials.0.password")).toBe("document.basicauth_credentials.0.password");
+  });
+  it("rejects invalid UUIDs, noncanonical salts and malformed hashes without echoing passwords", () => {
+    for (const id of ["not-a-uuid", "AAAAAAAA-0000-4000-8000-000000000016", "00000000-0000-4000-8000-000000000016\n"]) {
+      const converted = convertKongConfig({ _format_version: "3.0", _transform: false, consumers: [{ id, username: "hashed", basicauth_credentials: [{ username: "login", password: "a".repeat(40) }] }] });
+      expect(converted.errors).toContainEqual(expect.objectContaining({ path: "document.consumers.0.basicauth_credentials.0.password", message: expect.stringContaining("salted") }));
+    }
+    for (const password of ["A".repeat(40), "g".repeat(40), "a".repeat(39), "a".repeat(40) + "\n", "plaintext"]) {
+      const converted = convertKongConfig({ _format_version: "3.0", _transform: false, consumers: [{ id: "00000000-0000-4000-8000-000000000016", username: "hashed", basicauth_credentials: [{ username: "login", password }] }] });
+      expect(converted.errors).toContainEqual(expect.objectContaining({ path: "document.consumers.0.basicauth_credentials.0.password" }));
+      expect(JSON.stringify(converted.errors)).not.toContain(password);
+    }
+  });
+  it("does not allow a target-only consumer reference to supply the salt", () => {
+    const id = "00000000-0000-4000-8000-000000000016";
+    const converted = convertKongConfig({ _format_version: "3.0", _transform: false, basicauth_credentials: [{ consumer: { id }, username: "login", password: "a".repeat(40) }] }, { services: [], routes: [], consumers: [{ id, username: "existing" }], plugins: [], keyAuthCredentials: [] });
+    expect(converted.errors).toContainEqual(expect.objectContaining({ path: "document.basicauth_credentials.0.password", message: expect.stringContaining("salted") }));
+  });
+  it("resolves target UUID aliases to a renamed source consumer carrying mixed credential types", () => {
+    const id = "00000000-0000-4000-8000-000000000016";
+    const converted = convertKongConfig({ _format_version: "3.0", _transform: false, consumers: [{ id, username: "renamed", basicauth_credentials: [{ username: "login", password: "a".repeat(40) }] }], keyauth_credentials: [{ consumer: { id }, key: "key-for-renamed-consumer" }], plugins: [{ name: "key-auth", consumer: { id }, config: {} }] }, { services: [], routes: [], consumers: [{ id, username: "original" }], plugins: [], keyAuthCredentials: [] });
+    expect(converted.errors).toEqual([]);
+    expect(converted.document.consumers).toHaveLength(1);
+    expect(converted.document.consumers[0]?.keyAuthCredentials).toHaveLength(1);
+    expect(converted.document.plugins[0]?.scope?.consumer).toEqual({ username: "renamed" });
   });
 });
 
