@@ -1,5 +1,5 @@
 import pg from "pg";
-import type { GlobalSetupContext } from "vitest/node";
+import type { TestProject } from "vitest/node";
 import { runMigrations } from "../../src/db/migrate.js";
 
 /**
@@ -9,7 +9,7 @@ import { runMigrations } from "../../src/db/migrate.js";
  */
 const ADMIN_URL = process.env.TEST_DATABASE_URL ?? "postgres://gromesh:gromesh@127.0.0.1:5432/gromesh";
 
-export default async function setup({ provide }: GlobalSetupContext) {
+export default async function setup({ provide }: TestProject) {
   const dbName = `gromesh_test_${Date.now()}_${process.pid}`;
   const admin = new pg.Client({ connectionString: ADMIN_URL });
   await admin.connect();
