@@ -11,6 +11,20 @@ info:
       - Lists are cursor-paginated: `?limit=50&cursor=<opaque>` → `{ items, nextCursor }`.
       - Errors are RFC 9457 problem details (`application/problem+json`).
       - `x-required-role` is the minimum role: viewer < editor < admin. Enforced by the API, not only by the UI.
+      - Roles per environment (planned): a user has a global role and may have, per environment, a role that
+        replaces it in that environment (`viewer`, `editor`, `admin`, or `none` = no access). The role checked
+        against `x-required-role` is the effective role:
+          * operations with `{envId}` in the path, and those on a resource that belongs to one environment
+            (`/clusters/{clusterId}`, `/clusters/{clusterId}/rotate-token`): the environment's role if the user has
+            one, otherwise the global role. A user whose effective role there is `none` does not see the environment:
+            every such operation answers 404, never 403, so its existence is not revealed. A visible environment
+            where the effective role is below `x-required-role` answers 403.
+          * every other operation (users, API tokens, audit events, creating environments, `/me`, the plugin
+            catalog): the global role only. An environment `admin` does not manage users or other users' tokens.
+          * a global `admin` is `admin` in every environment; environment roles cannot be assigned to one.
+          * an API token acts with min(the token's role, its owner's effective role for that operation).
+        `GET /environments` lists only the environments where the caller's effective role is at least `viewer`
+        (a global admin sees all).
       - Every mutation is written to the audit log in the same transaction.
       - Edits change the environment's draft state. Traffic only changes after a publish
         (or automatically when the environment has `publishMode: auto`).
@@ -120,13 +134,14 @@ paths:
       tags: [auth]
       operationId: getMe
       x-required-role: viewer
+      description: The caller, with the roles that replace the global one in specific environments.
       responses:
         "200":
           description: Current user
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/User" }
-              example: {"id": "3c2b1a09-8f7e-4d6c-9b5a-4f3e2d1c0b9a", "email": "editor@gromesh.dev", "name": "Ana Editora", "role": "editor", "active": true, "createdAt": "2026-10-15T12:00:00Z", "updatedAt": "2026-10-15T12:00:00Z"}
+              schema: { $ref: "#/components/schemas/Me" }
+              example: {"id": "3c2b1a09-8f7e-4d6c-9b5a-4f3e2d1c0b9a", "email": "editor@gromesh.dev", "name": "Ana Editora", "role": "editor", "active": true, "environmentRoles": [{"environmentId": "0b3c6b5e-8d1f-4a51-9c64-2f0f6d1f8a11", "role": "viewer"}], "createdAt": "2026-10-15T12:00:00Z", "updatedAt": "2026-10-15T12:00:00Z"}
         "401": { $ref: "#/components/responses/Unauthorized" }
 
   /users:
@@ -192,6 +207,49 @@ paths:
         "204": { description: Deleted }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+  /users/{userId}/environment-roles:
+    parameters: [{ $ref: "#/components/parameters/UserId" }]
+    get:
+      tags: [users]
+      operationId: getUserEnvironmentRoles
+      security: [{ cookieAuth: [] }]
+      x-required-role: admin
+      x-gromesh-planned: true
+      description: The roles that replace the user's global role in specific environments. Global role only (an environment admin cannot read this).
+      responses:
+        "200":
+          description: Environment roles (environments without an entry use the global role)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EnvironmentRoles" }
+              example: {"items": [{"environmentId": "0b3c6b5e-8d1f-4a51-9c64-2f0f6d1f8a11", "role": "editor"}, {"environmentId": "7d1e2f3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a", "role": "none"}]}
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [users]
+      operationId: replaceUserEnvironmentRoles
+      security: [{ cookieAuth: [], csrfToken: [] }]
+      x-required-role: admin
+      x-gromesh-planned: true
+      description: |
+        Replaces the whole set; an environment left out goes back to the global role, `{ "items": [] }` clears every
+        override. One entry per environment. Audited with the set before and after. 422 with `path`: an unknown
+        environment (`items.N.environmentId`), a repeated environment, or a user whose global role is `admin`
+        (`(body)`: a global admin is admin in every environment).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EnvironmentRoles" }
+      responses:
+        "200":
+          description: Replaced
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EnvironmentRoles" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
 
   /users/me/tokens:
     get:
@@ -221,7 +279,8 @@ paths:
       x-required-role: viewer
       description: |
         Creates an API token for the caller. The token itself is returned once, here, and never again: the server keeps
-        only a keyed hash and the hint. `role` may not exceed the caller's role (422 on `role`). A user may hold at most
+        only a keyed hash and the hint. `role` may not exceed the caller's global role (422 on `role`); in each
+        environment the token then acts with min(its role, the owner's effective role there). A user may hold at most
         50 active tokens (neither revoked nor expired): the 51st answers 422 with path `(body)` and a message saying so.
       requestBody:
         required: true
@@ -296,6 +355,7 @@ paths:
       tags: [environments]
       operationId: listEnvironments
       x-required-role: viewer
+      description: The environments where the caller's effective role is at least viewer (planned; today every environment). A global admin sees all.
       responses:
         "200":
           description: Environments
@@ -1894,6 +1954,36 @@ components:
     Role:
       type: string
       enum: [viewer, editor, admin]
+    EnvironmentRole:
+      type: string
+      enum: [viewer, editor, admin, none]
+      description: Replaces the global role in one environment; `none` hides the environment from the user.
+    EnvironmentRoleAssignment:
+      type: object
+      additionalProperties: false
+      required: [environmentId, role]
+      properties:
+        environmentId: { type: string, format: uuid }
+        role: { $ref: "#/components/schemas/EnvironmentRole" }
+    EnvironmentRoles:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 500
+          items: { $ref: "#/components/schemas/EnvironmentRoleAssignment" }
+    Me:
+      allOf:
+        - { $ref: "#/components/schemas/User" }
+        - type: object
+          properties:
+            environmentRoles:
+              type: array
+              x-gromesh-planned: true
+              description: Planned. The caller's environment roles (the same set as GET /users/{userId}/environment-roles); absent until implemented.
+              items: { $ref: "#/components/schemas/EnvironmentRoleAssignment" }
     User:
       allOf:
         - type: object

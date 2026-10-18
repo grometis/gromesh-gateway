@@ -68,6 +68,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** @description The caller, with the roles that replace the global one in specific environments. */
         get: operations["getMe"];
         put?: never;
         post?: never;
@@ -111,6 +112,31 @@ export interface paths {
         patch: operations["updateUser"];
         trace?: never;
     };
+    "/users/{userId}/environment-roles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                userId: components["parameters"]["UserId"];
+            };
+            cookie?: never;
+        };
+        /** @description The roles that replace the user's global role in specific environments. Global role only (an environment admin cannot read this). */
+        get: operations["getUserEnvironmentRoles"];
+        /**
+         * @description Replaces the whole set; an environment left out goes back to the global role, `{ "items": [] }` clears every
+         *     override. One entry per environment. Audited with the set before and after. 422 with `path`: an unknown
+         *     environment (`items.N.environmentId`), a repeated environment, or a user whose global role is `admin`
+         *     (`(body)`: a global admin is admin in every environment).
+         */
+        put: operations["replaceUserEnvironmentRoles"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/users/me/tokens": {
         parameters: {
             query?: never;
@@ -123,7 +149,8 @@ export interface paths {
         put?: never;
         /**
          * @description Creates an API token for the caller. The token itself is returned once, here, and never again: the server keeps
-         *     only a keyed hash and the hint. `role` may not exceed the caller's role (422 on `role`). A user may hold at most
+         *     only a keyed hash and the hint. `role` may not exceed the caller's global role (422 on `role`); in each
+         *     environment the token then acts with min(its role, the owner's effective role there). A user may hold at most
          *     50 active tokens (neither revoked nor expired): the 51st answers 422 with path `(body)` and a message saying so.
          */
         post: operations["createMyToken"];
@@ -198,6 +225,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** @description The environments where the caller's effective role is at least viewer (planned; today every environment). A global admin sees all. */
         get: operations["listEnvironments"];
         put?: never;
         post: operations["createEnvironment"];
@@ -1103,6 +1131,23 @@ export interface components {
         };
         /** @enum {string} */
         Role: "viewer" | "editor" | "admin";
+        /**
+         * @description Replaces the global role in one environment; `none` hides the environment from the user.
+         * @enum {string}
+         */
+        EnvironmentRole: "viewer" | "editor" | "admin" | "none";
+        EnvironmentRoleAssignment: {
+            /** Format: uuid */
+            environmentId: string;
+            role: components["schemas"]["EnvironmentRole"];
+        };
+        EnvironmentRoles: {
+            items: components["schemas"]["EnvironmentRoleAssignment"][];
+        };
+        Me: components["schemas"]["User"] & {
+            /** @description Planned. The caller's environment roles (the same set as GET /users/{userId}/environment-roles); absent until implemented. */
+            environmentRoles?: components["schemas"]["EnvironmentRoleAssignment"][];
+        };
         User: {
             /** Format: uuid */
             id: string;
@@ -2429,11 +2474,17 @@ export interface operations {
                      *       "name": "Ana Editora",
                      *       "role": "editor",
                      *       "active": true,
+                     *       "environmentRoles": [
+                     *         {
+                     *           "environmentId": "0b3c6b5e-8d1f-4a51-9c64-2f0f6d1f8a11",
+                     *           "role": "viewer"
+                     *         }
+                     *       ],
                      *       "createdAt": "2026-10-15T12:00:00Z",
                      *       "updatedAt": "2026-10-15T12:00:00Z"
                      *     }
                      */
-                    "application/json": components["schemas"]["User"];
+                    "application/json": components["schemas"]["Me"];
                 };
             };
             401: components["responses"]["Unauthorized"];
@@ -2534,6 +2585,73 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["User"];
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+        };
+    };
+    getUserEnvironmentRoles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                userId: components["parameters"]["UserId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Environment roles (environments without an entry use the global role) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "items": [
+                     *         {
+                     *           "environmentId": "0b3c6b5e-8d1f-4a51-9c64-2f0f6d1f8a11",
+                     *           "role": "editor"
+                     *         },
+                     *         {
+                     *           "environmentId": "7d1e2f3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a",
+                     *           "role": "none"
+                     *         }
+                     *       ]
+                     *     }
+                     */
+                    "application/json": components["schemas"]["EnvironmentRoles"];
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    replaceUserEnvironmentRoles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                userId: components["parameters"]["UserId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EnvironmentRoles"];
+            };
+        };
+        responses: {
+            /** @description Replaced */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnvironmentRoles"];
                 };
             };
             403: components["responses"]["Forbidden"];
