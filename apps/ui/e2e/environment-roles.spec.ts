@@ -92,7 +92,41 @@ test("a 422 names the environment's row; a global admin has no environment roles
   await dialog.getByRole("button", { name: "Cancelar" }).click();
 
   await page.getByRole("button", { name: "Papéis de Ana Souza por environment" }).click();
-  await expect(page.getByRole("dialog", { name: "Environments de Ana Souza" })).toContainText("administradores em todos os environments");
+  const adminDialog = page.getByRole("dialog", { name: "Environments de Ana Souza" });
+  await expect(adminDialog).toContainText("administradores em todos os environments");
+  await expect(adminDialog.getByRole("combobox")).toHaveCount(0);
+  await expect(adminDialog.getByRole("button", { name: "Salvar" })).toHaveCount(0);
+});
+
+test("Salvar stays off when the roles cannot be read again: a stale set never replaces the current one", async ({ page }) => {
+  const viewer = person("viewer");
+  let fail = false;
+  const puts: unknown[] = [];
+  await page.route("**/api/v1/users?*", (route) => route.fulfill({ json: { items: [admin, viewer], nextCursor: null } }));
+  await page.route("**/api/v1/users", (route) => route.fulfill({ json: { items: [admin, viewer], nextCursor: null } }));
+  await page.route(`**/api/v1/users/${viewer.id}/environment-roles`, (route) => {
+    if (route.request().method() === "PUT") puts.push(route.request().postDataJSON());
+    return fail ? route.fulfill({ status: 500, json: { title: "Internal", status: 500 } }) : route.fulfill({ json: { items: [] } });
+  });
+  await signIn(page, admin);
+  await page.getByRole("link", { name: "Usuários", exact: true }).click();
+  await page.getByRole("button", { name: "Papéis de Rui Prado por environment" }).click();
+  const dialog = page.getByRole("dialog", { name: "Environments de Rui Prado" });
+  await expect(dialog.getByRole("button", { name: "Salvar" })).toBeEnabled();
+  await dialog.getByRole("button", { name: "Cancelar" }).click();
+  fail = true;
+  await page.getByRole("button", { name: "Papéis de Rui Prado por environment" }).click();
+  await expect(dialog.getByRole("alert")).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Salvar" })).toBeDisabled();
+  expect(puts).toEqual([]);
+});
+
+test("a global viewer who is editor in one environment may create an editor token, never an admin one", async ({ page }) => {
+  await signIn(page, person("viewer", [{ environmentId: prod.id, role: "editor" }]));
+  await page.getByRole("link", { name: "Tokens de API" }).click();
+  await page.getByRole("button", { name: "Novo token" }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByLabel("Papel").locator("option")).toHaveText(["Leitor", "Editor"]);
 });
 
 for (const viewport of [{ name: "desktop-1440", width: 1440, height: 900 }, { name: "mobile-390", width: 390, height: 844 }]) {

@@ -171,6 +171,7 @@ function EnvironmentRolesForm({ user, onClose }: { user: User; onClose: () => vo
     queryKey: ["environment-roles", user.id],
     queryFn: () => unwrap(api.GET("/users/{userId}/environment-roles", { params: { path: { userId: user.id } } })),
     enabled: user.role !== "admin",
+    refetchOnMount: "always",
   });
   const [draft, setDraft] = useState<Record<string, EnvironmentRole | typeof GLOBAL>>({});
   const [errors, setErrors] = useState<string[]>([]);
@@ -199,8 +200,11 @@ function EnvironmentRolesForm({ user, onClose }: { user: User; onClose: () => vo
       setErrors(rows.length > 0 ? rows : toFormErrors(err, []).form);
     },
   });
+  // The PUT replaces the whole set: only a fresh, successful read may be the base of it, never a stale cache.
+  const ready = envs.isSuccess && roles.isSuccess && !envs.isFetching && !roles.isFetching;
   const submit = (event: FormEvent) => {
     event.preventDefault();
+    if (!ready) return;
     setErrors([]);
     save.mutate();
   };
@@ -260,7 +264,7 @@ function EnvironmentRolesForm({ user, onClose }: { user: User; onClose: () => vo
           <button type="button" onClick={onClose}>
             Cancelar
           </button>
-          <button type="submit" className="primary" disabled={save.isPending || !envs.data || !roles.data}>
+          <button type="submit" className="primary" disabled={save.isPending || !ready}>
             {save.isPending ? "Salvando…" : "Salvar"}
           </button>
         </div>

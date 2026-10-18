@@ -99,3 +99,10 @@ export function useCanAdmin(): boolean {
   const { envId } = useParams();
   return effectiveRole(user, envId) === "admin";
 }
+
+const RANK = { viewer: 1, editor: 2, admin: 3 } as const;
+
+/** The highest role a token may carry: the global role or any environment role above it. */
+export function highestRole(user: Me): Me["role"] {
+  return (user.environmentRoles ?? []).reduce<Me["role"]>((max, { role }) => (role !== "none" && RANK[role] > RANK[max] ? role : max), user.role);
+}

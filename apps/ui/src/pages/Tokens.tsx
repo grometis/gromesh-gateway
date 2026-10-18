@@ -2,7 +2,7 @@ import { useState, type FormEvent } from "react";
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, unwrap, type Schemas } from "../api/client";
 import { statusMessage, toFormErrors, type FormErrors } from "../api/errors";
-import { useAuth } from "../auth";
+import { highestRole, useAuth } from "../auth";
 import { Field, FormErrorList } from "../components/Field";
 import { Modal } from "../components/Modal";
 
@@ -54,7 +54,7 @@ export function TokensPage() {
         </button>
       </div>
       <p className="muted">
-        Um token autentica chamadas à API com <code>Authorization: Bearer</code>, sem cookie nem CSRF, com no máximo o seu papel atual. Ele não cria nem revoga tokens e não gerencia usuários.
+        Um token autentica chamadas à API com <code>Authorization: Bearer</code>, sem cookie nem CSRF, com no máximo o seu maior papel (global ou de algum environment); em cada environment ele age com o menor entre o papel do token e o seu papel ali. Ele não cria nem revoga tokens e não gerencia usuários.
       </p>
       {admin && (
         <Field label="Mostrar">
@@ -122,7 +122,7 @@ export function TokensPage() {
       )}
       {creating && user && (
         <CreateTokenModal
-          maxRole={user.role}
+          maxRole={highestRole(user)}
           onClose={() => setCreating(false)}
           onCreated={(token) => {
             setCreating(false);
