@@ -2153,6 +2153,15 @@ components:
           additionalProperties: { type: array, items: { type: string } }
         stripPath: { type: boolean, default: true }
         preserveHost: { type: boolean, default: false }
+        analyticsRetentionDays:
+          type: [integer, "null"]
+          minimum: 1
+          maximum: 7
+          x-gromesh-planned: true
+          description: |
+            How long this route's request analytics are kept, in days. Null or omitted uses the 7-day default;
+            retention can never exceed 7 days. Applies only to rows written after the next publication,
+            without changing retention for existing rows. Does not change path masking.
         tags: { $ref: "#/components/schemas/Tags" }
     Route:
       allOf:
@@ -2431,6 +2440,9 @@ components:
         headers: { $ref: "#/components/schemas/RouteWrite/properties/headers" }
         stripPath: { $ref: "#/components/schemas/RouteWrite/properties/stripPath" }
         preserveHost: { $ref: "#/components/schemas/RouteWrite/properties/preserveHost" }
+        analyticsRetentionDays:
+          $ref: "#/components/schemas/RouteWrite/properties/analyticsRetentionDays"
+          x-gromesh-planned: true
         tags: { $ref: "#/components/schemas/Tags" }
     GromeshConfigConsumerRef:
       type: object
