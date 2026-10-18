@@ -50,7 +50,7 @@ api() { curl -s --max-time 15 -H "cookie: $cookie" -H "x-csrf-token: $csrf" -H '
 
 # 3. RBAC matrix: generated from the contract by the control-plane integration tests (every operationId with
 # x-required-role, three roles, without session, without CSRF).
-check R1 "Matriz RBAC gerada do contrato (apps/control-plane/test/integration/auth.test.ts)" PASS "coberta por \`pnpm test\` na CI"
+check R0 "Matriz RBAC gerada do contrato, global e por environment (apps/control-plane/test/integration/auth.test.ts)" PASS "coberta por \`pnpm test\` na CI"
 
 # 4. Secrets never returned by the API; encrypted at rest.
 env_id="$(api -d '{"name":"seccheck-'"$RANDOM"'"}' "$CP/environments" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')"
@@ -114,6 +114,35 @@ bearer_tokens="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -H "Author
 bearer_users="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -H "Authorization: Bearer $token" "$CP/users")"
 [[ "$bearer_tokens" == 401 && "$bearer_users" == 401 ]] && check T3 "Token não cria tokens nem gerencia usuários (401)" PASS "" || check T3 "Token gerencia tokens/usuários" FAIL "tokens=$bearer_tokens users=$bearer_users"
 api -X DELETE "$CP/users/me/tokens/$token_id" > /dev/null
+
+# 6c. Roles per environment: a global viewer with editor in A and none in C.
+id_of() { sed -n 's/^{"id":"\([^"]*\)".*/\1/p'; }
+env_a="$(api -d '{"name":"seccheck-a-'"$RANDOM"'"}' "$CP/environments" | id_of)"
+env_b="$(api -d '{"name":"seccheck-b-'"$RANDOM"'"}' "$CP/environments" | id_of)"
+env_c="$(api -d '{"name":"seccheck-c-'"$RANDOM"'"}' "$CP/environments" | id_of)"
+scoped_email="seccheck-$RANDOM-$RANDOM@gromesh.dev"
+scoped_pw="seccheck-$(openssl rand -hex 12)"
+scoped_id="$(api -d '{"email":"'"$scoped_email"'","name":"Seccheck","role":"viewer","password":"'"$scoped_pw"'"}' "$CP/users" | id_of)"
+roles="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -X PUT -H "cookie: $cookie" -H "x-csrf-token: $csrf" -H 'content-type: application/json' \
+  -d '{"items":[{"environmentId":"'"$env_a"'","role":"editor"},{"environmentId":"'"$env_c"'","role":"none"}]}' "$CP/users/$scoped_id/environment-roles")"
+scoped_cookie="$(curl -s -D - -o /dev/null --max-time 10 -H 'content-type: application/json' -d '{"email":"'"$scoped_email"'","password":"'"$scoped_pw"'"}' "$CP/auth/login" | tr -d '\r' | sed -n 's/^[Ss]et-[Cc]ookie: \([^;]*\).*/\1/p' | head -1)"
+scoped_csrf="$(curl -s --max-time 10 -H "cookie: $scoped_cookie" "$CP/auth/csrf" | sed -n 's/.*"csrfToken":"\([^"]*\)".*/\1/p')"
+as_scoped() { curl -s -o /dev/null -w '%{http_code}' --max-time 10 -H "cookie: $scoped_cookie" -H "x-csrf-token: $scoped_csrf" -H 'content-type: application/json' "$@"; }
+svc='{"name":"seccheck","protocol":"http","host":"echo","port":80}'
+in_a="$(as_scoped -d "$svc" "$CP/environments/$env_a/services")"
+in_b="$(as_scoped -d "$svc" "$CP/environments/$env_b/services")"
+users_scoped="$(as_scoped "$CP/users")"
+[[ "$roles" == 200 && "$in_a" == 201 && "$in_b" == 403 && "$users_scoped" == 403 ]] \
+  && check R1 "Papel por environment eleva só no environment certo (editor em A cria; viewer em B → 403; usuários → 403)" PASS "" \
+  || check R1 "Papel por environment" FAIL "roles=$roles A=$in_a B=$in_b users=$users_scoped"
+hidden="$(as_scoped "$CP/environments/$env_c")"
+hidden_write="$(as_scoped -d "$svc" "$CP/environments/$env_c/services")"
+missing="$(as_scoped "$CP/environments/$(uuidgen | tr 'A-Z' 'a-z')")"
+listed="$(curl -s --max-time 10 -H "cookie: $scoped_cookie" "$CP/environments")"
+[[ "$hidden" == 404 && "$hidden_write" == 404 && "$missing" == 404 && "$listed" != *"$env_c"* && "$listed" == *"$env_a"* ]] \
+  && check R2 "Environment invisível (none) → 404, igual a um inexistente, e fora da lista" PASS "" \
+  || check R2 "Environment invisível" FAIL "get=$hidden write=$hidden_write missing=$missing"
+api -X DELETE "$CP/users/$scoped_id" > /dev/null
 
 # 7. Known advisories.
 check A1 "CVE-2026-1907 (RPC de clustering, modo híbrido)" NOTE "não se aplica: data planes em DB-less sem clustering do Kong"
