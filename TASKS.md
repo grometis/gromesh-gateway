@@ -55,6 +55,7 @@ git worktree add ../gg-codex  -b task/W1-X1-kong-image
 | P4-C1 | Claude | — | `apps/ui/` (+ `.github/workflows/` só para anexar screenshots ao job da UI) |
 | P4-X0 | Codex | — | `contracts/` (+ `apps/ui/src/api/schema.d.ts` gerado) |
 | P4-X1 | Codex | P4-X0 | `packages/compiler/` (conversão Kong → modelo), `apps/control-plane/`, `contracts/` (só remover `x-gromesh-planned`) |
+| P4-C2 | Claude | P4-C1, P4-X1 | `contracts/` (PR próprio do `autoPublishPausedReason`), `apps/control-plane/` (o campo), `apps/ui/` (+ `.github/workflows/` só para screenshots) |
 
 Ordem de merge na semana 3: W2-C2 → W3-X1 → W3-C1 → W3-X2. Quem mergeia depois faz rebase; `src/db/schema.ts` e `drizzle/` são alterados por uma frente por vez.
 
@@ -432,6 +433,13 @@ Aceite: lint válido, diff aprovado antes da implementação.
 Implementação do contrato do P4-X0 (PR #44). A conversão da config declarativa do Kong para o modelo do Gromesh fica no compilador.
 
 Aceite: (a) export → import em environment vazio → publicar → snapshot equivalente ao original (ids e campos de plugin de plataforma específicos do environment normalizados, já que o import gera ids novos); (b) import do `contracts/examples/snapshot.example.json` (`kong-declarative-3.0`) → rascunho equivalente, com entidades e campos desconhecidos em `errors[]`; (c) import com erro não grava nada (contagem de linhas igual antes e depois); (d) REDACTED mantém o segredo, conferido decifrando no teste; (e) export nunca contém segredo em claro (varredura pelos valores conhecidos).
+
+### P4-C2 [Claude] Pausa do auto-publish visível e telas no novo visual
+- Ponto da faixa por estado: verde (todos os nós na versão no ar), âmbar `#B7791F` (convergindo), vermelho `#C93A1E` (degradado), cinza (sem nós).
+- Contrato: `Environment.autoPublishPausedReason: "import" | null` (só leitura; o auto-publish volta após a próxima publicação explícita). Implementação: o campo na API e, na faixa, "Publicação automática pausada após importação — publique para retomar".
+- Telas, um PR cada, com screenshots desktop/mobile: Visão geral (faixa + 4 indicadores + requisições por hora com sucesso/erro + top rotas com seletor); Revisar e publicar (alterações à esquerda, diff campo a campo v_atual × rascunho à direita, nota de REDACTED, mensagem + Publicar, frase sobre rollback); Clusters (cartões por cluster com barra por nó, tabela de nós, nó com falha na última versão boa com o erro do gateway); Consumer (abas Credenciais / Grupos ACL / Plugins; segredo exibido uma vez com Copiar e "Já copiei"; cartões só com dicas).
+
+Aceite: Playwright e axe verdes; screenshots como artefato; teste dos quatro estados do ponto.
 
 ---
 
