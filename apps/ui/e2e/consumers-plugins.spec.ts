@@ -45,7 +45,7 @@ test("a new consumer's key is shown once and is gone after closing", async ({ pa
   const shown = page.getByRole("dialog", { name: "Chave criada" });
   await expect(shown.getByLabel("Chave")).toHaveText(key);
   await expect(shown.getByRole("note")).toContainText("não será mostrada de novo");
-  await shown.getByRole("button", { name: "Concluído" }).click();
+  await shown.getByRole("button", { name: "Já copiei" }).click();
 
   await expect(shown).toBeHidden();
   await expect(page.getByText(key)).toHaveCount(0);

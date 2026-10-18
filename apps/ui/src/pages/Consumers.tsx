@@ -10,6 +10,7 @@ import { ConfirmDialog, Modal } from "../components/Modal";
 import { Tabs } from "../components/Tabs";
 import { Button } from "../components/Button";
 import { RowMenu } from "../components/RowMenu";
+import { createdAt, CredentialCard, SecretOnce } from "../components/Credentials";
 import { Table } from "../components/Table";
 import { useEnvId } from "../components/Shell";
 import { AclGroupsPanel, BasicAuthCredentials, JwtCredentials } from "./ConsumerCredentials";
@@ -123,12 +124,10 @@ export function ConsumerDetailPage() {
         <h1>Consumer {consumerName(c)}</h1>
         {canEdit && (
           <div className="form-actions">
-            <button type="button" onClick={() => setEditing(true)}>
+            <Button variant="primary" onClick={() => setEditing(true)}>
               Editar
-            </button>
-            <button type="button" className="danger" onClick={() => setDeleting(true)}>
-              Excluir
-            </button>
+            </Button>
+            <RowMenu label={`Mais ações para ${consumerName(c)}`} items={[{ label: "Excluir", danger: true, onSelect: () => setDeleting(true) }]} />
           </div>
         )}
       </div>
@@ -141,26 +140,39 @@ export function ConsumerDetailPage() {
         <dd>{c.tags?.join(", ") || "—"}</dd>
       </dl>
       <CredentialTabs envId={envId} consumer={c} canEdit={canEdit} />
-      <ScopedPlugins envId={envId} scope={{ kind: "consumer", id: c.id }} title="Plugins do consumer" />
       {editing && <ConsumerForm envId={envId} consumer={c} onClose={() => setEditing(false)} />}
       {deleting && <DeleteConsumer envId={envId} consumer={c} onClose={() => setDeleting(false)} onDeleted={() => navigate("..")} />}
     </section>
   );
 }
 
+/** The three credential kinds side by side: each card shows only hints, never a secret. */
+function CredentialsPanel(props: { envId: string; consumer: Consumer; canEdit: boolean }) {
+  return (
+    <div className="cred-columns">
+      <KeyAuthCredentials {...props} />
+      <JwtCredentials {...props} />
+      <BasicAuthCredentials {...props} />
+    </div>
+  );
+}
+
+function PluginsPanel({ envId, consumer }: { envId: string; consumer: Consumer; canEdit: boolean }) {
+  return <ScopedPlugins envId={envId} scope={{ kind: "consumer", id: consumer.id }} title="Plugins do consumer" />;
+}
+
 const TABS = [
-  { id: "key-auth", label: "Key-auth", Panel: KeyAuthCredentials },
-  { id: "jwt", label: "JWT", Panel: JwtCredentials },
-  { id: "basic-auth", label: "Basic-auth", Panel: BasicAuthCredentials },
-  { id: "groups", label: "Grupos", Panel: AclGroupsPanel },
+  { id: "credentials", label: "Credenciais", Panel: CredentialsPanel },
+  { id: "groups", label: "Grupos ACL", Panel: AclGroupsPanel },
+  { id: "plugins", label: "Plugins", Panel: PluginsPanel },
 ] as const;
 
 /** Credentials and ACL groups of the consumer, one panel at a time. */
 function CredentialTabs({ envId, consumer, canEdit }: { envId: string; consumer: Consumer; canEdit: boolean }) {
-  const [active, setActive] = useState<(typeof TABS)[number]["id"]>("key-auth");
+  const [active, setActive] = useState<(typeof TABS)[number]["id"]>("credentials");
   const { Panel } = TABS.find((t) => t.id === active)!;
   return (
-    <Tabs label="Credenciais do consumer" tabs={TABS} active={active} onChange={setActive}>
+    <Tabs label="Seções do consumer" tabs={TABS} active={active} onChange={setActive}>
       <Panel envId={envId} consumer={consumer} canEdit={canEdit} />
     </Tabs>
   );
@@ -264,9 +276,9 @@ function KeyAuthCredentials({ envId, consumer, canEdit }: { envId: string; consu
   const items = credentials.data?.items ?? [];
 
   return (
-    <section aria-label="Credenciais key-auth">
-      <div className="page-head">
-        <h2>Credenciais key-auth</h2>
+    <section aria-label="Credenciais key-auth" className="cred-section">
+      <div className="cred-head">
+        <h2>Key-auth</h2>
         {canEdit && (
           <button type="button" className="primary" onClick={() => setCreating(true)}>
             Gerar chave
@@ -277,30 +289,17 @@ function KeyAuthCredentials({ envId, consumer, canEdit }: { envId: string; consu
       {credentials.isError && <p className="error">{statusMessage(credentials.error)}</p>}
       {credentials.isSuccess && items.length === 0 && <p className="muted">Nenhuma chave.</p>}
       {items.length > 0 && (
-        <table aria-label="Chaves">
-          <thead>
-            <tr>
-              <th>Chave</th>
-              <th>Criada em</th>
-              {canEdit && <th aria-label="Ações" />}
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((k) => (
-              <tr key={k.id}>
-                <td className="mono">{k.keyHint}</td>
-                <td>{new Date(k.createdAt).toLocaleString("pt-BR")}</td>
-                {canEdit && (
-                  <td className="actions">
-                    <button type="button" className="danger" onClick={() => setDeleting(k)}>
-                      Excluir
-                    </button>
-                  </td>
-                )}
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <ul className="cred-list" aria-label="Chaves">
+          {items.map((k) => (
+            <CredentialCard
+              key={k.id}
+              hint={<span className="mono">{k.keyHint}</span>}
+              meta={createdAt(k.createdAt)}
+              deleteLabel={`Mais ações para a chave ${k.keyHint}`}
+              onDelete={canEdit ? () => setDeleting(k) : undefined}
+            />
+          ))}
+        </ul>
       )}
       {creating && (
         <NewKey
@@ -332,7 +331,6 @@ function KeyAuthCredentials({ envId, consumer, canEdit }: { envId: string; consu
 function NewKey({ envId, consumerId, onDone }: { envId: string; consumerId: string; onDone: () => void }) {
   const [custom, setCustom] = useState("");
   const [errors, setErrors] = useState<FormErrors>({ fields: {}, form: [] });
-  const [copied, setCopied] = useState(false);
   const create = useMutation({
     // The response carries the secret: evict it from the mutation cache as soon as the dialog lets go of it.
     gcTime: 0,
@@ -352,34 +350,14 @@ function NewKey({ envId, consumerId, onDone }: { envId: string; consumerId: stri
   };
 
   if (create.data) {
-    const key = create.data.key;
     return (
-      <Modal
+      <SecretOnce
         title="Chave criada"
+        label="Chave"
+        secret={create.data.key}
+        note="Copie a chave agora. Ela não será mostrada de novo: depois só aparecem os últimos caracteres."
         onClose={close}
-        footer={
-          <button type="button" className="primary" onClick={close}>
-            Concluído
-          </button>
-        }
-      >
-        <p className="warn" role="note">
-          Copie a chave agora. Ela não será mostrada de novo: depois só aparecem os últimos caracteres.
-        </p>
-        <div className="secret">
-          <code className="mono" aria-label="Chave">
-            {key}
-          </code>
-          <button
-            type="button"
-            onClick={() => {
-              void navigator.clipboard?.writeText(key).then(() => setCopied(true));
-            }}
-          >
-            {copied ? "Copiada" : "Copiar"}
-          </button>
-        </div>
-      </Modal>
+      />
     );
   }
 

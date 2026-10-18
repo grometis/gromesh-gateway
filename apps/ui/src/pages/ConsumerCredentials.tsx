@@ -3,6 +3,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { api, unwrap, type BasicAuthCredential, type Consumer, type JwtCredential } from "../api/client";
 import { statusMessage, toFormErrors, type FormErrors } from "../api/errors";
 import { Field, FormErrorList } from "../components/Field";
+import { createdAt, CredentialCard, SecretOnce } from "../components/Credentials";
 import { ConfirmDialog, Modal } from "../components/Modal";
 import { splitList, useInvalidateDraft } from "./Services";
 
@@ -23,9 +24,9 @@ export function JwtCredentials({ envId, consumer, canEdit }: { envId: string; co
   const items = credentials.data?.items ?? [];
 
   return (
-    <section aria-label="Credenciais JWT">
-      <div className="page-head">
-        <h2>Credenciais JWT</h2>
+    <section aria-label="Credenciais JWT" className="cred-section">
+      <div className="cred-head">
+        <h2>JWT</h2>
         {canEdit && (
           <button type="button" className="primary" onClick={() => setCreating(true)}>
             Nova credencial JWT
@@ -36,32 +37,21 @@ export function JwtCredentials({ envId, consumer, canEdit }: { envId: string; co
       {credentials.isError && <p className="error">{statusMessage(credentials.error)}</p>}
       {credentials.isSuccess && items.length === 0 && <p className="muted">Nenhuma credencial JWT.</p>}
       {items.length > 0 && (
-        <table aria-label="Credenciais JWT">
-          <thead>
-            <tr>
-              <th>Key (iss)</th>
-              <th>Algoritmo</th>
-              <th>Criada em</th>
-              {canEdit && <th aria-label="Ações" />}
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((j) => (
-              <tr key={j.id}>
-                <td className="mono">{j.key}</td>
-                <td>{j.algorithm}</td>
-                <td>{new Date(j.createdAt).toLocaleString("pt-BR")}</td>
-                {canEdit && (
-                  <td className="actions">
-                    <button type="button" className="danger" onClick={() => setDeleting(j)}>
-                      Excluir
-                    </button>
-                  </td>
-                )}
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <ul className="cred-list" aria-label="Credenciais JWT">
+          {items.map((j) => (
+            <CredentialCard
+              key={j.id}
+              hint={
+                <>
+                  <span className="mono">{j.key}</span> <span className="badge no-nodes">{j.algorithm}</span>
+                </>
+              }
+              meta={createdAt(j.createdAt)}
+              deleteLabel={`Mais ações para a credencial JWT ${j.key}`}
+              onDelete={canEdit ? () => setDeleting(j) : undefined}
+            />
+          ))}
+        </ul>
       )}
       {creating && (
         <NewJwt
@@ -95,7 +85,6 @@ export function JwtCredentials({ envId, consumer, canEdit }: { envId: string; co
 function NewJwt({ envId, consumerId, onDone }: { envId: string; consumerId: string; onDone: () => void }) {
   const [form, setForm] = useState({ key: "", algorithm: "HS256" as JwtCredential["algorithm"], secret: "", rsaPublicKey: "" });
   const [errors, setErrors] = useState<FormErrors>(noErrors);
-  const [copied, setCopied] = useState(false);
   const hs = form.algorithm === "HS256";
   const create = useMutation({
     // The response carries the secret: evict it from the mutation cache as soon as the dialog lets go of it.
@@ -131,29 +120,18 @@ function NewJwt({ envId, consumerId, onDone }: { envId: string; consumerId: stri
   };
 
   if (create.data?.secret) {
-    const secret = create.data.secret;
     return (
-      <Modal
+      <SecretOnce
         title="Credencial JWT criada"
-        onClose={close}
-        footer={
-          <button type="button" className="primary" onClick={close}>
-            Concluído
-          </button>
+        label="Segredo"
+        secret={create.data.secret}
+        note={
+          <>
+            Copie o segredo agora. Ele não será mostrado de novo. Os tokens devem ter <span className="mono">iss</span> = <span className="mono">{create.data.key}</span>.
+          </>
         }
-      >
-        <p className="warn" role="note">
-          Copie o segredo agora. Ele não será mostrado de novo. Os tokens devem ter <span className="mono">iss</span> = <span className="mono">{create.data.key}</span>.
-        </p>
-        <div className="secret">
-          <code className="mono" aria-label="Segredo">
-            {secret}
-          </code>
-          <button type="button" onClick={() => void navigator.clipboard?.writeText(secret).then(() => setCopied(true))}>
-            {copied ? "Copiado" : "Copiar"}
-          </button>
-        </div>
-      </Modal>
+        onClose={close}
+      />
     );
   }
 
@@ -211,9 +189,9 @@ export function BasicAuthCredentials({ envId, consumer, canEdit }: { envId: stri
   const items = credentials.data?.items ?? [];
 
   return (
-    <section aria-label="Credenciais basic-auth">
-      <div className="page-head">
-        <h2>Credenciais basic-auth</h2>
+    <section aria-label="Credenciais basic-auth" className="cred-section">
+      <div className="cred-head">
+        <h2>Basic-auth</h2>
         {canEdit && (
           <button type="button" className="primary" onClick={() => setCreating(true)}>
             Nova credencial basic-auth
@@ -224,30 +202,17 @@ export function BasicAuthCredentials({ envId, consumer, canEdit }: { envId: stri
       {credentials.isError && <p className="error">{statusMessage(credentials.error)}</p>}
       {credentials.isSuccess && items.length === 0 && <p className="muted">Nenhuma credencial basic-auth.</p>}
       {items.length > 0 && (
-        <table aria-label="Credenciais basic-auth">
-          <thead>
-            <tr>
-              <th>Usuário</th>
-              <th>Criada em</th>
-              {canEdit && <th aria-label="Ações" />}
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((b) => (
-              <tr key={b.id}>
-                <td className="mono">{b.username}</td>
-                <td>{new Date(b.createdAt).toLocaleString("pt-BR")}</td>
-                {canEdit && (
-                  <td className="actions">
-                    <button type="button" className="danger" onClick={() => setDeleting(b)}>
-                      Excluir
-                    </button>
-                  </td>
-                )}
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <ul className="cred-list" aria-label="Credenciais basic-auth">
+          {items.map((b) => (
+            <CredentialCard
+              key={b.id}
+              hint={<span className="mono">{b.username}</span>}
+              meta={createdAt(b.createdAt)}
+              deleteLabel={`Mais ações para o usuário ${b.username}`}
+              onDelete={canEdit ? () => setDeleting(b) : undefined}
+            />
+          ))}
+        </ul>
       )}
       {creating && (
         <NewBasicAuth

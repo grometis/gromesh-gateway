@@ -294,6 +294,16 @@ table.cards tr:hover td { background: var(--line); }
 .node-failure { margin-top: var(--space-1); color: var(--draft-text); font-size: var(--text-sm); }
 .node-failure p { margin: 0; }
 .node-failure .node-error { display: inline; background: none; padding: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* ---------------- consumer credentials ---------------- */
+.cred-columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: var(--space-4); align-items: start; }
+.cred-section { background: var(--surface); border-radius: var(--radius); padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-3); }
+.cred-head { display: flex; justify-content: space-between; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.cred-head h2 { font-size: var(--h3); }
+.cred-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-2); }
+.cred-card { display: flex; justify-content: space-between; align-items: center; gap: var(--space-2); background: var(--bg); border-radius: var(--radius); padding: var(--space-2) var(--space-2) var(--space-2) var(--space-3); }
+.cred-hint { font-weight: 600; overflow-wrap: anywhere; }
+.cred-meta { color: var(--text-3); font-size: var(--text-sm); }
+.cred-section > p { margin: 0; }
 
 /* ---------------- dialogs ---------------- */
 .backdrop { position: fixed; inset: 0; background: rgb(11 42 42 / 0.55); display: grid; place-items: center; padding: var(--space-4); z-index: 10; }
@@ -418,6 +428,7 @@ table.numeric td, table.numeric th { white-space: nowrap; }
   .node-table tr.node-failed td { background: none; }
   .node-table tr.node-failed { background: var(--draft); }
   .cluster-card { padding: var(--space-3); }
+  .cred-columns { grid-template-columns: minmax(0, 1fr); }
   .publish-strip.read-only { grid-template-columns: minmax(0, 1fr); }
   /* Card rows stack: name → target on its own line, then the state, then the actions. */
   table.cards, table.cards tbody { display: block; margin-top: 0; }

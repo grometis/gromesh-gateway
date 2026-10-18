@@ -20,7 +20,7 @@ async function openConsumer(page: Page) {
   await expect(page.getByRole("heading", { name: /^Consumer / })).toBeVisible();
 }
 
-const tabs = (page: Page) => page.getByRole("tablist", { name: "Credenciais do consumer" });
+const tabs = (page: Page) => page.getByRole("tablist", { name: "Seções do consumer" });
 
 test("an HS256 secret is shown once and is gone after closing; an RS256 key needs a PEM", async ({ page }) => {
   // Prism would answer with a placeholder; a realistic secret makes "shown once" observable.
@@ -30,9 +30,9 @@ test("an HS256 secret is shown once and is gone after closing; an RS256 key need
       : route.fallback(),
   );
   await openConsumer(page);
-  await expect(tabs(page).getByRole("tab", { name: "Key-auth" })).toHaveAttribute("aria-selected", "true");
-  await tabs(page).getByRole("tab", { name: "JWT" }).click();
-  await expect(page.getByRole("tabpanel", { name: "JWT" })).toBeVisible();
+  // Credentials come first, with key-auth, JWT and basic-auth side by side.
+  await expect(tabs(page).getByRole("tab", { name: "Credenciais" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tabpanel", { name: "Credenciais" }).getByRole("region", { name: "Credenciais JWT" })).toBeVisible();
 
   await page.getByRole("button", { name: "Nova credencial JWT" }).click();
   const dialog = page.getByRole("dialog", { name: "Nova credencial JWT" });
@@ -47,7 +47,7 @@ test("an HS256 secret is shown once and is gone after closing; an RS256 key need
   const shown = page.getByRole("dialog", { name: "Credencial JWT criada" });
   await expect(shown.getByLabel("Segredo")).toHaveText(secret);
   await expect(shown.getByRole("note")).toContainText("não será mostrado de novo");
-  await shown.getByRole("button", { name: "Concluído" }).click();
+  await shown.getByRole("button", { name: "Já copiei" }).click();
   await expect(shown).toBeHidden();
   await expect(page.getByText(secret)).toHaveCount(0);
   const stored = await page.evaluate(() => JSON.stringify({ ...sessionStorage }) + JSON.stringify({ ...localStorage }));
@@ -56,7 +56,6 @@ test("an HS256 secret is shown once and is gone after closing; an RS256 key need
 
 test("a basic-auth password goes to the API once and is never rendered", async ({ page }) => {
   await openConsumer(page);
-  await tabs(page).getByRole("tab", { name: "Basic-auth" }).click();
   await page.getByRole("button", { name: "Nova credencial basic-auth" }).click();
   const dialog = page.getByRole("dialog", { name: "Nova credencial basic-auth" });
   await dialog.getByLabel("Usuário").fill("partner-api");
@@ -77,10 +76,9 @@ test("ACL groups are validated and replaced as a whole set", async ({ page }) =>
     route.request().method() === "PUT" ? route.fulfill({ json: route.request().postDataJSON() }) : route.fulfill({ json: { groups: ["partners"] } }),
   );
   await openConsumer(page);
-  await tabs(page).getByRole("tab", { name: "JWT" }).focus();
+  await tabs(page).getByRole("tab", { name: "Credenciais" }).focus();
   await page.keyboard.press("ArrowRight");
-  await page.keyboard.press("ArrowRight");
-  await expect(tabs(page).getByRole("tab", { name: "Grupos" })).toBeFocused();
+  await expect(tabs(page).getByRole("tab", { name: "Grupos ACL" })).toBeFocused();
   await expect(page.getByRole("list", { name: "Grupos" })).toContainText("partners");
 
   await page.getByRole("button", { name: "Editar grupos" }).click();
