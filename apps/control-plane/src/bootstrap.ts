@@ -18,8 +18,8 @@ export async function createApp(config: AppConfig, opts: { logger?: false | LogL
   const app = await NestFactory.create<NestExpressApplication>(AppModule.forRoot(config), {
     ...(opts.logger === undefined ? {} : { logger: opts.logger }),
   });
-  // Preserve Express 4 query semantics for pagination and filters after the Express 5 upgrade.
-  app.set("query parser", "extended");
+  // Express 5's default made explicit: no operation takes nested query objects (FlatQueryInterceptor refuses them).
+  app.set("query parser", "simple");
   configureImportParser(app);
   app.setGlobalPrefix("api/v1", {
     exclude: ["healthz", { path: "agent/v1/{*splat}", method: RequestMethod.ALL }],

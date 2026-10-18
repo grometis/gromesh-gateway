@@ -53,3 +53,19 @@ it.each([
     if (server !== h) await server.close();
   }
 });
+
+it("uses Express 5's simple query parser: repeated keys are arrays, bracket keys are refused, after authentication", async () => {
+  // Anonymous first: the 401 comes before any query check.
+  expect((await h.anonymous("GET", "/audit-events?limit[value]=1")).status).toBe(401);
+  const nested = await h.api<{ errors: { path: string }[] }>("GET", "/audit-events?limit[value]=1&cursor[a][b]=x");
+  expect(nested.status).toBe(422);
+  expect(nested.body.errors).toEqual([
+    { path: "limit", message: "must be a single value, not an object" },
+    { path: "cursor", message: "must be a single value, not an object" },
+  ]);
+  // A repeated scalar still reaches the handler as an array and is refused there, as before.
+  const repeated = await h.api<{ errors: { path: string }[] }>("GET", "/audit-events?limit=1&limit=2");
+  expect(repeated.status).toBe(422);
+  expect(repeated.body.errors).toContainEqual(expect.objectContaining({ path: "limit" }));
+  expect((await h.api("GET", "/audit-events?limit=1")).status).toBe(200);
+});
