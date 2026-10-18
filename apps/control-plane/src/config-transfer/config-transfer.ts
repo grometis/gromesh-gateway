@@ -9,7 +9,7 @@ import { contracts } from "../common/contract.js";
 import { unprocessable } from "../common/problem.js";
 import { ENCRYPTOR, Encryptor } from "../crypto/crypto.js";
 import { DB, type Db } from "../db/db.js";
-import { environments } from "../db/schema.js";
+import { consumers, environments } from "../db/schema.js";
 import { markDraftChanged, requireEnvironment, uuidParam } from "../environments/environments.js";
 import { loadGatewayState, restoreGatewayState } from "../gateway/gateway.js";
 import { PluginCatalog, PluginCatalogModule } from "../plugin-catalog/catalog.js";
@@ -50,7 +50,13 @@ export class ConfigTransferService {
           // A malformed converted shape cannot be planned safely, but all converter/schema diagnostics survive.
           const checkedSchema = errors.length > 0;
           let plan: Awaited<ReturnType<typeof planImport>> | undefined;
-          if (!checkedSchema) { plan = await planImport(document, current, request.mode, this.catalog, this.plugins); errors.push(...plan.errors); }
+          if (!checkedSchema) {
+            plan = await planImport(document, current, request.mode, this.catalog, this.plugins, converted ? {
+              identity: converted.identity,
+              consumerIdExists: async id => (await tx.select({ id: consumers.id }).from(consumers).where(eq(consumers.id, id)).limit(1)).length > 0,
+            } : undefined);
+            errors.push(...plan.errors);
+          }
           const mapped = [...(converted?.errors ?? []), ...errors.map(e => ({ ...e, path: converted?.sourcePath(e.path) ?? e.path }))];
           if (mapped.length) {
             const redacted = checkedSchema ? mapped : redactImportErrors(mapped, document, current, this.catalog);
@@ -77,6 +83,8 @@ export class ConfigTransferService {
             const code = String(pg.code);
             // SSI conflicts can also come from the at-rest key rotator. Re-plan from a fresh snapshot.
             if (["40001", "40P01"].includes(code) && attempt < 3) continue retry;
+            // An import into another environment may claim a free UUID after our serializable snapshot.
+            if (code === "23505" && "constraint" in pg && pg.constraint === "consumers_pkey" && attempt < 3) continue retry;
             if (["23505", "23503", "40001", "40P01"].includes(code)) throw importFailure([{ path: "document", message: "the resulting draft conflicts with existing or concurrent changes; retry after resolving the conflict" }]);
           }
         }

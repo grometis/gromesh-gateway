@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { basicAuthPasswordHash, hashIssues, validate, type ConfigDocument, type Consumer, type ConsumerRef, type GatewayState, type Plugin, type Service, type Route, type Upstream, type Target, type Certificate } from "@gromesh/compiler";
+import { basicAuthPasswordHash, hashIssues, validate, type ImportIdentity, type ConfigDocument, type Consumer, type ConsumerRef, type GatewayState, type Plugin, type Service, type Route, type Upstream, type Target, type Certificate } from "@gromesh/compiler";
 import { type FieldError, ProblemException } from "../common/problem.js";
 import { checkCertificate } from "../certificates/certificates.js";
 import { checkJwt } from "../consumers/credentials.js";
@@ -10,7 +10,7 @@ import type { PluginCatalog } from "../plugin-catalog/catalog.js";
 import type { PluginsService } from "../plugins/plugins.js";
 
 /** Resolves a complete proposed domain state without writing. Every diagnostic uses a document path. */
-export async function planImport(document: ConfigDocument, current: GatewayState, mode: "merge" | "replace", catalog: PluginCatalog, plugins: PluginsService) {
+export async function planImport(document: ConfigDocument, current: GatewayState, mode: "merge" | "replace", catalog: PluginCatalog, plugins: PluginsService, preservation?: { identity: ImportIdentity; consumerIdExists: (id: string) => Promise<boolean> }) {
   const errors: FieldError[] = [];
   const paths = new Map<string, string>();
   const add = (path: string, message: string) => errors.push({ path, message });
@@ -67,8 +67,26 @@ export async function planImport(document: ConfigDocument, current: GatewayState
   retain(result.routes, current.routes);
   for (const [i, c] of document.consumers.entries()) {
     const path = `document.consumers.${i}`;
-    const old = matchConsumer(c, current.consumers, path);
-    const value: Consumer = { id: old?.id ?? randomUUID(), ...consumerValues(c), aclGroups: mode === "merge" ? [...new Set([...(old?.aclGroups ?? []), ...c.aclGroups])] : c.aclGroups };
+    const requestedId = preservation?.identity.consumerIds.get(i);
+    const old = requestedId ? current.consumers.find(v => v.id === requestedId) : matchConsumer(c, current.consumers, path);
+    if (requestedId && preservation) {
+      let conflict = false;
+      if (!old && await preservation.consumerIdExists(requestedId)) {
+        add(`${path}.id`, "consumer id cannot be preserved because it is already in use");
+        conflict = true;
+      }
+      for (const field of ["username", "customId"] as const) {
+        if (c[field] && current.consumers.some(v => v.id !== requestedId && v[field] === c[field])) {
+          add(`${path}.${field}`, "consumer identifier conflicts with the consumer id to preserve");
+          conflict = true;
+        }
+      }
+      if (conflict) c.basicAuthCredentials.forEach((_k, j) => {
+        const passwordPath = `${path}.basicAuthCredentials.${j}.password`;
+        if (preservation.identity.prehashedPasswords.has(passwordPath)) add(passwordPath, "Kong's hash is salted with the consumer id; the source consumer UUID cannot be preserved");
+      });
+    }
+    const value: Consumer = { id: requestedId ?? old?.id ?? randomUUID(), ...consumerValues(c), aclGroups: mode === "merge" ? [...new Set([...(old?.aclGroups ?? []), ...c.aclGroups])] : c.aclGroups };
     upsert(result.consumers, value, path);
     function credentialMatch<T extends { id: string; consumerId: string }>(list: T[], id: string | undefined, natural: (v: T) => boolean, p: string): T | undefined {
       const byId = id ? list.find(v => v.id === id) : undefined;
@@ -92,7 +110,7 @@ export async function planImport(document: ConfigDocument, current: GatewayState
     for (const [j, k] of c.basicAuthCredentials.entries()) {
       const p = `${path}.basicAuthCredentials.${j}`;
       const old = credentialMatch(current.basicAuthCredentials ?? [], k.id, v => v.username === k.username, p);
-      const passwordHash = k.password === undefined || k.password === "REDACTED" ? secret(undefined, old?.passwordHash, `${p}.password`) : basicAuthPasswordHash(value.id, k.password);
+      const passwordHash = k.password === undefined || k.password === "REDACTED" ? secret(undefined, old?.passwordHash, `${p}.password`) : preservation?.identity.prehashedPasswords.has(`${p}.password`) ? k.password : basicAuthPasswordHash(value.id, k.password);
       upsert(result.basicAuthCredentials!, { id: old?.id ?? randomUUID(), consumerId: value.id, username: k.username, passwordHash, tags: k.tags ?? [] }, p);
     }
   }
