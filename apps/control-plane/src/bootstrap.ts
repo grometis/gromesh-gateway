@@ -18,9 +18,11 @@ export async function createApp(config: AppConfig, opts: { logger?: false | LogL
   const app = await NestFactory.create<NestExpressApplication>(AppModule.forRoot(config), {
     ...(opts.logger === undefined ? {} : { logger: opts.logger }),
   });
+  // Express 5's default made explicit: no operation takes nested query objects (FlatQueryInterceptor refuses them).
+  app.set("query parser", "simple");
   configureImportParser(app);
   app.setGlobalPrefix("api/v1", {
-    exclude: ["healthz", { path: "agent/v1/(.*)", method: RequestMethod.ALL }],
+    exclude: ["healthz", { path: "agent/v1/{*splat}", method: RequestMethod.ALL }],
   });
   app.enableShutdownHooks();
   if (config.trustProxy !== false) (app.getHttpAdapter().getInstance() as import("express").Express).set("trust proxy", config.trustProxy);

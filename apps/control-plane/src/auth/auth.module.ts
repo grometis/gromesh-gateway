@@ -159,6 +159,7 @@ class AuthController {
 @Module({ controllers: [AuthController], providers: [AuthService, SessionService], exports: [SessionService] })
 export class AuthModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
-    consumer.apply(AnonymousMiddleware).forRoutes("*");
+    // The prefixed wildcard requires a slash; include the bare API prefix as well.
+    consumer.apply(AnonymousMiddleware).forRoutes("/", "{*splat}");
   }
 }

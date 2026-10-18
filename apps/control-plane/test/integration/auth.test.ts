@@ -391,9 +391,9 @@ describe("RBAC matrix from the contract", () => {
   }
   /** Routes registered in Nest, as "METHOD /api/v1/path/:param", from the Express router. */
   const registeredRoutes = (): Set<string> => {
-    const express = h.app.getHttpAdapter().getInstance() as { _router?: { stack: { route?: { path: string; methods: Record<string, boolean> } }[] } };
+    const express = h.app.getHttpAdapter().getInstance() as { router: { stack: { route?: { path: string; methods: Record<string, boolean> } }[] } };
     const routes = new Set<string>();
-    for (const layer of express._router?.stack ?? []) {
+    for (const layer of express.router.stack) {
       if (!layer.route) continue;
       for (const [method, on] of Object.entries(layer.route.methods)) if (on) routes.add(`${method.toUpperCase()} ${layer.route.path}`);
     }
