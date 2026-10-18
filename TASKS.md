@@ -56,6 +56,11 @@ git worktree add ../gg-codex  -b task/W1-X1-kong-image
 | P4-X0 | Codex | — | `contracts/` (+ `apps/ui/src/api/schema.d.ts` gerado) |
 | P4-X1 | Codex | P4-X0 | `packages/compiler/` (conversão Kong → modelo), `apps/control-plane/`, `contracts/` (só remover `x-gromesh-planned`) |
 | P4-C2 | Claude | P4-C1, P4-X1 | `contracts/` (PR próprio do `autoPublishPausedReason`), `apps/control-plane/` (o campo), `apps/ui/` (+ `.github/workflows/` só para screenshots) |
+| P5-C0 | Claude | — | `contracts/` (+ `apps/ui/src/api/schema.d.ts` gerado) |
+| P5-C1 | Claude | P5-C0 | `apps/control-plane/`, `e2e/security-checklist.*`, `contracts/` (só remover `x-gromesh-planned`) |
+| P5-C2 | Claude | P5-C1 | `apps/ui/` |
+| B-11 | Codex | — | `contracts/` (PR próprio), `packages/compiler/`, `apps/control-plane/`, `deploy/observability/`, `deploy/compose/`, `deploy/helm/data-plane/files/vector/`, `e2e/` |
+| B-16 | Codex | — | `contracts/` (PR próprio), `packages/compiler/` (conversão Kong → modelo), `apps/control-plane/` |
 
 Ordem de merge na semana 3: W2-C2 → W3-X1 → W3-C1 → W3-X2. Quem mergeia depois faz rebase; `src/db/schema.ts` e `drizzle/` são alterados por uma frente por vez.
 
@@ -442,6 +447,39 @@ Aceite: (a) export → import em environment vazio → publicar → snapshot equ
 Aceite: Playwright e axe verdes; screenshots como artefato; teste dos quatro estados do ponto.
 
 ---
+## P5 — Papel por environment; retenção por rota; import de hash do basic-auth
+
+### P5-C0 [Claude] Contrato: papel por environment
+- Um papel por environment substitui o global ali (`viewer`, `editor`, `admin` ou `none` = sem acesso). Vale para operações com `{envId}` e para recursos de um environment endereçados por id (`/clusters/{clusterId}`). As demais (usuários, tokens, audit, criar environment, `/me`) usam só o global.
+- `GET`/`PUT /users/{userId}/environment-roles` (admin global, só sessão, audit before/after); `/me` traz `environmentRoles`; `GET /environments` lista só os visíveis (admin global vê todos).
+- Environment invisível → 404, nunca 403; papel insuficiente num visível → 403. Admin global é admin em todos e não recebe papel por environment (422). Token age com min(papel do token, papel efetivo do dono); o papel de um token novo continua limitado pelo global.
+
+Aceite: lint válido e teste do contrato (PR #58).
+
+### P5-C1 [Claude] Papel por environment no control plane
+- Tabela `environment_roles(user_id, environment_id, role)`, única por par; apagar o environment ou o usuário remove as linhas; promover a admin global as apaga (com audit).
+- Guard resolve o envId (do path ou do cluster) fail-closed: 404 para environment inexistente ou invisível, 403 para papel insuficiente. SSE e agente não mudam.
+
+Aceite: matriz RBAC estendida (viewer global + editor em A; editor global + viewer em A; admin em A sem gerenciar usuários e tokens; `none` → 404 e fora da lista; o mesmo via token) e `e2e/security-checklist.sh` com R1 (eleva só no environment certo) e R2 (environment invisível → 404). PR #62.
+
+### P5-C2 [Claude] Papel por environment na UI
+- Usuários: tabela environment × papel com "Usa o global"; só o admin global vê e edita.
+- O seletor de environment mostra só os visíveis; os botões seguem o papel efetivo do environment em tela.
+
+Aceite: Playwright contra o Prism, axe e screenshots desktop/mobile. PR #63.
+
+### B-11 [Codex] Retenção por rota no ClickHouse (backlog 11)
+- Contrato: `Route.analyticsRetentionDays` 1..7 | null (PR #59).
+- A rota leva o valor no http-log via compilador; o Vector grava `retention_days`; a TTL passa a `ts + toIntervalDay(retention_days)`; migração do ClickHouse compatível, com padrão 7.
+
+Aceite: teste com ClickHouse real usando `OPTIMIZE … FINAL` e timestamps antigos (`e2e/route-retention.mjs`). PR #61.
+
+### B-16 [Codex] Import de basic-auth com hash do Kong (backlog 16)
+- Contrato: hash aceito só se o consumer tem id preservado; senão 422 no path da senha. O hash é guardado como `enc:v2` (PR #60).
+
+Aceite: hash gerado no teste (`sha1(senha + consumer_id)`) → publicar → login no Kong do compose responde 200 (senha errada 401); consumer sem id preservado → 422. PR #64.
+
+---
 
 ## Backlog (pós-MVP, em ordem de prioridade)
 
@@ -452,15 +490,15 @@ Aceite: Playwright e axe verdes; screenshots como artefato; teste dos quatro est
 5. **Analytics e dado pessoal:** feito (B5). O Vector mascara no path, antes do ClickHouse, CPF e CNPJ (com e sem pontuação), e-mails e sequências de 6+ dígitos (`{cpf}`, `{cnpj}`, `{email}`, `{num}`), inclusive percent-encoded; UUIDs e ids curtos ficam intactos; a query continua descartada. Aceite em `e2e/path-masking.spec.ts` (ClickHouse e log do Vector sem valores brutos).
 6. **Analytics:** feito (B6). `GET /environments/{envId}/analytics/top-routes` (`by` = requests | errors | p95, `limit` ≤ 50, 7 dias) agrupando a tabela `requests` por `route_id`, nome vindo do Postgres (rota apagada: id com nome nulo); card "Top rotas" no dashboard com seletor de critério e link para o explorador filtrado pela rota.
 7. **Observabilidade:** feito (B7). O compilador injeta no http-log a união dos `key_names` dos key-auth publicados (validados por `^[A-Za-z0-9._-]{1,64}$`, 422 em `config.key_names` na API); o Vector remove esses nomes de header e query por evento; `GROMESH_KEY_NAMES` fica como fallback/união. Aceite em `e2e/key-names.spec.ts`.
-8. **Snapshot por cluster:** em andamento como P1-X1 (persistir o node token do agente).
+8. **Snapshot por cluster:** feito (P1-X1). O agente guarda o node token em `GROMESH_STATE_DIR/node-token` (escrita atômica, modo 0600), num volume próprio no compose e no chart; ao reiniciar usa o token salvo sem novo registro, e um 401 apaga o token e registra de novo com o registration token.
 9. **Proteção da `main` no GitHub:** aplicar `.github/rulesets/main.json` (`gh api -X POST repos/grometis/gromesh-gateway/rulesets --input .github/rulesets/main.json`) quando a conta tiver GitHub Pro; até lá vale o hook `pre-push` de `.githooks/` (CLAUDE.md, regra 10).
 10. **401 antes de 404 para anônimos:** feito (P3-X1). Requisição a `/api/v1/*` sem cookie de sessão nem bearer, fora da lista pública gerada dos dois contratos (`scripts/generate-session-exempt-routes.mjs`, com teste de divergência), recebe 401 antes do roteamento; com credencial presente, rota inexistente segue 404. Risco aceito: anônimo com `Authorization` arbitrário ainda distingue rota existente de inexistente; os paths já são públicos no bundle da UI, então o ganho de fechar não compensa duplicar o guard.
-11. **Retenção por rota no ClickHouse:** o `path` pode ser sensível mesmo mascarado; permitir retenção menor (TTL) para rotas marcadas, em vez dos 7 dias globais da tabela `requests`.
+11. **Retenção por rota no ClickHouse:** em andamento como B-11 (PRs #59 e #61). O `path` pode ser sensível mesmo mascarado; permitir retenção menor (TTL) para rotas marcadas, em vez dos 7 dias globais da tabela `requests`.
 12. **P2: upstreams/targets + certificados/SNIs:** feito (P2-C0..C2, PRs #27, #31, #32). Entidades do Kong ainda não cobertas pelo modelo (balanceamento por upstream/targets, certificados e SNIs); contrato depois do P1-C0.
 13. **Flake do `mvp-e2e` em kind:** causa encontrada e corrigida (PR #25). "traffic must reach the analytics API" em 5 execuções em 2026-10-16 (runs 38960971263, 38967623348, 38968335996, 38969548580, 38978312100): o spec usava `/mvp-<8 hex>`, e desde a máscara de dado pessoal (B5) uma sequência de 6+ dígitos vira `{num}` no ClickHouse (~10% das execuções; ex.: `/mvp-629762c6`). O spec passou a usar o UUID inteiro. Fica a lição: paths de teste com sufixo aleatório devem usar UUID completo. Os logs dos pods como artefato do job em falha seguem no P1-X2.
 14. **Máscara de path por segmento:** feito (P2-X1). Um segmento com 6+ dígitos seguidos que não é UUID vira `{id}` inteiro (`/mvp-629762c6` → `/{id}`, `/orders/507f1f77bcf86cd799439011` → `/orders/{id}`); CPF/CNPJ completos e segmentos com e-mail mantêm `{cpf}`, `{cnpj}`, `{email}`; UUIDs e ids curtos intactos.
 15. **Contador separado para falhas de bearer:** feito (P2-X2). Falhas de token usam a chave própria `bearer-ip:<ip>` (mesmo limiar e janela do login por endereço); um pipeline com token expirado não bloqueia mais o login por senha do mesmo IP, e vice-versa.
-16. **Import de basic-auth com hash do Kong:** aceitar `_transform: false` quando o id original do consumer for preservado (o hash depende dele). Hoje é recusado, e quem migra precisa redefinir as senhas.
-17. **Teste intermitente "Kong merge resolves existing natural references, supports nested additions and rejects prehashed basic-auth"** (`apps/control-plane/test/integration/export-import.test.ts`): falhou uma vez em 2026-10-17, na suíte completa local (`× … 277ms`; a mensagem de erro não foi capturada). Isolado, passou 30 de 30 vezes em 2026-10-18. Hipótese não comprovada: o teste exige que o export inteiro não contenha a substring `abc` (a chave importada), mas o export traz conteúdo aleatório por execução (6 UUIDs e ~1000 caracteres de PEM base64); simulação dá ~3,9% de chance de `abc` aparecer por acaso. Correção sugerida se voltar a falhar: verificar que nenhum valor de string do documento é igual à chave (ou termina com ela), em vez de procurar a substring no JSON inteiro, e capturar a saída da falha.
+16. **Import de basic-auth com hash do Kong:** em andamento como B-16 (PRs #60 e #64). Aceitar `_transform: false` quando o id original do consumer for preservado (o hash depende dele). Hoje é recusado, e quem migra precisa redefinir as senhas.
+17. **Teste intermitente "Kong merge resolves existing natural references, supports nested additions and rejects prehashed basic-auth"** (`apps/control-plane/test/integration/export-import.test.ts`): falhou uma vez em 2026-10-17, na suíte completa local (`× … 277ms`; a mensagem de erro não foi capturada). Isolado, passou 30 de 30 vezes em 2026-10-18. Hipótese não comprovada: o teste exige que o export inteiro não contenha a substring `abc` (a chave importada), mas o export traz conteúdo aleatório por execução (6 UUIDs e ~1000 caracteres de PEM base64); simulação dá ~3,9% de chance de `abc` aparecer por acaso. Correção sugerida se voltar a falhar: verificar que nenhum valor de string do documento é igual à chave (ou termina com ela), em vez de procurar a substring no JSON inteiro, e capturar a saída da falha. Em 2026-10-18 a suíte completa rodou pelo menos 6 vezes (P5-C0, P5-C1, B-11, B-16 e duas do Codex) e essa falha não se repetiu. O B-16 altera o teste: o import com hash passa a exigir o id preservado, e o erro esperado fica no path da senha. A busca pela substring `abc` continua. Na mesma noite apareceu outro intermitente, com causa encontrada: `credentials.test.ts` falhou no setup com 429 no login do admin do harness ("Too many login attempts"). O teste "locks a client address after too many failures across accounts" de `auth.test.ts` sobe uma réplica com `loginMaxFailuresPerIp: 3` sem `trustProxy`, então trava `ip:127.0.0.1` por 60 s no banco que todos os arquivos da execução compartilham. Qualquer harness que fizer login nessa janela recebe 429. A correção usa `trustProxy` e um `X-Forwarded-For` próprio, como os testes vizinhos, e está no PR #65. A falha original deste item pode ter a mesma origem se o teste logou no meio dessa janela, mas isso não foi comprovado.
 
 Regras de produção já codificadas nos charts e que continuam valendo: `TRUST_PROXY` é o IP/CIDR exato do ingress (nunca `uniquelocal`); o `LISTEN` do control plane usa conexão direta ao Postgres (nunca PgBouncer em modo transação); o ingress na frente do SSE do agente precisa de idle timeout acima de 15 s e buffering desligado; `COOKIE_SECURE` só é falso no compose de desenvolvimento.
