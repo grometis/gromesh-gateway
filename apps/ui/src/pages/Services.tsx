@@ -5,8 +5,10 @@ import { statusMessage, toFormErrors, type FormErrors } from "../api/errors";
 import { useCanEdit } from "../auth";
 import { Field, FormErrorList } from "../components/Field";
 import { ConfirmDialog, Modal } from "../components/Modal";
+import { Link, useNavigate, useParams } from "react-router";
 import { useEnvId, useEnvironment } from "../components/Shell";
-import { DraftBadge } from "../components/Badge";
+import { Badge, DraftBadge } from "../components/Badge";
+import { RowMenu } from "../components/RowMenu";
 import { Button } from "../components/Button";
 import { Table } from "../components/Table";
 import { ScopedPlugins } from "./Plugins";
@@ -64,7 +66,6 @@ export function ServicesPage() {
   const draft = useServiceDraft(envId);
   const [editing, setEditing] = useState<Service | "new" | null>(null);
   const [deleting, setDeleting] = useState<Service | null>(null);
-  const [plugins, setPlugins] = useState<Service | null>(null);
   const all = services.data?.pages.flatMap((p) => p.items) ?? [];
   const changed = all.filter((s) => draft.has(s.id));
   const items = onlyChanged ? changed : all;
@@ -102,39 +103,35 @@ export function ServicesPage() {
             <tr>
               <th>Service → destino</th>
               <th>
-                <span className="visually-hidden">Situação</span>
-              </th>
-              <th>
                 <span className="visually-hidden">Ações</span>
               </th>
             </tr>
           </thead>
           <tbody>
             {items.map((s) => (
-              <tr key={s.id}>
-                <td>
+              <tr key={s.id} className={s.enabled === false ? "row-off" : undefined}>
+                <td className="row-main">
                   <div className="service-route">
-                    <span className="service-name">{s.name}</span>
+                    {/* The whole row opens the service: this link covers it, the actions sit above it. */}
+                    <Link to={s.id} className="row-open service-name">
+                      {s.name}
+                    </Link>
                     <DraftBadge change={draft.get(s.id)} />
+                    {s.enabled === false && <Badge tone="off">Desativado</Badge>}
                     <span className="arrow" aria-hidden="true">
                       →
                     </span>
                     <span className="visually-hidden">destino</span>
-                    <span className="target mono">
-                      {s.protocol}://{s.host}:{s.port}
-                      {s.path ?? ""}
-                    </span>
+                    <span className="target mono">{serviceTarget(s)}</span>
                   </div>
                 </td>
-                <td>{s.enabled === false && <span className="service-off">Desativado</span>}</td>
                 <td className="actions">
-                  <Button onClick={() => setPlugins(s)}>Plugins</Button>
                   {canEdit && (
                     <>
-                      <Button onClick={() => setEditing(s)}>Editar</Button>
-                      <Button variant="danger" onClick={() => setDeleting(s)}>
-                        Excluir
+                      <Button variant="quiet" onClick={() => setEditing(s)}>
+                        Editar
                       </Button>
+                      <RowMenu label={`Mais ações para ${s.name}`} items={[{ label: "Excluir", danger: true, onSelect: () => setDeleting(s) }]} />
                     </>
                   )}
                 </td>
@@ -150,11 +147,67 @@ export function ServicesPage() {
       )}
       {editing && <ServiceForm envId={envId} service={editing === "new" ? null : editing} onClose={() => setEditing(null)} />}
       {deleting && <DeleteService envId={envId} service={deleting} onClose={() => setDeleting(null)} />}
-      {plugins && (
-        <Modal title={`Plugins de ${plugins.name}`} onClose={() => setPlugins(null)} wide>
-          <ScopedPlugins envId={envId} scope={{ kind: "service", id: plugins.id }} title="Plugins aplicados" />
-        </Modal>
-      )}
+    </section>
+  );
+}
+
+export function serviceTarget(s: Service): string {
+  return `${s.protocol}://${s.host}:${s.port}${s.path ?? ""}`;
+}
+
+export function ServiceDetailPage() {
+  const envId = useEnvId();
+  const { serviceId } = useParams();
+  const canEdit = useCanEdit();
+  const navigate = useNavigate();
+  const draft = useServiceDraft(envId);
+  const [editing, setEditing] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const service = useQuery({
+    queryKey: ["services", envId, "detail", serviceId],
+    queryFn: () => unwrap(api.GET("/environments/{envId}/services/{serviceId}", { params: { path: { envId, serviceId: serviceId! } } })),
+  });
+
+  if (service.isPending) return <p className="muted">Carregando…</p>;
+  if (service.isError) return <p className="error">{statusMessage(service.error)}</p>;
+  const s = service.data;
+  return (
+    <section className="stack">
+      <p>
+        <Link to="..">← Services</Link>
+      </p>
+      <div className="page-head">
+        <div>
+          <h1 className="title-with-badges">
+            {s.name} <DraftBadge change={draft.get(s.id)} />
+            {s.enabled === false && <Badge tone="off">Desativado</Badge>}
+          </h1>
+          <p className="lede mono">{serviceTarget(s)}</p>
+        </div>
+        {canEdit && (
+          <div className="form-actions">
+            <Button variant="primary" onClick={() => setEditing(true)}>
+              Editar
+            </Button>
+            <RowMenu label={`Mais ações para ${s.name}`} items={[{ label: "Excluir", danger: true, onSelect: () => setDeleting(true) }]} />
+          </div>
+        )}
+      </div>
+      <dl className="props">
+        <dt>Protocolo</dt>
+        <dd className="mono">{s.protocol}</dd>
+        <dt>Host</dt>
+        <dd className="mono">{s.host}</dd>
+        <dt>Porta</dt>
+        <dd className="mono">{s.port}</dd>
+        <dt>Path no destino</dt>
+        <dd className="mono">{s.path ?? "—"}</dd>
+        <dt>Tags</dt>
+        <dd>{s.tags?.join(", ") || "—"}</dd>
+      </dl>
+      <ScopedPlugins envId={envId} scope={{ kind: "service", id: s.id }} title="Plugins do service" />
+      {editing && <ServiceForm envId={envId} service={s} onClose={() => setEditing(false)} />}
+      {deleting && <DeleteService envId={envId} service={s} onClose={() => setDeleting(false)} onDeleted={() => navigate("..")} />}
     </section>
   );
 }
@@ -262,13 +315,14 @@ function ServiceForm({ envId, service, onClose }: { envId: string; service: Serv
   );
 }
 
-function DeleteService({ envId, service, onClose }: { envId: string; service: Service; onClose: () => void }) {
+function DeleteService({ envId, service, onClose, onDeleted }: { envId: string; service: Service; onClose: () => void; onDeleted?: () => void }) {
   const invalidate = useInvalidateDraft(envId);
   const remove = useMutation({
     mutationFn: () => unwrap(api.DELETE("/environments/{envId}/services/{serviceId}", { params: { path: { envId, serviceId: service.id } } })),
     onSuccess: () => {
       invalidate("services");
       onClose();
+      onDeleted?.();
     },
   });
   return (

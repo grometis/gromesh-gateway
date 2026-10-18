@@ -8,6 +8,9 @@ import { useCanEdit } from "../auth";
 import { Field, FormErrorList } from "../components/Field";
 import { ConfirmDialog, Modal } from "../components/Modal";
 import { Tabs } from "../components/Tabs";
+import { Button } from "../components/Button";
+import { RowMenu } from "../components/RowMenu";
+import { Table } from "../components/Table";
 import { useEnvId } from "../components/Shell";
 import { AclGroupsPanel, BasicAuthCredentials, JwtCredentials } from "./ConsumerCredentials";
 import { ScopedPlugins } from "./Plugins";
@@ -41,39 +44,41 @@ export function ConsumersPage() {
       {consumers.isError && <p className="error">{statusMessage(consumers.error)}</p>}
       {consumers.isSuccess && items.length === 0 && <p className="muted">{q ? "Nenhum consumer encontrado." : "Nenhum consumer ainda."}</p>}
       {items.length > 0 && (
-        <table>
+        <Table label="Consumers" cards>
           <thead>
             <tr>
-              <th>Username</th>
+              <th>Consumer</th>
               <th>Custom id</th>
-              <th>Tags</th>
-              <th aria-label="Ações" />
+              <th>
+                <span className="visually-hidden">Ações</span>
+              </th>
             </tr>
           </thead>
           <tbody>
             {items.map((c) => (
               <tr key={c.id}>
-                <td>
-                  <Link to={c.id}>{consumerName(c)}</Link>
+                <td className="row-main">
+                  {/* The whole row opens the consumer: this link covers it, the actions sit above it. */}
+                  <Link to={c.id} className="row-open service-name">
+                    {consumerName(c)}
+                  </Link>
+                  {c.tags && c.tags.length > 0 && <span className="muted"> · {c.tags.join(", ")}</span>}
                 </td>
                 <td className="mono">{c.customId ?? "—"}</td>
-                <td>{c.tags?.join(", ") || "—"}</td>
                 <td className="actions">
                   {canEdit && (
                     <>
-                      <button type="button" onClick={() => setEditing(c)}>
+                      <Button variant="quiet" onClick={() => setEditing(c)}>
                         Editar
-                      </button>
-                      <button type="button" className="danger" onClick={() => setDeleting(c)}>
-                        Excluir
-                      </button>
+                      </Button>
+                      <RowMenu label={`Mais ações para ${consumerName(c)}`} items={[{ label: "Excluir", danger: true, onSelect: () => setDeleting(c) }]} />
                     </>
                   )}
                 </td>
               </tr>
             ))}
           </tbody>
-        </table>
+        </Table>
       )}
       {consumers.hasNextPage && (
         <button type="button" onClick={() => void consumers.fetchNextPage()} disabled={consumers.isFetchingNextPage}>

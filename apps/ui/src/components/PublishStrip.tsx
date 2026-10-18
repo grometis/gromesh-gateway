@@ -33,6 +33,9 @@ export function PublishStrip({ envId }: { envId: string }) {
   const nodes = (clusters.data?.items ?? []).flatMap((c) => c.nodes).filter((n) => n.online);
   const synced = nodes.filter((n) => current !== null && n.appliedVersion === current).length;
   const dot = nodes.length === 0 ? "none" : synced === nodes.length ? "" : "partial";
+  // Not only the dot's colour: a rollout that has not reached every node says so in words.
+  const lagging = nodes.length > 0 && synced < nodes.length;
+  const state = !lagging ? null : (clusters.data?.items ?? []).some((c) => c.status === "degraded") ? "degradado" : "convergindo";
 
   return (
     <section className={canEdit ? "publish-strip" : "publish-strip read-only"} aria-label="Publicação">
@@ -50,7 +53,7 @@ export function PublishStrip({ envId }: { envId: string }) {
         )}
       </div>
       {canEdit && (
-        <button type="button" className="primary" disabled={!pending} onClick={() => setOpen(true)}>
+        <button type="button" className="publish" disabled={!pending} onClick={() => setOpen(true)}>
           Publicar v{(current ?? 0) + 1}
           <span aria-hidden="true">→</span>
         </button>
@@ -71,6 +74,12 @@ export function PublishStrip({ envId }: { envId: string }) {
               </span>{" "}
               {nodes.length === 1 ? "nó" : "nós"}
             </span>
+            {state && (
+              <>
+                <span className="sep" aria-hidden="true">·</span>
+                <strong className={`strip-state ${state === "degradado" ? "bad" : ""}`}>{state}</strong>
+              </>
+            )}
           </>
         )}
       </div>

@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 
-/** NOVO / ALTERADO mark unpublished entities; the other tones mirror the cluster and diff states. */
-export type BadgeTone = "new" | "changed" | "added" | "removed" | "modified" | "converged" | "converging" | "degraded" | "no-nodes" | "warning" | "danger";
+/** NOVO / ALTERADO mark unpublished entities, "off" a disabled one; the other tones mirror the cluster and diff states. */
+export type BadgeTone = "new" | "changed" | "off" | "added" | "removed" | "modified" | "converged" | "converging" | "degraded" | "no-nodes" | "warning" | "danger";
 
 export function Badge({ tone, children }: { tone: BadgeTone; children: ReactNode }) {
   return <span className={`badge ${tone}`}>{children}</span>;

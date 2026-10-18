@@ -19,7 +19,7 @@
   --line-strong: #d3dedc;
   /* form controls need 3:1 against white and the surface */
   --control-line: #6f8481;
-  /* accent: primary action, NEW */
+  /* accent: only the publish action, and NEW */
   --accent: #c93a1e;
   --accent-hover: #a8301a;
   --on-accent: #ffffff;
@@ -102,8 +102,13 @@ button, .button {
 }
 button:hover:not(:disabled), .button:hover { background: var(--surface); }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
-button.primary, .button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
-button.primary:hover:not(:disabled), .button.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+/* The accent is reserved for publishing; every other main action is the ink outline. */
+button.publish { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+button.publish:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
+button.primary, .button.primary { border: 2px solid var(--ink); background: var(--bg); color: var(--ink); font-weight: 600; }
+button.primary:hover:not(:disabled), .button.primary:hover { background: var(--surface); }
+button.quiet { border-color: transparent; background: transparent; color: var(--text-2); }
+button.quiet:hover:not(:disabled) { background: var(--line); color: var(--text); }
 button.danger { color: var(--draft-text); border-color: var(--draft-text); }
 button.danger:hover:not(:disabled) { background: var(--draft); }
 button.icon { min-height: 0; border: none; background: none; font-size: 22px; line-height: 1; padding: var(--space-1) var(--space-2); }
@@ -139,6 +144,7 @@ fieldset legend { font-weight: 600; padding: 0 var(--space-1); }
   white-space: nowrap; vertical-align: middle;
 }
 .badge.new { background: var(--accent); color: var(--on-accent); }
+.badge.off { background: var(--line); color: var(--text-2); }
 .badge.changed { background: var(--draft-strong); color: var(--draft-text); }
 .badge.added, .badge.converged { color: var(--ok-text); background: var(--ok-bg); }
 .badge.removed, .badge.degraded, .badge.danger { color: var(--draft-text); background: var(--draft-strong); }
@@ -161,6 +167,17 @@ table.cards th { border-bottom: none; padding-bottom: 0; }
 table.cards td { background: var(--surface); border-bottom: none; padding: var(--space-3) var(--space-4); }
 table.cards td:first-child { border-radius: var(--radius) 0 0 var(--radius); }
 table.cards td:last-child { border-radius: 0 var(--radius) var(--radius) 0; }
+
+/* ---------------- row menu ---------------- */
+.row-menu { position: relative; display: inline-block; }
+.icon-button { min-width: var(--control-h); padding: 0; font-size: 20px; letter-spacing: 0.05em; }
+.menu-popover {
+  position: absolute; right: 0; top: calc(100% + var(--space-1)); z-index: 5; min-width: 180px; display: flex; flex-direction: column;
+  padding: var(--space-1); background: var(--bg); border: 1px solid var(--line-strong); border-radius: var(--radius); box-shadow: 0 12px 32px rgb(11 42 42 / 0.16);
+}
+.menu-popover [role="menuitem"] { justify-content: flex-start; border: none; border-radius: var(--radius-sm); background: none; min-height: 40px; }
+.menu-popover [role="menuitem"]:hover:not(:disabled), .menu-popover [role="menuitem"]:focus-visible { background: var(--surface); }
+.menu-popover .danger-item { color: var(--draft-text); }
 
 /* ---------------- tabs and pills ---------------- */
 .tabs { display: flex; gap: var(--space-1); border-bottom: 1px solid var(--line-strong); margin-bottom: var(--space-4); overflow-x: auto; }
@@ -207,12 +224,27 @@ table.cards td:last-child { border-radius: 0 var(--radius) var(--radius) 0; }
 .strip-draft .sep, .strip-live .sep { opacity: 0.7; }
 .strip-draft button.link { color: var(--draft-text); font-weight: 600; }
 .strip-draft.clean { background: var(--surface); color: var(--text-2); }
-.publish-strip > button.primary { min-height: 56px; padding: 0 var(--space-5); font-size: 16px; }
+.publish-strip > button.publish { min-height: 56px; padding: 0 var(--space-5); font-size: 16px; }
 .strip-live { background: var(--ink); color: var(--ink-text); }
 .strip-live strong, .strip-live .mono { color: var(--bg); }
 .strip-live .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); flex: none; }
 .strip-live .dot.partial { background: var(--accent); }
 .strip-live .dot.none { background: var(--ink-muted); }
+.strip-live .strip-state { color: var(--draft-strong); font-weight: 600; }
+.strip-live .strip-state.bad { color: var(--on-accent); background: var(--accent); border-radius: var(--radius-sm); padding: 0 var(--space-2); }
+
+/* ---------------- rows that open a detail ---------------- */
+/* The row's link stretches over the whole row; its actions stay above it. */
+table.cards tr { position: relative; }
+.row-open { color: inherit; text-decoration: none; }
+.row-open::after { content: ""; position: absolute; inset: 0; border-radius: var(--radius); }
+.row-open:hover { text-decoration: underline; }
+.row-open:focus-visible { outline: none; }
+.row-open:focus-visible::after { outline: 2px solid var(--accent); outline-offset: 2px; }
+table.cards td.actions > * { position: relative; z-index: 1; }
+table.cards tr.row-off td { opacity: 0.72; }
+table.cards tr:hover td { background: var(--line); }
+.title-with-badges { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
 
 /* ---------------- services ---------------- */
 .service-name { font-weight: 600; }

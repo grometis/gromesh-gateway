@@ -54,7 +54,7 @@ export function PublishModal({ env, onClose, readOnly = false }: { env: Environm
             <button type="button" onClick={onClose}>
               Cancelar
             </button>
-            <button type="button" className="primary" disabled={!preview.data?.hasChanges || publish.isPending} onClick={() => publish.mutate()}>
+            <button type="button" className="publish" disabled={!preview.data?.hasChanges || publish.isPending} onClick={() => publish.mutate()}>
               {publish.isPending ? "Publicando…" : "Publicar"}
             </button>
           </>

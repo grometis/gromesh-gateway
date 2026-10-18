@@ -1,7 +1,7 @@
 import { createBrowserRouter, Navigate } from "react-router";
 import { Shell, RequireAuth, RequireAdmin, FirstEnvironment } from "./components/Shell";
 import { LoginPage } from "./pages/Login";
-import { ServicesPage } from "./pages/Services";
+import { ServiceDetailPage, ServicesPage } from "./pages/Services";
 import { RoutesPage } from "./pages/Routes";
 import { ConsumerDetailPage, ConsumersPage } from "./pages/Consumers";
 import { PluginsPage } from "./pages/Plugins";
@@ -37,6 +37,7 @@ export const router = createBrowserRouter([
             children: [
               { index: true, element: <Navigate to="services" replace /> },
               { path: "services", element: <ServicesPage /> },
+              { path: "services/:serviceId", element: <ServiceDetailPage /> },
               { path: "routes", element: <RoutesPage /> },
               { path: "consumers", element: <ConsumersPage /> },
               { path: "consumers/:consumerId", element: <ConsumerDetailPage /> },
