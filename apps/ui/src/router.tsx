@@ -14,6 +14,7 @@ import { UsersPage } from "./pages/Users";
 import { AuditPage } from "./pages/Audit";
 import { AnalyticsPage } from "./pages/Analytics";
 import { RequestsPage } from "./pages/Requests";
+import { OverviewPage } from "./pages/Overview";
 
 export const router = createBrowserRouter([
   { path: "/login", element: <LoginPage /> },
@@ -47,6 +48,7 @@ export const router = createBrowserRouter([
               { path: "publications", element: <SnapshotsPage /> },
               { path: "publications/:version", element: <SnapshotDetailPage /> },
               { path: "clusters", element: <ClustersPage /> },
+              { path: "overview", element: <OverviewPage /> },
               { path: "analytics", element: <AnalyticsPage /> },
               { path: "requests", element: <RequestsPage /> },
             ],

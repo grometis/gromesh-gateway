@@ -208,7 +208,7 @@ function Dashboard({ envId }: { envId: string }) {
 }
 
 /** The routes with the most traffic, errors or latency of the period; a row opens the explorer filtered by the route. */
-function TopRoutes({ envId, range, tick, visible }: { envId: string; range: { from: string; to: string }; tick: number; visible: boolean }) {
+export function TopRoutes({ envId, range, tick, visible }: { envId: string; range: { from: string; to: string }; tick: number; visible: boolean }) {
   const [by, setBy] = useState<TopBy>("requests");
   const top = useQuery({
     queryKey: ["top-routes", envId, by, range.to, tick],
@@ -238,36 +238,38 @@ function TopRoutes({ envId, range, tick, visible }: { envId: string; range: { fr
       )}
       {top.data && top.data.items.length === 0 && <p className="muted">Sem tráfego no período.</p>}
       {top.data && top.data.items.length > 0 && (
-        <table aria-label="Top rotas">
-          <thead>
-            <tr>
-              <th scope="col">Route</th>
-              <th scope="col">Requisições</th>
-              <th scope="col">Erros</th>
-              <th scope="col">Taxa de erro</th>
-              <th scope="col">p95</th>
-            </tr>
-          </thead>
-          <tbody>
-            {top.data.items.map((item) => (
-              <tr key={item.routeId ?? "none"}>
-                <td>
-                  {item.routeId === null ? (
-                    <span className="muted">Sem rota</span>
-                  ) : (
-                    <Link to={`/e/${envId}/requests?routeId=${item.routeId}`} title={item.routeName === null ? "Rota removida; abre o explorador filtrado pelo id" : "Abre o explorador filtrado por esta rota"}>
-                      {item.routeName ?? `${item.routeId.slice(0, 8)}… (removida)`}
-                    </Link>
-                  )}
-                </td>
-                <td>{number(item.requests)}</td>
-                <td>{number(item.errors4xx + item.errors5xx)}</td>
-                <td>{percent(item.errorRate)}</td>
-                <td>{ms(item.p95Ms)}</td>
+        <div className="table-scroll">
+          <table aria-label="Top rotas" className="numeric">
+            <thead>
+              <tr>
+                <th scope="col">Route</th>
+                <th scope="col">Requisições</th>
+                <th scope="col">Erros</th>
+                <th scope="col">Taxa de erro</th>
+                <th scope="col">p95</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {top.data.items.map((item) => (
+                <tr key={item.routeId ?? "none"}>
+                  <td>
+                    {item.routeId === null ? (
+                      <span className="muted">Sem rota</span>
+                    ) : (
+                      <Link to={`/e/${envId}/requests?routeId=${item.routeId}`} title={item.routeName === null ? "Rota removida; abre o explorador filtrado pelo id" : "Abre o explorador filtrado por esta rota"}>
+                        {item.routeName ?? `${item.routeId.slice(0, 8)}… (removida)`}
+                      </Link>
+                    )}
+                  </td>
+                  <td>{number(item.requests)}</td>
+                  <td>{number(item.errors4xx + item.errors5xx)}</td>
+                  <td>{percent(item.errorRate)}</td>
+                  <td>{ms(item.p95Ms)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </section>
   );

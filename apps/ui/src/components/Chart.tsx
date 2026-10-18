@@ -17,7 +17,7 @@ const HEIGHT = 180;
 const PAD = { top: 10, right: 12, bottom: 24, left: 44 };
 
 /** A few round steps for the y axis. */
-function ticks(max: number): number[] {
+export function ticks(max: number): number[] {
   if (max <= 0) return [0];
   const raw = max / 3;
   const magnitude = 10 ** Math.floor(Math.log10(raw));
