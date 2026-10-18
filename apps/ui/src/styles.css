@@ -312,6 +312,32 @@ table.cards tr:hover td { background: var(--line); }
 .stat-card { background: var(--surface); border-radius: var(--radius); padding: var(--space-3) var(--space-4); }
 .stat-card dt { color: var(--text-3); font-size: var(--text-xs); }
 .stat-card dd { margin: var(--space-1) 0 0; font-family: var(--font-mono); font-size: 22px; font-weight: 500; }
+/* ---------------- overview ---------------- */
+.tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-3); margin: 0 0 var(--space-5); }
+.tile { background: var(--surface); border-radius: var(--radius); padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-1); }
+.tile dt { font-size: var(--text-sm); font-weight: 600; color: var(--text-2); }
+.tile dd { margin: 0; display: flex; flex-direction: column; gap: var(--space-1); }
+.tile .value { font-size: 30px; font-weight: 500; letter-spacing: -0.02em; line-height: 1.15; }
+.tile small { color: var(--text-3); font-size: var(--text-sm); }
+.chart.hourly { background: var(--bg); border: 1px solid var(--line); padding: var(--space-4) var(--space-5); }
+.chart.hourly figcaption { font-size: var(--h3); }
+.chart-plot { position: relative; width: 100%; }
+.chart-plot svg { display: block; width: 100%; height: auto; }
+table.numeric td, table.numeric th { white-space: nowrap; }
+.bar-ok { fill: var(--ok); }
+.bar-err { fill: var(--accent); }
+.bar .hit { fill: transparent; }
+.bar.active .hit { fill: rgb(11 42 42 / 0.05); }
+.chart-swatch.ok { background: var(--ok); }
+.chart-swatch.err { background: var(--accent); }
+.chart-tooltip {
+  position: absolute; top: 0; transform: translateX(-50%); pointer-events: none; display: flex; flex-direction: column; gap: 2px;
+  padding: var(--space-2) var(--space-3); background: var(--ink); color: var(--ink-text); border-radius: var(--radius-sm); font-size: var(--text-sm); white-space: nowrap;
+}
+.chart-tooltip strong { color: var(--bg); font-family: var(--font-mono); }
+.chart-table { margin-top: var(--space-2); font-size: var(--text-sm); }
+.chart-table summary { cursor: pointer; color: var(--text-2); }
+
 .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: var(--space-4); }
 .chart { margin: 0; background: var(--surface); border-radius: var(--radius); padding: var(--space-3) var(--space-4); }
 .chart figcaption { font-weight: 600; margin-bottom: var(--space-2); }
@@ -342,6 +368,9 @@ table.cards tr:hover td { background: var(--line); }
   .content { padding: var(--space-4) var(--space-4) var(--space-6); }
   h1 { font-size: 28px; }
   .publish-strip { grid-template-columns: minmax(0, 1fr); }
+  .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .tile .value { font-size: 24px; }
+  .chart.hourly { padding: var(--space-3); }
   .publish-strip.read-only { grid-template-columns: minmax(0, 1fr); }
   /* Card rows stack: name → target on its own line, then the state, then the actions. */
   table.cards, table.cards tbody { display: block; margin-top: 0; }

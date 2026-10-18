@@ -56,6 +56,7 @@ const GATEWAY = [
   ["certificates", "Certificados"],
 ] as const;
 const OPERATION = [
+  ["overview", "Visão geral"],
   ["publications", "Publicações"],
   ["clusters", "Clusters"],
   ["analytics", "Dashboard"],
