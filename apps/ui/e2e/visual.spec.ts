@@ -125,3 +125,12 @@ for (const { label, nodes, status, color, words } of [
     if (words !== "convergindo" && words !== "degradado") await expect(strip.getByText(/convergindo|degradado/)).toHaveCount(0);
   });
 }
+
+test("an auto environment paused by an import says so in the strip, and only then", async ({ page }) => {
+  await openServices(page);
+  const strip = page.getByRole("region", { name: "Publicação" });
+  await expect(strip.getByRole("note")).toHaveCount(0);
+  await page.route(`**/api/v1/environments/${envId}`, (route) => route.fulfill({ json: { ...environment, publishMode: "auto", autoPublishPausedReason: "import" } }));
+  await page.reload();
+  await expect(strip.getByRole("note")).toHaveText("Publicação automática pausada após importação — publique para retomar.");
+});
