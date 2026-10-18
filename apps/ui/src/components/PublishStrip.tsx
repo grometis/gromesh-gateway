@@ -1,8 +1,7 @@
-import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, unwrap } from "../api/client";
 import { useCanEdit } from "../auth";
-import { PublishModal } from "./PublishModal";
+import { Link, useNavigate } from "react-router";
 import { useEnvironment } from "./Shell";
 
 /**
@@ -12,7 +11,8 @@ import { useEnvironment } from "./Shell";
 export function PublishStrip({ envId }: { envId: string }) {
   const env = useEnvironment(envId);
   const canEdit = useCanEdit();
-  const [open, setOpen] = useState(false);
+  const navigate = useNavigate();
+  const review = () => navigate(`/e/${envId}/publish`);
   const pending = env.data?.hasUnpublishedChanges ?? false;
   const preview = useQuery({
     queryKey: ["preview", envId],
@@ -46,14 +46,14 @@ export function PublishStrip({ envId }: { envId: string }) {
         {pending && (
           <>
             <span className="sep" aria-hidden="true">·</span>
-            <button type="button" className="link" onClick={() => setOpen(true)}>
+            <Link to={`/e/${envId}/publish`} className="strip-link">
               Ver diff
-            </button>
+            </Link>
           </>
         )}
       </div>
       {canEdit && (
-        <button type="button" className="publish" disabled={!pending} onClick={() => setOpen(true)}>
+        <button type="button" className="publish" disabled={!pending} onClick={review}>
           Publicar v{(current ?? 0) + 1}
           <span aria-hidden="true">→</span>
         </button>
@@ -87,7 +87,6 @@ export function PublishStrip({ envId }: { envId: string }) {
           </>
         )}
       </div>
-      {open && <PublishModal env={env.data} readOnly={!canEdit} onClose={() => setOpen(false)} />}
     </section>
   );
 }
