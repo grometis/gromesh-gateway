@@ -240,11 +240,11 @@ test("login por cookie → service → route → publicação → audit com o me
   expect((await routeCreated).status()).toBe(201);
   await expect(route).toBeHidden();
   await page.getByRole("region", { name: "Publicação" }).getByRole("button", { name: /^Publicar v\d+$/ }).click();
-  const publish = page.getByRole("dialog", { name: /^Publicar/ });
+  const publish = page.getByRole("region", { name: "Revisar e publicar" });
   await expect(publish.locator('[data-change="added"]')).toHaveCount(2);
   await publish.getByLabel("Mensagem").fill("Publicação da UI");
   const published = page.waitForResponse((response) => response.request().method() === "POST" && response.url().endsWith("/snapshots"));
-  await publish.getByRole("button", { name: "Publicar", exact: true }).click();
+  await publish.getByRole("button", { name: /^Publicar v\d+$/ }).click();
   const response = await published;
   expect(response.status()).toBe(201);
   const snapshot = await response.json() as { version: number };

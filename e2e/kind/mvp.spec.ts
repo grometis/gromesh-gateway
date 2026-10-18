@@ -116,10 +116,10 @@ test("MVP: install → publish → converge → traffic in the dashboard → rol
 
     // Publish through the UI (the data plane is NotReady until now) and wait for the cluster.
     await page.getByRole("region", { name: "Publicação" }).getByRole("button", { name: /^Publicar v\d+$/ }).click();
-    const publish = page.getByRole("dialog", { name: /^Publicar/ });
+    const publish = page.getByRole("region", { name: "Revisar e publicar" });
     await expect(publish.locator('[data-change="added"]')).toHaveCount(8); // service, route, consumer, key, key-auth, rate-limiting and the 2 platform plugins
     const published = page.waitForResponse((r) => r.request().method() === "POST" && r.url().endsWith(`/environments/${envId}/snapshots`));
-    await publish.getByRole("button", { name: "Publicar", exact: true }).click();
+    await publish.getByRole("button", { name: /^Publicar v\d+$/ }).click();
     const v1 = (await (await published).json()) as Publication;
     await expect(publish).toBeHidden();
     await converge(api, v1.version);

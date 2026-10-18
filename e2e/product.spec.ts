@@ -142,10 +142,10 @@ test("UI publication, key-auth traffic, viewer limits, audit and rollback on the
     await expect(route).toBeHidden();
 
     await page.getByRole("region", { name: "Publicação" }).getByRole("button", { name: /^Publicar v\d+$/ }).click();
-    const publish = page.getByRole("dialog", { name: /^Publicar/ });
+    const publish = page.getByRole("region", { name: "Revisar e publicar" });
     await expect(publish.locator('[data-change="added"]')).toHaveCount(2);
     const published = page.waitForResponse((r) => r.request().method() === "POST" && r.url().endsWith(`/environments/${env.id}/snapshots`));
-    await publish.getByRole("button", { name: "Publicar", exact: true }).click();
+    await publish.getByRole("button", { name: /^Publicar v\d+$/ }).click();
     const publicationResponse = await published;
     expect(publicationResponse.status()).toBe(201);
     const uiVersion = await publicationResponse.json() as Publication;

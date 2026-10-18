@@ -224,7 +224,7 @@ table.cards td:last-child { border-radius: 0 var(--radius) var(--radius) 0; }
 .strip-draft { background: var(--draft); color: var(--draft-text); }
 .strip-draft strong, .strip-live strong { font-weight: 700; }
 .strip-draft .sep, .strip-live .sep { opacity: 0.7; }
-.strip-draft button.link { color: var(--draft-text); font-weight: 600; }
+.strip-draft .strip-link { color: var(--draft-text); font-weight: 600; }
 .strip-draft.clean { background: var(--surface); color: var(--text-2); }
 .publish-strip > button.publish { min-height: 56px; padding: 0 var(--space-5); font-size: 16px; }
 .strip-live { background: var(--ink); color: var(--ink-text); }
@@ -258,6 +258,22 @@ table.cards tr:hover td { background: var(--line); }
 .service-route .arrow { color: var(--text-3); }
 .service-route .target { color: var(--text-2); overflow-wrap: anywhere; }
 .service-off { color: var(--text-3); font-size: var(--text-sm); }
+
+/* ---------------- review and publish ---------------- */
+.review { display: grid; grid-template-columns: minmax(240px, 1fr) minmax(0, 2fr); gap: var(--space-5); align-items: start; margin-bottom: var(--space-4); }
+.review-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-1); }
+.review-list button { width: 100%; justify-content: flex-start; gap: var(--space-2); text-align: left; white-space: normal; border-color: transparent; background: var(--surface); }
+.review-list button[aria-current="true"] { background: var(--bg); border: 2px solid var(--ink); }
+.review-kind { color: var(--text-2); }
+.field-diff h2 { font-size: var(--h2); }
+.diff-fields th[scope="row"] { font-weight: 500; color: var(--text-2); }
+.diff-fields td { overflow-wrap: anywhere; }
+.diff-fields tr.changed th, .diff-fields tr.changed td { background: var(--draft); color: var(--draft-text); }
+.diff-fields tr.same th, .diff-fields tr.same td { color: var(--text-3); }
+.note { background: var(--surface); border-radius: var(--radius); padding: var(--space-2) var(--space-3); color: var(--text-2); }
+.publish-box { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-3); align-items: end; padding-top: var(--space-4); border-top: 1px solid var(--line); }
+.publish-box > button.publish { min-height: 56px; padding: 0 var(--space-5); font-size: 16px; }
+.publish-box > p { grid-column: 1 / -1; margin: 0; }
 
 /* ---------------- dialogs ---------------- */
 .backdrop { position: fixed; inset: 0; background: rgb(11 42 42 / 0.55); display: grid; place-items: center; padding: var(--space-4); z-index: 10; }
@@ -371,6 +387,8 @@ table.numeric td, table.numeric th { white-space: nowrap; }
   .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .tile .value { font-size: 24px; }
   .chart.hourly { padding: var(--space-3); }
+  .review { grid-template-columns: minmax(0, 1fr); }
+  .publish-box { grid-template-columns: minmax(0, 1fr); }
   .publish-strip.read-only { grid-template-columns: minmax(0, 1fr); }
   /* Card rows stack: name → target on its own line, then the state, then the actions. */
   table.cards, table.cards tbody { display: block; margin-top: 0; }

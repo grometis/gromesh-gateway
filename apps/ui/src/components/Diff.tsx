@@ -3,7 +3,7 @@ import type { Schemas } from "../api/client";
 type EntityChange = Schemas["EntityChange"];
 
 const CHANGE_LABEL: Record<EntityChange["change"], string> = { added: "Adicionado", removed: "Removido", modified: "Alterado" };
-const KIND_LABEL: Record<EntityChange["kind"], string> = {
+export const KIND_LABEL: Record<EntityChange["kind"], string> = {
   services: "Service",
   routes: "Route",
   consumers: "Consumer",

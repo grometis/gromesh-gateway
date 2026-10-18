@@ -15,6 +15,7 @@ import { AuditPage } from "./pages/Audit";
 import { AnalyticsPage } from "./pages/Analytics";
 import { RequestsPage } from "./pages/Requests";
 import { OverviewPage } from "./pages/Overview";
+import { ReviewPublishPage } from "./pages/ReviewPublish";
 
 export const router = createBrowserRouter([
   { path: "/login", element: <LoginPage /> },
@@ -45,6 +46,7 @@ export const router = createBrowserRouter([
               { path: "plugins", element: <PluginsPage /> },
               { path: "upstreams", element: <UpstreamsPage /> },
               { path: "certificates", element: <CertificatesPage /> },
+              { path: "publish", element: <ReviewPublishPage /> },
               { path: "publications", element: <SnapshotsPage /> },
               { path: "publications/:version", element: <SnapshotDetailPage /> },
               { path: "clusters", element: <ClustersPage /> },
