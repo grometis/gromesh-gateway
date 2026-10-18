@@ -502,7 +502,8 @@ paths:
         is display-only and MUST NOT be used to match a credential. A credential belonging to another consumer,
         or an id disagreeing with a natural-key match, is a conflict. Credential ids only match within the resolved
         consumer; unmatched ids are source identities, not requested ids for creation. New ids are generated
-        by the control plane. Matched entities retain their ids. ACL membership matches by (consumer, group).
+        by the control plane, except for the planned consumer-id preservation rule for prehashed basic-auth below.
+        Matched entities retain their ids. ACL membership matches by (consumer, group).
         Merge never deletes, including nested credentials, targets and ACL groups: omitted entities remain,
         and supplied ACL groups are unioned. Supplied entities replace their non-secret attributes, with omitted
         optional attributes taking the same defaults as their write schemas (nullable values default to null,
@@ -532,8 +533,46 @@ paths:
         fields and relationships to the Gromesh model; do not pass this config directly to the data plane.
         Every unsupported entity or field, including nested fields and unknown plugin config fields, produces
         an `errors[]` entry at its original document path; nothing is silently ignored, even default-valued fields.
-        `_transform` may be absent or true for plaintext basic-auth passwords. False with basic-auth credentials
-        is unsupported (422 at `document._transform`): importing prehashed passwords is not supported.
+        `_transform` may be absent or true for plaintext basic-auth passwords, including documents mixing
+        basic-auth with other credential types. Such passwords keep today's plaintext handling even if they
+        happen to contain 40 lowercase hex characters. `_transform` is document-wide, not per credential.
+
+        Planned: accept prehashed `basicauth_credentials` only for `sourceFormat: kong-declarative-3.0` with
+        `_transform: false`. Each supplied password must match `^[0-9a-f]{40}$` and is already Kong's
+        `sha1(password + consumer_id)` hash; store it unchanged, without hashing it again. Acceptance requires
+        the credential's consumer to be present in the source document with a UUID `id`, and that exact id
+        to be preserved as the consumer's id in the target environment. This applies to nested credentials and
+        flat credentials resolved to that source consumer. A reference to an existing consumer alone does not suffice.
+
+        Planned: for each such consumer, in both merge and replace, resolve its UUID globally before any
+        username/customId matching. If that id exists in the TARGET environment, that consumer is the match
+        and retains its id; normal merge/replace updates and uniqueness checks still apply. Any supplied
+        username/customId resolving to a different consumer is a conflict, never a fallback match. If that id
+        exists in ANOTHER environment, it cannot be preserved because consumer ids are global primary keys:
+        reject with 422 at the source consumer's id path (e.g. `document.consumers.0.id`), without disclosing
+        the other environment or consumer. If no consumer anywhere has that id, create a NEW consumer with
+        exactly that id; a username/customId already matching another target consumer is a conflict, even
+        in replace mode. Never substitute a generated id or another consumer's id to accept the hash.
+        This exception applies only to source consumers carrying prehashed basic-auth credentials in this
+        format. All other consumers and entities keep today's matching and id-generation rules.
+
+        Planned: an invalid hash, a missing/invalid consumer UUID, or any inability to preserve that id rejects
+        a real import with 422 and an error at the credential's original password path, e.g.
+        `document.consumers.0.basicauth_credentials.0.password` or `document.basicauth_credentials.0.password`.
+        The message explains that Kong's hash is salted with the consumer id and requires preserving that id,
+        without echoing the hash or submitted password. Invalid UUIDs and cross-environment id collisions also
+        produce an error at the source consumer's id path. Existing omitted/REDACTED-secret preservation on
+        matched credentials still applies; it does not authorize creating a credential without a valid hash
+        or bypassing the consumer-id rule. All-or-nothing and dry-run error/report semantics below still apply.
+
+        Planned: imported hashes are sealed at rest with `enc:v2`, bound to table `basicauth_credentials`,
+        column `password_hash` and the target credential's id, like other basic-auth hashes. They are treated
+        as secrets and REDACTED everywhere except the agent endpoint (including API, diff, preview and snapshot
+        envelope); exports continue omitting basic-auth passwords and hashes entirely. Reports, errors, logs
+        and audit events never echo the hash or submitted password. Plaintext imports with `_transform`
+        absent/true and the Gromesh document's prohibition on importing hashes are unchanged.
+        This prehashed-import behavior is planned only; the current handler still rejects `_transform: false`
+        with basic-auth credentials at `document._transform` until the implementation is approved and delivered.
 
         Conflicts (the matching conflicts above and uniqueness violations in the resulting draft) are errors like any
         other: an `errors[]` entry at the conflicting path, never a separate 409.
@@ -2652,7 +2691,15 @@ components:
         at their original paths; with dryRun false any such error aborts the entire import with 422.
       properties:
         _format_version: { type: string, const: "3.0" }
-        _transform: { type: boolean, description: Defaults to true; false with basic-auth credentials is unsupported }
+        _transform:
+          type: boolean
+          description: |
+            Defaults to true; absent/true means plaintext basic-auth passwords. Planned: false accepts supplied
+            basic-auth password hashes matching ^[0-9a-f]{40}$ only when their source consumer has a UUID id
+            preserved exactly under importEnvironmentConfig's global-id rules. Otherwise the real import is
+            422 at the credential's password path because the hash is salted with the consumer id; invalid
+            UUIDs and cross-environment id collisions also report the consumer's id path. Currently false
+            with basic-auth credentials is still rejected at document._transform.
     SerializedConfigDocument:
       type: string
       minLength: 1
@@ -2666,6 +2713,14 @@ components:
       const: gromesh/v1
       default: gromesh/v1
     EnvironmentImportRequest:
+      description: |
+        Import envelope for the selected source model. Planned: only kong-declarative-3.0 with _transform false
+        accepts prehashed basic-auth passwords (40 lowercase hex), and only for source consumers with a UUID
+        id preserved exactly: match that id in the target environment, reject an id used in another environment,
+        or create with that id when globally unused. Natural identifiers cannot select a different consumer.
+        See importEnvironmentConfig for conflicts, original error paths and secret handling. All other consumers
+        keep today's matching and control-plane-generated ids for creation; absent/true _transform keeps
+        plaintext handling. This behavior is planned, not yet implemented.
       oneOf:
         - type: object
           additionalProperties: false
@@ -2715,6 +2770,8 @@ components:
         array name. Merge always has removed empty. Secrets are redacted as in publish diff; basic-auth passwords
         and hashes are never included. On semantic errors in dry-run all change arrays are empty.
         Ids for proposed additions in a dry-run are provisional and do not reserve persisted ids.
+        Planned: additions under the prehashed basic-auth consumer-id exception report the exact source
+        consumer UUID, but dry-run still never reserves it; a real import rechecks global id availability.
       allOf:
         - if:
             properties:
