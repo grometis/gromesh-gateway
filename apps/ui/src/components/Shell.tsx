@@ -2,11 +2,17 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { Navigate, NavLink, Outlet, useLocation, useNavigate, useParams } from "react-router";
 import { api, unwrap } from "../api/client";
 import { statusMessage } from "../api/errors";
-import { useAuth } from "../auth";
+import { effectiveRole, useAuth } from "../auth";
 import { Brand } from "./Brand";
 import { PublishStrip } from "./PublishStrip";
 
 export const environmentsQuery = { queryKey: ["environments"], queryFn: () => unwrap(api.GET("/environments")) };
+
+/** The API lists only the environments the user may see; the UI also leaves out any its session marks as none. */
+export function useVisibleEnvironments() {
+  const { user } = useAuth();
+  return useQuery({ ...environmentsQuery, select: (data) => data.items.filter((e) => effectiveRole(user, e.id) !== "none") });
+}
 
 export function useEnvId(): string {
   const { envId } = useParams();
@@ -37,10 +43,10 @@ export function RequireAdmin() {
 
 export function FirstEnvironment() {
   const { user } = useAuth();
-  const envs = useQuery(environmentsQuery);
+  const envs = useVisibleEnvironments();
   if (envs.isPending) return <p className="center muted">Carregando environments…</p>;
   if (envs.isError) return <p className="center error">{statusMessage(envs.error)}</p>;
-  const first = envs.data.items[0];
+  const first = envs.data[0];
   if (!first) return user?.role === "admin"
     ? <Navigate to="/users" replace />
     : <p className="center muted">Nenhum environment cadastrado. Peça a um administrador para criar um.</p>;
@@ -68,8 +74,8 @@ export function Shell() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const envs = useQuery(environmentsQuery);
-  const envId = routeEnvId ?? envs.data?.items[0]?.id ?? "";
+  const envs = useVisibleEnvironments();
+  const envId = routeEnvId ?? envs.data?.[0]?.id ?? "";
   const signOut = useMutation({ mutationFn: logout });
 
   const switchEnv = (id: string) => {
@@ -85,7 +91,7 @@ export function Shell() {
         <div className="env">
           <label htmlFor="env-select">Environment</label>
           <select id="env-select" value={envId} onChange={(e) => switchEnv(e.target.value)}>
-            {envs.data?.items.map((e) => (
+            {envs.data?.map((e) => (
               <option key={e.id} value={e.id}>
                 {e.name}
               </option>
@@ -106,7 +112,7 @@ export function Shell() {
         </nav>
         <div className="account">
           <span className="who">
-            {user?.name} · {user?.role}
+            {user?.name} · {effectiveRole(user, routeEnvId)}
           </span>
           <button type="button" disabled={signOut.isPending} onClick={() => signOut.mutate()}>
             {signOut.isPending ? "Saindo…" : "Sair"}

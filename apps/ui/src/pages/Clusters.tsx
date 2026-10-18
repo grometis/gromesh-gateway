@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "rea
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, unwrap, type Schemas } from "../api/client";
 import { statusMessage, toFormErrors, type FormErrors } from "../api/errors";
-import { useAuth } from "../auth";
+import { useCanAdmin } from "../auth";
 import { Field, FormErrorList } from "../components/Field";
 import { ConfirmDialog, Modal } from "../components/Modal";
 import { RowMenu } from "../components/RowMenu";
@@ -36,8 +36,7 @@ function useVisibleTab() {
 }
 
 function ClusterList({ envId }: { envId: string }) {
-  const { user } = useAuth();
-  const canAdmin = user?.role === "admin";
+  const canAdmin = useCanAdmin();
   const visible = useVisibleTab();
   const [creating, setCreating] = useState(false);
   const [rotating, setRotating] = useState<Cluster | null>(null);
