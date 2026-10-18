@@ -56,6 +56,7 @@ export function toRoute(r: RouteRow) {
     headers: optional(r.headers),
     stripPath: r.stripPath,
     preserveHost: r.preserveHost,
+    analyticsRetentionDays: r.analyticsRetentionDays,
     tags: r.tags,
     createdAt: r.createdAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
@@ -90,6 +91,7 @@ export function routeValues(body: RouteWrite | Route) {
     headers: body.headers && Object.keys(body.headers).length > 0 ? body.headers : null,
     stripPath: body.stripPath ?? true,
     preserveHost: body.preserveHost ?? false,
+    analyticsRetentionDays: body.analyticsRetentionDays ?? null,
     tags: body.tags ?? [],
   };
 }
