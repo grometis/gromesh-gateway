@@ -3080,6 +3080,7 @@ export interface operations {
                     "application/json": components["schemas"]["ServicePage"];
                 };
             };
+            404: components["responses"]["NotFound"];
         };
     };
     createService: {
@@ -3120,6 +3121,7 @@ export interface operations {
                     "application/json": components["schemas"]["Service"];
                 };
             };
+            404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             422: components["responses"]["ValidationError"];
         };
@@ -3279,6 +3281,7 @@ export interface operations {
                     "application/json": components["schemas"]["RoutePage"];
                 };
             };
+            404: components["responses"]["NotFound"];
         };
     };
     createRoute: {
@@ -3324,6 +3327,7 @@ export interface operations {
                     "application/json": components["schemas"]["Route"];
                 };
             };
+            404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             422: components["responses"]["ValidationError"];
         };
@@ -3467,6 +3471,7 @@ export interface operations {
                     "application/json": components["schemas"]["ConsumerPage"];
                 };
             };
+            404: components["responses"]["NotFound"];
         };
     };
     createConsumer: {
@@ -3493,6 +3498,7 @@ export interface operations {
                     "application/json": components["schemas"]["Consumer"];
                 };
             };
+            404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             422: components["responses"]["ValidationError"];
         };
@@ -3596,6 +3602,7 @@ export interface operations {
                     };
                 };
             };
+            404: components["responses"]["NotFound"];
         };
     };
     createKeyAuthCredential: {
@@ -3629,6 +3636,7 @@ export interface operations {
                     };
                 };
             };
+            404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
         };
     };
@@ -3709,6 +3717,7 @@ export interface operations {
                     };
                 };
             };
+            404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             422: components["responses"]["ValidationError"];
         };
@@ -3787,6 +3796,7 @@ export interface operations {
                     "application/json": components["schemas"]["BasicAuthCredential"];
                 };
             };
+            404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             422: components["responses"]["ValidationError"];
         };
@@ -3956,6 +3966,7 @@ export interface operations {
                     "application/json": components["schemas"]["Upstream"];
                 };
             };
+            404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             422: components["responses"]["ValidationError"];
         };
@@ -4311,6 +4322,7 @@ export interface operations {
                     "application/json": components["schemas"]["Certificate"];
                 };
             };
+            404: components["responses"]["NotFound"];
             422: components["responses"]["ValidationError"];
         };
     };
@@ -4455,6 +4467,7 @@ export interface operations {
                     "application/json": components["schemas"]["PluginPage"];
                 };
             };
+            404: components["responses"]["NotFound"];
         };
     };
     createPlugin: {
@@ -4481,6 +4494,7 @@ export interface operations {
                     "application/json": components["schemas"]["Plugin"];
                 };
             };
+            404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             422: components["responses"]["ValidationError"];
         };
@@ -4666,6 +4680,7 @@ export interface operations {
                     "application/json": components["schemas"]["PublishPreview"];
                 };
             };
+            404: components["responses"]["NotFound"];
             422: components["responses"]["ValidationError"];
         };
     };
@@ -4692,6 +4707,7 @@ export interface operations {
                     "application/json": components["schemas"]["SnapshotPage"];
                 };
             };
+            404: components["responses"]["NotFound"];
         };
     };
     publish: {
@@ -4732,6 +4748,7 @@ export interface operations {
                     "application/json": components["schemas"]["SnapshotSummary"];
                 };
             };
+            404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             422: components["responses"]["ValidationError"];
         };
@@ -4837,6 +4854,7 @@ export interface operations {
                     };
                 };
             };
+            404: components["responses"]["NotFound"];
         };
     };
     createCluster: {
@@ -4867,6 +4885,7 @@ export interface operations {
                     };
                 };
             };
+            404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
         };
     };

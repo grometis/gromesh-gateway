@@ -612,6 +612,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ServicePage" }
               example: {"items": [{"id": "6f1d2c3b-4a5e-4f60-8b7c-1d2e3f4a5b6c", "name": "orders", "protocol": "http", "host": "orders.internal", "port": 8080, "path": null, "enabled": true, "tags": [], "createdAt": "2026-10-15T12:00:00Z", "updatedAt": "2026-10-15T12:00:00Z"}], "nextCursor": null}
+        "404": { $ref: "#/components/responses/NotFound" }
     post:
       tags: [services]
       operationId: createService
@@ -631,6 +632,7 @@ paths:
               example: {"id": "6f1d2c3b-4a5e-4f60-8b7c-1d2e3f4a5b6c", "name": "orders", "protocol": "http", "host": "orders.internal", "port": 8080, "path": null, "enabled": true, "tags": [], "createdAt": "2026-10-15T12:00:00Z", "updatedAt": "2026-10-15T12:00:00Z"}
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/ValidationError" }
+        "404": { $ref: "#/components/responses/NotFound" }
   /environments/{envId}/services/{serviceId}:
     parameters: [{ $ref: "#/components/parameters/EnvId" }, { $ref: "#/components/parameters/ServiceId" }]
     get:
@@ -696,6 +698,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/RoutePage" }
               example: {"items": [{"id": "9a8b7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d", "name": "orders-api", "serviceId": "6f1d2c3b-4a5e-4f60-8b7c-1d2e3f4a5b6c", "protocols": ["http", "https"], "paths": ["/orders"], "stripPath": true, "preserveHost": false, "tags": [], "createdAt": "2026-10-15T12:00:00Z", "updatedAt": "2026-10-15T12:00:00Z"}], "nextCursor": null}
+        "404": { $ref: "#/components/responses/NotFound" }
     post:
       tags: [routes]
       operationId: createRoute
@@ -715,6 +718,7 @@ paths:
               example: {"id": "9a8b7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d", "name": "orders-api", "serviceId": "6f1d2c3b-4a5e-4f60-8b7c-1d2e3f4a5b6c", "protocols": ["http", "https"], "paths": ["/orders"], "stripPath": true, "preserveHost": false, "tags": [], "createdAt": "2026-10-15T12:00:00Z", "updatedAt": "2026-10-15T12:00:00Z"}
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/ValidationError" }
+        "404": { $ref: "#/components/responses/NotFound" }
   /environments/{envId}/routes/{routeId}:
     parameters: [{ $ref: "#/components/parameters/EnvId" }, { $ref: "#/components/parameters/RouteId" }]
     get:
@@ -774,6 +778,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ConsumerPage" }
+        "404": { $ref: "#/components/responses/NotFound" }
     post:
       tags: [consumers]
       operationId: createConsumer
@@ -792,6 +797,7 @@ paths:
               schema: { $ref: "#/components/schemas/Consumer" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/ValidationError" }
+        "404": { $ref: "#/components/responses/NotFound" }
   /environments/{envId}/consumers/{consumerId}:
     parameters: [{ $ref: "#/components/parameters/EnvId" }, { $ref: "#/components/parameters/ConsumerId" }]
     get:
@@ -850,6 +856,7 @@ paths:
                   items:
                     type: array
                     items: { $ref: "#/components/schemas/KeyAuthCredential" }
+        "404": { $ref: "#/components/responses/NotFound" }
     post:
       tags: [consumers]
       operationId: createKeyAuthCredential
@@ -878,6 +885,7 @@ paths:
                     properties:
                       key: { type: string, description: "Full key, shown once" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "404": { $ref: "#/components/responses/NotFound" }
   /environments/{envId}/consumers/{consumerId}/key-auth/{credentialId}:
     parameters:
       - { $ref: "#/components/parameters/EnvId" }
@@ -942,6 +950,7 @@ paths:
                       secret: { type: string, description: "HS256 only: the full secret, shown once" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/ValidationError" }
+        "404": { $ref: "#/components/responses/NotFound" }
   /environments/{envId}/consumers/{consumerId}/jwt/{credentialId}:
     parameters:
       - { $ref: "#/components/parameters/EnvId" }
@@ -1001,6 +1010,7 @@ paths:
               schema: { $ref: "#/components/schemas/BasicAuthCredential" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/ValidationError" }
+        "404": { $ref: "#/components/responses/NotFound" }
   /environments/{envId}/consumers/{consumerId}/basic-auth/{credentialId}:
     parameters:
       - { $ref: "#/components/parameters/EnvId" }
@@ -1093,6 +1103,7 @@ paths:
               example: {"id": "8a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "name": "orders.upstream", "algorithm": "round-robin", "hashOn": "none", "hashFallback": "none", "healthchecks": {"active": null, "passive": null}, "tags": [], "createdAt": "2026-10-15T12:00:00Z", "updatedAt": "2026-10-15T12:00:00Z"}
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/ValidationError" }
+        "404": { $ref: "#/components/responses/NotFound" }
   /environments/{envId}/upstreams/{upstreamId}:
     parameters: [{ $ref: "#/components/parameters/EnvId" }, { $ref: "#/components/parameters/UpstreamId" }]
     get:
@@ -1255,6 +1266,7 @@ paths:
               schema: { $ref: "#/components/schemas/Certificate" }
               example: {"id": "0c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f", "cert": "-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIUExample\n-----END CERTIFICATE-----\n", "key": "REDACTED", "snis": ["api.example.com", "*.example.com"], "tags": [], "subject": "CN=api.example.com", "issuer": "CN=Example CA", "notBefore": "2026-10-01T00:00:00Z", "notAfter": "2027-10-01T00:00:00Z", "fingerprintSha256": "3A:7F:1C:9D:4E:2B:8A:6F:0D:5C:1E:9B:7A:3F:2D:8C:6E:4B:1A:9F:0C:7D:5E:3B:2A:8F:6C:4D:1B:9E:0F:7A", "createdAt": "2026-10-15T12:00:00Z", "updatedAt": "2026-10-15T12:00:00Z"}
         "422": { $ref: "#/components/responses/ValidationError" }
+        "404": { $ref: "#/components/responses/NotFound" }
   /environments/{envId}/certificates/{certificateId}:
     parameters: [{ $ref: "#/components/parameters/EnvId" }, { $ref: "#/components/parameters/CertificateId" }]
     get:
@@ -1319,6 +1331,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/PluginPage" }
+        "404": { $ref: "#/components/responses/NotFound" }
     post:
       tags: [plugins]
       operationId: createPlugin
@@ -1338,6 +1351,7 @@ paths:
               schema: { $ref: "#/components/schemas/Plugin" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/ValidationError" }
+        "404": { $ref: "#/components/responses/NotFound" }
   /environments/{envId}/plugins/{pluginId}:
     parameters: [{ $ref: "#/components/parameters/EnvId" }, { $ref: "#/components/parameters/PluginId" }]
     get:
@@ -1437,6 +1451,7 @@ paths:
               schema: { $ref: "#/components/schemas/PublishPreview" }
               example: {"currentVersion": 3, "draftHash": "sha256:4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f", "hasChanges": true, "changes": [{"kind": "services", "id": "6f1d2c3b-4a5e-4f60-8b7c-1d2e3f4a5b6c", "label": "orders", "change": "added", "after": {"id": "6f1d2c3b-4a5e-4f60-8b7c-1d2e3f4a5b6c", "name": "orders", "protocol": "http", "host": "orders.internal", "port": 8080}}, {"kind": "routes", "id": "9a8b7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d", "label": "orders-api", "change": "added", "after": {"id": "9a8b7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d", "name": "orders-api", "service": "6f1d2c3b-4a5e-4f60-8b7c-1d2e3f4a5b6c", "paths": ["/orders"]}}]}
         "422": { $ref: "#/components/responses/ValidationError" }
+        "404": { $ref: "#/components/responses/NotFound" }
   /environments/{envId}/snapshots:
     parameters: [{ $ref: "#/components/parameters/EnvId" }]
     get:
@@ -1450,6 +1465,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SnapshotPage" }
+        "404": { $ref: "#/components/responses/NotFound" }
     post:
       tags: [snapshots]
       operationId: publish
@@ -1473,6 +1489,7 @@ paths:
               example: {"version": 4, "hash": "sha256:4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f", "message": "Adiciona orders", "createdAt": "2026-10-15T12:00:00Z", "createdBy": {"id": "3c2b1a09-8f7e-4d6c-9b5a-4f3e2d1c0b9a", "name": "Ana Editora"}, "rollbackOf": null, "isCurrent": true}
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/ValidationError" }
+        "404": { $ref: "#/components/responses/NotFound" }
   /environments/{envId}/snapshots/{version}:
     parameters: [{ $ref: "#/components/parameters/EnvId" }, { $ref: "#/components/parameters/Version" }]
     get:
@@ -1550,6 +1567,7 @@ paths:
                   items:
                     type: array
                     items: { $ref: "#/components/schemas/Cluster" }
+        "404": { $ref: "#/components/responses/NotFound" }
     post:
       tags: [clusters]
       operationId: createCluster
@@ -1577,6 +1595,7 @@ paths:
                     properties:
                       registrationToken: { type: string }
         "409": { $ref: "#/components/responses/Conflict" }
+        "404": { $ref: "#/components/responses/NotFound" }
   /clusters/{clusterId}:
     parameters: [{ $ref: "#/components/parameters/ClusterId" }]
     get:
