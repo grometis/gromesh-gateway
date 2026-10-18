@@ -77,6 +77,8 @@ describe("audit events", () => {
       ["from=2026-01-02T00:00:00Z&to=2026-01-01T00:00:00Z", "to"],
       ["limit=0", "limit"], ["limit=201", "limit"], ["limit=1.5", "limit"],
       ["actorId=a&actorId=b", "actorId"], ["cursor=bad", "cursor"],
+      ["limit[value]=1", "limit"], ["actorId[value]=invalid", "actorId"],
+      ["cursor[value]=bad", "cursor"],
       [`cursor=${Buffer.from(JSON.stringify({ k: "not-a-date", id: actorId })).toString("base64url")}`, "cursor"],
       [`cursor=${Buffer.from(JSON.stringify({ k: "2026-01-01T00:00:00Z", id: "invalid" })).toString("base64url")}`, "cursor"],
     ]) {
