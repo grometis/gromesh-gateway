@@ -3,7 +3,8 @@
 # starts. Idempotent. Neither the control plane nor Vector ever use the admin (or `default`): one reader, one writer.
 set -eu
 # Run on every init job, including upgrades of an existing ClickHouse volume, in filename order.
-for migration in /migrations/*.sql; do
+for migration in "${CLICKHOUSE_MIGRATIONS_DIR:-/migrations}"/*.sql; do
+  [ -e "$migration" ] || continue
   clickhouse-client --host "${CLICKHOUSE_HOST:-clickhouse}" -u "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" -n < "$migration"
 done
 clickhouse-client --host "${CLICKHOUSE_HOST:-clickhouse}" -u "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" -n <<SQL

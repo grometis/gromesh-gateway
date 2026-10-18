@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "vitest";
 import { parse } from "yaml";
+import type { GatewayState } from "@gromesh/compiler";
+import { ENCRYPTOR, Encryptor, snapshotContext } from "../../src/crypto/crypto.js";
 import { startHarness, uniq, type Harness } from "./harness.js";
 
 let h: Harness;
@@ -74,14 +76,30 @@ test("publication and rollback restore retention; JSON/YAML export and retention
 });
 
 test("a legacy publication rolls back to the default and Kong import invents no retention", async () => {
-  const { base, write } = await fixture();
+  const { base, envId, write } = await fixture();
   const created = await h.api("POST", `${base}/routes`, write);
   expect(created.body.analyticsRetentionDays).toBe(null);
+  expect((await h.api("GET", `${base}/routes/${created.body.id}`)).body).toHaveProperty("analyticsRetentionDays", null);
+  expect((await h.api("GET", `${base}/routes`)).body.items[0]).toHaveProperty("analyticsRetentionDays", null);
+  const unsetExport = await h.api("GET", `${base}/export?format=json`);
+  expect(unsetExport.body.routes[0]).toHaveProperty("analyticsRetentionDays", null);
+  const unsetYaml = await h.api<string>("GET", `${base}/export?format=yaml`);
+  expect(parse(unsetYaml.body)).toEqual(unsetExport.body);
   const first = await h.api("POST", `${base}/snapshots`, {});
+  expect(first.status).toBe(201);
+  const enc = h.app.get<Encryptor>(ENCRYPTOR);
+  const context = snapshotContext(envId, first.body.version as number, "state");
+  const stored = await h.sql.query("select state from snapshots where environment_id=$1 and version=$2", [envId, first.body.version]);
+  const legacy = enc.openJson<GatewayState>(stored.rows[0].state, context);
+  legacy.routes.forEach((route) => { delete route.analyticsRetentionDays; });
+  await h.sql.query("update snapshots set state=$1 where environment_id=$2 and version=$3", [JSON.stringify(enc.sealJson(legacy, context)), envId, first.body.version]);
+  const checked = await h.sql.query("select state from snapshots where environment_id=$1 and version=$2", [envId, first.body.version]);
+  expect(enc.openJson<GatewayState>(checked.rows[0].state, context).routes[0]).not.toHaveProperty("analyticsRetentionDays");
   await h.api("PUT", `${base}/routes/${created.body.id}`, { ...write, analyticsRetentionDays: 1 });
   await h.api("POST", `${base}/snapshots`, {});
   expect((await h.api("POST", `${base}/snapshots/${first.body.version}/rollback`)).status).toBe(201);
   expect((await h.api("GET", `${base}/routes/${created.body.id}`)).body.analyticsRetentionDays).toBe(null);
+  expect((await h.api("GET", `${base}/export?format=json`)).body.routes[0]).toHaveProperty("analyticsRetentionDays", null);
   const imported = await h.api("POST", `${base}/import`, { mode: "replace", dryRun: false, sourceFormat: "kong-declarative-3.0", document: {
     _format_version: "3.0", services: [{ name: "imported", protocol: "http", host: "echo", port: 80, routes: [{ name: "imported", paths: ["/imported"] }] }],
   } });

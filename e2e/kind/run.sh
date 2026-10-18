@@ -13,6 +13,7 @@ umask 077
 namespace=gromesh-mvp
 cp_chart=deploy/helm/control-plane
 dp_chart=deploy/helm/data-plane
+bash "$dp_chart/ci/check.sh"
 work="$(mktemp -d)"
 forwards=()
 cleanup() {

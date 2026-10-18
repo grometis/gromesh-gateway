@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { diffConfigs } from "./diff.js";
 import { CompileError, type CompileIssue } from "./errors.js";
-import { keyNameIssues, resolvePlatformKeyNames, resolvePlatformRetention } from "./platform-plugins.js";
+import { keyNameIssues, resolvePlatformKeyNames, resolvePlatformRetention, RETENTION_TAG_PREFIX } from "./platform-plugins.js";
 import type {
   CompileOptions,
   GatewayState,
@@ -109,7 +109,11 @@ function declarativeConfig(state: GatewayState, options: CompileOptions): KongDe
       headers: r.headers,
       strip_path: r.stripPath,
       preserve_host: r.preserveHost,
-      tags: tags(r.tags),
+      // Reserved tags are compiler-owned: a user's tag cannot override the persisted retention policy.
+      tags: tags([
+        ...(r.tags ?? []).filter((tag) => !tag.startsWith(RETENTION_TAG_PREFIX)),
+        ...(r.analyticsRetentionDays == null ? [] : [`${RETENTION_TAG_PREFIX}${r.analyticsRetentionDays}`]),
+      ]),
     }),
   );
 

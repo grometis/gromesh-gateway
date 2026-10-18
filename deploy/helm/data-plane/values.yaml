@@ -103,6 +103,8 @@ collector:
   # Optional non-secret fallback/union with each http-log event's key_names. Vector always strips apikey.
   keyNames: []
   clickhouse:
+    # External schema is operator-managed (this chart bundles no ClickHouse). A mandatory pre-install/upgrade
+    # hook refuses rollout until 001-requests.sql and 002-retention.sql have been applied, using only writer metadata.
     endpoint: http://clickhouse.observability.svc.cluster.local:8123
     database: gromesh
     # Secret holding the INSERT-only user's password (gromesh_writer); required when enabled.

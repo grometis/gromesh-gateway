@@ -20,16 +20,18 @@ export async function retentionAcceptance() {
   const rows = async () => JSON.parse(await sql(`SELECT path, retention_days FROM gromesh.requests
     WHERE environment_id = '${environmentId}' ORDER BY path FORMAT JSON`)).data;
   try {
-    const partition = (await sql("SELECT toString(toDate(now() - INTERVAL 2 DAY)) FORMAT TabSeparated")).trim();
+    const oldTimestamp = (await sql("SELECT formatDateTime(now('UTC') - INTERVAL 2 DAY, '%Y-%m-%d %H:%i:%S', 'UTC') FORMAT TabSeparated")).trim();
+    assert.match(oldTimestamp, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+    const partition = oldTimestamp.slice(0, 10);
     assert.match(partition, /^\d{4}-\d{2}-\d{2}$/);
     // The two policies share an old partition: TTL must remove rows, rather than dropping the entire part.
     await sql(`INSERT INTO gromesh.requests (id, ts, environment_id, cluster_id, route_id, path, retention_days) VALUES
-      ('${randomUUID()}', now() - INTERVAL 2 DAY, '${environmentId}', '${environmentId}', '${shortRoute}', '/expired-short', 1),
-      ('${randomUUID()}', now() - INTERVAL 2 DAY, '${environmentId}', '${environmentId}', '${defaultRoute}', '/kept-seven', 7),
+      ('${randomUUID()}', '${oldTimestamp}', '${environmentId}', '${environmentId}', '${shortRoute}', '/expired-short', 1),
+      ('${randomUUID()}', '${oldTimestamp}', '${environmentId}', '${environmentId}', '${defaultRoute}', '/kept-seven', 7),
       ('${randomUUID()}', now(), '${environmentId}', '${environmentId}', '${shortRoute}', '/recent-short', 1)`);
     // Old producers omit the column; their rows must still receive the seven-day default.
     await sql(`INSERT INTO gromesh.requests (id, ts, environment_id, cluster_id, route_id, path) VALUES
-      ('${randomUUID()}', now() - INTERVAL 2 DAY, '${environmentId}', '${environmentId}', '${defaultRoute}', '/legacy-default')`);
+      ('${randomUUID()}', '${oldTimestamp}', '${environmentId}', '${environmentId}', '${defaultRoute}', '/legacy-default')`);
     await sql(`OPTIMIZE TABLE gromesh.requests PARTITION '${partition}' FINAL SETTINGS optimize_skip_merged_partitions = 0`);
     assert.deepEqual(await rows(), [
       { path: "/kept-seven", retention_days: 7 },

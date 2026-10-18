@@ -163,7 +163,7 @@ async function main() {
       check(rows.every((row) => [`${base}/ready`, ...cases.map(({ label, path = `${base}/${label}` }) => path)].includes(row.path)), "Unexpected analytics path or unsanitized query");
       check(rows.every((row) => row.retention_days === (row.route_id === routeId ? 1 : 7)), "Matched retention and default/unmatched fallback must reach ClickHouse");
       if (cases.every(({ label, path = `${base}/${label}`, status }) => rows.some((row) => row.path === path && row.status === status))) break;
-      check(attempt < 120, "Header, query and rejected requests must arrive in ClickHouse within 30 seconds");
+      check(attempt < 120, "Header, query, rejected, default-retention, seven-day and unmatched requests must arrive in ClickHouse within 30 seconds");
       await sleep(250);
     }
   } finally {

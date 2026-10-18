@@ -3,6 +3,7 @@ import type { Plugin, Route } from "./model.js";
 
 const HTTP_LOG_ID = "14f9de7e-3701-4c69-b7f7-b8b5622c0102";
 const KEY_NAME_RE = /^[A-Za-z0-9._-]{1,64}$/;
+export const RETENTION_TAG_PREFIX = "gromesh-retention:";
 
 export function keyNameIssues(plugin: Plugin, path: string) {
   const names = plugin.config?.key_names;
@@ -28,11 +29,9 @@ export function resolvePlatformKeyNames(platform: Plugin[], configured: Plugin[]
 }
 
 export function resolvePlatformRetention(platform: Plugin[], routes: Route[]): Plugin[] {
-  const retained = routes.filter((route) => route.analyticsRetentionDays != null).sort((a, b) => a.id.localeCompare(b.id));
   // Preserve existing snapshots and hashes until a route explicitly opts into retention.
-  if (retained.length === 0) return platform;
-  const entries = retained.map((route) => `["${route.id.toLowerCase()}"]=${route.analyticsRetentionDays}`).join(",");
-  const lua = `local days = {${entries}}; local route = kong.router.get_route(); return (route and days[route.id]) or 7`;
+  if (!routes.some((route) => route.analyticsRetentionDays != null)) return platform;
+  const lua = 'local route = kong.router.get_route(); for _, tag in ipairs((route and route.tags) or {}) do local days = string.match(tag, "^gromesh%-retention:([1-7])$"); if days then return tonumber(days) end end; return 7';
   return platform.map((plugin) => plugin.id === HTTP_LOG_ID && plugin.name === "http-log" ? {
     ...plugin,
     config: { ...plugin.config, custom_fields_by_lua: {
