@@ -32,7 +32,7 @@ test("an HS256 secret is shown once and is gone after closing; an RS256 key need
   await openConsumer(page);
   await expect(tabs(page).getByRole("tab", { name: "Key-auth" })).toHaveAttribute("aria-selected", "true");
   await tabs(page).getByRole("tab", { name: "JWT" }).click();
-  await expect(page.getByRole("tabpanel")).toHaveAttribute("aria-labelledby", "consumer-tab-jwt");
+  await expect(page.getByRole("tabpanel", { name: "JWT" })).toBeVisible();
 
   await page.getByRole("button", { name: "Nova credencial JWT" }).click();
   const dialog = page.getByRole("dialog", { name: "Nova credencial JWT" });

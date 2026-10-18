@@ -5,6 +5,13 @@ import { RouterProvider } from "react-router";
 import { ApiError } from "./api/client";
 import { AuthProvider } from "./auth";
 import { router } from "./router";
+// Self-hosted (the CSP allows fonts only from 'self'): Latin subset, the weights the tokens use.
+import "@fontsource/space-grotesk/latin-400.css";
+import "@fontsource/space-grotesk/latin-500.css";
+import "@fontsource/space-grotesk/latin-600.css";
+import "@fontsource/space-grotesk/latin-700.css";
+import "@fontsource/jetbrains-mono/latin-400.css";
+import "@fontsource/jetbrains-mono/latin-500.css";
 import "./styles.css";
 
 const queryClient = new QueryClient({

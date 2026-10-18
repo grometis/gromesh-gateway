@@ -1,10 +1,10 @@
-import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Navigate, NavLink, Outlet, useLocation, useNavigate, useParams } from "react-router";
 import { api, unwrap } from "../api/client";
 import { statusMessage } from "../api/errors";
-import { useAuth, useCanEdit } from "../auth";
-import { PublishModal } from "./PublishModal";
+import { useAuth } from "../auth";
+import { Brand } from "./Brand";
+import { PublishStrip } from "./PublishStrip";
 
 export const environmentsQuery = { queryKey: ["environments"], queryFn: () => unwrap(api.GET("/environments")) };
 
@@ -47,13 +47,15 @@ export function FirstEnvironment() {
   return <Navigate to={`/e/${first.id}/services`} replace />;
 }
 
-const MENU = [
+const GATEWAY = [
   ["services", "Services"],
   ["routes", "Routes"],
   ["consumers", "Consumers"],
   ["plugins", "Plugins"],
   ["upstreams", "Upstreams"],
   ["certificates", "Certificados"],
+] as const;
+const OPERATION = [
   ["publications", "Publicações"],
   ["clusters", "Clusters"],
   ["analytics", "Dashboard"],
@@ -77,73 +79,57 @@ export function Shell() {
 
   return (
     <div className="app">
-      <header className="topbar">
-        <strong className="brand">Gromesh Gateway</strong>
-        <label className="env-select">
-          <span>Environment</span>
-          <select value={envId} onChange={(e) => switchEnv(e.target.value)} aria-label="Environment">
+      <aside className="menu">
+        <Brand />
+        <div className="env">
+          <label htmlFor="env-select">Environment</label>
+          <select id="env-select" value={envId} onChange={(e) => switchEnv(e.target.value)}>
             {envs.data?.items.map((e) => (
               <option key={e.id} value={e.id}>
                 {e.name}
               </option>
             ))}
           </select>
-        </label>
-        <span className="spacer" />
-        <span className="muted">
-          {user?.name} ({user?.role})
-        </span>
-        <NavLink to="/tokens">Tokens de API</NavLink>
-        <button type="button" disabled={signOut.isPending} onClick={() => signOut.mutate()}>
-          {signOut.isPending ? "Saindo…" : "Sair"}
-        </button>
-        {signOut.isError && <p className="error" role="alert">{statusMessage(signOut.error)}</p>}
-      </header>
-      <nav className="sidebar" aria-label="Menu principal">
-        {envId && MENU.map(([path, label]) => (
-          <NavLink key={path} to={`/e/${envId}/${path}`}>
-            {label}
-          </NavLink>
-        ))}
-        {user?.role === "admin" && (
-          <>
-            <NavLink to="/users">Usuários</NavLink>
-            <NavLink to="/audit">Auditoria</NavLink>
-          </>
-        )}
-      </nav>
+        </div>
+        <nav aria-label="Menu principal">
+          {envId && (
+            <>
+              <MenuGroup title="Gateway" items={GATEWAY.map(([path, label]) => [`/e/${envId}/${path}`, label])} />
+              <MenuGroup title="Operação" items={OPERATION.map(([path, label]) => [`/e/${envId}/${path}`, label])} />
+            </>
+          )}
+          <MenuGroup
+            title="Conta"
+            items={[["/tokens", "Tokens de API"], ...(user?.role === "admin" ? ([["/users", "Usuários"], ["/audit", "Auditoria"]] as const) : [])]}
+          />
+        </nav>
+        <div className="account">
+          <span className="who">
+            {user?.name} · {user?.role}
+          </span>
+          <button type="button" disabled={signOut.isPending} onClick={() => signOut.mutate()}>
+            {signOut.isPending ? "Saindo…" : "Sair"}
+          </button>
+          {signOut.isError && <p className="error" role="alert">{statusMessage(signOut.error)}</p>}
+        </div>
+      </aside>
       <main className="content">
-        {routeEnvId && <UnpublishedBar envId={routeEnvId} />}
+        {routeEnvId && <PublishStrip envId={routeEnvId} />}
         <Outlet />
       </main>
     </div>
   );
 }
 
-function UnpublishedBar({ envId }: { envId: string }) {
-  const env = useEnvironment(envId);
-  const canEdit = useCanEdit();
-  const [open, setOpen] = useState(false);
-  const pending = env.data?.hasUnpublishedChanges ?? false;
-  const preview = useQuery({
-    queryKey: ["preview", envId],
-    queryFn: () => unwrap(api.GET("/environments/{envId}/publish-preview", { params: { path: { envId } } })),
-    enabled: pending,
-  });
-  if (!pending) return null;
-  const count = preview.data?.changes.length;
+function MenuGroup({ title, items }: { title: string; items: readonly (readonly [string, string])[] }) {
   return (
-    <div className="unpublished" role="status">
-      <span>
-        {count === undefined ? "Há alterações não publicadas" : `${count} ${count === 1 ? "alteração não publicada" : "alterações não publicadas"}`}
-        {env.data?.currentVersion ? ` (versão publicada: ${env.data.currentVersion})` : ""}
-      </span>
-      {canEdit && (
-        <button type="button" className="primary" onClick={() => setOpen(true)}>
-          Publicar
-        </button>
-      )}
-      {open && env.data && <PublishModal env={env.data} onClose={() => setOpen(false)} />}
+    <div className="menu-group">
+      <h2>{title}</h2>
+      {items.map(([to, label]) => (
+        <NavLink key={to} to={to}>
+          {label}
+        </NavLink>
+      ))}
     </div>
   );
 }

@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import { Navigate, useLocation } from "react-router";
 import { ApiError } from "../api/client";
 import { useAuth } from "../auth";
+import { Brand } from "../components/Brand";
 
 export function LoginPage() {
   const { user, loading, login } = useAuth();
@@ -35,25 +36,28 @@ export function LoginPage() {
 
   return (
     <main className="login">
-      <form onSubmit={submit} className="card">
-        <h1>Gromesh Gateway</h1>
-        <label className="field">
-          <span>E-mail</span>
-          <input type="email" autoComplete="username" required value={email} onChange={(e) => setEmail(e.target.value)} />
-        </label>
-        <label className="field">
-          <span>Senha</span>
-          <input type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
-        </label>
-        {error && (
-          <p className="error" role="alert">
-            {error}
-          </p>
-        )}
-        <button type="submit" className="primary" disabled={busy}>
-          {busy ? "Entrando…" : "Entrar"}
-        </button>
-      </form>
+      <div className="login-box">
+        <Brand />
+        <form onSubmit={submit} className="card">
+          <h1>Entrar</h1>
+          <label className="field">
+            <span>E-mail</span>
+            <input type="email" autoComplete="username" required value={email} onChange={(e) => setEmail(e.target.value)} />
+          </label>
+          <label className="field">
+            <span>Senha</span>
+            <input type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
+          </label>
+          {error && (
+            <p className="error" role="alert">
+              {error}
+            </p>
+          )}
+          <button type="submit" className="primary" disabled={busy}>
+            {busy ? "Entrando…" : "Entrar"}
+          </button>
+        </form>
+      </div>
     </main>
   );
 }

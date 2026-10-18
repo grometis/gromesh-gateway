@@ -1,11 +1,16 @@
 import { useDeferredValue, useState, type FormEvent } from "react";
-import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, unwrap, type Service, type ServiceWrite } from "../api/client";
 import { statusMessage, toFormErrors, type FormErrors } from "../api/errors";
 import { useCanEdit } from "../auth";
 import { Field, FormErrorList } from "../components/Field";
 import { ConfirmDialog, Modal } from "../components/Modal";
-import { useEnvId } from "../components/Shell";
+import { Link, useNavigate, useParams } from "react-router";
+import { useEnvId, useEnvironment } from "../components/Shell";
+import { Badge, DraftBadge } from "../components/Badge";
+import { RowMenu } from "../components/RowMenu";
+import { Button } from "../components/Button";
+import { Table } from "../components/Table";
 import { ScopedPlugins } from "./Plugins";
 import { useUpstreams } from "./Upstreams";
 
@@ -36,82 +41,173 @@ export function useServices(envId: string, q = "") {
   });
 }
 
+/** Which services the draft adds or changes, from the publish preview (the strip loads the same query). */
+function useServiceDraft(envId: string): Map<string, "added" | "modified"> {
+  const env = useEnvironment(envId);
+  const pending = env.data?.hasUnpublishedChanges ?? false;
+  const preview = useQuery({
+    queryKey: ["preview", envId],
+    queryFn: () => unwrap(api.GET("/environments/{envId}/publish-preview", { params: { path: { envId } } })),
+    enabled: pending,
+  });
+  const draft = new Map<string, "added" | "modified">();
+  if (!pending) return draft;
+  for (const c of preview.data?.changes ?? []) if (c.kind === "services" && c.change !== "removed") draft.set(c.id, c.change);
+  return draft;
+}
+
 export function ServicesPage() {
   const envId = useEnvId();
   const canEdit = useCanEdit();
   const [search, setSearch] = useState("");
+  const [onlyChanged, setOnlyChanged] = useState(false);
   const q = useDeferredValue(search.trim());
   const services = useServices(envId, q);
+  const draft = useServiceDraft(envId);
   const [editing, setEditing] = useState<Service | "new" | null>(null);
   const [deleting, setDeleting] = useState<Service | null>(null);
-  const [plugins, setPlugins] = useState<Service | null>(null);
-  const items = services.data?.pages.flatMap((p) => p.items) ?? [];
+  const all = services.data?.pages.flatMap((p) => p.items) ?? [];
+  const changed = all.filter((s) => draft.has(s.id));
+  const items = onlyChanged ? changed : all;
 
   return (
     <section>
       <div className="page-head">
-        <h1>Services</h1>
+        <div>
+          <h1>Services</h1>
+          <p className="lede">Os destinos para onde o gateway encaminha as requisições.</p>
+        </div>
         {canEdit && (
-          <button type="button" className="primary" onClick={() => setEditing("new")}>
+          <Button variant="primary" onClick={() => setEditing("new")}>
             Novo service
-          </button>
+          </Button>
         )}
+      </div>
+      <div className="pills" role="group" aria-label="Filtrar services">
+        <button type="button" aria-pressed={!onlyChanged} onClick={() => setOnlyChanged(false)}>
+          Todos <span className="count">{all.length}</span>
+        </button>
+        <button type="button" aria-pressed={onlyChanged} onClick={() => setOnlyChanged(true)}>
+          Com alterações <span className="count">{changed.length}</span>
+        </button>
       </div>
       <input type="search" className="search" placeholder="Buscar por nome" aria-label="Buscar services" value={search} onChange={(e) => setSearch(e.target.value)} />
       {services.isPending && <p className="muted">Carregando…</p>}
       {services.isError && <p className="error">{statusMessage(services.error)}</p>}
-      {services.isSuccess && items.length === 0 && <p className="muted">{q ? "Nenhum service encontrado." : "Nenhum service ainda."}</p>}
+      {services.isSuccess && items.length === 0 && (
+        <p className="muted">{onlyChanged ? "Nenhum service com alterações não publicadas." : q ? "Nenhum service encontrado." : "Nenhum service ainda. Crie o primeiro para começar a rotear tráfego."}</p>
+      )}
       {items.length > 0 && (
-        <table>
+        <Table label="Services" cards>
           <thead>
             <tr>
-              <th>Nome</th>
-              <th>Destino</th>
-              <th>Ativo</th>
-              <th aria-label="Ações" />
+              <th>Service → destino</th>
+              <th>
+                <span className="visually-hidden">Ações</span>
+              </th>
             </tr>
           </thead>
           <tbody>
             {items.map((s) => (
-              <tr key={s.id}>
-                <td>{s.name}</td>
-                <td className="mono">
-                  {s.protocol}://{s.host}:{s.port}
-                  {s.path ?? ""}
+              <tr key={s.id} className={s.enabled === false ? "row-off" : undefined}>
+                <td className="row-main">
+                  <div className="service-route">
+                    {/* The whole row opens the service: this link covers it, the actions sit above it. */}
+                    <Link to={s.id} className="row-open service-name">
+                      {s.name}
+                    </Link>
+                    <DraftBadge change={draft.get(s.id)} />
+                    {s.enabled === false && <Badge tone="off">Desativado</Badge>}
+                    <span className="arrow" aria-hidden="true">
+                      →
+                    </span>
+                    <span className="visually-hidden">destino</span>
+                    <span className="target mono">{serviceTarget(s)}</span>
+                  </div>
                 </td>
-                <td>{s.enabled === false ? "Não" : "Sim"}</td>
                 <td className="actions">
-                  <button type="button" onClick={() => setPlugins(s)}>
-                    Plugins
-                  </button>
                   {canEdit && (
                     <>
-                      <button type="button" onClick={() => setEditing(s)}>
+                      <Button variant="quiet" onClick={() => setEditing(s)}>
                         Editar
-                      </button>
-                      <button type="button" className="danger" onClick={() => setDeleting(s)}>
-                        Excluir
-                      </button>
+                      </Button>
+                      <RowMenu label={`Mais ações para ${s.name}`} items={[{ label: "Excluir", danger: true, onSelect: () => setDeleting(s) }]} />
                     </>
                   )}
                 </td>
               </tr>
             ))}
           </tbody>
-        </table>
+        </Table>
       )}
-      {services.hasNextPage && (
-        <button type="button" onClick={() => void services.fetchNextPage()} disabled={services.isFetchingNextPage}>
+      {services.hasNextPage && !onlyChanged && (
+        <Button onClick={() => void services.fetchNextPage()} disabled={services.isFetchingNextPage}>
           Carregar mais
-        </button>
+        </Button>
       )}
       {editing && <ServiceForm envId={envId} service={editing === "new" ? null : editing} onClose={() => setEditing(null)} />}
       {deleting && <DeleteService envId={envId} service={deleting} onClose={() => setDeleting(null)} />}
-      {plugins && (
-        <Modal title={`Plugins de ${plugins.name}`} onClose={() => setPlugins(null)} wide>
-          <ScopedPlugins envId={envId} scope={{ kind: "service", id: plugins.id }} title="Plugins aplicados" />
-        </Modal>
-      )}
+    </section>
+  );
+}
+
+export function serviceTarget(s: Service): string {
+  return `${s.protocol}://${s.host}:${s.port}${s.path ?? ""}`;
+}
+
+export function ServiceDetailPage() {
+  const envId = useEnvId();
+  const { serviceId } = useParams();
+  const canEdit = useCanEdit();
+  const navigate = useNavigate();
+  const draft = useServiceDraft(envId);
+  const [editing, setEditing] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const service = useQuery({
+    queryKey: ["services", envId, "detail", serviceId],
+    queryFn: () => unwrap(api.GET("/environments/{envId}/services/{serviceId}", { params: { path: { envId, serviceId: serviceId! } } })),
+  });
+
+  if (service.isPending) return <p className="muted">Carregando…</p>;
+  if (service.isError) return <p className="error">{statusMessage(service.error)}</p>;
+  const s = service.data;
+  return (
+    <section className="stack">
+      <p>
+        <Link to="..">← Services</Link>
+      </p>
+      <div className="page-head">
+        <div>
+          <h1 className="title-with-badges">
+            {s.name} <DraftBadge change={draft.get(s.id)} />
+            {s.enabled === false && <Badge tone="off">Desativado</Badge>}
+          </h1>
+          <p className="lede mono">{serviceTarget(s)}</p>
+        </div>
+        {canEdit && (
+          <div className="form-actions">
+            <Button variant="primary" onClick={() => setEditing(true)}>
+              Editar
+            </Button>
+            <RowMenu label={`Mais ações para ${s.name}`} items={[{ label: "Excluir", danger: true, onSelect: () => setDeleting(true) }]} />
+          </div>
+        )}
+      </div>
+      <dl className="props">
+        <dt>Protocolo</dt>
+        <dd className="mono">{s.protocol}</dd>
+        <dt>Host</dt>
+        <dd className="mono">{s.host}</dd>
+        <dt>Porta</dt>
+        <dd className="mono">{s.port}</dd>
+        <dt>Path no destino</dt>
+        <dd className="mono">{s.path ?? "—"}</dd>
+        <dt>Tags</dt>
+        <dd>{s.tags?.join(", ") || "—"}</dd>
+      </dl>
+      <ScopedPlugins envId={envId} scope={{ kind: "service", id: s.id }} title="Plugins do service" />
+      {editing && <ServiceForm envId={envId} service={s} onClose={() => setEditing(false)} />}
+      {deleting && <DeleteService envId={envId} service={s} onClose={() => setDeleting(false)} onDeleted={() => navigate("..")} />}
     </section>
   );
 }
@@ -219,13 +315,14 @@ function ServiceForm({ envId, service, onClose }: { envId: string; service: Serv
   );
 }
 
-function DeleteService({ envId, service, onClose }: { envId: string; service: Service; onClose: () => void }) {
+function DeleteService({ envId, service, onClose, onDeleted }: { envId: string; service: Service; onClose: () => void; onDeleted?: () => void }) {
   const invalidate = useInvalidateDraft(envId);
   const remove = useMutation({
     mutationFn: () => unwrap(api.DELETE("/environments/{envId}/services/{serviceId}", { params: { path: { envId, serviceId: service.id } } })),
     onSuccess: () => {
       invalidate("services");
       onClose();
+      onDeleted?.();
     },
   });
   return (

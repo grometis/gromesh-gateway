@@ -32,8 +32,8 @@ test("login, create a service and a route, then preview the publication", async 
   expect((await createdRoute).status()).toBe(201);
   await expect(route).toBeHidden();
 
-  await expect(page.getByRole("status")).toContainText("2 alterações não publicadas");
-  await page.getByRole("button", { name: "Publicar" }).click();
+  await expect(page.getByRole("region", { name: "Publicação" })).toContainText("2 alterações");
+  await page.getByRole("region", { name: "Publicação" }).getByRole("button", { name: /^Publicar v\d+$/ }).click();
   const publish = page.getByRole("dialog", { name: /^Publicar/ });
   const changes = publish.getByRole("list", { name: "Alterações" }).getByRole("listitem");
   await expect(changes).toHaveCount(2);
