@@ -46,9 +46,9 @@ updates:
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
       - dependency-name: "nginxinc/nginx-unprivileged"
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
-      # 1.28.2 carries CVE-2026-42945 (CRITICAL): skip that release only; 1.28.3 and later patches are proposed.
+      # 1.28.1 and 1.28.2 carry CVE-2026-42945 (CRITICAL): skip them; 1.28.3 and later patches are proposed.
       - dependency-name: "nginxinc/nginx-unprivileged"
-        versions: ["1.28.2", "1.28.2-alpine"]
+        versions: [">=1.28.1, <1.28.3"]
     groups:
       docker:
         patterns: ["*"]
