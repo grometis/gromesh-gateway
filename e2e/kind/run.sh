@@ -2,7 +2,7 @@
 # Final MVP acceptance in kind: both charts, observability, then the Playwright scenario in e2e/kind/mvp.spec.ts,
 # then a second data plane with the chart defaults.
 # Prerequisites: a kind cluster with the images loaded (see the mvp-e2e job in .github/workflows/ci.yml:
-# gromesh-control-plane:ci, gromesh-ui:ci, gromesh-agent:ci, ghcr.io/grometis/gromesh-kong:3.9.4-ac22d11c5ee912f9caeaf03a0305faca16aa5ca7, postgres:16-alpine, traefik/whoami:v1.10.3,
+# gromesh-control-plane:ci, gromesh-ui:ci, gromesh-agent:ci, ghcr.io/grometis/gromesh-kong:3.9.4-5cd683f5e6c4d19d1dc3706eb375df571846125d, postgres:16-alpine, traefik/whoami:v1.10.3,
 # clickhouse/clickhouse-server:25.8.33.6-alpine, timberio/vector:0.57.0-alpine), helm, kubectl, jq, pnpm with the
 # e2e workspace installed and Chromium (`pnpm --filter @gromesh/e2e exec playwright install chromium`).
 # Docker must reach the kind node containers: the restart step stops only the agent through crictl
