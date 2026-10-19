@@ -4,10 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
-  # image-digests dispatches ci on its PR branch: a PR opened with GITHUB_TOKEN gets no pull_request event.
+  # A manual run on any branch runs everything.
   workflow_dispatch:
 
-# A new push to a PR (or a new dispatch on the bot's branch) cancels the run it replaces; pushes to main always finish.
+# A new push to a PR cancels the run it replaces; pushes to main always finish.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name != 'push' }}
@@ -39,13 +39,13 @@ jobs:
         id: mode
         env:
           EVENT: ${{ github.event_name }}
-          REF: ${{ github.ref_name }}
+          # A pull request's ref is refs/pull/<n>/merge: its branch is the head ref.
+          REF: ${{ github.head_ref || github.ref_name }}
         run: |
           bot=false
           case "$REF" in chore/app-image-digests|chore/kong-image-digest) bot=true ;; esac
           all=false
-          # main, or a manual dispatch on any branch that is not the bot's: everything.
-          if [ "$EVENT" = push ] || { [ "$EVENT" = workflow_dispatch ] && [ "$bot" = false ]; }; then all=true; fi
+          if [ "$EVENT" = push ] || [ "$EVENT" = workflow_dispatch ]; then all=true; fi
           echo "all=$all" >> "$GITHUB_OUTPUT"
           echo "bot=$bot" >> "$GITHUB_OUTPUT"
       - name: Changed paths

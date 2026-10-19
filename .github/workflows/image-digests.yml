@@ -1,8 +1,8 @@
 name: image-digests
 
 # After kong-image or images publishes a new build, pin its digest everywhere the repository references the image
-# (scripts/bump-image-digests.mjs) and open or refresh one PR per image group. The PR is created with GITHUB_TOKEN,
-# which never triggers the pull_request event, so the ci workflow is dispatched on the branch explicitly (mvp-e2e included).
+# (scripts/bump-image-digests.mjs) and open or refresh one PR per image group. The branch is pushed and the PR opened with
+# a token of the digests GitHub App: unlike GITHUB_TOKEN, that triggers the pull_request event, so ci runs on the PR itself.
 on:
   workflow_run:
     workflows: [kong-image, images]
@@ -42,17 +42,19 @@ jobs:
        !contains(github.event.workflow_run.head_commit.message, 'chore/app-image-digests'))
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    # The App's private key lives only in this environment, whose deployment policy admits the main branch alone:
+    # a job on any other ref (a pull request included) cannot read it, whatever its workflow file says.
+    environment: image-digests
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
       packages: read
-      actions: write
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
+          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
@@ -98,27 +100,42 @@ jobs:
           done < "$RUNNER_TEMP/digests"
           if git diff --quiet; then echo "changed=false" >> "$GITHUB_OUTPUT"; else echo "changed=true" >> "$GITHUB_OUTPUT"; fi
 
+      # Minted after the bump script ran, so nothing but the two steps below ever sees it.
+      - name: Token of the digests App, for this repository only
+        if: steps.bump.outputs.changed == 'true'
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.DIGESTS_APP_ID }}
+          private-key: ${{ secrets.DIGESTS_APP_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+
       - name: Push the branch
         if: steps.bump.outputs.changed == 'true'
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -B "$BRANCH"
           git commit -am "$TITLE" -m "$(cat "$RUNNER_TEMP/digests")"
           # One branch per image group, rewritten on every new build: the open PR follows it.
-          git push --force origin "$BRANCH"
+          git push --force "https://x-access-token:${APP_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/${BRANCH}"
 
-      - name: Open or refresh the PR and run ci on it
+      - name: Open or refresh the PR
         if: steps.bump.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           body="$(printf '%s\n\n```\n%s\n```\n\n%s' \
             "Pins tag \`${TAG}\` by digest wherever the repository references these images (compose default, charts, ci workflow, security checklist for kong)." \
             "$(cat "$RUNNER_TEMP/digests")" \
-            "Opened by the image-digests workflow; the ci run on this branch (mvp-e2e included) was dispatched explicitly. For kong, re-run e2e/security-checklist.sh locally before merging to refresh row A2 with a real run.")"
+            "Opened by the image-digests workflow (digests GitHub App); ci runs on this PR (mvp-e2e included). For kong, re-run e2e/security-checklist.sh locally before merging to refresh row A2 with a real run.")"
           number="$(gh pr list --head "$BRANCH" --base main --state open --json number --jq '.[0].number')"
           if [ -z "$number" ]; then
             gh pr create --base main --head "$BRANCH" --title "$TITLE" --body "$body"
           else
             gh pr edit "$number" --title "$TITLE" --body "$body"
           fi
-          gh workflow run ci.yml --ref "$BRANCH"
