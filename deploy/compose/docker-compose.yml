@@ -24,7 +24,7 @@ services:
 
   # One-time volume ownership and empty boot config. Never overwrite the last good snapshot.
   kong-config-init:
-    image: ${KONG_IMAGE:-ghcr.io/grometis/gromesh-kong@sha256:58e49a1347c60cac60c6994888f07a0f2693edd4875fdce44b29edea31d78d59}
+    image: ${KONG_IMAGE:-ghcr.io/grometis/gromesh-kong@sha256:ffe28812ade7f8aaec8ff1303b5c5f2e614453b87e1b3bd917401f6ad8b74faf}
     user: "0:0"
     entrypoint: ["/bin/sh", "-ec"]
     command:
@@ -42,7 +42,7 @@ services:
 
   # Kong OSS data plane in DB-less mode. Swap the image for the in-house 3.9.4 build (images/kong) when ready.
   kong:
-    image: ${KONG_IMAGE:-ghcr.io/grometis/gromesh-kong@sha256:58e49a1347c60cac60c6994888f07a0f2693edd4875fdce44b29edea31d78d59}
+    image: ${KONG_IMAGE:-ghcr.io/grometis/gromesh-kong@sha256:ffe28812ade7f8aaec8ff1303b5c5f2e614453b87e1b3bd917401f6ad8b74faf}
     environment:
       KONG_DATABASE: "off"
       KONG_DECLARATIVE_CONFIG: /kong/declarative/kong.json
@@ -76,7 +76,7 @@ services:
 
   # No proxy listener or proxy traffic: plugin validation only.
   kong-validator:
-    image: ${KONG_IMAGE:-ghcr.io/grometis/gromesh-kong@sha256:58e49a1347c60cac60c6994888f07a0f2693edd4875fdce44b29edea31d78d59}
+    image: ${KONG_IMAGE:-ghcr.io/grometis/gromesh-kong@sha256:ffe28812ade7f8aaec8ff1303b5c5f2e614453b87e1b3bd917401f6ad8b74faf}
     environment:
       KONG_DATABASE: "off"
       KONG_PROXY_LISTEN: "off"

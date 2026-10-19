@@ -29,6 +29,6 @@ Gerado por `e2e/security-checklist.sh` em 2026-10-18T08:49:55Z contra o compose 
 | R1 | Papel por environment eleva só no environment certo (editor em A cria; viewer em B → 403; usuários → 403) | PASS |  |
 | R2 | Environment invisível (none) → 404, igual a um inexistente, e fora da lista | PASS |  |
 | A1 | CVE-2026-1907 (RPC de clustering, modo híbrido) | NOTE | não se aplica: data planes em DB-less sem clustering do Kong |
-| A2 | Imagem própria Kong 3.9.4 (build próprio, fixada por digest) | PASS | ghcr.io/grometis/gromesh-kong@sha256:58e49a1347c60cac60c6994888f07a0f2693edd4875fdce44b29edea31d78d59 |
+| A2 | Imagem própria Kong 3.9.4 (build próprio, fixada por digest) | PASS | ghcr.io/grometis/gromesh-kong@sha256:ffe28812ade7f8aaec8ff1303b5c5f2e614453b87e1b3bd917401f6ad8b74faf |
 
 Falhas: 0.
