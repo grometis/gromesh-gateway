@@ -309,6 +309,20 @@ table.cards tr:hover td { background: var(--line); }
 :is(.service-detail, .gateway-list) .check { min-height: 40px; }
 :is(.service-detail, .gateway-list) input:is([type="checkbox"], [type="radio"]) { min-height: 40px; accent-color: var(--ink); flex: none; }
 
+/* ---------------- upstreams and certificates ---------------- */
+.target-weight { max-width: 100px; }
+.upstreams-page > .table-scroll .cards th.actions { width: 280px; }
+.upstreams-page .badge { white-space: normal; }
+.upstreams-page .modal .cards th.actions { width: 120px; }
+.certificates-page .cards th.actions { width: 160px; }
+.certificates-page .badge { white-space: normal; }
+.certificate-file { display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--text-sm); min-width: 0; }
+.certificate-file input { min-width: 0; max-width: 100%; }
+.certificate-file input::file-selector-button {
+  font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--control-line);
+  border-radius: var(--radius-sm); padding: var(--space-1) var(--space-2); margin-right: var(--space-2); cursor: pointer;
+}
+
 /* ---------------- plugin catalog ---------------- */
 .catalog-group h3 { font-size: var(--text-sm); color: var(--text-3); margin: var(--space-4) 0 var(--space-2); }
 .catalog { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr)); gap: var(--space-2); }
@@ -407,10 +421,6 @@ table.cards tr:hover td { background: var(--line); }
 .scroll-x { overflow-x: auto; }
 .wrap { overflow-wrap: anywhere; }
 .block { margin-top: var(--space-5); }
-.file { display: block; font-size: var(--text-sm); margin: calc(-1 * var(--space-1)) 0 var(--space-3); }
-.file input { margin-left: var(--space-2); }
-.cluster-actions { margin-bottom: var(--space-3); }
-.state-failed { color: var(--draft-text); }
 .node-error { min-width: 160px; max-width: 360px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .diff-table { table-layout: fixed; }
 .diff-table td { vertical-align: top; }
