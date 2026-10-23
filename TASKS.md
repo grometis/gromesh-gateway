@@ -61,6 +61,15 @@ git worktree add ../gg-codex  -b task/W1-X1-kong-image
 | P5-C2 | Claude | P5-C1 | `apps/ui/` |
 | B-11 | Codex | — | `contracts/` (PR próprio), `packages/compiler/`, `apps/control-plane/`, `deploy/observability/`, `deploy/compose/`, `deploy/helm/data-plane/files/vector/`, `e2e/` |
 | B-16 | Codex | — | `contracts/` (PR próprio), `packages/compiler/` (conversão Kong → modelo), `apps/control-plane/` |
+| P6-C0 | Claude | — | `contracts/`, `deploy/helm/*/values.yaml`, `deploy/helm/data-plane/values.schema.json`, `deploy/helm/*/templates/_helpers.tpl` (só a trava "planned"), `deploy/helm/*/ci/check.sh`, `.github/workflows/ci.yml` (só o passo do chart do data plane) |
+| P6-X2 | Codex | — | `apps/ui/` |
+| P6-X3a | Codex | P6-X2 | `apps/ui/` |
+| P6-X3b | Codex | P6-X3a | `apps/ui/` |
+| P6-X3c | Codex | P6-X3b | `apps/ui/` |
+| P6-X3d | Codex | P6-X3c | `apps/ui/` |
+| P6-X3e | Codex | P6-X3d | `apps/ui/` |
+| P6-X1 | Codex | P6-C0 | `apps/control-plane/`, `deploy/helm/*/templates/`, `deploy/helm/*/values.yaml` (só os comentários), `deploy/helm/*/ci/check.sh`, `.github/workflows/ci.yml` (só o passo do chart do data plane) |
+| P6-C2 | Claude | P6-X1 | `deploy/helm/*/ci/values-homelab.yaml` |
 
 Ordem de merge na semana 3: W2-C2 → W3-X1 → W3-C1 → W3-X2. Quem mergeia depois faz rebase; `src/db/schema.ts` e `drizzle/` são alterados por uma frente por vez.
 
@@ -478,6 +487,47 @@ Aceite: teste com ClickHouse real usando `OPTIMIZE … FINAL` e timestamps antig
 - Contrato: hash aceito só se o consumer tem id preservado; senão 422 no path da senha. O hash é guardado como `enc:v2` (PR #60).
 
 Aceite: hash gerado no teste (`sha1(senha + consumer_id)`) → publicar → login no Kong do compose responde 200 (senha errada 401); consumer sem id preservado → 422. PR #64.
+
+---
+
+## P6 — Telas secundárias na Direção 3; endereço do cliente atrás de CDN
+
+Migração visual: sem mudar comportamento nem contrato de API. Referência: as telas finais (Services, Consumers, Clusters, Revisar e publicar, Visão geral) e os tokens do P4-C1. Vermelho `#C93A1E` só na ação de publicar e em estados de erro; ação destrutiva usa `#8E2A15` com borda, nunca o botão vermelho cheio. Segredos nunca aparecem (REDACTED ou dica); onde se cria um segredo, o fluxo "copie agora, não será exibido de novo" do Consumer. "Kong" não aparece no texto da UI.
+
+Aceite de toda tarefa de tela: Playwright existente verde, mais asserções novas quando um elemento muda de estrutura; axe sem violações serious/critical; a verificação de layout do P6-X2 (sem rolagem horizontal em 390 px, alvos ≥ 40 px, foco visível) aplicada às telas da tarefa; nenhuma ocorrência de "Kong" no texto renderizado; capturas antes/depois em 1440 e 390 no PR.
+
+### P6-C0 [Claude] Contrato: endereço do cliente
+- Convenção "Client address" no contrato: hop do `X-Forwarded-For` de proxy confiável ou, com `CLIENT_IP_HEADER`, esse header, honrado só de origem confiável; ausente, inválido ou de origem não confiável, ignorado.
+- Charts: `clientIpHeader` no control plane (exige `trustProxy`); `kong.realIpHeader` e `kong.trustedIps` no data plane (juntos, CIDRs explícitos, nunca /0). Qualquer valor é recusado ("planned (P6-X1)") até o P6-X1.
+
+Aceite: lint válido e testes de rejeição dos charts (PR #107).
+
+### P6-X2 [Codex] Componentes comuns das telas
+- `PageHeader` (título, descrição, ações) no lugar das `.page-head` repetidas; `EmptyState` (título, texto, ação opcional); tom "no ar" no `Badge` se faltar. Telas finais passam a usá-los sem mudar o visual.
+- Verificação de layout reutilizável no Playwright: em 390 px, `scrollWidth` ≤ largura da janela; botões, links de ação e campos visíveis com altura ≥ 40 px; foco visível por teclado. Aplicada às telas finais e, em cada grupo, às telas migradas.
+
+Aceite: Playwright e axe verdes; a verificação de layout passa nas telas finais.
+
+### P6-X3a [Codex] Services (detalhe), Routes, Plugins
+### P6-X3b [Codex] Upstreams, Certificados
+### P6-X3c [Codex] Publicações (lista e detalhe) e Auditoria
+### P6-X3d [Codex] Usuários e Tokens de API
+- Criação de token no fluxo "copie agora" do Consumer.
+### P6-X3e [Codex] Métricas, Requisições e Login
+- Métricas e Requisições mantêm o `Chart` atual: só layout, filtros e tabelas. Login: wordmark "gromesh" (`<Brand/>`), sem ilustração.
+- Ao fim, a seção "screens not redesigned yet" do `styles.css` deixa de existir; cada grupo remove as classes que deixou de usar.
+
+Aceite (X3a–X3e): o aceite de toda tarefa de tela, acima.
+
+### P6-X1 [Codex] Endereço do cliente no control plane e no gateway
+- `CLIENT_IP_HEADER`: o rate limit de login, o audit, o uso de token de API e o agente usam o endereço da convenção do P6-C0. O chart remove a trava "planned" e passa `clientIpHeader`; o do data plane passa `KONG_REAL_IP_HEADER` e `KONG_TRUSTED_IPS`.
+
+Aceite: testes com header presente vindo de proxy confiável (usado), presente vindo de origem não confiável (ignorado), ausente e inválido (regra anterior); render dos charts com os valores ligados.
+
+### P6-C2 [Claude] values-homelab com CF-Connecting-IP
+- Control plane: `clientIpHeader: CF-Connecting-IP`. Data plane: `kong.realIpHeader: CF-Connecting-IP` e `kong.trustedIps` com o CIDR de pods do minikube, explícito.
+
+Aceite: checagens dos charts verdes com os values de homelab.
 
 ---
 
