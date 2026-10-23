@@ -15,7 +15,8 @@ export interface paths {
         put?: never;
         /**
          * @description Starts a session. The session id travels only in the `gromesh_session` cookie; the body never carries a token.
-         *     Repeated failures for the same e-mail or client address answer 429 with `Retry-After`.
+         *     Repeated failures for the same e-mail or client address (see "Client address" in the API description)
+         *     answer 429 with `Retry-After`.
          */
         post: operations["login"];
         delete?: never;
@@ -1945,6 +1946,7 @@ export interface components {
             entityId?: string | null;
             before?: Record<string, never> | null;
             after?: Record<string, never> | null;
+            /** @description Client address of the request behind the event (see "Client address" in the API description); null when there was no request. */
             ip?: string | null;
         };
         AuditEventPage: {
@@ -2032,7 +2034,9 @@ export interface components {
             latencyUpstreamMs: number | null;
             latencyTotalMs: number;
             /**
-             * @description Full address for admins only. Viewers and editors get it masked: IPv4 with the last octet zeroed
+             * @description The client address as the gateway saw it: the TCP peer, or, when the data plane trusts the peer
+             *     (`kong.trustedIps`) and names a header (`kong.realIpHeader`), that header's value.
+             *     Full address for admins only. Viewers and editors get it masked: IPv4 with the last octet zeroed
              *     (203.0.113.10 → 203.0.113.0), IPv6 truncated to its /48 (2001:db8:1234:5678::1 → 2001:db8:1234::).
              */
             clientIp: string;
