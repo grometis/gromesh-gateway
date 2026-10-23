@@ -168,6 +168,11 @@ jobs:
           helm template dp deploy/helm/data-plane --set-string agent.token=ci-placeholder > /dev/null
           helm lint deploy/helm/data-plane --strict -f deploy/helm/data-plane/ci/values-full.yaml
           helm template dp deploy/helm/data-plane -f deploy/helm/data-plane/ci/values-full.yaml > /dev/null
+          helm lint deploy/helm/data-plane --strict -f deploy/helm/data-plane/ci/values-homelab.yaml
+          helm template dp deploy/helm/data-plane -f deploy/helm/data-plane/ci/values-homelab.yaml > /tmp/helm-dp-homelab.yaml
+          # Homelab: every container books its whole memory limit (as in deploy/helm/data-plane/ci/check.sh).
+          unbooked="$(docker run --rm -i mikefarah/yq:4.44.3 ea '[.. | select(tag == "!!map" and has("image")) | select(.resources.limits.memory == null or .resources.requests.memory != .resources.limits.memory) | .name] | join(",")' < /tmp/helm-dp-homelab.yaml)"
+          [[ -z "$unbooked" ]] || { echo "Homelab containers whose memory request differs from the limit: $unbooked" >&2; exit 1; }
           if helm template dp deploy/helm/data-plane > /dev/null 2> /tmp/helm-dp-missing-token.log; then
             echo 'Chart unexpectedly accepted missing registration credentials' >&2
             exit 1

@@ -1,0 +1,57 @@
+# Single-node homelab (minikube on an arm64 VM, ingress-nginx behind a Cloudflare tunnel). Memory requests equal
+# limits so the scheduler books what the pods may use: the node's cgroup is smaller than the capacity it reports.
+# Postgres and ClickHouse are installed beside the release (this chart bundles neither); the Secrets are created
+# by hand in the namespace before the first install.
+replicaCount: 1
+imagePullSecrets:
+  - name: ghcr-gromesh
+
+ui:
+  replicaCount: 1
+  resources:
+    requests: {cpu: 10m, memory: 64Mi}
+    limits: {cpu: 200m, memory: 64Mi}
+
+validator:
+  resources:
+    requests: {cpu: 50m, memory: 384Mi}
+    limits: {cpu: 500m, memory: 384Mi}
+
+database:
+  existingSecret: gromesh-database
+bootstrapAdmin:
+  existingSecret: gromesh-admin
+clickhouse:
+  existingSecret: gromesh-clickhouse-reader
+encryption:
+  existingSecret: gromesh-encryption
+
+# Resolved inside each cluster's namespace to the data-plane chart's collector (collector.enabled).
+platform:
+  httpLogEndpoint: http://gromesh-collector:8080/kong
+
+# Cloudflare terminates TLS and reaches ingress-nginx over plain HTTP: cookies stay Secure (insecureCookies false)
+# because the browser only ever sees HTTPS. Only the controller's pods, in the cluster pod CIDR, may set
+# X-Forwarded-For.
+trustProxy: 10.244.0.0/16
+
+resources:
+  requests: {cpu: 50m, memory: 512Mi}
+  limits: {cpu: 500m, memory: 512Mi}
+migration:
+  resources:
+    requests: {cpu: 50m, memory: 256Mi}
+    limits: {cpu: 500m, memory: 256Mi}
+# One replica: a minAvailable 1 budget would block every drain of the only node.
+pdb:
+  enabled: false
+
+ingress:
+  enabled: true
+  className: nginx
+  host: gromesh.grometis.com
+  annotations:
+    # TLS ends at Cloudflare; no certificate here, so no redirect either.
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+  tls: []
+  tlsTerminatedUpstream: true
