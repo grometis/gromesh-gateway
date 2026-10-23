@@ -30,12 +30,12 @@ export async function checkLayout(page: Page, options: { inlineLinks?: readonly 
   }
   expect(checked, "the screen has controls to check").toBeGreaterThan(0);
 
-  // blur() retains Chromium's sequential starting point, including after the last control (e.g. Comparar).
+  // blur() retains Chromium's sequential starting point, including after the last control (e.g. Comparar or a submit).
   // Focus the body to restart at the document, then use real Tab presses to check :focus-visible.
   const bodyTabIndex = await page.evaluate(() => {
     const previous = document.body.getAttribute("tabindex");
     document.body.setAttribute("tabindex", "-1");
-    document.body.focus();
+    document.body.focus({ preventScroll: true });
     return previous;
   });
   // Reach the page itself as well as the shell, so a sidebar outline cannot mask missing page focus styles.
@@ -46,11 +46,13 @@ export async function checkLayout(page: Page, options: { inlineLinks?: readonly 
       const focus = await page.evaluate((region) => {
         const element = document.activeElement;
         if (!(element instanceof HTMLElement) || element === document.body) return null;
-        const style = getComputedStyle(element);
+        const hasIndicator = (style: CSSStyleDeclaration) => (style.outlineStyle !== "none" && parseFloat(style.outlineWidth) > 0 && style.outlineColor !== "rgba(0, 0, 0, 0)")
+          || (style.boxShadow !== "" && style.boxShadow !== "none");
+        const after = getComputedStyle(element, "::after");
         return {
           visible: element.matches(":focus-visible"),
-          indicator: (style.outlineStyle !== "none" && parseFloat(style.outlineWidth) > 0 && style.outlineColor !== "rgba(0, 0, 0, 0)")
-            || style.boxShadow !== "none",
+          // Stretched row links draw their visible focus ring on ::after.
+          indicator: hasIndicator(getComputedStyle(element)) || (after.content !== "none" && after.content !== "normal" && hasIndicator(after)),
           inPage: element.closest(region) !== null,
           label: element.getAttribute("aria-label") ?? element.textContent?.trim().slice(0, 80) ?? element.tagName,
         };

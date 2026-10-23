@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 
 const admin = { id: "7c1d2e3f-4a5b-4c6d-8e7f-000000000001", name: "Ana Souza", email: "ana@gromesh.dev", role: "admin" as const, active: true, createdAt: "2026-10-15T12:00:00Z", updatedAt: "2026-10-15T12:00:00Z" };
 const GLOBAL_SCREENS: readonly string[] = ["users", "tokens", "audit"];
-const screens = ["services", "service-detail", "routes", "plugins", "plugin-catalog", "upstreams", "upstream-targets", "upstream-healthchecks", "certificates", "certificate-upload", "certificate-edit", "consumers", "consumer-detail", "clusters", "publish", "overview", "publications", "publication-detail", "publication-diff", "publication-rollback", "audit", "users", "user-create", "user-edit", "user-deactivate", "user-roles", "user-delete", "user-menu", "tokens", "tokens-all", "token-create", "token-secret", "token-revoke"] as const;
+const screens = ["services", "service-detail", "routes", "plugins", "plugin-catalog", "upstreams", "upstream-targets", "upstream-healthchecks", "certificates", "certificate-upload", "certificate-edit", "consumers", "consumer-detail", "clusters", "publish", "overview", "publications", "publication-detail", "publication-diff", "publication-rollback", "audit", "users", "user-create", "user-edit", "user-deactivate", "user-roles", "user-delete", "user-menu", "tokens", "tokens-all", "token-create", "token-secret", "token-revoke", "metrics", "requests", "request-detail"] as const;
 
 for (const width of [390, 1440]) {
   test(`layout focus walk restarts after the last control at ${width}px`, async ({ page }) => {
@@ -42,6 +42,7 @@ for (const width of [390, 1440]) {
         : screen === "publication-detail" || screen === "publication-diff" ? "publications/2"
         : screen === "publication-rollback" ? "publications"
         : screen === "plugin-catalog" ? "plugins" : screen === "consumer-detail" ? "consumers"
+        : screen === "request-detail" ? "requests"
         : screen.startsWith("upstream-") ? "upstreams" : screen.startsWith("certificate-") ? "certificates" : screen;
       const isGlobal = GLOBAL_SCREENS.includes(screen) || screen.startsWith("user") || screen.startsWith("token");
       await page.goto(!isGlobal ? `/e/${envId}/${path}` : screen.startsWith("user") ? "/users" : screen.startsWith("token") ? "/tokens" : `/${path}`);
@@ -143,6 +144,38 @@ for (const width of [390, 1440]) {
         }
       } else if (screen === "services" || screen === "consumers") {
         await expect(page.getByRole("table", { name: screen === "services" ? "Services" : "Consumers" })).toBeVisible();
+      } else if (screen === "metrics") {
+        await expect(page.locator("dl.stat-cards > .stat-card")).toHaveCount(6);
+        await expect(page.locator("figure.chart")).toHaveCount(3);
+        await expect(page.getByRole("table", { name: "Top rotas" })).toHaveClass("cards");
+        await expect(page.getByLabel("Período", { exact: true })).toHaveValue("6h");
+      } else if (screen === "requests" || screen === "request-detail") {
+        const table = page.getByRole("table", { name: "Requisições", exact: true });
+        await expect(table).toHaveClass("cards");
+        await expect(table.getByRole("cell", { name: "203.0.113.0", exact: true })).toBeVisible();
+        const open = table.getByRole("button", { name: "/orders/42", exact: true });
+        await expect(open).toBeVisible();
+        if (screen === "request-detail") {
+          await open.focus();
+          await page.keyboard.press("Enter");
+          const detail = page.getByRole("dialog", { name: "GET /orders/42" });
+          await expect(detail).toContainText("203.0.113.0");
+          await expect(detail).toContainText("Latência no gateway");
+          await expect(detail.getByRole("term")).toHaveCount(15);
+          await expect(detail.getByRole("definition")).toHaveCount(15);
+          const body = detail.getByRole("region", { name: "Conteúdo da requisição", exact: true });
+          await expect(body).toHaveAttribute("tabindex", "0");
+          await detail.getByRole("button", { name: "Fechar", exact: true }).focus();
+          await page.keyboard.press("Tab");
+          await expect(body).toBeFocused();
+          await expect(body).toHaveCSS("outline-style", "solid");
+          await expect(body).toHaveCSS("outline-color", "rgb(11, 42, 42)");
+          if (width === 390) {
+            const before = await body.evaluate((element) => element.scrollTop);
+            await page.keyboard.press("ArrowDown");
+            await expect.poll(() => body.evaluate((element) => element.scrollTop)).toBeGreaterThan(before);
+          }
+        }
       } else if (screen === "clusters") {
         await expect(page.locator(".cluster-card").first()).toBeVisible();
       } else if (screen === "publish") {
@@ -183,7 +216,7 @@ for (const width of [390, 1440]) {
       });
       await checkLayout(page, {
         focusWithin: screen === "publication-rollback" ? '[role="dialog"]'
-          : ["upstream-targets", "upstream-healthchecks", "certificate-upload", "certificate-edit"].includes(screen) ? ".final-page [role=dialog]" : ".final-page",
+          : ["upstream-targets", "upstream-healthchecks", "certificate-upload", "certificate-edit", "request-detail"].includes(screen) ? ".final-page [role=dialog]" : ".final-page",
         inlineLinks: screen === "overview"
           ? [{ selector: ".top-routes td a", reason: "Route names are plain text links inside table cells." }]
           : screen === "publish"
@@ -198,4 +231,35 @@ for (const width of [390, 1440]) {
       expect(axe.violations.filter((v) => v.impact === "serious" || v.impact === "critical").map((v) => `${v.id}: ${v.nodes.map((n) => n.target).join(", ")}`)).toEqual([]);
     });
   }
+}
+
+for (const width of [390, 1440]) {
+  test(`login: layout and axe at ${width}px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto("/login");
+    await expect(page.getByRole("heading", { name: "Entrar", exact: true })).toBeVisible();
+    await expect(page.getByRole("link", { name: "gromesh, início" })).toHaveText("gromesh");
+    await expect(page.getByLabel("E-mail")).toHaveAttribute("autocomplete", "username");
+    await expect(page.getByLabel("Senha")).toHaveAttribute("type", "password");
+    await page.evaluate(() => document.fonts.ready);
+    await testInfo.attach(`login-${width}`, { body: await page.screenshot({ fullPage: true }), contentType: "image/png" });
+    await checkLayout(page, { focusWithin: ".login-card" });
+    await expect(page.getByLabel("E-mail")).toBeFocused();
+    await expect(page.getByLabel("E-mail")).toHaveCSS("outline-style", "solid");
+    await expect(page.getByLabel("E-mail")).toHaveCSS("outline-color", "rgb(11, 42, 42)");
+    const axe = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
+    expect(axe.violations.filter((v) => v.impact === "serious" || v.impact === "critical").map((v) => `${v.id}: ${v.nodes.map((n) => n.target).join(", ")}`)).toEqual([]);
+
+    await page.route("**/api/v1/auth/login", (route) => route.fulfill({ status: 401, json: { title: "Unauthorized", status: 401 } }));
+    await page.getByLabel("E-mail").fill("ana@gromesh.dev");
+    await page.getByLabel("Senha").fill("invalid-password");
+    await page.getByRole("button", { name: "Entrar", exact: true }).click();
+    await expect(page.getByRole("alert")).toHaveText("E-mail ou senha inválidos.");
+    await checkLayout(page, { focusWithin: ".login-card" });
+    await expect(page.getByLabel("E-mail")).toBeFocused();
+    await expect(page.getByLabel("E-mail")).toHaveCSS("outline-style", "solid");
+    await expect(page.getByLabel("E-mail")).toHaveCSS("outline-color", "rgb(11, 42, 42)");
+    const errorAxe = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
+    expect(errorAxe.violations.filter((v) => v.impact === "serious" || v.impact === "critical").map((v) => `${v.id}: ${v.nodes.map((n) => n.target).join(", ")}`)).toEqual([]);
+  });
 }
