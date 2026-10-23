@@ -1,5 +1,6 @@
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { validateHeaderName } from "node:http";
 
 /** Package root (apps/control-plane), same from src/ and dist/. */
 export const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -16,6 +17,8 @@ export interface AppConfig {
    * per client address sees the real client behind the UI's nginx instead of the proxy. Off by default.
    */
   trustProxy: boolean | string;
+  /** Optional client address header, honoured only when the TCP peer is trusted by Express. */
+  clientIpHeader: string | null;
   /** Sliding session lifetime. */
   sessionTtlMs: number;
   /** Failed logins per e-mail+client address before a lockout of `loginLockoutMs`. */
@@ -52,6 +55,14 @@ export interface AppConfig {
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const databaseUrl = env.DATABASE_URL;
   if (!databaseUrl) throw new Error("DATABASE_URL is required");
+  const clientIpHeader = env.CLIENT_IP_HEADER || null;
+  if (clientIpHeader !== null) {
+    try {
+      validateHeaderName(clientIpHeader);
+    } catch {
+      throw new Error("CLIENT_IP_HEADER must be a single HTTP header name");
+    }
+  }
   const bootstrapEmail = env.BOOTSTRAP_ADMIN_EMAIL;
   const bootstrapPassword = env.BOOTSTRAP_ADMIN_PASSWORD;
   if (Boolean(bootstrapEmail) !== Boolean(bootstrapPassword)) {
@@ -63,6 +74,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     bootstrapAdmin: bootstrapEmail && bootstrapPassword ? { email: bootstrapEmail, password: bootstrapPassword } : null,
     cookieSecure: env.COOKIE_SECURE !== "false",
     trustProxy: env.TRUST_PROXY === undefined || env.TRUST_PROXY === "false" ? false : env.TRUST_PROXY === "true" ? true : env.TRUST_PROXY,
+    clientIpHeader,
     sessionTtlMs: Number(env.SESSION_TTL_MS ?? 8 * 60 * 60 * 1000),
     loginMaxFailures: Number(env.LOGIN_MAX_FAILURES ?? 5),
     loginDelayBaseMs: Number(env.LOGIN_DELAY_BASE_MS ?? 250),

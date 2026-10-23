@@ -26,6 +26,7 @@ export async function createApp(config: AppConfig, opts: { logger?: false | LogL
   });
   app.enableShutdownHooks();
   if (config.trustProxy !== false) (app.getHttpAdapter().getInstance() as import("express").Express).set("trust proxy", config.trustProxy);
+  app.set("client ip header", config.clientIpHeader);
   await app.init();
   // Rows written before the encryption migration (or with an older key, after a rotation) are sealed here.
   await app.get(AtRestService).encryptExisting();
