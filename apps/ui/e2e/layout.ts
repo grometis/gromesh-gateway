@@ -30,26 +30,39 @@ export async function checkLayout(page: Page, options: { inlineLinks?: readonly 
   }
   expect(checked, "the screen has controls to check").toBeGreaterThan(0);
 
-  // Start from the document, then use a real Tab rather than programmatic focus (:focus-visible differs).
-  await page.evaluate(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); });
+  // blur() retains Chromium's sequential starting point, including after the last control (e.g. Comparar).
+  // Focus the body to restart at the document, then use real Tab presses to check :focus-visible.
+  const bodyTabIndex = await page.evaluate(() => {
+    const previous = document.body.getAttribute("tabindex");
+    document.body.setAttribute("tabindex", "-1");
+    document.body.focus();
+    return previous;
+  });
   // Reach the page itself as well as the shell, so a sidebar outline cannot mask missing page focus styles.
   let reachedPage = false;
-  for (let step = 0; step <= checked; step++) {
-    await page.keyboard.press("Tab");
-    const focus = await page.evaluate((region) => {
-      const element = document.activeElement;
-      if (!(element instanceof HTMLElement) || element === document.body) return null;
-      const style = getComputedStyle(element);
-      return {
-        visible: element.matches(":focus-visible"),
-        indicator: (style.outlineStyle !== "none" && parseFloat(style.outlineWidth) > 0 && style.outlineColor !== "rgba(0, 0, 0, 0)")
-          || style.boxShadow !== "none",
-        inPage: element.closest(region) !== null,
-        label: element.getAttribute("aria-label") ?? element.textContent?.trim().slice(0, 80) ?? element.tagName,
-      };
-    }, focusWithin);
-    expect.soft(focus?.visible && focus.indicator, `${focus?.label ?? "document"}: keyboard focus is visible`).toBe(true);
-    if (focus?.inPage) { reachedPage = true; break; }
+  try {
+    for (let step = 0; step <= checked; step++) {
+      await page.keyboard.press("Tab");
+      const focus = await page.evaluate((region) => {
+        const element = document.activeElement;
+        if (!(element instanceof HTMLElement) || element === document.body) return null;
+        const style = getComputedStyle(element);
+        return {
+          visible: element.matches(":focus-visible"),
+          indicator: (style.outlineStyle !== "none" && parseFloat(style.outlineWidth) > 0 && style.outlineColor !== "rgba(0, 0, 0, 0)")
+            || style.boxShadow !== "none",
+          inPage: element.closest(region) !== null,
+          label: element.getAttribute("aria-label") ?? element.textContent?.trim().slice(0, 80) ?? element.tagName,
+        };
+      }, focusWithin);
+      expect.soft(focus?.visible && focus.indicator, `${focus?.label ?? "document"}: keyboard focus is visible`).toBe(true);
+      if (focus?.inPage) { reachedPage = true; break; }
+    }
+  } finally {
+    await page.evaluate((previous) => {
+      if (previous === null) document.body.removeAttribute("tabindex");
+      else document.body.setAttribute("tabindex", previous);
+    }, bodyTabIndex);
   }
   expect(reachedPage, "Tab reaches a control in the screen's content").toBe(true);
 }

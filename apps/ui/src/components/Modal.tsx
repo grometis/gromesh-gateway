@@ -37,6 +37,8 @@ export function ConfirmDialog(props: {
   title: string;
   message: ReactNode;
   confirmLabel: string;
+  confirmDisabled?: boolean;
+  children?: ReactNode;
   busy: boolean;
   error: string | null;
   onConfirm: () => void;
@@ -51,13 +53,14 @@ export function ConfirmDialog(props: {
           <button type="button" onClick={props.onClose}>
             Cancelar
           </button>
-          <button type="button" className="danger" disabled={props.busy} onClick={props.onConfirm}>
+          <button type="button" className="danger" disabled={props.busy || props.confirmDisabled} onClick={props.onConfirm}>
             {props.confirmLabel}
           </button>
         </>
       }
     >
       <p>{props.message}</p>
+      {props.children}
       {props.error && <p className="error" role="alert">{props.error}</p>}
     </Modal>
   );
