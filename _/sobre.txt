@@ -1,0 +1,1 @@
+Capturas de tela anexadas aos PRs (branch órfão; não faz parte do código).
