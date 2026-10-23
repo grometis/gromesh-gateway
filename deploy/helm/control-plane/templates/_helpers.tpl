@@ -79,8 +79,8 @@ seccompProfile:
 {{- if ne (index .Values.ingress.annotations "nginx.ingress.kubernetes.io/proxy-buffering") "off" -}}
 {{- fail "ingress proxy-buffering must be off for agent SSE" -}}
 {{- end -}}
-{{- if and (not .Values.insecureCookies) (empty .Values.ingress.tls) -}}
-{{- fail "ingress.tls is required unless development insecureCookies is explicitly enabled" -}}
+{{- if and (not .Values.insecureCookies) (empty .Values.ingress.tls) (not .Values.ingress.tlsTerminatedUpstream) -}}
+{{- fail "ingress.tls is required unless TLS ends before the ingress (ingress.tlsTerminatedUpstream) or development insecureCookies is explicitly enabled" -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
