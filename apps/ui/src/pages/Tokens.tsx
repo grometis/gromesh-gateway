@@ -4,7 +4,13 @@ import { api, unwrap, type Schemas } from "../api/client";
 import { statusMessage, toFormErrors, type FormErrors } from "../api/errors";
 import { highestRole, useAuth } from "../auth";
 import { Field, FormErrorList } from "../components/Field";
-import { Modal } from "../components/Modal";
+import { ConfirmDialog, Modal } from "../components/Modal";
+import { Badge } from "../components/Badge";
+import { Button } from "../components/Button";
+import { SecretOnce } from "../components/Credentials";
+import { EmptyState } from "../components/EmptyState";
+import { PageHeader } from "../components/PageHeader";
+import { Table } from "../components/Table";
 
 type ApiToken = Schemas["ApiToken"];
 type ApiTokenCreated = Schemas["ApiTokenCreated"];
@@ -46,79 +52,79 @@ export function TokensPage() {
   });
 
   return (
-    <section>
-      <div className="page-head">
-        <h1>Tokens de API</h1>
-        <button type="button" className="primary" onClick={() => setCreating(true)}>
-          Novo token
-        </button>
-      </div>
-      <p className="muted">
-        Um token autentica chamadas à API com <code>Authorization: Bearer</code>, sem cookie nem CSRF, com no máximo o seu maior papel (global ou de algum environment); em cada environment ele age com o menor entre o papel do token e o seu papel ali. Ele não cria nem revoga tokens e não gerencia usuários.
-      </p>
+    <section className="final-page identity-page">
+      <PageHeader
+        title="Tokens de API"
+        description={<>Um token autentica chamadas à API com <code>Authorization: Bearer</code>, sem cookie nem CSRF, com no máximo o seu maior papel (global ou de algum environment); em cada environment ele age com o menor entre o papel do token e o seu papel ali. Ele não cria nem revoga tokens e não gerencia usuários.</>}
+        actions={<Button variant="primary" onClick={() => setCreating(true)}>Novo token</Button>}
+      />
       {admin && (
-        <Field label="Mostrar">
-          {(id) => (
-            <select id={id} value={scope} onChange={(e) => setScope(e.target.value as "mine" | "all")}>
-              <option value="mine">Meus tokens</option>
-              <option value="all">Todos os usuários</option>
-            </select>
-          )}
-        </Field>
+        <div className="identity-filters">
+          <Field label="Mostrar">
+            {(id) => (
+              <select id={id} value={scope} onChange={(e) => setScope(e.target.value as "mine" | "all")}>
+                <option value="mine">Meus tokens</option>
+                <option value="all">Todos os usuários</option>
+              </select>
+            )}
+          </Field>
+        </div>
       )}
       {tokens.isPending && <p className="muted">Carregando…</p>}
       {tokens.isError && <p className="error" role="alert">{statusMessage(tokens.error)}</p>}
-      {tokens.isSuccess && items.length === 0 && <p className="muted">Nenhum token.</p>}
+      {tokens.isSuccess && items.length === 0 && <EmptyState title="Nenhum token." text="Crie um token para autenticar suas chamadas à API." />}
       {items.length > 0 && (
-        <div className="scroll-x">
-          <table aria-label="Tokens de API">
-            <thead>
-              <tr>
-                <th>Nome</th>
-                <th>Token</th>
-                <th>Papel</th>
-                {scope === "all" && <th>Dono</th>}
-                <th>Criado em</th>
-                <th>Expira em</th>
-                <th>Último uso</th>
-                <th>Estado</th>
-                <th aria-label="Ações" />
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((token) => {
-                const expired = Date.parse(token.expiresAt) <= Date.now();
-                const state = token.revokedAt ? "Revogado" : expired ? "Expirado" : "Ativo";
-                return (
-                  <tr key={token.id} className={state === "Ativo" ? undefined : "muted"}>
-                    <td>{token.name}</td>
-                    <td>
-                      <code>{token.tokenHint}</code>
-                    </td>
-                    <td>{ROLES[token.role]}</td>
-                    {scope === "all" && <td>{token.owner.name}</td>}
-                    <td>{when(token.createdAt)}</td>
-                    <td>{when(token.expiresAt)}</td>
-                    <td>{when(token.lastUsedAt)}</td>
-                    <td>{state}</td>
-                    <td className="actions">
-                      {state === "Ativo" && (
-                        <button type="button" className="danger" onClick={() => setRevoking(token)}>
-                          Revogar
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+        <Table label="Tokens de API" cards>
+          <thead>
+            <tr>
+              <th>Nome → token</th>
+              <th>Papel</th>
+              {scope === "all" && <th>Dono</th>}
+              <th>Validade e uso</th>
+              <th>Estado</th>
+              <th aria-label="Ações" />
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((token) => {
+              const expired = Date.parse(token.expiresAt) <= Date.now();
+              const state = token.revokedAt ? "Revogado" : expired ? "Expirado" : "Ativo";
+              return (
+                <tr key={token.id} className={state === "Ativo" ? undefined : "row-off"}>
+                  <td className="row-main">
+                    <div className="service-route">
+                      <strong>{token.name}</strong>
+                      <span className="arrow" aria-hidden="true">→</span>
+                      <code className="target">{token.tokenHint}</code>
+                    </div>
+                  </td>
+                  <td><Badge tone="off">{ROLES[token.role]}</Badge></td>
+                  {scope === "all" && <td>{token.owner.name}</td>}
+                  <td>
+                    <dl className="identity-meta">
+                      <div><dt>Criado em</dt><dd className="mono">{when(token.createdAt)}</dd></div>
+                      <div><dt>Expira em</dt><dd className="mono">{when(token.expiresAt)}</dd></div>
+                      <div><dt>Último uso</dt><dd className="mono">{when(token.lastUsedAt)}</dd></div>
+                    </dl>
+                  </td>
+                  <td><Badge tone={state === "Ativo" ? "converged" : "off"}>{state}</Badge></td>
+                  <td className="actions">
+                    {state === "Ativo" && (
+                      <button type="button" className="danger" onClick={() => setRevoking(token)}>
+                        Revogar
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </Table>
       )}
       {tokens.hasNextPage && (
-        <button type="button" onClick={() => tokens.fetchNextPage()} disabled={tokens.isFetchingNextPage}>
+        <Button onClick={() => void tokens.fetchNextPage()} disabled={tokens.isFetchingNextPage}>
           Carregar mais
-        </button>
+        </Button>
       )}
       {creating && user && (
         <CreateTokenModal
@@ -133,25 +139,15 @@ export function TokensPage() {
       )}
       {created && <CreatedTokenModal token={created} onClose={() => setCreated(null)} />}
       {revoking && (
-        <Modal
+        <ConfirmDialog
           title="Revogar token"
+          message={<>O token <strong>{revoking.name}</strong> ({revoking.tokenHint}) deixa de funcionar imediatamente. Esta ação não pode ser desfeita.</>}
+          confirmLabel={revoke.isPending ? "Revogando…" : "Revogar"}
+          busy={revoke.isPending}
+          error={revoke.isError ? statusMessage(revoke.error) : null}
+          onConfirm={() => revoke.mutate(revoking)}
           onClose={() => setRevoking(null)}
-          footer={
-            <>
-              <button type="button" onClick={() => setRevoking(null)}>
-                Cancelar
-              </button>
-              <button type="button" className="danger" disabled={revoke.isPending} onClick={() => revoke.mutate(revoking)}>
-                {revoke.isPending ? "Revogando…" : "Revogar"}
-              </button>
-            </>
-          }
-        >
-          <p>
-            O token <strong>{revoking.name}</strong> ({revoking.tokenHint}) deixa de funcionar imediatamente. Esta ação não pode ser desfeita.
-          </p>
-          {revoke.isError && <p className="error" role="alert">{statusMessage(revoke.error)}</p>}
-        </Modal>
+        />
       )}
     </section>
   );
@@ -161,6 +157,8 @@ function CreateTokenModal({ maxRole, onClose, onCreated }: { maxRole: Role; onCl
   const [form, setForm] = useState({ name: "", role: "viewer" as Role, expiresInDays: 90 });
   const [errors, setErrors] = useState<FormErrors>({ fields: {}, form: [] });
   const create = useMutation({
+    // The response contains a secret; evict it when this form unmounts after creation.
+    gcTime: 0,
     mutationFn: () => unwrap(api.POST("/users/me/tokens", { body: form })),
     onSuccess: onCreated,
     onError: (error) => setErrors(toFormErrors(error, FIELDS)),
@@ -184,7 +182,7 @@ function CreateTokenModal({ maxRole, onClose, onCreated }: { maxRole: Role; onCl
         </>
       }
     >
-      <form id="create-token" onSubmit={submit}>
+      <form id="create-token" className="form" onSubmit={submit}>
         <Field label="Nome" errors={errors.fields.name}>
           {(id) => <input id={id} value={form.name} maxLength={64} required onChange={(e) => setForm({ ...form, name: e.target.value })} />}
         </Field>
@@ -212,34 +210,14 @@ function CreateTokenModal({ maxRole, onClose, onCreated }: { maxRole: Role; onCl
 
 /** Shown once: the value is never available again after this dialog closes. */
 function CreatedTokenModal({ token, onClose }: { token: ApiTokenCreated; onClose: () => void }) {
-  const [copied, setCopied] = useState(false);
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(token.token);
-      setCopied(true);
-    } catch {
-      setCopied(false);
-    }
-  };
   return (
-    <Modal
+    <SecretOnce
       title="Token criado"
+      label="Token"
+      secret={token.token}
+      closeLabel="Entendi, já copiei"
+      note={<>Copie o token agora: ele <strong>não será exibido novamente</strong>. Expira em {when(token.expiresAt)}.</>}
       onClose={onClose}
-      footer={
-        <button type="button" className="primary" onClick={onClose}>
-          Entendi, já copiei
-        </button>
-      }
-    >
-      <p>
-        Copie o token agora: ele <strong>não será exibido novamente</strong>. Expira em {when(token.expiresAt)}.
-      </p>
-      <p>
-        <code aria-label="Token">{token.token}</code>
-      </p>
-      <button type="button" onClick={copy}>
-        {copied ? "Copiado" : "Copiar"}
-      </button>
-    </Modal>
+    />
   );
 }

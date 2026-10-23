@@ -6,6 +6,10 @@ import { statusMessage } from "../api/errors";
 import { useRouteList } from "../api/lists";
 import { LineChart } from "../components/Chart";
 import { Field } from "../components/Field";
+import { Button } from "../components/Button";
+import { EmptyState } from "../components/EmptyState";
+import { PageHeader } from "../components/PageHeader";
+import { Table } from "../components/Table";
 import { useEnvId } from "../components/Shell";
 import { useServices } from "./Services";
 
@@ -141,14 +145,13 @@ function Dashboard({ envId }: { envId: string }) {
   const data = summary.data;
 
   return (
-    <section>
-      <div className="page-head">
-        <h1>Métricas</h1>
-        <button type="button" onClick={() => setTick((t) => t + 1)} disabled={summary.isFetching}>
+    <section className="final-page">
+      <PageHeader title="Métricas" actions={
+        <Button onClick={() => setTick((t) => t + 1)} disabled={summary.isFetching}>
           {summary.isFetching ? "Atualizando…" : "Atualizar"}
-        </button>
-      </div>
-      <div className="analytics-filters">
+        </Button>
+      } />
+      <div className="gateway-filters traffic-filters">
         <PeriodSelect value={period} onChange={setPeriod} />
         <ScopeFilters envId={envId} routeId={routeId} serviceId={serviceId} onRoute={setRouteId} onService={setServiceId} />
       </div>
@@ -188,7 +191,7 @@ function Dashboard({ envId }: { envId: string }) {
           </dl>
           <TopRoutes envId={envId} range={range} tick={tick} visible={visible} />
           <div className="charts">
-            <LineChart title="Requisições por intervalo" points={data.series} lines={[{ key: "requests", label: "Requisições", color: "var(--primary)" }]} />
+            <LineChart title="Requisições por intervalo" points={data.series} lines={[{ key: "requests", label: "Requisições", color: "var(--ink)" }]} />
             <LineChart
               title="Erros por intervalo"
               points={data.series}
@@ -204,7 +207,7 @@ function Dashboard({ envId }: { envId: string }) {
               lines={[
                 { key: "p50Ms", label: "p50", color: "var(--added)" },
                 { key: "p95Ms", label: "p95", color: "var(--modified)" },
-                { key: "p99Ms", label: "p99", color: "var(--removed)" },
+                { key: "p99Ms", label: "p99", color: "var(--ink)" },
               ]}
             />
           </div>
@@ -224,60 +227,60 @@ export function TopRoutes({ envId, range, tick, visible }: { envId: string; rang
     refetchInterval: visible ? 60_000 : false,
   });
   return (
-    <section className="top-routes" aria-labelledby="top-routes-title">
+    <section className="top-routes traffic-list" aria-labelledby="top-routes-title">
       <div className="page-head">
         <h2 id="top-routes-title">Top rotas</h2>
-        <Field label="Critério">
-          {(id) => (
-            <select id={id} value={by} onChange={(e) => setBy(e.target.value as TopBy)}>
-              {(Object.keys(TOP_BY) as TopBy[]).map((k) => (
-                <option key={k} value={k}>
-                  {TOP_BY[k]}
-                </option>
-              ))}
-            </select>
-          )}
-        </Field>
+        <div className="gateway-filters traffic-filters">
+          <Field label="Critério">
+            {(id) => (
+              <select id={id} value={by} onChange={(e) => setBy(e.target.value as TopBy)}>
+                {(Object.keys(TOP_BY) as TopBy[]).map((k) => (
+                  <option key={k} value={k}>
+                    {TOP_BY[k]}
+                  </option>
+                ))}
+              </select>
+            )}
+          </Field>
+        </div>
       </div>
       {top.isError && (
         <p className="error" role="alert">
           {statusMessage(top.error)}
         </p>
       )}
-      {top.data && top.data.items.length === 0 && <p className="muted">Sem tráfego no período.</p>}
+      {top.data && top.data.items.length === 0 && <EmptyState title="Sem tráfego no período." />}
       {top.data && top.data.items.length > 0 && (
-        <div className="table-scroll">
-          <table aria-label="Top rotas" className="numeric">
-            <thead>
-              <tr>
-                <th scope="col">Rota</th>
-                <th scope="col">Requisições</th>
-                <th scope="col">Erros</th>
-                <th scope="col">Taxa de erro</th>
-                <th scope="col">p95</th>
+        <Table label="Top rotas" cards>
+          <thead>
+            <tr>
+              <th scope="col">Rota</th>
+              <th scope="col">Requisições</th>
+              <th scope="col">Erros</th>
+              <th scope="col">Taxa de erro</th>
+              <th scope="col">p95</th>
+            </tr>
+          </thead>
+          <tbody>
+            {top.data.items.map((item) => (
+              <tr key={item.routeId ?? "none"}>
+                <td className="row-main">
+                  {item.routeId === null ? (
+                    <span className="muted">Sem rota</span>
+                  ) : (
+                    <Link className="row-open service-name" to={`/e/${envId}/requests?routeId=${item.routeId}`} title={item.routeName === null ? "Rota removida; abre o explorador filtrado pelo id" : "Abre o explorador filtrado por esta rota"}>
+                      {item.routeName ?? `${item.routeId.slice(0, 8)}… (removida)`}
+                    </Link>
+                  )}
+                </td>
+                <td className="mono"><span className="traffic-label" aria-hidden="true">Requisições</span>{number(item.requests)}</td>
+                <td className="mono"><span className="traffic-label" aria-hidden="true">Erros</span>{number(item.errors4xx + item.errors5xx)}</td>
+                <td className="mono"><span className="traffic-label" aria-hidden="true">Taxa de erro</span>{percent(item.errorRate)}</td>
+                <td className="mono"><span className="traffic-label" aria-hidden="true">p95</span>{ms(item.p95Ms)}</td>
               </tr>
-            </thead>
-            <tbody>
-              {top.data.items.map((item) => (
-                <tr key={item.routeId ?? "none"}>
-                  <td>
-                    {item.routeId === null ? (
-                      <span className="muted">Sem rota</span>
-                    ) : (
-                      <Link to={`/e/${envId}/requests?routeId=${item.routeId}`} title={item.routeName === null ? "Rota removida; abre o explorador filtrado pelo id" : "Abre o explorador filtrado por esta rota"}>
-                        {item.routeName ?? `${item.routeId.slice(0, 8)}… (removida)`}
-                      </Link>
-                    )}
-                  </td>
-                  <td>{number(item.requests)}</td>
-                  <td>{number(item.errors4xx + item.errors5xx)}</td>
-                  <td>{percent(item.errorRate)}</td>
-                  <td>{ms(item.p95Ms)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+            ))}
+          </tbody>
+        </Table>
       )}
     </section>
   );

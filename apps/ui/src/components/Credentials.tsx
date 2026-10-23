@@ -21,7 +21,7 @@ export const createdAt = (iso: string) => `Criada em ${new Date(iso).toLocaleStr
  * A secret shown once, right after the 201: Copiar puts it on the clipboard, "Já copiei" closes the dialog and the
  * secret is gone (it only lived in the caller's mutation result, evicted from the cache).
  */
-export function SecretOnce({ title, label, secret, note, onClose }: { title: string; label: string; secret: string; note: ReactNode; onClose: () => void }) {
+export function SecretOnce({ title, label, secret, note, closeLabel = "Já copiei", onClose }: { title: string; label: string; secret: string; note: ReactNode; closeLabel?: string; onClose: () => void }) {
   const [copied, setCopied] = useState(false);
   return (
     <Modal
@@ -29,7 +29,7 @@ export function SecretOnce({ title, label, secret, note, onClose }: { title: str
       onClose={onClose}
       footer={
         <button type="button" className="primary" onClick={onClose}>
-          Já copiei
+          {closeLabel}
         </button>
       }
     >
@@ -40,7 +40,7 @@ export function SecretOnce({ title, label, secret, note, onClose }: { title: str
         <code className="mono" aria-label={label}>
           {secret}
         </code>
-        <button type="button" onClick={() => void navigator.clipboard?.writeText(secret).then(() => setCopied(true))}>
+        <button type="button" onClick={() => void navigator.clipboard?.writeText(secret).then(() => setCopied(true)).catch(() => setCopied(false))}>
           {copied ? "Copiado" : "Copiar"}
         </button>
       </div>

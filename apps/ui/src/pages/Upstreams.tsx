@@ -7,6 +7,12 @@ import { Field, FormErrorList } from "../components/Field";
 import { ConfirmDialog, Modal } from "../components/Modal";
 import { useEnvId } from "../components/Shell";
 import { splitList, useInvalidateDraft } from "./Services";
+import { PageHeader } from "../components/PageHeader";
+import { EmptyState } from "../components/EmptyState";
+import { Table } from "../components/Table";
+import { Badge } from "../components/Badge";
+import { Button } from "../components/Button";
+import { RowMenu } from "../components/RowMenu";
 
 type Upstream = Schemas["Upstream"];
 type UpstreamWrite = Schemas["UpstreamWrite"];
@@ -51,54 +57,50 @@ export function UpstreamsPage() {
   const items = upstreams.data?.pages.flatMap((p) => p.items) ?? [];
 
   return (
-    <section>
-      <div className="page-head">
-        <h1>Upstreams</h1>
-        {canEdit && (
-          <button type="button" className="primary" onClick={() => setEditing("new")}>
-            Novo upstream
-          </button>
-        )}
-      </div>
-      <p className="muted">Um service cujo host é o nome de um upstream balanceia entre os targets dele.</p>
+    <section className="final-page gateway-list upstreams-page">
+      <PageHeader
+        title="Upstreams"
+        description="Um service cujo host é o nome de um upstream balanceia entre os targets dele."
+        actions={canEdit && <Button variant="primary" onClick={() => setEditing("new")}>Novo upstream</Button>}
+      />
       {upstreams.isPending && <p className="muted">Carregando…</p>}
       {upstreams.isError && <p className="error">{statusMessage(upstreams.error)}</p>}
-      {upstreams.isSuccess && items.length === 0 && <p className="muted">Nenhum upstream ainda.</p>}
+      {upstreams.isSuccess && items.length === 0 && <EmptyState title="Nenhum upstream ainda." />}
       {items.length > 0 && (
-        <table aria-label="Upstreams">
+        <Table label="Upstreams" cards>
           <thead>
             <tr>
-              <th>Nome</th>
-              <th>Algoritmo</th>
-              <th>Saúde</th>
-              <th aria-label="Ações" />
+              <th>Upstream → algoritmo</th>
+              <th className="actions" aria-label="Ações" />
             </tr>
           </thead>
           <tbody>
             {items.map((u) => (
               <tr key={u.id}>
-                <td className="mono">{u.name}</td>
-                <td>{ALGORITHMS[u.algorithm]}</td>
-                <td>{healthSummary(u)}</td>
+                <td className="row-main">
+                  <div className="service-route">
+                    <span className="service-name mono">{u.name}</span>
+                    <span className="arrow" aria-hidden="true">→</span>
+                    <span className="target mono">{ALGORITHMS[u.algorithm]}</span>
+                  </div>
+                  <div className="route-matches">
+                    <span className="muted">Saúde</span>
+                    <Badge tone={u.healthchecks?.active || u.healthchecks?.passive ? "no-nodes" : "off"}>{healthSummary(u)}</Badge>
+                  </div>
+                </td>
                 <td className="actions">
-                  <button type="button" onClick={() => setTargets(u)}>
-                    Targets
-                  </button>
+                  <Button variant="quiet" onClick={() => setTargets(u)}>Targets</Button>
                   {canEdit && (
                     <>
-                      <button type="button" onClick={() => setEditing(u)}>
-                        Editar
-                      </button>
-                      <button type="button" className="danger" onClick={() => setDeleting(u)}>
-                        Excluir
-                      </button>
+                      <Button variant="quiet" onClick={() => setEditing(u)}>Editar</Button>
+                      <RowMenu label={`Mais ações para ${u.name}`} items={[{ label: "Excluir", danger: true, onSelect: () => setDeleting(u) }]} />
                     </>
                   )}
                 </td>
               </tr>
             ))}
           </tbody>
-        </table>
+        </Table>
       )}
       {upstreams.hasNextPage && (
         <button type="button" onClick={() => void upstreams.fetchNextPage()} disabled={upstreams.isFetchingNextPage}>
@@ -346,22 +348,27 @@ function DeleteUpstream({ envId, upstream, onClose }: { envId: string; upstream:
   );
 }
 
-function Targets({ envId, upstream, canEdit }: { envId: string; upstream: Upstream; canEdit: boolean }) {
-  const queryClient = useQueryClient();
-  const invalidate = useInvalidateDraft(envId);
-  const key = ["targets", envId, upstream.id];
-  const targets = useInfiniteQuery({
-    queryKey: key,
+function useTargets(envId: string, upstreamId: string) {
+  return useInfiniteQuery({
+    queryKey: ["targets", envId, upstreamId],
     queryFn: ({ pageParam }) =>
       unwrap(
         api.GET("/environments/{envId}/upstreams/{upstreamId}/targets", {
-          params: { path: { envId, upstreamId: upstream.id }, query: pageParam ? { cursor: pageParam } : {} },
+          params: { path: { envId, upstreamId }, query: pageParam ? { cursor: pageParam } : {} },
         }),
       ),
     initialPageParam: "",
     getNextPageParam: (page) => page.nextCursor ?? undefined,
   });
+}
+
+function Targets({ envId, upstream, canEdit }: { envId: string; upstream: Upstream; canEdit: boolean }) {
+  const queryClient = useQueryClient();
+  const invalidate = useInvalidateDraft(envId);
+  const key = ["targets", envId, upstream.id];
+  const targets = useTargets(envId, upstream.id);
   const items = targets.data?.pages.flatMap((p) => p.items) ?? [];
+  const [deleting, setDeleting] = useState<Target | null>(null);
   const [form, setForm] = useState({ target: "", weight: "100" });
   const [errors, setErrors] = useState<FormErrors>({ fields: {}, form: [] });
   const refresh = () => {
@@ -397,56 +404,72 @@ function Targets({ envId, upstream, canEdit }: { envId: string; upstream: Upstre
   const remove = useMutation({
     mutationFn: (t: Target) =>
       unwrap(api.DELETE("/environments/{envId}/upstreams/{upstreamId}/targets/{targetId}", { params: { path: { envId, upstreamId: upstream.id, targetId: t.id } } })),
-    onSuccess: refresh,
+    onSuccess: () => {
+      refresh();
+      setDeleting(null);
+    },
   });
 
   return (
     <div>
       {targets.isPending && <p className="muted">Carregando…</p>}
       {targets.isError && <p className="error">{statusMessage(targets.error)}</p>}
-      {targets.isSuccess && items.length === 0 && <p className="muted">Nenhum target: o tráfego deste upstream não tem destino.</p>}
+      {targets.isSuccess && items.length === 0 && <EmptyState title="Nenhum target: o tráfego deste upstream não tem destino." />}
       {items.length > 0 && (
-        <table aria-label="Targets">
+        <Table label="Targets" cards>
           <thead>
             <tr>
-              <th>Target</th>
-              <th>Peso</th>
-              <th aria-label="Ações" />
+              <th>Target → peso</th>
+              <th className="actions" aria-label="Ações" />
             </tr>
           </thead>
           <tbody>
             {items.map((t) => (
               <tr key={t.id}>
-                <td className="mono">{t.target}</td>
-                <td>
-                  {canEdit ? (
-                    <input
-                      aria-label={`Peso de ${t.target}`}
-                      inputMode="numeric"
-                      defaultValue={t.weight}
-                      onBlur={(e) => {
-                        const weight = Number(e.target.value);
-                        if (weight !== t.weight && Number.isInteger(weight)) reweigh.mutate({ t, weight });
-                      }}
-                    />
-                  ) : (
-                    t.weight
-                  )}
-                  {t.weight === 0 && <span className="muted"> fora do balanceamento</span>}
+                <td className="row-main">
+                  <div className="service-route">
+                    <span className="service-name mono">{t.target}</span>
+                    <span className="arrow" aria-hidden="true">→</span>
+                    <span className="muted">Peso</span>
+                    {canEdit ? (
+                      <input
+                        className="target-weight mono"
+                        aria-label={`Peso de ${t.target}`}
+                        inputMode="numeric"
+                        defaultValue={t.weight}
+                        onBlur={(e) => {
+                          const weight = Number(e.target.value);
+                          if (weight !== t.weight && Number.isInteger(weight)) reweigh.mutate({ t, weight });
+                        }}
+                      />
+                    ) : <span className="mono">{t.weight}</span>}
+                    {t.weight === 0 && <Badge tone="off">fora do balanceamento</Badge>}
+                  </div>
                 </td>
                 <td className="actions">
                   {canEdit && (
-                    <button type="button" className="danger" onClick={() => remove.mutate(t)}>
+                    <Button variant="danger" onClick={() => { remove.reset(); setDeleting(t); }}>
                       Remover
-                    </button>
+                    </Button>
                   )}
                 </td>
               </tr>
             ))}
           </tbody>
-        </table>
+        </Table>
       )}
-      {(reweigh.isError || remove.isError) && <p className="error">{statusMessage(reweigh.error ?? remove.error)}</p>}
+      {reweigh.isError && <p className="error">{statusMessage(reweigh.error)}</p>}
+      {deleting && (
+        <ConfirmDialog
+          title="Remover target"
+          message={<>Remover <strong className="mono">{deleting.target}</strong>? A exclusão só afeta o tráfego depois de publicar.</>}
+          confirmLabel="Remover"
+          busy={remove.isPending}
+          error={remove.isError ? statusMessage(remove.error) : null}
+          onConfirm={() => remove.mutate(deleting)}
+          onClose={() => setDeleting(null)}
+        />
+      )}
       {canEdit && (
         <form
           className="form"

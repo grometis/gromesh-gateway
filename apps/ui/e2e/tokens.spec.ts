@@ -23,6 +23,7 @@ test("qualquer usuário cria um token, vê o valor uma única vez e revoga pela 
   await expect(page.getByRole("heading", { name: "Tokens de API" })).toBeVisible();
   // The list comes from the contract example: hint only, never a token value.
   const table = page.getByRole("table", { name: "Tokens de API" });
+  await expect(table).toHaveClass("cards");
   await expect(table).toContainText("ci-deploy");
   await expect(table).toContainText("…");
   await expect(page.getByText(EXAMPLE_TOKEN)).toHaveCount(0);
@@ -37,6 +38,7 @@ test("qualquer usuário cria um token, vê o valor uma única vez e revoga pela 
   expect((await created).postDataJSON()).toEqual({ name: "ci-deploy", role: "viewer", expiresInDays: 90 });
   // Shown once, with a copy button.
   const shown = page.getByRole("dialog", { name: "Token criado" });
+  await expect(shown.locator(".secret").getByLabel("Token")).toHaveText(EXAMPLE_TOKEN);
   await expect(shown.getByLabel("Token")).toHaveText(EXAMPLE_TOKEN);
   await expect(shown).toContainText("não será exibido novamente");
   await shown.getByRole("button", { name: "Copiar" }).click();
@@ -68,4 +70,13 @@ test("o administrador vê os tokens de todos os usuários e revoga pela rota adm
   await table.getByRole("button", { name: "Revogar" }).first().click();
   await page.getByRole("dialog", { name: "Revogar token" }).getByRole("button", { name: "Revogar" }).click();
   await revoked;
+});
+
+
+test("empty token list uses the shared empty state and retains creation", async ({ page }) => {
+  await page.route("**/api/v1/users/me/tokens", (route) => route.fulfill({ json: { items: [], nextCursor: null } }));
+  await login(page);
+  await page.goto("/tokens");
+  await expect(page.getByRole("heading", { name: "Nenhum token.", level: 2 })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Novo token", exact: true })).toBeVisible();
 });
