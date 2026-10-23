@@ -75,7 +75,7 @@ seccompProfile:
 {{- if empty (trim $.Values.trustProxy) -}}
 {{- fail "clientIpHeader needs trustProxy: the header is honoured only from trusted proxies" -}}
 {{- end -}}
-{{- fail "clientIpHeader is planned (P6-C1) and not implemented yet" -}}
+{{- fail "clientIpHeader is planned (P6-X1) and not implemented yet" -}}
 {{- end -}}
 {{- if .Values.ingress.enabled -}}
 {{- if empty .Values.ingress.host -}}

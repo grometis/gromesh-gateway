@@ -35,7 +35,7 @@ expect_failure 'trustProxy' "${required[@]}" --set ingress.enabled=true
 for trust in uniquelocal true false loopback linklocal 0.0.0.0/0; do
   expect_failure 'trustProxy' "${required[@]}" --set ingress.enabled=true --set-string "trustProxy=$trust"
 done
-# clientIpHeader (contract P6-C0): a header name, only with trustProxy, refused until P6-C1 implements it.
+# clientIpHeader (contract P6-C0): a header name, only with trustProxy, refused until P6-X1 implements it.
 expect_failure 'single HTTP header name' "${required[@]}" --set-string 'clientIpHeader=CF Connecting IP'
 expect_failure 'clientIpHeader needs trustProxy' "${required[@]}" --set-string clientIpHeader=CF-Connecting-IP
 expect_failure 'clientIpHeader is planned' "${required[@]}" --set-string clientIpHeader=CF-Connecting-IP --set-string trustProxy=10.244.0.0/16
