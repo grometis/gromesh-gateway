@@ -6,6 +6,8 @@ import { statusMessage, toFormErrors } from "../api/errors";
 import { useCanEdit } from "../auth";
 import { DraftBadge, Badge } from "../components/Badge";
 import { changeTitle } from "../components/Diff";
+import { PageHeader } from "../components/PageHeader";
+import { EmptyState } from "../components/EmptyState";
 import { useEnvId, useEnvironment } from "../components/Shell";
 
 type EntityChange = Schemas["EntityChange"];
@@ -119,11 +121,10 @@ export function ReviewPublishPage() {
   const issues = preview.isError ? toFormErrors(preview.error, []) : null;
 
   return (
-    <section aria-label="Revisar e publicar">
-      <div className="page-head">
-        <div>
-          <h1>Revisar e publicar</h1>
-          <p className="lede">
+    <section className="final-page" aria-label="Revisar e publicar">
+      <PageHeader
+        title="Revisar e publicar"
+        description={<>
             O que muda quando o rascunho virar <span className="mono">v{(current ?? 0) + 1}</span>
             {current !== null && (
               <>
@@ -131,9 +132,8 @@ export function ReviewPublishPage() {
               </>
             )}
             .
-          </p>
-        </div>
-      </div>
+        </>}
+      />
       {preview.isPending && <p className="muted">Calculando as alterações…</p>}
       {issues && (
         <div className="error" role="alert">
@@ -145,7 +145,7 @@ export function ReviewPublishPage() {
           </ul>
         </div>
       )}
-      {preview.data && !preview.data.hasChanges && <p className="muted">Nada a publicar: o rascunho é igual à versão no ar.</p>}
+      {preview.data && !preview.data.hasChanges && <EmptyState title="Nada a publicar:" text="o rascunho é igual à versão no ar." />}
       {changes.length > 0 && (
         <div className="review">
           <ul className="review-list" aria-label="Alterações">

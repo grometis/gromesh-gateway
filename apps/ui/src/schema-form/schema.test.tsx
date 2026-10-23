@@ -77,6 +77,12 @@ describe("plugin config form", () => {
 describe("rate-limiting", () => {
   const schema = parsePluginSchema(load("rate-limiting"));
 
+  it("renders help text without upstream branding, including the configuration filename", () => {
+    const html = renderToStaticMarkup(<SchemaFields fields={schema.config} value={initialConfig(schema.config)} onChange={() => {}} errors={{}} onJsonError={() => {}} />);
+    expect(html).not.toMatch(/kong/i);
+    expect(html).toContain("gateway configuration");
+  });
+
   it("validates numbers locally and keeps defaults for untouched fields", () => {
     const value = { ...initialConfig(schema.config), minute: -1 };
     expect(validateConfig(schema.config, value)).toEqual({ "config.minute": ["Use um valor maior que 0."] });

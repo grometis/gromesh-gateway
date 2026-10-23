@@ -5,6 +5,12 @@ import { statusMessage, toFormErrors, type FormErrors } from "../api/errors";
 import { Field, FormErrorList } from "../components/Field";
 import { ConfirmDialog, Modal } from "../components/Modal";
 import { environmentsQuery } from "../components/Shell";
+import { Badge } from "../components/Badge";
+import { Button } from "../components/Button";
+import { EmptyState } from "../components/EmptyState";
+import { PageHeader } from "../components/PageHeader";
+import { RowMenu } from "../components/RowMenu";
+import { Table } from "../components/Table";
 
 const ROLES: Record<User["role"], string> = { viewer: "Leitor", editor: "Editor", admin: "Administrador" };
 const FIELDS = ["email", "name", "role", "active", "password"] as const;
@@ -25,56 +31,67 @@ export function UsersPage() {
   const items = users.data?.pages.flatMap((page) => page.items) ?? [];
 
   return (
-    <section>
-      <div className="page-head">
-        <h1>Usuários</h1>
-        <button type="button" className="primary" onClick={() => setEditing("new")}>
-          Novo usuário
-        </button>
-      </div>
+    <section className="final-page identity-page">
+      <PageHeader
+        title="Usuários"
+        description="Gerencie os papéis globais e o acesso de cada usuário aos environments."
+        actions={<Button variant="primary" onClick={() => setEditing("new")}>Novo usuário</Button>}
+      />
       {users.isPending && <p className="muted">Carregando…</p>}
       {users.isError && <p className="error" role="alert">{statusMessage(users.error)}</p>}
-      {users.isSuccess && items.length === 0 && <p className="muted">Nenhum usuário encontrado.</p>}
+      {users.isSuccess && items.length === 0 && <EmptyState title="Nenhum usuário encontrado." text="Cadastre um usuário para conceder acesso ao gateway." />}
       {items.length > 0 && (
-        <div className="scroll-x">
-          <table>
-            <thead>
-              <tr>
-                <th>Nome</th>
-                <th>E-mail</th>
-                <th>Papel</th>
-                <th>Ativo</th>
-                <th aria-label="Ações" />
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((user) => (
-                <tr key={user.id}>
-                  <td>{user.name}</td>
-                  <td>{user.email}</td>
-                  <td>{ROLES[user.role]}</td>
-                  <td>{user.active ? "Sim" : "Não"}</td>
-                  <td className="actions">
-                    <button type="button" onClick={() => setEditing(user)}>
+        <Table label="Usuários" cards>
+          <thead>
+            <tr>
+              <th>Nome → e-mail</th>
+              <th>Papel</th>
+              <th>Ativo</th>
+              <th aria-label="Ações" />
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((user) => (
+              <tr key={user.id} className={user.active ? undefined : "row-off"}>
+                <td className="row-main">
+                  <div className="service-route">
+                    <strong>{user.name}</strong>
+                    <span className="arrow" aria-hidden="true">→</span>
+                    <span className="target mono">{user.email}</span>
+                  </div>
+                </td>
+                <td><Badge tone="off">{ROLES[user.role]}</Badge></td>
+                <td>
+                  <Badge tone={user.active ? "converged" : "off"}>{user.active ? "Ativo" : "Inativo"}</Badge>
+                  <span className="visually-hidden">{user.active ? "Sim" : "Não"}</span>
+                </td>
+                <td className="actions">
+                  <div className="identity-actions">
+                    <Button variant="quiet" onClick={() => setEditing(user)}>
                       Editar
-                    </button>
+                    </Button>
                     <button type="button" aria-label={`Papéis de ${user.name} por environment`} onClick={() => setScoping(user)}>
                       Environments
                     </button>
                     <button type="button" className="danger" onClick={() => setDeleting(user)}>
                       Excluir
                     </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+                    <RowMenu label={`Mais ações para ${user.name}`} items={[
+                      { label: "Editar", onSelect: () => setEditing(user) },
+                      { label: "Environments", onSelect: () => setScoping(user) },
+                      { label: "Excluir", danger: true, onSelect: () => setDeleting(user) },
+                    ]} />
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </Table>
       )}
       {users.hasNextPage && (
-        <button type="button" disabled={users.isFetchingNextPage} onClick={() => void users.fetchNextPage()}>
+        <Button disabled={users.isFetchingNextPage} onClick={() => void users.fetchNextPage()}>
           Carregar mais
-        </button>
+        </Button>
       )}
       {editing && <UserForm user={editing === "new" ? null : editing} onClose={() => setEditing(null)} />}
       {deleting && <DeleteUser user={deleting} onClose={() => setDeleting(null)} />}
@@ -90,6 +107,7 @@ function UserForm({ user, onClose }: { user: User | null; onClose: () => void })
   const [role, setRole] = useState<User["role"]>(user?.role ?? "viewer");
   const [active, setActive] = useState(user?.active ?? true);
   const [password, setPassword] = useState("");
+  const [confirmDeactivation, setConfirmDeactivation] = useState(false);
   const [errors, setErrors] = useState<FormErrors>({ fields: {}, form: [] });
   const save = useMutation({
     mutationFn: () => {
@@ -109,8 +127,23 @@ function UserForm({ user, onClose }: { user: User | null; onClose: () => void })
   const submit = (event: FormEvent) => {
     event.preventDefault();
     setErrors({ fields: {}, form: [] });
-    save.mutate();
+    if (user?.active && !active) setConfirmDeactivation(true);
+    else save.mutate();
   };
+
+  if (confirmDeactivation && user) {
+    return (
+      <ConfirmDialog
+        title="Desativar usuário"
+        message={<>Desativar <strong>{user.name}</strong> ({user.email})? As sessões dele serão encerradas.</>}
+        confirmLabel="Desativar"
+        busy={save.isPending}
+        error={save.isError ? statusMessage(save.error) : null}
+        onConfirm={() => save.mutate()}
+        onClose={() => setConfirmDeactivation(false)}
+      />
+    );
+  }
 
   return (
     <Modal title={user ? `Editar ${user.name}` : "Novo usuário"} onClose={onClose}>
@@ -120,7 +153,7 @@ function UserForm({ user, onClose }: { user: User | null; onClose: () => void })
             <input id={id} aria-invalid={invalid} autoComplete="name" value={name} onChange={(event) => setName(event.target.value)} />
           )}
         </Field>
-        {user ? <p className="muted">{user.email}</p> : (
+        {user ? <p className="muted mono">{user.email}</p> : (
           <Field label="E-mail" errors={errors.fields.email}>
             {(id, invalid) => (
               <input id={id} type="email" aria-invalid={invalid} autoComplete="off" value={email} onChange={(event) => setEmail(event.target.value)} />
@@ -139,7 +172,7 @@ function UserForm({ user, onClose }: { user: User | null; onClose: () => void })
         {user && (
           <Field label="Ativo" errors={errors.fields.active}>
             {(id, invalid) => (
-              <input id={id} className="user-active" type="checkbox" aria-invalid={invalid} checked={active} onChange={(event) => setActive(event.target.checked)} />
+              <input id={id} className="identity-active" type="checkbox" aria-invalid={invalid} checked={active} onChange={(event) => setActive(event.target.checked)} />
             )}
           </Field>
         )}
@@ -228,36 +261,34 @@ function EnvironmentRolesForm({ user, onClose }: { user: User; onClose: () => vo
         </p>
         {(envs.isPending || roles.isPending) && <p className="muted">Carregando…</p>}
         {failed && <p className="error" role="alert">{statusMessage(failed)}</p>}
-        {envs.data && roles.data && (envs.data.items.length === 0 ? <p className="muted">Nenhum environment cadastrado.</p> : (
-          <div className="scroll-x">
-            <table>
-              <thead>
-                <tr>
-                  <th>Environment</th>
-                  <th>Papel</th>
+        {envs.data && roles.data && (envs.data.items.length === 0 ? <EmptyState title="Nenhum environment cadastrado." /> : (
+          <Table label="Papéis por environment" cards>
+            <thead>
+              <tr>
+                <th>Environment</th>
+                <th>Papel</th>
+              </tr>
+            </thead>
+            <tbody>
+              {envs.data.items.map((env) => (
+                <tr key={env.id}>
+                  <td>{env.name}</td>
+                  <td>
+                    <select
+                      aria-label={`Papel em ${env.name}`}
+                      value={valueOf(env.id)}
+                      onChange={(event) => setDraft({ ...draft, [env.id]: event.target.value as EnvironmentRole | typeof GLOBAL })}
+                    >
+                      <option value={GLOBAL}>Usa o global ({ROLES[user.role]})</option>
+                      {(Object.keys(ENV_ROLES) as EnvironmentRole[]).map((value) => (
+                        <option key={value} value={value}>{ENV_ROLES[value]}</option>
+                      ))}
+                    </select>
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {envs.data.items.map((env) => (
-                  <tr key={env.id}>
-                    <td>{env.name}</td>
-                    <td>
-                      <select
-                        aria-label={`Papel em ${env.name}`}
-                        value={valueOf(env.id)}
-                        onChange={(event) => setDraft({ ...draft, [env.id]: event.target.value as EnvironmentRole | typeof GLOBAL })}
-                      >
-                        <option value={GLOBAL}>Usa o global ({ROLES[user.role]})</option>
-                        {(Object.keys(ENV_ROLES) as EnvironmentRole[]).map((value) => (
-                          <option key={value} value={value}>{ENV_ROLES[value]}</option>
-                        ))}
-                      </select>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+              ))}
+            </tbody>
+          </Table>
         ))}
         <FormErrorList messages={errors} />
         <div className="form-actions">

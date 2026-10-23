@@ -42,12 +42,21 @@ test("histórico paginado, detalhe, diff v1 → v2 e rollback com o diff inverso
   await login(page);
   await page.getByRole("link", { name: "Publicações", exact: true }).click();
   await expect(page.getByRole("link", { name: "v2", exact: true })).toBeVisible();
+  const history = page.getByRole("table", { name: "Publicações", exact: true });
+  await expect(history).toHaveClass("cards");
+  const current = history.getByRole("row").filter({ has: page.getByRole("link", { name: "v2", exact: true }) });
+  await expect(current).toContainText("Publicação 2");
+  await expect(current).toContainText(actor.name);
+  await expect(current.locator(".badge.converged")).toHaveText("Atual");
+  await expect(current.getByRole("button", { name: "Restaurar v2" })).toHaveClass("danger");
   const older = page.waitForRequest((r) => r.url().includes("cursor=older"));
   await page.getByRole("button", { name: "Carregar mais" }).click();
   await older;
   await page.getByRole("link", { name: "v1", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Publicação v1", exact: true })).toBeVisible();
   await expect(page.getByText(summary(1).hash, { exact: true })).toBeVisible();
+  await expect(page.locator("dl.service-properties")).toContainText("Hash");
+  await expect(page.getByRole("link", { name: "Voltar ao histórico" })).toHaveClass("back-link");
   await expect(page.getByText("never-render-this-secret")).toHaveCount(0);
   await page.getByLabel("Versão de origem").fill("1");
   await page.getByLabel("Versão de destino").fill("2");
@@ -64,6 +73,7 @@ test("histórico paginado, detalhe, diff v1 → v2 e rollback com o diff inverso
   await expect(diff.getByText(/REDACTED/)).toBeVisible();
   await page.getByRole("button", { name: "Restaurar v1" }).click();
   const rollback = page.getByRole("dialog", { name: "Restaurar v1" });
+  await expect(rollback.getByRole("button", { name: "Confirmar rollback" })).toHaveClass("danger");
   await expect(rollback.getByRole("region", { name: "Diff v2 → v1" })).toBeVisible();
   await expect(rollback.getByRole("cell").nth(0)).toContainText("new.internal");
   await expect(rollback.getByRole("cell").nth(1)).toContainText("old.internal");
@@ -223,6 +233,17 @@ test("viewer consulta histórico e diff sem ações de rollback", async ({ page 
   await expect(page.getByRole("button", { name: /Restaurar/ })).toHaveCount(0);
   await page.getByRole("button", { name: "Comparar", exact: true }).click();
   await expect(page.getByRole("region", { name: "Diff v1 → v2" })).toBeVisible();
+});
+
+test("histórico vazio usa EmptyState e mantém a comparação disponível", async ({ page }) => {
+  await page.route("**/api/v1/environments/*/snapshots", (route) => route.fulfill({ json: { items: [], nextCursor: null } }));
+  await login(page);
+  await page.getByRole("link", { name: "Publicações", exact: true }).click();
+  await expect(page.locator(".empty-state").getByRole("heading", { name: "Nenhuma publicação ainda." })).toBeVisible();
+  await expect(page.getByLabel("Versão de origem")).toHaveValue("1");
+  await expect(page.getByLabel("Versão de destino")).toHaveValue("2");
+  await expect(page.getByRole("button", { name: "Comparar", exact: true })).toBeEnabled();
+  await expect(page.getByRole("button", { name: /Restaurar/ })).toHaveCount(0);
 });
 
 test("publicação pela barra superior atualiza o histórico já aberto", async ({ page }) => {
