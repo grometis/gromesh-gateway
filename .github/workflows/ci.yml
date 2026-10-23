@@ -511,7 +511,16 @@ jobs:
   image-scan:
     needs: changes
     if: needs.changes.outputs.images == 'true' || needs.changes.outputs.bot == 'true'
-    runs-on: ubuntu-latest
+    # Each published architecture is built and scanned on its own native runner, as the images workflow does.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     permissions:
       contents: read
@@ -529,6 +538,7 @@ jobs:
       - name: Build or pull the images this change touches and fail on CRITICAL (Trivy, as in the images workflow)
         env:
           BASE: ${{ github.event.pull_request.base.sha || 'origin/main' }}
+          SCAN_PLATFORM: linux/${{ matrix.arch }}
         run: node scripts/scan-changed-images.mjs "$BASE"
 
   ci-ok:
