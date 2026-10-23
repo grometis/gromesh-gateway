@@ -4,9 +4,14 @@ import { Link, useParams } from "react-router";
 import { api, ApiError, unwrap } from "../api/client";
 import { statusMessage } from "../api/errors";
 import { useCanEdit } from "../auth";
+import { Badge } from "../components/Badge";
+import { Button } from "../components/Button";
 import { Diff } from "../components/Diff";
+import { EmptyState } from "../components/EmptyState";
 import { Field } from "../components/Field";
-import { Modal } from "../components/Modal";
+import { ConfirmDialog } from "../components/Modal";
+import { PageHeader } from "../components/PageHeader";
+import { Table } from "../components/Table";
 import { useEnvId, useEnvironment } from "../components/Shell";
 
 const SAME_CONFIG_MESSAGE = "A versão de destino tem a mesma configuração da atual. Nada foi publicado.";
@@ -36,10 +41,8 @@ function SnapshotHistory({ envId }: { envId: string }) {
   const items = history.data?.pages.flatMap((page) => page.items) ?? [];
 
   return (
-    <section>
-      <div className="page-head">
-        <h1>Publicações</h1>
-      </div>
+    <section className="final-page publications-page">
+      <PageHeader title="Publicações" description="O histórico de versões publicadas e as alterações entre elas." />
       {published !== null && <p role="status">Rollback publicado como v{published}.</p>}
       {history.isPending && <p className="muted">Carregando histórico…</p>}
       {history.isError && (
@@ -47,53 +50,50 @@ function SnapshotHistory({ envId }: { envId: string }) {
           {statusMessage(history.error)}
         </p>
       )}
-      {history.isSuccess && items.length === 0 && <p className="muted">Nenhuma publicação ainda.</p>}
+      {history.isSuccess && items.length === 0 && <EmptyState title="Nenhuma publicação ainda." />}
       {items.length > 0 && (
-        <div className="scroll-x">
-          <table>
+        <div className="gateway-list">
+          <Table label="Publicações" cards>
             <thead>
               <tr>
-                <th>Versão</th>
-                <th>Mensagem</th>
-                <th>Autor</th>
-                <th>Publicada em</th>
-                <th>Alterações</th>
-                {canEdit && <th aria-label="Ações" />}
+                <th>Versão → mensagem</th>
+                {canEdit && <th className="actions" aria-label="Ações" />}
               </tr>
             </thead>
             <tbody>
               {items.map((snapshot) => (
                 <tr key={snapshot.version}>
-                  <td>
-                    <Link to={`/e/${envId}/publications/${snapshot.version}`}>v{snapshot.version}</Link>
-                    {snapshot.isCurrent && <span className="badge added"> Atual</span>}
+                  <td className="row-main">
+                    <div className="service-route">
+                      <Link to={`/e/${envId}/publications/${snapshot.version}`} className="row-open service-name mono">v{snapshot.version}</Link>
+                      {snapshot.isCurrent && <Badge tone="converged">Atual</Badge>}
+                      <span className="arrow" aria-hidden="true">→</span>
+                      <span className="target">{snapshot.message || "—"}</span>
+                    </div>
+                    <div className="route-matches muted">
+                      <span>Autor <span className="mono">{snapshot.createdBy.name}</span></span>
+                      <span>Publicada em <When at={snapshot.createdAt} /></span>
+                      <span>Alterações <span className="mono">{snapshot.changeCount ?? "—"}</span></span>
+                      {snapshot.rollbackOf != null && <span>Restaura <span className="mono">v{snapshot.rollbackOf}</span></span>}
+                    </div>
                   </td>
-                  <td>
-                    {snapshot.message || "—"}
-                    {snapshot.rollbackOf != null && <p className="muted">Restaura v{snapshot.rollbackOf}</p>}
-                  </td>
-                  <td>{snapshot.createdBy.name}</td>
-                  <td>
-                    <When at={snapshot.createdAt} />
-                  </td>
-                  <td>{snapshot.changeCount ?? "—"}</td>
                   {canEdit && (
                     <td className="actions">
-                      <button type="button" onClick={() => setRestoring(snapshot.version)}>
+                      <Button variant="danger" onClick={() => setRestoring(snapshot.version)}>
                         Restaurar v{snapshot.version}
-                      </button>
+                      </Button>
                     </td>
                   )}
                 </tr>
               ))}
             </tbody>
-          </table>
+          </Table>
         </div>
       )}
       {history.hasNextPage && (
-        <button type="button" disabled={history.isFetchingNextPage} onClick={() => void history.fetchNextPage()}>
+        <Button disabled={history.isFetchingNextPage} onClick={() => void history.fetchNextPage()}>
           Carregar mais
-        </button>
+        </Button>
       )}
       <SnapshotComparison envId={envId} />
       {restoring !== null && <Rollback envId={envId} version={restoring} onClose={() => setRestoring(null)} onPublished={setPublished} />}
@@ -107,9 +107,9 @@ export function SnapshotDetailPage() {
   const version = Number(versionParam);
   if (!validVersion(version)) {
     return (
-      <p className="error" role="alert">
-        Versão inválida.
-      </p>
+      <section className="final-page publications-page">
+        <p className="error" role="alert">Versão inválida.</p>
+      </section>
     );
   }
   return <SnapshotDetail key={`${envId}:${version}`} envId={envId} version={version} />;
@@ -131,16 +131,16 @@ function SnapshotDetail({ envId, version }: { envId: string; version: number }) 
   });
 
   return (
-    <section>
-      <Link to={`/e/${envId}/publications`}>Voltar ao histórico</Link>
-      <div className="page-head">
-        <h1>Publicação v{version}</h1>
-        {canEdit && snapshot.isSuccess && (
-          <button type="button" onClick={() => setRestoring(true)}>
+    <section className="final-page publications-page stack">
+      <Link className="back-link" to={`/e/${envId}/publications`}>Voltar ao histórico</Link>
+      <PageHeader
+        title={<>Publicação <span className="mono">v{version}</span></>}
+        actions={canEdit && snapshot.isSuccess && (
+          <Button variant="danger" onClick={() => setRestoring(true)}>
             Restaurar v{version}
-          </button>
+          </Button>
         )}
-      </div>
+      />
       {published !== null && <p role="status">Rollback publicado como v{published}.</p>}
       {snapshot.isPending && <p className="muted">Carregando versão…</p>}
       {snapshot.isError && (
@@ -149,7 +149,7 @@ function SnapshotDetail({ envId, version }: { envId: string; version: number }) 
         </p>
       )}
       {snapshot.data && (
-        <dl className="props">
+        <dl className="service-properties">
           <dt>Hash</dt>
           <dd className="mono wrap">{snapshot.data.hash}</dd>
           <dt>Publicada em</dt>
@@ -165,7 +165,7 @@ function SnapshotDetail({ envId, version }: { envId: string; version: number }) 
 }
 
 function When({ at }: { at: string }) {
-  return <time dateTime={at}>{new Date(at).toLocaleString("pt-BR")}</time>;
+  return <time className="mono" dateTime={at}>{new Date(at).toLocaleString("pt-BR")}</time>;
 }
 
 function validVersion(version: number): boolean {
@@ -189,10 +189,10 @@ function SnapshotComparison({ envId, defaultTo = 2 }: { envId: string; defaultTo
   };
 
   return (
-    <section className="block">
+    <section className="snapshot-comparison stack">
       <h2>Comparar versões</h2>
       <form className="form" onSubmit={compare} noValidate>
-        <div className="row">
+        <div className="snapshot-versions">
           <Field label="Versão de origem">
             {(id) => <input id={id} type="number" min={1} step={1} value={from} onChange={(e) => setFrom(e.target.value)} />}
           </Field>
@@ -206,7 +206,7 @@ function SnapshotComparison({ envId, defaultTo = 2 }: { envId: string; defaultTo
           </p>
         )}
         <div className="form-actions">
-          <button type="submit">Comparar</button>
+          <Button type="submit" variant="primary">Comparar</Button>
         </div>
       </form>
       {comparison && <VersionDiff envId={envId} from={comparison.from} to={comparison.to} />}
@@ -264,21 +264,16 @@ function Rollback({ envId, version, onClose, onPublished }: { envId: string; ver
   const canConfirm = diff.isSuccess && !diff.isFetching && !environment.isFetching && !environment.isError && !rollback.isPending && diff.data.items.length > 0;
 
   return (
-    <Modal
+    <ConfirmDialog
       title={`Restaurar v${version}`}
+      message={`Restaurar v${version} substitui o rascunho e publica uma nova versão. As alterações abaixo serão aplicadas sobre a versão atual.`}
+      confirmLabel={rollback.isPending ? "Restaurando…" : "Confirmar rollback"}
+      confirmDisabled={!canConfirm}
+      busy={rollback.isPending}
+      error={rollback.isError ? rollback.error instanceof ApiError && rollback.error.status === 409 ? SAME_CONFIG_MESSAGE : statusMessage(rollback.error) : null}
+      onConfirm={() => rollback.mutate()}
       onClose={onClose}
-      footer={
-        <>
-          <button type="button" onClick={onClose}>
-            Cancelar
-          </button>
-          <button type="button" className="danger" disabled={!canConfirm} onClick={() => rollback.mutate()}>
-            {rollback.isPending ? "Restaurando…" : "Confirmar rollback"}
-          </button>
-        </>
-      }
     >
-      <p>Restaurar v{version} substitui o rascunho e publica uma nova versão. As alterações abaixo serão aplicadas sobre a versão atual.</p>
       {(environment.isPending || (current != null && diff.isPending)) && <p className="muted">Calculando alterações…</p>}
       {environment.isError && (
         <p className="error" role="alert">
@@ -296,11 +291,6 @@ function Rollback({ envId, version, onClose, onPublished }: { envId: string; ver
         </p>
       )}
       {current != null && diff.data && <Diff changes={diff.data.items} from={current} to={version} />}
-      {rollback.isError && (
-        <p className="error" role="alert">
-          {rollback.error instanceof ApiError && rollback.error.status === 409 ? SAME_CONFIG_MESSAGE : statusMessage(rollback.error)}
-        </p>
-      )}
-    </Modal>
+    </ConfirmDialog>
   );
 }

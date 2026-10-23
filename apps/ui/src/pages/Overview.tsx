@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { api, ApiError, retryNetworkErrorsOnly, unwrap } from "../api/client";
 import { statusMessage } from "../api/errors";
 import { HourlyBars } from "../components/HourlyBars";
+import { PageHeader } from "../components/PageHeader";
 import { useEnvId, useEnvironment } from "../components/Shell";
 import { periodRange, TopRoutes, useVisibleTab } from "./Analytics";
 
@@ -38,13 +39,8 @@ function Overview({ envId }: { envId: string }) {
   const unavailable = summary.isError && summary.error instanceof ApiError && summary.error.status === 502;
 
   return (
-    <section>
-      <div className="page-head">
-        <div>
-          <h1>Visão geral</h1>
-          <p className="lede">Últimas 24 horas deste environment.</p>
-        </div>
-      </div>
+    <section className="final-page">
+      <PageHeader title="Visão geral" description="Últimas 24 horas deste environment." />
       <dl className="tiles" aria-label="Indicadores das últimas 24 horas">
         <div className="tile">
           <dt>Requisições</dt>

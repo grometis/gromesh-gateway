@@ -7,6 +7,12 @@ import { Field, FormErrorList } from "../components/Field";
 import { ConfirmDialog, Modal } from "../components/Modal";
 import { useEnvId } from "../components/Shell";
 import { splitList, useInvalidateDraft } from "./Services";
+import { PageHeader } from "../components/PageHeader";
+import { EmptyState } from "../components/EmptyState";
+import { Table } from "../components/Table";
+import { Badge } from "../components/Badge";
+import { Button } from "../components/Button";
+import { RowMenu } from "../components/RowMenu";
 
 type Certificate = Schemas["Certificate"];
 type CertificateWrite = Schemas["CertificateWrite"];
@@ -23,9 +29,9 @@ export function daysLeft(notAfter: string, now = Date.now()): number {
 
 function Expiry({ notAfter }: { notAfter: string }) {
   const days = daysLeft(notAfter);
-  if (days < 0) return <span className="badge danger">Expirado em {when(notAfter)}</span>;
-  if (days < WARN_DAYS) return <span className="badge warning">Expira em {days} dia(s) ({when(notAfter)})</span>;
-  return <span>{when(notAfter)}</span>;
+  if (days < 0) return <Badge tone="danger">Expirado em {when(notAfter)}</Badge>;
+  if (days < WARN_DAYS) return <Badge tone="warning">Expira em {days} dia(s) ({when(notAfter)})</Badge>;
+  return <span className="mono">{when(notAfter)}</span>;
 }
 
 export function CertificatesPage() {
@@ -43,55 +49,49 @@ export function CertificatesPage() {
   const items = certs.data?.pages.flatMap((p) => p.items) ?? [];
 
   return (
-    <section>
-      <div className="page-head">
-        <h1>Certificados</h1>
-        {canEdit && (
-          <button type="button" className="primary" onClick={() => setEditing("new")}>
-            Novo certificado
-          </button>
-        )}
-      </div>
-      <p className="muted">A chave privada só é enviada; depois de salva, nunca é exibida de novo.</p>
+    <section className="final-page gateway-list certificates-page">
+      <PageHeader
+        title="Certificados"
+        description="A chave privada só é enviada; depois de salva, nunca é exibida de novo."
+        actions={canEdit && <Button variant="primary" onClick={() => setEditing("new")}>Novo certificado</Button>}
+      />
       {certs.isPending && <p className="muted">Carregando…</p>}
       {certs.isError && <p className="error">{statusMessage(certs.error)}</p>}
-      {certs.isSuccess && items.length === 0 && <p className="muted">Nenhum certificado ainda.</p>}
+      {certs.isSuccess && items.length === 0 && <EmptyState title="Nenhum certificado ainda." />}
       {items.length > 0 && (
-        <table aria-label="Certificados">
+        <Table label="Certificados" cards>
           <thead>
             <tr>
-              <th>SNIs</th>
-              <th>Assunto</th>
-              <th>Emissor</th>
-              <th>Validade</th>
-              <th aria-label="Ações" />
+              <th>Assunto → SNIs / validade</th>
+              <th className="actions" aria-label="Ações" />
             </tr>
           </thead>
           <tbody>
             {items.map((c) => (
               <tr key={c.id}>
-                <td className="mono">{c.snis.length > 0 ? c.snis.join(", ") : <span className="muted">nenhum</span>}</td>
-                <td>{c.subject}</td>
-                <td>{c.issuer}</td>
-                <td>
-                  <Expiry notAfter={c.notAfter} />
+                <td className="row-main">
+                  <div className="service-route">
+                    <span className="service-name mono">{c.subject}</span>
+                    <span className="arrow" aria-hidden="true">→</span>
+                    <span className="target mono">{c.snis.length > 0 ? c.snis.join(", ") : <span className="muted">nenhum</span>}</span>
+                  </div>
+                  <div className="route-matches">
+                    <span className="muted">Emissor</span><span className="mono">{c.issuer}</span>
+                    <span className="muted">Validade</span><Expiry notAfter={c.notAfter} />
+                  </div>
                 </td>
                 <td className="actions">
                   {canEdit && (
                     <>
-                      <button type="button" onClick={() => setEditing(c)}>
-                        Editar
-                      </button>
-                      <button type="button" className="danger" onClick={() => setDeleting(c)}>
-                        Excluir
-                      </button>
+                      <Button variant="quiet" onClick={() => setEditing(c)}>Editar</Button>
+                      <RowMenu label={`Mais ações para ${c.subject}`} items={[{ label: "Excluir", danger: true, onSelect: () => setDeleting(c) }]} />
                     </>
                   )}
                 </td>
               </tr>
             ))}
           </tbody>
-        </table>
+        </Table>
       )}
       {certs.hasNextPage && (
         <button type="button" onClick={() => void certs.fetchNextPage()} disabled={certs.isFetchingNextPage}>
@@ -153,7 +153,7 @@ function CertificateForm({ envId, certificate, onClose }: { envId: string; certi
         <Field label="Certificado (PEM)" errors={errors.fields.cert} hint="O certificado do servidor primeiro, depois os intermediários">
           {(id, invalid) => <textarea id={id} aria-invalid={invalid} rows={6} className="mono" value={form.cert} onChange={(e) => set("cert", e.target.value)} />}
         </Field>
-        <label className="file">
+        <label className="certificate-file">
           Carregar arquivo do certificado <input type="file" accept=".pem,.crt,.cer" aria-label="Arquivo do certificado" onChange={(e) => readFile(e, (t) => set("cert", t))} />
         </label>
         <Field
@@ -175,7 +175,7 @@ function CertificateForm({ envId, certificate, onClose }: { envId: string; certi
             />
           )}
         </Field>
-        <label className="file">
+        <label className="certificate-file">
           Carregar arquivo da chave <input type="file" accept=".pem,.key" aria-label="Arquivo da chave" onChange={(e) => readFile(e, (t) => set("key", t))} />
         </label>
         <Field label="SNIs" errors={errors.fields.snis} hint="Nomes separados por vírgula; curinga só como prefixo, ex.: *.exemplo.com">

@@ -3,7 +3,7 @@ import { useEffect, useId, type ReactNode } from "react";
 /** Open modals, innermost last: Escape closes only the one on top (a plugin editor opened from a plugin list). */
 const openModals: string[] = [];
 
-export function Modal({ title, onClose, children, footer, wide }: { title: string; onClose: () => void; children: ReactNode; footer?: ReactNode; wide?: boolean }) {
+export function Modal({ title, onClose, children, footer, wide, bodyLabel }: { title: string; onClose: () => void; children: ReactNode; footer?: ReactNode; wide?: boolean; bodyLabel?: string }) {
   const titleId = useId();
   useEffect(() => {
     openModals.push(titleId);
@@ -25,7 +25,7 @@ export function Modal({ title, onClose, children, footer, wide }: { title: strin
             ×
           </button>
         </header>
-        <div className="modal-body">{children}</div>
+        <div className="modal-body" role={bodyLabel ? "region" : undefined} tabIndex={bodyLabel ? 0 : undefined} aria-label={bodyLabel}>{children}</div>
         {footer && <footer>{footer}</footer>}
       </div>
     </div>
@@ -37,6 +37,8 @@ export function ConfirmDialog(props: {
   title: string;
   message: ReactNode;
   confirmLabel: string;
+  confirmDisabled?: boolean;
+  children?: ReactNode;
   busy: boolean;
   error: string | null;
   onConfirm: () => void;
@@ -51,13 +53,14 @@ export function ConfirmDialog(props: {
           <button type="button" onClick={props.onClose}>
             Cancelar
           </button>
-          <button type="button" className="danger" disabled={props.busy} onClick={props.onConfirm}>
+          <button type="button" className="danger" disabled={props.busy || props.confirmDisabled} onClick={props.onConfirm}>
             {props.confirmLabel}
           </button>
         </>
       }
     >
       <p>{props.message}</p>
+      {props.children}
       {props.error && <p className="error" role="alert">{props.error}</p>}
     </Modal>
   );

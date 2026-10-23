@@ -68,12 +68,19 @@ test("rate-limiting on a route through the generated form, with a 422 on config.
 
   const picker = page.getByRole("dialog", { name: "Escolha um plugin" });
   await expect(picker.getByRole("button", { name: /^oauth2/ })).toBeDisabled();
+  await expect(picker.getByRole("region", { name: "Autenticação", exact: true })).toContainText("oauth2");
+  await expect(picker.getByRole("button", { name: /^oauth2/ })).toContainText("Indisponível: depende de banco de dados no data plane, que roda sem banco.");
+  await expect(picker.getByRole("region", { name: "Controle de tráfego", exact: true }).getByRole("button", { name: /^rate-limiting/ })).toHaveClass("catalog-card");
+  await picker.getByLabel("Buscar plugin").fill("plugin-inexistente");
+  await expect(picker.getByRole("heading", { name: "Nenhum plugin encontrado." })).toBeVisible();
+  await picker.getByLabel("Buscar plugin").fill("rate-limiting");
   await picker.getByRole("button", { name: /^rate-limiting/ }).click();
 
   const editor = page.getByRole("dialog", { name: "Novo plugin rate-limiting" });
   await expect(editor.getByRole("radio", { name: "Route" })).toBeChecked();
   await expect(editor.getByRole("combobox", { name: "Route" })).toHaveValue(/[0-9a-f-]{36}/);
   await expect(editor.getByLabel("limit_by")).toHaveValue("consumer");
+  await expect(editor).not.toContainText(/kong/i, { useInnerText: true });
   await editor.getByLabel("minute", { exact: true }).fill("5");
 
   // First save: the validator refuses config.minute.

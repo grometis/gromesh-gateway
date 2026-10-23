@@ -73,7 +73,7 @@ export function parseFields(raw: unknown): NamedField[] {
 
 /** The schema descriptions are upstream text: keep them, but never show the upstream brand in the UI. */
 function cleanDescription(text: string): string {
-  return text.replace(/\bKong\b/g, "the gateway");
+  return text.replace(/\bkong\.conf\b/gi, "gateway configuration").replace(/\bKong\b/gi, "the gateway");
 }
 
 export interface PluginSchema {
