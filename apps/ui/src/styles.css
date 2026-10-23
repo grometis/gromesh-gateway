@@ -221,6 +221,24 @@ table.cards td:last-child { border-radius: 0 var(--radius) var(--radius) 0; }
 .page-head h2 { align-self: center; }
 .lede { color: var(--text-2); margin: var(--space-2) 0 0; }
 
+/* Compact empty states retain the former paragraph's typography and spacing. */
+.empty-state { margin: 1em 0; }
+.empty-state > h2, .empty-state > p { display: inline; font: inherit; letter-spacing: inherit; margin: 0; }
+.empty-state-action { margin-top: var(--space-3); }
+.cred-section > .empty-state { margin: 0; }
+
+/* P6-X2: limit target-size and colour corrections to the final screens. */
+.final-page .row-open, .final-page .back-link,
+.content:has(> .final-page) .strip-link { display: inline-flex; align-items: center; min-height: 40px; }
+.app:has(.final-page) .brand { display: inline-flex; align-items: center; min-height: 40px; }
+.final-page .chart-table summary { min-height: 40px; align-content: center; }
+.app:has(.final-page) :focus-visible { outline-color: var(--ink); }
+.app:has(.final-page) .menu :focus-visible { outline-color: var(--ink-text); }
+.final-page .row-open:focus-visible::after { outline-color: var(--ink); }
+.final-page .tabs [role="tab"][aria-selected="true"] { border-bottom-color: var(--ink); }
+.final-page .badge.new { background: var(--draft-strong); color: var(--draft-text); }
+.final-page .menu-popover .danger-item { border: 1px solid var(--draft-text); }
+
 /* ---------------- publish strip: draft → publish → live ---------------- */
 .publish-strip { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: stretch; gap: var(--space-2); margin-bottom: var(--space-6); }
 .publish-strip.read-only { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }

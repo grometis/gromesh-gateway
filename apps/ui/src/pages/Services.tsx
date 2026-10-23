@@ -11,6 +11,8 @@ import { Badge, DraftBadge } from "../components/Badge";
 import { RowMenu } from "../components/RowMenu";
 import { Button } from "../components/Button";
 import { Table } from "../components/Table";
+import { PageHeader } from "../components/PageHeader";
+import { EmptyState } from "../components/EmptyState";
 import { ScopedPlugins } from "./Plugins";
 import { useUpstreams } from "./Upstreams";
 
@@ -71,18 +73,16 @@ export function ServicesPage() {
   const items = onlyChanged ? changed : all;
 
   return (
-    <section>
-      <div className="page-head">
-        <div>
-          <h1>Services</h1>
-          <p className="lede">Os destinos para onde o gateway encaminha as requisições.</p>
-        </div>
-        {canEdit && (
+    <section className="final-page">
+      <PageHeader
+        title="Services"
+        description="Os destinos para onde o gateway encaminha as requisições."
+        actions={canEdit && (
           <Button variant="primary" onClick={() => setEditing("new")}>
             Novo service
           </Button>
         )}
-      </div>
+      />
       <div className="pills" role="group" aria-label="Filtrar services">
         <button type="button" aria-pressed={!onlyChanged} onClick={() => setOnlyChanged(false)}>
           Todos <span className="count">{all.length}</span>
@@ -95,7 +95,10 @@ export function ServicesPage() {
       {services.isPending && <p className="muted">Carregando…</p>}
       {services.isError && <p className="error">{statusMessage(services.error)}</p>}
       {services.isSuccess && items.length === 0 && (
-        <p className="muted">{onlyChanged ? "Nenhum service com alterações não publicadas." : q ? "Nenhum service encontrado." : "Nenhum service ainda. Crie o primeiro para começar a rotear tráfego."}</p>
+        <EmptyState
+          title={onlyChanged ? "Nenhum service com alterações não publicadas." : q ? "Nenhum service encontrado." : "Nenhum service ainda."}
+          text={!onlyChanged && !q ? "Crie o primeiro para começar a rotear tráfego." : undefined}
+        />
       )}
       {items.length > 0 && (
         <Table label="Services" cards>

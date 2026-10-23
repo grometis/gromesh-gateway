@@ -6,6 +6,8 @@ import { useCanAdmin } from "../auth";
 import { Field, FormErrorList } from "../components/Field";
 import { ConfirmDialog, Modal } from "../components/Modal";
 import { RowMenu } from "../components/RowMenu";
+import { PageHeader } from "../components/PageHeader";
+import { EmptyState } from "../components/EmptyState";
 import { useEnvId, useEnvironment } from "../components/Shell";
 import { fullDateTime, relativeTime } from "../time";
 
@@ -52,25 +54,23 @@ function ClusterList({ envId }: { envId: string }) {
   });
 
   return (
-    <section>
-      <div className="page-head">
-        <div>
-          <h1>Clusters</h1>
-          <p className="lede">Os gateways de cada cluster e a versão que cada um serve. Atualiza a cada 10 segundos com esta aba visível.</p>
-        </div>
-        {canAdmin && (
+    <section className="final-page">
+      <PageHeader
+        title="Clusters"
+        description="Os gateways de cada cluster e a versão que cada um serve. Atualiza a cada 10 segundos com esta aba visível."
+        actions={canAdmin && (
           <button type="button" className="primary" onClick={() => setCreating(true)}>
             Novo cluster
           </button>
         )}
-      </div>
+      />
       {clusters.isPending && <p className="muted">Carregando clusters…</p>}
       {clusters.isError && (
         <p className="error" role="alert">
           {statusMessage(clusters.error)}
         </p>
       )}
-      {clusters.isSuccess && clusters.data.items.length === 0 && <p className="muted">Nenhum cluster ainda.</p>}
+      {clusters.isSuccess && clusters.data.items.length === 0 && <EmptyState title="Nenhum cluster ainda." />}
       <div className="cluster-cards">
         {clusters.data?.items.map((cluster) => (
           <ClusterCard
@@ -118,7 +118,7 @@ function ClusterCard({ cluster, current, actions }: { cluster: Cluster; current:
         {actions}
       </div>
       {cluster.nodes.length === 0 ? (
-        <p className="muted">Nenhum nó registrado. Use o token de registro para conectar o primeiro gateway.</p>
+        <EmptyState title="Nenhum nó registrado." text="Use o token de registro para conectar o primeiro gateway." />
       ) : (
         <>
           <p className="cluster-summary">

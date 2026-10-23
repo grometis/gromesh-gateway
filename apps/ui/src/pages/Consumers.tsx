@@ -12,6 +12,8 @@ import { Button } from "../components/Button";
 import { RowMenu } from "../components/RowMenu";
 import { createdAt, CredentialCard, SecretOnce } from "../components/Credentials";
 import { Table } from "../components/Table";
+import { PageHeader } from "../components/PageHeader";
+import { EmptyState } from "../components/EmptyState";
 import { useEnvId } from "../components/Shell";
 import { AclGroupsPanel, BasicAuthCredentials, JwtCredentials } from "./ConsumerCredentials";
 import { ScopedPlugins } from "./Plugins";
@@ -31,19 +33,19 @@ export function ConsumersPage() {
   const items = consumers.data?.pages.flatMap((p) => p.items) ?? [];
 
   return (
-    <section>
-      <div className="page-head">
-        <h1>Consumers</h1>
-        {canEdit && (
+    <section className="final-page">
+      <PageHeader
+        title="Consumers"
+        actions={canEdit && (
           <button type="button" className="primary" onClick={() => setEditing("new")}>
             Novo consumer
           </button>
         )}
-      </div>
+      />
       <input type="search" className="search" placeholder="Buscar por username ou custom id" aria-label="Buscar consumers" value={search} onChange={(e) => setSearch(e.target.value)} />
       {consumers.isPending && <p className="muted">Carregando…</p>}
       {consumers.isError && <p className="error">{statusMessage(consumers.error)}</p>}
-      {consumers.isSuccess && items.length === 0 && <p className="muted">{q ? "Nenhum consumer encontrado." : "Nenhum consumer ainda."}</p>}
+      {consumers.isSuccess && items.length === 0 && <EmptyState title={q ? "Nenhum consumer encontrado." : "Nenhum consumer ainda."} />}
       {items.length > 0 && (
         <Table label="Consumers" cards>
           <thead>
@@ -116,13 +118,13 @@ export function ConsumerDetailPage() {
   if (consumer.isError) return <p className="error">{statusMessage(consumer.error)}</p>;
   const c = consumer.data;
   return (
-    <section className="stack">
+    <section className="stack final-page">
       <p>
-        <Link to="..">← Consumers</Link>
+        <Link to=".." className="back-link">← Consumers</Link>
       </p>
-      <div className="page-head">
-        <h1>Consumer {consumerName(c)}</h1>
-        {canEdit && (
+      <PageHeader
+        title={<>Consumer {consumerName(c)}</>}
+        actions={canEdit && (
           <div className="form-actions">
             <Button variant="primary" onClick={() => setEditing(true)}>
               Editar
@@ -130,7 +132,7 @@ export function ConsumerDetailPage() {
             <RowMenu label={`Mais ações para ${consumerName(c)}`} items={[{ label: "Excluir", danger: true, onSelect: () => setDeleting(true) }]} />
           </div>
         )}
-      </div>
+      />
       <dl className="props">
         <dt>Username</dt>
         <dd>{c.username ?? "—"}</dd>
@@ -287,7 +289,7 @@ function KeyAuthCredentials({ envId, consumer, canEdit }: { envId: string; consu
       </div>
       {credentials.isPending && <p className="muted">Carregando…</p>}
       {credentials.isError && <p className="error">{statusMessage(credentials.error)}</p>}
-      {credentials.isSuccess && items.length === 0 && <p className="muted">Nenhuma chave.</p>}
+      {credentials.isSuccess && items.length === 0 && <EmptyState title="Nenhuma chave." />}
       {items.length > 0 && (
         <ul className="cred-list" aria-label="Chaves">
           {items.map((k) => (
