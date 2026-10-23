@@ -7,6 +7,9 @@ imagePullSecrets:
 
 kong:
   workerProcesses: 2
+  # The visitor's address from the Cloudflare tunnel, read only from ingress-nginx (the minikube pod network).
+  realIpHeader: CF-Connecting-IP
+  trustedIps: [10.244.0.0/16]
   resources:
     requests: {cpu: 100m, memory: 768Mi}
     limits: {cpu: "1", memory: 768Mi}
