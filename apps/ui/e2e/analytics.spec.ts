@@ -117,3 +117,19 @@ test("Métricas is the former Dashboard: the old /analytics address redirects to
   await expect(menu(page).getByRole("link", { name: "Métricas" })).toHaveAttribute("aria-current", "page");
   await expect(menu(page).getByRole("link", { name: "Dashboard" })).toHaveCount(0);
 });
+
+test("métricas e requisições usam estados vazios sem perder os filtros", async ({ page }) => {
+  await login(page);
+  await page.route("**/api/v1/environments/*/analytics/top-routes?*", (route) => route.fulfill({ json: { by: "requests", items: [] } }));
+  await page.goto(`/e/${envId}/metrics`);
+  await expect(page.getByRole("heading", { name: "Sem tráfego no período.", exact: true })).toBeVisible();
+  await expect(page.getByRole("table", { name: "Top rotas" })).toHaveCount(0);
+  await expect(page.getByLabel("Critério")).toBeEnabled();
+  await expect(page.locator("figure.chart")).toHaveCount(3);
+
+  await page.route("**/api/v1/environments/*/requests?*", (route) => route.fulfill({ json: { items: [], nextCursor: null } }));
+  await page.goto(`/e/${envId}/requests`);
+  await expect(page.getByRole("heading", { name: "Nenhuma requisição no período.", exact: true })).toBeVisible();
+  await expect(page.getByRole("table", { name: "Requisições", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Filtrar", exact: true })).toBeEnabled();
+});

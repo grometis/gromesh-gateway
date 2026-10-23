@@ -5,6 +5,11 @@ import { api, ApiError, unwrap, type Schemas } from "../api/client";
 import { statusMessage, toFormErrors } from "../api/errors";
 import { useConsumers, consumerName } from "../api/lists";
 import { Field, FormErrorList } from "../components/Field";
+import { Badge } from "../components/Badge";
+import { Button } from "../components/Button";
+import { EmptyState } from "../components/EmptyState";
+import { PageHeader } from "../components/PageHeader";
+import { Table } from "../components/Table";
 import { Modal } from "../components/Modal";
 import { useEnvId } from "../components/Shell";
 import { PeriodSelect, ScopeFilters, periodRange, type PeriodKey } from "./Analytics";
@@ -16,7 +21,6 @@ const FIELDS = ["from", "to", "status", "statusClass", "routeId", "serviceId", "
 const EMPTY = { period: "6h" as PeriodKey, status: "", statusClass: "" as StatusClass, routeId: "", serviceId: "", consumerId: "" };
 type Filters = typeof EMPTY;
 
-const statusClassOf = (status: number) => `status-${Math.floor(status / 100)}xx`;
 const when = (iso: string) => new Date(iso).toLocaleString("pt-BR", { hour12: false, fractionalSecondDigits: 3 } as Intl.DateTimeFormatOptions);
 
 export function RequestsPage() {
@@ -59,11 +63,9 @@ function Explorer({ envId }: { envId: string }) {
   };
 
   return (
-    <section>
-      <div className="page-head">
-        <h1>Requisições</h1>
-      </div>
-      <form className="analytics-filters" onSubmit={submit} noValidate aria-label="Filtros de requisições">
+    <section className="final-page requests-page traffic-list">
+      <PageHeader title="Requisições" />
+      <form className="gateway-filters traffic-filters" onSubmit={submit} noValidate aria-label="Filtros de requisições">
         <PeriodSelect value={form.period} onChange={(v) => set("period", v)} />
         <Field label="Classe de status" errors={errors.fields.statusClass}>
           {(id, invalid) => (
@@ -94,9 +96,9 @@ function Explorer({ envId }: { envId: string }) {
           )}
         </Field>
         <div className="form-actions">
-          <button type="submit" className="primary">
+          <Button type="submit" variant="primary">
             Filtrar
-          </button>
+          </Button>
         </div>
       </form>
       <FormErrorList messages={errors.form} />
@@ -106,41 +108,44 @@ function Explorer({ envId }: { envId: string }) {
           {failure === 502 ? "Os dados de tráfego não estão disponíveis no momento (coletor fora do ar ou não configurado)." : statusMessage(requests.error)}
         </p>
       )}
-      {requests.isSuccess && items.length === 0 && <p className="muted">Nenhuma requisição no período.</p>}
+      {requests.isSuccess && items.length === 0 && <EmptyState title="Nenhuma requisição no período." />}
       {items.length > 0 && (
-        <div className="scroll-x">
-          <table>
-            <thead>
-              <tr>
-                <th>Quando</th>
-                <th>Método</th>
-                <th>Path</th>
-                <th>Status</th>
-                <th>Latência</th>
-                <th>Cliente</th>
+        <Table label="Requisições" cards>
+          <thead>
+            <tr>
+              <th>Quando</th>
+              <th>Método</th>
+              <th>Path</th>
+              <th>Status</th>
+              <th>Latência</th>
+              <th>Cliente</th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((r) => (
+              <tr key={r.id} className="row-link" onClick={() => setSelected(r)}>
+                <td className="mono">
+                  <time dateTime={r.ts}>{when(r.ts)}</time>
+                </td>
+                <td className="mono">{r.method}</td>
+                <td className="mono wrap">
+                  <Button className="row-open request-path mono" onClick={() => setSelected(r)}>{r.path}</Button>
+                </td>
+                <td>
+                  <span className="traffic-label" aria-hidden="true">Status</span>
+                  <Badge tone={r.status >= 500 ? "danger" : r.status >= 400 ? "warning" : r.status >= 300 ? "off" : "added"}>{r.status}</Badge>
+                </td>
+                <td className="mono"><span className="traffic-label" aria-hidden="true">Latência</span>{r.latencyTotalMs} ms</td>
+                <td className="mono"><span className="traffic-label" aria-hidden="true">Cliente</span>{r.clientIp}</td>
               </tr>
-            </thead>
-            <tbody>
-              {items.map((r) => (
-                <tr key={r.id} className="row-link" onClick={() => setSelected(r)}>
-                  <td>
-                    <time dateTime={r.ts}>{when(r.ts)}</time>
-                  </td>
-                  <td className="mono">{r.method}</td>
-                  <td className="mono wrap">{r.path}</td>
-                  <td className={statusClassOf(r.status)}>{r.status}</td>
-                  <td>{r.latencyTotalMs} ms</td>
-                  <td className="mono">{r.clientIp}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+            ))}
+          </tbody>
+        </Table>
       )}
       {requests.hasNextPage && (
-        <button type="button" disabled={requests.isFetchingNextPage} onClick={() => void requests.fetchNextPage()}>
+        <Button disabled={requests.isFetchingNextPage} onClick={() => void requests.fetchNextPage()}>
           Carregar mais
-        </button>
+        </Button>
       )}
       {selected && <RequestDetail record={selected} onClose={() => setSelected(null)} />}
     </section>
@@ -166,8 +171,8 @@ function RequestDetail({ record, onClose }: { record: RequestRecord; onClose: ()
     ["Id", record.id],
   ];
   return (
-    <Modal title={`${record.method} ${record.path}`} onClose={onClose}>
-      <dl className="props">
+    <Modal title={`${record.method} ${record.path}`} onClose={onClose} bodyLabel="Conteúdo da requisição">
+      <dl className="props request-properties">
         {rows.map(([k, v]) => (
           <div key={k} className="contents">
             <dt>{k}</dt>

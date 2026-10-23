@@ -3,6 +3,9 @@ import { Navigate, useLocation } from "react-router";
 import { ApiError } from "../api/client";
 import { useAuth } from "../auth";
 import { Brand } from "../components/Brand";
+import { Button } from "../components/Button";
+import { Field } from "../components/Field";
+import { PageHeader } from "../components/PageHeader";
 
 export function LoginPage() {
   const { user, loading, login } = useAuth();
@@ -36,28 +39,26 @@ export function LoginPage() {
 
   return (
     <main className="login">
-      <div className="login-box">
+      <section className="final-page login-box">
         <Brand />
-        <form onSubmit={submit} className="card">
-          <h1>Entrar</h1>
-          <label className="field">
-            <span>E-mail</span>
-            <input type="email" autoComplete="username" required value={email} onChange={(e) => setEmail(e.target.value)} />
-          </label>
-          <label className="field">
-            <span>Senha</span>
-            <input type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
-          </label>
+        <form onSubmit={submit} className="login-card">
+          <PageHeader title="Entrar" />
+          <Field label="E-mail">
+            {(id) => <input id={id} type="email" autoComplete="username" required value={email} onChange={(e) => setEmail(e.target.value)} />}
+          </Field>
+          <Field label="Senha">
+            {(id) => <input id={id} type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />}
+          </Field>
           {error && (
             <p className="error" role="alert">
               {error}
             </p>
           )}
-          <button type="submit" className="primary" disabled={busy}>
+          <Button type="submit" variant="primary" disabled={busy}>
             {busy ? "Entrando…" : "Entrar"}
-          </button>
+          </Button>
         </form>
-      </div>
+      </section>
     </main>
   );
 }
