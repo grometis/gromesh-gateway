@@ -1,29 +1,52 @@
 import { useDeferredValue, useState, type FormEvent } from "react";
 import { useInfiniteQuery, useMutation } from "@tanstack/react-query";
 import { useSearchParams } from "react-router";
-import { api, unwrap, type Route, type RouteWrite } from "../api/client";
+import { api, unwrap, type Route, type RouteWrite, type Service } from "../api/client";
 import { statusMessage, toFormErrors, type FormErrors } from "../api/errors";
 import { useCanEdit } from "../auth";
 import { Field, FormErrorList } from "../components/Field";
 import { ConfirmDialog, Modal } from "../components/Modal";
 import { useEnvId } from "../components/Shell";
 import { ScopedPlugins } from "./Plugins";
-import { splitList, useInvalidateDraft, useServices } from "./Services";
+import { splitList, useEntityDraft, useInvalidateDraft, useServices } from "./Services";
+import { PageHeader } from "../components/PageHeader";
+import { EmptyState } from "../components/EmptyState";
+import { Table } from "../components/Table";
+import { DraftBadge } from "../components/Badge";
+import { Button } from "../components/Button";
+import { RowMenu } from "../components/RowMenu";
 
 const FIELDS = ["name", "serviceId", "paths", "hosts", "methods", "protocols", "stripPath", "preserveHost", "tags"] as const;
 const PROTOCOLS: NonNullable<RouteWrite["protocols"]>[number][] = ["http", "https", "grpc", "grpcs"];
 
 export function RoutesPage() {
   const envId = useEnvId();
-  const canEdit = useCanEdit();
   // The service filter lives in the URL so it can be linked from a service.
   const [params, setParams] = useSearchParams();
   const serviceId = params.get("serviceId") ?? "";
+  return (
+    <section className="final-page">
+      <RouteList envId={envId} serviceId={serviceId} onServiceChange={(id) => setParams(id ? { serviceId: id } : {})} />
+    </section>
+  );
+}
+
+export function ScopedRoutes({ envId, service }: { envId: string; service: Service }) {
+  return (
+    <section aria-label="Routes do service">
+      <RouteList envId={envId} serviceId={service.id} service={service} />
+    </section>
+  );
+}
+
+function RouteList({ envId, serviceId, service, onServiceChange }: { envId: string; serviceId: string; service?: Service; onServiceChange?: (id: string) => void }) {
+  const canEdit = useCanEdit();
+  const draft = useEntityDraft(envId, "routes");
   const [search, setSearch] = useState("");
   const q = useDeferredValue(search.trim());
   const services = useServices(envId);
   const serviceList = services.data?.pages.flatMap((p) => p.items) ?? [];
-  const serviceName = (id: string) => serviceList.find((s) => s.id === id)?.name ?? id.slice(0, 8);
+  const serviceName = (id: string) => (id === service?.id ? service.name : serviceList.find((s) => s.id === id)?.name) ?? id.slice(0, 8);
 
   const routes = useInfiniteQuery({
     queryKey: ["routes", envId, q, serviceId],
@@ -43,68 +66,74 @@ export function RoutesPage() {
   const [deleting, setDeleting] = useState<Route | null>(null);
   const [plugins, setPlugins] = useState<Route | null>(null);
   const items = routes.data?.pages.flatMap((p) => p.items) ?? [];
+  const createAction = canEdit && (
+    <Button variant="primary" onClick={() => setEditing("new")} disabled={serviceList.length === 0} title={serviceList.length === 0 ? "Crie um service primeiro" : undefined}>
+      Nova route
+    </Button>
+  );
 
   return (
-    <section>
-      <div className="page-head">
-        <h1>Routes</h1>
-        {canEdit && (
-          <button type="button" className="primary" onClick={() => setEditing("new")} disabled={serviceList.length === 0} title={serviceList.length === 0 ? "Crie um service primeiro" : undefined}>
-            Nova route
-          </button>
-        )}
-      </div>
-      <div className="filters">
+    <div className="gateway-list">
+      {service ? <div className="page-head"><h2>Routes do service</h2>{createAction}</div> : (
+        <PageHeader title="Routes" description="As regras que levam cada requisição ao seu service." actions={createAction} />
+      )}
+      <div className="gateway-filters">
         <input type="search" className="search" placeholder="Buscar por nome, path ou host" aria-label="Buscar routes" value={search} onChange={(e) => setSearch(e.target.value)} />
-        <select aria-label="Filtrar por service" value={serviceId} onChange={(e) => setParams(e.target.value ? { serviceId: e.target.value } : {})}>
+        {onServiceChange && <select aria-label="Filtrar por service" value={serviceId} onChange={(e) => onServiceChange(e.target.value)}>
           <option value="">Todos os services</option>
           {serviceList.map((s) => (
             <option key={s.id} value={s.id}>
               {s.name}
             </option>
           ))}
-        </select>
+        </select>}
       </div>
       {routes.isPending && <p className="muted">Carregando…</p>}
       {routes.isError && <p className="error">{statusMessage(routes.error)}</p>}
-      {routes.isSuccess && items.length === 0 && <p className="muted">Nenhuma route encontrada.</p>}
+      {routes.isSuccess && items.length === 0 && <EmptyState title="Nenhuma route encontrada." />}
       {items.length > 0 && (
-        <table>
+        <Table label={service ? "Routes do service" : "Routes"} cards>
           <thead>
             <tr>
-              <th>Nome</th>
-              <th>Service</th>
-              <th>Paths / hosts</th>
-              <th>Métodos</th>
-              <th aria-label="Ações" />
+              <th>Route → paths / service</th>
+              <th className="actions" aria-label="Ações" />
             </tr>
           </thead>
           <tbody>
             {items.map((r) => (
               <tr key={r.id}>
-                <td>{r.name}</td>
-                <td>{serviceName(r.serviceId)}</td>
-                <td className="mono">{[...(r.paths ?? []), ...(r.hosts ?? [])].join(", ") || "—"}</td>
-                <td>{r.methods?.join(", ") ?? "todos"}</td>
+                <td className="row-main">
+                  <div className="service-route">
+                    <span className="service-name">{r.name}</span>
+                    <DraftBadge change={draft.get(r.id)} />
+                    <span className="arrow" aria-hidden="true">→</span>
+                    <span className="target mono">{r.paths?.join(", ") || "—"}</span>
+                    <span className="muted">Service <span className="mono">{serviceName(r.serviceId)}</span></span>
+                  </div>
+                  <div className="route-matches">
+                    <span className="muted">Métodos</span>
+                    {r.methods === undefined ? <span className="match-chip mono">todos</span> : r.methods.map((m) => <span className="match-chip mono" key={m}>{m}</span>)}
+                    <span className="muted">Hosts</span>
+                    {r.hosts?.length ? r.hosts.map((h) => <span className="match-chip mono" key={h}>{h}</span>) : <span className="mono">—</span>}
+                  </div>
+                </td>
                 <td className="actions">
-                  <button type="button" onClick={() => setPlugins(r)}>
+                  <Button variant="quiet" onClick={() => setPlugins(r)}>
                     Plugins
-                  </button>
+                  </Button>
                   {canEdit && (
                     <>
-                      <button type="button" onClick={() => setEditing(r)}>
+                      <Button variant="quiet" onClick={() => setEditing(r)}>
                         Editar
-                      </button>
-                      <button type="button" className="danger" onClick={() => setDeleting(r)}>
-                        Excluir
-                      </button>
+                      </Button>
+                      <RowMenu label={`Mais ações para ${r.name}`} items={[{ label: "Excluir", danger: true, onSelect: () => setDeleting(r) }]} />
                     </>
                   )}
                 </td>
               </tr>
             ))}
           </tbody>
-        </table>
+        </Table>
       )}
       {routes.hasNextPage && (
         <button type="button" onClick={() => void routes.fetchNextPage()} disabled={routes.isFetchingNextPage}>
@@ -126,7 +155,7 @@ export function RoutesPage() {
           <ScopedPlugins envId={envId} scope={{ kind: "route", id: plugins.id }} title="Plugins aplicados" />
         </Modal>
       )}
-    </section>
+    </div>
   );
 }
 
