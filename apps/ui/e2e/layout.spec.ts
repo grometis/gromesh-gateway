@@ -4,7 +4,7 @@ import { checkLayout } from "./layout";
 import { readFileSync } from "node:fs";
 
 const admin = { id: "7c1d2e3f-4a5b-4c6d-8e7f-000000000001", name: "Ana Souza", email: "ana@gromesh.dev", role: "admin" as const, active: true, createdAt: "2026-10-15T12:00:00Z", updatedAt: "2026-10-15T12:00:00Z" };
-const screens = ["services", "service-detail", "routes", "plugins", "plugin-catalog", "consumers", "consumer-detail", "clusters", "publish", "overview"] as const;
+const screens = ["services", "service-detail", "routes", "plugins", "plugin-catalog", "upstreams", "upstream-targets", "upstream-healthchecks", "certificates", "certificate-upload", "certificate-edit", "consumers", "consumer-detail", "clusters", "publish", "overview"] as const;
 
 for (const width of [390, 1440]) {
   for (const screen of screens) {
@@ -18,7 +18,8 @@ for (const width of [390, 1440]) {
       await expect(page.getByRole("heading", { name: "Services", exact: true })).toBeVisible();
       const envId = /\/e\/([^/]+)\//.exec(new URL(page.url()).pathname)![1]!;
       const path = screen === "service-detail" ? "services/7c1d2e3f-4a5b-4c6d-8e7f-000000000002"
-        : screen === "plugin-catalog" ? "plugins" : screen === "consumer-detail" ? "consumers" : screen;
+        : screen === "plugin-catalog" ? "plugins" : screen === "consumer-detail" ? "consumers"
+        : screen.startsWith("upstream-") ? "upstreams" : screen.startsWith("certificate-") ? "certificates" : screen;
       await page.goto(`/e/${envId}/${path}`);
       await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
       if (screen === "consumer-detail") {
@@ -40,6 +41,39 @@ for (const width of [390, 1440]) {
           await page.getByRole("button", { name: "Novo plugin" }).click();
           await expect(page.getByRole("dialog", { name: "Escolha um plugin" }).getByRole("button", { name: /^oauth2/ })).toBeDisabled();
         }
+      } else if (screen === "upstreams" || screen === "upstream-targets" || screen === "upstream-healthchecks") {
+        const table = page.getByRole("table", { name: "Upstreams", exact: true });
+        await expect(table).toHaveClass("cards");
+        await expect(table.locator(".service-name").first()).toHaveText("orders.upstream");
+        await expect(table.locator(".target.mono").first()).toHaveText("Round-robin");
+        if (screen === "upstream-targets") {
+          await table.getByRole("button", { name: "Targets", exact: true }).first().click();
+          const dialog = page.getByRole("dialog", { name: "Targets de orders.upstream" });
+          await expect(dialog.getByRole("table", { name: "Targets", exact: true })).toHaveClass("cards");
+          await expect(dialog.getByLabel("Peso de 10.0.0.11:8080")).toHaveValue("100");
+        } else if (screen === "upstream-healthchecks") {
+          await table.getByRole("button", { name: "Editar", exact: true }).first().click();
+          const dialog = page.getByRole("dialog", { name: "Editar orders.upstream" });
+          await dialog.getByLabel("Algoritmo").selectOption("consistent-hashing");
+          await dialog.getByLabel("Hash por").selectOption("header");
+          await dialog.getByLabel("Alternativa", { exact: true }).selectOption("header");
+          await dialog.getByLabel("Verificação ativa", { exact: true }).check();
+          await dialog.getByLabel("Verificação passiva (pelo tráfego)").check();
+          await expect(dialog.getByLabel("Timeouts para não saudável", { exact: true })).toBeVisible();
+        }
+      } else if (screen === "certificates" || screen === "certificate-upload" || screen === "certificate-edit") {
+        const table = page.getByRole("table", { name: "Certificados", exact: true });
+        await expect(table).toHaveClass("cards");
+        await expect(table.locator(".service-name").first()).toHaveText("CN=api.example.com");
+        await expect(table.locator(".target").first()).toHaveText("api.example.com, *.example.com");
+        if (screen !== "certificates") {
+          if (screen === "certificate-upload") await page.getByRole("button", { name: "Novo certificado", exact: true }).click();
+          else await table.getByRole("button", { name: "Editar", exact: true }).first().click();
+          const dialog = page.getByRole("dialog", { name: screen === "certificate-upload" ? "Novo certificado" : "Editar certificado" });
+          await expect(dialog.getByLabel("Arquivo do certificado")).toBeVisible();
+          await expect(dialog.getByLabel("Arquivo da chave")).toBeVisible();
+          await expect(dialog.getByLabel("Chave privada (PEM)")).toHaveValue("");
+        }
       } else if (screen === "services" || screen === "consumers") {
         await expect(page.getByRole("table", { name: screen === "services" ? "Services" : "Consumers" })).toBeVisible();
       } else if (screen === "clusters") {
@@ -53,7 +87,7 @@ for (const width of [390, 1440]) {
       await page.evaluate(() => document.fonts.ready);
       await testInfo.attach(`${screen}-${width}`, { body: await page.screenshot({ fullPage: true }), contentType: "image/png" });
       await checkLayout(page, {
-        focusWithin: ".final-page",
+        focusWithin: ["upstream-targets", "upstream-healthchecks", "certificate-upload", "certificate-edit"].includes(screen) ? ".final-page [role=dialog]" : ".final-page",
         inlineLinks: screen === "overview"
           ? [{ selector: ".top-routes td a", reason: "Route names are plain text links inside table cells." }]
           : screen === "publish"

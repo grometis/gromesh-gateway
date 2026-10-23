@@ -19,6 +19,10 @@ test("upstreams: list, consistent hashing with a header, health checks and targe
   await expect(table).toContainText("orders.upstream");
   await expect(table).toContainText("Round-robin");
   await expect(table).toContainText("desligada");
+  await expect(table).toHaveClass("cards");
+  await expect(table.locator(".service-route .service-name")).toHaveText("orders.upstream");
+  await expect(table.locator(".badge.off")).toHaveText("desligada");
+  await expect(table.locator(".target.mono")).toHaveText("Round-robin");
 
   await page.getByRole("button", { name: "Novo upstream" }).click();
   const dialog = page.getByRole("dialog", { name: "Novo upstream" });
@@ -49,6 +53,8 @@ test("upstreams: list, consistent hashing with a header, health checks and targe
   const targets = page.getByRole("dialog", { name: "Targets de orders.upstream" });
   await expect(targets.getByRole("table", { name: "Targets" })).toContainText("10.0.0.11:8080");
   await expect(targets.getByLabel("Peso de 10.0.0.11:8080")).toHaveValue("100");
+  await expect(targets.getByRole("table", { name: "Targets" })).toHaveClass("cards");
+  await expect(targets.getByLabel("Peso de 10.0.0.11:8080")).toHaveClass(/mono/);
   await targets.getByLabel("Novo target").fill("10.0.0.12:8080");
   await targets.getByLabel("Peso", { exact: true }).fill("0");
   const added = page.waitForRequest((r) => r.method() === "POST" && r.url().endsWith("/targets"));
@@ -76,6 +82,10 @@ test("certificates: upload PEM files and the key is never shown again", async ({
   const table = page.getByRole("table", { name: "Certificados" });
   await expect(table).toContainText("api.example.com, *.example.com");
   await expect(table).toContainText("CN=api.example.com");
+  await expect(table).toHaveClass("cards");
+  await expect(table.locator(".service-name.mono")).toHaveText("CN=api.example.com");
+  await expect(table.locator(".target.mono")).toHaveText("api.example.com, *.example.com");
+  await expect(table).toContainText("CN=Example CA");
   await expect(page.getByText(/REDACTED/)).toHaveCount(0);
 
   await page.getByRole("button", { name: "Novo certificado" }).click();
@@ -121,4 +131,111 @@ test("a certificate expiring in less than 30 days, or already expired, is flagge
   const table = page.getByRole("table", { name: "Certificados" });
   await expect(table.getByRole("row", { name: /soon\.example\.com/ })).toContainText(/Expira em (9|10) dia/);
   await expect(table.getByRole("row", { name: /old\.example\.com/ })).toContainText("Expirado em");
+  await expect(table.getByRole("row", { name: /soon\.example\.com/ }).locator(".badge.warning")).toBeVisible();
+  await expect(table.getByRole("row", { name: /old\.example\.com/ }).locator(".badge.danger")).toBeVisible();
+});
+
+test("upstream and certificate row menus keep deletion behind an outlined confirmation", async ({ page }) => {
+  await login(page);
+  for (const screen of [
+    { link: "Upstreams", name: "orders.upstream", dialog: "Excluir upstream" },
+    { link: "Certificados", name: "CN=api.example.com", dialog: "Excluir certificado" },
+  ]) {
+    await menu(page).getByRole("link", { name: screen.link, exact: true }).click();
+    const table = page.getByRole("table", { name: screen.link, exact: true });
+    await table.getByRole("button", { name: `Mais ações para ${screen.name}`, exact: true }).focus();
+    await page.keyboard.press("ArrowDown");
+    await expect(page.getByRole("menuitem", { name: "Excluir", exact: true })).toBeFocused();
+    await page.keyboard.press("Enter");
+    const dialog = page.getByRole("dialog", { name: screen.dialog, exact: true });
+    await expect(dialog).toContainText(screen.link === "Upstreams" ? screen.name : "api.example.com");
+    await expect(dialog.getByRole("button", { name: "Excluir", exact: true })).toHaveClass("danger");
+    await expect(dialog.getByRole("button", { name: "Excluir", exact: true })).toHaveCSS("background-color", "rgb(255, 255, 255)");
+    await dialog.getByRole("button", { name: "Cancelar", exact: true }).click();
+    await expect(dialog).toBeHidden();
+  }
+});
+
+test("removing a target requires confirmation, preserves cancellation and sends the same DELETE", async ({ page }) => {
+  await login(page);
+  await menu(page).getByRole("link", { name: "Upstreams", exact: true }).click();
+  await page.getByRole("table", { name: "Upstreams" }).getByRole("button", { name: "Targets", exact: true }).first().click();
+  const targets = page.getByRole("dialog", { name: "Targets de orders.upstream", exact: true });
+  const deletes: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "DELETE" && request.url().includes("/targets/")) deletes.push(request.url());
+  });
+  await targets.getByRole("button", { name: "Remover", exact: true }).first().click();
+  const confirm = page.getByRole("dialog", { name: "Remover target", exact: true });
+  await expect(confirm).toContainText("10.0.0.11:8080");
+  await expect(confirm.getByRole("button", { name: "Remover", exact: true })).toHaveClass("danger");
+  await confirm.getByRole("button", { name: "Cancelar", exact: true }).click();
+  await expect(confirm).toBeHidden();
+  expect(deletes).toEqual([]);
+  await targets.getByRole("button", { name: "Remover", exact: true }).first().click();
+  const removed = page.waitForRequest((request) => request.method() === "DELETE" && request.url().includes("/targets/"));
+  await confirm.getByRole("button", { name: "Remover", exact: true }).click();
+  expect(new URL((await removed).url()).pathname).toMatch(/\/upstreams\/[^/]+\/targets\/[^/]+$/);
+  await expect(confirm).toBeHidden();
+});
+
+test("empty upstream, target and certificate lists use EmptyState and retain creation actions", async ({ page }) => {
+  await login(page);
+  await page.route("**/api/v1/environments/*/upstreams/*/targets", (route) => route.fulfill({ json: { items: [], nextCursor: null } }));
+  await menu(page).getByRole("link", { name: "Upstreams", exact: true }).click();
+  await expect(page.getByRole("table", { name: "Upstreams" })).toContainText("orders.upstream");
+  await page.getByRole("button", { name: "Targets", exact: true }).first().click();
+  const targets = page.getByRole("dialog", { name: "Targets de orders.upstream", exact: true });
+  await expect(targets.locator(".empty-state")).toContainText("Nenhum target: o tráfego deste upstream não tem destino.");
+  await expect(targets.getByRole("button", { name: "Adicionar target", exact: true })).toBeEnabled();
+  await targets.getByRole("button", { name: "Fechar", exact: true }).click();
+  for (const screen of [
+    { path: "upstreams", empty: "Nenhum upstream ainda.", create: "Novo upstream" },
+    { path: "certificates", empty: "Nenhum certificado ainda.", create: "Novo certificado" },
+  ]) {
+    await page.route(`**/api/v1/environments/*/${screen.path}`, (route) => route.fulfill({ json: { items: [], nextCursor: null } }));
+    const envId = /\/e\/([^/]+)\//.exec(new URL(page.url()).pathname)![1]!;
+    await page.goto(`/e/${envId}/${screen.path}`);
+    await expect(page.locator(".empty-state").getByRole("heading", { name: screen.empty, exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: screen.create, exact: true })).toBeEnabled();
+  }
+});
+
+test("upstream targets are fetched only for the opened panel", async ({ page }) => {
+  const upstreams = [
+    { id: "8a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", name: "orders.upstream" },
+    { id: "8a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4e", name: "payments.upstream" },
+  ].map((upstream) => ({
+    ...upstream, algorithm: "round-robin", hashOn: "none", hashFallback: "none",
+    healthchecks: { active: null, passive: null }, tags: [],
+    createdAt: "2026-10-15T12:00:00Z", updatedAt: "2026-10-15T12:00:00Z",
+  }));
+  await page.route("**/api/v1/environments/*/upstreams", (route) => route.fulfill({ json: { items: upstreams, nextCursor: null } }));
+  await login(page);
+  // Finish the shell's initial requests before observing what opening the list adds.
+  await page.waitForLoadState("networkidle");
+  const requests: URL[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "GET") requests.push(new URL(request.url()));
+  });
+  await menu(page).getByRole("link", { name: "Upstreams", exact: true }).click();
+  const table = page.getByRole("table", { name: "Upstreams", exact: true });
+  await expect(table.locator(".service-name")).toHaveText(["orders.upstream", "payments.upstream"]);
+  await expect(table.getByRole("columnheader", { name: "Upstream → algoritmo", exact: true })).toBeAttached();
+  // This negative network assertion needs the list's request cycle to settle, including React Query effects.
+  await page.waitForLoadState("networkidle");
+  expect(requests.filter((url) => url.pathname.includes("/api/v1/"))).toHaveLength(1);
+  expect(requests.find((url) => url.pathname.includes("/api/v1/"))?.pathname).toMatch(/\/environments\/[^/]+\/upstreams$/);
+
+  const selected = upstreams[1]!;
+  const fetched = page.waitForResponse((response) => response.request().method() === "GET"
+    && new URL(response.url()).pathname.endsWith(`/upstreams/${selected.id}/targets`));
+  await table.getByRole("row").filter({ hasText: selected.name }).getByRole("button", { name: "Targets", exact: true }).click();
+  await fetched;
+  await expect(page.getByRole("dialog", { name: `Targets de ${selected.name}`, exact: true }).getByRole("table", { name: "Targets", exact: true })).toBeVisible();
+  await page.waitForLoadState("networkidle");
+  const targetRequests = requests.filter((url) => /\/upstreams\/[^/]+\/targets$/.test(url.pathname));
+  expect(targetRequests).toHaveLength(1);
+  expect(targetRequests[0]!.pathname).toContain(`/upstreams/${selected.id}/targets`);
+  expect(targetRequests[0]!.search).toBe("");
 });
