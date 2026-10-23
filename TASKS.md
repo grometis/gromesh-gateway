@@ -61,7 +61,7 @@ git worktree add ../gg-codex  -b task/W1-X1-kong-image
 | P5-C2 | Claude | P5-C1 | `apps/ui/` |
 | B-11 | Codex | — | `contracts/` (PR próprio), `packages/compiler/`, `apps/control-plane/`, `deploy/observability/`, `deploy/compose/`, `deploy/helm/data-plane/files/vector/`, `e2e/` |
 | B-16 | Codex | — | `contracts/` (PR próprio), `packages/compiler/` (conversão Kong → modelo), `apps/control-plane/` |
-| P6-C0 | Claude | — | `contracts/`, `deploy/helm/*/values.yaml`, `deploy/helm/data-plane/values.schema.json`, `deploy/helm/*/templates/_helpers.tpl` (só a trava "planned"), `deploy/helm/*/ci/check.sh`, `.github/workflows/ci.yml` (só o passo do chart do data plane) |
+| P6-C0 | Claude | — | `contracts/` (+ `apps/ui/src/api/schema.d.ts` gerado), `deploy/helm/*/values.yaml`, `deploy/helm/data-plane/values.schema.json`, `deploy/helm/*/templates/_helpers.tpl` (só a trava "planned"), `deploy/helm/*/ci/check.sh`, `.github/workflows/ci.yml` (só o passo do chart do data plane) |
 | P6-X2 | Codex | — | `apps/ui/` |
 | P6-X3a | Codex | P6-X2 | `apps/ui/` |
 | P6-X3b | Codex | P6-X3a | `apps/ui/` |

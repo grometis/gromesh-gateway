@@ -35,6 +35,12 @@ expect_failure 'trustProxy' "${required[@]}" --set ingress.enabled=true
 for trust in uniquelocal true false loopback linklocal 0.0.0.0/0; do
   expect_failure 'trustProxy' "${required[@]}" --set ingress.enabled=true --set-string "trustProxy=$trust"
 done
+# clientIpHeader: a single header name, honoured only with trustProxy.
+expect_failure 'single HTTP header name' "${required[@]}" --set-string 'clientIpHeader=CF Connecting IP'
+expect_failure 'clientIpHeader needs trustProxy' "${required[@]}" --set-string clientIpHeader=CF-Connecting-IP
+helm template cp "$chart" "${required[@]}" --set-string clientIpHeader=CF-Connecting-IP --set-string trustProxy=10.244.0.0/16 > "$work/client-ip.yaml"
+client_ip_header="$(docker run --rm -i mikefarah/yq:4.44.3 ea 'select(.kind == "Deployment") | .spec.template.spec.containers[] | select(.name == "control-plane") | .env[] | select(.name == "CLIENT_IP_HEADER") | .value' < "$work/client-ip.yaml")"
+[[ "$client_ip_header" == 'CF-Connecting-IP' ]]
 # Secure cookies need HTTPS somewhere: an ingress without TLS must declare the terminator in front of it.
 expect_failure 'ingress.tls is required' -f "$chart/ci/values-homelab.yaml" --set ingress.tlsTerminatedUpstream=false
 expect_failure 'proxy-read-timeout' -f "$chart/ci/values-full.yaml" \
@@ -45,7 +51,7 @@ expect_failure 'proxy-buffering' -f "$chart/ci/values-full.yaml" \
 helm template cp "$chart" --is-upgrade --set-string database.existingSecret=ci-database --set-string encryption.existingSecret=ci-encryption > /dev/null
 echo 'Chart lint/render and rejection checks passed'
 if [[ "${KUBECONFORM:-false}" == true ]]; then
-  for variant in default full kind inline homelab; do
+  for variant in default full kind inline homelab client-ip; do
     docker run --rm -i ghcr.io/yannh/kubeconform:v0.6.7 \
       -strict -summary -kubernetes-version 1.32.2 < "$work/$variant.yaml"
   done

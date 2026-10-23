@@ -68,6 +68,14 @@ seccompProfile:
 {{- end -}}
 {{- end -}}
 {{- end -}}
+{{- with .Values.clientIpHeader -}}
+{{- if not (regexMatch "^[A-Za-z0-9!#$%&'*+.^_`|~-]+$" .) -}}
+{{- fail "clientIpHeader must be a single HTTP header name" -}}
+{{- end -}}
+{{- if empty (trim $.Values.trustProxy) -}}
+{{- fail "clientIpHeader needs trustProxy: the header is honoured only from trusted proxies" -}}
+{{- end -}}
+{{- end -}}
 {{- if .Values.ingress.enabled -}}
 {{- if empty .Values.ingress.host -}}
 {{- fail "ingress.host is required" -}}

@@ -23,6 +23,11 @@ kong:
     errorTtl: 1
     # Retain stale positive answers during DNS outages; do not shorten upstream availability.
     staleTtl: 3600
+  # Client address behind a CDN, tunnel or balancer (Kong's real_ip_header / trusted_ips): the header (e.g.
+  # CF-Connecting-IP) is read only from peers in trustedIps (explicit CIDRs or addresses; never /0). Both empty: the
+  # gateway sees the TCP peer. Set both or neither.
+  realIpHeader: ""
+  trustedIps: []
   # Prefix (/kong_prefix: nginx files, sockets, certificates, LMDB) and /tmp
   # each have an emptyDir so the image root filesystem can remain read-only.
   resources:
@@ -37,7 +42,7 @@ agent:
   image:
     # Published by the images workflow and pinned by digest through image-digests (scripts/bump-image-digests.mjs).
     repository: ghcr.io/grometis/gromesh-agent
-    tag: "584a6428a827dcf790df73314650995edb79e768"
+    tag: "945c4f10a987c95209320ddd1c7f95e099d7440b"
     digest: "sha256:f13a82e3ab5cd8e4b0c67b08de38fe677d7deb236739df859451c988013ec4af"
     pullPolicy: IfNotPresent
   # The agent appends /agent/v1/... itself. Use the control plane origin/base URL,

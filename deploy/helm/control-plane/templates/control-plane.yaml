@@ -48,6 +48,10 @@ spec:
               value: {{ ternary "false" "true" .Values.insecureCookies | quote }}
             - name: TRUST_PROXY
               value: {{ default "false" .Values.trustProxy | quote }}
+            {{- with .Values.clientIpHeader }}
+            - name: CLIENT_IP_HEADER
+              value: {{ . | quote }}
+            {{- end }}
             - name: KONG_VALIDATOR_URL
               value: http://kong-validator:8001
             {{- with .Values.platform.httpLogEndpoint }}
