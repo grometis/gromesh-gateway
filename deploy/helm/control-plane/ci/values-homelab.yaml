@@ -34,6 +34,8 @@ platform:
 # because the browser only ever sees HTTPS. Only the controller's pods, in the cluster pod CIDR, may set
 # X-Forwarded-For.
 trustProxy: 10.244.0.0/16
+# The Cloudflare tunnel puts the visitor's address in CF-Connecting-IP; ingress-nginx overwrites X-Forwarded-For.
+clientIpHeader: CF-Connecting-IP
 
 resources:
   requests: {cpu: 50m, memory: 512Mi}
