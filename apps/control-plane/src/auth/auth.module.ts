@@ -4,6 +4,7 @@ import { eq, inArray } from "drizzle-orm";
 import type { Response } from "express";
 import { audit } from "../audit/audit.js";
 import { contractBody, inlineBody } from "../common/contract.js";
+import { clientAddress } from "../common/client-address.js";
 import { ProblemException } from "../common/problem.js";
 import { APP_CONFIG, type AppConfig } from "../config.js";
 import { DB, type Db, type Executor } from "../db/db.js";
@@ -127,7 +128,7 @@ class AuthController {
   @HttpCode(HttpStatus.OK)
   @Public()
   async login(@Body(contractBody(inlineBody("/auth/login", "post"))) body: LoginBody, @Req() req: AuthenticatedRequest, @Res({ passthrough: true }) res: Response) {
-    const { user, sessionId } = await this.auth.login(body, req.ip ?? null, sessionCookie(req.headers.cookie));
+    const { user, sessionId } = await this.auth.login(body, clientAddress(req), sessionCookie(req.headers.cookie));
     res.setHeader("Set-Cookie", this.sessions.cookie(sessionId));
     return { user: toUser(user) };
   }
@@ -137,7 +138,7 @@ class AuthController {
   @RequiredRole("viewer")
   @SessionOnly()
   async logout(@Req() req: AuthenticatedRequest, @Res({ passthrough: true }) res: Response) {
-    const ctx: RequestContext = { actor: { type: "user", id: req.user!.id, name: req.user!.name }, ip: req.ip ?? null, role: req.user!.role };
+    const ctx: RequestContext = { actor: { type: "user", id: req.user!.id, name: req.user!.name }, ip: clientAddress(req), role: req.user!.role };
     await this.auth.logout(ctx, req.session!.idHash);
     res.setHeader("Set-Cookie", this.sessions.cookie(null));
   }

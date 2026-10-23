@@ -11,6 +11,7 @@ import { timingSafeEqual } from "node:crypto";
 import { Reflector } from "@nestjs/core";
 import type { Request, Response } from "express";
 import type { Actor, UserRow } from "../db/schema.js";
+import { clientAddress } from "../common/client-address.js";
 import { ProblemException } from "../common/problem.js";
 import { DB, type Db } from "../db/db.js";
 import { environmentAccess, lower, RANK, type Role } from "./environment-access.js";
@@ -93,7 +94,7 @@ export class AuthGuard implements CanActivate {
       if (sessionOnly) throw new ProblemException(HttpStatus.UNAUTHORIZED, "This operation requires a session, not an API token");
       const bearer = /^Bearer\s+(\S+)$/i.exec(authorization)?.[1] ?? "";
       // An unparsable value is resolved as any other invalid token: same answer, same failure counter.
-      const resolved = await this.tokens.resolve(TOKEN_PATTERN.test(bearer) ? bearer : "ggt_invalid", req.ip ?? null);
+      const resolved = await this.tokens.resolve(TOKEN_PATTERN.test(bearer) ? bearer : "ggt_invalid", clientAddress(req));
       if (!resolved) throw new ProblemException(HttpStatus.UNAUTHORIZED, "Invalid or expired API token");
       const access = await environmentAccess(this.db, resolved.user, req.params);
       const role = access ? lower(resolved.token.role, access.role) : resolved.role;
@@ -145,7 +146,7 @@ export function contextOf(req: AuthenticatedRequest): RequestContext {
   const user = req.user!;
   const role = req.auth?.role ?? user.role;
   if (req.auth?.via === "token") {
-    return { actor: { type: "user", id: user.id, name: user.name, via: "token", tokenId: req.auth.tokenId, tokenName: req.auth.tokenName }, ip: req.ip ?? null, role };
+    return { actor: { type: "user", id: user.id, name: user.name, via: "token", tokenId: req.auth.tokenId, tokenName: req.auth.tokenName }, ip: clientAddress(req), role };
   }
-  return { actor: { type: "user", id: user.id, name: user.name }, ip: req.ip ?? null, role };
+  return { actor: { type: "user", id: user.id, name: user.name }, ip: clientAddress(req), role };
 }

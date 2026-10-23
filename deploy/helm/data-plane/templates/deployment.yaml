@@ -66,6 +66,12 @@ spec:
           env:
             - name: KONG_DATABASE
               value: "off"
+            {{- if .Values.kong.realIpHeader }}
+            - name: KONG_REAL_IP_HEADER
+              value: {{ .Values.kong.realIpHeader | quote }}
+            - name: KONG_TRUSTED_IPS
+              value: {{ join "," .Values.kong.trustedIps | quote }}
+            {{- end }}
             - name: KONG_DECLARATIVE_CONFIG
               value: /kong/declarative/kong.json
             - name: KONG_ADMIN_LISTEN

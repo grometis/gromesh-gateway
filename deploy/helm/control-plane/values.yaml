@@ -89,7 +89,6 @@ insecureCookies: false
 trustProxy: ""
 # Header with the client address set by a TLS terminator in front of the ingress (e.g. CF-Connecting-IP behind a
 # Cloudflare tunnel), honoured only on requests from trustProxy. Empty: the address comes from X-Forwarded-For.
-# Planned (P6-X1): rendering refuses a value until the control plane implements it.
 clientIpHeader: ""
 config:
   sessionTtlMs: 28800000

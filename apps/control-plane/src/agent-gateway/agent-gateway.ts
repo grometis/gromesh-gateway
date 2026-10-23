@@ -20,6 +20,7 @@ import { and, asc, eq, gt, sql } from "drizzle-orm";
 import { audit } from "../audit/audit.js";
 import { Public, type RequestContext } from "../auth/auth.js";
 import { HEARTBEAT_SECONDS, newToken, tokenHash } from "../clusters/clusters.js";
+import { clientAddress } from "../common/client-address.js";
 import { ProblemException, unprocessable } from "../common/problem.js";
 import type { GatewayState } from "@gromesh/compiler";
 import { ENCRYPTOR, Encryptor, snapshotContext } from "../crypto/crypto.js";
@@ -42,7 +43,7 @@ function bearer(req: Request): string {
 function agentContext(req: Request, nodeId: string): RequestContext {
   return {
     actor: { type: "agent", id: nodeId },
-    ip: req.ip ?? null,
+    ip: clientAddress(req),
     role: "viewer",
   };
 }

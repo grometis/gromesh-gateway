@@ -88,7 +88,6 @@ http://gromesh-collector:8080/kong
 {{- if not (and .Values.kong.realIpHeader .Values.kong.trustedIps) -}}
 {{- fail "kong.realIpHeader and kong.trustedIps go together: the header is read only from trusted peers" -}}
 {{- end -}}
-{{- fail "kong.realIpHeader/kong.trustedIps are planned (P6-X1) and not implemented yet" -}}
 {{- end -}}
 {{- if and .Values.autoscaling.enabled (gt (int .Values.autoscaling.minReplicas) (int .Values.autoscaling.maxReplicas)) -}}
 {{- fail "autoscaling.maxReplicas must be at least autoscaling.minReplicas" -}}
