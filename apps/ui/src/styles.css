@@ -416,6 +416,10 @@ table.cards tr:hover td { background: var(--line); }
 .node-failure p { margin: 0; }
 .node-failure .node-error { display: inline; background: none; padding: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 /* ---------------- consumer credentials ---------------- */
+.warn { background: var(--draft); color: var(--draft-text); border-radius: var(--radius); padding: var(--space-2) var(--space-3); margin-top: 0; }
+.secret { display: flex; gap: var(--space-2); align-items: center; }
+.secret code { flex: 1; padding: var(--space-2) var(--space-3); border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--surface); word-break: break-all; user-select: all; }
+
 .cred-columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: var(--space-4); align-items: start; }
 .cred-section { background: var(--surface); border-radius: var(--radius); padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-3); }
 .cred-head { display: flex; justify-content: space-between; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
@@ -425,6 +429,26 @@ table.cards tr:hover td { background: var(--line); }
 .cred-hint { font-weight: 600; overflow-wrap: anywhere; }
 .cred-meta { color: var(--text-3); font-size: var(--text-sm); }
 .cred-section > p { margin: 0; }
+
+/* ---------------- users and API tokens ---------------- */
+.identity-page .table-scroll { overflow: visible; }
+.identity-page .row-main, .identity-page .modal-body { overflow-wrap: anywhere; }
+.identity-page .service-route > * { min-width: 0; max-width: 100%; }
+.identity-page td.actions { white-space: normal; }
+/* State badges carry inactive status without fading text below accessible contrast. */
+.identity-page table.cards tr.row-off td { opacity: 1; }
+.identity-actions { display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
+.identity-page td.actions button + button { margin-left: 0; }
+.identity-meta { margin: 0; display: flex; flex-direction: column; gap: var(--space-2); }
+.identity-meta dt { color: var(--text-3); font-size: var(--text-xs); }
+.identity-meta dd { margin: 0; }
+.identity-filters { display: flex; flex-wrap: wrap; margin-bottom: var(--space-4); }
+.identity-filters select { border-radius: var(--radius-pill); }
+.identity-page .modal > header h2 { min-width: 0; overflow-wrap: anywhere; }
+.identity-page .modal > header .icon { min-height: 40px; min-width: 40px; flex: none; }
+.identity-page .identity-active { min-height: 40px; width: 40px; align-self: flex-start; accent-color: var(--ink); }
+.identity-page .secret { flex-wrap: wrap; }
+.identity-page .secret code { min-width: 0; flex-basis: 200px; }
 
 /* ---------------- dialogs ---------------- */
 .backdrop { position: fixed; inset: 0; background: rgb(11 42 42 / 0.55); display: grid; place-items: center; padding: var(--space-4); z-index: 10; }
@@ -446,16 +470,12 @@ table.cards tr:hover td { background: var(--line); }
 .props dd { margin: 0; }
 .record { border: 1px solid var(--line-strong); border-radius: var(--radius); padding: var(--space-2) var(--space-3) var(--space-3); display: flex; flex-direction: column; gap: var(--space-3); }
 .record legend { font-weight: 600; padding: 0 var(--space-1); }
-.warn { background: var(--draft); color: var(--draft-text); border-radius: var(--radius); padding: var(--space-2) var(--space-3); margin-top: 0; }
 .tags { display: flex; flex-wrap: wrap; gap: var(--space-2); list-style: none; padding: 0; margin: 0; }
 .tags li { border: 1px solid var(--line-strong); border-radius: var(--radius-pill); padding: 2px var(--space-3); }
-.secret { display: flex; gap: var(--space-2); align-items: center; }
-.secret code { flex: 1; padding: var(--space-2) var(--space-3); border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--surface); word-break: break-all; user-select: all; }
 .scroll-x { overflow-x: auto; }
 .wrap { overflow-wrap: anywhere; }
 .block { margin-top: var(--space-5); }
 .node-error { min-width: 160px; max-width: 360px; white-space: pre-wrap; overflow-wrap: anywhere; }
-.user-active { width: auto; align-self: flex-start; }
 .stat-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: var(--space-3); margin-bottom: var(--space-4); }
 .stat-card { background: var(--surface); border-radius: var(--radius); padding: var(--space-3) var(--space-4); }
 .stat-card dt { color: var(--text-3); font-size: var(--text-xs); }
@@ -542,6 +562,8 @@ table.numeric td, table.numeric th { white-space: nowrap; }
   table.cards td.actions { text-align: left; white-space: normal; display: flex; flex-wrap: wrap; gap: var(--space-2); }
   table.cards td.actions button + button { margin-left: 0; }
   .gateway-list .cards .plugin-state { width: auto; }
+  .identity-actions { justify-content: flex-start; width: 100%; }
+  .identity-actions .row-menu { margin-left: auto; }
   .service-properties { grid-template-columns: minmax(0, 1fr); gap: var(--space-1); padding: var(--space-4); }
   .service-properties dd + dt { margin-top: var(--space-3); }
   .gateway-filters select { width: 100%; }

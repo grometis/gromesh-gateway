@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 
 const admin = { id: "7c1d2e3f-4a5b-4c6d-8e7f-000000000001", name: "Ana Souza", email: "ana@gromesh.dev", role: "admin" as const, active: true, createdAt: "2026-10-15T12:00:00Z", updatedAt: "2026-10-15T12:00:00Z" };
 const GLOBAL_SCREENS: readonly string[] = ["users", "tokens", "audit"];
-const screens = ["services", "service-detail", "routes", "plugins", "plugin-catalog", "upstreams", "upstream-targets", "upstream-healthchecks", "certificates", "certificate-upload", "certificate-edit", "consumers", "consumer-detail", "clusters", "publish", "overview", "publications", "publication-detail", "publication-diff", "publication-rollback", "audit"] as const;
+const screens = ["services", "service-detail", "routes", "plugins", "plugin-catalog", "upstreams", "upstream-targets", "upstream-healthchecks", "certificates", "certificate-upload", "certificate-edit", "consumers", "consumer-detail", "clusters", "publish", "overview", "publications", "publication-detail", "publication-diff", "publication-rollback", "audit", "users", "user-create", "user-edit", "user-deactivate", "user-roles", "user-delete", "user-menu", "tokens", "tokens-all", "token-create", "token-secret", "token-revoke"] as const;
 
 for (const width of [390, 1440]) {
   test(`layout focus walk restarts after the last control at ${width}px`, async ({ page }) => {
@@ -43,10 +43,53 @@ for (const width of [390, 1440]) {
         : screen === "publication-rollback" ? "publications"
         : screen === "plugin-catalog" ? "plugins" : screen === "consumer-detail" ? "consumers"
         : screen.startsWith("upstream-") ? "upstreams" : screen.startsWith("certificate-") ? "certificates" : screen;
-      const isGlobal = GLOBAL_SCREENS.includes(screen);
-      await page.goto(isGlobal ? `/${path}` : `/e/${envId}/${path}`);
+      const isGlobal = GLOBAL_SCREENS.includes(screen) || screen.startsWith("user") || screen.startsWith("token");
+      await page.goto(!isGlobal ? `/e/${envId}/${path}` : screen.startsWith("user") ? "/users" : screen.startsWith("token") ? "/tokens" : `/${path}`);
       await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
-      if (screen === "consumer-detail") {
+      if (screen.startsWith("user")) {
+        const table = page.getByRole("table", { name: "Usuários", exact: true });
+        await expect(table).toHaveClass("cards");
+        if (screen === "user-create") {
+          await page.getByRole("button", { name: "Novo usuário" }).click();
+          await expect(page.getByRole("dialog", { name: "Novo usuário" })).toBeVisible();
+        } else if (screen === "user-menu") {
+          await table.getByRole("button", { name: /^Mais ações para/ }).first().click();
+          await expect(page.getByRole("menuitem", { name: "Excluir", exact: true })).toBeVisible();
+        } else if (screen === "user-edit" || screen === "user-deactivate") {
+          await table.getByRole("button", { name: "Editar", exact: true }).first().click();
+          await expect(page.getByRole("dialog").getByLabel("Ativo", { exact: true })).toBeVisible();
+          if (screen === "user-deactivate") {
+            await page.getByRole("dialog").getByLabel("Ativo", { exact: true }).uncheck();
+            await page.getByRole("dialog").getByRole("button", { name: "Salvar", exact: true }).click();
+            await expect(page.getByRole("dialog", { name: "Desativar usuário" })).toBeVisible();
+          }
+        } else if (screen === "user-roles") {
+          await table.getByRole("button", { name: /^Papéis de/ }).first().click();
+          await expect(page.getByRole("table", { name: "Papéis por environment" })).toBeVisible();
+        } else if (screen === "user-delete") {
+          await table.getByRole("button", { name: "Excluir", exact: true }).first().click();
+          await expect(page.getByRole("dialog", { name: "Excluir usuário" })).toBeVisible();
+        }
+      } else if (screen.startsWith("token")) {
+        const table = page.getByRole("table", { name: "Tokens de API", exact: true });
+        await expect(table).toHaveClass("cards");
+        if (screen === "tokens-all") {
+          await page.getByLabel("Mostrar", { exact: true }).selectOption("all");
+          await expect(table.getByRole("columnheader", { name: "Dono", exact: true })).toBeVisible();
+        } else if (screen === "token-create" || screen === "token-secret") {
+          await page.getByRole("button", { name: "Novo token" }).click();
+          if (screen === "token-secret") {
+            await page.getByRole("dialog").getByLabel("Nome", { exact: true }).fill("ci-deploy");
+            await page.getByRole("button", { name: "Criar token", exact: true }).click();
+            await expect(page.getByRole("dialog", { name: "Token criado" }).getByLabel("Token", { exact: true })).toBeVisible();
+          } else {
+            await expect(page.getByRole("dialog", { name: "Novo token" })).toBeVisible();
+          }
+        } else if (screen === "token-revoke") {
+          await table.getByRole("button", { name: "Revogar", exact: true }).first().click();
+          await expect(page.getByRole("dialog", { name: "Revogar token" })).toBeVisible();
+        }
+      } else if (screen === "consumer-detail") {
         await page.getByRole("table", { name: "Consumers" }).locator(".row-open").first().click();
         await expect(page.getByRole("heading", { level: 1 })).toContainText("Consumer ");
         await expect(page.getByRole("list", { name: "Chaves", exact: true })).toBeVisible();
@@ -131,9 +174,13 @@ for (const width of [390, 1440]) {
       } else {
         await expect(page.getByRole("table", { name: "Top rotas" })).toBeVisible();
       }
-      if (!isGlobal) await expect(page.getByRole("region", { name: "Publicação" })).toBeVisible();
+      if (isGlobal) await expect(page.getByRole("region", { name: "Publicação" })).toHaveCount(0);
+      else await expect(page.getByRole("region", { name: "Publicação" })).toBeVisible();
       await page.evaluate(() => document.fonts.ready);
-      await testInfo.attach(`${screen}-${width}`, { body: await page.screenshot({ fullPage: true }), contentType: "image/png" });
+      await testInfo.attach(`${screen}-${width}`, {
+        body: await page.screenshot({ fullPage: true, mask: screen === "token-secret" ? [page.getByLabel("Token", { exact: true })] : [] }),
+        contentType: "image/png",
+      });
       await checkLayout(page, {
         focusWithin: screen === "publication-rollback" ? '[role="dialog"]'
           : ["upstream-targets", "upstream-healthchecks", "certificate-upload", "certificate-edit"].includes(screen) ? ".final-page [role=dialog]" : ".final-page",

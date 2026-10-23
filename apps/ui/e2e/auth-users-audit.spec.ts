@@ -130,6 +130,7 @@ test("admin pagina usuários, cria, altera papel e ativo e confirma exclusão", 
   });
   await login(page);
   await page.getByRole("link", { name: "Usuários", exact: true }).click();
+  await expect(page.getByRole("table", { name: "Usuários", exact: true })).toHaveClass("cards");
   await page.getByRole("button", { name: "Carregar mais" }).click();
   await expect(page.getByRole("row").filter({ hasText: viewer.email })).toBeVisible();
   await page.getByRole("button", { name: "Novo usuário" }).click();
@@ -146,6 +147,14 @@ test("admin pagina usuários, cria, altera papel e ativo e confirma exclusão", 
   await edit.getByLabel("Papel").selectOption("editor");
   await edit.getByLabel("Ativo", { exact: true }).uncheck();
   await edit.getByRole("button", { name: "Salvar" }).click();
+  expect(edited).toBe(false);
+  const deactivate = page.getByRole("dialog", { name: "Desativar usuário" });
+  await expect(deactivate).toContainText(viewer.name);
+  await deactivate.getByRole("button", { name: "Cancelar", exact: true }).click();
+  expect(edited).toBe(false);
+  await expect(edit).toBeVisible();
+  await edit.getByRole("button", { name: "Salvar" }).click();
+  await deactivate.getByRole("button", { name: "Desativar", exact: true }).click();
   await expect(edit).toBeHidden();
   await expect(row).toContainText("Editor");
   await expect(row).toContainText("Não");
@@ -285,4 +294,40 @@ test("login por cookie → service → route → publicação → audit com o me
   await expect(event).toContainText(admin.id);
   await expect(event).toContainText(`"version": ${snapshot.version}`);
   await expect(event).toContainText("Publicação da UI");
+});
+
+
+test("user row menu retains edit, environment roles and confirmed deletion", async ({ page }) => {
+  await page.route("**/api/v1/users", (route) => route.fulfill({ json: { items: [viewer], nextCursor: null } }));
+  await login(page);
+  await page.goto("/users");
+  const row = page.getByRole("row").filter({ hasText: viewer.email });
+  const menu = row.getByRole("button", { name: `Mais ações para ${viewer.name}` });
+  await expect(row.locator(".mono")).toHaveText(viewer.email);
+  await expect(row.locator(".badge")).toHaveText(["Leitor", "Ativo"]);
+  await menu.focus();
+  await page.keyboard.press("ArrowDown");
+  await expect(page.getByRole("menuitem", { name: "Editar", exact: true })).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("dialog", { name: `Editar ${viewer.name}` })).toBeVisible();
+  await page.getByRole("button", { name: "Cancelar", exact: true }).click();
+  await menu.click();
+  await page.getByRole("menuitem", { name: "Environments", exact: true }).click();
+  await expect(page.getByRole("table", { name: "Papéis por environment" })).toHaveClass("cards");
+  await page.getByRole("button", { name: "Cancelar", exact: true }).click();
+  await menu.click();
+  await page.getByRole("menuitem", { name: "Excluir", exact: true }).click();
+  const confirm = page.getByRole("dialog", { name: "Excluir usuário" });
+  await expect(confirm).toContainText(viewer.email);
+  await expect(confirm.getByRole("button", { name: "Excluir", exact: true })).toHaveClass("danger");
+  await confirm.getByRole("button", { name: "Cancelar", exact: true }).click();
+  await expect(row).toBeVisible();
+});
+
+test("empty user list uses the shared empty state and retains creation", async ({ page }) => {
+  await page.route("**/api/v1/users", (route) => route.fulfill({ json: { items: [], nextCursor: null } }));
+  await login(page);
+  await page.goto("/users");
+  await expect(page.getByRole("heading", { name: "Nenhum usuário encontrado.", level: 2 })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Novo usuário", exact: true })).toBeVisible();
 });
