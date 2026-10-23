@@ -4,9 +4,30 @@ import { checkLayout } from "./layout";
 import { readFileSync } from "node:fs";
 
 const admin = { id: "7c1d2e3f-4a5b-4c6d-8e7f-000000000001", name: "Ana Souza", email: "ana@gromesh.dev", role: "admin" as const, active: true, createdAt: "2026-10-15T12:00:00Z", updatedAt: "2026-10-15T12:00:00Z" };
-const screens = ["services", "service-detail", "routes", "plugins", "plugin-catalog", "upstreams", "upstream-targets", "upstream-healthchecks", "certificates", "certificate-upload", "certificate-edit", "consumers", "consumer-detail", "clusters", "publish", "overview"] as const;
+const GLOBAL_SCREENS: readonly string[] = ["users", "tokens", "audit"];
+const screens = ["services", "service-detail", "routes", "plugins", "plugin-catalog", "upstreams", "upstream-targets", "upstream-healthchecks", "certificates", "certificate-upload", "certificate-edit", "consumers", "consumer-detail", "clusters", "publish", "overview", "publications", "publication-detail", "publication-diff", "publication-rollback", "audit"] as const;
 
 for (const width of [390, 1440]) {
+  test(`layout focus walk restarts after the last control at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.setContent(`
+      <style>
+        body { margin: 0; }
+        a, button { display: inline-flex; align-items: center; min-height: 44px; }
+        :focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+      </style>
+      <main class="final-page">
+        <a href="#history">Voltar ao histórico</a>
+        <button type="button">Comparar</button>
+      </main>
+    `);
+    await page.getByRole("button", { name: "Comparar", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Comparar", exact: true })).toBeFocused();
+    await checkLayout(page, { focusWithin: ".final-page" });
+    await expect(page.getByRole("link", { name: "Voltar ao histórico" })).toBeFocused();
+    await expect(page.locator("body")).not.toHaveAttribute("tabindex");
+  });
+
   for (const screen of screens) {
     test(`${screen}: layout and axe at ${width}px`, async ({ page }, testInfo) => {
       await page.setViewportSize({ width, height: 900 });
@@ -18,9 +39,12 @@ for (const width of [390, 1440]) {
       await expect(page.getByRole("heading", { name: "Services", exact: true })).toBeVisible();
       const envId = /\/e\/([^/]+)\//.exec(new URL(page.url()).pathname)![1]!;
       const path = screen === "service-detail" ? "services/7c1d2e3f-4a5b-4c6d-8e7f-000000000002"
+        : screen === "publication-detail" || screen === "publication-diff" ? "publications/2"
+        : screen === "publication-rollback" ? "publications"
         : screen === "plugin-catalog" ? "plugins" : screen === "consumer-detail" ? "consumers"
         : screen.startsWith("upstream-") ? "upstreams" : screen.startsWith("certificate-") ? "certificates" : screen;
-      await page.goto(`/e/${envId}/${path}`);
+      const isGlobal = GLOBAL_SCREENS.includes(screen);
+      await page.goto(isGlobal ? `/${path}` : `/e/${envId}/${path}`);
       await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
       if (screen === "consumer-detail") {
         await page.getByRole("table", { name: "Consumers" }).locator(".row-open").first().click();
@@ -80,14 +104,39 @@ for (const width of [390, 1440]) {
         await expect(page.locator(".cluster-card").first()).toBeVisible();
       } else if (screen === "publish") {
         await expect(page.getByRole("list", { name: "Alterações", exact: true })).toBeVisible();
+      } else if (screen === "publications" || screen === "publication-rollback") {
+        await expect(page.getByRole("table", { name: "Publicações", exact: true })).toHaveClass("cards");
+        if (screen === "publication-rollback") {
+          await page.getByRole("button", { name: /^Restaurar v\d+$/ }).first().click();
+          const dialog = page.getByRole("dialog", { name: /^Restaurar v\d+$/ });
+          await expect(dialog.getByRole("region", { name: /^Diff v\d+ → v\d+$/ })).toBeVisible();
+          await expect(dialog.getByRole("button", { name: "Confirmar rollback" })).toHaveClass("danger");
+        }
+      } else if (screen === "publication-detail" || screen === "publication-diff") {
+        await expect(page.locator("dl.service-properties")).toContainText("Hash");
+        await expect(page.getByRole("link", { name: "Voltar ao histórico" })).toHaveAttribute("href", `/e/${envId}/publications`);
+        await expect(page.getByRole("button", { name: "Restaurar v2", exact: true })).toBeEnabled();
+        if (screen === "publication-diff") {
+          await page.getByRole("button", { name: "Comparar", exact: true }).click();
+          await expect(page.getByRole("region", { name: "Diff v1 → v2", exact: true })).toBeVisible();
+          await expect(page.getByRole("columnheader", { name: "Antes", exact: true }).first()).toBeVisible();
+        }
+      } else if (screen === "audit") {
+        await expect(page.getByRole("form", { name: "Filtros de auditoria" })).toBeVisible();
+        const event = page.getByRole("article").first();
+        await expect(event).toBeVisible();
+        await expect(event.getByRole("table").first()).toHaveClass("cards");
+        await expect(event.getByRole("columnheader", { name: "Antes", exact: true })).toBeVisible();
+        await expect(event.getByRole("columnheader", { name: "Depois", exact: true })).toBeVisible();
       } else {
         await expect(page.getByRole("table", { name: "Top rotas" })).toBeVisible();
       }
-      await expect(page.getByRole("region", { name: "Publicação" })).toBeVisible();
+      if (!isGlobal) await expect(page.getByRole("region", { name: "Publicação" })).toBeVisible();
       await page.evaluate(() => document.fonts.ready);
       await testInfo.attach(`${screen}-${width}`, { body: await page.screenshot({ fullPage: true }), contentType: "image/png" });
       await checkLayout(page, {
-        focusWithin: ["upstream-targets", "upstream-healthchecks", "certificate-upload", "certificate-edit"].includes(screen) ? ".final-page [role=dialog]" : ".final-page",
+        focusWithin: screen === "publication-rollback" ? '[role="dialog"]'
+          : ["upstream-targets", "upstream-healthchecks", "certificate-upload", "certificate-edit"].includes(screen) ? ".final-page [role=dialog]" : ".final-page",
         inlineLinks: screen === "overview"
           ? [{ selector: ".top-routes td a", reason: "Route names are plain text links inside table cells." }]
           : screen === "publish"

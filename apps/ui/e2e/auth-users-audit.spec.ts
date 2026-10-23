@@ -187,8 +187,16 @@ test("audit mostra publicação com autor, antes/depois e filtra com cursor", as
   await page.getByRole("link", { name: "Auditoria", exact: true }).click();
   await expect(page.getByText("snapshot.publish", { exact: true })).toBeVisible();
   const event = page.getByRole("article", { name: `snapshot.publish por ${admin.name}` });
+  await expect(page.locator(".final-page")).toBeVisible();
+  await expect(event.getByRole("table").first()).toHaveClass("cards");
+  await expect(event.getByRole("heading", { name: "snapshot.publish", exact: true })).toHaveClass("mono");
+  await expect(page.getByRole("form", { name: "Filtros de auditoria" })).toHaveClass(/gateway-filters/);
   await expect(event).toContainText(admin.name);
   await expect(event).toContainText(admin.id);
+  await expect(event).toContainText(`${publication.entityType} · ${publication.entityId}`);
+  await expect(event.locator("dl.service-properties")).toContainText(envId);
+  await expect(event.locator("dl.service-properties")).toContainText(publication.ip);
+  await expect(event.locator("time")).toHaveAttribute("datetime", publication.at);
   await expect(event.getByRole("columnheader", { name: "Antes" })).toBeVisible();
   await expect(event.getByRole("columnheader", { name: "Depois" })).toBeVisible();
   await expect(event).toContainText("Publicação da UI");
@@ -212,6 +220,28 @@ test("audit mostra publicação com autor, antes/depois e filtra com cursor", as
   expect(queries.at(-1)?.get("actorId")).toBe(admin.id);
   await page.getByRole("button", { name: "Limpar filtros" }).click();
   await expect(page.getByLabel("ID do autor")).toHaveValue("");
+});
+
+test("auditoria vazia usa EmptyState e conserva os filtros e a validação do período", async ({ page }) => {
+  let requests = 0;
+  await page.route("**/api/v1/audit-events*", (route) => {
+    requests++;
+    return route.fulfill({ json: { items: [], nextCursor: null } });
+  });
+  await login(page);
+  await page.getByRole("link", { name: "Auditoria", exact: true }).click();
+  await expect(page.locator(".empty-state").getByRole("heading", { name: "Nenhum evento encontrado." })).toBeVisible();
+  await page.getByLabel("De", { exact: true }).fill("2026-10-16T00:00");
+  await page.getByLabel("Até", { exact: true }).fill("2026-10-15T00:00");
+  const beforeFilter = requests;
+  await page.getByRole("button", { name: "Filtrar", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("Informe um período válido");
+  expect(requests).toBe(beforeFilter);
+  await page.getByRole("button", { name: "Limpar filtros" }).click();
+  await expect(page.getByLabel("De", { exact: true })).toHaveValue("");
+  await expect(page.getByLabel("Até", { exact: true })).toHaveValue("");
+  await expect(page.getByLabel("Eventos por página")).toHaveValue("50");
+  await expect(page.getByRole("alert")).toHaveCount(0);
 });
 
 test("login por cookie → service → route → publicação → audit com o mesmo autor", async ({ page }) => {
