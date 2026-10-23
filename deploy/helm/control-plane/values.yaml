@@ -124,6 +124,9 @@ ingress:
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
   # Pre-create the TLS Secret; production ingress requires TLS for Secure cookies.
   tls: []
+  # true only when every client reaches the ingress through a TLS terminator in front of it (e.g. a tunnel or CDN
+  # that serves HTTPS): cookies stay Secure, and the ingress itself carries no certificate.
+  tlsTerminatedUpstream: false
   # - secretName: gromesh-tls
   #   hosts: [gateway.example.com]
 

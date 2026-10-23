@@ -1,0 +1,35 @@
+# Single-node homelab data plane, beside the control plane's homelab release (control-plane/ci/values-homelab.yaml).
+# Memory requests equal limits. The proxy is published by an Ingress installed beside the release (this chart only
+# renders a ClusterIP Service on 8000/8443); the Admin API listens on the pod's loopback and is never a Service port.
+replicaCount: 1
+imagePullSecrets:
+  - name: ghcr-gromesh
+
+kong:
+  workerProcesses: 2
+  resources:
+    requests: {cpu: 100m, memory: 768Mi}
+    limits: {cpu: "1", memory: 768Mi}
+
+initResources:
+  requests: {cpu: 10m, memory: 64Mi}
+  limits: {cpu: 100m, memory: 64Mi}
+
+agent:
+  controlPlaneUrl: http://control-plane.gromesh-development.svc.cluster.local:3000
+  existingSecret: gromesh-agent-registration
+  existingSecretKey: registration-token
+  resources:
+    requests: {cpu: 10m, memory: 64Mi}
+    limits: {cpu: 100m, memory: 64Mi}
+
+collector:
+  enabled: true
+  # Placeholder: each installation sets the UUID the control plane returned for its cluster.
+  clusterId: 00000000-0000-4000-8000-000000000000
+  clickhouse:
+    endpoint: http://clickhouse.gromesh-development.svc.cluster.local:8123
+    existingSecret: gromesh-clickhouse-writer
+  resources:
+    requests: {cpu: 20m, memory: 128Mi}
+    limits: {cpu: 250m, memory: 128Mi}

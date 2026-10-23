@@ -7,6 +7,11 @@ helm lint "$chart" --strict --set-string agent.token=ci-placeholder
 helm template dp "$chart" --set-string agent.token=ci-placeholder > "$work/default.yaml"
 helm lint "$chart" --strict -f "$chart/ci/values-full.yaml"
 helm template dp "$chart" -f "$chart/ci/values-full.yaml" > "$work/full.yaml"
+helm lint "$chart" --strict -f "$chart/ci/values-homelab.yaml"
+helm template dp "$chart" -f "$chart/ci/values-homelab.yaml" > "$work/homelab.yaml"
+# Homelab: every container books its whole memory limit (same rule as the control-plane homelab values).
+unbooked="$(docker run --rm -i mikefarah/yq:4.44.3 ea '[.. | select(tag == "!!map" and has("image")) | select(.resources.limits.memory == null or .resources.requests.memory != .resources.limits.memory) | .name] | join(",")' < "$work/homelab.yaml")"
+[[ -z "$unbooked" ]] || { echo "Homelab containers whose memory request differs from the limit: $unbooked" >&2; exit 1; }
 pnpm --filter @gromesh/control-plane exec node --input-type=module - "$work/default.yaml" "$work/full.yaml" <<'JS'
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
