@@ -404,7 +404,7 @@ table.numeric td, table.numeric th { white-space: nowrap; }
 .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: var(--space-4); }
 .chart { margin: 0; background: var(--surface); border-radius: var(--radius); padding: var(--space-3) var(--space-4); }
 .chart figcaption { font-weight: 600; margin-bottom: var(--space-2); }
-.chart svg { width: 100%; height: auto; display: block; }
+.chart > svg { width: 100%; height: auto; display: block; }
 .chart-grid { stroke: var(--line-strong); stroke-width: 1; }
 .chart-tick { fill: var(--text-3); font-size: 11px; font-family: var(--font-mono); }
 .chart-legend { list-style: none; display: flex; flex-wrap: wrap; gap: var(--space-3); padding: 0; margin: var(--space-2) 0 0; font-size: var(--text-xs); color: var(--text-3); }

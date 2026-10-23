@@ -93,7 +93,7 @@ export function LineChart({ title, points, lines, unit = "" }: { title: string; 
       <ul className="chart-legend">
         {lines.map((l) => (
           <li key={l.key}>
-            <svg className="chart-swatch" aria-hidden="true" viewBox="0 0 10 10">
+            <svg className="chart-swatch" aria-hidden="true" width="10" height="10" viewBox="0 0 10 10">
               <rect width="10" height="10" rx="2" fill={l.color} />
             </svg>{" "}
             {l.label}

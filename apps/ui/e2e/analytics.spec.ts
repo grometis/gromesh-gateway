@@ -35,6 +35,12 @@ test("o dashboard renderiza os totais e as séries do período", async ({ page }
   await expect(charts).toHaveCount(3);
   await expect(charts.first().locator("path[data-series=requests]")).toHaveAttribute("d", /^M.*L.*/);
   await expect(charts.nth(2).locator("path[data-series]")).toHaveCount(3);
+  // The legend swatches stay 10×10: the plot's full-width rule must not reach them.
+  const swatches = charts.locator(".chart-legend .chart-swatch");
+  await expect(swatches).toHaveCount(6);
+  for (const box of await swatches.evaluateAll((els) => els.map((el) => el.getBoundingClientRect().toJSON()))) {
+    expect({ width: box.width, height: box.height }).toEqual({ width: 10, height: 10 });
+  }
 
   // A 7-day period asks for hourly buckets.
   const weekly = page.waitForRequest((r) => r.url().includes("interval=1h"));
