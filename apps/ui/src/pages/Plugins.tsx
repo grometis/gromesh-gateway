@@ -1,4 +1,4 @@
-import { useDeferredValue, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useDeferredValue, useMemo, useState, type FormEvent } from "react";
 import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
 import { ApiError, api, unwrap, type Plugin, type PluginCatalogEntry, type PluginScope, type PluginWrite } from "../api/client";
 import { consumerName, useConsumers, useRouteList } from "../api/lists";
@@ -9,7 +9,13 @@ import { ConfirmDialog, Modal } from "../components/Modal";
 import { useEnvId } from "../components/Shell";
 import { SchemaFields } from "../schema-form/SchemaForm";
 import { configToSubmit, fieldPaths, initialConfig, isObject, parsePluginSchema, placeErrors, validateConfig, type Config, type FieldErrors, type PluginSchema } from "../schema-form/schema";
-import { splitList, useInvalidateDraft, useServices } from "./Services";
+import { splitList, useEntityDraft, useInvalidateDraft, useServices } from "./Services";
+import { PageHeader } from "../components/PageHeader";
+import { EmptyState } from "../components/EmptyState";
+import { Table } from "../components/Table";
+import { Badge, DraftBadge } from "../components/Badge";
+import { Button } from "../components/Button";
+import { RowMenu } from "../components/RowMenu";
 
 type ScopeKind = "global" | "service" | "route" | "consumer";
 export interface ScopeChoice {
@@ -102,18 +108,15 @@ export function PluginsPage() {
   const canEdit = useCanEdit();
   const [onlyGlobal, setOnlyGlobal] = useState(false);
   return (
-    <section>
+    <section className="final-page">
       <PluginList
         envId={envId}
         scope={onlyGlobal ? { kind: "global", id: "" } : null}
-        heading={<h1>Plugins</h1>}
+        title="Plugins"
+        page
         canEdit={canEdit}
-        filters={
-          <select aria-label="Filtrar por escopo" className="search" value={onlyGlobal ? "global" : ""} onChange={(e) => setOnlyGlobal(e.target.value === "global")}>
-            <option value="">Todos os escopos</option>
-            <option value="global">Só globais</option>
-          </select>
-        }
+        onlyGlobal={onlyGlobal}
+        onGlobalChange={setOnlyGlobal}
       />
     </section>
   );
@@ -122,59 +125,70 @@ export function PluginsPage() {
 /** Plugins of one service, route or consumer, shown inside that entity's screen. */
 export function ScopedPlugins({ envId, scope, title }: { envId: string; scope: ScopeChoice; title: string }) {
   const canEdit = useCanEdit();
-  return <PluginList envId={envId} scope={scope} heading={<h2>{title}</h2>} canEdit={canEdit} />;
+  return <PluginList envId={envId} scope={scope} title={title} canEdit={canEdit} />;
 }
 
-function PluginList({ envId, scope, heading, filters, canEdit }: { envId: string; scope: ScopeChoice | null; heading: ReactNode; filters?: ReactNode; canEdit: boolean }) {
+function PluginList({ envId, scope, title, page, onlyGlobal, onGlobalChange, canEdit }: { envId: string; scope: ScopeChoice | null; title: string; page?: boolean; onlyGlobal?: boolean; onGlobalChange?: (on: boolean) => void; canEdit: boolean }) {
   const plugins = usePlugins(envId, scope);
+  const draft = useEntityDraft(envId, "plugins");
   const names = useScopeNames(envId);
   const [editing, setEditing] = useState<Plugin | "new" | null>(null);
   const [deleting, setDeleting] = useState<Plugin | null>(null);
   const items = plugins.data?.pages.flatMap((p) => p.items) ?? [];
+  const createAction = canEdit && (
+    <Button variant="primary" onClick={() => setEditing("new")}>
+      {scope && scope.kind !== "global" ? "Adicionar plugin" : "Novo plugin"}
+    </Button>
+  );
   return (
-    <>
-      <div className="page-head">
-        {heading}
-        {canEdit && (
-          <button type="button" className="primary" onClick={() => setEditing("new")}>
-            {scope && scope.kind !== "global" ? "Adicionar plugin" : "Novo plugin"}
-          </button>
-        )}
-      </div>
-      {filters}
+    <div className="gateway-list">
+      {page ? <PageHeader title={title} description="Os plugins aplicados ao gateway e a cada escopo." actions={createAction} /> : (
+        <div className="page-head"><h2>{title}</h2>{createAction}</div>
+      )}
+      {onGlobalChange && (
+        <div className="gateway-filters">
+          <select aria-label="Filtrar por escopo" value={onlyGlobal ? "global" : ""} onChange={(e) => onGlobalChange(e.target.value === "global")}>
+            <option value="">Todos os escopos</option>
+            <option value="global">Só globais</option>
+          </select>
+        </div>
+      )}
       {plugins.isPending && <p className="muted">Carregando…</p>}
       {plugins.isError && <p className="error">{statusMessage(plugins.error)}</p>}
-      {plugins.isSuccess && items.length === 0 && <p className="muted">Nenhum plugin.</p>}
+      {plugins.isSuccess && items.length === 0 && <EmptyState title="Nenhum plugin." />}
       {items.length > 0 && (
-        <table aria-label="Plugins">
+        <Table label="Plugins" cards>
           <thead>
             <tr>
-              <th>Plugin</th>
-              <th>Escopo</th>
-              <th>Ativo</th>
-              {canEdit && <th aria-label="Ações" />}
+              <th>Plugin → escopo</th>
+              <th className="plugin-state">Ativo</th>
+              {canEdit && <th className="actions" aria-label="Ações" />}
             </tr>
           </thead>
           <tbody>
             {items.map((p) => (
               <tr key={p.id}>
-                <td>{p.name}</td>
-                <td>{names.label(scopeOf(p))}</td>
-                <td>{p.enabled === false ? "Não" : "Sim"}</td>
+                <td className="row-main">
+                  <div className="service-route">
+                    <span className="service-name mono">{p.name}</span>
+                    <DraftBadge change={draft.get(p.id)} />
+                    <span className="arrow" aria-hidden="true">→</span>
+                    <span className="target mono">{names.label(scopeOf(p))}</span>
+                  </div>
+                </td>
+                <td className="plugin-state"><span className="visually-hidden">Ativo: </span><Badge tone={p.enabled === false ? "off" : "converged"}>{p.enabled === false ? "Não" : "Sim"}</Badge></td>
                 {canEdit && (
                   <td className="actions">
-                    <button type="button" onClick={() => setEditing(p)}>
+                    <Button variant="quiet" onClick={() => setEditing(p)}>
                       Editar
-                    </button>
-                    <button type="button" className="danger" onClick={() => setDeleting(p)}>
-                      Excluir
-                    </button>
+                    </Button>
+                    <RowMenu label={`Mais ações para ${p.name} (${names.label(scopeOf(p))})`} items={[{ label: "Excluir", danger: true, onSelect: () => setDeleting(p) }]} />
                   </td>
                 )}
               </tr>
             ))}
           </tbody>
-        </table>
+        </Table>
       )}
       {plugins.hasNextPage && (
         <button type="button" onClick={() => void plugins.fetchNextPage()} disabled={plugins.isFetchingNextPage}>
@@ -183,7 +197,7 @@ function PluginList({ envId, scope, heading, filters, canEdit }: { envId: string
       )}
       {editing && <PluginEditor envId={envId} plugin={editing === "new" ? null : editing} preset={scope} onClose={() => setEditing(null)} />}
       {deleting && <DeletePlugin envId={envId} plugin={deleting} label={names.label(scopeOf(deleting))} onClose={() => setDeleting(null)} />}
-    </>
+    </div>
   );
 }
 
@@ -216,6 +230,7 @@ function CatalogPicker({ onPick, onClose }: { onPick: (name: string) => void; on
       <input type="search" className="search" placeholder="Buscar plugin" aria-label="Buscar plugin" value={search} onChange={(e) => setSearch(e.target.value)} />
       {catalog.isPending && <p className="muted">Carregando catálogo…</p>}
       {catalog.isError && <p className="error">{statusMessage(catalog.error)}</p>}
+      {catalog.isSuccess && groups.length === 0 && <EmptyState title="Nenhum plugin encontrado." />}
       {groups.map(([category, items]) => (
         <section key={category} className="catalog-group" aria-label={CATEGORY_LABEL[category]}>
           <h3>{CATEGORY_LABEL[category]}</h3>
@@ -223,11 +238,11 @@ function CatalogPicker({ onPick, onClose }: { onPick: (name: string) => void; on
             {items.map((p) => {
               const unsupported = p.supportedInDbless === false;
               return (
-                <button key={p.name} type="button" disabled={unsupported} title={unsupported ? NOT_IN_DBLESS : undefined} onClick={() => onPick(p.name)}>
-                  <span>{p.name}</span>
+                <Button key={p.name} className="catalog-card" disabled={unsupported} title={unsupported ? NOT_IN_DBLESS : undefined} onClick={() => onPick(p.name)}>
+                  <span className="mono">{p.name}</span>
                   {p.source === "custom" && <small className="muted"> (customizado)</small>}
                   {unsupported && <small className="muted unsupported">{NOT_IN_DBLESS}</small>}
-                </button>
+                </Button>
               );
             })}
           </div>

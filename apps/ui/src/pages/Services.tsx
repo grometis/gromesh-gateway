@@ -15,6 +15,7 @@ import { PageHeader } from "../components/PageHeader";
 import { EmptyState } from "../components/EmptyState";
 import { ScopedPlugins } from "./Plugins";
 import { useUpstreams } from "./Upstreams";
+import { ScopedRoutes } from "./Routes";
 
 const PROTOCOLS: ServiceWrite["protocol"][] = ["http", "https", "grpc", "grpcs", "tcp", "tls"];
 const FIELDS = ["name", "protocol", "host", "port", "path", "enabled", "tags"] as const;
@@ -43,8 +44,8 @@ export function useServices(envId: string, q = "") {
   });
 }
 
-/** Which services the draft adds or changes, from the publish preview (the strip loads the same query). */
-function useServiceDraft(envId: string): Map<string, "added" | "modified"> {
+/** Which entities the draft adds or changes, from the publish preview (the strip loads the same query). */
+export function useEntityDraft(envId: string, kind: "services" | "routes" | "plugins"): Map<string, "added" | "modified"> {
   const env = useEnvironment(envId);
   const pending = env.data?.hasUnpublishedChanges ?? false;
   const preview = useQuery({
@@ -54,7 +55,7 @@ function useServiceDraft(envId: string): Map<string, "added" | "modified"> {
   });
   const draft = new Map<string, "added" | "modified">();
   if (!pending) return draft;
-  for (const c of preview.data?.changes ?? []) if (c.kind === "services" && c.change !== "removed") draft.set(c.id, c.change);
+  for (const c of preview.data?.changes ?? []) if (c.kind === kind && c.change !== "removed") draft.set(c.id, c.change);
   return draft;
 }
 
@@ -65,7 +66,7 @@ export function ServicesPage() {
   const [onlyChanged, setOnlyChanged] = useState(false);
   const q = useDeferredValue(search.trim());
   const services = useServices(envId, q);
-  const draft = useServiceDraft(envId);
+  const draft = useEntityDraft(envId, "services");
   const [editing, setEditing] = useState<Service | "new" | null>(null);
   const [deleting, setDeleting] = useState<Service | null>(null);
   const all = services.data?.pages.flatMap((p) => p.items) ?? [];
@@ -163,7 +164,7 @@ export function ServiceDetailPage() {
   const { serviceId } = useParams();
   const canEdit = useCanEdit();
   const navigate = useNavigate();
-  const draft = useServiceDraft(envId);
+  const draft = useEntityDraft(envId, "services");
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const service = useQuery({
@@ -175,19 +176,19 @@ export function ServiceDetailPage() {
   if (service.isError) return <p className="error">{statusMessage(service.error)}</p>;
   const s = service.data;
   return (
-    <section className="stack">
+    <section className="stack final-page service-detail">
       <p>
-        <Link to="..">← Services</Link>
+        <Link to=".." className="back-link">← Services</Link>
       </p>
-      <div className="page-head">
-        <div>
-          <h1 className="title-with-badges">
+      <PageHeader
+        title={
+          <span className="title-with-badges">
             {s.name} <DraftBadge change={draft.get(s.id)} />
             {s.enabled === false && <Badge tone="off">Desativado</Badge>}
-          </h1>
-          <p className="lede mono">{serviceTarget(s)}</p>
-        </div>
-        {canEdit && (
+          </span>
+        }
+        description={<span className="mono">{serviceTarget(s)}</span>}
+        actions={canEdit && (
           <div className="form-actions">
             <Button variant="primary" onClick={() => setEditing(true)}>
               Editar
@@ -195,8 +196,8 @@ export function ServiceDetailPage() {
             <RowMenu label={`Mais ações para ${s.name}`} items={[{ label: "Excluir", danger: true, onSelect: () => setDeleting(true) }]} />
           </div>
         )}
-      </div>
-      <dl className="props">
+      />
+      <dl className="service-properties" aria-label="Propriedades do service">
         <dt>Protocolo</dt>
         <dd className="mono">{s.protocol}</dd>
         <dt>Host</dt>
@@ -208,6 +209,7 @@ export function ServiceDetailPage() {
         <dt>Tags</dt>
         <dd>{s.tags?.join(", ") || "—"}</dd>
       </dl>
+      <ScopedRoutes envId={envId} service={s} />
       <ScopedPlugins envId={envId} scope={{ kind: "service", id: s.id }} title="Plugins do service" />
       {editing && <ServiceForm envId={envId} service={s} onClose={() => setEditing(false)} />}
       {deleting && <DeleteService envId={envId} service={s} onClose={() => setDeleting(false)} onDeleted={() => navigate("..")} />}

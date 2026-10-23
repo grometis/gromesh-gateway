@@ -1,9 +1,10 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, mockSession, test } from "./fixtures";
 import { checkLayout } from "./layout";
+import { readFileSync } from "node:fs";
 
 const admin = { id: "7c1d2e3f-4a5b-4c6d-8e7f-000000000001", name: "Ana Souza", email: "ana@gromesh.dev", role: "admin" as const, active: true, createdAt: "2026-10-15T12:00:00Z", updatedAt: "2026-10-15T12:00:00Z" };
-const screens = ["services", "consumers", "consumer-detail", "clusters", "publish", "overview"] as const;
+const screens = ["services", "service-detail", "routes", "plugins", "plugin-catalog", "consumers", "consumer-detail", "clusters", "publish", "overview"] as const;
 
 for (const width of [390, 1440]) {
   for (const screen of screens) {
@@ -16,12 +17,29 @@ for (const width of [390, 1440]) {
       await page.getByRole("button", { name: "Entrar" }).click();
       await expect(page.getByRole("heading", { name: "Services", exact: true })).toBeVisible();
       const envId = /\/e\/([^/]+)\//.exec(new URL(page.url()).pathname)![1]!;
-      await page.goto(`/e/${envId}/${screen === "consumer-detail" ? "consumers" : screen}`);
+      const path = screen === "service-detail" ? "services/7c1d2e3f-4a5b-4c6d-8e7f-000000000002"
+        : screen === "plugin-catalog" ? "plugins" : screen === "consumer-detail" ? "consumers" : screen;
+      await page.goto(`/e/${envId}/${path}`);
       await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
       if (screen === "consumer-detail") {
         await page.getByRole("table", { name: "Consumers" }).locator(".row-open").first().click();
         await expect(page.getByRole("heading", { level: 1 })).toContainText("Consumer ");
         await expect(page.getByRole("list", { name: "Chaves", exact: true })).toBeVisible();
+      } else if (screen === "service-detail") {
+        await expect(page.locator("dl.service-properties")).toContainText("Protocolo");
+        await expect(page.getByRole("table", { name: "Routes do service" })).toHaveClass("cards");
+        await expect(page.getByRole("table", { name: "Plugins" })).toHaveClass("cards");
+      } else if (screen === "routes" || screen === "plugins" || screen === "plugin-catalog") {
+        await expect(page.getByRole("table", { name: screen === "routes" ? "Routes" : "Plugins", exact: true })).toHaveClass("cards");
+        if (screen === "plugin-catalog") {
+          // The contract has no catalog example; use the same served catalog as the plugin acceptance test.
+          await page.route("**/api/v1/plugin-schemas", (route) => route.fulfill({
+            contentType: "application/json",
+            body: readFileSync(new URL("../../control-plane/src/plugin-catalog/kong-3.9/_catalog.json", import.meta.url), "utf8"),
+          }));
+          await page.getByRole("button", { name: "Novo plugin" }).click();
+          await expect(page.getByRole("dialog", { name: "Escolha um plugin" }).getByRole("button", { name: /^oauth2/ })).toBeDisabled();
+        }
       } else if (screen === "services" || screen === "consumers") {
         await expect(page.getByRole("table", { name: screen === "services" ? "Services" : "Consumers" })).toBeVisible();
       } else if (screen === "clusters") {

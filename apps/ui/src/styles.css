@@ -282,6 +282,44 @@ table.cards tr:hover td { background: var(--line); }
 .service-route .arrow { color: var(--text-3); }
 .service-route .target { color: var(--text-2); overflow-wrap: anywhere; }
 .service-off { color: var(--text-3); font-size: var(--text-sm); }
+.service-detail > .page-head { margin-bottom: 0; }
+.service-detail .page-head > div { min-width: 0; }
+.service-detail h1, .service-detail .lede { overflow-wrap: anywhere; }
+.service-properties {
+  display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--space-3) var(--space-5);
+  margin: 0; padding: var(--space-5); border-radius: var(--radius); background: var(--surface);
+}
+.service-properties dt { color: var(--text-3); }
+.service-properties dd { margin: 0; overflow-wrap: anywhere; }
+
+/* ---------------- routes and scoped plugin rows ---------------- */
+.gateway-filters { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); margin-bottom: var(--space-4); }
+.gateway-filters .search { margin: 0; flex: 1 1 240px; }
+.gateway-filters select { width: auto; max-width: 100%; border-radius: var(--radius-pill); }
+/* These cards wrap their values, leaving room for the row menus outside the table. */
+.gateway-list .table-scroll { overflow: visible; }
+.gateway-list table.cards { table-layout: fixed; }
+.gateway-list .row-main { overflow-wrap: anywhere; }
+.gateway-list .cards th.actions { width: 240px; }
+.gateway-list .cards .plugin-state { width: 84px; }
+.route-matches { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-2); font-size: var(--text-sm); }
+.match-chip { padding: 2px var(--space-2); border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--bg); overflow-wrap: anywhere; }
+:is(.service-detail, .gateway-list) .modal > header .icon { min-height: 40px; min-width: 40px; flex: none; }
+:is(.service-detail, .gateway-list) .modal > header h2 { overflow-wrap: anywhere; min-width: 0; }
+:is(.service-detail, .gateway-list) .check { min-height: 40px; }
+:is(.service-detail, .gateway-list) input:is([type="checkbox"], [type="radio"]) { min-height: 40px; accent-color: var(--ink); flex: none; }
+
+/* ---------------- plugin catalog ---------------- */
+.catalog-group h3 { font-size: var(--text-sm); color: var(--text-3); margin: var(--space-4) 0 var(--space-2); }
+.catalog { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr)); gap: var(--space-2); }
+.catalog .catalog-card {
+  text-align: left; flex-direction: column; align-items: flex-start; gap: var(--space-2); padding: var(--space-4);
+  white-space: normal; overflow-wrap: anywhere; min-width: 0; background: var(--surface); border-color: var(--line-strong);
+}
+.catalog-card > .mono { font-weight: 600; }
+.catalog .catalog-card:hover:not(:disabled) { border-color: var(--control-line); background: var(--line); }
+.catalog .catalog-card:disabled { opacity: 1; color: var(--text-3); }
+.catalog .unsupported { font-size: var(--text-xs); }
 
 /* ---------------- review and publish ---------------- */
 .review { display: grid; grid-template-columns: minmax(240px, 1fr) minmax(0, 2fr); gap: var(--space-5); align-items: start; margin-bottom: var(--space-4); }
@@ -350,8 +388,6 @@ table.cards tr:hover td { background: var(--line); }
 .modal-body { padding: 0 var(--space-5) var(--space-5); overflow: auto; }
 
 /* ---------------- screens not redesigned yet: same tokens ---------------- */
-.filters { display: flex; gap: var(--space-2); }
-.filters select { width: 220px; }
 .changes { list-style: none; padding: 0; margin: 0 0 var(--space-3); display: flex; flex-direction: column; gap: var(--space-2); }
 .login { display: grid; place-items: center; min-height: 100vh; padding: var(--space-4); background: var(--ink); }
 .login-box { display: flex; flex-direction: column; gap: var(--space-5); width: min(380px, 100%); }
@@ -363,10 +399,6 @@ table.cards tr:hover td { background: var(--line); }
 .props dd { margin: 0; }
 .record { border: 1px solid var(--line-strong); border-radius: var(--radius); padding: var(--space-2) var(--space-3) var(--space-3); display: flex; flex-direction: column; gap: var(--space-3); }
 .record legend { font-weight: 600; padding: 0 var(--space-1); }
-.catalog-group h3 { font-size: var(--text-sm); color: var(--text-3); margin: var(--space-3) 0 var(--space-2); }
-.catalog { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: var(--space-2); }
-.catalog button { text-align: left; flex-direction: column; align-items: flex-start; gap: 2px; padding: var(--space-2) var(--space-3); white-space: normal; }
-.catalog .unsupported { font-size: var(--text-xs); }
 .warn { background: var(--draft); color: var(--draft-text); border-radius: var(--radius); padding: var(--space-2) var(--space-3); margin-top: 0; }
 .tags { display: flex; flex-wrap: wrap; gap: var(--space-2); list-style: none; padding: 0; margin: 0; }
 .tags li { border: 1px solid var(--line-strong); border-radius: var(--radius-pill); padding: 2px var(--space-3); }
@@ -474,9 +506,11 @@ table.numeric td, table.numeric th { white-space: nowrap; }
   table.cards td:empty { display: none; }
   table.cards td.actions { text-align: left; white-space: normal; display: flex; flex-wrap: wrap; gap: var(--space-2); }
   table.cards td.actions button + button { margin-left: 0; }
+  .gateway-list .cards .plugin-state { width: auto; }
+  .service-properties { grid-template-columns: minmax(0, 1fr); gap: var(--space-1); padding: var(--space-4); }
+  .service-properties dd + dt { margin-top: var(--space-3); }
+  .gateway-filters select { width: 100%; }
   .form .row { grid-template-columns: 1fr; }
-  .filters { flex-direction: column; }
-  .filters select { width: 100%; }
   .audit-filters { grid-template-columns: 1fr; }
   .audit-event .props { grid-template-columns: 1fr; }
 }
