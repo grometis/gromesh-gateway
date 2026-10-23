@@ -38,10 +38,9 @@ info:
       - Client address (the per-address login lockout, `ip` in audit events and in API token use): the TCP peer, or
         the `X-Forwarded-For` hop written by a proxy the deployment trusts (`TRUST_PROXY`). When the deployment names
         a client address header (`CLIENT_IP_HEADER`, e.g. `CF-Connecting-IP`, set by a CDN or tunnel in front of the
-        ingress), that header's value is the client address instead, but only on a request whose `X-Forwarded-For`
-        chain reaches the control plane through trusted proxies alone. From an untrusted peer, or when the header is
-        absent or not a single valid IP address, it is ignored and the rule above applies. Unset (the default)
-        keeps the rule above.
+        ingress), that header's value is the client address instead, but only on a request whose TCP peer is one of
+        those trusted proxies. From an untrusted peer, or when the header is absent or not a single valid IP address,
+        it is ignored and the rule above applies. Unset (the default) keeps the rule above.
       - Secrets are write-only: credential keys, JWT secrets, `encrypted` plugin fields and certificate private keys
         read back as `"REDACTED"` for every role. Only the agent endpoint delivers the real values. Basic-auth
         passwords are never returned anywhere; the control plane keeps only Kong's salted hash, which is a secret too:
