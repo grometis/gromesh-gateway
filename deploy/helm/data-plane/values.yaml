@@ -23,6 +23,11 @@ kong:
     errorTtl: 1
     # Retain stale positive answers during DNS outages; do not shorten upstream availability.
     staleTtl: 3600
+  # Client address behind a CDN, tunnel or balancer (Kong's real_ip_header / trusted_ips): the header (e.g.
+  # CF-Connecting-IP) is read only from peers in trustedIps (explicit CIDRs or addresses; never /0). Both empty: the
+  # gateway sees the TCP peer. Set both or neither. Planned (P6-C1): rendering refuses a value until implemented.
+  realIpHeader: ""
+  trustedIps: []
   # Prefix (/kong_prefix: nginx files, sockets, certificates, LMDB) and /tmp
   # each have an emptyDir so the image root filesystem can remain read-only.
   resources:

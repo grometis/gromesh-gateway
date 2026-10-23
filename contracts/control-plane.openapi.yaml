@@ -35,6 +35,13 @@ info:
       - Authentication is a session cookie set by `POST /auth/login` (`httpOnly; Secure; SameSite=Strict`).
         Every mutation also needs the `X-CSRF-Token` header, obtained from `GET /auth/csrf`; a missing or
         wrong token is a 403. Agents authenticate differently (see agent-protocol.openapi.yaml).
+      - Client address (the per-address login lockout, `ip` in audit events and in API token use): the TCP peer, or
+        the `X-Forwarded-For` hop written by a proxy the deployment trusts (`TRUST_PROXY`). When the deployment names
+        a client address header (`CLIENT_IP_HEADER`, e.g. `CF-Connecting-IP`, set by a CDN or tunnel in front of the
+        ingress), that header's value is the client address instead, but only on a request whose `X-Forwarded-For`
+        chain reaches the control plane through trusted proxies alone. From an untrusted peer, or when the header is
+        absent or not a single valid IP address, it is ignored and the rule above applies. Unset (the default)
+        keeps the rule above.
       - Secrets are write-only: credential keys, JWT secrets, `encrypted` plugin fields and certificate private keys
         read back as `"REDACTED"` for every role. Only the agent endpoint delivers the real values. Basic-auth
         passwords are never returned anywhere; the control plane keeps only Kong's salted hash, which is a secret too:
@@ -77,7 +84,8 @@ paths:
                 password: { type: string, format: password }
       description: |
         Starts a session. The session id travels only in the `gromesh_session` cookie; the body never carries a token.
-        Repeated failures for the same e-mail or client address answer 429 with `Retry-After`.
+        Repeated failures for the same e-mail or client address (see "Client address" in the API description)
+        answer 429 with `Retry-After`.
       responses:
         "200":
           description: Logged in
@@ -2924,7 +2932,9 @@ components:
         entityId: { type: [string, "null"] }
         before: { type: [object, "null"] }
         after: { type: [object, "null"] }
-        ip: { type: [string, "null"] }
+        ip:
+          type: [string, "null"]
+          description: Client address of the request behind the event (see "Client address" in the API description); null when there was no request.
     AuditEventPage:
       type: object
       required: [items, nextCursor]
@@ -3000,6 +3010,8 @@ components:
         clientIp:
           type: string
           description: |
+            The client address as the gateway saw it: the TCP peer, or, when the data plane trusts the peer
+            (`kong.trustedIps`) and names a header (`kong.realIpHeader`), that header's value.
             Full address for admins only. Viewers and editors get it masked: IPv4 with the last octet zeroed
             (203.0.113.10 → 203.0.113.0), IPv6 truncated to its /48 (2001:db8:1234:5678::1 → 2001:db8:1234::).
         requestSize: { type: integer, minimum: 0, description: Bytes }

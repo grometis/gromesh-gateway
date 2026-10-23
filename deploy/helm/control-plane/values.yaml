@@ -87,6 +87,10 @@ insecureCookies: false
 # comma-separated. Never use aliases (especially uniquelocal), booleans or /0.
 # /api/v1/ bypasses UI nginx at ingress so this trust boundary stays one hop.
 trustProxy: ""
+# Header with the client address set by a TLS terminator in front of the ingress (e.g. CF-Connecting-IP behind a
+# Cloudflare tunnel), honoured only on requests from trustProxy. Empty: the address comes from X-Forwarded-For.
+# Planned (P6-C1): rendering refuses a value until the control plane implements it.
+clientIpHeader: ""
 config:
   sessionTtlMs: 28800000
   loginMaxFailures: 5
