@@ -4585,6 +4585,7 @@ export interface operations {
             };
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+            /** @description Includes a config string with a vault reference (see Vault references). */
             422: components["responses"]["ValidationError"];
         };
     };
@@ -4639,6 +4640,7 @@ export interface operations {
             };
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+            /** @description Includes a config string with a vault reference (see Vault references). */
             422: components["responses"]["ValidationError"];
         };
     };
