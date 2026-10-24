@@ -20,6 +20,9 @@ const proxy = process.env.KONG_PROXY_URL ?? "http://127.0.0.1:8000";
 const status = process.env.KONG_METRICS_URL ?? "http://127.0.0.1:8100";
 const request = (url) => fetch(url, { signal: AbortSignal.timeout(5000) });
 const check = (ok, message) => assert.ok(ok, message);
+// Isolation failures are collected, not thrown, so the negative control (admin-isolation.spec.ts) sees all of them.
+const failures = [];
+const expectIsolated = (ok, message) => { if (!ok) failures.push(message); };
 
 // Beside Kong with its kong-admin volume: the Admin API listens only on a Unix socket (contract: agent-protocol).
 async function admin(id, method, body) {
@@ -82,7 +85,8 @@ async function main() {
   // 0B00007F is 127.0.0.11, Docker's embedded DNS resolver in every container's network namespace.
   const listening = new Set(tcp.split("\n").map((line) => line.trim().split(/\s+/))
     .filter((cols) => cols[3] === "0A" && !cols[1].startsWith("0B00007F:")).map((cols) => parseInt(cols[1].split(":").pop(), 16)));
-  assert.deepEqual([...listening].sort(), [8000, 8100, 8443], "Unexpected TCP listeners in the gateway");
+  const ports = [...listening].sort((a, b) => a - b).join(",");
+  expectIsolated(ports === "8000,8100,8443", `Unexpected TCP listeners in the gateway: ${ports}`);
 
   await exec("pnpm", ["--filter", "@gromesh/compiler", "build"], { cwd: root, env, timeout: 60_000 });
   const { compile } = await import("../packages/compiler/dist/index.js");
@@ -117,9 +121,9 @@ async function main() {
       for (const path of ["", "/", "/services", "/config", "/status", "/status/ready", "/metrics", "/kconfig.js"]) {
         const response = await request(`${proxy}${base}/${service.name}${path}`);
         const text = await response.text();
-        check(!leaked(text), `${service.name}${path}: Admin/status API reached through the proxy (HTTP ${response.status})`);
+        expectIsolated(!leaked(text), `${service.name}${path}: Admin/status API reached through the proxy (HTTP ${response.status})`);
         // /metrics and /status/ready exist on TCP 8100, but refuse requests coming from the gateway itself.
-        check(response.status !== 200, `${service.name}${path}: HTTP 200 through the proxy`);
+        expectIsolated(response.status !== 200, `${service.name}${path}: HTTP 200 through the proxy`);
         results.push(response.status);
       }
     }
@@ -127,8 +131,9 @@ async function main() {
     for (const [path, expected] of [["/metrics", 200], ["/status/ready", 200], ["/status", 404], ["/services", 404], ["/config", 404]]) {
       const response = await request(`${status}${path}`);
       await response.arrayBuffer();
-      check(response.status === expected, `TCP 8100${path}: HTTP ${response.status}, expected ${expected}`);
+      expectIsolated(response.status === expected, `TCP 8100${path}: HTTP ${response.status}, expected ${expected}`);
     }
+    assert.ok(failures.length === 0, `${failures.length} isolation failures:\n${failures.slice(0, 20).join("\n")}`);
     console.log(`No Admin/status API through the proxy: ${services.length} destinations, ${results.length} requests ` +
       `(${[...new Set(results)].sort().join("/")}); TCP listeners 8000, 8443, 8100 (metrics and readiness only); recovered from orphan sockets`);
   } finally {
