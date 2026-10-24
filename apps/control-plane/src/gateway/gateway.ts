@@ -8,6 +8,8 @@ import { Ctx, RequiredRole, type RequestContext } from "../auth/auth.js";
 import { contractBody } from "../common/contract.js";
 import { decodeCursor, parseLimit, toPage } from "../common/pagination.js";
 import { conflict, notFound, unprocessable } from "../common/problem.js";
+import { assertDestination, destinationPolicy, type DestinationPolicy } from "../common/destinations.js";
+import { APP_CONFIG, type AppConfig } from "../config.js";
 import { DB, type Db, type Executor } from "../db/db.js";
 import { consumerValues, keyAuthValues } from "../consumers/consumers.js";
 import { basicAuthCredentials, consumers, jwtCredentials, keyAuthCredentials, plugins, routes, services, targets, upstreams, type RouteRow, type ServiceRow } from "../db/schema.js";
@@ -211,7 +213,11 @@ export function routeErrors(body: RouteWrite) {
 
 @Injectable()
 export class GatewayService {
-  constructor(@Inject(DB) private readonly db: Db) {}
+  private readonly destinations: DestinationPolicy;
+
+  constructor(@Inject(DB) private readonly db: Db, @Inject(APP_CONFIG) config: AppConfig) {
+    this.destinations = destinationPolicy(config);
+  }
 
   /* services */
 
@@ -232,6 +238,7 @@ export class GatewayService {
   }
 
   async createService(ctx: RequestContext, envId: string, body: ServiceWrite) {
+    assertDestination("host", body.host, this.destinations, "service");
     return this.db.transaction(async (tx) => {
       await requireEnvironment(tx, envId);
       const [row] = await tx.insert(services).values({ environmentId: envId, ...serviceValues(body) }).returning();
@@ -243,6 +250,7 @@ export class GatewayService {
   }
 
   async replaceService(ctx: RequestContext, envId: string, serviceId: string, body: ServiceWrite) {
+    assertDestination("host", body.host, this.destinations, "service");
     return this.db.transaction(async (tx) => {
       const before = toService(await this.requireService(tx, envId, serviceId));
       const [row] = await tx
