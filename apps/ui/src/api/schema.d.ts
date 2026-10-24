@@ -406,7 +406,9 @@ export interface paths {
          *     absent/true and the Gromesh document's prohibition on importing hashes are unchanged.
          *
          *     Conflicts (the matching conflicts above and uniqueness violations in the resulting draft) are errors like any
-         *     other: an `errors[]` entry at the conflicting path, never a separate 409.
+         *     other: an `errors[]` entry at the conflicting path, never a separate 409. A forbidden destination (see the
+         *     description of this API) in the resulting draft is a semantic error at its document path, e.g.
+         *     `document.services.0.host`, `document.upstreams.0.targets.1.target`.
          *
          *     A real import (`dryRun: false`) is ALL OR NOTHING. With any error (invalid envelope, malformed
          *     serialization, schema violation, conversion or semantic error, conflict, size limit) NOTHING is written:
@@ -443,6 +445,7 @@ export interface paths {
         };
         get: operations["listServices"];
         put?: never;
+        /** @description 422 at `host` for a forbidden destination (see the description of this API). */
         post: operations["createService"];
         delete?: never;
         options?: never;
@@ -461,6 +464,7 @@ export interface paths {
             cookie?: never;
         };
         get: operations["getService"];
+        /** @description 422 at `host` for a forbidden destination (see the description of this API). */
         put: operations["replaceService"];
         post?: never;
         /** @description Refused with 409 while routes or plugins reference the service. */
@@ -712,7 +716,8 @@ export interface paths {
          *     any other host stays ordinary DNS (a service pointing at an upstream that does not exist is valid). 409 on a
          *     name already used in the environment; 422 with `path` when `hashOn`/`hashFallback` are set without
          *     `algorithm: consistent-hashing`, when `hashOnHeader`/`hashOnCookie`/`hashFallbackHeader` is missing for the
-         *     chosen hash, or when `hashOn: cookie` has a fallback other than `none`.
+         *     chosen hash, or when `hashOn: cookie` has a fallback other than `none`; 422 at `name` when the name is a
+         *     forbidden destination (see the description of this API).
          */
         post: operations["createUpstream"];
         delete?: never;
@@ -760,7 +765,7 @@ export interface paths {
         };
         get: operations["listTargets"];
         put?: never;
-        /** @description 409 when the same `target` already exists in this upstream; 422 on `target` with a port outside 1..65535. */
+        /** @description 409 when the same `target` already exists in this upstream; 422 on `target` with a port outside 1..65535 or a host that is a forbidden destination (see the description of this API). */
         post: operations["createTarget"];
         delete?: never;
         options?: never;
@@ -948,7 +953,9 @@ export interface paths {
         /**
          * @description Compiles the draft, stores it as version N+1 and notifies agents.
          *     Returns 409 if the draft hash equals the current snapshot (nothing to publish)
-         *     or if `expectedCurrentVersion` is stale.
+         *     or if `expectedCurrentVersion` is stale; 422 when the draft has a forbidden destination (see the
+         *     description of this API), with `path` naming the entity (`services.<id>.host`,
+         *     `upstreams.<id>.name`, `targets.<id>.target`).
          */
         post: operations["publish"];
         delete?: never;
@@ -1011,7 +1018,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Restores the draft to this version's state and publishes it as a NEW version. */
+        /** @description Restores the draft to this version's state and publishes it as a NEW version. 422, with nothing changed, when that state has a forbidden destination (see the description of this API). */
         post: operations["rollback"];
         delete?: never;
         options?: never;
@@ -1301,7 +1308,7 @@ export interface components {
             name: components["schemas"]["Name"];
             /** @enum {string} */
             protocol: "http" | "https" | "grpc" | "grpcs" | "tcp" | "tls";
-            /** @description An upstream's name balances across its targets; any other host is resolved by DNS */
+            /** @description An upstream's name balances across its targets; any other host is resolved by DNS. 422 at `host` for a forbidden destination (see the description of this API). */
             host: string;
             port: number;
             path?: string | null;
@@ -1438,7 +1445,7 @@ export interface components {
         /** @enum {string} */
         HashOn: "none" | "consumer" | "ip" | "header" | "cookie";
         UpstreamWrite: {
-            /** @description A lowercase hostname, unique in the environment */
+            /** @description A lowercase hostname, unique in the environment. 422 at `name` for a forbidden destination (see the description of this API). */
             name: string;
             /**
              * @default round-robin
@@ -1510,7 +1517,7 @@ export interface components {
             nextCursor: string | null;
         };
         TargetWrite: {
-            /** @description host:port, IPv6 in brackets; unique in the upstream */
+            /** @description host:port, IPv6 in brackets; unique in the upstream. 422 at `target` when the host is a forbidden destination (see the description of this API). */
             target: string;
             /**
              * @description 0 takes the target out of the balancing
@@ -4912,6 +4919,7 @@ export interface operations {
             404: components["responses"]["NotFound"];
             /** @description Target has the same configuration as the current version */
             409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
         };
     };
     listClusters: {
