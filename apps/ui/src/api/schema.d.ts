@@ -954,8 +954,8 @@ export interface paths {
          * @description Compiles the draft, stores it as version N+1 and notifies agents.
          *     Returns 409 if the draft hash equals the current snapshot (nothing to publish)
          *     or if `expectedCurrentVersion` is stale; 422 when the draft has a forbidden destination (see the
-         *     description of this API), with `path` naming the entity (`services.<id>.host`,
-         *     `upstreams.<id>.name`, `targets.<id>.target`).
+         *     description of this API), with `path` naming the entity like other publish errors (`services[0].host`,
+         *     `upstreams[0].name`, `targets[0].target`).
          */
         post: operations["publish"];
         delete?: never;

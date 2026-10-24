@@ -48,9 +48,10 @@ info:
           * link-local: 169.254.0.0/16 (includes 169.254.169.254), fe80::/10, and fd00:ec2::254;
           * the same addresses written as IPv4-mapped IPv6 (`::ffff:127.0.0.1`), or a numeric host that is not a
             canonical dotted-quad IPv4 (`127.1`, `2130706433`, `0x7f000001`, `0177.0.0.1`);
-          * an internal host of the installation: the hosts of this control plane's validator, database and
-            ClickHouse URLs, plus every entry of `FORBIDDEN_DESTINATIONS` (comma-separated host names, `*.suffix`
-            patterns, IP addresses or CIDRs, set by the operator; empty by default).
+          * an internal host of the installation: the hosts of this control plane's validator, database, ClickHouse
+            and platform http-log (collector) URLs, plus every entry of `FORBIDDEN_DESTINATIONS` (comma-separated
+            host names, `*.suffix` patterns, IP addresses or CIDRs, set by the operator; empty by default). A name
+            without dots also matches its Kubernetes forms (`<name>.<namespace>`, `<name>.<namespace>.svc[...]`).
         Host names are compared lowercased and without a trailing dot. The same rule makes publish, rollback and
         import answer 422 when the resulting state has such a destination (rows written before the rule existed).
         The control plane does not resolve DNS: a name that resolves to one of these addresses is not detected here,
@@ -1551,8 +1552,8 @@ paths:
         Compiles the draft, stores it as version N+1 and notifies agents.
         Returns 409 if the draft hash equals the current snapshot (nothing to publish)
         or if `expectedCurrentVersion` is stale; 422 when the draft has a forbidden destination (see the
-        description of this API), with `path` naming the entity (`services.<id>.host`,
-        `upstreams.<id>.name`, `targets.<id>.target`).
+        description of this API), with `path` naming the entity like other publish errors (`services[0].host`,
+        `upstreams[0].name`, `targets[0].target`).
       requestBody:
         required: false
         content:
