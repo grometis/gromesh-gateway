@@ -60,6 +60,19 @@ async function main() {
   check(agents.trim() === "", "Stop the compose agent before running: it would overwrite the test config");
   const id = (await compose("ps", "-q", "kong")).stdout.trim();
   check(id, "The compose Kong must be running");
+
+  // An unclean exit leaves both sockets in the volume and nginx's bind() would fail; the gateway removes them at start.
+  await compose("kill", "-s", "KILL", "kong");
+  const { stdout: orphans } = await run(["run", "--rm", "--volumes-from", id, "--user", "1001:1001", NODE_IMAGE, "node", "-e",
+    "const fs = require('node:fs'); console.log(['admin', 'status'].filter((n) => fs.statSync(`/kong/admin/${n}.sock`).isSocket()).length)"]);
+  check(orphans.trim() === "2", "The killed gateway must leave its sockets behind");
+  await compose("start", "kong");
+  for (let attempt = 0; ; attempt++) {
+    const { stdout: health } = await run(["inspect", "-f", "{{.State.Health.Status}}", id]);
+    if (health.trim() === "healthy") break;
+    check(health.trim() !== "unhealthy" && attempt < 60, "The gateway must come back after an unclean exit");
+    await sleep(1000);
+  }
   const { stdout: ip } = await run(["inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}", id]);
   const ownAddress = ip.trim().split(" ")[0];
   check(/^\d+\.\d+\.\d+\.\d+$/.test(ownAddress), "Kong container address not found");
@@ -117,7 +130,7 @@ async function main() {
       check(response.status === expected, `TCP 8100${path}: HTTP ${response.status}, expected ${expected}`);
     }
     console.log(`No Admin/status API through the proxy: ${services.length} destinations, ${results.length} requests ` +
-      `(${[...new Set(results)].sort().join("/")}); TCP listeners 8000, 8443, 8100 (metrics and readiness only)`);
+      `(${[...new Set(results)].sort().join("/")}); TCP listeners 8000, 8443, 8100 (metrics and readiness only); recovered from orphan sockets`);
   } finally {
     await admin(id, "POST", prior);
   }
