@@ -90,6 +90,10 @@ trustProxy: ""
 # Header with the client address set by a TLS terminator in front of the ingress (e.g. CF-Connecting-IP behind a
 # Cloudflare tunnel), honoured only on requests from trustProxy. Empty: the address comes from X-Forwarded-For.
 clientIpHeader: ""
+# Hosts that services, upstreams and targets may never use, on top of loopback, link-local and this control plane's
+# own dependencies (validator, database, ClickHouse, collector): host names, *.suffix patterns, IPs or CIDRs. A name
+# without dots also covers its <name>.<namespace>[.svc...] forms; `kubernetes` keeps routes off the cluster API.
+forbiddenDestinations: [kubernetes]
 config:
   sessionTtlMs: 28800000
   loginMaxFailures: 5
