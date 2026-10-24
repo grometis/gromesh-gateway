@@ -39,7 +39,7 @@ test("negative control: the same check fails against the collector without authe
     const failure = await exec(process.execPath, [script], { timeout: 170_000, env: { ...env, COMPOSE_FILE: `${composeFile}:${override}` } })
       .then(() => null, (error: { stderr?: string }) => error.stderr ?? "");
     expect(failure, "the check must fail against an unauthenticated collector").not.toBeNull();
-    expect(failure).toContain("A forged event reached ClickHouse for another environment through the proxy");
+    expect(failure).toContain("A forged event without a valid token reached ClickHouse through the proxy");
   } finally {
     await up(composeFile);
     rmSync(dir, { recursive: true, force: true });

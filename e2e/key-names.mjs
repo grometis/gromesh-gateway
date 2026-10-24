@@ -104,7 +104,7 @@ async function main() {
   // An extra legacy name proves the env var still participates when event names are present.
   for (const directory of ["deploy/observability/vector", "deploy/helm/data-plane/files/vector"]) {
     await run(["run", "--rm", "-e", "CLICKHOUSE_PASSWORD=unit-test",
-      "-e", "GROMESH_CLUSTER_ID=00000000-0000-4000-8000-00000000c0c0", "-e", 'GROMESH_KEY_NAMES=["legacy-key"]',
+      "-e", "GROMESH_CLUSTER_ID=00000000-0000-4000-8000-00000000c0c0", "-e", "GROMESH_ENVIRONMENT_ID=any", "-e", 'GROMESH_KEY_NAMES=["legacy-key"]',
       "-v", `${root}${directory}:/etc/vector:ro`,
       "-v", `${root}deploy/observability/vector:/tests:ro`, VECTOR_IMAGE,
       "test", "--dangerously-allow-env-var-interpolation", "/etc/vector/vector.yaml",
