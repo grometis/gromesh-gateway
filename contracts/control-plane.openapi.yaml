@@ -74,8 +74,10 @@ info:
         which is why the data plane must not expose privileged listeners over TCP.
       - Vault references. A plugin `config` string containing `{vault://` answers 422 with the `path` of that field
         (`config.headers.X-Token`, or `document.plugins.0.config...` on import): Kong resolves references in the data
-        plane, where they read the gateway's own environment (e.g. the collector token below). Platform plugins are
-        compiled by the control plane itself and are the only configuration that carries references.
+        plane, where they read the gateway's own environment (e.g. the collector token below). A publication or
+        rollback whose state has such a string in any user entity (a service path, a certificate key, rows written
+        before the rule) answers 422 with that path (`services[0].path`). Platform plugins are compiled by the
+        control plane itself and are the only configuration that carries references.
       - Privileged plugin capabilities. Configuration that runs code in the gateway or uses the gateway pod's own
         credentials is reserved to the platform admin (global role `admin`; an API token must also have role
         `admin`); an environment admin or editor gets 403. Privileged: the plugins `pre-function`, `post-function`
