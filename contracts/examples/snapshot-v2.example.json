@@ -3,7 +3,7 @@
   "instanceId": "00000000-0000-4000-8000-0000000000a1",
   "epoch": 2,
   "revision": 7,
-  "hash": "sha256:575df159eba01a6cc96bf08d91cab90d4e34246a0cfe371f086da8c8312b1353",
+  "hash": "sha256:de70fcba0ae603c205a7b01aead49b8a78bacc6f3841737b7ac59cdf32c4f52a",
   "createdAt": "2026-01-01T00:00:00.000Z",
   "reason": "promotion",
   "members": [
@@ -86,7 +86,7 @@
     "consumers": [
       {
         "id": "6a1f3c2e-0b7d-4c1a-9f10-000000000003",
-        "username": "app-tvro",
+        "username": "tvro~app-tvro",
         "tags": [
           "managed-by:gromesh",
           "gromesh-ws:00000000-0000-4000-8000-0000000000b1"
@@ -126,6 +126,16 @@
         "name": "gromesh-route-guard",
         "enabled": true,
         "route": "6a1f3c2e-0b7d-4c1a-9f10-000000000011",
+        "config": {},
+        "tags": [
+          "managed-by:gromesh",
+          "gromesh-platform"
+        ]
+      },
+      {
+        "id": "6a1f3c2e-0b7d-4c1a-9f10-000000000013",
+        "name": "gromesh-workspace",
+        "enabled": true,
         "config": {},
         "tags": [
           "managed-by:gromesh",

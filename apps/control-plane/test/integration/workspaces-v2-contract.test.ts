@@ -157,6 +157,19 @@ describe("authorization in the v2 contract", () => {
     }
   });
 
+  it("reports a conflict as 409 on a single write and inside the 422 of an import (N0R-5)", () => {
+    for (const { op } of v2Ops) {
+      const text = `${op.summary ?? ""} ${op.description ?? ""}`.replace(/never a separate 409/g, "");
+      if (/\b409\b/.test(text)) expect(Object.keys(op.responses), op.operationId).toContain("409");
+    }
+    const byId = (id: string) => v2Ops.find((o) => o.op.operationId === id)!.op;
+    for (const id of ["createConsumer", "replaceConsumer", "createJwtCredential", "createBasicAuthCredential", "createCertificate", "replaceCertificate", "declareWorkspaceVariable"]) {
+      expect(Object.keys(byId(id).responses), id).toContain("409");
+    }
+    expect(Object.keys(byId("importWorkspaceConfig").responses)).not.toContain("409");
+    expect(byId("importWorkspaceConfig").description).toContain("never a separate 409");
+  });
+
   it("closes every JSON request body", () => {
     const resolve = (s: Doc): Doc => {
       if (!s?.$ref) return s;
@@ -201,13 +214,14 @@ describe("traceability to the W0 requirements", () => {
    * contract (with the phase marker it must carry), a sentence of the v2 info, a v1 operation, or a later phase
    * whose proof is not a contract (compiler and data plane in N2, OIDC in L5).
    */
-  type Where = { schema: string; phase?: string } | { info: string } | { v1: string } | { deferred: string };
+  type Where = { schema: string; phase?: string } | { info: string } | { v1: string } | { deferred: string; info?: string };
   const ELSEWHERE: Record<string, Where> = {
-    "GW-WS-06": { deferred: "N2" }, // compiler + data plane: one workspace's credential never authenticates on another's route
+    // compiler + data plane: one workspace's credential never authenticates on another's route
+    "GW-WS-06": { deferred: "N2", info: "A credential of one workspace never authenticates on a route of another" },
     "GW-WS-06a": { schema: "AuthenticationProfile/oneOf/1", phase: "L10" },
     "GW-RBAC-08": { schema: "RoleBindingWrite/properties/effect/oneOf/1", phase: "L3" },
     "GW-RBAC-10": { info: "deny by default" },
-    "GW-RBAC-12": { info: "they never approve nor execute" },
+    "GW-RBAC-12": { info: "API tokens act with the intersection of the token's scopes and the owner's current permissions" },
     "GW-ADMIN-05": { schema: "RoleBindingWrite/properties/subjectType/oneOf/1", phase: "L2" },
     "GW-PLG-01": { info: "A mandatory platform plugin's name is reserved in every workspace scope" },
     "GW-PLG-03": { info: "created and changed only by platform-admin and audited" },
@@ -221,6 +235,7 @@ describe("traceability to the W0 requirements", () => {
     "GW-AUTH-03": { schema: "Identity/oneOf/0", phase: "L5" },
     "GW-AUTH-04": { deferred: "L5" }, // break-glass
   };
+  const infoText: string = v2.info.description.replace(/\s+/g, " ");
   const pointer = (path: string): Doc => path.split("/").reduce((node: Doc, key) => node?.[key], v2.components.schemas);
   const v1Ids = new Set(operationsOf("control-plane.openapi.yaml").map(({ op }) => op.operationId));
   const referenced = new Set<string>();
@@ -244,9 +259,27 @@ describe("traceability to the W0 requirements", () => {
         const node = pointer(where.schema);
         expect(node, `${r}: ${where.schema}`).toBeDefined();
         if (where.phase) expect(node["x-gromesh-phase"], `${r}: ${where.schema}`).toBe(where.phase);
-      } else if ("info" in where) expect(v2.info.description, r).toContain(where.info);
-      else if ("v1" in where) expect(v1Ids.has(where.v1), `${r}: v1 ${where.v1}`).toBe(true);
-      else expect(["N2", "L5"], r).toContain(where.deferred);
+      } else if ("deferred" in where) {
+        // Proven only at runtime: the contract names the phase and the proof.
+        const proof = v2.info["x-gromesh-deferred-proofs"]?.[r];
+        expect(proof?.phase, r).toBe(where.deferred);
+        expect(proof?.proof?.length, r).toBeGreaterThan(40);
+        if (where.info) expect(infoText, r).toContain(where.info);
+      } else if ("info" in where) expect(infoText, r).toContain(where.info);
+      else expect(v1Ids.has(where.v1), `${r}: v1 ${where.v1}`).toBe(true);
+    }
+    const deferred = Object.entries(ELSEWHERE).filter(([, w]) => "deferred" in w).map(([r]) => r);
+    expect(Object.keys(v2.info["x-gromesh-deferred-proofs"]).sort()).toEqual(deferred.sort());
+  });
+
+  it("accepts only a session on the deciding operations, never an API token nor M2M (GW-RBAC-12)", () => {
+    const listed = /Deciding operations accept only a session[^:]*:([^.]*)\./.exec(infoText)![1]!;
+    const deciding = listed.replace(" and ", ", ").split(",").map((s: string) => s.trim());
+    expect(deciding.length).toBe(6);
+    for (const id of deciding) {
+      const found = v2Ops.find(({ op }) => op.operationId === id);
+      expect(found, id).toBeDefined();
+      expect(found!.op.security, id).toEqual([{ cookieAuth: [], csrfToken: [] }]);
     }
   });
 });
@@ -448,6 +481,33 @@ describe("v2 schemas", () => {
     ["WorkspaceConsumerWrite", { username: "app", extra: true }, false],
     ["WorkspaceVariableDeclaration", { type: "privateKey", secret: true, required: true }, true],
     ["WorkspaceVariableDeclaration", { type: "host", secret: false, required: true, value: "x" }, false],
+    // Round 2 of the N0 review (N0R-1..N0R-4): nested shapes closed, secrets classified, results consistent.
+    ["PackagePayload", { ...base, content: content({ consumers: [{ id: u, spec: {}, aclGroups: [] }] }) }, false],
+    ["PackagePayload", { ...base, content: content({ consumers: [{ id: u, spec: { username: null, customId: null }, aclGroups: [] }] }) }, false],
+    ["PackagePayload", { ...base, content: content({ consumers: [{ id: u, spec: { username: "" }, aclGroups: [] }] }) }, false],
+    ["PackagePayload", { ...base, content: emptyContent, extra: 1 }, false],
+    ["PackagePayload", { ...base, content: content({ upstreams: [{ id: u, spec: { name: "pix", healthchecks: { active: { type: "http", httpPath: "/h" }, passive: null } } }] }) }, true],
+    ["PackagePayload", { ...base, content: content({ upstreams: [{ id: u, spec: { name: "pix", healthchecks: { active: { type: "http", script: "x" } } } }] }) }, false],
+    ["PackagePayload", { ...base, content: content({ upstreams: [{ id: u, spec: { name: "pix", healthchecks: { passive: { unhealthyTimeouts: 3, extra: 1 } } } }] }) }, false],
+    ["PackagePayload", { ...base, content: content({ upstreams: [{ id: u, spec: { name: "pix", healthchecks: { other: {} } } }] }) }, false],
+    ["PackagePayload", { ...base, content: content({ variables: [{ name: "TLS_KEY", type: "privateKey", secret: false, required: true }] }) }, false],
+    ["WorkspaceVariableDeclaration", { type: "privateKey", secret: false, required: true }, false],
+    ["WorkspaceVariableDeclaration", { type: "credential", secret: false, required: true }, false],
+    ["WorkspaceVariableDeclaration", { type: "credential", secret: true, required: true }, true],
+    ["WorkspaceStateSummary", { workspaceKey: u, activeRelease: { version: 4, contentDigest: d }, deploymentRevision: 9, convergence: "converged" }, true],
+    ["WorkspaceStateSummary", { workspaceKey: u, activeRelease: null, deploymentRevision: 0, convergence: "no-nodes" }, true],
+    ["WorkspaceStateSummary", { workspaceKey: u, activeRelease: null, deploymentRevision: 0, convergence: "no-nodes", values: {} }, false],
+    ["WorkspaceStateSummary", { workspaceKey: u, activeRelease: { version: 4, contentDigest: d, config: { secret: "x" } }, deploymentRevision: 9, convergence: "converged" }, false],
+    ["Promotion", { ...emergency, status: "failed", execution: exec("converged") }, false],
+    ["Promotion", { ...emergency, status: "converged", execution: exec("failed", "deadline") }, false],
+    ["Promotion", { ...emergency, status: "converged", execution: exec("failed", "deadline"), recoveredBy: { kind: "reapply", promotionId: null, deploymentRevision: 10, at: "2026-10-24T00:00:00Z" } }, true],
+    ["Promotion", { ...emergency, status: "converged", execution: exec("failed", "deadline"), recoveredBy: { kind: "rollback", promotionId: u, deploymentRevision: 10, at: "2026-10-24T00:00:00Z" } }, false],
+    ["Promotion", { ...promo, status: "deploying", execution: exec("converged") }, false],
+    ["Promotion", { ...promo, status: "rolled-back", execution: exec("converged"), recoveredBy: { kind: "rollback", promotionId: u, deploymentRevision: 9, at: "2026-10-24T00:00:00Z" } }, false],
+    ["PromotionRecovery", { kind: "rollback", deploymentRevision: 9, at: "2026-10-24T00:00:00Z" }, false],
+    ["PromotionRecovery", { kind: "emergency-rollback", promotionId: null, deploymentRevision: 9, at: "2026-10-24T00:00:00Z" }, false],
+    ["PromotionRecovery", { kind: "reapply", promotionId: u, deploymentRevision: 9, at: "2026-10-24T00:00:00Z" }, false],
+    ["PromotionRecovery", { kind: "reapply", promotionId: null, deploymentRevision: 9, at: "2026-10-24T00:00:00Z" }, true],
     // M2M reads only a summary (N0-3); errors, approvals, attestations and permissions are closed (N0-8, N0-10, N0-12).
     ["M2mPromotionSummary", { id: u, packageId: u, status: "validating", kind: "full", contentDigest: d, updatedAt: "2026-10-24T00:00:00Z" }, true],
     ["M2mPromotionSummary", { id: u, packageId: u, status: "validating", kind: "full", contentDigest: d, updatedAt: "2026-10-24T00:00:00Z", changes: [] }, false],
@@ -586,6 +646,12 @@ describe("agent protocol v2", () => {
       for (const p of route.paths) expect(p === `/${slug}` || p.startsWith(`/${slug}/`) || p.startsWith(`~/${slug}(?:`), p).toBe(true);
     }
     expect(snap.config.routes.some((r: Doc) => owner(r) === "gromesh-platform")).toBe(true);
+    // H-5: a consumer's node name carries its workspace's slug. H-1: gromesh-workspace is global and the platform's.
+    for (const consumer of snap.config.consumers) expect(consumer.username.startsWith(`${slugOf.get(owner(consumer))}~`), consumer.username).toBe(true);
+    const isolation = snap.config.plugins.filter((p: Doc) => p.name === "gromesh-workspace");
+    expect(isolation.length).toBe(1);
+    expect(owner(isolation[0]!)).toBe("gromesh-platform");
+    for (const scope of ["route", "service", "consumer"]) expect(isolation[0]![scope], scope).toBeUndefined();
   });
 });
 
