@@ -18,7 +18,8 @@ info:
     Kong's Admin API and status API listen only on Unix sockets in a volume shared by Kong and the agent
     (`unix:///kong/admin/admin.sock`, `unix:///kong/admin/status.sock`); the pod has no TCP Admin API listener,
     so no service, route or target can reach it through the proxy. The only TCP listener besides the proxy
-    serves `GET /metrics` to scrapers outside the pod and refuses requests coming from the pod itself.
+    serves `GET /metrics` (scrapers) and `GET /status/ready` (readiness probe) to callers outside the pod and
+    refuses requests coming from the pod itself (loopback or the pod's own address).
 
     The agent never talks to Postgres and the control plane never talks to Kong directly.
 servers:
