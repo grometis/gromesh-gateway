@@ -12,8 +12,14 @@ info:
          with If-None-Match: <hash> as a fallback for missed events.
       4. When the hash changes it downloads the snapshot, writes it to its volume
          (so Kong can boot from it via KONG_DECLARATIVE_CONFIG), applies it with
-         POST http://127.0.0.1:8001/config and reports the outcome to POST /agent/v1/status.
+         POST /config on Kong's Admin API and reports the outcome to POST /agent/v1/status.
       5. It sends a status report at least every `heartbeatIntervalSeconds`, even with no change.
+
+    Kong's Admin API and status API listen only on Unix sockets in a volume shared by Kong and the agent
+    (`unix:///kong/admin/admin.sock`, `unix:///kong/admin/status.sock`); the pod has no TCP Admin API listener,
+    so no service, route or target can reach it through the proxy. The only TCP listener besides the proxy
+    serves `GET /metrics` (scrapers) and `GET /status/ready` (readiness probe) to callers outside the pod and
+    refuses requests coming from the pod itself (loopback or the pod's own address).
 
     The agent never talks to Postgres and the control plane never talks to Kong directly.
 servers:
