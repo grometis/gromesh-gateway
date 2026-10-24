@@ -552,42 +552,56 @@ autorização.
   `EmergencyPostReview`, com identidade, máquina, revisor, resultado e operações próprias.
 - O contrato é autossuficiente: as regras normativas da W0 estão escritas nele, e as referências à W0 são só histórico.
 
+- Decisões H-1 (`gromesh-workspace`) e H-5 (consumer único no Workspace, `<slug>~<nome>` no nó) escritas no contrato.
+
 Aceite: `pnpm lint:contracts` sem erros e `workspaces-v2-contract.test.ts` (nenhuma operação v2 com handler;
-permissões, escopo e CSRF; corpos fechados e respostas de erro; papéis e permissões do catálogo; rastreabilidade dos
-98 GW-*; máquinas fechadas; perfil do núcleo; procedência e revogação; protocolo do agente; invariantes do exemplo de
-snapshot v2; vetor C-21 com o digest real do conteúdo).
+permissões, escopo e CSRF; decisões só por sessão; corpos fechados, inclusive aninhados, e respostas de erro; 409 e
+422 de conflito; papéis e permissões do catálogo; rastreabilidade dos 98 GW-*, com a prova dos requisitos só de
+runtime no contrato; máquinas fechadas e estado da promoção coerente com a execução; perfil do núcleo; procedência e
+revogação; protocolo do agente; invariantes do exemplo de snapshot v2; vetor C-21 com o digest real do conteúdo).
 
-### N1 — proposta para aprovação (não autorizada)
-Workspace Foundation no control plane. Nada é ativável em produção ou no homelab antes dos gates da N2: a N1 só
-migra cada environment para um Workspace e expõe a API v2 desses Workspaces, sem criar um segundo Workspace numa
-instância.
+### N1 — Workspace Foundation no control plane (planejada, não autorizada)
+A N1 preserva o comportamento atual: cada environment vira um Workspace com o mesmo UUID, a v1 continua servindo a
+UI, e o snapshot de cada environment continua igual byte a byte (mesmo hash antes e depois da migração). Nenhuma
+composição por instância, nenhum prefixo no data plane e nenhum segundo Workspace operacional numa instância antes
+dos gates da N2.
 
-**H-9 (recomendação):** migração controlada para a v2, sem duas APIs administrativas equivalentes permanentes.
-- A v1 continua servindo a UI durante a N1, mas cada handler v1 de `/environments/{envId}/…` passa a chamar o mesmo
-  serviço e o mesmo guard da v2 (Workspace com o id do environment, papel v1 traduzido para permissões). Não existe
-  regra de autorização própria da v1, então ela não contorna o RBAC dos Workspaces.
-- Regras da v2 valem também pela v1: route sem path → 422; o `stripPath` padrão da v1 (`true`) vale só para routes
-  `legacy-preserved`; unicidade por instância; upstream por `upstreamId`. Isso é uma mudança visível para clientes da
-  v1 e precisa entrar nas notas da N1.
-- Ficam na v1 sem substituição: login, logout, CSRF, `/me`, usuários, tokens, catálogo de plugins, auditoria e o
-  registro do agente.
-- Corte das operações administrativas v1 (64 com `{envId}`/`{clusterId}`, mais `GET`/`POST /environments`) só quando:
-  (1) a UI não chamar nenhuma delas (e2e); (2) a contagem de chamadas v1 por token `ggt_` ficar em zero por 30 dias
-  (métrica nova da N1); (3) a migração tiver passado nos testes de integração e e2e, com o roteiro de retorno ensaiado.
-  O corte responde 410 e é uma tarefa própria, com PR de contrato.
+**Decisões do PO (2026-10-24) e como a N1 as representa:**
+- **H-1, isolamento de consumers:** plugin próprio `gromesh-workspace` (global, depois dos autenticadores; consumer
+  com tag de outro Workspace ou credencial sem consumer → 401 igual à credencial inválida). Prefixo de route nunca
+  conta como isolamento. Na N1 só o lado do control plane: `anonymous` e plugins com escopo de consumer apontam para
+  consumer do mesmo Workspace (422), nome `gromesh-*` reservado (422) e FKs compostas que recusam referência cruzada
+  no banco. O plugin, as tags e a prova com Kong real são da N2 (GW-WS-06, GW-PLG-06).
+- **H-5, identidade dos consumers:** `username` e `customId` únicos no Workspace; `app-sky` em TVRO e em ASSINE são
+  consumers independentes. Banco: `unique (workspace_id, username)` e `unique (workspace_id, custom_id)`. API,
+  auditoria, export e pacotes: só o nome lógico, 409 só para duplicata no mesmo Workspace. Compilador (N2):
+  `<slug>~<username>` e `<slug>~<customId>` no nó, e o `gromesh-workspace` devolve os valores lógicos ao upstream em
+  `X-Consumer-Username` e `X-Consumer-Custom-ID`. Credenciais continuam únicas na instância (chave key-auth pelo HMAC,
+  `key` JWT, username basic-auth, SNI), com conflito genérico que não nomeia o outro Workspace. Na migração,
+  username/`customId` repetidos entre environments deixam de bloquear; credenciais repetidas continuam bloqueando.
+- **H-9, migração v1 → v2:** migração controlada, sem duas APIs administrativas equivalentes permanentes. Cada
+  handler v1 de `/environments/{envId}/…` passa a chamar o mesmo serviço e o mesmo guard da v2 (Workspace = id do
+  environment, papel v1 traduzido para permissões); não existe regra de autorização própria da v1. As regras da v2
+  valem também pela v1: route nova sem path → 422; `stripPath: true` padrão da v1 só nas routes `legacy-preserved`;
+  unicidade de credenciais por instância; upstream por `upstreamId` (mudança visível para clientes v1, vai nas notas
+  da N1). Ficam na v1 sem substituto: login, logout, CSRF, `/me`, usuários, tokens, catálogo de plugins, auditoria e
+  registro do agente. Corte das operações administrativas v1 (64 com `{envId}`/`{clusterId}`, mais `GET`/`POST
+  /environments`) só quando: (1) a UI não chamar nenhuma delas (e2e); (2) nenhuma chamada v1 por token `ggt_` em 30
+  dias (métrica da N1-X5); (3) migração e regressão verdes em integração e e2e, com o roteiro de retorno ensaiado. O
+  corte responde 410 e é tarefa própria, com PR de contrato.
 
-| Tarefa | Escopo | Aceite |
-| --- | --- | --- |
-| N1-C0 Contrato | marcar como implementáveis as operações v2 de Workspace, entidades, bindings e compatibilidade de routes; métrica de uso da v1 | lint + teste de contrato |
-| N1-X1 Modelo de dados | `workspaces` (id, key, slug imutável), `environment_id` → `workspace_id` em todas as entidades, FKs compostas `(workspace_id, id)`, `check (cardinality(paths) > 0)` nas novas routes, unicidade por instância (consumer, credenciais, SNI) | migração em banco com dados de cada versão anterior; referência cruzada recusada **pelo banco**; UUIDs preservados |
-| N1-X2 Inventário de routes | `pathCompatibility: legacy-preserved` em toda route existente; relatório de path público e de upstream antes/depois; `convertRoutePathCompatibility` explícita e auditada | integração: nenhuma conversão em lote; routes sem path listadas e bloqueadas para publicação |
-| N1-X3 Autorização | guard por `x-required-permission` e `x-scope`; bindings por Workspace e por instância; papéis embutidos; papel `none` vira deny somente leitura | matriz RBAC gerada do contrato (v1 e v2); 404 fora do escopo; nenhum handler sem permissão |
-| N1-X4 API v2 | Workspaces (sem segundo Workspace por instância até a N2), entidades do gateway, variáveis, export/import por Workspace | integração por operação; marca `x-gromesh-planned` removida operação a operação |
-| N1-X5 Compatibilidade v1 | handlers v1 sobre os serviços v2 | a mesma matriz RBAC passa pelas duas APIs; teste de bypass (papel v1 sem permissão v2 → 403/404) |
+| Tarefa | Depende de | Escopo | Aceite |
+| --- | --- | --- | --- |
+| N1-C0 Contrato | N0 mergeada | tirar `x-gromesh-planned` só das operações que a N1 implementa (Workspaces, entidades, variáveis, bindings, papéis, compatibilidade de routes); métrica de uso da v1 por token | lint + teste de contrato; teste "marcada sem handler" continua valendo para o resto |
+| N1-X1 Modelo de dados | N1-C0 | `workspaces` (id = env.id, key, slug imutável após o primeiro release), `environment_id` → `workspace_id`, FKs compostas `(workspace_id, id)`, unicidades por Workspace (nomes, username, `custom_id`) e por instância (credenciais, SNI), `check (cardinality(paths) > 0)` só nas routes novas | migração sobre bancos com dados de cada versão anterior; UUIDs preservados; referência cruzada recusada pelo banco; duplicata de credencial entre environments bloqueia a migração com relatório; snapshot de cada environment com o mesmo hash antes e depois |
+| N1-X2 Inventário de routes | N1-X1 | `pathCompatibility: legacy-preserved` em toda route existente; relatório de path público e upstream antes/depois; `convertRoutePathCompatibility` explícita, por route e auditada | integração: nenhuma conversão em lote; route sem path listada e bloqueada só para a composição v2, sem mudar o tráfego atual |
+| N1-X3 Autorização | N1-X1 | guard por `x-required-permission` e `x-scope`; bindings por Workspace e por instância; papéis embutidos; token = mínimo entre token e dono; decisões só por sessão | matriz RBAC gerada do contrato; 404 fora do escopo, 403 sem permissão; nenhum handler sem permissão; token tentando decidir → 401/403 |
+| N1-X4 API v2 | N1-X3 | Workspaces (criação bloqueada além do migrado até a N2), entidades do gateway, variáveis, export/import por Workspace (`gromesh/v1` sem variáveis → 422) | integração por operação; `x-gromesh-planned` removida operação a operação; dois Workspaces de fixture com consumer `app-sky` cada → ambos aceitos; credencial repetida entre eles → 409 genérico; `anonymous` de outro Workspace → 422 |
+| N1-X5 Compatibilidade v1 | N1-X3, N1-X4 | handlers v1 sobre os serviços e o guard v2; contador de chamadas v1 por token `ggt_` | a mesma matriz RBAC passa pelas duas APIs; teste de bypass (permissão v1 sem a v2 → 403/404); e2e da UI atual sem regressão |
 
-Dependências: N0 mergeada; decisões H-1 (mecanismo de isolamento de consumer) e H-5 (username/`custom_id`) antes da
-N1-X1; migração ensaiada contra uma cópia do banco do homelab, sem tocar no homelab.
-Riscos: migração longa em tabelas grandes; clientes v1 com routes sem path; tokens `ggt_` usados fora da UI.
+Riscos: migração longa em tabelas grandes (ensaiar o tempo numa cópia do banco do homelab, sem tocar no homelab);
+clientes v1 com routes sem path ou que dependem de `stripPath: true`; tokens `ggt_` usados fora da UI; slug derivado
+de nome de environment que colide ou é reservado (relatório antes do primeiro release, nunca sufixo silencioso).
 
 ### N2 — gates obrigatórios, ainda não comprovados
 Nenhum Workspace é ativável sem estes testes em Kong real e Kubernetes compatível (≥ 1.33 ou versão validada):
