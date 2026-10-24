@@ -1,0 +1,147 @@
+{
+  "schemaVersion": 2,
+  "instanceId": "00000000-0000-4000-8000-0000000000a1",
+  "epoch": 2,
+  "revision": 7,
+  "hash": "sha256:de70fcba0ae603c205a7b01aead49b8a78bacc6f3841737b7ac59cdf32c4f52a",
+  "createdAt": "2026-01-01T00:00:00.000Z",
+  "reason": "promotion",
+  "members": [
+    {
+      "workspaceId": "00000000-0000-4000-8000-0000000000b1",
+      "slug": "tvro",
+      "releaseVersion": 4,
+      "contentDigest": "sha256:55b70d6c5090bc1a0722d75097c0342809191613ad10ce76757995911b60979b"
+    }
+  ],
+  "mandatoryPluginsVersion": 1,
+  "valuesDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "config": {
+    "_format_version": "3.0",
+    "_transform": true,
+    "services": [
+      {
+        "id": "6a1f3c2e-0b7d-4c1a-9f10-000000000001",
+        "name": "tvro~recarga",
+        "protocol": "https",
+        "host": "recarga.tvro.example",
+        "port": 443,
+        "path": "/v1",
+        "tags": [
+          "managed-by:gromesh",
+          "gromesh-ws:00000000-0000-4000-8000-0000000000b1"
+        ]
+      },
+      {
+        "id": "6a1f3c2e-0b7d-4c1a-9f10-000000000010",
+        "name": "gromesh-platform~guard-canary",
+        "protocol": "http",
+        "host": "guard-canary.gromesh.internal",
+        "port": 80,
+        "tags": [
+          "managed-by:gromesh",
+          "gromesh-platform"
+        ]
+      }
+    ],
+    "routes": [
+      {
+        "id": "6a1f3c2e-0b7d-4c1a-9f10-000000000002",
+        "name": "tvro~recarga",
+        "service": "6a1f3c2e-0b7d-4c1a-9f10-000000000001",
+        "protocols": [
+          "http",
+          "https"
+        ],
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/tvro/recarga"
+        ],
+        "strip_path": false,
+        "tags": [
+          "managed-by:gromesh",
+          "gromesh-ws:00000000-0000-4000-8000-0000000000b1"
+        ]
+      },
+      {
+        "id": "6a1f3c2e-0b7d-4c1a-9f10-000000000011",
+        "name": "gromesh-platform~guard-canary",
+        "service": "6a1f3c2e-0b7d-4c1a-9f10-000000000010",
+        "protocols": [
+          "http"
+        ],
+        "paths": [
+          "/.gromesh/guard/current"
+        ],
+        "strip_path": false,
+        "tags": [
+          "managed-by:gromesh",
+          "gromesh-platform"
+        ]
+      }
+    ],
+    "consumers": [
+      {
+        "id": "6a1f3c2e-0b7d-4c1a-9f10-000000000003",
+        "username": "tvro~app-tvro",
+        "tags": [
+          "managed-by:gromesh",
+          "gromesh-ws:00000000-0000-4000-8000-0000000000b1"
+        ]
+      }
+    ],
+    "keyauth_credentials": [],
+    "plugins": [
+      {
+        "id": "6a1f3c2e-0b7d-4c1a-9f10-000000000005",
+        "name": "gromesh-route-guard",
+        "enabled": true,
+        "route": "6a1f3c2e-0b7d-4c1a-9f10-000000000002",
+        "config": {},
+        "tags": [
+          "managed-by:gromesh",
+          "gromesh-ws:00000000-0000-4000-8000-0000000000b1"
+        ]
+      },
+      {
+        "id": "6a1f3c2e-0b7d-4c1a-9f10-000000000006",
+        "name": "key-auth",
+        "enabled": true,
+        "route": "6a1f3c2e-0b7d-4c1a-9f10-000000000002",
+        "config": {
+          "key_names": [
+            "apikey"
+          ]
+        },
+        "tags": [
+          "managed-by:gromesh",
+          "gromesh-ws:00000000-0000-4000-8000-0000000000b1"
+        ]
+      },
+      {
+        "id": "6a1f3c2e-0b7d-4c1a-9f10-000000000012",
+        "name": "gromesh-route-guard",
+        "enabled": true,
+        "route": "6a1f3c2e-0b7d-4c1a-9f10-000000000011",
+        "config": {},
+        "tags": [
+          "managed-by:gromesh",
+          "gromesh-platform"
+        ]
+      },
+      {
+        "id": "6a1f3c2e-0b7d-4c1a-9f10-000000000013",
+        "name": "gromesh-workspace",
+        "enabled": true,
+        "config": {},
+        "tags": [
+          "managed-by:gromesh",
+          "gromesh-platform"
+        ]
+      }
+    ]
+  }
+}
