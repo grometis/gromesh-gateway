@@ -259,8 +259,8 @@ services:
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_WRITER_PASSWORD:-gromesh-dev-writer}
       # The e2e recreates this service with the real cluster id; the default marks "development, no cluster".
       GROMESH_CLUSTER_ID: ${GROMESH_CLUSTER_ID:-00000000-0000-4000-8000-00000000c0c0}
-      # Empty here because the e2e scripts create environments on the fly; the chart requires it (hotfix F-1).
-      GROMESH_ENVIRONMENT_ID: ${GROMESH_ENVIRONMENT_ID:-}
+      # "any" (explicit opt-out) because the e2e scripts create environments on the fly; the chart requires a UUID.
+      GROMESH_ENVIRONMENT_ID: ${GROMESH_ENVIRONMENT_ID:-any}
       # Development-only; the gateway sends the same value (contract: Platform analytics).
       GROMESH_COLLECTOR_TOKEN: ${GROMESH_COLLECTOR_TOKEN:-gromesh-dev-collector-token-not-a-secret}
       # Optional non-secret JSON array, unioned with each event's key_names. Vector always strips apikey.

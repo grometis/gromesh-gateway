@@ -7,7 +7,9 @@ case "${GROMESH_CLUSTER_ID:-}" in
   *) echo "GROMESH_CLUSTER_ID must be the UUID of this cluster" >&2; exit 64 ;;
 esac
 uuid='[0-9a-fA-F]\{8\}-[0-9a-fA-F]\{4\}-[0-9a-fA-F]\{4\}-[0-9a-fA-F]\{4\}-[0-9a-fA-F]\{12\}'
-if [ -n "${GROMESH_ENVIRONMENT_ID:-}" ] && ! printf '%s' "$GROMESH_ENVIRONMENT_ID" | grep -qx "$uuid"; then
+# The environment is pinned unless explicitly opted out with "any" (development stacks that create environments
+# on the fly); an empty value is an error, never a silent opt-out.
+if [ "${GROMESH_ENVIRONMENT_ID:-}" != any ] && ! printf '%s' "${GROMESH_ENVIRONMENT_ID:-}" | grep -qx "$uuid"; then
   echo "GROMESH_ENVIRONMENT_ID must be the UUID of this cluster's environment" >&2; exit 64
 fi
 # Without a token every event would be refused (401): fail at start instead of silently losing analytics.

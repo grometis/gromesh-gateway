@@ -20,6 +20,8 @@ const proxy = process.env.KONG_PROXY_URL ?? "http://127.0.0.1:8000";
 const clickhouse = process.env.CLICKHOUSE_URL ?? "http://127.0.0.1:8123";
 const request = (url, options = {}) => fetch(url, { ...options, signal: AbortSignal.timeout(5000) });
 const check = (ok, message) => assert.ok(ok, message);
+const token = process.env.GROMESH_COLLECTOR_TOKEN ?? "gromesh-dev-collector-token-not-a-secret";
+const VECTOR_IMAGE = "timberio/vector:0.57.0-alpine@sha256:19e3526faf4d4b1ed0c28a0d68d4cc3a1e13e437099986a5b7a768707907497c";
 
 // Beside Kong with its kong-admin volume: the Admin API listens only on a Unix socket (contract: agent-protocol).
 async function admin(id, method, body) {
@@ -71,20 +73,32 @@ async function main() {
   check(id && vector, "The compose Kong and the observability collector must be running");
   const { stdout: ip } = await run(["inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}", vector]);
   const collectorAddress = ip.trim().split(" ")[0];
+  const own = randomUUID();
+  const victim = randomUUID();
+  // A second collector pinned to `own`, as the chart deploys it: a VALID token must still not write another
+  // environment (the token can leak to Lua of the same gateway).
+  const { stdout: network } = await run(["inspect", "-f", "{{range $name, $_ := .NetworkSettings.Networks}}{{$name}} {{end}}", vector]);
+  const pinnedName = `gromesh-pinned-collector-${own.slice(0, 8)}`;
+  await run(["run", "-d", "--name", pinnedName, "--network", network.trim().split(" ")[0], "--user", "65534:65534",
+    "--tmpfs", "/var/lib/vector:uid=65534,gid=65534,mode=0700", "--entrypoint", "sh",
+    "-e", "GROMESH_CLUSTER_ID=00000000-0000-4000-8000-00000000c0c0", "-e", `GROMESH_ENVIRONMENT_ID=${own}`,
+    "-e", `GROMESH_COLLECTOR_TOKEN=${token}`, "-e", `CLICKHOUSE_PASSWORD=${process.env.CLICKHOUSE_WRITER_PASSWORD ?? "gromesh-dev-writer"}`,
+    "-v", `${root}deploy/observability/vector:/etc/vector:ro`, VECTOR_IMAGE, "/etc/vector/entrypoint.sh"]);
 
   await exec("pnpm", ["--filter", "@gromesh/compiler", "build"], { cwd: root, env, timeout: 60_000 });
   const { compile, platformPlugins } = await import("../packages/compiler/dist/index.js");
-  const own = randomUUID();
-  const victim = randomUUID();
   const base = `/collector-auth-${own}`;
   const echo = { id: randomUUID(), name: "echo", protocol: "http", host: "echo", port: 80 };
   // The CP refuses the collector's name (forbidden destinations) but cannot know its address: this is that bypass.
   const collector = { id: randomUUID(), name: "collector", protocol: "http", host: collectorAddress, port: 8080, path: "/kong" };
+  const { stdout: pinnedIp } = await run(["inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}", pinnedName]);
+  const pinned = { id: randomUUID(), name: "pinned", protocol: "http", host: pinnedIp.trim().split(" ")[0], port: 8080, path: "/kong" };
   const config = compile({
-    services: [echo, collector],
+    services: [echo, collector, pinned],
     routes: [
       { id: randomUUID(), name: "ok", serviceId: echo.id, paths: [`${base}/ok`] },
       { id: randomUUID(), name: "forge", serviceId: collector.id, paths: [`${base}/forge`], stripPath: true },
+      { id: randomUUID(), name: "forge-pinned", serviceId: pinned.id, paths: [`${base}/forge-pinned`], stripPath: true },
     ],
     consumers: [], keyAuthCredentials: [], plugins: [],
   }, { platformPlugins: platformPlugins({ environmentId: own, httpLogEndpoint: "http://gromesh-collector:8080/kong" }) });
@@ -99,8 +113,8 @@ async function main() {
       check(attempt < 50, "Gateway workers must load the test routes");
       await sleep(100);
     }
-    const forged = (path) => JSON.stringify([{
-      environment_id: victim, started_at: Date.now(), client_ip: "203.0.113.7",
+    const forged = (path, environmentId = own) => JSON.stringify([{
+      environment_id: environmentId, started_at: Date.now(), client_ip: "203.0.113.7",
       request: { uri: `/forged${path}`, method: "GET", size: 1 }, response: { status: 200, size: 1 },
       latencies: { kong: 1, proxy: 1, request: 2 },
     }]);
@@ -110,19 +124,35 @@ async function main() {
       await response.arrayBuffer();
       statuses.push(response.status);
     }
+    // With the valid token, through the proxy, to the pinned collector: another environment is dropped, its own kept.
+    for (const [path, environmentId] of [["/valid-token-other-environment", victim], ["/valid-token-own-environment", own]]) {
+      for (let attempt = 0; ; attempt++) {
+        const response = await request(`${proxy}${base}/forge-pinned`, {
+          method: "POST", headers: { "content-type": "application/json", "x-gromesh-collector-token": token }, body: forged(path, environmentId),
+        }).catch(() => null);
+        await response?.arrayBuffer();
+        if (response?.status === 200) break;
+        check(attempt < 40, `The pinned collector must accept its own token (HTTP ${response?.status ?? "no answer"})`);
+        await sleep(500);
+      }
+    }
     // The gateway's own http-log (token from its environment) must still reach ClickHouse.
     let legit = [];
-    for (let attempt = 0; attempt < 60 && !legit.includes(`${base}/ok`); attempt++) {
+    const expected = [`${base}/ok`, "/forged/valid-token-own-environment"];
+    for (let attempt = 0; attempt < 60 && !expected.every((path) => legit.includes(path)); attempt++) {
       await sleep(500);
       legit = await rows(own);
     }
-    const stolen = await rows(victim);
     check(legit.includes(`${base}/ok`), "The gateway's own analytics must still be written (token resolved from its environment)");
-    check(stolen.length === 0, `A forged event reached ClickHouse for another environment through the proxy (HTTP ${statuses.join("/")})`);
+    check(legit.includes("/forged/valid-token-own-environment"), "The pinned collector must write its own environment's events");
+    check(!legit.some((path) => path.endsWith("-token")), `A forged event without a valid token reached ClickHouse through the proxy (HTTP ${statuses.join("/")})`);
+    check((await rows(victim)).length === 0, "A valid token wrote another environment's analytics");
     check(statuses.every((status) => status === 401), `Forged events must be refused with 401, got HTTP ${statuses.join("/")}`);
-    console.log(`Collector refused events forged through the proxy (HTTP ${statuses.join("/")}); the gateway's own analytics arrived`);
+    console.log(`Collector refused events forged through the proxy (HTTP ${statuses.join("/")}); a valid token could not write ` +
+      "another environment; the gateway's own analytics arrived");
   } finally {
     await admin(id, "POST", prior);
+    await run(["rm", "-f", pinnedName]).catch(() => {});
   }
 }
 
