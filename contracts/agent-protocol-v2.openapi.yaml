@@ -33,7 +33,29 @@ info:
         after the kong container exited, which native sidecar ordering guarantees before the sidecars are
         signalled) or a node-reboot report of the previous boot. Otherwise it stays open and holds every new
         admission of the cluster until its chain arrives or a platform admin releases it.
-      - Containment never waits for the agent or the control plane. Budgets (B §3.5.3 of W0, proven in N2):
+      - Capabilities the probe proves from the kong container's network namespace (a NetworkPolicy manifest is
+        never proof). CAP-1 egress between pods: denied by default in the data plane namespace with an explicit
+        backend list; a test pod outside it is unreachable. CAP-2 host and privileged networks: the IP of every node
+        (the resident one included), a hostNetwork test server and the declared nodeCidrs and deniedCidrs are
+        refused. CAP-3 metadata: 169.254.169.254, fd00:ec2::254, 169.254.170.2 and the declared cloud's metadata
+        addresses are unreachable, also through a name resolving to them. CAP-4 DNS and rebinding: the cluster DNS
+        works and a name that starts resolving to a forbidden destination is refused at connection (by CAP-1 to
+        CAP-3). CAP-5 internal services: each internal destination (validator, Postgres, ClickHouse, collector,
+        the agent's :9100) admits only its expected clients and authenticates them. CAP-6 kong × agent and
+        control plane: separation by resource (agent socket and token, agent state and the lease volume are not
+        writable by kong; :9100 refuses its own pod). CAP-7 kong × collector: the collector accepts only its
+        cluster token on 127.0.0.1. Targets probed per round: a hostNetwork server on the resident node and on
+        another node, the metadata aliases (IPv4 and IPv6), a pod outside the list, a rebinding name, each internal
+        service and the control plane through an unauthorized address; after Kong starts, the guard canary
+        GET http://127.0.0.1:8000/.gromesh/guard/current (a platform route behind the guard answering 204 with
+        the lease nonce and the applied revision; every 1 s until the first success after each start or config
+        change). The control plane refuses to activate workspaces mode on a cluster until every pod has a
+        conclusive passing round.
+      - Probe persistence: each report is written with fsync to the probe's own volume before it is sent and kept in
+        a queue until the control plane acks it (sizeLimit 64Mi); a full queue stops lease renewal (no-proof). The
+        probe state (violation included), seq, key and queue survive container and node restarts. The probe key is
+        generated in the pod and never leaves the probe's volume.
+      - Containment never waits for the agent or the control plane. Budgets (proven in N2):
         detection <= 18 s, 503 <= 19 s, Kong stopped <= 20 s by the supervisor or <= 24 s by the liveness (effective
         kubelet grace 2 s), NotReady <= 20 s; during pod deletion the liveness is suspended by the kubelet, the
         supervisor drains for at most 18 s after receiving the signal (Kong stopped <= 20 s after the kubelet

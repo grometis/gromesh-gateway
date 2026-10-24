@@ -17,7 +17,7 @@
     "reason": { "enum": ["publish", "promotion", "rollback", "reconcile", "mandatory-plugins", "values", "migration"] },
     "members": {
       "type": "array",
-      "description": "Active release of each Workspace, ordered by workspaceId. Every entity in `config` carries the tag of exactly one member's Workspace, or the platform tag.",
+      "description": "Active release of each Workspace, ordered by workspaceId. Every route, service, consumer and plugin in `config` carries exactly one of: the tag `gromesh-ws:<workspaceId>` of a member, or the tag `gromesh-platform`.",
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -34,7 +34,7 @@
     "valuesDigest": { "oneOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] },
     "config": {
       "$ref": "./snapshot.schema.json#/$defs/kongConfig",
-      "description": "Opaque to the agent. The compiler guarantees (tested in N2): every Workspace route carries the full path with the Workspace prefix to the upstream unless stripPath is explicitly true; every Workspace route runs gromesh-route-guard; the platform canary route /.gromesh/guard/current exists."
+      "description": "Opaque to the agent. The compiler guarantees (checked on the example by the N0 contract test, proven with Kong in N2): every path of a Workspace route is `/<slug>` followed by the route path, or `~/<slug>(?:<regex>)`; strip_path is false unless the route set stripPath true (or is legacy-preserved); every Workspace route runs gromesh-route-guard; services and routes are named `<slug>~<name>`; the platform canary route with path /.gromesh/guard/current, tagged gromesh-platform and behind the guard, exists."
     }
   },
   "$defs": {

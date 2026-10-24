@@ -1,9 +1,10 @@
-import { createPublicKey, verify } from "node:crypto";
+import { createHash, createPublicKey, verify } from "node:crypto";
 import { readFileSync } from "node:fs";
 import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parse } from "yaml";
+import { hashConfig } from "@gromesh/compiler";
 import { startHarness, type Harness } from "./harness.js";
 
 // N0: the Workspaces contracts (v2) are planned; nothing here is implemented yet. These tests keep them coherent until
@@ -123,6 +124,58 @@ describe("authorization in the v2 contract", () => {
       if (p !== "public" && !m2m.has(p) && p !== "rollback.emergency") expect(has("platform-admin").has(p), `${op.operationId}: ${p}`).toBe(true);
     }
   });
+
+  it("selects the emergency permission by condition, with no other permission keys", () => {
+    for (const { op } of v2Ops) {
+      const keys = Object.keys(op).filter((k) => k.startsWith("x-required-permission"));
+      expect(keys.every((k) => ["x-required-permission", "x-required-permission-alternatives", "x-required-permission-when"].includes(k)), `${op.operationId}: ${keys}`).toBe(true);
+      for (const w of op["x-required-permission-when"] ?? []) expect(catalog.has(w.permission) && w.when.length > 0, op.operationId).toBe(true);
+    }
+    const rollback = v2Ops.find((o) => o.op.operationId === "rollbackRelease")!.op;
+    expect(rollback["x-required-permission"]).toBe("release.rollback");
+    expect(rollback["x-required-permission-when"]).toEqual([{ when: "body.emergency == true", permission: "rollback.emergency" }]);
+  });
+
+  it("limits grantable permissions and role names to the catalog", () => {
+    const s = v2.components.schemas;
+    expect(s.Permission.enum).toEqual([...catalog]);
+    expect(new Set(s.GrantablePermission.enum)).toEqual(new Set([...catalog].filter((p) => !m2m.has(p))));
+    expect(new Set(s.RolePermission.enum)).toEqual(new Set([...catalog].filter((p) => !m2m.has(p) && p !== "rollback.emergency")));
+    expect(s.RoleName.oneOf[0].enum).toEqual(Object.keys(roles));
+  });
+
+  it("declares the error responses of every operation", () => {
+    for (const { path, op } of v2Ops) {
+      const codes = Object.keys(op.responses);
+      if (op["x-required-permission"] === "public") {
+        expect(codes, op.operationId).toContain("400");
+        continue;
+      }
+      for (const c of ["401", "403"]) expect(codes, op.operationId).toContain(c);
+      if (path.includes("{")) expect(codes, op.operationId).toContain("404");
+      if (op.requestBody) expect(codes.includes("422") || codes.includes("400"), op.operationId).toBe(true);
+    }
+  });
+
+  it("closes every JSON request body", () => {
+    const resolve = (s: Doc): Doc => {
+      if (!s?.$ref) return s;
+      const [file, pointer] = s.$ref.split("#");
+      const doc = file ? docs[file.replace("./", "")] : v2;
+      return pointer.split("/").slice(1).reduce((node: Doc, key: string) => node[key], doc);
+    };
+    const isClosed = (s: Doc): boolean => {
+      const r = resolve(s);
+      if (r.additionalProperties === false || r.unevaluatedProperties === false) return true;
+      if (r.oneOf) return r.oneOf.every(isClosed);
+      if (r.allOf) return r.allOf.some(isClosed);
+      return r.type === "array";
+    };
+    for (const { op } of v2Ops) {
+      const body = op.requestBody?.content?.["application/json"]?.schema;
+      if (body) expect(isClosed(body), op.operationId).toBe(true);
+    }
+  });
 });
 
 describe("traceability to the W0 requirements", () => {
@@ -140,28 +193,36 @@ describe("traceability to the W0 requirements", () => {
     ...Array.from({ length: 4 }, (_, i) => `GW-RSK-0${i + 1}`),
     ...Array.from({ length: 4 }, (_, i) => `GW-PRV-0${i + 1}`),
     ...Array.from({ length: 5 }, (_, i) => `GW-AUTH-0${i + 1}`),
+    ...Array.from({ length: 5 }, (_, i) => `GW-M2M-0${i + 1}`),
     ...Array.from({ length: 9 }, (_, i) => `GW-DEP-0${i + 1}`),
   ];
-  /** Requirements without an operation of their own, and where their contract lives. */
-  const ELSEWHERE: Record<string, string> = {
-    "GW-WS-06": "compiler + data plane (N2): credential of one workspace never authenticates on another's route",
-    "GW-WS-06a": "schema:AuthenticationProfile (and/or chains, x-gromesh-phase L10)",
-    "GW-RBAC-08": "schema:RoleBindingWrite (effect deny, L3)",
-    "GW-RBAC-10": "info: deny by default in the authorization conventions",
-    "GW-RBAC-12": "v1 tokens (min of token and owner); info: M2M and API tokens never approve",
-    "GW-ADMIN-05": "schema:RoleBindingWrite (subjectType group, L2)",
-    "GW-PLG-01": "compiler (N2): mandatory platform plugins in every configuration",
-    "GW-PLG-03": "compiler (N2): exception only by the platform admin, with deadline and audit",
-    "GW-PLG-06": "data plane (N2): behavior proven with the real Kong",
-    "GW-PUB-04": "schema:PromotionRequest (kind partial, L7)",
-    "GW-RSK-01": "schema:Change (risk per change, L6)",
-    "GW-RSK-02": "schema:ApprovalPolicy (riskRules, L6)",
-    "GW-RSK-03": "schema:ApprovalPolicy (riskRules, L6)",
-    "GW-RSK-04": "schema:Change (risk per change, L6)",
-    "GW-AUTH-01": "v1 /auth/login (kept)",
-    "GW-AUTH-03": "L5 (OIDC per instance)",
-    "GW-AUTH-04": "L5 (break-glass)",
+  /**
+   * Requirements without an operation of their own, and where their contract lives: a JSON pointer into the v2
+   * contract (with the phase marker it must carry), a sentence of the v2 info, a v1 operation, or a later phase
+   * whose proof is not a contract (compiler and data plane in N2, OIDC in L5).
+   */
+  type Where = { schema: string; phase?: string } | { info: string } | { v1: string } | { deferred: string };
+  const ELSEWHERE: Record<string, Where> = {
+    "GW-WS-06": { deferred: "N2" }, // compiler + data plane: one workspace's credential never authenticates on another's route
+    "GW-WS-06a": { schema: "AuthenticationProfile/oneOf/1", phase: "L10" },
+    "GW-RBAC-08": { schema: "RoleBindingWrite/properties/effect/oneOf/1", phase: "L3" },
+    "GW-RBAC-10": { info: "deny by default" },
+    "GW-RBAC-12": { info: "they never approve nor execute" },
+    "GW-ADMIN-05": { schema: "RoleBindingWrite/properties/subjectType/oneOf/1", phase: "L2" },
+    "GW-PLG-01": { info: "A mandatory platform plugin's name is reserved in every workspace scope" },
+    "GW-PLG-03": { info: "created and changed only by platform-admin and audited" },
+    "GW-PLG-06": { deferred: "N2" }, // behavior proven with the real Kong
+    "GW-PUB-04": { schema: "PromotionRequest/oneOf/1", phase: "L7" },
+    "GW-RSK-01": { schema: "Change/properties/risk" },
+    "GW-RSK-02": { schema: "ApprovalPolicy/properties/riskRules", phase: "L6" },
+    "GW-RSK-03": { info: "workspace policy can only tighten" },
+    "GW-RSK-04": { schema: "Change/properties/risk" },
+    "GW-AUTH-01": { v1: "login" },
+    "GW-AUTH-03": { schema: "Identity/oneOf/0", phase: "L5" },
+    "GW-AUTH-04": { deferred: "L5" }, // break-glass
   };
+  const pointer = (path: string): Doc => path.split("/").reduce((node: Doc, key) => node?.[key], v2.components.schemas);
+  const v1Ids = new Set(operationsOf("control-plane.openapi.yaml").map(({ op }) => op.operationId));
   const referenced = new Set<string>();
   for (const { op } of [...v2Ops, ...agentOps]) for (const r of op["x-gromesh-requirements"] ?? []) referenced.add(r);
 
@@ -174,12 +235,18 @@ describe("traceability to the W0 requirements", () => {
   });
 
   it("covers every requirement by an operation or names where it lives", () => {
-    expect(CATALOG.length).toBe(93);
+    // The W0 matrix (R) has 98 rows: 95 requirements of the directive plus the derived GW-WS-06a, 16a and 16b.
+    expect(new Set(CATALOG).size).toBe(98);
     for (const r of CATALOG) expect(referenced.has(r) || r in ELSEWHERE, `${r} is not traced`).toBe(true);
     for (const [r, where] of Object.entries(ELSEWHERE)) {
       expect(referenced.has(r), `${r} has an operation: drop it from ELSEWHERE`).toBe(false);
-      const schema = /^schema:(\w+)/.exec(where)?.[1];
-      if (schema) expect(v2.components.schemas[schema], `${r}: ${schema}`).toBeDefined();
+      if ("schema" in where) {
+        const node = pointer(where.schema);
+        expect(node, `${r}: ${where.schema}`).toBeDefined();
+        if (where.phase) expect(node["x-gromesh-phase"], `${r}: ${where.schema}`).toBe(where.phase);
+      } else if ("info" in where) expect(v2.info.description, r).toContain(where.info);
+      else if ("v1" in where) expect(v1Ids.has(where.v1), `${r}: v1 ${where.v1}`).toBe(true);
+      else expect(["N2", "L5"], r).toContain(where.deferred);
     }
   });
 });
@@ -194,7 +261,7 @@ describe("state machines in the contracts", () => {
 
   it("finds the machines of the approved design", () => {
     expect(machines.map(([n]) => n.split("#")[1]).sort()).toEqual(
-      ["AdmissionOutcome", "AdmissionState", "ApprovalState", "DeploymentState", "IsolationPendencyLifecycle", "PodIsolationState", "PromotionStatus", "WorkspaceRequestStatus"].sort(),
+      ["AdmissionOutcome", "AdmissionState", "ApprovalState", "DeploymentState", "EmergencyPostReviewStatus", "IsolationPendencyLifecycle", "PodIsolationState", "PromotionStatus", "WorkspaceRequestStatus"].sort(),
     );
   });
 
@@ -269,6 +336,8 @@ describe("core profile (L1 to L10 blocked in the core)", () => {
     ["RoleBindingWrite", { subjectType: "group", subjectId: u, role: "editor" }, false],
     ["RoleBindingWrite", { subjectType: "user", subjectId: u, role: "editor", effect: "deny" }, false],
     ["RoleBindingWrite", { subjectType: "user", subjectId: u, role: "editor" }, true],
+    ["RoleBindingWrite", { subjectType: "user", subjectId: u, role: "tech-lead" }, false],
+    ["ApprovalPolicy", { minApprovals: 1, eligibleRoles: ["tech-lead"] }, false],
     ["ApprovalPolicy", { minApprovals: 1, eligibleRoles: ["approver"], riskRules: [{ minRisk: "high", extraApprovals: 1 }] }, false],
     ["ApprovalPolicy", { minApprovals: 1, eligibleRoles: ["approver"] }, true],
     ["PromotionRequest", { kind: "partial", releaseVersion: 1, selection: [{ kind: "routes", id: u, change: "upsert" }] }, false],
@@ -282,12 +351,18 @@ describe("core profile (L1 to L10 blocked in the core)", () => {
 describe("v2 schemas", () => {
   const emptyContent = { services: [], routes: [], consumers: [], credentials: [], plugins: [], upstreams: [], targets: [], certificates: [], variables: [] };
   const base = { packageId: u, sourceInstanceId: u, sourceStage: "dev", targetStage: "hml", workspaceKey: u, slug: "a", kind: "full", sourceReleaseVersion: 1, createdAt: "2026-10-23T00:00:00Z", expiresAt: "2026-10-24T00:00:00Z", nonce: "n", contentDigest: d, requestedBy: { kind: "local", email: "a@b.co" }, authors: [{ kind: "oidc", issuer: "https://idp.example", subject: "123" }] };
-  const att = { issuerInstanceId: u, issuerStage: "hml", workspaceKey: u, contentDigest: d, deploymentRevision: 1, clusters: [{ clusterId: u, nodes: [{ nodeId: "n1", appliedRevision: 1 }] }], promotionId: u, authorsDigest: d, convergedAt: "2026-10-23T00:00:00Z", jws: "x" };
+  const att = { issuerInstanceId: u, issuerStage: "hml", workspaceKey: u, contentDigest: d, deploymentRevision: 1, clusters: [{ clusterId: u, nodes: [{ nodeId: "n1", appliedRevision: 1 }] }], promotionId: u, authorsDigest: d, convergedAt: "2026-10-23T00:00:00Z", jws: { protected: "eyJ", payload: "eyJ", signature: "c2ln" } };
   const toPrd = { ...base, sourceStage: "hml", targetStage: "prd", content: emptyContent };
   const release = { workspaceId: u, version: 3, contentDigest: d, origin: "rollback", rollbackOf: 1, contentOriginVersion: 1, contentFirstActivatedAt: "2026-09-01T00:00:00Z", originPromotionId: u, contentRevoked: false, createdAt: "2026-10-23T00:00:00Z" };
   const promo = { id: u, packageId: u, status: "validating", kind: "rollback", proofUse: "historical", contentDigest: d, workspaceKey: u, slug: "a" };
   const pend = (kind: string, releasable: boolean, scope = "cluster") => ({ clusterId: u, pods: [], pendencies: [{ id: u, kind, scope, openedAt: "2026-10-24T00:00:00Z", releasable }] });
   const pod = { podUid: u, bootId: u, podName: "kong-0", nodeName: "n1", state: "verifying", admission: "open", reporting: "communication-failure", lastSeq: 7, leaseRemainingMs: 21000 };
+  const exec = (result: string, failureReason: string | null = null) => ({ promotionId: u, result, failureReason, executedBy: { userId: u, personId: u }, startedAt: "2026-10-24T00:00:00Z" });
+  const review = { id: u, promotionId: u, status: "pending", openedAt: "2026-10-24T00:00:00Z", reviewer: null, justification: null, correctiveAction: null, decidedAt: null };
+  const reviewer = { userId: u, personId: u, startedAt: "2026-10-24T01:00:00Z" };
+  const emergency = { ...promo, kind: "emergency-rollback", status: "converged", execution: exec("converged"), postReview: review };
+  const service = { id: u, spec: { name: "recarga", protocol: "https", host: { $var: "TVRO_HOST" }, port: 443 } };
+  const content = (extra: Record<string, unknown>) => ({ ...emptyContent, ...extra });
 
   it.each([
     ["PromotionRequest", { kind: "partial", releaseVersion: 1 }, false],
@@ -334,7 +409,62 @@ describe("v2 schemas", () => {
     ["Promotion", promo, true],
     ["Promotion", { ...promo, proofUse: undefined }, false],
     ["Promotion", { ...promo, kind: "emergency-rollback" }, true],
-    ["Promotion", { ...promo, status: "emergency-reviewed" }, true],
+    // The operational state of a promotion and the post-review of an emergency rollback are separate (N0-4).
+    ["Promotion", { ...promo, status: "emergency-reviewed" }, false],
+    ["Promotion", { ...promo, status: "emergency-pending-review" }, false],
+    ["Promotion", emergency, true],
+    ["Promotion", { ...emergency, status: "failed", execution: exec("failed", "partial") }, true],
+    ["Promotion", { ...emergency, status: "failed", execution: exec("failed") }, false],
+    ["Promotion", { ...emergency, postReview: undefined }, false],
+    ["Promotion", { ...emergency, status: "awaiting-approval", execution: undefined }, false],
+    ["Promotion", { ...emergency, status: "awaiting-emergency-execution", execution: undefined, postReview: undefined }, true],
+    ["Promotion", { ...promo, status: "awaiting-emergency-execution" }, false],
+    ["Promotion", { ...promo, status: "converged", execution: exec("converged"), postReview: review }, false],
+    ["Promotion", { ...promo, status: "converged" }, false],
+    ["Promotion", { ...promo, status: "rolled-back", execution: exec("failed", "deadline") }, false],
+    ["Promotion", { ...promo, status: "rolled-back", execution: exec("failed", "deadline"), recoveredBy: { kind: "emergency-rollback", promotionId: u, deploymentRevision: 9, at: "2026-10-24T00:00:00Z" } }, true],
+    ["EmergencyPostReview", { ...review, status: "in-review", reviewer }, true],
+    ["EmergencyPostReview", { ...review, status: "in-review" }, false],
+    ["EmergencyPostReview", { ...review, status: "no-findings", reviewer, justification: "restaurou o pix", decidedAt: "2026-10-24T02:00:00Z" }, true],
+    ["EmergencyPostReview", { ...review, status: "no-findings", reviewer, decidedAt: "2026-10-24T02:00:00Z" }, false],
+    ["EmergencyPostReview", { ...review, status: "corrective-action", reviewer, justification: "plantão sem janela", decidedAt: "2026-10-24T02:00:00Z" }, false],
+    ["EmergencyPostReview", { ...review, status: "corrective-action", reviewer, justification: "plantão sem janela", correctiveAction: "INC-42", decidedAt: "2026-10-24T02:00:00Z" }, true],
+    ["EmergencyPostReview", { ...review, justification: "cedo demais" }, false],
+    // Package content is typed per kind, with variables only where the schema allows them (N0-1, N0-2).
+    ["PackagePayload", { ...base, content: content({ services: [service] }) }, true],
+    ["PackagePayload", { ...base, content: content({ services: [{ id: u, spec: { name: "recarga" } }] }) }, false],
+    ["PackagePayload", { ...base, content: content({ services: [{ ...service, spec: { ...service.spec, retries: { $var: "N" } } }] }) }, false],
+    ["PackagePayload", { ...base, content: content({ services: [{ ...service, spec: { ...service.spec, extra: 1 } }] }) }, false],
+    ["PackagePayload", { ...base, content: content({ consumers: [{ id: u, spec: { customId: "c-1" }, aclGroups: [] }] }) }, true],
+    ["PackagePayload", { ...base, content: content({ targets: [{ id: u, upstreamId: u, spec: { target: { $var: "PIX_TARGET" } } }] }) }, true],
+    ["PackagePayload", { ...base, content: content({ certificates: [{ id: u, spec: { cert: "-----BEGIN", key: "-----BEGIN", snis: [] } }] }) }, false],
+    ["PackagePayload", { ...base, content: content({ certificates: [{ id: u, spec: { cert: "-----BEGIN", key: { $var: "TLS_KEY" }, snis: [] } }] }) }, true],
+    ["PackagePayload", { ...base, content: content({ variables: [{ type: "host", secret: false, required: true }] }) }, false],
+    ["PackagePayload", { ...base, sourceStage: "prd", targetStage: "dev", content: emptyContent }, false],
+    ["PackagePayload", { ...base, sourceStage: "hml", targetStage: "hml", content: emptyContent }, false],
+    ["WorkspaceServiceWrite", { name: "tvro", protocol: "http", host: { $var: "TVRO_HOST" }, port: { $var: "TVRO_PORT" } }, true],
+    ["WorkspaceServiceWrite", { name: "tvro", protocol: "http", host: { $var: "lower" }, port: 80 }, false],
+    ["WorkspaceServiceWrite", { name: "tvro", protocol: "http", host: "tvro.svc", port: 80, extra: true }, false],
+    ["WorkspaceConsumerWrite", { username: "app", extra: true }, false],
+    ["WorkspaceVariableDeclaration", { type: "privateKey", secret: true, required: true }, true],
+    ["WorkspaceVariableDeclaration", { type: "host", secret: false, required: true, value: "x" }, false],
+    // M2M reads only a summary (N0-3); errors, approvals, attestations and permissions are closed (N0-8, N0-10, N0-12).
+    ["M2mPromotionSummary", { id: u, packageId: u, status: "validating", kind: "full", contentDigest: d, updatedAt: "2026-10-24T00:00:00Z" }, true],
+    ["M2mPromotionSummary", { id: u, packageId: u, status: "validating", kind: "full", contentDigest: d, updatedAt: "2026-10-24T00:00:00Z", changes: [] }, false],
+    ["M2mValidationSummary", { result: "blocked", checks: [{ name: "conflicts", result: "blocked", detail: "consumer app-x" }], at: "2026-10-24T00:00:00Z" }, false],
+    ["Problem", {}, false],
+    ["Problem", { type: "about:blank", title: "Conflict", status: 409 }, true],
+    ["Approval", { id: u, state: "banana", approver: { userId: u, personId: u }, at: "2026-10-23T00:00:00Z", decision: "approve", contentDigest: d, diffDigest: d, baseRevision: 3, policyVersion: 1, valuesDigest: d, candidateDigest: d }, false],
+    ["Attestation", att, true],
+    ["Attestation", { ...att, jws: "eyJ.eyJ.c2ln" }, false],
+    ["SignedPackage", { protected: "", payload: "", signature: "" }, false],
+    ["RoleBindingWrite", { subjectType: "user", subjectId: u, permissions: ["promotion.typo"] }, false],
+    ["RoleBindingWrite", { subjectType: "user", subjectId: u, permissions: ["m2m.submit"] }, false],
+    ["RoleBindingWrite", { subjectType: "user", subjectId: u, role: "editor", extra: 1 }, false],
+    ["RoleWrite", { name: "tech-lead", permissions: ["rollback.emergency"] }, false],
+    ["RoleWrite", { name: "editor", permissions: ["promotion.approve"] }, false],
+    ["RoleWrite", { name: "tech-lead", permissions: ["promotion.approve"] }, true],
+    ["WorkspaceWrite", { name: "TVRO", extra: 1 }, false],
     // Revocation is by digest and only adds rows.
     ["ContentRevocation", { workspaceId: u, contentDigest: d, reason: "CVE na versão 4", revokedAt: "2026-10-24T00:00:00Z", revokedBy: {} }, true],
     ["ContentRevocation", { workspaceId: u, contentDigest: "sha256:x", reason: "x", revokedAt: "2026-10-24T00:00:00Z", revokedBy: {} }, false],
@@ -380,6 +510,11 @@ describe("v2 schemas", () => {
     ["/clusters/{clusterId}/isolation-releases", { pendencyId: u, justification: "causa corrigida na CNI" }, true],
     ["/clusters/{clusterId}/isolation-releases", { violationId: u, justification: "causa corrigida na CNI" }, false],
     ["/clusters/{clusterId}/isolation-releases", { pendencyId: u, justification: "ok" }, false],
+    ["/promotions/{promotionId}/post-review/decision", { outcome: "no-findings", justification: "restaurou o pix" }, true],
+    ["/promotions/{promotionId}/post-review/decision", { outcome: "corrective-action", justification: "plantão sem janela" }, false],
+    ["/promotions/{promotionId}/post-review/decision", { outcome: "corrective-action", justification: "plantão sem janela", correctiveAction: "INC-42" }, true],
+    ["/promotions/{promotionId}/post-review/decision", { outcome: "findings", justification: "plantão sem janela", correctiveAction: "INC-42" }, false],
+    ["/promotions/{promotionId}/post-review/decision", { outcome: "approve", justification: "plantão sem janela" }, false],
   ])("body of %s %j -> %s", (path, value, expected) => {
     expect(bodyOf(path)(value)).toBe(expected);
   });
@@ -425,6 +560,32 @@ describe("agent protocol v2", () => {
     const ref = agentV2.paths["/agent/v2/deployments/current"].get.responses[200].content["application/json"].schema.$ref;
     expect(ref).toBe("./snapshot-v2.schema.json");
   });
+
+  it("keeps the v2 invariants in the snapshot example: prefix, tags, guard and canary", () => {
+    const snap = JSON.parse(read("examples/snapshot-v2.example.json"));
+    expect(snap.hash).toBe(hashConfig(snap.config));
+    const slugOf = new Map<string, string>(snap.members.map((m: Doc) => [`gromesh-ws:${m.workspaceId}`, m.slug]));
+    const owner = (e: Doc) => {
+      const tags = (e.tags as string[]).filter((t) => t.startsWith("gromesh-ws:") || t === "gromesh-platform");
+      expect(tags.length, e.id).toBe(1);
+      return tags[0]!;
+    };
+    for (const kind of ["services", "routes", "consumers", "plugins"]) for (const e of snap.config[kind]) owner(e);
+    const guarded = new Set(snap.config.plugins.filter((p: Doc) => p.name === "gromesh-route-guard").map((p: Doc) => p.route));
+    for (const route of snap.config.routes) {
+      expect(guarded.has(route.id), route.name).toBe(true);
+      const tag = owner(route);
+      if (tag === "gromesh-platform") {
+        expect(route.paths).toEqual(["/.gromesh/guard/current"]);
+        continue;
+      }
+      const slug = slugOf.get(tag)!;
+      expect(route.name.startsWith(`${slug}~`), route.name).toBe(true);
+      expect(route.strip_path, route.name).toBe(false);
+      for (const p of route.paths) expect(p === `/${slug}` || p.startsWith(`/${slug}/`) || p.startsWith(`~/${slug}(?:`), p).toBe(true);
+    }
+    expect(snap.config.routes.some((r: Doc) => owner(r) === "gromesh-platform")).toBe(true);
+  });
 });
 
 describe("signed package vector (C-21)", () => {
@@ -444,6 +605,29 @@ describe("signed package vector (C-21)", () => {
     expect(JSON.parse(Buffer.from(vector.signedPackage.protected, "base64url").toString("utf8"))).toEqual({ alg: "EdDSA", kid: "dev-2026-10", typ: "gromesh-package+json", pkgVersion: 1 });
     expect(valid("PackagePayload", JSON.parse(vector.canonicalPayload))).toBe(true);
     expect(check(vector.signedPackage)).toBe(true);
+  });
+
+  const digestOf = (content: unknown) => "sha256:" + createHash("sha256").update(jcs(content), "utf8").digest("hex");
+  const accept = (jws: { protected: string; payload: string; signature: string }) => {
+    if (!check(jws)) return false;
+    const payload = JSON.parse(Buffer.from(jws.payload, "base64url").toString("utf8"));
+    return valid("PackagePayload", payload) && payload.contentDigest === digestOf(payload.content);
+  };
+
+  it("declares the digest of the content it carries, with every array ordered by id", () => {
+    const { content, contentDigest } = vector.payload;
+    expect(contentDigest).toBe(digestOf(content));
+    for (const [kind, items] of Object.entries(content as Record<string, { id?: string; name?: string }[]>)) {
+      const keys = items.map((i) => i.id ?? i.name!);
+      expect(keys, kind).toEqual([...keys].sort());
+    }
+    expect(content.services.length).toBeGreaterThan(0);
+    expect(accept(vector.signedPackage)).toBe(true);
+  });
+
+  it("refuses a correctly signed package whose contentDigest does not match its content", () => {
+    expect(check(vector.signedPackageWithWrongDigest)).toBe(true);
+    expect(accept(vector.signedPackageWithWrongDigest)).toBe(false);
   });
 
   it("fails on any change to the bytes, including an equivalent non-canonical serialization", () => {
