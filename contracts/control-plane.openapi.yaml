@@ -72,6 +72,17 @@ info:
         import answer 422 when the resulting state has such a destination (rows written before the rule existed).
         The control plane does not resolve DNS: a name that resolves to one of these addresses is not detected here,
         which is why the data plane must not expose privileged listeners over TCP.
+      - Vault references. A plugin `config` string containing `{vault://` answers 422 with the `path` of that field
+        (`config.headers.X-Token`, or `document.plugins.0.config...` on import): Kong resolves references in the data
+        plane, where they read the gateway's own environment (e.g. the collector token below). Platform plugins are
+        compiled by the control plane itself and are the only configuration that carries references.
+      - Platform analytics (http-log). The platform http-log plugin sends the header `X-Gromesh-Collector-Token`
+        with the value `{vault://env/gromesh-collector-token}`, which each gateway resolves from its own
+        `GROMESH_COLLECTOR_TOKEN`; the control plane never stores, returns, audits or diffs the token. The cluster's
+        collector refuses (401) every event without that cluster's token, and drops an event whose `environment_id`
+        differs from the environment the collector is configured for. A gateway or pod that can reach the collector
+        but lacks the token cannot write analytics; one that knows the token (it runs in that gateway) can only write
+        for that collector's own cluster and environment.
       - Secrets are write-only: credential keys, JWT secrets, `encrypted` plugin fields and certificate private keys
         read back as `"REDACTED"` for every role. Only the agent endpoint delivers the real values. Basic-auth
         passwords are never returned anywhere; the control plane keeps only Kong's salted hash, which is a secret too:
@@ -1556,7 +1567,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Plugin" }
         "409": { $ref: "#/components/responses/Conflict" }
-        "422": { $ref: "#/components/responses/ValidationError" }
+        "422": { $ref: "#/components/responses/ValidationError", description: "Includes a config string with a vault reference (see Vault references)." }
         "404": { $ref: "#/components/responses/NotFound" }
   /environments/{envId}/plugins/{pluginId}:
     parameters: [{ $ref: "#/components/parameters/EnvId" }, { $ref: "#/components/parameters/PluginId" }]
@@ -1590,7 +1601,7 @@ paths:
               schema: { $ref: "#/components/schemas/Plugin" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
-        "422": { $ref: "#/components/responses/ValidationError" }
+        "422": { $ref: "#/components/responses/ValidationError", description: "Includes a config string with a vault reference (see Vault references)." }
     delete:
       tags: [plugins]
       operationId: deletePlugin
