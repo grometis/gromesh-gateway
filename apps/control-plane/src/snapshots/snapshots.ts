@@ -33,6 +33,7 @@ import { decodeCursor, encodeCursor, parseLimit } from "../common/pagination.js"
 import { conflict, notFound, ProblemException, unprocessable } from "../common/problem.js";
 import { APP_CONFIG, type AppConfig } from "../config.js";
 import { destinationIssues, destinationPolicy, type DestinationPolicy } from "../common/destinations.js";
+import { stateVaultReferenceIssues } from "../common/vault-references.js";
 import { DB, type Db, type Executor, type Tx } from "../db/db.js";
 import { environments, snapshots, type EnvironmentRow, type SnapshotRow } from "../db/schema.js";
 import { requireEnvironment, uuidParam } from "../environments/environments.js";
@@ -273,7 +274,7 @@ export class SnapshotsService {
   private async prepare(tx: Executor, env: EnvironmentRow): Promise<PreparedPublish> {
     const state = await loadGatewayState(tx, env.id, this.enc, this.catalog);
     // Rows written before the rule existed (or restored by a rollback) must not reach the data plane either.
-    const forbidden = destinationIssues(state, this.destinations);
+    const forbidden = [...destinationIssues(state, this.destinations), ...stateVaultReferenceIssues(state)];
     if (forbidden.length > 0) throw unprocessable("The draft cannot be published", forbidden);
     let envelope: SnapshotEnvelope;
     try {

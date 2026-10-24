@@ -50,11 +50,13 @@ async function compose(args: string[], registrationToken?: string, extraEnv: Rec
  * The collector of one cluster: Vector recreated with that cluster's id (the compose default is a placeholder).
  * ClickHouse and its users come up first when the stack was started without the observability profile (CI).
  */
-async function collector(clusterId?: string) {
+async function collector(clusterId?: string, environmentId?: string) {
   await compose(["--profile", "observability", "up", "-d", "--wait", "clickhouse"]);
   // One-shot: `up --wait` would treat its clean exit as a failure, `run` waits for it to finish.
   await compose(["--profile", "observability", "run", "--rm", "--no-deps", "clickhouse-init"]);
-  await compose(["--profile", "observability", "up", "-d", "--wait", "--force-recreate", "--no-deps", "vector"], undefined, clusterId ? { GROMESH_CLUSTER_ID: clusterId } : {});
+  await compose(["--profile", "observability", "up", "-d", "--wait", "--force-recreate", "--no-deps", "vector"], undefined, {
+    ...(clusterId ? { GROMESH_CLUSTER_ID: clusterId } : {}), ...(environmentId ? { GROMESH_ENVIRONMENT_ID: environmentId } : {}),
+  });
 }
 
 /** What the agent protocol serves to a node of `clusterId`: the snapshot must be the same for every cluster. */
@@ -101,7 +103,7 @@ test("UI publication, key-auth traffic, viewer limits, audit and rollback on the
     // The collector comes up before the first request hits the gateway: a failed lookup of gromesh-collector would
     // otherwise be cached by the gateway (dns_not_found_ttl) and the log lines of the next seconds would be lost.
     collectorStarted = true;
-    await collector(cluster.id);
+    await collector(cluster.id, env.id);
     agentStarted = true;
     await compose(["up", "-d", "--no-deps", "--force-recreate", "agent"], cluster.registrationToken);
     await converge(api, cluster.id, baseline.version);

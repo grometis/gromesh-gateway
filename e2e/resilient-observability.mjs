@@ -57,7 +57,8 @@ async function collectorReady(timeoutMs = 60_000) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     try {
-      await compose("exec", "-T", "vector", "wget", "-q", "-O", "/dev/null", "--post-data=[]", "http://127.0.0.1:8080/kong");
+      await compose("exec", "-T", "vector", "sh", "-c",
+        'wget -q -O /dev/null --header "X-Gromesh-Collector-Token: $GROMESH_COLLECTOR_TOKEN" --post-data=[] http://127.0.0.1:8080/kong');
       return;
     } catch {
       assert.ok(Date.now() < deadline, `Collector must accept on its http-log endpoint within ${timeoutMs / 1000} s`);

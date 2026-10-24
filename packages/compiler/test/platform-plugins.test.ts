@@ -21,6 +21,7 @@ describe("platformPlugins", () => {
       } }),
       expect.objectContaining({ name: "http-log", config: {
         http_endpoint: options.httpLogEndpoint, method: "POST", content_type: "application/json", timeout: 5000,
+        headers: { "X-Gromesh-Collector-Token": "{vault://env/gromesh-collector-token}" },
         queue: { max_batch_size: 100, max_coalescing_delay: 1, max_entries: 10000, max_retry_time: 60 },
         custom_fields_by_lua: {
           environment_id: `return "${options.environmentId}"`,

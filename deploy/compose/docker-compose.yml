@@ -60,6 +60,9 @@ services:
       KONG_NGINX_HTTP_INCLUDE: /etc/gromesh/kong/listeners.conf
       KONG_PROXY_ACCESS_LOG: /dev/stdout
       KONG_PROXY_ERROR_LOG: /dev/stderr
+      # The platform http-log resolves {vault://env/gromesh-collector-token}; workers see only `env` variables.
+      GROMESH_COLLECTOR_TOKEN: ${GROMESH_COLLECTOR_TOKEN:-gromesh-dev-collector-token-not-a-secret}
+      KONG_NGINX_MAIN_ENV: GROMESH_COLLECTOR_TOKEN
       KONG_PLUGINS: bundled
       KONG_NGINX_WORKER_PROCESSES: "2"
       # Cold NXDOMAIN, 5s polls: 80.6s baseline -> 10.3s (3.9.3/3.9.4); recover within the 60s log queue.
@@ -256,6 +259,10 @@ services:
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_WRITER_PASSWORD:-gromesh-dev-writer}
       # The e2e recreates this service with the real cluster id; the default marks "development, no cluster".
       GROMESH_CLUSTER_ID: ${GROMESH_CLUSTER_ID:-00000000-0000-4000-8000-00000000c0c0}
+      # Empty here because the e2e scripts create environments on the fly; the chart requires it (hotfix F-1).
+      GROMESH_ENVIRONMENT_ID: ${GROMESH_ENVIRONMENT_ID:-}
+      # Development-only; the gateway sends the same value (contract: Platform analytics).
+      GROMESH_COLLECTOR_TOKEN: ${GROMESH_COLLECTOR_TOKEN:-gromesh-dev-collector-token-not-a-secret}
       # Optional non-secret JSON array, unioned with each event's key_names. Vector always strips apikey.
       GROMESH_KEY_NAMES: ${GROMESH_KEY_NAMES:-[]}
       VECTOR_LOG: info
@@ -269,7 +276,7 @@ services:
       clickhouse-init:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null --post-data='[]' http://127.0.0.1:8080/kong"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null --header \"X-Gromesh-Collector-Token: $$GROMESH_COLLECTOR_TOKEN\" --post-data='[]' http://127.0.0.1:8080/kong"]
       interval: 2s
       timeout: 3s
       retries: 30
@@ -308,6 +315,7 @@ services:
       - ../observability:/repo/deploy/observability:ro
     environment:
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-gromesh-dev-observability}
+      GROMESH_COLLECTOR_TOKEN: ${GROMESH_COLLECTOR_TOKEN:-gromesh-dev-collector-token-not-a-secret}
     command: ["node", "/repo/deploy/observability/acceptance.mjs", "--inside"]
     depends_on:
       kong:

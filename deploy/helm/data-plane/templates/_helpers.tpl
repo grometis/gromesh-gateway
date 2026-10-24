@@ -58,10 +58,17 @@ http://gromesh-collector:8080/kong
 {{- end -}}
 {{- end -}}
 
+{{- define "data-plane.collectorTokenSecret" -}}
+{{- .Values.collector.auth.existingSecret | default (printf "%s-collector-token" (include "data-plane.fullname" .)) -}}
+{{- end -}}
+
 {{- define "data-plane.validate" -}}
 {{- if .Values.collector.enabled -}}
 {{- if not (regexMatch "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" .Values.collector.clusterId) -}}
 {{- fail "collector.clusterId must be the UUID of this cluster when collector.enabled is true" -}}
+{{- end -}}
+{{- if not (regexMatch "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" .Values.collector.environmentId) -}}
+{{- fail "collector.environmentId must be the UUID of this cluster's environment when collector.enabled is true" -}}
 {{- end -}}
 {{- if empty .Values.collector.clickhouse.existingSecret -}}
 {{- fail "collector.clickhouse.existingSecret must name the Secret with the ClickHouse writer password when collector.enabled is true" -}}
