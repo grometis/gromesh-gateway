@@ -70,6 +70,7 @@ git worktree add ../gg-codex  -b task/W1-X1-kong-image
 | P6-X3e | Codex | P6-X3d | `apps/ui/` |
 | P6-X1 | Codex | P6-C0 | `apps/control-plane/`, `deploy/helm/*/templates/`, `deploy/helm/*/values.yaml` (só os comentários), `deploy/helm/*/ci/check.sh`, `.github/workflows/ci.yml` (só o passo do chart do data plane) |
 | P6-C2 | Claude | P6-X1 | `deploy/helm/*/ci/values-homelab.yaml` |
+| N0-C0 | Claude | W0 aprovada | `contracts/` (só arquivos v2 e exemplos novos), `apps/control-plane/test/integration/workspaces-v2-contract.test.ts`, `package.json` (só `lint:contracts`) |
 
 Ordem de merge na semana 3: W2-C2 → W3-X1 → W3-C1 → W3-X2. Quem mergeia depois faz rebase; `src/db/schema.ts` e `drizzle/` são alterados por uma frente por vez.
 
@@ -530,6 +531,33 @@ Aceite: testes com header presente vindo de proxy confiável (usado), presente v
 Aceite: checagens dos charts verdes com os values de homelab.
 
 ---
+
+## N0 — Workspaces: contratos (W0 aprovada)
+
+Desenho aprovado pelo Fabrício em 2026-10-24 (W0, `APPROVED_FOR_N0`; desenho e pareceres fora do repositório). A N0 só
+publica contratos planejados: nenhum handler, nenhuma migração, nenhum comportamento novo. N1 e N2 não começam sem
+autorização.
+
+### N0-C0 [Claude] Contrato v2 (Workspaces, planejado)
+- `contracts/control-plane-v2.openapi.yaml`: Workspaces, entidades do gateway por Workspace (`stripPath` padrão
+  `false`, path completo com o prefixo ao upstream), bindings e papéis, releases imutáveis, deployments, promoções,
+  aprovações, políticas, M2M, pacote assinado e atestados, contenção de isolamento. Tudo `x-gromesh-planned`, com
+  `x-required-permission`, `x-scope` e `x-gromesh-requirements`; catálogo de permissões e papéis embutidos no `info`.
+  Login, usuários, tokens, `/me` e catálogo de plugins ficam no v1 até a N1 decidir a compatibilidade dos paths (H-9).
+- `contracts/agent-protocol-v2.openapi.yaml`: deployment com época e revisão, status, admissão por `podUid` e `bootId`
+  com desafio, relatórios assinados e numerados, liberações, formato local da concessão.
+- `contracts/snapshot-v2.schema.json` e exemplos (snapshot v2, vetor do pacote assinado).
+- Máquinas de estados no contrato (`x-gromesh-transitions`); perfil do núcleo com L1–L10 bloqueados (`x-gromesh-phase`).
+
+Aceite: `pnpm lint:contracts` sem erros e `workspaces-v2-contract.test.ts` (nenhuma operação v2 com handler;
+permissões, escopo e CSRF; papéis; rastreabilidade GW-*; máquinas fechadas; perfil do núcleo; procedência e
+revogação; protocolo do agente; snapshot v2; vetor C-21).
+
+### N2 — gates obrigatórios, ainda não comprovados
+Nenhum Workspace é ativável sem estes testes em Kong real e Kubernetes compatível (≥ 1.33 ou versão validada):
+contenção real do tráfego; orçamento de detecção e encerramento (incluindo as folgas K, Ks e Kx medidas);
+keepalive e WebSocket; supervisor travado; relógio monotônico e `bootId`; admissão de pods; perda da sonda e da
+comunicação; recriação de pod e troca de nó; ordem de encerramento dos sidecars; controles negativos de isolamento.
 
 ## Backlog (pós-MVP, em ordem de prioridade)
 
