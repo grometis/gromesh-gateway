@@ -37,6 +37,11 @@ export interface AppConfig {
    */
   platformHttpLogEndpoint: string | null;
   /**
+   * FORBIDDEN_DESTINATIONS: comma-separated host names, `*.suffix` patterns, IP addresses or CIDRs that services,
+   * upstreams and targets may not use, on top of loopback, link-local and this control plane's own dependencies.
+   */
+  forbiddenDestinations: string[];
+  /**
    * Secrets at rest: GROMESH_ENCRYPTION_KEY is the write key (`<keyId>:<base64 of 32 bytes>`), GROMESH_ENCRYPTION_KEYS
    * the comma-separated previous keys still accepted for reading (rotation) and GROMESH_FINGERPRINT_KEY (base64 of
    * 32 bytes) the separate HMAC key behind uniqueness checks. The first and the last are required to start the API.
@@ -83,6 +88,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     loginLockoutMs: Number(env.LOGIN_LOCKOUT_MS ?? 15 * 60 * 1000),
     kongValidatorUrl: env.KONG_VALIDATOR_URL || null,
     platformHttpLogEndpoint: env.PLATFORM_HTTP_LOG_ENDPOINT || null,
+    forbiddenDestinations: (env.FORBIDDEN_DESTINATIONS ?? "").split(",").map((d) => d.trim()).filter(Boolean),
     encryption: env.GROMESH_ENCRYPTION_KEY
       ? {
           writeKey: env.GROMESH_ENCRYPTION_KEY,

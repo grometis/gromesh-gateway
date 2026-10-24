@@ -68,11 +68,11 @@ describe("upstreams and targets", () => {
     expect((await h.api("POST", `/environments/${envId}/upstreams/${up.id}/targets`, { target: "echo:80" })).status).toBe(409);
     expect((await h.api("POST", `/environments/${envId}/upstreams/${up.id}/targets`, { target: "echo:70000" })).body.errors[0].path).toBe("target");
     expect((await h.api("POST", `/environments/${envId}/upstreams/${up.id}/targets`, { target: "no-port" })).status).toBe(422);
-    expect((await h.api("POST", `/environments/${envId}/upstreams/${up.id}/targets`, { target: "[::1]:8080", weight: 0 })).status).toBe(201);
+    expect((await h.api("POST", `/environments/${envId}/upstreams/${up.id}/targets`, { target: "[2001:db8::1]:8080", weight: 0 })).status).toBe(201);
     const put = await h.api("PUT", `/environments/${envId}/upstreams/${up.id}/targets/${t1.body.id}`, { target: "echo:80", weight: 7 });
     expect(put.body.weight).toBe(7);
     const list = await h.api("GET", `/environments/${envId}/upstreams/${up.id}/targets`);
-    expect(list.body.items.map((t: { target: string }) => t.target)).toEqual(["[::1]:8080", "echo:80"]);
+    expect(list.body.items.map((t: { target: string }) => t.target)).toEqual(["[2001:db8::1]:8080", "echo:80"]);
     expect((await h.api("DELETE", `/environments/${envId}/upstreams/${up.id}/targets/${t1.body.id}`)).status).toBe(204);
   });
 

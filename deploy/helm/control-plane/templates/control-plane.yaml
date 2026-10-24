@@ -54,6 +54,10 @@ spec:
             {{- end }}
             - name: KONG_VALIDATOR_URL
               value: http://kong-validator:8001
+            {{- with .Values.forbiddenDestinations }}
+            - name: FORBIDDEN_DESTINATIONS
+              value: {{ join "," . | quote }}
+            {{- end }}
             {{- with .Values.platform.httpLogEndpoint }}
             - name: PLATFORM_HTTP_LOG_ENDPOINT
               value: {{ . | quote }}

@@ -7,6 +7,8 @@ import { Ctx, RequiredRole, type RequestContext } from "../auth/auth.js";
 import { audit } from "../audit/audit.js";
 import { contracts } from "../common/contract.js";
 import { unprocessable } from "../common/problem.js";
+import { destinationPolicy, type DestinationPolicy } from "../common/destinations.js";
+import { APP_CONFIG, type AppConfig } from "../config.js";
 import { ENCRYPTOR, Encryptor } from "../crypto/crypto.js";
 import { DB, type Db } from "../db/db.js";
 import { consumers, environments } from "../db/schema.js";
@@ -21,7 +23,17 @@ import { planImport } from "./plan.js";
 
 @Injectable()
 export class ConfigTransferService {
-  constructor(@Inject(DB) private readonly db: Db, @Inject(ENCRYPTOR) private readonly enc: Encryptor, private readonly catalog: PluginCatalog, private readonly plugins: PluginsService) {}
+  private readonly destinations: DestinationPolicy;
+
+  constructor(
+    @Inject(DB) private readonly db: Db,
+    @Inject(ENCRYPTOR) private readonly enc: Encryptor,
+    private readonly catalog: PluginCatalog,
+    private readonly plugins: PluginsService,
+    @Inject(APP_CONFIG) config: AppConfig,
+  ) {
+    this.destinations = destinationPolicy(config);
+  }
 
   async export(envId: string) {
     return this.db.transaction(async tx => {
@@ -58,7 +70,7 @@ export class ConfigTransferService {
           const invalidPrehashedPassword = converted && [...converted.identity.prehashedPasswords].some(path => conversionErrorPaths.has(converted.sourcePath(path)));
           let plan: Awaited<ReturnType<typeof planImport>> | undefined;
           if (!checkedSchema && !invalidPrehashedPassword) {
-            plan = await planImport(document, current, request.mode, this.catalog, this.plugins, converted ? {
+            plan = await planImport(document, current, request.mode, this.catalog, this.plugins, this.destinations, converted ? {
               identity: converted.identity,
               consumerIdExists: async id => (await tx.select({ id: consumers.id }).from(consumers).where(eq(consumers.id, id)).limit(1)).length > 0,
             } : undefined);

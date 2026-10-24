@@ -41,6 +41,21 @@ info:
         ingress), that header's value is the client address instead, but only on a request whose TCP peer is one of
         those trusted proxies. From an untrusted peer, or when the header is absent or not a single valid IP address,
         it is ignored and the rule above applies. Unset (the default) keeps the rule above.
+      - Forbidden destinations. Proxied traffic must not reach the data plane node itself, link-local addresses
+        (cloud metadata) or this installation's internal services. A service `host`, an upstream `name` and a target
+        `target` host answer 422 with that `path` when they are:
+          * loopback or unspecified: 127.0.0.0/8, ::1, 0.0.0.0, ::, `localhost` and names ending in `.localhost`;
+          * link-local: 169.254.0.0/16 (includes 169.254.169.254), fe80::/10, and fd00:ec2::254;
+          * the same addresses written as IPv4-mapped IPv6 (`::ffff:127.0.0.1`), or a numeric host that is not a
+            canonical dotted-quad IPv4 (`127.1`, `2130706433`, `0x7f000001`, `0177.0.0.1`);
+          * an internal host of the installation: the hosts of this control plane's validator, database, ClickHouse
+            and platform http-log (collector) URLs, plus every entry of `FORBIDDEN_DESTINATIONS` (comma-separated
+            host names, `*.suffix` patterns, IP addresses or CIDRs, set by the operator; empty by default). A name
+            without dots also matches its Kubernetes forms (`<name>.<namespace>`, `<name>.<namespace>.svc[...]`).
+        Host names are compared lowercased and without a trailing dot. The same rule makes publish, rollback and
+        import answer 422 when the resulting state has such a destination (rows written before the rule existed).
+        The control plane does not resolve DNS: a name that resolves to one of these addresses is not detected here,
+        which is why the data plane must not expose privileged listeners over TCP.
       - Secrets are write-only: credential keys, JWT secrets, `encrypted` plugin fields and certificate private keys
         read back as `"REDACTED"` for every role. Only the agent endpoint delivers the real values. Basic-auth
         passwords are never returned anywhere; the control plane keeps only Kong's salted hash, which is a secret too:
@@ -595,7 +610,9 @@ paths:
         absent/true and the Gromesh document's prohibition on importing hashes are unchanged.
 
         Conflicts (the matching conflicts above and uniqueness violations in the resulting draft) are errors like any
-        other: an `errors[]` entry at the conflicting path, never a separate 409.
+        other: an `errors[]` entry at the conflicting path, never a separate 409. A forbidden destination (see the
+        description of this API) in the resulting draft is a semantic error at its document path, e.g.
+        `document.services.0.host`, `document.upstreams.0.targets.1.target`.
 
         A real import (`dryRun: false`) is ALL OR NOTHING. With any error (invalid envelope, malformed
         serialization, schema violation, conversion or semantic error, conflict, size limit) NOTHING is written:
@@ -675,6 +692,7 @@ paths:
       operationId: createService
       security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
+      description: 422 at `host` for a forbidden destination (see the description of this API).
       requestBody:
         required: true
         content:
@@ -709,6 +727,7 @@ paths:
       operationId: replaceService
       security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
+      description: 422 at `host` for a forbidden destination (see the description of this API).
       requestBody:
         required: true
         content:
@@ -1145,7 +1164,8 @@ paths:
         any other host stays ordinary DNS (a service pointing at an upstream that does not exist is valid). 409 on a
         name already used in the environment; 422 with `path` when `hashOn`/`hashFallback` are set without
         `algorithm: consistent-hashing`, when `hashOnHeader`/`hashOnCookie`/`hashFallbackHeader` is missing for the
-        chosen hash, or when `hashOn: cookie` has a fallback other than `none`.
+        chosen hash, or when `hashOn: cookie` has a fallback other than `none`; 422 at `name` when the name is a
+        forbidden destination (see the description of this API).
       requestBody:
         required: true
         content:
@@ -1232,7 +1252,7 @@ paths:
       operationId: createTarget
       security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
-      description: 409 when the same `target` already exists in this upstream; 422 on `target` with a port outside 1..65535.
+      description: 409 when the same `target` already exists in this upstream; 422 on `target` with a port outside 1..65535 or a host that is a forbidden destination (see the description of this API).
       requestBody:
         required: true
         content:
@@ -1531,7 +1551,9 @@ paths:
       description: |
         Compiles the draft, stores it as version N+1 and notifies agents.
         Returns 409 if the draft hash equals the current snapshot (nothing to publish)
-        or if `expectedCurrentVersion` is stale.
+        or if `expectedCurrentVersion` is stale; 422 when the draft has a forbidden destination (see the
+        description of this API), with `path` naming the entity like other publish errors (`services[0].host`,
+        `upstreams[0].name`, `targets[0].target`).
       requestBody:
         required: false
         content:
@@ -1594,7 +1616,7 @@ paths:
       operationId: rollback
       security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
-      description: Restores the draft to this version's state and publishes it as a NEW version.
+      description: Restores the draft to this version's state and publishes it as a NEW version. 422, with nothing changed, when that state has a forbidden destination (see the description of this API).
       responses:
         "201":
           description: Published
@@ -1605,6 +1627,7 @@ paths:
         "409":
           $ref: "#/components/responses/Conflict"
           description: Target has the same configuration as the current version
+        "422": { $ref: "#/components/responses/ValidationError" }
 
   /environments/{envId}/clusters:
     parameters: [{ $ref: "#/components/parameters/EnvId" }]
@@ -2170,7 +2193,7 @@ components:
       properties:
         name: { $ref: "#/components/schemas/Name" }
         protocol: { type: string, enum: [http, https, grpc, grpcs, tcp, tls] }
-        host: { type: string, description: An upstream's name balances across its targets; any other host is resolved by DNS }
+        host: { type: string, description: "An upstream's name balances across its targets; any other host is resolved by DNS. 422 at `host` for a forbidden destination (see the description of this API)." }
         port: { type: integer, minimum: 1, maximum: 65535 }
         path: { type: [string, "null"], pattern: "^/" }
         retries: { type: integer, minimum: 0, maximum: 32767 }
@@ -2321,7 +2344,7 @@ components:
       type: object
       required: [name]
       properties:
-        name: { type: string, maxLength: 253, pattern: "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$", description: "A lowercase hostname, unique in the environment" }
+        name: { type: string, maxLength: 253, pattern: "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$", description: "A lowercase hostname, unique in the environment. 422 at `name` for a forbidden destination (see the description of this API)." }
         algorithm: { type: string, enum: [round-robin, least-connections, consistent-hashing, latency], default: round-robin }
         hashOn: { allOf: [{ $ref: "#/components/schemas/HashOn" }], default: none, description: Only with consistent-hashing }
         hashFallback: { allOf: [{ $ref: "#/components/schemas/HashOn" }], default: none, description: Only with consistent-hashing; must be none when hashOn is cookie }
@@ -2368,7 +2391,7 @@ components:
       type: object
       required: [target]
       properties:
-        target: { type: string, maxLength: 260, pattern: "^(\\[[0-9A-Fa-f:.]+\\]|[A-Za-z0-9.-]+):[0-9]{1,5}$", description: "host:port, IPv6 in brackets; unique in the upstream" }
+        target: { type: string, maxLength: 260, pattern: "^(\\[[0-9A-Fa-f:.]+\\]|[A-Za-z0-9.-]+):[0-9]{1,5}$", description: "host:port, IPv6 in brackets; unique in the upstream. 422 at `target` when the host is a forbidden destination (see the description of this API)." }
         weight: { type: integer, minimum: 0, maximum: 65535, default: 100, description: 0 takes the target out of the balancing }
         tags: { $ref: "#/components/schemas/Tags" }
     Target:

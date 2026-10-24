@@ -7,6 +7,8 @@ import { Ctx, RequiredRole, type RequestContext } from "../auth/auth.js";
 import { contractBody } from "../common/contract.js";
 import { decodeCursor, parseLimit, toPage } from "../common/pagination.js";
 import { conflict, notFound, unprocessable } from "../common/problem.js";
+import { assertDestination, destinationPolicy, targetHost, type DestinationPolicy } from "../common/destinations.js";
+import { APP_CONFIG, type AppConfig } from "../config.js";
 import { DB, type Db, type Executor } from "../db/db.js";
 import { services, targets, upstreams, type TargetRow, type UpstreamRow } from "../db/schema.js";
 import { markDraftChanged, requireEnvironment, uuidParam } from "../environments/environments.js";
@@ -112,7 +114,11 @@ const escapeLike = (q: string) => q.replace(/[%_\\]/g, "\\$&");
 
 @Injectable()
 export class UpstreamsService {
-  constructor(@Inject(DB) private readonly db: Db) {}
+  private readonly destinations: DestinationPolicy;
+
+  constructor(@Inject(DB) private readonly db: Db, @Inject(APP_CONFIG) config: AppConfig) {
+    this.destinations = destinationPolicy(config);
+  }
 
   async list(envId: string, query: Record<string, unknown>) {
     await requireEnvironment(this.db, envId);
@@ -131,6 +137,7 @@ export class UpstreamsService {
 
   async create(ctx: RequestContext, envId: string, body: UpstreamWrite) {
     checkUpstream(body);
+    assertDestination("name", body.name, this.destinations, "upstream");
     return this.db.transaction(async (tx) => {
       await requireEnvironment(tx, envId);
       const [row] = await tx.insert(upstreams).values({ environmentId: envId, ...upstreamValues(body) }).returning();
@@ -143,6 +150,7 @@ export class UpstreamsService {
 
   async replace(ctx: RequestContext, envId: string, upstreamId: string, body: UpstreamWrite) {
     checkUpstream(body);
+    assertDestination("name", body.name, this.destinations, "upstream");
     return this.db.transaction(async (tx) => {
       const current = await this.requireUpstream(tx, envId, upstreamId, true);
       if (current.name !== body.name) await refuseWhileReferenced(tx, envId, current.name, "renamed");
@@ -186,6 +194,7 @@ export class UpstreamsService {
 
   async createTarget(ctx: RequestContext, envId: string, upstreamId: string, body: TargetWrite) {
     checkTarget(body);
+    assertDestination("target", targetHost(body.target), this.destinations, "target");
     return this.db.transaction(async (tx) => {
       await this.requireUpstream(tx, envId, upstreamId);
       const [row] = await tx.insert(targets).values({ environmentId: envId, upstreamId, ...targetValues(body) }).returning();
@@ -198,6 +207,7 @@ export class UpstreamsService {
 
   async replaceTarget(ctx: RequestContext, envId: string, upstreamId: string, targetId: string, body: TargetWrite) {
     checkTarget(body);
+    assertDestination("target", targetHost(body.target), this.destinations, "target");
     return this.db.transaction(async (tx) => {
       const before = toTarget(await this.requireTarget(tx, envId, upstreamId, targetId));
       const [row] = await tx
