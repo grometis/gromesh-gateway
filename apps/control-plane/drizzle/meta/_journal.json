@@ -85,6 +85,13 @@
       "when": 1792309444102,
       "tag": "0011_route_analytics_retention",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1792847277498,
+      "tag": "0012_draft_pause_reason",
+      "breakpoints": true
     }
   ]
 }

@@ -1,11 +1,12 @@
 import { Controller, Get, HttpCode, Inject, Injectable, Module, Param, Post, Query, Res } from "@nestjs/common";
-import { convertKongConfig, diffGatewayStates, exportConfig, type ConfigDocument } from "@gromesh/compiler";
+import { convertKongConfig, diffGatewayStates, exportConfig, privilegedFingerprint, type ConfigDocument } from "@gromesh/compiler";
 import type { Response } from "express";
 import { eq } from "drizzle-orm";
 import { stringify } from "yaml";
 import { Ctx, RequiredRole, type RequestContext } from "../auth/auth.js";
 import { audit } from "../audit/audit.js";
 import { contracts } from "../common/contract.js";
+import { pluginPrivilegedIssues, requirePlatformAdmin } from "../common/privileged.js";
 import { unprocessable } from "../common/problem.js";
 import { destinationPolicy, type DestinationPolicy } from "../common/destinations.js";
 import { APP_CONFIG, type AppConfig } from "../config.js";
@@ -82,6 +83,11 @@ export class ConfigTransferService {
             if (request.dryRun) return emptyReport(redacted);
             throw importFailure(redacted);
           }
+          if (privilegedFingerprint(current) !== privilegedFingerprint(plan!.state)) {
+            const uses = document.plugins.flatMap((p, i) => pluginPrivilegedIssues(p, `document.plugins.${i}`));
+            requirePlatformAdmin(ctx, (uses.length ? uses : [{ path: "document", message: "removes a plugin reserved to the platform admin" }])
+              .map(e => ({ ...e, path: converted?.sourcePath(e.path) ?? e.path })));
+          }
           const changes = redactChanges(diffGatewayStates(current, plan!.state), (name, config) => this.catalog.redactConfig(name, config));
           const report = { added: changes.filter(c => c.change === "added"), modified: changes.filter(c => c.change === "modified"), removed: changes.filter(c => c.change === "removed"), errors: [] };
           if (!request.dryRun) {
@@ -89,7 +95,7 @@ export class ConfigTransferService {
               await restoreGatewayState(tx, envId, plan!.state, this.enc, this.catalog);
               await markDraftChanged(tx, envId);
               // Changed imported drafts require an explicit publish, including after a restart or on another replica.
-              await tx.update(environments).set({ draftRequiresPublish: true }).where(eq(environments.id, envId));
+              await tx.update(environments).set({ draftRequiresPublish: true, draftPauseReason: "import" }).where(eq(environments.id, envId));
             }
             await audit(tx, ctx, { action: "environment.import", entityType: "environment", entityId: envId, environmentId: envId, after: { mode: request.mode, sourceFormat: request.sourceFormat ?? "gromesh/v1", ...report } });
           }

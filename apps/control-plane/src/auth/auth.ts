@@ -39,6 +39,8 @@ export interface RequestContext {
   actor: Actor;
   ip: string | null;
   role: Role;
+  /** Global role admin, and through a token also the token's role: an environment admin is not the platform admin. */
+  platformAdmin?: boolean;
 }
 
 /** What the guard attaches to an authenticated request. */
@@ -145,8 +147,9 @@ export const Ctx = createParamDecorator((_data: unknown, context: ExecutionConte
 export function contextOf(req: AuthenticatedRequest): RequestContext {
   const user = req.user!;
   const role = req.auth?.role ?? user.role;
+  const platformAdmin = user.role === "admin" && role === "admin";
   if (req.auth?.via === "token") {
-    return { actor: { type: "user", id: user.id, name: user.name, via: "token", tokenId: req.auth.tokenId, tokenName: req.auth.tokenName }, ip: clientAddress(req), role };
+    return { actor: { type: "user", id: user.id, name: user.name, via: "token", tokenId: req.auth.tokenId, tokenName: req.auth.tokenName }, ip: clientAddress(req), role, platformAdmin };
   }
-  return { actor: { type: "user", id: user.id, name: user.name }, ip: clientAddress(req), role };
+  return { actor: { type: "user", id: user.id, name: user.name }, ip: clientAddress(req), role, platformAdmin };
 }

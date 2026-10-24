@@ -22,6 +22,7 @@ import {
   type GatewayState,
   type KongDeclarativeConfig,
   platformPlugins,
+  privilegedFingerprint,
   type SnapshotEnvelope,
 } from "@gromesh/compiler";
 import { and, desc, eq, lt, sql } from "drizzle-orm";
@@ -33,6 +34,7 @@ import { decodeCursor, encodeCursor, parseLimit } from "../common/pagination.js"
 import { conflict, notFound, ProblemException, unprocessable } from "../common/problem.js";
 import { APP_CONFIG, type AppConfig } from "../config.js";
 import { destinationIssues, destinationPolicy, type DestinationPolicy } from "../common/destinations.js";
+import { pluginPrivilegedIssues, requirePlatformAdmin } from "../common/privileged.js";
 import { stateVaultReferenceIssues } from "../common/vault-references.js";
 import { DB, type Db, type Executor, type Tx } from "../db/db.js";
 import { environments, snapshots, type EnvironmentRow, type SnapshotRow } from "../db/schema.js";
@@ -83,6 +85,13 @@ export function redactChanges(changes: EntityChange[], redact: RedactPluginConfi
   return changes.map((c) => (c.kind === "plugins" ? { ...c, before: plugin(c.before), after: plugin(c.after) } : c));
 }
 
+/** The privileged plugins of the draft when they differ from those of the current version (none when equal). */
+function privilegedChange({ state, current }: PreparedPublish) {
+  if (privilegedFingerprint(state) === privilegedFingerprint(current?.state ?? { plugins: [] })) return [];
+  const issues = state.plugins.flatMap((p, i) => pluginPrivilegedIssues(p, `plugins[${i}]`));
+  return issues.length > 0 ? issues : [{ path: "plugins", message: "removes a plugin reserved to the platform admin" }];
+}
+
 const versionParam = () => new ParseIntPipe({ errorHttpStatusCode: 404 });
 
 /** Auto-publish runs as the platform, not as whoever made the last edit. */
@@ -128,6 +137,7 @@ export class SnapshotsService {
       }
       const prepared = await this.prepare(tx, env);
       if (prepared.current?.hash === prepared.envelope.hash) throw conflict("Nothing to publish: the draft equals the current version");
+      requirePlatformAdmin(ctx, privilegedChange(prepared));
       return this.commit(tx, ctx, env, prepared, { message: body.message ?? null, rollbackOf: null });
     });
     return toSnapshotSummary(row, true, changeCount);
@@ -143,6 +153,8 @@ export class SnapshotsService {
       if (prepared.current?.hash === prepared.envelope.hash) {
         throw conflict(`Nothing to roll back: version ${version} has the same configuration as the current version`);
       }
+      // An older version may hold privileged plugins written before the rule existed.
+      requirePlatformAdmin(ctx, privilegedChange(prepared));
       return this.commit(tx, ctx, env, prepared, { message: `Rollback to version ${version}`, rollbackOf: version });
     });
     return toSnapshotSummary(row, true, changeCount);
@@ -182,6 +194,11 @@ export class SnapshotsService {
       if (prepared.current?.hash === prepared.envelope.hash) {
         // The edits cancelled out: nothing to publish, and nothing pending either.
         await tx.update(environments).set({ hasUnpublishedChanges: false }).where(eq(environments.id, envId));
+        return true;
+      }
+      if (privilegedChange(prepared).length > 0) {
+        // Only a platform admin puts privileged plugins live: wait for an explicit publish.
+        await tx.update(environments).set({ draftRequiresPublish: true, draftPauseReason: "privileged" }).where(eq(environments.id, envId));
         return true;
       }
       await this.commit(tx, AUTO_PUBLISH_CTX, env, prepared, { message: "Auto-publish", rollbackOf: null });
@@ -306,7 +323,7 @@ export class SnapshotsService {
       .returning();
     await tx
       .update(environments)
-      .set({ currentVersion: envelope.version, hasUnpublishedChanges: false, draftRequiresPublish: false, updatedAt: sql`now()` })
+      .set({ currentVersion: envelope.version, hasUnpublishedChanges: false, draftRequiresPublish: false, draftPauseReason: null, updatedAt: sql`now()` })
       .where(eq(environments.id, env.id));
     const changeCount = diffConfigs(current?.config ?? null, envelope.config).length;
     await audit(tx, ctx, {
