@@ -25,6 +25,7 @@ refuse() {
 refuse 'go together' --set-string kong.realIpHeader=CF-Connecting-IP
 refuse 'go together' --set 'kong.trustedIps={10.244.0.0/16}'
 refuse 'trustedIps' --set-string kong.realIpHeader=CF-Connecting-IP --set 'kong.trustedIps={0.0.0.0/0}'
+refuse 'collector.environmentId' -f "$chart/ci/values-full.yaml" --set collector.environmentId=
 refuse 'realIpHeader' --set-string 'kong.realIpHeader=Bad Header' --set 'kong.trustedIps={10.244.0.0/16}'
 helm template dp "$chart" --set-string agent.token=ci-placeholder --set-string kong.realIpHeader=CF-Connecting-IP --set 'kong.trustedIps={10.244.0.0/16,2001:db8::/32}' > "$work/client-ip.yaml"
 real_ip_env="$(docker run --rm -i mikefarah/yq:4.44.3 ea 'select(.kind == "Deployment") | .spec.template.spec.containers[] | select(.name == "kong") | [.env[] | select(.name == "KONG_REAL_IP_HEADER" or .name == "KONG_TRUSTED_IPS") | .name + "=" + .value] | sort | join(";")' < "$work/client-ip.yaml")"

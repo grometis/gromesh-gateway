@@ -106,6 +106,8 @@ export const environments = pgTable(
     hasUnpublishedChanges: boolean("has_unpublished_changes").notNull().default(false),
     // Imports remain drafts until an explicit publish, even after subsequent edits or a replica restart.
     draftRequiresPublish: boolean("draft_requires_publish").notNull().default(false),
+    /** Why the draft requires an explicit publish: an import, or a privileged plugin change (contract: autoPublishPausedReason). */
+    draftPauseReason: text("draft_pause_reason", { enum: ["import", "privileged"] }),
     // Last draft edit; auto-publish fires once it is older than the debounce delay.
     draftChangedAt: timestamp("draft_changed_at", { withTimezone: true }),
     ...timestamps,

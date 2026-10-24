@@ -78,6 +78,20 @@ spec:
           env:
             - name: GROMESH_CLUSTER_ID
               value: {{ .Values.collector.clusterId | quote }}
+            - name: GROMESH_ENVIRONMENT_ID
+              value: {{ .Values.collector.environmentId | lower | quote }}
+            - name: GROMESH_COLLECTOR_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "data-plane.collectorTokenSecret" . }}
+                  key: {{ .Values.collector.auth.existingSecretKey }}
+            # Rotation: the collector also accepts the old token while the gateways restart with the new one.
+            - name: GROMESH_COLLECTOR_TOKEN_PREVIOUS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "data-plane.collectorTokenSecret" . }}
+                  key: previous-token
+                  optional: true
             - name: GROMESH_KEY_NAMES
               value: {{ .Values.collector.keyNames | toJson | quote }}
             - name: CLICKHOUSE_ENDPOINT

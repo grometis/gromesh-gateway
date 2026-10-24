@@ -7,3 +7,4 @@ export { buildSnapshot, type SnapshotMeta } from "./snapshot.js";
 export { diffConfigs, ENTITY_KINDS, type EntityChange, type EntityKind } from "./diff.js";
 export { exportConfig, credentialKeyHint, type ConfigDocument, type ConfigConsumer, type ConfigPlugin, type ConsumerRef } from "./document.js";
 export { convertKongConfig, type ImportIdentity } from "./import.js";
+export { privilegedFingerprint, privilegedUses, type PrivilegedUse } from "./privileged.js";

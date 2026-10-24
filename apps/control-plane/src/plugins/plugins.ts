@@ -8,6 +8,8 @@ import { Ctx, RequiredRole, type RequestContext } from "../auth/auth.js";
 import { contractBody } from "../common/contract.js";
 import { decodeCursor, parseLimit, toPage } from "../common/pagination.js";
 import { notFound, unprocessable, type FieldError } from "../common/problem.js";
+import { pluginPrivilegedIssues, requirePlatformAdmin } from "../common/privileged.js";
+import { vaultReferenceIssues } from "../common/vault-references.js";
 import { DB, type Db, type Executor } from "../db/db.js";
 import { consumers, plugins, routes, services, type PluginRow } from "../db/schema.js";
 import { markDraftChanged, requireEnvironment, uuidParam } from "../environments/environments.js";
@@ -86,6 +88,7 @@ export class PluginsService {
 
   async create(ctx: RequestContext, envId: string, body: PluginWrite) {
     const id = randomUUID();
+    requirePlatformAdmin(ctx, pluginPrivilegedIssues(body));
     const merged = this.withSecrets(body, null);
     await this.validate(id, merged);
     return this.db.transaction(async (tx) => {
@@ -102,6 +105,8 @@ export class PluginsService {
   async replace(ctx: RequestContext, envId: string, pluginId: string, body: PluginWrite) {
     // The stored secrets are read before validation, which runs outside the transaction (it calls Kong).
     const current = await this.requirePlugin(this.db, envId, pluginId);
+    // Replacing a privileged plugin with an ordinary one would still change what the platform admin put live.
+    requirePlatformAdmin(ctx, [...pluginPrivilegedIssues(current), ...pluginPrivilegedIssues(body)]);
     const merged = this.withSecrets(body, current);
     await this.validate(pluginId, merged);
     return this.db.transaction(async (tx) => {
@@ -138,6 +143,7 @@ export class PluginsService {
   async remove(ctx: RequestContext, envId: string, pluginId: string) {
     await this.db.transaction(async (tx) => {
       const before = toPlugin(await this.requirePlugin(tx, envId, pluginId));
+      requirePlatformAdmin(ctx, pluginPrivilegedIssues(before));
       await tx.delete(plugins).where(eq(plugins.id, pluginId));
       await markDraftChanged(tx, envId);
       await audit(tx, ctx, { action: "plugin.delete", entityType: "plugin", entityId: pluginId, environmentId: envId, before: this.redacted(before) });
@@ -169,6 +175,8 @@ export class PluginsService {
       (!Array.isArray(names) || names.length === 0 || !names.every((name: unknown) => typeof name === "string" && /^[A-Za-z0-9._-]{1,64}$/.test(name)))) {
       throw unprocessable("Invalid plugin", [{ path: "config.key_names", message: "must be a non-empty array of names matching ^[A-Za-z0-9._-]{1,64}$" }]);
     }
+    const references = vaultReferenceIssues(body.config ?? {}, "config");
+    if (references.length > 0) throw unprocessable("Invalid plugin", references);
     await this.validator.validatePlugin({ id, ...body });
   }
 
