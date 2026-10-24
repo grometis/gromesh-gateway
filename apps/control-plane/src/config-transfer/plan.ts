@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { basicAuthPasswordHash, hashIssues, validate, type ImportIdentity, type ConfigDocument, type Consumer, type ConsumerRef, type GatewayState, type Plugin, type Service, type Route, type Upstream, type Target, type Certificate } from "@gromesh/compiler";
 import { type FieldError, ProblemException } from "../common/problem.js";
+import { destinationIssues, type DestinationPolicy } from "../common/destinations.js";
 import { checkCertificate } from "../certificates/certificates.js";
 import { checkJwt } from "../consumers/credentials.js";
 import { consumerValues } from "../consumers/consumers.js";
@@ -10,7 +11,7 @@ import type { PluginCatalog } from "../plugin-catalog/catalog.js";
 import type { PluginsService } from "../plugins/plugins.js";
 
 /** Resolves a complete proposed domain state without writing. Every diagnostic uses a document path. */
-export async function planImport(document: ConfigDocument, current: GatewayState, mode: "merge" | "replace", catalog: PluginCatalog, plugins: PluginsService, preservation?: { identity: ImportIdentity; consumerIdExists: (id: string) => Promise<boolean> }) {
+export async function planImport(document: ConfigDocument, current: GatewayState, mode: "merge" | "replace", catalog: PluginCatalog, plugins: PluginsService, destinations: DestinationPolicy, preservation?: { identity: ImportIdentity; consumerIdExists: (id: string) => Promise<boolean> }) {
   const errors: FieldError[] = [];
   const paths = new Map<string, string>();
   const add = (path: string, message: string) => errors.push({ path, message });
@@ -179,7 +180,7 @@ export async function planImport(document: ConfigDocument, current: GatewayState
   }
   retain(result.plugins, current.plugins);
   // Compiler validation covers the resulting draft, including cross-entity uniqueness and ACL/hash rules.
-  for (const issue of validate(result)) {
+  for (const issue of [...validate(result), ...destinationIssues(result, destinations)]) {
     const normalized = issue.path.replace(/\[(\d+)\]/g, ".$1");
     const [kind, index, ...rest] = normalized.split(".");
     const list = result[kind as keyof GatewayState];

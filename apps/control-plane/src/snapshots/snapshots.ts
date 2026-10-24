@@ -32,6 +32,7 @@ import { contractBody } from "../common/contract.js";
 import { decodeCursor, encodeCursor, parseLimit } from "../common/pagination.js";
 import { conflict, notFound, ProblemException, unprocessable } from "../common/problem.js";
 import { APP_CONFIG, type AppConfig } from "../config.js";
+import { destinationIssues, destinationPolicy, type DestinationPolicy } from "../common/destinations.js";
 import { DB, type Db, type Executor, type Tx } from "../db/db.js";
 import { environments, snapshots, type EnvironmentRow, type SnapshotRow } from "../db/schema.js";
 import { requireEnvironment, uuidParam } from "../environments/environments.js";
@@ -110,8 +111,11 @@ export class SnapshotsService {
     @Inject(APP_CONFIG) private readonly config: AppConfig,
     @Inject(ENCRYPTOR) private readonly enc: Encryptor,
     private readonly catalog: PluginCatalog,
-  ) {}
+  ) {
+    this.destinations = destinationPolicy(config);
+  }
 
+  private readonly destinations: DestinationPolicy;
   private readonly redact: RedactPluginConfig = (name, config) => this.catalog.redactConfig(name, config);
 
   /** Compiles the draft into version N+1. The environment row lock serialises concurrent publishes. */
@@ -258,6 +262,9 @@ export class SnapshotsService {
 
   private async prepare(tx: Executor, env: EnvironmentRow): Promise<PreparedPublish> {
     const state = await loadGatewayState(tx, env.id, this.enc, this.catalog);
+    // Rows written before the rule existed (or restored by a rollback) must not reach the data plane either.
+    const forbidden = destinationIssues(state, this.destinations);
+    if (forbidden.length > 0) throw unprocessable("The draft cannot be published", forbidden);
     let envelope: SnapshotEnvelope;
     try {
       // Platform plugins are environment-wide: every cluster of the environment gets the same snapshot and hash.

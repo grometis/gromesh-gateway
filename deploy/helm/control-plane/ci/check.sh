@@ -56,3 +56,6 @@ if [[ "${KUBECONFORM:-false}" == true ]]; then
       -strict -summary -kubernetes-version 1.32.2 < "$work/$variant.yaml"
   done
 fi
+# Forbidden destinations: the cluster API by default, operator entries appended.
+forbidden="$(docker run --rm -i mikefarah/yq:4.44.3 ea 'select(.kind == "Deployment") | .spec.template.spec.containers[] | select(.name == "control-plane") | .env[] | select(.name == "FORBIDDEN_DESTINATIONS") | .value' < "$work/default.yaml")"
+[[ "$forbidden" == "kubernetes" ]] || { echo "FORBIDDEN_DESTINATIONS default: '$forbidden'" >&2; exit 1; }
