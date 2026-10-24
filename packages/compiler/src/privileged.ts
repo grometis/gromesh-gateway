@@ -27,7 +27,9 @@ export function privilegedUses(plugin: Pick<Plugin, "name" | "config">): Privile
   const config = plugin.config ?? {};
   const uses: PrivilegedUse[] = [];
   if (PRIVILEGED_PLUGINS.has(plugin.name)) uses.push({ path: "name", message: `plugin "${plugin.name}" is reserved to the platform admin` });
-  if (config.custom_fields_by_lua !== undefined && config.custom_fields_by_lua !== null) {
+  // An empty map runs no Lua (a form may send it for an untouched field).
+  const lua = config.custom_fields_by_lua;
+  if (lua !== undefined && lua !== null && !(isRecord(lua) && Object.keys(lua).length === 0)) {
     uses.push({ path: "config.custom_fields_by_lua", message: "Lua fields are reserved to the platform admin" });
   }
   if (plugin.name === "aws-lambda" && !(present(config.aws_key) && present(config.aws_secret))) {
