@@ -4,7 +4,7 @@
 // write. Requires the observability profile and a stopped agent; restores the prior opaque gateway config.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -75,15 +75,22 @@ async function main() {
   const collectorAddress = ip.trim().split(" ")[0];
   const own = randomUUID();
   const victim = randomUUID();
-  // A second collector pinned to `own`, as the chart deploys it: a VALID token must still not write another
-  // environment (the token can leak to Lua of the same gateway).
+  // A second collector pinned to `own`, as the chart deploys it, in the middle of a token rotation: its new token,
+  // and the gateway's token as the previous one. A VALID token must still not write another environment.
   const { stdout: network } = await run(["inspect", "-f", "{{range $name, $_ := .NetworkSettings.Networks}}{{$name}} {{end}}", vector]);
   const pinnedName = `gromesh-pinned-collector-${own.slice(0, 8)}`;
-  await run(["run", "-d", "--name", pinnedName, "--network", network.trim().split(" ")[0], "--user", "65534:65534",
-    "--tmpfs", "/var/lib/vector:uid=65534,gid=65534,mode=0700", "--entrypoint", "sh",
-    "-e", "GROMESH_CLUSTER_ID=00000000-0000-4000-8000-00000000c0c0", "-e", `GROMESH_ENVIRONMENT_ID=${own}`,
-    "-e", `GROMESH_COLLECTOR_TOKEN=${token}`, "-e", `CLICKHOUSE_PASSWORD=${process.env.CLICKHOUSE_WRITER_PASSWORD ?? "gromesh-dev-writer"}`,
-    "-v", `${root}deploy/observability/vector:/etc/vector:ro`, VECTOR_IMAGE, "/etc/vector/entrypoint.sh"]);
+  const rotated = randomBytes(36).toString("base64url");
+  const otherCluster = randomBytes(36).toString("base64url");
+  const startPinned = async (previous) => {
+    await run(["rm", "-f", pinnedName]).catch(() => {});
+    await run(["run", "-d", "--name", pinnedName, "--network", network.trim().split(" ")[0], "--user", "65534:65534",
+      "--tmpfs", "/var/lib/vector:uid=65534,gid=65534,mode=0700", "--entrypoint", "sh",
+      "-e", "GROMESH_CLUSTER_ID=00000000-0000-4000-8000-00000000c0c0", "-e", `GROMESH_ENVIRONMENT_ID=${own}`,
+      "-e", `GROMESH_COLLECTOR_TOKEN=${rotated}`, "-e", `GROMESH_COLLECTOR_TOKEN_PREVIOUS=${previous}`,
+      "-e", `CLICKHOUSE_PASSWORD=${process.env.CLICKHOUSE_WRITER_PASSWORD ?? "gromesh-dev-writer"}`,
+      "-v", `${root}deploy/observability/vector:/etc/vector:ro`, VECTOR_IMAGE, "/etc/vector/entrypoint.sh"]);
+  };
+  await startPinned(token);
 
   await exec("pnpm", ["--filter", "@gromesh/compiler", "build"], { cwd: root, env, timeout: 60_000 });
   const { compile, platformPlugins } = await import("../packages/compiler/dist/index.js");
@@ -91,8 +98,8 @@ async function main() {
   const echo = { id: randomUUID(), name: "echo", protocol: "http", host: "echo", port: 80 };
   // The CP refuses the collector's name (forbidden destinations) but cannot know its address: this is that bypass.
   const collector = { id: randomUUID(), name: "collector", protocol: "http", host: collectorAddress, port: 8080, path: "/kong" };
-  const { stdout: pinnedIp } = await run(["inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}", pinnedName]);
-  const pinned = { id: randomUUID(), name: "pinned", protocol: "http", host: pinnedIp.trim().split(" ")[0], port: 8080, path: "/kong" };
+  // By container name: the restarted collector may come back on another address.
+  const pinned = { id: randomUUID(), name: "pinned", protocol: "http", host: pinnedName, port: 8080, path: "/kong" };
   const config = compile({
     services: [echo, collector, pinned],
     routes: [
@@ -124,32 +131,43 @@ async function main() {
       await response.arrayBuffer();
       statuses.push(response.status);
     }
-    // With the valid token, through the proxy, to the pinned collector: another environment is dropped, its own kept.
-    for (const [path, environmentId] of [["/valid-token-other-environment", victim], ["/valid-token-own-environment", own]]) {
+    const toPinned = (path, environmentId, credential) => request(`${proxy}${base}/forge-pinned`, {
+      method: "POST", headers: { "content-type": "application/json", "x-gromesh-collector-token": credential }, body: forged(path, environmentId),
+    }).then(async (response) => { await response.arrayBuffer(); return response.status; }, () => null);
+    const accepted = async (path, environmentId, credential) => {
       for (let attempt = 0; ; attempt++) {
-        const response = await request(`${proxy}${base}/forge-pinned`, {
-          method: "POST", headers: { "content-type": "application/json", "x-gromesh-collector-token": token }, body: forged(path, environmentId),
-        }).catch(() => null);
-        await response?.arrayBuffer();
-        if (response?.status === 200) break;
-        check(attempt < 40, `The pinned collector must accept its own token (HTTP ${response?.status ?? "no answer"})`);
+        const status = await toPinned(path, environmentId, credential);
+        if (status === 200) return;
+        check(attempt < 40, `The pinned collector must accept ${path} (HTTP ${status ?? "no answer"})`);
         await sleep(500);
       }
-    }
+    };
+    // Through the proxy to the pinned collector: another environment is dropped, its own kept, with either token
+    // of the rotation; another cluster's token is refused.
+    await accepted("/valid-token-other-environment", victim, token);
+    await accepted("/valid-token-own-environment", own, token);
+    await accepted("/rotated-token-own-environment", own, rotated);
+    const crossCluster = await toPinned("/other-cluster-token", own, otherCluster);
+    // The rotation ends: the previous token is removed and refused from then on.
+    await startPinned("");
+    await accepted("/after-rotation-new-token", own, rotated);
+    const retired = await toPinned("/after-rotation-old-token", own, token);
     // The gateway's own http-log (token from its environment) must still reach ClickHouse.
     let legit = [];
-    const expected = [`${base}/ok`, "/forged/valid-token-own-environment"];
+    const expected = [`${base}/ok`, "/forged/valid-token-own-environment", "/forged/rotated-token-own-environment", "/forged/after-rotation-new-token"];
     for (let attempt = 0; attempt < 60 && !expected.every((path) => legit.includes(path)); attempt++) {
       await sleep(500);
       legit = await rows(own);
     }
     check(legit.includes(`${base}/ok`), "The gateway's own analytics must still be written (token resolved from its environment)");
-    check(legit.includes("/forged/valid-token-own-environment"), "The pinned collector must write its own environment's events");
-    check(!legit.some((path) => path.endsWith("-token")), `A forged event without a valid token reached ClickHouse through the proxy (HTTP ${statuses.join("/")})`);
+    check(expected.every((path) => legit.includes(path)), `The pinned collector must write its own environment's events (got ${legit.join(", ")})`);
+    check(crossCluster === 401 && !legit.includes("/forged/other-cluster-token"), `Another cluster's token must be refused (HTTP ${crossCluster})`);
+    check(retired === 401 && !legit.includes("/forged/after-rotation-old-token"), `The previous token must be refused after the rotation (HTTP ${retired})`);
+    check(!legit.some((path) => ["/forged/no-token", "/forged/wrong-token"].includes(path)), `A forged event without a valid token reached ClickHouse through the proxy (HTTP ${statuses.join("/")})`);
     check((await rows(victim)).length === 0, "A valid token wrote another environment's analytics");
     check(statuses.every((status) => status === 401), `Forged events must be refused with 401, got HTTP ${statuses.join("/")}`);
     console.log(`Collector refused events forged through the proxy (HTTP ${statuses.join("/")}); a valid token could not write ` +
-      "another environment; the gateway's own analytics arrived");
+      "another environment; another cluster's token and the retired token were refused; the gateway's own analytics arrived");
   } finally {
     await admin(id, "POST", prior);
     await run(["rm", "-f", pinnedName]).catch(() => {});

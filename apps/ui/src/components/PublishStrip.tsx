@@ -98,6 +98,11 @@ export function PublishStrip({ envId }: { envId: string }) {
           Publicação automática pausada após importação — publique para retomar.
         </p>
       )}
+      {env.data.autoPublishPausedReason === "privileged" && (
+        <p className="strip-notice" role="note">
+          Publicação automática pausada: há plugin que executa código no gateway — só o administrador da plataforma publica.
+        </p>
+      )}
     </section>
   );
 }

@@ -104,7 +104,7 @@ transforms:
       if !starts_with(path, "/") { abort }
       uuid = r'(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
       environment_id = string!(.environment_id)
-      # A token can leak to plugins of the same gateway: pin the environment this collector serves ("any" only in
+      # Only privileged plugins of the same gateway can read the token: still pin the environment ("any" only in
       # development, see entrypoint.sh; an unset variable drops every event).
       expected_environment = downcase(get_env_var("GROMESH_ENVIRONMENT_ID") ?? "")
       if expected_environment != "any" && downcase(environment_id) != expected_environment { abort }
