@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,10 +29,13 @@ test("negative control: the same check fails against the collector without authe
   writeFileSync(join(dir, "vector.yaml"), open);
   const override = join(dir, "open-collector.compose.yml");
   writeFileSync(override, `services:\n  vector:\n    volumes:\n      - ${dir}:/etc/vector:ro\n`);
+  // mkdtemp is 0700: the collector runs as 65534 and must read the copy.
+  chmodSync(dir, 0o755);
+  for (const name of readdirSync(dir)) chmodSync(join(dir, name), 0o644);
   const up = (...files: string[]) => exec("docker", ["compose", ...files.flatMap((f) => ["-f", f]), "--profile", "observability",
     "up", "-d", "--wait", "--force-recreate", "--no-deps", "vector"], { timeout: 120_000, env });
-  await up(composeFile, override);
   try {
+    await up(composeFile, override);
     const failure = await exec(process.execPath, [script], { timeout: 170_000, env: { ...env, COMPOSE_FILE: `${composeFile}:${override}` } })
       .then(() => null, (error: { stderr?: string }) => error.stderr ?? "");
     expect(failure, "the check must fail against an unauthenticated collector").not.toBeNull();
