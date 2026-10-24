@@ -1,0 +1,3650 @@
+openapi: 3.1.0
+info:
+  title: Gromesh Gateway — Control plane API v2 (Workspaces, planned)
+  version: 0.2.0-planned
+  description: |
+    PLANNED (phase N0, from the approved W0 design). NOT implemented: every operation carries x-gromesh-planned: true
+    and has no handler; the implementation phases (N1 to N7) remove the mark operation by operation. The running
+    product serves control-plane.openapi.yaml (v1). Authentication, users, API tokens, /me and the plugin catalog
+    stay in v1 until N1 settles the compatibility of the paths (v1 alias or cut, decision H-9). References such as
+    "B §3.5.3" or "R7-2" point to the approved W0 design and its independent reviews.
+
+    Conventions (in addition to the current contract):
+      - Each Gromesh instance (dev, hml, prd) exposes this API independently. There is no central instance.
+      - x-required-permission replaces x-required-role: the guard evaluates the caller's effective permissions in the
+        scope of the request (instance or {workspaceId}), deny by default (mandatory policies, then explicit denies,
+        then individual grants, then group grants).
+      - Workspace-scoped operations answer 404 when the workspace does not exist or is invisible to the caller, 403
+        when visible but the permission is missing (same rule as environments today).
+      - Promotions are decided and executed by the TARGET instance. M2M identities (bearer m2mAssertion) may only
+        submit packages, ask for validation and read their own promotions; they never approve nor execute.
+      - Approvals are bound to (promotionId, contentDigest, diffDigest, baseRevision, policyVersion, valuesDigest,
+        candidateDigest); a change in diffDigest, policyVersion, valuesDigest or candidateDigest invalidates them.
+      - x-scope declares how the guard resolves the authorization scope before checking the permission: instance,
+        workspace ({workspaceId}), promotion ({promotionId} -> target workspace, or instance while provisioning),
+        binding ({bindingId} -> the binding's stored scope), request ({requestId} -> instance), m2m (the calling
+        peer instance's M2M client, never a user binding) and public (m2m token exchange only). Listings are filtered
+        by the same rule; an object outside the caller's scope answers 404.
+      - The requester of a promotion is the user who confirms it AUTHENTICATED ON THE TARGET
+        (requester-confirmation). The requester and authors declared in the package are recorded for audit only.
+      - Session mutations require cookieAuth plus csrfToken (X-CSRF-Token), as in the current contract.
+      - x-gromesh-phase names the phase after the core (L1 to L10) that delivers what it marks: an operation, a
+        schema, a oneOf alternative, a property or a const value. Until then the core answers 422 (value) or does
+        not expose the operation. x-gromesh-core-exception names the only core use of a marked part. Core profile
+        derivation (the N0 contract test does it and the core validates requests with the result): a marked
+        operation or oneOf alternative is removed; a marked property is forbidden in its parent (not: required),
+        replaced by its x-gromesh-core-profile schema when it has one (the exact core exception, applied to the
+        parent); every core request schema then rejects every marked part. experiments/ajv-contrato.mjs derives it
+        and checks the rejections.
+      - Authentication in the core (B §3.1, E5): at most ONE effective authentication mechanism per route,
+        counted by the compiler on the composed configuration after Kong's precedence (route > service > global
+        for the same plugin name; different names all run): route, service, workspace globals and mandatory
+        platform plugins. A write or a publication that yields two or more answers 422 with the path of the plugin
+        that adds the second one. `anonymous` only on that single mechanism and only with a consumer of the same
+        workspace. AND/OR chains, the `session` plugin and `ldap-auth` (its credential carries no workspace binding,
+        rodada 4 F-2): x-gromesh-phase L10 (AuthenticationProfile); in the core a workspace may only use key-auth,
+        basic-auth and jwt (hmac-auth once its credential is modelled), any other authenticator answers 422, and an
+        effective ldap-auth or session on a workspace route, including one of the platform, blocks the composition.
+        No tag creates an exception.
+      - Privileged plugin capabilities (B §3.4; already in the current product, hotfix F-1): pre-function,
+        post-function, file-log, custom_fields_by_lua, and plugins that would use the pod's cloud credentials
+        (aws-lambda without its own keys, ai-* with gcp_use_service_account or bedrock without keys) are
+        platform-admin only, on write, import, publication, promotion and rollback; a workspace admin never gets
+        them. `{vault://` in user configuration answers 422 for everyone.
+      - Trust in hml keys (B §4.5, rodadas 5 e 6, F-4): one predicate keyTrust(kid, use, signedAt, now), with
+        PeerKey.validFrom, validUntil, retiredAt and revokedAt. Always: not revoked (revokedAt null) and
+        validFrom <= signedAt <= validUntil. use=new (package or attestation arriving with a promotion): status
+        `active` and now <= validUntil. use=historical (attestation stored with a release when accepted): status
+        `active` or `retired`, signedAt < retiredAt when retired, and now is not checked against validUntil (an
+        expired key keeps proving what it signed while valid, like a retired one). Each operation has a fixed
+        use, recorded on the promotion at creation (Promotion.proofUse) and applied unchanged at validation,
+        approval, execution and recovery (re-execution after a restart): promotion → new; rollback, emergency
+        rollback and reconciliation → historical. A key that changes state between steps is re-evaluated with the
+        same use at execution (revoked → blocked).
+      - Content identity and revocation (B §10, rodada 6 G-2): the identity of a workspace's content on an instance
+        is its contentDigest. A release created by rollback copies the content and keeps its provenance: the same
+        contentDigest, contentOriginVersion (the first release with that digest here), contentFirstActivatedAt and
+        the authorization that first brought it (originPromotionId). Age limits are measured from
+        contentFirstActivatedAt, never from the copy. Revocation is per (workspace, contentDigest), append-only
+        (POST /workspaces/{workspaceId}/content-revocations), never an update of a release, and covers every release
+        with that digest, past and future; a revoked digest can no longer be the target of any operation.
+      - Four operations, never interchangeable (B §10, rodadas 5 e 6, F-3/G-1). (1) Reconciliation (reconcile):
+        only `reapply` of the instance's CURRENT deployment as a new revision; it chooses no version and never
+        changes the desired state; refused when a member's content is revoked. (2) Normal rollback
+        (rollbackRelease, emergency=false): on hml/prd a promotion of kind rollback with the full policy
+        (validation, approvals, requester != approvers, executor separation). (3) Emergency rollback
+        (rollbackRelease, emergency=true): kind emergency-rollback; target = content previously active on this
+        instance, not revoked, contentFirstActivatedAt newer than emergencyMaxReleaseAgeDays, in prd with a valid
+        historical attestation; never new content; current environment values; approval deferred to a mandatory
+        post-review. Requires `rollback.emergency`, granted only directly to a user with expiresAt (at most 7 days),
+        justification and scope; at execution the requester's grant is re-checked (still valid, not expired,
+        covering the scope) together with the target. A second verified person holding `rollback.emergency` or
+        `promotion.execute` executes, unless the INSTANCE policy sets `emergencySelfExecution: true`. Whatever the
+        outcome (converged, failed, partial, superseded) it enters emergency-pending-review; neither the requester
+        nor, when executorMayApprove is false, the executor reviews it. (4) New publication (dev) or promotion
+        (hml/prd). Only (3) may supersede a converging deployment.
+      - Fail-closed isolation (B §3.5.3, decision P1, R7-1, R7-2, R8-1, R8-3, R9-1, R9-2): Kong runs only while the
+        pod holds a valid isolation lease written by its isolation-probe (every 15 s, valid 33 s), measured in the
+        node's CLOCK_BOOTTIME and bound to its boot id (wall clock never decides validity; any doubt = invalid). The
+        lease depends only on a CP admission for the pod UID and boot and a conclusive network proof, never on Kong;
+        the guard canary is checked after start. agent, isolation-probe and collector are native sidecars
+        (Kubernetes >= 1.33, or an earlier minor with recorded N2 evidence). Layers: route guard 503; a supervisor
+        (PID 1 of the kong container) and, outside pod deletion, Kong's liveness kill the whole process (open
+        connections, healthchecks, timers); readiness. Budgets from the loss: detection <= 18 s, 503 <= 19 s, Kong
+        stopped <= 20 s (supervisor) or <= 24 s (liveness, effective kubelet grace 2 s), NotReady <= 20 s; during
+        pod deletion liveness is suspended, so the supervisor bound applies and the independent ceiling is the pod
+        grace (30 s from the deletion start); kubelet or node failure with a stuck supervisor has no time bound.
+        Probe reports are signed by a per-pod probe key, numbered without gaps and carry the cluster's admission
+        challenge. A new admission is granted only when no blocking pendency is open in scope and every other open
+        admission of the cluster has answered the current challenge without violation; no timeout grants it. An
+        admission closes only with a final report confirming Kong stopped (or a node-reboot report of the previous
+        boot). confirmed-violation and unconfirmed-isolation accept releaseIsolationContainment;
+        communication-failure (60 s) is an alert only. Agent, CP or collector outages never contain admitted pods
+        that keep proving isolation.
+      - Analytics collector in workspaces mode (B §3.5.2, decision P2): a sidecar listening only on 127.0.0.1, token per
+        cluster (never repeated across clusters), cluster and instance pinned by the collector, dedup by
+        (cluster, pod, request.id), workspace attributed by route_id against the active deployment.
+      - Identity in the core (B §4.7): each instance authenticates only its own local accounts; one local login
+        identity per person; deciding (confirm, approve, execute) requires a person verified by platform-admin with
+        a corporateId unique in the instance. OIDC login and cross-instance correlation: x-gromesh-phase L5. The
+        identity declared by a source instance is audit data; the target only uses it to REFUSE (mismatch), never to
+        grant. Separation of duties by verified person and by account: approver != confirmed requester; executor !=
+        confirmed requester; executor != approvers unless the policy sets executorMayApprove.
+  x-gromesh-permissions: [ instance.read, platform.admin, workspace.read, workspace.create, workspace.admin, workspace.request, gateway.write, values.write, members.read, members.manage, groups.read, groups.manage, release.publish, release.rollback, release.revoke, reconcile.execute, promotion.read, promotion.request, promotion.approve, promotion.execute, promotion.import, rollback.emergency, m2m.read-state, m2m.submit, m2m.read-own-promotion, m2m.validate-own-promotion, m2m.pull, m2m.ack, m2m.attestation ]
+  x-gromesh-builtin-roles:
+    viewer: [ workspace.read, members.read, promotion.read ]
+    editor: [ workspace.read, members.read, promotion.read, gateway.write ]
+    publisher: [ workspace.read, members.read, promotion.read, gateway.write, release.publish, release.rollback, promotion.request ]
+    approver: [ workspace.read, members.read, promotion.read, promotion.approve ]
+    workspace-admin: [ workspace.read, members.read, promotion.read, gateway.write, release.publish, release.rollback, promotion.request, workspace.admin, members.manage, values.write, release.revoke ]
+    platform-admin: [ instance.read, platform.admin, workspace.read, workspace.create, workspace.admin, workspace.request, gateway.write, values.write, members.read, members.manage, groups.read, groups.manage, release.publish, release.rollback, release.revoke, reconcile.execute, promotion.read, promotion.request, promotion.approve, promotion.execute, promotion.import ]
+  x-gromesh-m2m-permissions: [ m2m.read-state, m2m.submit, m2m.read-own-promotion, m2m.validate-own-promotion, m2m.pull, m2m.ack, m2m.attestation ]
+  # rollback.emergency is never part of a role (direct grant with expiresAt and justification); m2m.* only for M2M clients.
+servers:
+  - url: http://localhost:3000/api/v2
+security:
+  - cookieAuth: []
+  - bearerApiToken: []
+# Global default applies to reads only; every mutation declares { cookieAuth + csrfToken } or bearer explicitly.
+tags:
+  - name: instance
+  - name: workspaces
+  - name: access
+  - name: releases
+  - name: deployments
+  - name: promotions
+  - name: m2m
+  - name: trust
+paths:
+  /instance:
+    get:
+      tags: [ instance ]
+      operationId: getInstance
+      x-scope: instance
+      x-gromesh-requirements: [ GW-ENV-01 ]
+      x-required-permission: instance.read
+      x-gromesh-planned: true
+      summary: Identity of this instance (id, stage, signing key ids).
+      responses:
+        "200": { description: Instance, content: { application/json: { schema: { $ref: "#/components/schemas/Instance" } } } }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /workspaces:
+    get:
+      tags: [ workspaces ]
+      operationId: listWorkspaces
+      x-scope: instance
+      x-gromesh-requirements: [ GW-WS-01, GW-RBAC-02 ]
+      x-required-permission: workspace.read
+      x-gromesh-planned: true
+      description: Lists only workspaces where the caller has at least workspace.read.
+      parameters: [ { $ref: "#/components/parameters/Cursor" }, { $ref: "#/components/parameters/Limit" } ]
+      responses:
+        "200": { description: Page, content: { application/json: { schema: { $ref: "#/components/schemas/WorkspacePage" } } } }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [ workspaces ]
+      operationId: createWorkspace
+      x-scope: instance
+      x-gromesh-requirements: [ GW-WS-01, GW-WS-10, GW-ADMIN-01 ]
+      security: [ { cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] } ]
+      x-required-permission: workspace.create
+      x-gromesh-planned: true
+      description: |
+        Allowed according to the instance creation policy (admin-only, autonomous with explicit permission). In
+        restricted-request mode callers without workspace.create use POST /workspace-requests instead. Only in the
+        lowest stage (dev); hml and prd workspaces are provisioned by the first approved promotion.
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/WorkspaceWrite" } } } }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/Workspace" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /workspaces/{workspaceId}:
+    parameters: [ { $ref: "#/components/parameters/WorkspaceId" } ]
+    get:
+      tags: [ workspaces ]
+      operationId: getWorkspace
+      x-scope: workspace
+      x-gromesh-requirements: [ GW-WS-01 ]
+      x-required-permission: workspace.read
+      x-gromesh-planned: true
+      responses:
+        "200": { description: Workspace, content: { application/json: { schema: { $ref: "#/components/schemas/Workspace" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [ workspaces ]
+      operationId: updateWorkspace
+      x-scope: workspace
+      x-gromesh-requirements: [ GW-WS-01 ]
+      security: [ { cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] } ]
+      x-required-permission: workspace.admin
+      x-gromesh-planned: true
+      description: Name and description only. The slug is immutable after the first release.
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { name: { type: string }, description: { type: string } } } } } }
+      responses:
+        "200": { description: Updated, content: { application/json: { schema: { $ref: "#/components/schemas/Workspace" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /workspaces/{workspaceId}/archive:
+    parameters: [ { $ref: "#/components/parameters/WorkspaceId" } ]
+    post:
+      tags: [ workspaces ]
+      operationId: archiveWorkspace
+      x-scope: workspace
+      x-gromesh-requirements: [ GW-WS-15, GW-ADMIN-07 ]
+      security: [ { cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] } ]
+      x-required-permission: platform.admin
+      x-gromesh-planned: true
+      description: 409 while the workspace has an active release with entities (remove it with a tombstone promotion first).
+      responses:
+        "204": { description: Archived }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /workspace-requests:
+    post:
+      tags: [ workspaces ]
+      operationId: requestWorkspace
+      x-scope: instance
+      x-gromesh-requirements: [ GW-ADMIN-01, GW-ADMIN-02 ]
+      x-gromesh-phase: L8
+      security: [ { cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] } ]
+      x-required-permission: workspace.request
+      x-gromesh-planned: true
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/WorkspaceWrite" } } } }
+      responses:
+        "201": { description: Requested, content: { application/json: { schema: { $ref: "#/components/schemas/WorkspaceRequest" } } } }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /workspace-requests/{requestId}/decision:
+    parameters: [ { name: requestId, in: path, required: true, schema: { type: string, format: uuid } } ]
+    post:
+      tags: [ workspaces ]
+      operationId: decideWorkspaceRequest
+      x-gromesh-requirements: [ GW-ADMIN-01, GW-ADMIN-02 ]
+      x-gromesh-phase: L8
+      security: [ { cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] } ]
+      x-required-permission: workspace.create
+      x-scope: request
+      x-gromesh-planned: true
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [ decision ], properties: { decision: { enum: [ approve, reject ] }, comment: { type: string } } } } } }
+      responses:
+        "200": { description: Decided, content: { application/json: { schema: { $ref: "#/components/schemas/WorkspaceRequest" } } } }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /workspaces/{workspaceId}/variables:
+    parameters: [ { $ref: "#/components/parameters/WorkspaceId" } ]
+    get:
+      tags: [ workspaces ]
+      operationId: listWorkspaceVariables
+      x-scope: workspace
+      x-gromesh-requirements: [ GW-ENV-05 ]
+      x-required-permission: workspace.read
+      x-gromesh-planned: true
+      description: Declarations plus whether this instance has a value. Secret values always read back as REDACTED.
+      responses:
+        "200": { description: Variables, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/WorkspaceVariable" } } } } }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /workspaces/{workspaceId}/variables/{name}/value:
+    parameters: [ { $ref: "#/components/parameters/WorkspaceId" }, { name: name, in: path, required: true, schema: { type: string } } ]
+    put:
+      tags: [ workspaces ]
+      operationId: setWorkspaceValue
+      x-scope: workspace
+      x-gromesh-requirements: [ GW-ENV-05 ]
+      security: [ { cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] } ]
+      x-required-permission: values.write
+      x-gromesh-planned: true
+      description: Instance-local value (never travels in a package). Audited; secrets sealed and redacted.
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [ value ], properties: { value: { type: string } } } } } }
+      responses:
+        "204": { description: Set }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /workspaces/{workspaceId}/role-bindings:
+    parameters: [ { $ref: "#/components/parameters/WorkspaceId" } ]
+    get:
+      tags: [ access ]
+      operationId: listWorkspaceRoleBindings
+      x-scope: workspace
+      x-gromesh-requirements: [ GW-RBAC-01, GW-RBAC-02 ]
+      x-required-permission: members.read
+      x-gromesh-planned: true
+      responses:
+        "200": { description: Bindings, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/RoleBinding" } } } } }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [ access ]
+      operationId: createWorkspaceRoleBinding
+      x-scope: workspace
+      x-gromesh-requirements: [ GW-RBAC-01, GW-RBAC-05, GW-RBAC-11, GW-ADMIN-03 ]
+      security: [ { cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] } ]
+      x-required-permission: members.manage
+      x-gromesh-planned: true
+      description: |
+        A workspace admin grants roles to existing users or groups in this workspace; it cannot change group
+        membership, cannot grant platform permissions and cannot grant more than it holds. Temporary bindings require
+        expiresAt and justification. Denies are platform-admin only.
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/RoleBindingWrite" } } } }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/RoleBinding" } } } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /role-bindings:
+    get:
+      tags: [ access ]
+      operationId: listInstanceRoleBindings
+      x-gromesh-requirements: [ GW-RBAC-01, GW-RBAC-03 ]
+      x-required-permission: members.read
+      x-scope: instance
+      x-gromesh-planned: true
+      description: Instance-scoped bindings (e.g. who may confirm, approve and execute the provisioning of a workspace that does not exist yet).
+      responses:
+        "200": { description: Bindings, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/RoleBinding" } } } } }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [ access ]
+      operationId: createInstanceRoleBinding
+      x-gromesh-requirements: [ GW-RBAC-01, GW-RBAC-03, GW-ADMIN-03 ]
+      x-required-permission: platform.admin
+      x-scope: instance
+      x-gromesh-planned: true
+      description: Grants instance-scoped roles (e.g. provisioning-approver) without granting platform administration.
+      security: [ { cookieAuth: [], csrfToken: [] } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/RoleBindingWrite" } } } }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/RoleBinding" } } } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /persons/{personId}/identities:
+    parameters: [ { name: personId, in: path, required: true, schema: { type: string, format: uuid } } ]
+    get:
+      tags: [ access ]
+      operationId: listPersonIdentities
+      x-gromesh-requirements: [ GW-AUTH-05 ]
+      x-required-permission: platform.admin
+      x-scope: instance
+      x-gromesh-planned: true
+      responses:
+        "200": { description: Login identities, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/LoginIdentity" } } } } }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /persons/{personId}/verification:
+    parameters: [ { name: personId, in: path, required: true, schema: { type: string, format: uuid } } ]
+    put:
+      tags: [ access ]
+      operationId: verifyPerson
+      x-gromesh-requirements: [ GW-AUTH-05 ]
+      x-required-permission: platform.admin
+      x-scope: instance
+      x-gromesh-planned: true
+      description: |
+        Core (rodada 4, E-3). Marks the person as verified with its corporate identifier (e.g. employee number),
+        unique in the instance: 409 when another person already has it. Only verified persons confirm, approve or
+        execute. Under the advisory lock `identity`: increments identity_epoch; unconsumed confirmations and votes of
+        this person go back to awaiting-requester-confirmation / awaiting-approval. Audited.
+      security: [ { cookieAuth: [], csrfToken: [] } ]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: false, required: [ corporateId ], properties: { corporateId: { type: string, minLength: 1, maxLength: 128 } } } } } }
+      responses:
+        "200": { description: Verified, content: { application/json: { schema: { $ref: "#/components/schemas/Person" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+    delete:
+      tags: [ access ]
+      operationId: revokePersonVerification
+      x-gromesh-requirements: [ GW-AUTH-05 ]
+      x-required-permission: platform.admin
+      x-scope: instance
+      x-gromesh-planned: true
+      description: Core. Removes the verification (the person can no longer decide); same lock, epoch and invalidation as verifyPerson. Audited.
+      security: [ { cookieAuth: [], csrfToken: [] } ]
+      responses:
+        "200": { description: Revoked, content: { application/json: { schema: { $ref: "#/components/schemas/Person" } } } }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /persons/{personId}/links:
+    parameters: [ { name: personId, in: path, required: true, schema: { type: string, format: uuid } } ]
+    post:
+      tags: [ access ]
+      operationId: linkPersonIdentity
+      x-gromesh-requirements: [ GW-AUTH-02, GW-AUTH-05 ]
+      x-required-permission: platform.admin
+      x-scope: instance
+      x-gromesh-planned: true
+      x-gromesh-phase: L5
+      description: |
+        Resolves a pending identity: link it to this person, or declare it a distinct person. Linking, unlinking or
+        merging invalidates unconsumed confirmations and votes of the promotions where any affected identity appears
+        (they go back to awaiting-requester-confirmation or awaiting-approval). Audited.
+      security: [ { cookieAuth: [], csrfToken: [] } ]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: false, required: [ identityId, action ], properties: { identityId: { type: string, format: uuid }, action: { enum: [ link, distinct-person, unlink ] } } } } } }
+      responses:
+        "200": { description: Updated, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/LoginIdentity" } } } } }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /role-bindings/{bindingId}/revoke:
+    parameters: [ { name: bindingId, in: path, required: true, schema: { type: string, format: uuid } } ]
+    post:
+      tags: [ access ]
+      operationId: revokeRoleBinding
+      x-gromesh-requirements: [ GW-RBAC-05, GW-RBAC-11 ]
+      security: [ { cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] } ]
+      x-required-permission: members.manage
+      x-scope: binding
+      x-gromesh-planned: true
+      description: |
+        Immediate; sessions and tokens re-evaluate on the next request. The guard loads the binding first: deny
+        bindings and bindings granted by the platform can only be revoked by platform.admin; otherwise the caller
+        needs members.manage in the binding's scope and must hold the binding's permissions.
+      responses:
+        "204": { description: Revoked }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /groups:
+    get:
+      tags: [ access ]
+      operationId: listGroups
+      x-scope: instance
+      x-gromesh-requirements: [ GW-RBAC-06, GW-ADMIN-04 ]
+      x-gromesh-phase: L2
+      x-required-permission: groups.read
+      x-gromesh-planned: true
+      responses:
+        "200": { description: Groups, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Group" } } } } }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [ access ]
+      operationId: createGroup
+      x-scope: instance
+      x-gromesh-requirements: [ GW-RBAC-06, GW-ADMIN-04 ]
+      x-gromesh-phase: L2
+      security: [ { cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] } ]
+      x-required-permission: groups.manage
+      x-gromesh-planned: true
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [ name ], properties: { name: { type: string }, description: { type: string } } } } } }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/Group" } } } }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /groups/{groupId}/members:
+    parameters: [ { name: groupId, in: path, required: true, schema: { type: string, format: uuid } } ]
+    put:
+      tags: [ access ]
+      operationId: replaceGroupMembers
+      x-scope: instance
+      x-gromesh-requirements: [ GW-RBAC-06, GW-ADMIN-04 ]
+      x-gromesh-phase: L2
+      security: [ { cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] } ]
+      x-required-permission: groups.manage
+      x-gromesh-planned: true
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [ userIds ], properties: { userIds: { type: array, items: { type: string, format: uuid } } } } } } }
+      responses:
+        "204": { description: Replaced }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /workspaces/{workspaceId}/releases:
+    parameters: [ { $ref: "#/components/parameters/WorkspaceId" } ]
+    get:
+      tags: [ releases ]
+      operationId: listReleases
+      x-scope: workspace
+      x-gromesh-requirements: [ GW-PUB-06 ]
+      x-required-permission: workspace.read
+      x-gromesh-planned: true
+      responses:
+        "200": { description: Releases, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Release" } } } } }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [ releases ]
+      operationId: publishRelease
+      x-scope: workspace
+      x-gromesh-requirements: [ GW-PUB-01, GW-PUB-03, GW-PUB-06, GW-ENV-07 ]
+      security: [ { cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] } ]
+      x-required-permission: release.publish
+      x-gromesh-planned: true
+      description: |
+        Freezes the workspace draft into an immutable release and deploys it on THIS instance (new deployment
+        revision composing every workspace's active release). Only on dev: in hml and prd local publishing does not
+        exist (403); content arrives only through promotions. Needs the deployment lease (409 otherwise).
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { message: { type: string }, expectedActiveVersion: { type: [ integer, "null" ] } } } } } }
+      responses:
+        "201": { description: Published, content: { application/json: { schema: { $ref: "#/components/schemas/Release" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /workspaces/{workspaceId}/releases/{version}/rollback:
+    parameters: [ { $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/Version" } ]
+    post:
+      tags: [ releases ]
+      operationId: rollbackRelease
+      x-scope: workspace
+      x-gromesh-requirements: [ GW-DEP-06, GW-DEP-07 ]
+      x-required-permission: release.rollback
+      x-gromesh-planned: true
+      description: |
+        Requests reactivating the content of an earlier release that was active on this instance (in prd: one that
+        arrived by promotion, with a valid historical attestation). On dev it executes directly as a NEW release
+        (origin rollback). On hml/prd it creates a promotion of kind rollback (requester = this session) that goes
+        through validation, approval and execution with the normal policy. emergency = true (see "Rollback" in info):
+        requires rollback.emergency, a justification, content not revoked whose contentFirstActivatedAt is newer
+        than emergencyMaxReleaseAgeDays (a copy made by an earlier rollback never renews it); creates kind
+        emergency-rollback;
+        goes to awaiting-emergency-execution, executed by a second verified person (POST .../execution) unless the
+        instance policy sets emergencySelfExecution, in which case this call also executes it; after convergence the
+        promotion stays emergency-pending-review until the post-review is approved. 409 for a release that was never
+        active here, revoked (by contentDigest), too old, or (prd) without a valid historical attestation (keyTrust
+        use=historical); the body carries no content, only the version. The new release keeps contentDigest,
+        contentOriginVersion, contentFirstActivatedAt and originPromotionId of the target.
+      x-required-permission-emergency: rollback.emergency
+      security: [ { cookieAuth: [], csrfToken: [] } ]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: false, required: [ justification ], properties: { justification: { type: string, minLength: 10 }, emergency: { type: boolean, default: false } } } } } }
+      responses:
+        "201": { description: "dev: rolled back", content: { application/json: { schema: { $ref: "#/components/schemas/Release" } } } }
+        "202": { description: "hml/prd: rollback promotion created", content: { application/json: { schema: { $ref: "#/components/schemas/Promotion" } } } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /clusters/{clusterId}/isolation:
+    parameters: [ { $ref: "#/components/parameters/ClusterId" } ]
+    get:
+      tags: [ deployments ]
+      operationId: getClusterIsolation
+      x-gromesh-requirements: [ GW-WS-16a ]
+      x-required-permission: instance.read
+      x-scope: instance
+      x-gromesh-planned: true
+      description: |
+        Isolation state per pod as reported by its isolation-probe through the agent, the reporting continuity of each
+        admission and the open pendencies that refuse admissions (B §3.5.3, decision P1). Containment itself is
+        enforced in the pod and never waits for the CP.
+      responses:
+        "200": { description: Isolation state, content: { application/json: { schema: { $ref: "#/components/schemas/ClusterIsolation" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /clusters/{clusterId}/isolation-releases:
+    parameters: [ { $ref: "#/components/parameters/ClusterId" } ]
+    post:
+      tags: [ deployments ]
+      operationId: releaseIsolationContainment
+      x-gromesh-requirements: [ GW-WS-16a ]
+      x-required-permission: platform.admin
+      x-scope: instance
+      x-gromesh-planned: true
+      description: |
+        Closes a confirmed-violation or unconfirmed-isolation pendency with a release signed with the instance key
+        (cluster, pendencyId, expires in 15 min) that the agents hand to the isolation-probes of the affected pods;
+        for unconfirmed-isolation it also closes the orphan admission as closed-without-proof. Admissions in its
+        scope resume only under the challenge rule (every other open admission answering). A probe resumes only after a conclusive pass; a release alone never reopens
+        traffic and never replaces a pod's own proof. communication-failure pendencies are not releasable (409): they
+        close when the same report chain resumes or turn into unconfirmed-isolation. Containment by missing proof
+        needs no release (two conclusive passes). Session + CSRF; justification required; audited with alert. 409
+        when the pendency is not open or not releasable.
+      security: [ { cookieAuth: [], csrfToken: [] } ]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: false, required: [ pendencyId, justification ], properties: { pendencyId: { type: string, format: uuid }, justification: { type: string, minLength: 10 } } } } } }
+      responses:
+        "201": { description: Release issued (signed) }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /workspaces/{workspaceId}/routes/{routeId}/path-compatibility:
+    parameters: [ { $ref: "#/components/parameters/WorkspaceId" }, { name: routeId, in: path, required: true, schema: { type: string, format: uuid } } ]
+    post:
+      tags: [ workspaces ]
+      operationId: convertRoutePathCompatibility
+      x-gromesh-requirements: [ GW-WS-13 ]
+      x-required-permission: workspace.admin
+      x-scope: workspace
+      x-gromesh-planned: true
+      description: |
+        The only way to turn a migrated route (pathCompatibility legacy-preserved) into the workspace default (full path
+        with the prefix to the upstream, stripPath false; decision D1). Requires echoing the diff of public and upstream
+        paths returned by a dry run; changes the draft only (publication or promotion follows the normal rules).
+        Audited. Never done in bulk by migration or publication.
+      security: [ { cookieAuth: [], csrfToken: [] } ]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: false, required: [ dryRun ], properties: { dryRun: { type: boolean }, expectedDiffDigest: { $ref: "#/components/schemas/Digest" } }, if: { properties: { dryRun: { const: false } } }, then: { required: [ expectedDiffDigest ] } } } } }
+      responses:
+        "200": { description: "Dry run: paths before and after", content: { application/json: { schema: { $ref: "#/components/schemas/RoutePathDiff" } } } }
+        "204": { description: Converted in the draft }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /deployments/current:
+    get:
+      tags: [ deployments ]
+      operationId: getCurrentDeployment
+      x-scope: instance
+      x-gromesh-requirements: [ GW-DEP-02, GW-DEP-05, GW-DEP-09 ]
+      x-required-permission: instance.read
+      x-gromesh-planned: true
+      responses:
+        "200": { description: Deployment and convergence, content: { application/json: { schema: { $ref: "#/components/schemas/Deployment" } } } }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /reconciliations:
+    post:
+      tags: [ deployments ]
+      operationId: reconcile
+      x-scope: instance
+      x-gromesh-requirements: [ GW-PRM-04, GW-DEP-03, GW-DEP-05 ]
+      x-required-permission: reconcile.execute
+      x-gromesh-planned: true
+      description: |
+        Restores convergence of the configuration ALREADY AUTHORIZED on this instance (rodada 6, G-1): reapply of
+        the current deployment's members as a NEW revision (same contentDigest per workspace), clearing
+        permanent-failure marks. It selects no version, carries no content and never changes the desired state;
+        there is no "accept observed state", no direct edit and no rollback here (rollback is rollbackRelease, normal
+        or emergency, with its own rules). Checks: the current deployment exists and was created by an authorized
+        operation; no member's contentDigest is revoked (409, use a rollback or a promotion); in prd each member's
+        stored attestation passes keyTrust use=historical; the deployment lease is free (409). It never supersedes a
+        converging deployment. Never triggered by a promotion. Audited.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false, required: [ action, reason ], properties: { action: { const: reapply }, reason: { type: string, minLength: 1 } } }
+      security: [ { cookieAuth: [], csrfToken: [] } ]
+      responses:
+        "201": { description: Reconciliation started }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /workspaces/{workspaceId}/outgoing-promotions:
+    parameters: [ { $ref: "#/components/parameters/WorkspaceId" } ]
+    post:
+      tags: [ promotions ]
+      operationId: requestPromotion
+      x-scope: workspace
+      x-gromesh-requirements: [ GW-ENV-02, GW-ENV-04, GW-PRM-01, GW-RBAC-04 ]
+      security: [ { cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] } ]
+      x-required-permission: promotion.request
+      x-gromesh-planned: true
+      description: |
+        On the SOURCE instance. Builds and signs a package (full release or a selection with its dependencies), then
+        submits it to the target with the M2M identity (push) or makes it available for the target to pull. The
+        response includes the target's validation report when the target is reachable.
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/PromotionRequest" } } } }
+      responses:
+        "201": { description: Requested, content: { application/json: { schema: { $ref: "#/components/schemas/Promotion" } } } }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /promotions:
+    get:
+      tags: [ promotions ]
+      operationId: listPromotions
+      x-scope: instance
+      x-gromesh-requirements: [ GW-DEP-08 ]
+      x-required-permission: promotion.read
+      x-gromesh-planned: true
+      parameters: [ { name: status, in: query, schema: { $ref: "#/components/schemas/PromotionStatus" } }, { $ref: "#/components/parameters/Cursor" } ]
+      responses:
+        "200": { description: Page, content: { application/json: { schema: { type: object, required: [ items, nextCursor ], properties: { items: { type: array, items: { $ref: "#/components/schemas/Promotion" } }, nextCursor: { type: [ string, "null" ] } } } } } }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /promotions/{promotionId}:
+    parameters: [ { $ref: "#/components/parameters/PromotionId" } ]
+    get:
+      tags: [ promotions ]
+      operationId: getPromotion
+      x-gromesh-requirements: [ GW-DEP-08, GW-PUB-05 ]
+      x-required-permission: promotion.read
+      x-scope: promotion
+      x-gromesh-planned: true
+      description: Includes the exact diff (with risk per change), the effective policy, approvals and validations.
+      responses:
+        "200": { description: Promotion, content: { application/json: { schema: { $ref: "#/components/schemas/Promotion" } } } }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /promotions/{promotionId}/validations:
+    parameters: [ { $ref: "#/components/parameters/PromotionId" } ]
+    post:
+      tags: [ promotions ]
+      operationId: validatePromotion
+      x-gromesh-requirements: [ GW-PRM-02, GW-PRM-03, GW-PRM-05, GW-PRM-06 ]
+      security: [ { cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] } ]
+      x-required-permission: promotion.read
+      x-scope: promotion
+      x-gromesh-planned: true
+      description: Runs the target-side validation now and returns the report (authoritative only on the target).
+      responses:
+        "201": { description: Report, content: { application/json: { schema: { $ref: "#/components/schemas/ValidationReport" } } } }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /promotions/{promotionId}/requester-confirmation:
+    parameters: [ { $ref: "#/components/parameters/PromotionId" } ]
+    post:
+      tags: [ promotions ]
+      operationId: confirmPromotionRequester
+      x-gromesh-requirements: [ GW-APR-04, GW-RBAC-04 ]
+      x-required-permission: promotion.request
+      x-scope: promotion
+      x-gromesh-planned: true
+      description: |
+        Moves a promotion from awaiting-requester-confirmation to validating. Session + CSRF only (no API token, no
+        M2M). The TARGET records the caller's own account and person as the requester; the requester declared by the
+        source is kept for audit only. 409 requester-mismatch (audited, alert) when the caller's person differs from
+        the person the target maps the declared identity to (no mapping = mismatch; core: by the declared
+        corporateId, else the local e-mail; L5: issuer+subject); 409 when the promotion is not awaiting confirmation,
+        the echoed packageId/contentDigest differs, or the caller's person is not verified. The confirmation is
+        single-use (state transition), stores the identity_epoch read under the `identity` lock and is invalidated
+        when the epoch changes for that person. The mapping can only refuse; it never grants a decision.
+      security: [ { cookieAuth: [], csrfToken: [] } ]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: false, required: [ packageId, contentDigest ], properties: { packageId: { type: string, format: uuid }, contentDigest: { $ref: "#/components/schemas/Digest" } } } } } }
+      responses:
+        "200": { description: Confirmed, content: { application/json: { schema: { $ref: "#/components/schemas/Promotion" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /promotions/{promotionId}/approvals:
+    parameters: [ { $ref: "#/components/parameters/PromotionId" } ]
+    post:
+      tags: [ promotions ]
+      operationId: approvePromotion
+      x-gromesh-requirements: [ GW-APR-01, GW-APR-03, GW-APR-04, GW-APR-05, GW-APR-07, GW-PUB-02, GW-PUB-05 ]
+      x-required-permission: promotion.approve
+      x-scope: promotion
+      x-gromesh-planned: true
+      description: |
+        Session + CSRF only (no API token, no M2M). Requires a confirmed requester; the approver's person (resolved at
+        vote time) and account must differ from the CONFIRMED requester's (never the declared one) and, when the policy
+        forbids authors, from the persons the declared authors map to. One vote per person; identities pending a
+        person link cannot vote. The request echoes the digests the approver saw; mismatch → 409. The same endpoint
+        records the post-review of an emergency rollback (status emergency-pending-review, any execution outcome):
+        the requester never reviews it, and neither does the executor unless the effective policy sets
+        executorMayApprove (403).
+      security: [ { cookieAuth: [], csrfToken: [] } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ApprovalWrite" } } } }
+      responses:
+        "201": { description: Recorded, content: { application/json: { schema: { $ref: "#/components/schemas/Approval" } } } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /promotions/{promotionId}/execution:
+    parameters: [ { $ref: "#/components/parameters/PromotionId" } ]
+    post:
+      tags: [ promotions ]
+      operationId: executePromotion
+      x-gromesh-requirements: [ GW-APR-06, GW-DEP-01, GW-DEP-02, GW-DEP-04, GW-PRV-01, GW-PRV-02, GW-PRV-03, GW-PRV-04, GW-ENV-03 ]
+      x-required-permission: promotion.execute
+      x-required-permission-alternatives:
+        - { permission: rollback.emergency, when: "promotion.kind == emergency-rollback" }
+      x-scope: promotion
+      x-gromesh-planned: true
+      description: |
+        Session + CSRF only. Revalidates; blocks if the target changed relevantly since approval (B §4.3). Needs the
+        deployment lease (409 otherwise). Idempotent per promotion. The executor's verified person and account must
+        differ from the confirmed requester's, and from every approver's unless the policy sets executorMayApprove
+        (403). Under the `identity` lock it re-resolves requester, approvers and executor and drops votes and
+        confirmations of an older identity_epoch whose equivalence changed. Key trust uses promotion.proofUse, the
+        same use as at validation (info, F-4): kind full/partial → new (for prd: attestation with an `active` hml key,
+        workspaceKey, attestation.contentDigest = package contentDigest = recomputed resultDigest, authorsDigest);
+        kind rollback → historical (the attestation stored with the target release; `active` or `retired`, never
+        `revoked`), and the target's contentDigest must not be revoked. Authorization: promotion.execute for every
+        kind; for kind emergency-rollback alternatively rollback.emergency (x-required-permission-alternatives).
+        For a promotion in awaiting-emergency-execution (rodadas 5 e 6, F-3): no approval is required; the executor
+        must be a verified person different from the requester (always: the self-execution exception happens only
+        inside the rollback call, when the instance policy allows it); the REQUESTER's rollback.emergency grant is
+        re-checked (not revoked, not expired, scope covers the workspace) and so are the target restrictions
+        (never active here, revoked digest, contentFirstActivatedAt too old, historical attestation not valid →
+        409).
+      security: [ { cookieAuth: [], csrfToken: [] } ]
+      responses:
+        "202": { description: Executing, content: { application/json: { schema: { $ref: "#/components/schemas/Execution" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /promotions/{promotionId}/cancel:
+    parameters: [ { $ref: "#/components/parameters/PromotionId" } ]
+    post:
+      tags: [ promotions ]
+      operationId: cancelPromotion
+      x-gromesh-requirements: [ GW-DEP-08 ]
+      security: [ { cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] } ]
+      x-required-permission: promotion.request
+      x-scope: promotion
+      x-gromesh-planned: true
+      responses:
+        "204": { description: Cancelled }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /m2m/token:
+    post:
+      tags: [ m2m ]
+      operationId: m2mToken
+      x-scope: public
+      x-gromesh-requirements: [ GW-PRM-01 ]
+      security: []
+      x-required-permission: public
+      x-gromesh-planned: true
+      description: OAuth2 client credentials with private_key_jwt (client_assertion signed by the source instance key, aud = this instance, short exp, unique jti). Returns a short-lived access token limited to the m2m scopes.
+      requestBody: { required: true, content: { application/x-www-form-urlencoded: { schema: { type: object, required: [ grant_type, client_assertion_type, client_assertion ], properties: { grant_type: { const: client_credentials }, client_assertion_type: { const: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer" }, client_assertion: { type: string } } } } } }
+      responses:
+        "200": { description: Token, content: { application/json: { schema: { type: object, required: [ access_token, expires_in ], properties: { access_token: { type: string }, expires_in: { type: integer } } } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /m2m/workspaces/{workspaceKey}/state:
+    parameters: [ { name: workspaceKey, in: path, required: true, schema: { type: string, format: uuid } } ]
+    get:
+      tags: [ m2m ]
+      operationId: m2mWorkspaceState
+      x-scope: m2m
+      x-gromesh-requirements: [ GW-PRM-01, GW-ENV-06 ]
+      security: [ { m2mAssertion: [] } ]
+      x-required-permission: m2m.read-state
+      x-gromesh-planned: true
+      description: Summary only (active release version and contentDigest, deployment revision, convergence). No content, no secrets. 404 when the workspace does not exist yet (provisioning).
+      responses:
+        "200": { description: State, content: { application/json: { schema: { $ref: "#/components/schemas/WorkspaceStateSummary" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /m2m/packages:
+    post:
+      tags: [ m2m ]
+      operationId: m2mSubmitPackage
+      x-scope: m2m
+      x-gromesh-requirements: [ GW-PRM-07, GW-ENV-04 ]
+      security: [ { m2mAssertion: [] } ]
+      x-required-permission: m2m.submit
+      x-gromesh-planned: true
+      description: |
+        Push transport. The target verifies signature, stage chain and expiry, registers the promotion in
+        awaiting-requester-confirmation and returns it. Idempotent: the same packageId with the same bytes returns the
+        existing promotion (200) to the same client; the same packageId with different bytes → 409. It never
+        confirms, approves or executes.
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/SignedPackage" } } } }
+      responses:
+        "200": { description: Already registered (identical resubmission), content: { application/json: { schema: { $ref: "#/components/schemas/Promotion" } } } }
+        "201": { description: Registered, content: { application/json: { schema: { $ref: "#/components/schemas/Promotion" } } } }
+        "400": { description: "Bad signature, unknown key, wrong stage chain, duplicated JSON keys or expired package" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /m2m/promotions/{promotionId}:
+    parameters: [ { $ref: "#/components/parameters/PromotionId" } ]
+    get:
+      tags: [ m2m ]
+      operationId: m2mGetOwnPromotion
+      x-scope: m2m
+      x-gromesh-requirements: [ GW-PRM-01 ]
+      security: [ { m2mAssertion: [] } ]
+      x-required-permission: m2m.read-own-promotion
+      x-gromesh-planned: true
+      description: Status and validation summary of a promotion SUBMITTED BY THE CALLING CLIENT (ownership enforced; others → 404). No content, no secrets.
+      responses:
+        "200": { description: Promotion summary, content: { application/json: { schema: { $ref: "#/components/schemas/Promotion" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /m2m/promotions/{promotionId}/validations:
+    parameters: [ { $ref: "#/components/parameters/PromotionId" } ]
+    post:
+      tags: [ m2m ]
+      operationId: m2mValidateOwnPromotion
+      x-scope: m2m
+      x-gromesh-requirements: [ GW-PRM-02 ]
+      security: [ { m2mAssertion: [] } ]
+      x-required-permission: m2m.validate-own-promotion
+      x-gromesh-planned: true
+      description: Re-runs the target-side validation of a promotion submitted by the calling client (ownership enforced).
+      responses:
+        "201": { description: Report, content: { application/json: { schema: { $ref: "#/components/schemas/ValidationReport" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /m2m/outbox:
+    get:
+      tags: [ m2m ]
+      operationId: m2mPullPackages
+      x-scope: m2m
+      x-gromesh-requirements: [ GW-PRM-07 ]
+      x-gromesh-phase: L1
+      security: [ { m2mAssertion: [] } ]
+      x-required-permission: m2m.pull
+      x-gromesh-planned: true
+      description: Pull transport (L1), served by the SOURCE to the target's pull identity (registered on the source; the target calls out). Lists packages addressed to the caller's stage not yet acknowledged.
+      responses:
+        "200": { description: Packages, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/SignedPackage" } } } } }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /m2m/outbox/{packageId}/ack:
+    parameters: [ { name: packageId, in: path, required: true, schema: { type: string, format: uuid } } ]
+    post:
+      tags: [ m2m ]
+      operationId: m2mAckPackage
+      x-scope: m2m
+      x-gromesh-requirements: [ GW-PRM-07 ]
+      x-gromesh-phase: L1
+      security: [ { m2mAssertion: [] } ]
+      x-required-permission: m2m.ack
+      x-gromesh-planned: true
+      description: Pull transport (L1). The target acknowledges that it registered the package and reports the promotion id and status. Idempotent.
+      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: false, required: [ promotionId, status ], properties: { promotionId: { type: string, format: uuid }, status: { $ref: "#/components/schemas/PromotionStatus" } } } } } }
+      responses:
+        "204": { description: Acknowledged }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /m2m/attestations:
+    post:
+      tags: [ m2m ]
+      operationId: m2mIssueAttestation
+      x-scope: m2m
+      x-gromesh-requirements: [ GW-ENV-03, GW-PRM-07 ]
+      x-gromesh-phase: L1
+      security: [ { m2mAssertion: [] } ]
+      x-required-permission: m2m.attestation
+      x-gromesh-planned: true
+      description: Pull transport (L1). Served by hml to prd's pull identity; in push, hml embeds the attestation in the package. The attestation proves what hml asserted, not that hml is honest (B §4.2). Returns a convergence attestation for a content digest only if that digest is the active, converged release of the workspace.
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [ workspaceKey, contentDigest ], properties: { workspaceKey: { type: string, format: uuid }, contentDigest: { $ref: "#/components/schemas/Digest" } } } } } }
+      responses:
+        "200": { description: Attestation, content: { application/json: { schema: { $ref: "#/components/schemas/Attestation" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /packages/import:
+    post:
+      tags: [ promotions ]
+      operationId: importPackage
+      x-scope: instance
+      x-gromesh-requirements: [ GW-PRM-07 ]
+      x-gromesh-phase: L1
+      x-required-permission: promotion.import
+      x-gromesh-planned: true
+      description: File transport (L1, isolated networks). Same verification and idempotency as /m2m/packages; the importing user is recorded but does not become the requester (the requester still confirms on this instance).
+      security: [ { cookieAuth: [], csrfToken: [] } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/SignedPackage" } } } }
+      responses:
+        "201": { description: Registered, content: { application/json: { schema: { $ref: "#/components/schemas/Promotion" } } } }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /provisioning/{workspaceKey}/values/{name}:
+    parameters: [ { name: workspaceKey, in: path, required: true, schema: { type: string, format: uuid } }, { name: name, in: path, required: true, schema: { type: string, pattern: "^[A-Z][A-Z0-9_]{0,63}$" } } ]
+    put:
+      tags: [ workspaces ]
+      operationId: setProvisioningValue
+      x-gromesh-requirements: [ GW-PRV-01, GW-ENV-05 ]
+      x-required-permission: values.write
+      x-scope: instance
+      x-gromesh-planned: true
+      description: Prepares an environment value for a workspace that does not exist yet on this instance (first promotion). Moved into the workspace inside the provisioning transaction. Never filled from the source. Audited; secrets sealed and redacted.
+      security: [ { cookieAuth: [], csrfToken: [] } ]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: false, required: [ value ], properties: { value: { type: string } } } } } }
+      responses:
+        "204": { description: Set }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /approval-policies/instance:
+    get:
+      tags: [ access ]
+      operationId: getInstanceApprovalPolicy
+      x-gromesh-requirements: [ GW-APR-02 ]
+      x-required-permission: instance.read
+      x-scope: instance
+      x-gromesh-planned: true
+      responses:
+        "200": { description: Policy, content: { application/json: { schema: { $ref: "#/components/schemas/ApprovalPolicy" } } } }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    put:
+      tags: [ access ]
+      operationId: setInstanceApprovalPolicy
+      x-gromesh-requirements: [ GW-APR-01, GW-APR-02, GW-APR-03, GW-RBAC-09 ]
+      x-required-permission: platform.admin
+      x-scope: instance
+      x-gromesh-planned: true
+      description: Mandatory instance policy. Bumps policyVersion; pending approvals under the old version are invalidated.
+      security: [ { cookieAuth: [], csrfToken: [] } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ApprovalPolicy" } } } }
+      responses:
+        "200": { description: Policy, content: { application/json: { schema: { $ref: "#/components/schemas/ApprovalPolicy" } } } }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /workspaces/{workspaceId}/approval-policy:
+    parameters: [ { $ref: "#/components/parameters/WorkspaceId" } ]
+    put:
+      tags: [ access ]
+      operationId: setWorkspaceApprovalPolicy
+      x-gromesh-requirements: [ GW-APR-02, GW-ADMIN-06 ]
+      x-required-permission: workspace.admin
+      x-scope: workspace
+      x-gromesh-planned: true
+      description: Can only harden the instance policy (422 with path when a field is weaker). Bumps policyVersion.
+      security: [ { cookieAuth: [], csrfToken: [] } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ApprovalPolicy" } } } }
+      responses:
+        "200": { description: Policy, content: { application/json: { schema: { $ref: "#/components/schemas/ApprovalPolicy" } } } }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /workspaces/{workspaceId}/content-revocations:
+    parameters: [ { $ref: "#/components/parameters/WorkspaceId" } ]
+    post:
+      tags: [ releases ]
+      operationId: revokeContent
+      x-gromesh-requirements: [ GW-PUB-06, GW-DEP-06 ]
+      x-required-permission: release.revoke
+      x-scope: workspace
+      x-gromesh-planned: true
+      description: |
+        Records that a content of this workspace must not be activated again on this instance (rodada 6, G-2), e.g.
+        a version withdrawn for a vulnerability. Append-only: no update or delete; it applies to every release with
+        that contentDigest, including copies made by rollback before or after. If the digest is active, the
+        instance is flagged revoked-content-active with an alert; reconciliation refuses it and only a promotion or
+        a rollback to another content clears it. Audited.
+      security: [ { cookieAuth: [], csrfToken: [] } ]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: false, required: [ contentDigest, reason ], properties: { contentDigest: { $ref: "#/components/schemas/Digest" }, reason: { type: string, minLength: 10 } } } } } }
+      responses:
+        "201": { description: Recorded, content: { application/json: { schema: { $ref: "#/components/schemas/ContentRevocation" } } } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /workspaces/{workspaceId}/global-plugins:
+    parameters: [ { $ref: "#/components/parameters/WorkspaceId" } ]
+    get:
+      tags: [ workspaces ]
+      operationId: listWorkspaceGlobalPlugins
+      x-gromesh-requirements: [ GW-PLG-04 ]
+      x-required-permission: workspace.read
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-phase: L9
+      responses:
+        "200": { description: Plugins applied to every route of the workspace, content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: "#/components/schemas/PackageEntity" } } } } } } }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [ workspaces ]
+      operationId: createWorkspaceGlobalPlugin
+      x-gromesh-requirements: [ GW-PLG-04 ]
+      x-required-permission: workspace.admin
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-phase: L9
+      description: Emulated by one instance per route or service (B §3.4 classes); stateful plugins follow H-8; privileged capabilities stay platform-admin only.
+      security: [ { cookieAuth: [], csrfToken: [] } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/PackageEntity" } } } }
+      responses:
+        "201": { description: Created }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /roles:
+    get:
+      tags: [ access ]
+      operationId: listRoles
+      x-gromesh-requirements: [ GW-RBAC-07 ]
+      x-required-permission: members.read
+      x-scope: instance
+      x-gromesh-planned: true
+      responses:
+        "200": { description: Roles, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Role" } } } } }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [ access ]
+      operationId: createRole
+      x-gromesh-requirements: [ GW-RBAC-07 ]
+      x-gromesh-phase: L3
+      x-required-permission: platform.admin
+      x-scope: instance
+      x-gromesh-planned: true
+      description: Custom role (L3). Built-in roles cannot be edited.
+      security: [ { cookieAuth: [], csrfToken: [] } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/RoleWrite" } } } }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/Role" } } } }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /roles/{roleId}:
+    parameters: [ { name: roleId, in: path, required: true, schema: { type: string, format: uuid } } ]
+    patch:
+      tags: [ access ]
+      operationId: updateRole
+      x-gromesh-requirements: [ GW-RBAC-07 ]
+      x-gromesh-phase: L3
+      x-required-permission: platform.admin
+      x-scope: instance
+      x-gromesh-planned: true
+      description: Changing a role's permissions re-evaluates every binding that uses it; only the platform can do it.
+      security: [ { cookieAuth: [], csrfToken: [] } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/RoleWrite" } } } }
+      responses:
+        "200": { description: Updated, content: { application/json: { schema: { $ref: "#/components/schemas/Role" } } } }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /trust/peers:
+    get:
+      tags: [ trust ]
+      operationId: listPeers
+      x-scope: instance
+      x-gromesh-requirements: [ GW-ENV-01 ]
+      x-required-permission: platform.admin
+      x-gromesh-planned: true
+      responses:
+        "200": { description: Peers, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Peer" } } } } }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /trust/peers/{peerId}/keys:
+    parameters: [ { name: peerId, in: path, required: true, schema: { type: string, format: uuid } } ]
+    put:
+      tags: [ trust ]
+      operationId: setPeerKeys
+      x-scope: instance
+      x-gromesh-requirements: [ GW-ENV-01 ]
+      security: [ { cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] } ]
+      x-required-permission: platform.admin
+      x-gromesh-planned: true
+      description: Replaces the trust store entries of a neighbouring instance (rotation with overlap, revocation). Audited.
+      requestBody: { required: true, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/PeerKey" } } } } }
+      responses:
+        "204": { description: Replaced }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /workspaces/{workspaceId}/export:
+    get:
+      tags:
+        - environments
+      operationId: exportWorkspaceConfig
+      security:
+        - cookieAuth: []
+        - bearerApiToken: []
+      summary: Export the current draft as a Gromesh configuration document
+      description: |
+        Exports every managed draft entity, without pagination, as `apiVersion: gromesh/v1`.
+        This is Gromesh's declarative model, not a Kong config or a published snapshot. Environment settings,
+        users, API tokens, clusters, audit events and platform-injected plugins are outside this document.
+        `format` selects both serialization and Content-Type, independently of Accept; the default is yaml.
+        Both representations conform to GromeshConfigV1Export. No state is changed.
+        Plugin fields marked `encrypted` by the plugin schema, certificate private keys and HS256 JWT secrets
+        are always the literal `REDACTED`, for every role. Key-auth credentials contain only identity, tags
+        and `keyHint`, never `key`. Basic-auth credentials never contain a password or its hash.
+        Reimporting an export into the same environment preserves matched secrets; importing it into another
+        environment requires supplying real secrets for new entities. The output has no document size limit;
+        a document larger than the import limit must be split before import.
+      parameters:
+        - name: format
+          in: query
+          description: Serialization of the response document
+          schema:
+            type: string
+            enum:
+              - yaml
+              - json
+            default: yaml
+      responses:
+        "200":
+          description: Complete draft with secrets redacted
+          content:
+            application/yaml:
+              schema:
+                $ref: ./control-plane.openapi.yaml#/components/schemas/GromeshConfigV1Export
+            application/json:
+              schema:
+                $ref: ./control-plane.openapi.yaml#/components/schemas/GromeshConfigV1Export
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+      x-required-permission: workspace.read
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-04
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+  /workspaces/{workspaceId}/import:
+    post:
+      tags:
+        - environments
+      operationId: importWorkspaceConfig
+      security:
+        - cookieAuth: []
+          csrfToken: []
+        - bearerApiToken: []
+      summary: Validate, preview or import configuration into the draft
+      description: |
+        Accepts a parsed document object or a UTF-8 YAML/JSON document string inside the JSON request envelope.
+        `sourceFormat` defaults to `gromesh/v1`; it selects the model, not the serialization. Reject multiple
+        YAML documents, duplicate mapping keys, custom YAML tags and alias expansion. The document limit is
+        5 MiB (5,242,880 bytes): UTF-8 bytes of a string before parsing, or UTF-8 bytes of compact JSON for an
+        object, and of the decoded compact JSON in either case. Exceeding either limit returns 422 at `document`.
+
+        Merge upserts services, routes and upstreams by name; consumers by username or customId. When both
+        consumer identifiers are supplied, either may match an existing consumer; if both resolve, they must resolve
+        to the same consumer. Resolving to different consumers is a conflict. Certificates match by an existing target-environment id or by
+        their exact non-empty SNI set (order-independent); disagreeing matches are a conflict. An empty SNI set has
+        no natural key and requires an existing id to update. SNI overlap with another certificate that would remain
+        in the resulting draft is a uniqueness conflict.
+        Plugins match by (name, resolved service, route, consumer scope), targets by (upstream, target), JWT
+        credentials by issuer key and basic-auth credentials by username (both unique within the environment).
+        Key-auth matches by existing id within the resolved consumer or by the supplied full key; `keyHint`
+        is display-only and MUST NOT be used to match a credential. A credential belonging to another consumer,
+        or an id disagreeing with a natural-key match, is a conflict. Credential ids only match within the resolved
+        consumer; unmatched ids are source identities, not requested ids for creation. New ids are generated
+        by the control plane, except for the consumer-id preservation rule for prehashed basic-auth below.
+        Matched entities retain their ids. ACL membership matches by (consumer, group).
+        Merge never deletes, including nested credentials, targets and ACL groups: omitted entities remain,
+        and supplied ACL groups are unioned. Supplied entities replace their non-secret attributes, with omitted
+        optional attributes taking the same defaults as their write schemas (nullable values default to null,
+        arrays to empty, plugin scope to global, and plugin protocols to the plugin schema's default).
+        A removed ACL membership requires replace mode or the existing ACL API.
+
+        Replace uses the same matching rules but makes the draft exactly the document, deleting every entity
+        and nested membership absent from it, subject only to retained ids and preserved secrets of matched
+        entities. References in replace must resolve inside the document; in merge they may also resolve to
+        existing draft entities. Unknown references are 422 with their source path. A service host matching
+        an upstream name keeps the existing upstream-resolution semantics; other hosts use DNS.
+
+        A supplied `REDACTED`, or an omitted secret on a matched entity, keeps the current secret in either mode,
+        as with certificate PUT. For a NEW credential/certificate/plugin secret, `REDACTED` or a missing value
+        is 422 at that secret path; import never auto-generates credentials. This applies to key-auth keys,
+        basic-auth passwords, HS256 JWT secrets, certificate keys and plugin fields marked `encrypted` that
+        the selected plugin configuration requires. Optional inactive plugin secret fields may remain absent.
+        A secret slot without a stored value is new even on a matched plugin or credential.
+        RS256/ES256 JWT credentials require a valid public key and must not supply a secret. Existing certificate
+        keys must still match the leaf; all current entity write validations, including certificate expiry on
+        creation or a changed cert, apply. Basic-auth hashes are never accepted in the Gromesh document.
+
+        For `kong-declarative-3.0`, `_format_version` must be the string `3.0`. Normalize only entities and fields
+        representable in GromeshConfigV1, including nested or flat services/routes/plugins, consumers with
+        keyauth_credentials/jwt_secrets/basicauth_credentials/acls, upstreams/targets and certificates/snis.
+        Resolve source ids and named references before assigning target ids. Translate supported snake_case
+        fields and relationships to the Gromesh model; do not pass this config directly to the data plane.
+        Every unsupported entity or field, including nested fields and unknown plugin config fields, produces
+        an `errors[]` entry at its original document path; nothing is silently ignored, even default-valued fields.
+        `_transform` may be absent or true for plaintext basic-auth passwords. Such passwords keep today's
+        plaintext handling even if they happen to contain 40 lowercase hex characters. `_transform` is
+        document-wide, not per credential; `_transform: false` without basic-auth credentials is accepted.
+
+        Accept prehashed `basicauth_credentials` only for `sourceFormat: kong-declarative-3.0` with
+        `_transform: false`. Each supplied password must match `^[0-9a-f]{40}$` and is already Kong's
+        `sha1(password + consumer_id)` hash; store it unchanged, without hashing it again. Acceptance requires
+        the credential's consumer to be present in the source document with an `id` in lowercase canonical UUID
+        form (`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`; the salt is that exact string, so
+        any other form is rejected as invalid), and that exact id to be preserved as the consumer's id in the
+        target environment. This applies to nested credentials and to flat credentials whose consumer reference
+        resolves to a consumer entry of the same document carrying such an `id`. A reference to an existing
+        target consumer that is not in the document does not suffice.
+
+        For each such consumer, in both merge and replace, resolve its UUID globally before any
+        username/customId matching. If that id exists in the TARGET environment, that consumer is the match
+        and retains its id; normal merge/replace updates and uniqueness checks still apply. Any supplied
+        username/customId resolving to a different consumer is a conflict, never a fallback match. If that id
+        exists in ANOTHER environment, it cannot be preserved because consumer ids are global primary keys:
+        reject with 422 at the source consumer's id path (e.g. `document.consumers.0.id`), without disclosing
+        the other environment or consumer. If no consumer anywhere has that id, create a NEW consumer with
+        exactly that id; a username/customId already matching another target consumer is a conflict, even
+        in replace mode. Never substitute a generated id or another consumer's id to accept the hash.
+        This exception applies only to source consumers carrying prehashed basic-auth credentials in this
+        format. All other consumers and entities keep today's matching and id-generation rules.
+
+        An invalid hash, a missing/invalid consumer UUID, or any inability to preserve that id rejects
+        a real import with 422 and an error at the credential's original password path, e.g.
+        `document.consumers.0.basicauth_credentials.0.password` or `document.basicauth_credentials.0.password`.
+        The message explains that Kong's hash is salted with the consumer id and requires preserving that id,
+        without echoing the hash or submitted password. Invalid UUIDs and cross-environment id collisions also
+        produce an error at the source consumer's id path. Existing omitted/REDACTED-secret preservation on
+        matched credentials still applies; it does not authorize creating a credential without a valid hash
+        or bypassing the consumer-id rule: under `_transform: false`, an omitted or REDACTED password still requires
+        its consumer's id to be preserved. All-or-nothing and dry-run error/report semantics below still apply.
+
+        error paths, with one error per affected credential at its password path and no other paths:
+          * hash not 40 lowercase hex: the password path.
+          * consumer without `id`: the password path.
+          * `id` not a lowercase canonical UUID: the password path and `document.consumers.N.id`.
+          * `id` used by a consumer of another environment: the password path and `document.consumers.N.id`.
+          * `id` repeated by two source consumers: the password path and `document.consumers.N.id` of the repeat.
+          * username/customId resolving to another consumer: the password path and that identifier's path.
+        The message at the id path is fixed ("consumer id cannot be preserved because it is already in use" for an
+        id in use) and reveals only that the id is unavailable, never where; this availability signal, also
+        visible through dry-run, is accepted since consumer ids are random UUIDs.
+
+        Imported hashes are sealed at rest with `enc:v2`, bound to table `basicauth_credentials`,
+        column `password_hash` and the target credential's id, like other basic-auth hashes. They are treated
+        as secrets and REDACTED everywhere except the agent endpoint (including API, diff, preview and snapshot
+        envelope); exports continue omitting basic-auth passwords and hashes entirely. Reports, errors, logs
+        and audit events never echo the hash or submitted password. Plaintext imports with `_transform`
+        absent/true and the Gromesh document's prohibition on importing hashes are unchanged.
+
+        Conflicts (the matching conflicts above and uniqueness violations in the resulting draft) are errors like any
+        other: an `errors[]` entry at the conflicting path, never a separate 409. A forbidden destination (see the
+        description of this API) in the resulting draft is a semantic error at its document path, e.g.
+        `document.services.0.host`, `document.upstreams.0.targets.1.target`.
+
+        A real import (`dryRun: false`) is ALL OR NOTHING. With any error (invalid envelope, malformed
+        serialization, schema violation, conversion or semantic error, conflict, size limit) NOTHING is written:
+        no entity, draft revision, audit event or snapshot. The response is then 422 with the same report
+        `{ added, modified, removed, errors[] }` (EnvironmentImportFailure, inside a problem+json body), where
+        errors[] lists every error found and the change arrays are empty because there is no valid plan; never a
+        partial success. On success the entire change, draft revision update and a redacted import audit event
+        commit in ONE transaction and the response is 200 with errors[] empty.
+
+        `dryRun: true` never writes anything (including audit, draft revision or snapshots) and returns the same
+        redacted diff a real import would apply. Its document/conversion/semantic errors and conflicts return a 200
+        report with errors[] (change arrays empty); an invalid request envelope, malformed serialization or a
+        document schema violation is the same 422 EnvironmentImportFailure as a real import. Import NEVER publishes or notifies
+        agents, even when publishMode is auto; a separate explicit publish is required.
+        Reports diff against the current draft, not the published snapshot. Diff labels/before/after and errors
+        never expose secrets, plaintext passwords, password hashes or submitted secret values. Error paths use
+        dot-separated properties and zero-based indexes rooted at `document`, e.g. `document.consumers.0.jwtCredentials.0.secret`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ./control-plane.openapi.yaml#/components/schemas/EnvironmentImportRequest
+      responses:
+        "200":
+          description: Successful draft import, or a dry-run report; a real import always has an empty errors array
+          content:
+            application/json:
+              schema:
+                $ref: ./control-plane.openapi.yaml#/components/schemas/EnvironmentImportReport
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: Nothing was written (all or nothing); errors[] lists every error and the change arrays are empty
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./control-plane.openapi.yaml#/components/schemas/EnvironmentImportFailure
+      x-required-permission: gateway.write
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-04
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+  /workspaces/{workspaceId}/services:
+    get:
+      tags:
+        - services
+      operationId: listServices
+      parameters:
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/Limit
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/Cursor
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/Search
+      responses:
+        "200":
+          description: Services
+          content:
+            application/json:
+              schema:
+                $ref: ./control-plane.openapi.yaml#/components/schemas/ServicePage
+        "404":
+          $ref: "#/components/responses/NotFound"
+      x-required-permission: workspace.read
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+        - GW-WS-05
+        - GW-WS-16
+    post:
+      tags:
+        - services
+      operationId: createService
+      security:
+        - cookieAuth: []
+          csrfToken: []
+        - bearerApiToken: []
+      description: 422 at `host` for a forbidden destination (see the description of this API).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkspaceServiceWrite"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: ./control-plane.openapi.yaml#/components/schemas/Service
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+      x-required-permission: gateway.write
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+        - GW-WS-05
+        - GW-WS-16
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+  /workspaces/{workspaceId}/services/{serviceId}:
+    get:
+      tags:
+        - services
+      operationId: getService
+      responses:
+        "200":
+          description: Service
+          content:
+            application/json:
+              schema:
+                $ref: ./control-plane.openapi.yaml#/components/schemas/Service
+        "404":
+          $ref: "#/components/responses/NotFound"
+      x-required-permission: workspace.read
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+        - GW-WS-05
+        - GW-WS-16
+    put:
+      tags:
+        - services
+      operationId: replaceService
+      security:
+        - cookieAuth: []
+          csrfToken: []
+        - bearerApiToken: []
+      description: 422 at `host` for a forbidden destination (see the description of this API).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkspaceServiceWrite"
+      responses:
+        "200":
+          description: Replaced
+          content:
+            application/json:
+              schema:
+                $ref: ./control-plane.openapi.yaml#/components/schemas/Service
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+      x-required-permission: gateway.write
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+        - GW-WS-05
+        - GW-WS-16
+    delete:
+      tags:
+        - services
+      operationId: deleteService
+      security:
+        - cookieAuth: []
+          csrfToken: []
+        - bearerApiToken: []
+      description: Refused with 409 while routes or plugins reference the service.
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+      x-required-permission: gateway.write
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+        - GW-WS-05
+        - GW-WS-16
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+      - $ref: ./control-plane.openapi.yaml#/components/parameters/ServiceId
+  /workspaces/{workspaceId}/routes:
+    get:
+      tags:
+        - routes
+      operationId: listRoutes
+      parameters:
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/Limit
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/Cursor
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/Search
+        - name: serviceId
+          in: query
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Routes
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceRoutePage"
+        "404":
+          $ref: "#/components/responses/NotFound"
+      x-required-permission: workspace.read
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+        - GW-WS-03
+        - GW-WS-11
+        - GW-WS-13
+        - GW-WS-14
+    post:
+      tags:
+        - routes
+      operationId: createRoute
+      security:
+        - cookieAuth: []
+          csrfToken: []
+        - bearerApiToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkspaceRouteWrite"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceRoute"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+      x-required-permission: gateway.write
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+        - GW-WS-03
+        - GW-WS-11
+        - GW-WS-13
+        - GW-WS-14
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+  /workspaces/{workspaceId}/routes/{routeId}:
+    get:
+      tags:
+        - routes
+      operationId: getRoute
+      responses:
+        "200":
+          description: Route
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceRoute"
+        "404":
+          $ref: "#/components/responses/NotFound"
+      x-required-permission: workspace.read
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+        - GW-WS-03
+        - GW-WS-11
+        - GW-WS-13
+        - GW-WS-14
+    put:
+      tags:
+        - routes
+      operationId: replaceRoute
+      security:
+        - cookieAuth: []
+          csrfToken: []
+        - bearerApiToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkspaceRouteWrite"
+      responses:
+        "200":
+          description: Replaced
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceRoute"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+      x-required-permission: gateway.write
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+        - GW-WS-03
+        - GW-WS-11
+        - GW-WS-13
+        - GW-WS-14
+    delete:
+      tags:
+        - routes
+      operationId: deleteRoute
+      security:
+        - cookieAuth: []
+          csrfToken: []
+        - bearerApiToken: []
+      responses:
+        "204":
+          description: Deleted (route-scoped plugins are deleted with it)
+        "404":
+          $ref: "#/components/responses/NotFound"
+      x-required-permission: gateway.write
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+        - GW-WS-03
+        - GW-WS-11
+        - GW-WS-13
+        - GW-WS-14
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+      - $ref: ./control-plane.openapi.yaml#/components/parameters/RouteId
+  /workspaces/{workspaceId}/consumers:
+    get:
+      tags:
+        - consumers
+      operationId: listConsumers
+      parameters:
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/Limit
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/Cursor
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/Search
+      responses:
+        "200":
+          description: Consumers
+          content:
+            application/json:
+              schema:
+                $ref: ./control-plane.openapi.yaml#/components/schemas/ConsumerPage
+        "404":
+          $ref: "#/components/responses/NotFound"
+      x-required-permission: workspace.read
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+        - GW-WS-07
+        - GW-WS-08
+        - GW-WS-09
+    post:
+      tags:
+        - consumers
+      operationId: createConsumer
+      security:
+        - cookieAuth: []
+          csrfToken: []
+        - bearerApiToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ./control-plane.openapi.yaml#/components/schemas/ConsumerWrite
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: ./control-plane.openapi.yaml#/components/schemas/Consumer
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+      x-required-permission: gateway.write
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+        - GW-WS-07
+        - GW-WS-08
+        - GW-WS-09
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+  /workspaces/{workspaceId}/consumers/{consumerId}:
+    get:
+      tags:
+        - consumers
+      operationId: getConsumer
+      responses:
+        "200":
+          description: Consumer
+          content:
+            application/json:
+              schema:
+                $ref: ./control-plane.openapi.yaml#/components/schemas/Consumer
+        "404":
+          $ref: "#/components/responses/NotFound"
+      x-required-permission: workspace.read
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+        - GW-WS-07
+        - GW-WS-08
+        - GW-WS-09
+    put:
+      tags:
+        - consumers
+      operationId: replaceConsumer
+      security:
+        - cookieAuth: []
+          csrfToken: []
+        - bearerApiToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ./control-plane.openapi.yaml#/components/schemas/ConsumerWrite
+      responses:
+        "200":
+          description: Replaced
+          content:
+            application/json:
+              schema:
+                $ref: ./control-plane.openapi.yaml#/components/schemas/Consumer
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+      x-required-permission: gateway.write
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+        - GW-WS-07
+        - GW-WS-08
+        - GW-WS-09
+    delete:
+      tags:
+        - consumers
+      operationId: deleteConsumer
+      security:
+        - cookieAuth: []
+          csrfToken: []
+        - bearerApiToken: []
+      responses:
+        "204":
+          description: Deleted (credentials and consumer-scoped plugins are deleted with it)
+        "404":
+          $ref: "#/components/responses/NotFound"
+      x-required-permission: gateway.write
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+        - GW-WS-07
+        - GW-WS-08
+        - GW-WS-09
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+      - $ref: ./control-plane.openapi.yaml#/components/parameters/ConsumerId
+  /workspaces/{workspaceId}/consumers/{consumerId}/key-auth:
+    get:
+      tags:
+        - consumers
+      operationId: listKeyAuthCredentials
+      responses:
+        "200":
+          description: Credentials (keys are masked, only the last 4 characters are returned)
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - items
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: ./control-plane.openapi.yaml#/components/schemas/KeyAuthCredential
+        "404":
+          $ref: "#/components/responses/NotFound"
+      x-required-permission: workspace.read
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+        - GW-WS-07
+        - GW-WS-08
+        - GW-WS-09
+    post:
+      tags:
+        - consumers
+      operationId: createKeyAuthCredential
+      security:
+        - cookieAuth: []
+          csrfToken: []
+        - bearerApiToken: []
+      description: If `key` is omitted a random 32-byte key is generated. The full key is returned only in this response.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                key:
+                  type: string
+                  minLength: 16
+                tags:
+                  $ref: ./control-plane.openapi.yaml#/components/schemas/Tags
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: ./control-plane.openapi.yaml#/components/schemas/KeyAuthCredential
+                  - type: object
+                    required:
+                      - key
+                    properties:
+                      key:
+                        type: string
+                        description: Full key, shown once
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+      x-required-permission: gateway.write
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+        - GW-WS-07
+        - GW-WS-08
+        - GW-WS-09
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+      - $ref: ./control-plane.openapi.yaml#/components/parameters/ConsumerId
+  /workspaces/{workspaceId}/consumers/{consumerId}/key-auth/{credentialId}:
+    delete:
+      tags:
+        - consumers
+      operationId: deleteKeyAuthCredential
+      security:
+        - cookieAuth: []
+          csrfToken: []
+        - bearerApiToken: []
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+      x-required-permission: gateway.write
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+        - GW-WS-07
+        - GW-WS-08
+        - GW-WS-09
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+      - $ref: ./control-plane.openapi.yaml#/components/parameters/ConsumerId
+      - name: credentialId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+  /workspaces/{workspaceId}/consumers/{consumerId}/jwt:
+    get:
+      tags:
+        - consumers
+      operationId: listJwtCredentials
+      responses:
+        "200":
+          description: JWT credentials (an HS256 `secret` is never returned)
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - items
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: ./control-plane.openapi.yaml#/components/schemas/JwtCredential
+        "404":
+          $ref: "#/components/responses/NotFound"
+      x-required-permission: workspace.read
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+        - GW-WS-07
+        - GW-WS-08
+        - GW-WS-09
+    post:
+      tags:
+        - consumers
+      operationId: createJwtCredential
+      security:
+        - cookieAuth: []
+          csrfToken: []
+        - bearerApiToken: []
+      description: |
+        HS256 signs with a shared `secret`: if omitted a random 32-byte secret is generated, and it is returned only in
+        this response. RS256 and ES256 verify with `rsaPublicKey` (an RSA or EC P-256 public key, despite Kong's field
+        name). If `key` is omitted a random one is generated. 409 when `key` is already used by a JWT credential in the
+        environment. 422 with `path`: `secret` given with RS256/ES256; `rsaPublicKey` missing with RS256/ES256, given
+        with HS256, not a PEM public key, or of the wrong type for the algorithm (RSA for RS256, EC P-256 for ES256).
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: ./control-plane.openapi.yaml#/components/schemas/JwtCredentialCreate
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: ./control-plane.openapi.yaml#/components/schemas/JwtCredential
+                  - type: object
+                    properties:
+                      secret:
+                        type: string
+                        description: "HS256 only: the full secret, shown once"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+      x-required-permission: gateway.write
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+        - GW-WS-07
+        - GW-WS-08
+        - GW-WS-09
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+      - $ref: ./control-plane.openapi.yaml#/components/parameters/ConsumerId
+  /workspaces/{workspaceId}/consumers/{consumerId}/jwt/{credentialId}:
+    delete:
+      tags:
+        - consumers
+      operationId: deleteJwtCredential
+      security:
+        - cookieAuth: []
+          csrfToken: []
+        - bearerApiToken: []
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+      x-required-permission: gateway.write
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+        - GW-WS-07
+        - GW-WS-08
+        - GW-WS-09
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+      - $ref: ./control-plane.openapi.yaml#/components/parameters/ConsumerId
+      - name: credentialId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+  /workspaces/{workspaceId}/consumers/{consumerId}/basic-auth:
+    get:
+      tags:
+        - consumers
+      operationId: listBasicAuthCredentials
+      responses:
+        "200":
+          description: Basic-auth credentials (the password is never returned)
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - items
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: ./control-plane.openapi.yaml#/components/schemas/BasicAuthCredential
+        "404":
+          $ref: "#/components/responses/NotFound"
+      x-required-permission: workspace.read
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+        - GW-WS-07
+        - GW-WS-08
+        - GW-WS-09
+    post:
+      tags:
+        - consumers
+      operationId: createBasicAuthCredential
+      security:
+        - cookieAuth: []
+          csrfToken: []
+        - bearerApiToken: []
+      description: |
+        The password is write-only and never returned, not even here. The control plane keeps only Kong's salted hash of it
+        (`sha1(password + consumerId)`), and the snapshot carries that hash (applied with `_transform: false`), never the
+        password itself. The hash is treated as a secret: encrypted at rest in the control plane's table and `"REDACTED"`
+        everywhere except the agent endpoint (API, audit, diff, preview and snapshot envelope). 409 when `username` is
+        already used by a basic-auth credential in the environment.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ./control-plane.openapi.yaml#/components/schemas/BasicAuthCredentialCreate
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: ./control-plane.openapi.yaml#/components/schemas/BasicAuthCredential
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+      x-required-permission: gateway.write
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+        - GW-WS-07
+        - GW-WS-08
+        - GW-WS-09
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+      - $ref: ./control-plane.openapi.yaml#/components/parameters/ConsumerId
+  /workspaces/{workspaceId}/consumers/{consumerId}/basic-auth/{credentialId}:
+    delete:
+      tags:
+        - consumers
+      operationId: deleteBasicAuthCredential
+      security:
+        - cookieAuth: []
+          csrfToken: []
+        - bearerApiToken: []
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+      x-required-permission: gateway.write
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+        - GW-WS-07
+        - GW-WS-08
+        - GW-WS-09
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+      - $ref: ./control-plane.openapi.yaml#/components/parameters/ConsumerId
+      - name: credentialId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+  /workspaces/{workspaceId}/consumers/{consumerId}/acl-groups:
+    get:
+      tags:
+        - consumers
+      operationId: getConsumerAclGroups
+      responses:
+        "200":
+          description: The consumer's ACL groups (empty when it has none)
+          content:
+            application/json:
+              schema:
+                $ref: ./control-plane.openapi.yaml#/components/schemas/AclGroups
+        "404":
+          $ref: "#/components/responses/NotFound"
+      x-required-permission: workspace.read
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+        - GW-WS-07
+        - GW-WS-08
+        - GW-WS-09
+    put:
+      tags:
+        - consumers
+      operationId: replaceConsumerAclGroups
+      security:
+        - cookieAuth: []
+          csrfToken: []
+        - bearerApiToken: []
+      description: Replaces the whole set; `[]` removes the consumer from every group. The `acl` plugin matches these names in `allow`/`deny`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ./control-plane.openapi.yaml#/components/schemas/AclGroups
+      responses:
+        "200":
+          description: Replaced
+          content:
+            application/json:
+              schema:
+                $ref: ./control-plane.openapi.yaml#/components/schemas/AclGroups
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+      x-required-permission: gateway.write
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+        - GW-WS-07
+        - GW-WS-08
+        - GW-WS-09
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+      - $ref: ./control-plane.openapi.yaml#/components/parameters/ConsumerId
+  /workspaces/{workspaceId}/upstreams:
+    get:
+      tags:
+        - upstreams
+      operationId: listUpstreams
+      parameters:
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/Limit
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/Cursor
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/Search
+      responses:
+        "200":
+          description: Upstreams
+          content:
+            application/json:
+              schema:
+                $ref: ./control-plane.openapi.yaml#/components/schemas/UpstreamPage
+        "404":
+          $ref: "#/components/responses/NotFound"
+      x-required-permission: workspace.read
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+    post:
+      tags:
+        - upstreams
+      operationId: createUpstream
+      security:
+        - cookieAuth: []
+          csrfToken: []
+        - bearerApiToken: []
+      description: |
+        A load-balancing pool. A service whose `host` equals the upstream's `name` balances across its targets;
+        any other host stays ordinary DNS (a service pointing at an upstream that does not exist is valid). 409 on a
+        name already used in the environment; 422 with `path` when `hashOn`/`hashFallback` are set without
+        `algorithm: consistent-hashing`, when `hashOnHeader`/`hashOnCookie`/`hashFallbackHeader` is missing for the
+        chosen hash, or when `hashOn: cookie` has a fallback other than `none`; 422 at `name` when the name is a
+        forbidden destination (see the description of this API).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ./control-plane.openapi.yaml#/components/schemas/UpstreamWrite
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: ./control-plane.openapi.yaml#/components/schemas/Upstream
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+      x-required-permission: gateway.write
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+  /workspaces/{workspaceId}/upstreams/{upstreamId}:
+    get:
+      tags:
+        - upstreams
+      operationId: getUpstream
+      responses:
+        "200":
+          description: Upstream
+          content:
+            application/json:
+              schema:
+                $ref: ./control-plane.openapi.yaml#/components/schemas/Upstream
+        "404":
+          $ref: "#/components/responses/NotFound"
+      x-required-permission: workspace.read
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+    put:
+      tags:
+        - upstreams
+      operationId: replaceUpstream
+      security:
+        - cookieAuth: []
+          csrfToken: []
+        - bearerApiToken: []
+      description: |
+        409 when the name changes while services of the environment use the current name as `host`; the problem
+        `detail` lists those services. Same 409/422 rules as the creation otherwise.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ./control-plane.openapi.yaml#/components/schemas/UpstreamWrite
+      responses:
+        "200":
+          description: Replaced
+          content:
+            application/json:
+              schema:
+                $ref: ./control-plane.openapi.yaml#/components/schemas/Upstream
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+      x-required-permission: gateway.write
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+    delete:
+      tags:
+        - upstreams
+      operationId: deleteUpstream
+      security:
+        - cookieAuth: []
+          csrfToken: []
+        - bearerApiToken: []
+      description: |
+        Deletes the upstream and its targets. 409 while services of the environment use its name as `host`; the
+        problem `detail` lists those services.
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+      x-required-permission: gateway.write
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+      - $ref: ./control-plane.openapi.yaml#/components/parameters/UpstreamId
+  /workspaces/{workspaceId}/upstreams/{upstreamId}/targets:
+    get:
+      tags:
+        - upstreams
+      operationId: listTargets
+      parameters:
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/Limit
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/Cursor
+      responses:
+        "200":
+          description: Targets of the upstream
+          content:
+            application/json:
+              schema:
+                $ref: ./control-plane.openapi.yaml#/components/schemas/TargetPage
+        "404":
+          $ref: "#/components/responses/NotFound"
+      x-required-permission: workspace.read
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+    post:
+      tags:
+        - upstreams
+      operationId: createTarget
+      security:
+        - cookieAuth: []
+          csrfToken: []
+        - bearerApiToken: []
+      description: 409 when the same `target` already exists in this upstream; 422 on `target` with a port outside 1..65535 or a host that is a forbidden destination (see the description of this API).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ./control-plane.openapi.yaml#/components/schemas/TargetWrite
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: ./control-plane.openapi.yaml#/components/schemas/Target
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+      x-required-permission: gateway.write
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+      - $ref: ./control-plane.openapi.yaml#/components/parameters/UpstreamId
+  /workspaces/{workspaceId}/upstreams/{upstreamId}/targets/{targetId}:
+    put:
+      tags:
+        - upstreams
+      operationId: replaceTarget
+      security:
+        - cookieAuth: []
+          csrfToken: []
+        - bearerApiToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ./control-plane.openapi.yaml#/components/schemas/TargetWrite
+      responses:
+        "200":
+          description: Replaced
+          content:
+            application/json:
+              schema:
+                $ref: ./control-plane.openapi.yaml#/components/schemas/Target
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+      x-required-permission: gateway.write
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+    delete:
+      tags:
+        - upstreams
+      operationId: deleteTarget
+      security:
+        - cookieAuth: []
+          csrfToken: []
+        - bearerApiToken: []
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+      x-required-permission: gateway.write
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+      - $ref: ./control-plane.openapi.yaml#/components/parameters/UpstreamId
+      - $ref: ./control-plane.openapi.yaml#/components/parameters/TargetId
+  /workspaces/{workspaceId}/certificates:
+    get:
+      tags:
+        - certificates
+      operationId: listCertificates
+      parameters:
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/Limit
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/Cursor
+      responses:
+        "200":
+          description: Certificates; `key` is always "REDACTED"
+          content:
+            application/json:
+              schema:
+                $ref: ./control-plane.openapi.yaml#/components/schemas/CertificatePage
+        "404":
+          $ref: "#/components/responses/NotFound"
+      x-required-permission: workspace.read
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+    post:
+      tags:
+        - certificates
+      operationId: createCertificate
+      security:
+        - cookieAuth: []
+          csrfToken: []
+        - bearerApiToken: []
+      description: |
+        A TLS certificate with its private key and the server names (SNIs) it answers. `cert` may be a PEM chain, leaf
+        first then intermediates; the whole chain is served. The key is checked against the leaf, and `subject`,
+        `issuer`, `notBefore`, `notAfter` and `fingerprintSha256` describe the leaf. The key is write-only: it is
+        stored encrypted and reads back as "REDACTED". 422 with `path`: `cert` when it is not a PEM certificate chain or
+        its leaf has expired; `key` when it is not a PEM private key, does not match the leaf, or is "REDACTED" here;
+        `snis.<i>` when a name is repeated in the request, already belongs to another certificate of the environment,
+        or has a wildcard anywhere but as the `*.` prefix.
+        Expiry is judged only when `cert` is created or replaced: publishing, rolling back and editing only the `snis`
+        of a certificate that has since expired keep working.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ./control-plane.openapi.yaml#/components/schemas/CertificateWrite
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: ./control-plane.openapi.yaml#/components/schemas/Certificate
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+      x-required-permission: gateway.write
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+  /workspaces/{workspaceId}/certificates/{certificateId}:
+    get:
+      tags:
+        - certificates
+      operationId: getCertificate
+      responses:
+        "200":
+          description: Certificate; `key` is always "REDACTED"
+          content:
+            application/json:
+              schema:
+                $ref: ./control-plane.openapi.yaml#/components/schemas/Certificate
+        "404":
+          $ref: "#/components/responses/NotFound"
+      x-required-permission: workspace.read
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+    put:
+      tags:
+        - certificates
+      operationId: replaceCertificate
+      security:
+        - cookieAuth: []
+          csrfToken: []
+        - bearerApiToken: []
+      description: |
+        `key: "REDACTED"` keeps the stored key, which must then still match the leaf of the new `cert` (422 on `key`
+        otherwise). Same 422 rules as the creation; an unchanged `cert` is not judged on expiry.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ./control-plane.openapi.yaml#/components/schemas/CertificateWrite
+      responses:
+        "200":
+          description: Replaced
+          content:
+            application/json:
+              schema:
+                $ref: ./control-plane.openapi.yaml#/components/schemas/Certificate
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+      x-required-permission: gateway.write
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+    delete:
+      tags:
+        - certificates
+      operationId: deleteCertificate
+      security:
+        - cookieAuth: []
+          csrfToken: []
+        - bearerApiToken: []
+      description: Deletes the certificate and its SNIs.
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+      x-required-permission: gateway.write
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+      - $ref: ./control-plane.openapi.yaml#/components/parameters/CertificateId
+  /workspaces/{workspaceId}/plugins:
+    get:
+      tags:
+        - plugins
+      operationId: listPlugins
+      parameters:
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/Limit
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/Cursor
+        - name: serviceId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: routeId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: consumerId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: global
+          in: query
+          description: Only plugins with no scope
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: Plugins
+          content:
+            application/json:
+              schema:
+                $ref: ./control-plane.openapi.yaml#/components/schemas/PluginPage
+        "404":
+          $ref: "#/components/responses/NotFound"
+      x-required-permission: workspace.read
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+        - GW-WS-03
+        - GW-WS-16
+        - GW-PLG-02
+        - GW-PLG-05
+    post:
+      tags:
+        - plugins
+      operationId: createPlugin
+      security:
+        - cookieAuth: []
+          csrfToken: []
+        - bearerApiToken: []
+      description: "`config` is validated against the plugin schema of the Kong version pinned by the platform."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkspacePluginWrite"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: ./control-plane.openapi.yaml#/components/schemas/Plugin
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+      x-required-permission: gateway.write
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+        - GW-WS-03
+        - GW-WS-16
+        - GW-PLG-02
+        - GW-PLG-05
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+  /workspaces/{workspaceId}/plugins/{pluginId}:
+    get:
+      tags:
+        - plugins
+      operationId: getPlugin
+      responses:
+        "200":
+          description: Plugin
+          content:
+            application/json:
+              schema:
+                $ref: ./control-plane.openapi.yaml#/components/schemas/Plugin
+        "404":
+          $ref: "#/components/responses/NotFound"
+      x-required-permission: workspace.read
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+        - GW-WS-03
+        - GW-WS-16
+        - GW-PLG-02
+        - GW-PLG-05
+    put:
+      tags:
+        - plugins
+      operationId: replacePlugin
+      security:
+        - cookieAuth: []
+          csrfToken: []
+        - bearerApiToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkspacePluginWrite"
+      responses:
+        "200":
+          description: Replaced
+          content:
+            application/json:
+              schema:
+                $ref: ./control-plane.openapi.yaml#/components/schemas/Plugin
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+      x-required-permission: gateway.write
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+        - GW-WS-03
+        - GW-WS-16
+        - GW-PLG-02
+        - GW-PLG-05
+    delete:
+      tags:
+        - plugins
+      operationId: deletePlugin
+      security:
+        - cookieAuth: []
+          csrfToken: []
+        - bearerApiToken: []
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+      x-required-permission: gateway.write
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-02
+        - GW-WS-03
+        - GW-WS-16
+        - GW-PLG-02
+        - GW-PLG-05
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+      - $ref: ./control-plane.openapi.yaml#/components/parameters/PluginId
+  /workspaces/{workspaceId}/publish-preview:
+    get:
+      tags:
+        - snapshots
+      operationId: previewPublish
+      description: Compiles the draft and diffs it against the current snapshot. 422 lists compile issues.
+      responses:
+        "200":
+          description: What a publish would change
+          content:
+            application/json:
+              schema:
+                $ref: ./control-plane.openapi.yaml#/components/schemas/PublishPreview
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+      x-required-permission: workspace.read
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-PUB-01
+        - GW-PUB-02
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+  /workspaces/{workspaceId}/analytics/summary:
+    get:
+      tags:
+        - analytics
+      operationId: getAnalyticsSummary
+      description: |
+        Traffic of the environment as seen by its gateways, from the `requests` table fed by the observability
+        pipeline (7 days of retention). Totals for the period plus one point per `interval`; a bucket with no
+        traffic is present with zero requests and null latencies. Latencies are total request time in ms.
+      parameters:
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/AnalyticsFrom
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/AnalyticsTo
+        - name: interval
+          in: query
+          schema:
+            type: string
+            enum:
+              - 1m
+              - 5m
+              - 15m
+              - 1h
+              - 1d
+            default: 5m
+          description: Bucket size; the period may hold at most 2000 buckets.
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/RouteFilter
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/ServiceFilter
+      responses:
+        "200":
+          description: Summary
+          content:
+            application/json:
+              schema:
+                $ref: ./control-plane.openapi.yaml#/components/schemas/AnalyticsSummary
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "502":
+          $ref: ./control-plane.openapi.yaml#/components/responses/AnalyticsUnavailable
+      x-required-permission: workspace.read
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-12
+        - GW-WS-16b
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+  /workspaces/{workspaceId}/analytics/top-routes:
+    get:
+      tags:
+        - analytics
+      operationId: getTopRoutes
+      description: |
+        The routes with the most traffic, the most errors or the slowest p95 over the period, from the same
+        `requests` table as the summary (same 7-day limit). Traffic that matched no route is one row with null
+        `routeId` and `serviceId`. Ordered by the chosen criterion descending, ties by `requests` descending then
+        `routeId`.
+      parameters:
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/AnalyticsFrom
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/AnalyticsTo
+        - name: by
+          in: query
+          schema:
+            type: string
+            enum:
+              - requests
+              - errors
+              - p95
+            default: requests
+          description: |
+            `requests`: request count; `errors`: 4xx plus 5xx responses; `p95`: p95 of the total latency (routes
+            without latency data come last).
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 10
+      responses:
+        "200":
+          description: Top routes
+          content:
+            application/json:
+              schema:
+                $ref: ./control-plane.openapi.yaml#/components/schemas/TopRoutes
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "502":
+          $ref: ./control-plane.openapi.yaml#/components/responses/AnalyticsUnavailable
+      x-required-permission: workspace.read
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-12
+        - GW-WS-16b
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+  /workspaces/{workspaceId}/requests:
+    get:
+      tags:
+        - analytics
+      operationId: listRequests
+      description: |
+        Request explorer over the same `requests` table, newest first. Credentials never reach the table (the
+        pipeline strips them), so a record carries no header or query values: only the path. `clientIp` is
+        masked for every role but admin.
+      parameters:
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/AnalyticsFrom
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/AnalyticsTo
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/Limit
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/Cursor
+        - name: status
+          in: query
+          schema:
+            type: integer
+            minimum: 100
+            maximum: 599
+          description: Exact status code; mutually exclusive with `statusClass`.
+        - name: statusClass
+          in: query
+          schema:
+            type: string
+            enum:
+              - 2xx
+              - 3xx
+              - 4xx
+              - 5xx
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/RouteFilter
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/ServiceFilter
+        - name: consumerId
+          in: query
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Requests, newest first
+          content:
+            application/json:
+              schema:
+                $ref: ./control-plane.openapi.yaml#/components/schemas/RequestPage
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "502":
+          $ref: ./control-plane.openapi.yaml#/components/responses/AnalyticsUnavailable
+      x-required-permission: workspace.read
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-WS-12
+        - GW-WS-16b
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+  /clusters:
+    get:
+      tags:
+        - deployments
+      operationId: listClusters
+      x-required-permission: instance.read
+      x-scope: instance
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-ENV-01
+      responses:
+        "200":
+          description: Clusters of the instance
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - items
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: ./control-plane.openapi.yaml#/components/schemas/Cluster
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags:
+        - deployments
+      operationId: createCluster
+      x-required-permission: platform.admin
+      x-scope: instance
+      x-gromesh-planned: true
+      x-gromesh-requirements:
+        - GW-ENV-01
+      description: Every cluster of the instance receives the instance's current deployment (all Workspaces). Session + CSRF.
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - name
+              properties:
+                name:
+                  $ref: ./control-plane.openapi.yaml#/components/schemas/Name
+      responses:
+        "201":
+          description: Created (the registration token is shown once)
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+components:
+  securitySchemes:
+    cookieAuth: { type: apiKey, in: cookie, name: gromesh_session }
+    bearerApiToken: { type: http, scheme: bearer, description: "ggt_ API token" }
+    m2mAssertion: { type: http, scheme: bearer, description: Short-lived access token from /m2m/token }
+    csrfToken: { type: apiKey, in: header, name: X-CSRF-Token, description: Session-bound token from GET /auth/csrf (current contract) }
+  parameters:
+    WorkspaceId: { name: workspaceId, in: path, required: true, schema: { type: string, format: uuid } }
+    PromotionId: { name: promotionId, in: path, required: true, schema: { type: string, format: uuid } }
+    Version: { name: version, in: path, required: true, schema: { type: integer, minimum: 1 } }
+    ClusterId: { name: clusterId, in: path, required: true, schema: { type: string, format: uuid } }
+    Cursor: { name: cursor, in: query, schema: { type: string } }
+    Limit: { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+  responses:
+    NotFound: { description: Not found or invisible, content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
+    Forbidden: { description: Forbidden, content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
+    Unauthorized: { description: Unauthorized, content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
+    Conflict: { description: Conflict, content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
+    ValidationError: { description: Validation error, content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
+  schemas:
+    WorkspaceServiceWrite:
+      type: object
+      required:
+        - name
+        - protocol
+        - host
+        - port
+      properties:
+        name:
+          $ref: ./control-plane.openapi.yaml#/components/schemas/Name
+        protocol:
+          type: string
+          enum:
+            - http
+            - https
+            - grpc
+            - grpcs
+            - tcp
+            - tls
+        host:
+          type: string
+          description: An upstream's name balances across its targets; any other host is resolved by DNS. 422 at `host` for a forbidden destination (see the description of this API).
+          not:
+            pattern: (^|\.)gromesh\.internal\.?$
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        path:
+          type:
+            - string
+            - "null"
+          pattern: ^/
+        retries:
+          type: integer
+          minimum: 0
+          maximum: 32767
+        connectTimeoutMs:
+          type: integer
+          minimum: 1
+        readTimeoutMs:
+          type: integer
+          minimum: 1
+        writeTimeoutMs:
+          type: integer
+          minimum: 1
+        enabled:
+          type: boolean
+          default: true
+        tags:
+          $ref: ./control-plane.openapi.yaml#/components/schemas/Tags
+        upstreamId:
+          type:
+            - string
+            - "null"
+          format: uuid
+      additionalProperties: false
+      description: ServiceWrite of v1 scoped to a Workspace (revision C-27). host refuses the reserved .gromesh.internal suffix and the forbidden destinations (422 at `host`); upstreamId points to an upstream of the SAME Workspace (composite foreign key).
+    WorkspaceRouteWrite:
+      type: object
+      required:
+        - name
+        - serviceId
+        - paths
+      description: "RouteWrite of v1 scoped to a Workspace (revision C-27, decision D1). paths is required: the compiler prefixes every path with /<slug> (a regex path becomes ~/<slug>(?:<regex>)). By default the FULL path, prefix included, reaches the upstream (GET /tvro/recarga -> upstream /tvro/recarga); stripPath true is an explicit choice with Kong's semantics. serviceId must be a service of the same Workspace."
+      properties:
+        name:
+          $ref: ./control-plane.openapi.yaml#/components/schemas/Name
+        serviceId:
+          type: string
+          format: uuid
+        protocols:
+          type: array
+          items:
+            type: string
+            enum:
+              - http
+              - https
+              - grpc
+              - grpcs
+          default:
+            - http
+            - https
+        methods:
+          type: array
+          items:
+            type: string
+        hosts:
+          type: array
+          items:
+            type: string
+        paths:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            pattern: ^(/|~/)
+            maxLength: 1024
+        headers:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+        stripPath:
+          type: boolean
+          default: false
+        preserveHost:
+          type: boolean
+          default: false
+        analyticsRetentionDays:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+          maximum: 7
+          description: |
+            How long this route's request analytics are kept, in days. Null or omitted uses the 7-day default;
+            retention can never exceed 7 days. Responses and exports return `null` when unset (never the default).
+            Applies only to rows written after the next publication, without changing retention for existing rows.
+            Does not change path masking. The value reaches the data plane inside the compiled gateway
+            configuration (compiler-internal); no other contract changes.
+        tags:
+          $ref: ./control-plane.openapi.yaml#/components/schemas/Tags
+      additionalProperties: false
+    WorkspaceRoute:
+      allOf:
+        - $ref: ./control-plane.openapi.yaml#/components/schemas/Route
+        - type: object
+          required:
+            - pathCompatibility
+          properties:
+            pathCompatibility:
+              enum:
+                - legacy-preserved
+                - workspace-default
+              readOnly: true
+              description: "legacy-preserved: a route migrated from an environment keeps its strip_path until convertRoutePathCompatibility"
+    WorkspaceRoutePage:
+      type: object
+      required:
+        - items
+        - nextCursor
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkspaceRoute"
+        nextCursor:
+          type:
+            - string
+            - "null"
+    WorkspacePluginWrite:
+      type: object
+      required:
+        - name
+        - config
+        - scope
+      properties:
+        name:
+          type: string
+          minLength: 1
+          not:
+            pattern: ^gromesh-
+        enabled:
+          type: boolean
+          default: true
+        scope:
+          type: object
+          additionalProperties: false
+          minProperties: 1
+          properties:
+            serviceId:
+              type: string
+              format: uuid
+            routeId:
+              type: string
+              format: uuid
+            consumerId:
+              type: string
+              format: uuid
+        config:
+          type: object
+        protocols:
+          type: array
+          items:
+            type: string
+        tags:
+          $ref: ./control-plane.openapi.yaml#/components/schemas/Tags
+      additionalProperties: false
+      description: "PluginWrite of v1 scoped to a Workspace. The scope names at least one service, route or consumer of the same Workspace: a Workspace-wide plugin is createWorkspaceGlobalPlugin (L9). Names gromesh-* are reserved; privileged capabilities (pre/post-function, file-log, *_by_lua, ambient cloud credentials) are platform-only (403, B §3.4)."
+    Problem:
+      type: object
+      properties: { type: { type: string }, title: { type: string }, status: { type: integer }, detail: { type: string }, errors: { type: array, items: { type: object, properties: { path: { type: string }, message: { type: string } } } } }
+    Digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+    Stage: { enum: [ dev, hml, prd ] }
+    Instance:
+      type: object
+      required: [ id, stage, signingKeyIds ]
+      properties: { id: { type: string, format: uuid }, stage: { $ref: "#/components/schemas/Stage" }, name: { type: string }, signingKeyIds: { type: array, items: { type: string } } }
+    WorkspaceWrite:
+      type: object
+      required: [ name ]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+        description: { type: string }
+        slug: { type: string, pattern: "^[a-z][a-z0-9-]{1,39}$", description: "Optional; derived from the name when absent (lowercase, no accents, spaces to hyphens). Reserved slugs rejected." }
+    Workspace:
+      allOf:
+        - $ref: "#/components/schemas/WorkspaceWrite"
+        - type: object
+          required: [ id, key, slug, status ]
+          properties:
+            id: { type: string, format: uuid }
+            key: { type: string, format: uuid, description: Logical identity shared by the same workspace across instances. }
+            status: { enum: [ active, archived ] }
+            activeRelease: { type: [ integer, "null" ] }
+            provisionedByPromotion: { type: [ string, "null" ], format: uuid }
+    WorkspacePage:
+      type: object
+      required: [ items, nextCursor ]
+      properties: { items: { type: array, items: { $ref: "#/components/schemas/Workspace" } }, nextCursor: { type: [ string, "null" ] } }
+    WorkspaceRequestStatus:
+      enum: [ pending, approved, rejected, cancelled ]
+      x-gromesh-transitions:
+        initial: [ pending ]
+        terminal: [ approved, rejected, cancelled ]
+        transitions:
+          - [ pending, approved, "someone with workspace.create approves: workspace created" ]
+          - [ pending, rejected, "rejected" ]
+          - [ pending, cancelled, "the requester cancels" ]
+    WorkspaceRequest:
+      type: object
+      required: [ id, status ]
+      properties: { id: { type: string, format: uuid }, name: { type: string }, status: { $ref: "#/components/schemas/WorkspaceRequestStatus" }, requestedBy: { type: string }, decidedBy: { type: [ string, "null" ] } }
+    WorkspaceVariable:
+      type: object
+      required: [ name, type, secret, required, hasValue ]
+      properties: { name: { type: string, pattern: "^[A-Z][A-Z0-9_]{0,63}$" }, type: { enum: [ string, host, port, url, certificate, privateKey, credential ] }, secret: { type: boolean }, required: { type: boolean }, hasValue: { type: boolean }, value: { type: [ string, "null" ], description: REDACTED when secret } }
+    RoleBindingWrite:
+      type: object
+      required: [ subjectType, subjectId ]
+      oneOf:
+        - { required: [ role ], not: { required: [ permissions ] } }
+        - { required: [ permissions ], not: { required: [ role ] }, properties: { permissions: { minItems: 1 } } }
+      if: { required: [ expiresAt ], properties: { expiresAt: { type: string } } }
+      then: { required: [ justification ], properties: { justification: { type: string, minLength: 1 } } }
+      allOf:
+        - if: { required: [ permissions ], properties: { permissions: { contains: { const: rollback.emergency } } } }
+          then: { required: [ expiresAt, justification ], properties: { subjectType: { const: user }, expiresAt: { type: string }, justification: { type: string, minLength: 10 } } }
+      description: rollback.emergency is never part of a role; it is granted only directly to a user, with expiresAt (at most 7 days, checked by the service) and justification (rodada 5, F-3). Phases are marked on the parts they deliver (subjectType group L2, effect deny L3, expiresAt L4), with the core exceptions stated there.
+      properties:
+        subjectType:
+          oneOf:
+            - { const: user }
+            - { const: group, x-gromesh-phase: L2 }
+        subjectId: { type: string, format: uuid }
+        role: { type: string, description: "Built-in role name; custom roles are x-gromesh-phase L3 (createRole)." }
+        permissions: { type: array, items: { type: string } }
+        effect:
+          default: allow
+          oneOf:
+            - { const: allow }
+            - const: deny
+              x-gromesh-phase: L3
+              x-gromesh-core-exception: "Read-only deny bindings created by the N1 migration from environment role none; the core API never writes deny (422)."
+        expiresAt:
+          type: [ string, "null" ]
+          format: date-time
+          x-gromesh-phase: L4
+          x-gromesh-core-exception: "Required on a direct user binding holding rollback.emergency (at most 7 days); any other expiresAt answers 422 in the core."
+          x-gromesh-core-profile: { if: { required: [ expiresAt ] }, then: { required: [ permissions ], properties: { permissions: { contains: { const: rollback.emergency } } } } }
+        justification: { type: [ string, "null" ] }
+    RoleBinding:
+      allOf:
+        - $ref: "#/components/schemas/RoleBindingWrite"
+        - type: object
+          required: [ id, scope ]
+          properties: { id: { type: string, format: uuid }, scope: { type: object, properties: { type: { enum: [ instance, workspace ] }, workspaceId: { type: [ string, "null" ], format: uuid } } }, grantedBy: { type: string }, revokedAt: { type: [ string, "null" ], format: date-time } }
+    LoginIdentity:
+      type: object
+      required: [ id, kind, pendingLink ]
+      properties: { id: { type: string, format: uuid }, kind: { enum: [ local, oidc ] }, email: { type: string, format: email }, issuer: { type: [ string, "null" ] }, subject: { type: [ string, "null" ] }, pendingLink: { type: boolean } }
+    Person:
+      type: object
+      required: [ id, displayName, verified ]
+      properties: { id: { type: string, format: uuid }, displayName: { type: string }, verified: { type: boolean }, corporateId: { type: [ string, "null" ] }, verifiedAt: { type: [ string, "null" ], format: date-time } }
+    Group:
+      type: object
+      required: [ id, name ]
+      properties: { id: { type: string, format: uuid }, name: { type: string }, description: { type: string }, source: { enum: [ local, idp ] } }
+    Release:
+      type: object
+      required: [ workspaceId, version, contentDigest, origin, contentOriginVersion, contentFirstActivatedAt, originPromotionId, contentRevoked, createdAt ]
+      allOf:
+        - if: { properties: { origin: { const: promotion } } }
+          then: { properties: { originPromotionId: { type: string } } }
+      description: "A rollback copy inherits originPromotionId from the content it copies: a promotion id for promoted content, null for content published locally (dev) or migrated (R7-3)."
+      properties:
+        workspaceId: { type: string, format: uuid }
+        version: { type: integer }
+        contentDigest: { $ref: "#/components/schemas/Digest" }
+        origin: { enum: [ local, promotion, rollback, tombstone, migration ] }
+        promotionId: { type: [ string, "null" ], format: uuid }
+        rollbackOf: { type: [ integer, "null" ] }
+        contentOriginVersion: { type: integer, description: "First release of this workspace with this contentDigest on this instance; a rollback copy keeps it (G-2)." }
+        contentFirstActivatedAt: { type: [ string, "null" ], format: date-time, description: "From content_activations, recorded when that content first converged here; null = never converged here, which makes it ineligible for an emergency rollback (no fallback to the copy's createdAt)." }
+        originPromotionId: { type: [ string, "null" ], format: uuid, description: "The authorization that first brought this content; null only for origin local or migration (dev and migrated releases), a rollback copy of promoted content carries it." }
+        contentRevoked: { type: boolean, readOnly: true, description: "A ContentRevocation exists for this contentDigest." }
+        message: { type: string }
+        createdBy: { type: object }
+        createdAt: { type: string, format: date-time }
+    DeploymentState:
+      enum: [ composed, rejected, active, converging, converged, degraded, failed, superseded ]
+      x-gromesh-transitions:
+        initial: [ composed ]
+        terminal: [ rejected, superseded ]
+        transitions:
+          - [ composed, rejected, "composition or validator failed (nothing applied; lease released)" ]
+          - [ composed, active, "recorded, expected nodes fixed, agents notified" ]
+          - [ active, converging, "some node has not applied yet" ]
+          - [ active, converged, "every expected node already confirmed the revision" ]
+          - [ converging, converged, "every expected node applied with revision and hash" ]
+          - [ converging, degraded, "node failed (400/413), offline > 45 s or Kong unhealthy" ]
+          - [ degraded, converging, "agent retry or node back" ]
+          - [ degraded, failed, "convergence deadline (lease released)" ]
+          - [ degraded, superseded, "reconciliation (reapply, same content) or rollback creates a new deployment" ]
+          - [ failed, superseded, "reconciliation (reapply, same content) or rollback creates a new deployment" ]
+          - [ converged, superseded, "new deployment" ]
+          - [ converging, superseded, "emergency rollback only (owning promotion -> failed, reason superseded)" ]
+    Deployment:
+      type: object
+      required: [ epoch, revision, state, members, configHash, convergence ]
+      properties:
+        epoch: { type: integer, minimum: 1 }
+        revision: { type: integer }
+        state: { $ref: "#/components/schemas/DeploymentState" }
+        members: { type: array, items: { type: object, required: [ workspaceId, releaseVersion, contentDigest ], properties: { workspaceId: { type: string, format: uuid }, releaseVersion: { type: integer }, contentDigest: { $ref: "#/components/schemas/Digest" } } } }
+        configHash: { $ref: "#/components/schemas/Digest" }
+        convergence: { enum: [ converged, converging, degraded, no-nodes ] }
+        clusters: { type: array, items: { type: object, properties: { id: { type: string, format: uuid }, status: { enum: [ converged, converging, degraded, no-nodes ] }, nodes: { type: array, items: { type: object, properties: { nodeId: { type: string }, state: { enum: [ applying, applied, failed, idle ] }, appliedRevision: { type: [ integer, "null" ] }, online: { type: boolean } } } } } } }
+    PromotionRequest:
+      description: Both kinds name the source release (deployed and converged on the source); partial adds a non-empty selection, whose dependency closure the TARGET recomputes over that release.
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [ kind, releaseVersion ]
+          properties: { kind: { const: full }, releaseVersion: { type: integer, minimum: 1 }, message: { type: string } }
+        - type: object
+          additionalProperties: false
+          x-gromesh-phase: L7
+          description: Individual publication (L7); the core answers 422.
+          required: [ kind, releaseVersion, selection ]
+          properties:
+            kind: { const: partial }
+            releaseVersion: { type: integer, minimum: 1 }
+            selection: { type: array, minItems: 1, items: { type: object, additionalProperties: false, required: [ kind, id, change ], properties: { kind: { enum: [ services, routes, plugins, consumers, upstreams, certificates ] }, id: { type: string, format: uuid }, change: { enum: [ upsert, removed ] } } } }
+            message: { type: string }
+    PromotionStatus:
+      enum: [ received, awaiting-requester-confirmation, awaiting-emergency-execution, emergency-pending-review, emergency-reviewed, validating, blocked, awaiting-approval, approved, rejected, expired, cancelled, executing, deploying, converged, failed, rolled-back ]
+      description: failed is final only when nobody acts (it stays visible until reconciliation or rollback). converged on hml enables the attestation for prd.
+      x-gromesh-transitions:
+        initial: [ received, validating ]
+        terminal: [ converged, rejected, expired, cancelled, rolled-back, emergency-reviewed ]
+        transitions:
+          - [ received, awaiting-requester-confirmation, "diff computed on the target; approvers not notified yet" ]
+          - [ awaiting-requester-confirmation, validating, "requester confirms authenticated on the target (session + CSRF)" ]
+          - [ awaiting-requester-confirmation, awaiting-requester-confirmation, "confirmation refused (requester-mismatch, audited)" ]
+          - [ awaiting-requester-confirmation, expired, "confirmationTtl" ]
+          - [ awaiting-requester-confirmation, cancelled, "cancel" ]
+          - [ validating, blocked, "validation failed" ]
+          - [ validating, awaiting-approval, "validation passed" ]
+          - [ validating, awaiting-emergency-execution, "emergency-rollback validated (no prior approval)" ]
+          - [ blocked, validating, "revalidate after a separate reconciliation" ]
+          - [ blocked, cancelled, "cancel" ]
+          - [ awaiting-approval, awaiting-approval, "approval recorded, approvers missing" ]
+          - [ awaiting-approval, rejected, "an approver rejects" ]
+          - [ awaiting-approval, approved, "minimum of distinct approvers reached" ]
+          - [ awaiting-approval, expired, "request deadline" ]
+          - [ awaiting-approval, validating, "relevant change on the target: approvals invalidated" ]
+          - [ awaiting-approval, awaiting-requester-confirmation, "persons linked, unlinked or merged: confirmation invalidated" ]
+          - [ approved, expired, "approval validity" ]
+          - [ approved, executing, "executor (session, promotion.execute, verified person, separation of duties)" ]
+          - [ approved, cancelled, "cancel" ]
+          - [ awaiting-emergency-execution, executing, "second verified person with rollback.emergency or promotion.execute (or the requester with emergencySelfExecution)" ]
+          - [ awaiting-emergency-execution, expired, "1 h" ]
+          - [ executing, blocked, "pre-execution revalidation failed" ]
+          - [ executing, awaiting-approval, "diff or policy changed: approvals invalidated" ]
+          - [ executing, deploying, "local release and deployment created (idempotent by promotionId)" ]
+          - [ executing, emergency-pending-review, "emergency rollback superseded or failed before deploying" ]
+          - [ deploying, converged, "deployment converged in time (every node confirmed the revision)" ]
+          - [ deploying, failed, "permanent node failure, deadline, or superseded by an emergency rollback" ]
+          - [ deploying, emergency-pending-review, "emergency rollback, any outcome (converged, failed, partial, superseded)" ]
+          - [ failed, rolled-back, "rollback (approved or emergency, its own operation)" ]
+          - [ failed, converged, "authorized reapply (new revision, same content) converges" ]
+          - [ emergency-pending-review, emergency-pending-review, "post-review rejected: alert, stays visible until a new decision" ]
+          - [ emergency-pending-review, emergency-reviewed, "post-review approved by eligible approvers (not the requester; the executor only with executorMayApprove)" ]
+    Promotion:
+      type: object
+      required: [ id, packageId, status, kind, proofUse, contentDigest, workspaceKey, slug ]
+      properties:
+        id: { type: string, format: uuid }
+        packageId: { type: string, format: uuid }
+        direction: { enum: [ incoming, outgoing ] }
+        status: { $ref: "#/components/schemas/PromotionStatus" }
+        kind:
+          oneOf:
+            - { const: full }
+            - { const: partial, x-gromesh-phase: L7 }
+            - { const: rollback }
+            - { const: emergency-rollback }
+        proofUse: { enum: [ new, historical ], description: "Fixed at creation from kind (full/partial → new; rollback, emergency-rollback → historical) and used unchanged at validation, approval, execution and recovery (F-4)." }
+        workspaceKey: { type: string, format: uuid }
+        slug: { type: string }
+        sourceInstanceId: { type: string, format: uuid }
+        contentDigest: { $ref: "#/components/schemas/Digest" }
+        selectionDigest: { oneOf: [ { $ref: "#/components/schemas/Digest" }, { type: "null" } ] }
+        resultDigest: { $ref: "#/components/schemas/Digest" }
+        diffDigest: { $ref: "#/components/schemas/Digest" }
+        valuesDigest: { $ref: "#/components/schemas/Digest" }
+        candidateDigest: { $ref: "#/components/schemas/Digest" }
+        baseRevision: { type: [ integer, "null" ] }
+        provisioning: { type: boolean, description: True when the workspace does not exist in the target yet. }
+        risk: { enum: [ low, medium, high, critical ] }
+        changes: { type: array, items: { $ref: "#/components/schemas/Change" } }
+        includedDependencies: { type: array, items: { type: object, properties: { kind: { type: string }, id: { type: string }, reason: { type: string } } } }
+        effectivePolicy: { $ref: "#/components/schemas/EffectivePolicy" }
+        approvals: { type: array, items: { $ref: "#/components/schemas/Approval" } }
+        validations: { type: array, items: { $ref: "#/components/schemas/ValidationReport" } }
+        execution: { oneOf: [ { $ref: "#/components/schemas/Execution" }, { type: "null" } ] }
+        declaredRequester: { $ref: "#/components/schemas/Identity" }
+        declaredAuthors: { type: array, items: { $ref: "#/components/schemas/Identity" } }
+        requester: { oneOf: [ { $ref: "#/components/schemas/ConfirmedRequester" }, { type: "null" } ], description: Set by the TARGET on requester-confirmation; null before. }
+    Change:
+      type: object
+      required: [ kind, id, change, risk ]
+      properties: { kind: { type: string }, id: { type: string }, label: { type: string }, change: { enum: [ added, modified, removed ] }, risk: { enum: [ low, medium, high, critical ] }, before: { type: [ object, "null" ] }, after: { type: [ object, "null" ] } }
+    EffectivePolicy:
+      type: object
+      required: [ version, minApprovals, authorMayApprove, executorMayApprove, emergencySelfExecution ]
+      description: Resolved values, the most restrictive of the sources (booleans that relax independence are true only when every source allows it; emergencySelfExecution comes only from the instance). The execution records this version in the audit.
+      properties: { version: { type: integer }, minApprovals: { type: integer, minimum: 1 }, eligibleRoles: { type: array, items: { type: string } }, requiredRoles: { type: array, items: { type: string } }, approvalValidityHours: { type: integer }, authorMayApprove: { type: boolean }, executorMayApprove: { type: boolean }, emergencySelfExecution: { type: boolean }, emergencyMaxReleaseAgeDays: { type: integer, minimum: 1 }, sources: { type: array, items: { oneOf: [ { const: instance }, { const: workspace }, { const: risk, x-gromesh-phase: L6 } ] } } }
+    ApprovalWrite:
+      type: object
+      additionalProperties: false
+      required: [ decision, contentDigest, diffDigest, baseRevision, policyVersion, valuesDigest, candidateDigest ]
+      properties: { decision: { enum: [ approve, reject ] }, contentDigest: { $ref: "#/components/schemas/Digest" }, diffDigest: { $ref: "#/components/schemas/Digest" }, baseRevision: { type: [ integer, "null" ] }, policyVersion: { type: integer }, valuesDigest: { $ref: "#/components/schemas/Digest" }, candidateDigest: { $ref: "#/components/schemas/Digest" }, comment: { type: string } }
+    ApprovalState:
+      enum: [ recorded, invalidated, expired, consumed ]
+      x-gromesh-transitions:
+        initial: [ recorded ]
+        terminal: [ invalidated, expired, consumed ]
+        transitions:
+          - [ recorded, invalidated, "diffDigest, policyVersion, valuesDigest, candidateDigest, contentDigest or baseRevision changed" ]
+          - [ recorded, expired, "validity" ]
+          - [ recorded, consumed, "used by the execution (never reused by another promotion)" ]
+    Approval:
+      description: Response shape (not composed with ApprovalWrite, which forbids extra properties).
+      type: object
+      required: [ id, state, approver, at, decision, contentDigest, diffDigest, baseRevision, policyVersion, valuesDigest, candidateDigest ]
+      properties: { id: { type: string, format: uuid }, approver: { type: object, required: [ userId, personId ], properties: { userId: { type: string, format: uuid }, personId: { type: string, format: uuid }, displayName: { type: string } } }, at: { type: string, format: date-time }, decision: { enum: [ approve, reject ] }, contentDigest: { $ref: "#/components/schemas/Digest" }, diffDigest: { $ref: "#/components/schemas/Digest" }, baseRevision: { type: [ integer, "null" ] }, policyVersion: { type: integer }, valuesDigest: { $ref: "#/components/schemas/Digest" }, candidateDigest: { $ref: "#/components/schemas/Digest" }, comment: { type: string }, invalidatedAt: { type: [ string, "null" ], format: date-time }, invalidatedReason: { type: [ string, "null" ] } }
+    ValidationReport:
+      type: object
+      required: [ id, kind, result, checks, at ]
+      properties:
+        state: { $ref: "#/components/schemas/ApprovalState" }
+        id: { type: string, format: uuid }
+        kind: { enum: [ pre-approval, pre-execution ] }
+        result: { enum: [ passed, blocked ] }
+        checks: { type: array, items: { type: object, required: [ name, result ], properties: { name: { enum: [ authentication, provenance, replay, stage-chain, attestation, requester, base-revision, target-integrity, dependencies, conflicts, network-destinations, compile, convergence, values, policy ] }, result: { enum: [ passed, blocked, warning ] }, detail: { type: string } } } }
+        targetDeploymentRevision: { type: integer }
+        at: { type: string, format: date-time }
+    Execution:
+      type: object
+      required: [ promotionId, result ]
+      properties: { promotionId: { type: string, format: uuid }, result: { enum: [ deploying, converged, failed, rolled-back ] }, releaseVersion: { type: integer }, deploymentRevision: { type: integer }, executedBy: { type: object }, startedAt: { type: string, format: date-time }, finishedAt: { type: [ string, "null" ], format: date-time } }
+    WorkspaceStateSummary:
+      type: object
+      required: [ workspaceKey, activeRelease, deploymentRevision, convergence ]
+      properties: { workspaceKey: { type: string, format: uuid }, activeRelease: { type: [ object, "null" ], properties: { version: { type: integer }, contentDigest: { $ref: "#/components/schemas/Digest" } } }, deploymentRevision: { type: integer }, convergence: { enum: [ converged, converging, degraded, no-nodes ] } }
+    SignedPackage:
+      type: object
+      required: [ protected, payload, signature ]
+      description: |
+        Flattened JWS JSON serialization (RFC 7515) with ATTACHED payload; protected header {alg: EdDSA, kid, typ:
+        gromesh-package+json, pkgVersion: 1}. payload = base64url(UTF-8 bytes of the RFC 8785 (JCS) canonical JSON of
+        PackagePayload). The verifier checks the signature over the received bytes before parsing and rejects
+        duplicated keys. Byte-level test vectors are part of the contract PR.
+      properties: { protected: { type: string }, payload: { type: string }, signature: { type: string } }
+    PackagePayload:
+      type: object
+      required: [ packageId, sourceInstanceId, sourceStage, targetStage, workspaceKey, slug, kind, sourceReleaseVersion, createdAt, expiresAt, nonce, content, contentDigest, requestedBy, authors ]
+      allOf:
+        - if: { properties: { targetStage: { const: prd } } }
+          then: { required: [ attestations ], properties: { sourceStage: { const: hml }, attestations: { minItems: 1, maxItems: 1 } } }
+        - if: { properties: { targetStage: { const: hml } } }
+          then: { properties: { sourceStage: { const: dev } } }
+        - if: { properties: { kind: { const: partial } } }
+          then: { required: [ selection, selectionDigest ], properties: { selection: { minItems: 1 } } }
+      properties:
+        packageId: { type: string, format: uuid }
+        sourceInstanceId: { type: string, format: uuid }
+        sourceStage: { $ref: "#/components/schemas/Stage" }
+        targetStage: { $ref: "#/components/schemas/Stage" }
+        workspaceKey: { type: string, format: uuid }
+        slug: { type: string }
+        kind:
+          oneOf:
+            - { const: full }
+            - { const: partial, x-gromesh-phase: L7 }
+        baseRevision: { type: [ integer, "null" ] }
+        sourceReleaseVersion: { type: integer, minimum: 1 }
+        selection: { type: array, items: { type: object, additionalProperties: false, required: [ kind, id, change ], properties: { kind: { type: string }, id: { type: string, format: uuid }, change: { enum: [ upsert, removed ] } } } }
+        selectionDigest: { $ref: "#/components/schemas/Digest" }
+        content:
+          type: object
+          description: FULL source release in the Gromesh model (also for partial); secrets replaced by variable references.
+          additionalProperties: false
+          required: [ services, routes, consumers, credentials, plugins, upstreams, targets, certificates, variables ]
+          properties:
+            services: { type: array, items: { $ref: "#/components/schemas/PackageEntity" } }
+            routes: { type: array, items: { $ref: "#/components/schemas/PackageEntity" } }
+            consumers: { type: array, items: { $ref: "#/components/schemas/PackageEntity" } }
+            credentials: { type: array, maxItems: 0, description: "Always empty: consumer credentials are environment values (H-6 a); the target fills them locally." }
+            plugins: { type: array, items: { $ref: "#/components/schemas/PackageEntity" } }
+            upstreams: { type: array, items: { $ref: "#/components/schemas/PackageEntity" } }
+            targets: { type: array, items: { $ref: "#/components/schemas/PackageEntity" } }
+            certificates: { type: array, items: { $ref: "#/components/schemas/PackageEntity" } }
+            variables: { type: array, items: { type: object, additionalProperties: false, required: [ name, type, secret, required ], properties: { name: { type: string, pattern: "^[A-Z][A-Z0-9_]{0,63}$" }, type: { enum: [ string, host, port, url, certificate, privateKey, credential ] }, secret: { type: boolean }, required: { type: boolean }, validation: { type: object } } } }
+        contentDigest: { $ref: "#/components/schemas/Digest" }
+        attestations: { type: array, maxItems: 1, items: { $ref: "#/components/schemas/Attestation" }, description: "To prd exactly one, covering THIS package's contentDigest (hml's converged release). prd executes only when its own recomputed resultDigest equals contentDigest (B §4.2, E-5); no choice among attestations." }
+        requestedBy: { $ref: "#/components/schemas/Identity" }
+        authors: { type: array, items: { $ref: "#/components/schemas/Identity" }, description: Declarative; the target never decides who may approve from this list alone. }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        nonce: { type: string }
+    Attestation:
+      type: object
+      description: |
+        Issued by hml for a release of the workspace that converged there. contentDigest is the digest of THAT hml
+        release (the result in hml, not the package hml received). jws = flattened JWS (EdDSA, hml key) whose payload
+        is the JCS canonical JSON of every other field of this object (issuer, workspaceKey, contentDigest,
+        deploymentRevision, clusters with nodes and applied revisions, promotionId, authorsDigest, convergedAt); the
+        verifier checks the jws and that its payload equals those fields. In a package to prd it must cover the
+        package's contentDigest, which must equal prd's recomputed resultDigest, checked at validation and again at
+        execution. prd stores it with the release it proved (releases.attestation_id); a rollback to that release
+        presents it again while the hml key is not revoked.
+      required: [ issuerInstanceId, issuerStage, workspaceKey, contentDigest, deploymentRevision, clusters, promotionId, authorsDigest, convergedAt, jws ]
+      properties: { issuerInstanceId: { type: string, format: uuid }, issuerStage: { const: hml }, workspaceKey: { type: string, format: uuid }, contentDigest: { $ref: "#/components/schemas/Digest" }, deploymentRevision: { type: integer }, clusters: { type: array, minItems: 1, items: { type: object, required: [ clusterId, nodes ], properties: { clusterId: { type: string, format: uuid }, nodes: { type: array, minItems: 1, items: { type: object, required: [ nodeId, appliedRevision ], properties: { nodeId: { type: string }, appliedRevision: { type: integer } } } } } } }, promotionId: { type: string, format: uuid }, authorsDigest: { $ref: "#/components/schemas/Digest" }, convergedAt: { type: string, format: date-time }, jws: { type: string } }
+    Identity:
+      description: Login identity as known by the instance that declares it. The receiving instance maps it to its own persons; it never decides who may approve from it alone.
+      oneOf:
+        - { type: object, additionalProperties: false, x-gromesh-phase: L5, required: [ kind, issuer, subject ], properties: { kind: { const: oidc }, issuer: { type: string, format: uri }, subject: { type: string, minLength: 1 }, email: { type: string, format: email }, displayName: { type: string } } }
+        - { type: object, additionalProperties: false, required: [ kind, email ], properties: { kind: { const: local }, email: { type: string, format: email }, corporateId: { type: string, minLength: 1, maxLength: 128, description: "Declared by the source (its verified person's corporate id). Audit and mismatch only; the target never trusts it to grant anything." }, displayName: { type: string } } }
+    ConfirmedRequester:
+      type: object
+      required: [ userId, personId, confirmedAt ]
+      properties: { userId: { type: string, format: uuid }, personId: { type: string, format: uuid }, confirmedAt: { type: string, format: date-time } }
+    ApprovalPolicy:
+      type: object
+      additionalProperties: false
+      required: [ minApprovals, eligibleRoles ]
+      properties: { version: { type: integer, readOnly: true }, minApprovals: { type: integer, minimum: 1 }, eligibleRoles: { type: array, minItems: 1, items: { type: string } }, requiredRoles: { type: array, items: { type: string } }, approvalValidityHours: { type: integer, minimum: 1 }, confirmationTtlHours: { type: integer, minimum: 1, default: 24 }, authorMayApprove: { type: boolean }, executorMayApprove: { type: boolean, default: false, description: "The executor is never the confirmed requester; with false (default) it is also none of the approvers. A workspace policy can only turn it off." }, emergencySelfExecution: { type: boolean, default: false, description: "Instance policy only (422 on a workspace policy): the holder of rollback.emergency may execute the emergency rollback without a second person." }, emergencyMaxReleaseAgeDays: { type: integer, minimum: 1, maximum: 365, default: 30 }, riskRules: { x-gromesh-phase: L6, description: "Extra approvals by change risk (L6); the core answers 422.", type: array, items: { type: object, additionalProperties: false, required: [ minRisk, extraApprovals ], properties: { minRisk: { enum: [ medium, high, critical ] }, extraApprovals: { type: integer, minimum: 1 } } } } }
+    RoleWrite:
+      type: object
+      additionalProperties: false
+      required: [ name, permissions ]
+      properties: { name: { type: string, pattern: "^[a-z][a-z0-9-]{1,39}$" }, displayName: { type: string }, permissions: { type: array, minItems: 1, items: { type: string } } }
+    Role:
+      description: Response shape (not composed with RoleWrite, which forbids extra properties).
+      type: object
+      required: [ id, name, permissions, builtin ]
+      properties: { id: { type: string, format: uuid }, name: { type: string }, displayName: { type: string }, permissions: { type: array, items: { type: string } }, builtin: { type: boolean } }
+    ClusterIsolation:
+      type: object
+      required: [ clusterId, pods, pendencies ]
+      properties:
+        clusterId: { type: string, format: uuid }
+        pods:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [ podUid, bootId, podName, nodeName, state, admission, reporting, lastSeq ]
+            properties:
+              podUid: { type: string, format: uuid }
+              bootId: { type: string, format: uuid }
+              podName: { type: string }
+              nodeName: { type: string }
+              admissionId: { type: [ string, "null" ], format: uuid }
+              state: { $ref: "./agent-protocol-v2.openapi.yaml#/components/schemas/PodIsolationState" }
+              admission: { enum: [ requested, refused, open, closed, closed-without-proof ] }
+              reporting: { enum: [ reporting, communication-failure, unconfirmed-isolation, closed ] }
+              kongStopConfirmed: { type: [ boolean, "null" ] }
+              lastSeq: { type: integer, minimum: 0 }
+              lastReportAt: { type: [ string, "null" ], format: date-time }
+              leaseRemainingMs: { type: [ integer, "null" ], minimum: 0, description: "Remaining lease validity measured by the probe in the node's CLOCK_BOOTTIME at report time; never compared across nodes" }
+              lastConclusiveAt: { type: [ string, "null" ], format: date-time }
+              failedCapabilities: { type: array, items: { enum: [ CAP-1, CAP-2, CAP-3, CAP-4, CAP-5, CAP-6, CAP-7, guard-canary ] } }
+        pendencies:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [ id, kind, scope, openedAt, releasable ]
+            properties:
+              id: { type: string, format: uuid }
+              kind: { enum: [ confirmed-violation, communication-failure, unconfirmed-isolation ] }
+              scope: { enum: [ cluster, node ] }
+              nodeName: { type: [ string, "null" ] }
+              podUid: { type: [ string, "null" ], format: uuid }
+              capability: { type: [ string, "null" ] }
+              openedAt: { type: string, format: date-time }
+              releasable: { type: boolean, description: "false for communication-failure" }
+            if: { properties: { kind: { const: communication-failure } } }
+            then: { properties: { releasable: { const: false }, scope: { const: cluster } } }
+            else: { properties: { releasable: { const: true } } }
+    IsolationPendencyLifecycle:
+      description: Lifecycle of a pendency (kind while open, then how it closed). communication-failure is an alert; admissions are held by the challenge rule, not by a timer.
+      enum: [ communication-failure, confirmed-violation, unconfirmed-isolation, closed, released ]
+      x-gromesh-transitions:
+        initial: [ communication-failure, confirmed-violation ]
+        terminal: [ closed, released ]
+        transitions:
+          - [ communication-failure, closed, "the same chain resumes without violation (chain-resumed)" ]
+          - [ communication-failure, confirmed-violation, "the chain resumes with a violation (superseded)" ]
+          - [ communication-failure, unconfirmed-isolation, "10 min without the chain (superseded)" ]
+          - [ unconfirmed-isolation, closed, "the complete chain still arrives (chain-resumed)" ]
+          - [ unconfirmed-isolation, released, "releaseIsolationContainment (platform admin, audited)" ]
+          - [ confirmed-violation, released, "releaseIsolationContainment (platform admin, audited)" ]
+    RoutePathDiff:
+      type: object
+      required: [ routeId, pathCompatibility, diffDigest, paths ]
+      properties:
+        routeId: { type: string, format: uuid }
+        pathCompatibility: { enum: [ legacy-preserved, workspace-default ] }
+        diffDigest: { $ref: "#/components/schemas/Digest" }
+        paths: { type: array, items: { type: object, required: [ publicPath, upstreamBefore, upstreamAfter ], properties: { publicPath: { type: string }, upstreamBefore: { type: string }, upstreamAfter: { type: string } } } }
+    ContentRevocation:
+      type: object
+      required: [ workspaceId, contentDigest, reason, revokedAt, revokedBy ]
+      properties: { workspaceId: { type: string, format: uuid }, contentDigest: { $ref: "#/components/schemas/Digest" }, reason: { type: string }, revokedAt: { type: string, format: date-time }, revokedBy: { type: object } }
+    AuthenticationProfile:
+      description: |
+        Effective authentication of one route, computed by the compiler on the composed configuration (B §3.1) and
+        returned in the publication preview and the promotion diff. The core accepts only the first alternative.
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [ composition, mechanisms ]
+          properties:
+            composition: { const: single }
+            mechanisms: { type: array, maxItems: 1, items: { type: object, required: [ plugin, scope ], properties: { plugin: { enum: [ key-auth, basic-auth, jwt, hmac-auth ] }, scope: { enum: [ route, service, workspace, platform ] }, anonymous: { type: boolean } } } }
+        - type: object
+          x-gromesh-phase: L10
+          description: "AND/OR chains and authenticators without a consumer (ldap-auth with a verified directory identity, session); the core answers 422 and blocks the composition."
+          required: [ composition, mechanisms ]
+          properties:
+            composition: { enum: [ and, or ] }
+            mechanisms: { type: array, minItems: 1, items: { type: object, required: [ plugin, scope ], properties: { plugin: { enum: [ key-auth, basic-auth, jwt, hmac-auth, ldap-auth, session ] }, scope: { enum: [ route, service, workspace, platform ] }, anonymous: { type: boolean }, directoryIdentity: { type: [ string, "null" ], description: "ldap-auth: identity of the directory from its verified TLS certificate and RootDSE naming context, never the configured hostname (G-3)." } } } }
+    PackageEntity:
+      type: object
+      required: [ id, name ]
+      description: |
+        One entity of the versioned content: the body of the current contract's write schema for its kind
+        (ServiceWrite, RouteWrite, ConsumerWrite, PluginWrite, UpstreamWrite, TargetWrite, CertificateWrite, after the
+        W0 changes listed in D-contratos.md) plus id. References are ids inside the same content (upstreamId,
+        serviceId, consumerId, ...). A field on the parametrizable allowlist may hold {"$var": "NAME"} instead of a
+        literal. The target re-validates every entity with those schemas (422 with path) before computing the diff.
+      properties: { id: { type: string, format: uuid }, name: { type: string, minLength: 1 } }
+    Peer:
+      type: object
+      required: [ id, stage, role, transport ]
+      properties: { id: { type: string, format: uuid }, stage: { $ref: "#/components/schemas/Stage" }, role: { enum: [ source, target ] }, transport: { enum: [ push, pull, file ] }, baseUrl: { type: [ string, "null" ] } }
+    PeerKey:
+      type: object
+      required: [ kid, publicKey, status, validFrom, validUntil, retiredAt, revokedAt ]
+      properties: { kid: { type: string }, publicKey: { type: string, description: "base64url Ed25519 public key" }, status: { enum: [ active, retired, revoked ] }, validFrom: { type: string, format: date-time }, validUntil: { type: string, format: date-time }, retiredAt: { type: [ string, "null" ], format: date-time }, revokedAt: { type: [ string, "null" ], format: date-time } }

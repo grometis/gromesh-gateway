@@ -1,0 +1,57 @@
+{
+  "description": "C-21 byte-level vector: flattened JWS, EdDSA, attached payload = UTF-8 bytes of the RFC 8785 (JCS) form of PackagePayload. TEST-ONLY key derived from a published seed; never trust it.",
+  "testOnlySeedHex": "67726f6d6573682d6e302d746573742d766563746f722d6f6e6c792d30303031",
+  "publicKeyJwk": {
+    "kty": "OKP",
+    "crv": "Ed25519",
+    "x": "qFPbuUeOXaT3FvUjNrP7rtqRiOjDE27k6YbEjrW1mFg"
+  },
+  "protectedHeader": {
+    "alg": "EdDSA",
+    "kid": "dev-2026-10",
+    "typ": "gromesh-package+json",
+    "pkgVersion": 1
+  },
+  "payload": {
+    "packageId": "00000000-0000-4000-8000-000000000001",
+    "sourceInstanceId": "00000000-0000-4000-8000-000000000002",
+    "sourceStage": "dev",
+    "targetStage": "hml",
+    "workspaceKey": "00000000-0000-4000-8000-000000000003",
+    "slug": "tvro",
+    "kind": "full",
+    "baseRevision": null,
+    "sourceReleaseVersion": 4,
+    "createdAt": "2026-10-24T12:00:00Z",
+    "expiresAt": "2026-10-25T12:00:00Z",
+    "nonce": "Ação-ñ-✓",
+    "content": {
+      "services": [],
+      "routes": [],
+      "consumers": [],
+      "credentials": [],
+      "plugins": [],
+      "upstreams": [],
+      "targets": [],
+      "certificates": [],
+      "variables": []
+    },
+    "contentDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "requestedBy": {
+      "kind": "local",
+      "email": "dev@example.com"
+    },
+    "authors": [
+      {
+        "kind": "local",
+        "email": "dev@example.com"
+      }
+    ]
+  },
+  "canonicalPayload": "{\"authors\":[{\"email\":\"dev@example.com\",\"kind\":\"local\"}],\"baseRevision\":null,\"content\":{\"certificates\":[],\"consumers\":[],\"credentials\":[],\"plugins\":[],\"routes\":[],\"services\":[],\"targets\":[],\"upstreams\":[],\"variables\":[]},\"contentDigest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"createdAt\":\"2026-10-24T12:00:00Z\",\"expiresAt\":\"2026-10-25T12:00:00Z\",\"kind\":\"full\",\"nonce\":\"Ação-ñ-✓\",\"packageId\":\"00000000-0000-4000-8000-000000000001\",\"requestedBy\":{\"email\":\"dev@example.com\",\"kind\":\"local\"},\"slug\":\"tvro\",\"sourceInstanceId\":\"00000000-0000-4000-8000-000000000002\",\"sourceReleaseVersion\":4,\"sourceStage\":\"dev\",\"targetStage\":\"hml\",\"workspaceKey\":\"00000000-0000-4000-8000-000000000003\"}",
+  "signedPackage": {
+    "protected": "eyJhbGciOiJFZERTQSIsImtpZCI6ImRldi0yMDI2LTEwIiwicGtnVmVyc2lvbiI6MSwidHlwIjoiZ3JvbWVzaC1wYWNrYWdlK2pzb24ifQ",
+    "payload": "eyJhdXRob3JzIjpbeyJlbWFpbCI6ImRldkBleGFtcGxlLmNvbSIsImtpbmQiOiJsb2NhbCJ9XSwiYmFzZVJldmlzaW9uIjpudWxsLCJjb250ZW50Ijp7ImNlcnRpZmljYXRlcyI6W10sImNvbnN1bWVycyI6W10sImNyZWRlbnRpYWxzIjpbXSwicGx1Z2lucyI6W10sInJvdXRlcyI6W10sInNlcnZpY2VzIjpbXSwidGFyZ2V0cyI6W10sInVwc3RyZWFtcyI6W10sInZhcmlhYmxlcyI6W119LCJjb250ZW50RGlnZXN0Ijoic2hhMjU2OmFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWEiLCJjcmVhdGVkQXQiOiIyMDI2LTEwLTI0VDEyOjAwOjAwWiIsImV4cGlyZXNBdCI6IjIwMjYtMTAtMjVUMTI6MDA6MDBaIiwia2luZCI6ImZ1bGwiLCJub25jZSI6IkHDp8Ojby3DsS3inJMiLCJwYWNrYWdlSWQiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDEiLCJyZXF1ZXN0ZWRCeSI6eyJlbWFpbCI6ImRldkBleGFtcGxlLmNvbSIsImtpbmQiOiJsb2NhbCJ9LCJzbHVnIjoidHZybyIsInNvdXJjZUluc3RhbmNlSWQiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDIiLCJzb3VyY2VSZWxlYXNlVmVyc2lvbiI6NCwic291cmNlU3RhZ2UiOiJkZXYiLCJ0YXJnZXRTdGFnZSI6ImhtbCIsIndvcmtzcGFjZUtleSI6IjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMyJ9",
+    "signature": "mIvfJKGY_J5hvruvhOQ2cDTG-jjCi8_N94naq__lFBt98VMwEA1H3FtfU1B5RIAbu3j5YJHbqQcXlostMr4WAw"
+  }
+}

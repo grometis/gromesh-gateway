@@ -1,0 +1,107 @@
+{
+  "schemaVersion": 2,
+  "instanceId": "00000000-0000-4000-8000-0000000000a1",
+  "epoch": 2,
+  "revision": 7,
+  "hash": "sha256:69c1eb7fdd08fa3ba3c2e0c732a0abb5786bd2be662f1fdc2ddec8a9e72cae13",
+  "createdAt": "2026-01-01T00:00:00.000Z",
+  "reason": "promotion",
+  "members": [
+    {
+      "workspaceId": "00000000-0000-4000-8000-0000000000b1",
+      "slug": "tvro",
+      "releaseVersion": 4,
+      "contentDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  ],
+  "mandatoryPluginsVersion": 1,
+  "valuesDigest": null,
+  "config": {
+    "_format_version": "3.0",
+    "_transform": true,
+    "services": [
+      {
+        "id": "6a1f3c2e-0b7d-4c1a-9f10-000000000001",
+        "name": "echo",
+        "protocol": "http",
+        "host": "echo",
+        "port": 80,
+        "path": "/",
+        "tags": [
+          "managed-by:gromesh",
+          "team:platform"
+        ]
+      }
+    ],
+    "routes": [
+      {
+        "id": "6a1f3c2e-0b7d-4c1a-9f10-000000000002",
+        "name": "echo-public",
+        "service": "6a1f3c2e-0b7d-4c1a-9f10-000000000001",
+        "protocols": [
+          "http",
+          "https"
+        ],
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/echo"
+        ],
+        "strip_path": true,
+        "tags": [
+          "managed-by:gromesh"
+        ]
+      }
+    ],
+    "consumers": [
+      {
+        "id": "6a1f3c2e-0b7d-4c1a-9f10-000000000003",
+        "username": "demo-app",
+        "tags": [
+          "managed-by:gromesh"
+        ]
+      }
+    ],
+    "keyauth_credentials": [
+      {
+        "id": "6a1f3c2e-0b7d-4c1a-9f10-000000000004",
+        "consumer": "6a1f3c2e-0b7d-4c1a-9f10-000000000003",
+        "key": "demo-key-123",
+        "tags": [
+          "managed-by:gromesh"
+        ]
+      }
+    ],
+    "plugins": [
+      {
+        "id": "6a1f3c2e-0b7d-4c1a-9f10-000000000005",
+        "name": "key-auth",
+        "enabled": true,
+        "route": "6a1f3c2e-0b7d-4c1a-9f10-000000000002",
+        "config": {
+          "key_names": [
+            "apikey"
+          ]
+        },
+        "tags": [
+          "managed-by:gromesh"
+        ]
+      },
+      {
+        "id": "6a1f3c2e-0b7d-4c1a-9f10-000000000006",
+        "name": "rate-limiting",
+        "enabled": true,
+        "service": "6a1f3c2e-0b7d-4c1a-9f10-000000000001",
+        "config": {
+          "minute": 60,
+          "policy": "local"
+        },
+        "tags": [
+          "managed-by:gromesh"
+        ]
+      }
+    ]
+  }
+}

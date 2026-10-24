@@ -1,0 +1,394 @@
+openapi: 3.1.0
+info:
+  title: Gromesh Gateway — Agent protocol v2 (Workspaces, planned)
+  version: 0.2.0-planned
+  description: |
+    PLANNED. Every operation carries x-gromesh-planned: true and has no handler; the running agent speaks
+    agent-protocol.openapi.yaml (v1). Registration (POST /agent/v1/register) and the node token are unchanged.
+
+    Deployments (snapshot-v2.schema.json):
+      - The control plane serves the instance's current deployment. A 304 still carries X-Gromesh-Epoch and
+        X-Gromesh-Revision, and the agent confirms the revision it applied even when the hash did not change, so a
+        rollback or a reapply of identical content converges.
+      - The agent never applies a lower revision inside an epoch, accepts the first revision of a newer epoch even if
+        its volume holds a higher revision, and refuses an older epoch (409 from the control plane on report).
+      - A permanent failure (Kong 400/413) is marked per (epoch, revision, hash); a new revision clears the mark.
+
+    Fail-closed isolation (Workspaces mode). Pod layout: agent, isolation-probe and collector are native sidecars
+    (Kubernetes >= 1.33, or an earlier minor with recorded N2 evidence); kong is the only main container. Rules:
+      - Lease: written by the isolation-probe only (IsolationLease), read by the route guard, the kong container's
+        supervisor (PID 1) and Kong's liveness. Validity is measured in the node's CLOCK_BOOTTIME and bound to the
+        node boot id; the wall clock never decides validity; any doubt (clock unreadable, other boot id, non-zero
+        time namespace offset, inconsistent fields) makes it invalid. Probe every 15 s, round <= 3 s, lease 33 s.
+      - Admission: the agent asks for an admission of (podUid, bootId) carrying the probe's public key. The control
+        plane records the request, issues a new cluster challenge, and grants (records, then signs) only when no
+        blocking pendency is open in scope and every other open admission of the cluster has answered that
+        challenge with a contiguous chain without violation. No timeout grants: after 45 s the request is refused
+        and the agent asks again. The probe ignores an admission for another pod, boot or cluster.
+      - Reports: one per probe round, signed by the probe key bound to the admission, numbered without gaps, carrying
+        the latest challenge the probe received. The agent only transports them in order; the control plane acks the
+        highest contiguous seq after commit. A gap is kept until filled; the same seq with different content opens a
+        confirmed-violation.
+      - Closing: an admission stops counting only after a final report with kongStopConfirmed (sent by the probe
+        after the kong container exited, which native sidecar ordering guarantees before the sidecars are
+        signalled) or a node-reboot report of the previous boot. Otherwise it stays open and holds every new
+        admission of the cluster until its chain arrives or a platform admin releases it.
+      - Containment never waits for the agent or the control plane. Budgets (B §3.5.3 of W0, proven in N2):
+        detection <= 18 s, 503 <= 19 s, Kong stopped <= 20 s by the supervisor or <= 24 s by the liveness (effective
+        kubelet grace 2 s), NotReady <= 20 s; during pod deletion the liveness is suspended by the kubelet, the
+        supervisor drains for at most 18 s after receiving the signal (Kong stopped <= 20 s after the kubelet
+        observes the deletion) and the independent ceiling is the pod grace (30 s); a kubelet, runtime or node
+        failure with a stuck supervisor has no time bound.
+servers:
+  - url: http://localhost:3000
+tags:
+  - name: agent
+security:
+  - nodeToken: []
+paths:
+  /agent/v2/deployments/current:
+    get:
+      tags: [agent]
+      operationId: getCurrentDeployment
+      x-gromesh-planned: true
+      x-gromesh-requirements: [GW-DEP-02, GW-DEP-05, GW-DEP-09]
+      summary: Current deployment of the node's instance
+      parameters:
+        - name: If-None-Match
+          in: header
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: Current deployment
+          headers:
+            X-Gromesh-Epoch: { schema: { type: integer } }
+            X-Gromesh-Revision: { schema: { type: integer } }
+            ETag: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "./snapshot-v2.schema.json" }
+        "304":
+          description: Same hash; the revision may still be newer and must be confirmed
+          headers:
+            X-Gromesh-Epoch: { schema: { type: integer } }
+            X-Gromesh-Revision: { schema: { type: integer } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: No deployment yet }
+  /agent/v2/status:
+    post:
+      tags: [agent]
+      operationId: reportNodeStatus
+      x-gromesh-planned: true
+      x-gromesh-requirements: [GW-DEP-02, GW-DEP-03, GW-DEP-05, GW-WS-16b]
+      summary: Applied (epoch, revision, hash), failures and health
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StatusReport" }
+      responses:
+        "204": { description: Recorded }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { description: Epoch older than the instance's current epoch }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /agent/v2/isolation/admission-requests:
+    post:
+      tags: [agent]
+      operationId: requestIsolationAdmission
+      x-gromesh-planned: true
+      x-gromesh-requirements: [GW-WS-16a]
+      summary: Ask for the admission of this pod in this boot
+      description: |
+        Recorded before any decision, with a new cluster challenge that the agents of every open admission hand to
+        their probes. Poll the request until it is granted or refused; refused requests are retried with a new call.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdmissionRequest" }
+      responses:
+        "202":
+          description: Recorded; decision pending
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdmissionRequestStatus" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { description: An admission for this podUid and bootId already exists }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /agent/v2/isolation/admission-requests/{requestId}:
+    get:
+      tags: [agent]
+      operationId: getIsolationAdmissionRequest
+      x-gromesh-planned: true
+      x-gromesh-requirements: [GW-WS-16a]
+      parameters:
+        - { name: requestId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Decision (pending, granted with the signed admission, or refused with the reason)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdmissionRequestStatus" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: Unknown request for this cluster }
+  /agent/v2/isolation/challenge:
+    get:
+      tags: [agent]
+      operationId: getIsolationChallenge
+      x-gromesh-planned: true
+      x-gromesh-requirements: [GW-WS-16a]
+      summary: Latest admission challenge of the node's cluster, to hand to the probe
+      responses:
+        "200":
+          description: Current challenge (null when no admission is pending)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [challenge]
+                properties:
+                  challenge: { type: [string, "null"], pattern: "^[A-Za-z0-9_-]{22,64}$" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /agent/v2/isolation/reports:
+    post:
+      tags: [agent]
+      operationId: submitIsolationReports
+      x-gromesh-planned: true
+      x-gromesh-requirements: [GW-WS-16a]
+      summary: Signed probe reports, in order; the control plane acks the highest contiguous seq after commit
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reports]
+              properties:
+                reports: { type: array, minItems: 1, maxItems: 500, items: { $ref: "#/components/schemas/SignedProbeReport" } }
+      responses:
+        "200":
+          description: Acks per admission; rejected reports listed with the reason (bad signature, unknown admission, other podUid or bootId)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReportAcks" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /agent/v2/isolation/releases:
+    get:
+      tags: [agent]
+      operationId: listIsolationReleases
+      x-gromesh-planned: true
+      x-gromesh-requirements: [GW-WS-16a]
+      summary: Signed releases for pendencies that affect this cluster, to hand to the probes
+      responses:
+        "200":
+          description: Releases not expired
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Jws" } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+components:
+  securitySchemes:
+    nodeToken:
+      type: http
+      scheme: bearer
+      description: Node token issued by POST /agent/v1/register (unchanged).
+  responses:
+    Unauthorized:
+      description: Missing or invalid node token
+      content:
+        application/problem+json:
+          schema: { $ref: "./agent-protocol.openapi.yaml#/components/schemas/Problem" }
+    ValidationError:
+      description: Body does not match the contract
+      content:
+        application/problem+json:
+          schema: { $ref: "./agent-protocol.openapi.yaml#/components/schemas/Problem" }
+  schemas:
+    Digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+    Jws:
+      type: object
+      description: JWS JSON flattened serialization with attached payload (alg EdDSA). Verified over the received bytes.
+      additionalProperties: false
+      required: [protected, payload, signature]
+      properties:
+        protected: { type: string, pattern: "^[A-Za-z0-9_-]+$" }
+        payload: { type: string, pattern: "^[A-Za-z0-9_-]+$" }
+        signature: { type: string, pattern: "^[A-Za-z0-9_-]+$" }
+    StatusReport:
+      type: object
+      additionalProperties: false
+      required: [nodeId, epoch, appliedRevision, appliedHash, kongHealthy]
+      properties:
+        nodeId: { type: string, minLength: 1, maxLength: 253 }
+        epoch: { type: integer, minimum: 1 }
+        appliedRevision: { type: [integer, "null"], minimum: 1 }
+        appliedHash: { oneOf: [{ $ref: "#/components/schemas/Digest" }, { type: "null" }] }
+        failedRevision: { type: [integer, "null"], minimum: 1 }
+        failedHash: { oneOf: [{ $ref: "#/components/schemas/Digest" }, { type: "null" }] }
+        failureStatus: { type: [integer, "null"], description: "Kong's HTTP status for a permanent failure (400/413)" }
+        kongHealthy: { type: boolean }
+        analytics: { enum: [analytics-healthy, analytics-degraded], description: "Collector health; never affects convergence, containment or readiness" }
+        isolationState: { $ref: "#/components/schemas/PodIsolationState" }
+    PodIsolationState:
+      description: State of the pod as decided by its isolation-probe, without agent or control plane.
+      enum: [awaiting-admission, verifying, ok, inconclusive, kong-unavailable, guard-missing, no-proof, violation]
+      x-gromesh-transitions:
+        initial: [awaiting-admission]
+        terminal: []
+        transitions:
+          - [awaiting-admission, verifying, "admission for this podUid and bootId + conclusive pass: lease issued, nginx started"]
+          - [verifying, ok, "canary passes for the applied revision (Ready)"]
+          - [verifying, kong-unavailable, "canary without connection"]
+          - [ok, kong-unavailable, "Kong down; lease still valid; NotReady"]
+          - [kong-unavailable, verifying, "Kong answers"]
+          - [ok, verifying, "new config applied (NotReady until the canary passes)"]
+          - [verifying, guard-missing, "canary without guard, wrong nonce, or 404 for more than 60 s"]
+          - [ok, guard-missing, "canary without guard"]
+          - [guard-missing, verifying, "backoff elapsed: new lease, new start"]
+          - [ok, inconclusive, "inconclusive round"]
+          - [inconclusive, ok, "conclusive pass"]
+          - [inconclusive, no-proof, "5 min without a conclusive result"]
+          - [ok, no-proof, "lease expired or invalid (probe stopped, queue full, clock or boot id inconsistent)"]
+          - [no-proof, verifying, "two consecutive conclusive passes"]
+          - [ok, violation, "capability violated"]
+          - [verifying, violation, "capability violated"]
+          - [inconclusive, violation, "capability violated"]
+          - [no-proof, violation, "capability violated"]
+          - [kong-unavailable, violation, "capability violated"]
+          - [violation, violation, "pass without release"]
+          - [violation, verifying, "valid signed release + conclusive pass"]
+    AdmissionRequest:
+      type: object
+      additionalProperties: false
+      required: [podUid, podName, nodeName, bootId, probePublicKey]
+      properties:
+        podUid: { type: string, format: uuid }
+        podName: { type: string, minLength: 1, maxLength: 253 }
+        nodeName: { type: string, minLength: 1, maxLength: 253 }
+        bootId: { type: string, format: uuid, description: "/proc/sys/kernel/random/boot_id of the node" }
+        probePublicKey: { type: string, pattern: "^[A-Za-z0-9_-]{43}$", description: "Ed25519 public key of the probe, base64url (32 bytes)" }
+    AdmissionRequestStatus:
+      type: object
+      additionalProperties: false
+      required: [requestId, outcome, challenge]
+      properties:
+        requestId: { type: string, format: uuid }
+        outcome: { $ref: "#/components/schemas/AdmissionOutcome" }
+        challenge: { type: string, pattern: "^[A-Za-z0-9_-]{22,64}$" }
+        admission: { $ref: "#/components/schemas/Jws", description: "Present only when granted; payload is AdmissionClaims" }
+        reason: { enum: [pendency-open, chain-not-answered, timeout], description: "Present only when refused" }
+      allOf:
+        - if: { properties: { outcome: { const: granted } } }
+          then: { required: [admission], not: { required: [reason] } }
+        - if: { properties: { outcome: { const: refused } } }
+          then: { required: [reason], not: { required: [admission] } }
+        - if: { properties: { outcome: { const: pending } } }
+          then: { not: { anyOf: [{ required: [admission] }, { required: [reason] }] } }
+    AdmissionOutcome:
+      enum: [pending, granted, refused]
+      x-gromesh-transitions:
+        initial: [pending]
+        terminal: [granted, refused]
+        transitions:
+          - [pending, granted, "no blocking pendency in scope and every other open admission answered the challenge without violation"]
+          - [pending, refused, "pendency open, or condition not met in 45 s (never granted by a timeout)"]
+    AdmissionClaims:
+      type: object
+      description: Payload of the admission JWS, signed with the instance key. Recorded before signing.
+      additionalProperties: false
+      required: [clusterId, podUid, nodeName, bootId, admissionId, probePublicKey, startDeadline]
+      properties:
+        clusterId: { type: string, format: uuid }
+        podUid: { type: string, format: uuid }
+        nodeName: { type: string }
+        bootId: { type: string, format: uuid }
+        admissionId: { type: string, format: uuid }
+        probePublicKey: { type: string, pattern: "^[A-Za-z0-9_-]{43}$" }
+        startDeadline: { type: string, format: date-time, description: "First lease must be issued before it (5 min); checked by the control plane's clock only" }
+    AdmissionState:
+      description: Lifecycle of an admission in the control plane.
+      enum: [open, closed, closed-without-proof]
+      x-gromesh-transitions:
+        initial: [open]
+        terminal: [closed, closed-without-proof]
+        transitions:
+          - [open, closed, "final report with kongStopConfirmed and complete chain, or node-reboot report of the previous boot"]
+          - [open, closed-without-proof, "releaseIsolationContainment of the unconfirmed-isolation pendency (audited)"]
+    ProbeReport:
+      type: object
+      description: Payload of a probe report JWS, signed with the probe key bound to the admission.
+      additionalProperties: false
+      required: [clusterId, podUid, bootId, admissionId, seq, prevDigest, state, failedCapabilities, challenge, final]
+      properties:
+        clusterId: { type: string, format: uuid }
+        podUid: { type: string, format: uuid }
+        bootId: { type: string, format: uuid }
+        admissionId: { type: string, format: uuid }
+        seq: { type: integer, minimum: 1 }
+        prevDigest: { oneOf: [{ $ref: "#/components/schemas/Digest" }, { type: "null" }], description: "Digest of the previous report; null only for seq 1" }
+        state: { $ref: "#/components/schemas/PodIsolationState" }
+        failedCapabilities: { type: array, uniqueItems: true, items: { enum: [CAP-1, CAP-2, CAP-3, CAP-4, CAP-5, CAP-6, CAP-7, guard-canary] } }
+        challenge: { type: [string, "null"], pattern: "^[A-Za-z0-9_-]{22,64}$" }
+        leaseRemainingMs: { type: [integer, "null"], minimum: 0, description: "Measured in the node's CLOCK_BOOTTIME; never compared across nodes" }
+        final: { type: boolean }
+        finalReason: { enum: [pod-terminated, node-reboot] }
+        kongStopConfirmed: { type: boolean }
+      allOf:
+        - if: { properties: { seq: { const: 1 } } }
+          then: { properties: { prevDigest: { type: "null" } } }
+          else: { properties: { prevDigest: { $ref: "#/components/schemas/Digest" } } }
+        - if: { properties: { final: { const: true } } }
+          then: { required: [finalReason, kongStopConfirmed] }
+          else: { not: { anyOf: [{ required: [finalReason] }, { required: [kongStopConfirmed] }] } }
+        - if: { properties: { state: { const: violation } } }
+          then: { properties: { failedCapabilities: { minItems: 1 } } }
+    SignedProbeReport:
+      allOf:
+        - $ref: "#/components/schemas/Jws"
+      description: Jws whose payload is a ProbeReport.
+    ReportAcks:
+      type: object
+      additionalProperties: false
+      required: [acks, rejected]
+      properties:
+        acks: { type: array, items: { type: object, additionalProperties: false, required: [admissionId, ackedSeq], properties: { admissionId: { type: string, format: uuid }, ackedSeq: { type: integer, minimum: 0 } } } }
+        rejected: { type: array, items: { type: object, additionalProperties: false, required: [index, reason], properties: { index: { type: integer, minimum: 0 }, reason: { enum: [bad-signature, unknown-admission, other-pod, other-boot, integrity-conflict] } } } }
+    IsolationReleaseClaims:
+      type: object
+      description: Payload of a release JWS, signed with the instance key; it never replaces a pod's own proof.
+      additionalProperties: false
+      required: [clusterId, pendencyId, kind, expiresAt]
+      properties:
+        clusterId: { type: string, format: uuid }
+        pendencyId: { type: string, format: uuid }
+        kind: { enum: [confirmed-violation, unconfirmed-isolation] }
+        expiresAt: { type: string, format: date-time, description: "15 min; checked by the control plane's clock" }
+    IsolationLease:
+      type: object
+      description: |
+        Local file /gromesh/isolation/lease.json, written only by the isolation-probe, read-only for the kong
+        container (guard, supervisor, liveness). Not an HTTP body. Valid only when podUid matches the pod, bootId
+        matches the reader's node, state is ok or inconclusive, issuedBoottimeNs <= now(CLOCK_BOOTTIME) <
+        expiresBoottimeNs, expiresBoottimeNs - issuedBoottimeNs = 33 s, and the reader's time namespace offsets are
+        zero. issuedAt (wall clock) is for display and audit only.
+      additionalProperties: false
+      required: [state, podUid, bootId, admissionId, issuedBoottimeNs, expiresBoottimeNs, nonce, capabilities, issuedAt]
+      properties:
+        state: { enum: [ok, inconclusive, violation, no-proof, guard-missing] }
+        podUid: { type: string, format: uuid }
+        bootId: { type: string, format: uuid }
+        admissionId: { type: string, format: uuid }
+        issuedBoottimeNs: { type: integer, minimum: 0 }
+        expiresBoottimeNs: { type: integer, minimum: 0 }
+        nonce: { type: string, pattern: "^[A-Za-z0-9_-]{22,64}$" }
+        capabilities: { type: array, uniqueItems: true, items: { enum: [CAP-1, CAP-2, CAP-3, CAP-4, CAP-5, CAP-6, CAP-7] } }
+        issuedAt: { type: string, format: date-time }

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gromesh.dev/contracts/snapshot-v2.schema.json",
+  "title": "Gromesh Gateway deployment snapshot (Workspaces, planned)",
+  "description": "PLANNED (x-gromesh-planned): not produced by the current control plane, which still serves snapshot.schema.json. One deployment of an instance composes the active release of every Workspace plus the mandatory platform plugins and the frozen environment values. The agent treats `config` as opaque and confirms the (epoch, revision) it applied, even when the hash is unchanged, so a rollback to identical content converges. An agent accepts the first revision of a newer epoch even if the revision persisted on its volume is higher, and refuses an older epoch.",
+  "x-gromesh-planned": true,
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "instanceId", "epoch", "revision", "hash", "createdAt", "members", "config"],
+  "properties": {
+    "schemaVersion": { "const": 2 },
+    "instanceId": { "type": "string", "format": "uuid" },
+    "epoch": { "type": "integer", "minimum": 1, "description": "Agent protocol epoch. Changes only on migration; never decreases." },
+    "revision": { "type": "integer", "minimum": 1, "description": "Deployment revision, monotonic inside an epoch. A reconciliation (reapply) creates a new revision with the same members." },
+    "hash": { "$ref": "#/$defs/digest", "description": "Hash of `config` (the compiler's canonical hash)." },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "reason": { "enum": ["publish", "promotion", "rollback", "reconcile", "mandatory-plugins", "values", "migration"] },
+    "members": {
+      "type": "array",
+      "description": "Active release of each Workspace, ordered by workspaceId. Every entity in `config` carries the tag of exactly one member's Workspace, or the platform tag.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["workspaceId", "slug", "releaseVersion", "contentDigest"],
+        "properties": {
+          "workspaceId": { "type": "string", "format": "uuid" },
+          "slug": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$", "maxLength": 40 },
+          "releaseVersion": { "type": "integer", "minimum": 1 },
+          "contentDigest": { "$ref": "#/$defs/digest" }
+        }
+      }
+    },
+    "mandatoryPluginsVersion": { "type": ["integer", "null"], "minimum": 1 },
+    "valuesDigest": { "oneOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] },
+    "config": {
+      "$ref": "./snapshot.schema.json#/$defs/kongConfig",
+      "description": "Opaque to the agent. The compiler guarantees (tested in N2): every Workspace route carries the full path with the Workspace prefix to the upstream unless stripPath is explicitly true; every Workspace route runs gromesh-route-guard; the platform canary route /.gromesh/guard/current exists."
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}
