@@ -166,8 +166,25 @@ async function main() {
     check(!legit.some((path) => ["/forged/no-token", "/forged/wrong-token"].includes(path)), `A forged event without a valid token reached ClickHouse through the proxy (HTTP ${statuses.join("/")})`);
     check((await rows(victim)).length === 0, "A valid token wrote another environment's analytics");
     check(statuses.every((status) => status === 401), `Forged events must be refused with 401, got HTTP ${statuses.join("/")}`);
+    // Migration (G-4): a snapshot compiled before the hotfix has no token header, so its analytics stop at the
+    // collector. The data plane is upgraded only after every environment is republished by the new control plane.
+    const legacy = structuredClone(config);
+    for (const plugin of legacy.plugins) if (plugin.name === "http-log") delete plugin.config.headers;
+    await admin(id, "POST", legacy);
+    const legacyPath = `${base}/ok?legacy=${randomUUID()}`;
+    for (let attempt = 0; ; attempt++) {
+      const response = await request(`${proxy}${legacyPath}`);
+      await response.arrayBuffer();
+      if (response.status === 200) break;
+      check(attempt < 50, "Gateway workers must load the legacy config");
+      await sleep(100);
+    }
+    const before = (await rows(own)).filter((path) => path === `${base}/ok`).length;
+    await sleep(6000);
+    const after = (await rows(own)).filter((path) => path === `${base}/ok`).length;
+    check(after === before, "A snapshot without the token header must not write analytics (republish before upgrading the data plane)");
     console.log(`Collector refused events forged through the proxy (HTTP ${statuses.join("/")}); a valid token could not write ` +
-      "another environment; another cluster's token and the retired token were refused; the gateway's own analytics arrived");
+      "another environment; another cluster's token, the retired token and a pre-hotfix snapshot were refused; the gateway's own analytics arrived");
   } finally {
     await admin(id, "POST", prior);
     await run(["rm", "-f", pinnedName]).catch(() => {});
