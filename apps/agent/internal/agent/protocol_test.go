@@ -55,7 +55,7 @@ func TestConfigFromEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.NodeID != hostname || c.Hostname != hostname || c.KongAdminURL != "http://127.0.0.1:8001" || c.KongStatusURL != "http://127.0.0.1:8100" || c.SnapshotPath != "/kong/declarative/kong.json" {
+	if c.NodeID != hostname || c.Hostname != hostname || c.KongAdminURL != "unix:///kong/admin/admin.sock" || c.KongStatusURL != "unix:///kong/admin/status.sock" || c.SnapshotPath != "/kong/declarative/kong.json" {
 		t.Fatalf("incorrect defaults: %+v", c)
 	}
 	if c.StateDir != "/var/lib/gromesh" {
@@ -79,7 +79,18 @@ func TestConfigFromEnv(t *testing.T) {
 			t.Fatal("invalid control plane URL accepted")
 		}
 	}
+	t.Setenv("GROMESH_CP_URL", "unix:///kong/admin/admin.sock")
+	if _, err := ConfigFromEnv(); err == nil {
+		t.Fatal("control plane accepted on a Unix socket")
+	}
 	t.Setenv("GROMESH_CP_URL", "https://cp.example")
+	for _, value := range []string{"unix://kong/admin.sock", "unix:admin.sock", "unix:///kong/admin.sock?x=1", "file:///kong/admin.sock"} {
+		t.Setenv("KONG_ADMIN_URL", value)
+		if _, err := ConfigFromEnv(); err == nil {
+			t.Fatalf("invalid Kong URL %q accepted", value)
+		}
+	}
+	t.Setenv("KONG_ADMIN_URL", "")
 	t.Setenv("GROMESH_REGISTRATION_TOKEN", "")
 	if _, err := ConfigFromEnv(); err == nil {
 		t.Fatal("missing token accepted")

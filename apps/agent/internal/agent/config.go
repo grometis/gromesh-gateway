@@ -34,8 +34,8 @@ func ConfigFromEnv() (Config, error) {
 	c := Config{
 		ControlPlaneURL: os.Getenv("GROMESH_CP_URL"), RegistrationToken: os.Getenv("GROMESH_REGISTRATION_TOKEN"),
 		NodeID: value("GROMESH_NODE_ID", hostname), Hostname: hostname,
-		KongAdminURL:  value("KONG_ADMIN_URL", "http://127.0.0.1:8001"),
-		KongStatusURL: value("KONG_STATUS_URL", "http://127.0.0.1:8100"),
+		KongAdminURL:  value("KONG_ADMIN_URL", "unix:///kong/admin/admin.sock"),
+		KongStatusURL: value("KONG_STATUS_URL", "unix:///kong/admin/status.sock"),
 		SnapshotPath:  value("SNAPSHOT_PATH", "/kong/declarative/kong.json"),
 		StateDir:      value("GROMESH_STATE_DIR", defaultStateDir),
 	}
@@ -49,13 +49,32 @@ func (c Config) validate() error {
 	if c.NodeID == "" || c.Hostname == "" || c.SnapshotPath == "" {
 		return fmt.Errorf("node ID, hostname and snapshot path are required")
 	}
-	for _, field := range []struct{ name, value string }{
-		{"GROMESH_CP_URL", c.ControlPlaneURL}, {"KONG_ADMIN_URL", c.KongAdminURL}, {"KONG_STATUS_URL", c.KongStatusURL},
+	for _, field := range []struct {
+		name, value string
+		socket      bool
+	}{
+		{"GROMESH_CP_URL", c.ControlPlaneURL, false}, {"KONG_ADMIN_URL", c.KongAdminURL, true}, {"KONG_STATUS_URL", c.KongStatusURL, true},
 	} {
+		if _, ok := unixSocket(field.value); ok && field.socket {
+			continue
+		}
 		u, err := url.Parse(field.value)
 		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			if field.socket {
+				return fmt.Errorf("%s must be unix:///<absolute path> or an HTTP(S) URL without credentials, query or fragment", field.name)
+			}
 			return fmt.Errorf("%s must be an HTTP(S) URL without credentials, query or fragment", field.name)
 		}
 	}
 	return nil
+}
+
+// unixSocket returns the socket path of a unix:///<absolute path> URL. Kong's Admin and status APIs listen
+// only on Unix sockets in the pod (contract: agent-protocol), so no proxied request can reach them.
+func unixSocket(raw string) (string, bool) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "unix" || u.Host != "" || !strings.HasPrefix(u.Path, "/") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return "", false
+	}
+	return u.Path, true
 }

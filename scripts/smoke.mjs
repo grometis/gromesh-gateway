@@ -2,10 +2,12 @@
 // Smoke test against a real Kong: applies contracts/examples/snapshot.example.json via POST /config
 // and checks routing, key-auth and rate-limiting. Requires `pnpm dev:up`. No dependencies (Node >= 22).
 import { readFileSync } from "node:fs";
+import { request } from "node:http";
 
-const ADMIN = process.env.KONG_ADMIN_URL ?? "http://127.0.0.1:8001";
+// Kong's Admin and status APIs listen only on Unix sockets (contract: agent-protocol); fetch cannot dial them.
+const ADMIN = process.env.KONG_ADMIN_URL ?? "unix:///kong/admin/admin.sock";
 const PROXY = process.env.KONG_PROXY_URL ?? "http://127.0.0.1:8000";
-const STATUS = process.env.KONG_STATUS_URL ?? "http://127.0.0.1:8100";
+const STATUS = process.env.KONG_STATUS_URL ?? "unix:///kong/admin/status.sock";
 const envelope = JSON.parse(readFileSync(new URL("../contracts/examples/snapshot.example.json", import.meta.url), "utf8"));
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -15,27 +17,34 @@ const check = (name, ok, detail = "") => {
   if (!ok) failures++;
 };
 
-async function waitFor(url, label, tries = 60) {
+function kong(socket, path, body) {
+  return new Promise((resolve, reject) => {
+    const req = request({ socketPath: new URL(socket).pathname, path, method: body ? "POST" : "GET",
+      headers: body ? { "content-type": "application/json" } : {} }, (res) => {
+      let text = "";
+      res.setEncoding("utf8").on("data", (chunk) => { text += chunk; }).on("end", () => resolve({ status: res.statusCode, text }));
+    });
+    req.on("error", reject).end(body);
+  });
+}
+
+async function waitFor(socket, path, label, tries = 60) {
   for (let i = 0; i < tries; i++) {
     try {
-      const res = await fetch(url);
-      if (res.ok) return;
+      if ((await kong(socket, path)).status === 200) return;
     } catch {}
     await sleep(1000);
   }
-  throw new Error(`${label} not reachable at ${url}`);
+  throw new Error(`${label} not reachable at ${socket}`);
 }
 
-await waitFor(`${STATUS}/status`, "Kong status API");
-const info = await (await fetch(ADMIN)).json();
+await waitFor(STATUS, "/status", "Kong status API");
+const info = JSON.parse((await kong(ADMIN, "/")).text);
 check("Kong runs in DB-less mode", info.configuration?.database === "off", `version ${info.version}`);
+check("Kong has no TCP Admin API listener", info.configuration?.admin_listen?.join() === "off");
 
-const apply = await fetch(`${ADMIN}/config`, {
-  method: "POST",
-  headers: { "content-type": "application/json" },
-  body: JSON.stringify(envelope.config),
-});
-check("POST /config accepted the compiled snapshot", apply.status === 201, `HTTP ${apply.status}${apply.ok ? "" : " " + (await apply.text())}`);
+const apply = await kong(ADMIN, "/config", JSON.stringify(envelope.config));
+check("POST /config accepted the compiled snapshot", apply.status === 201, `HTTP ${apply.status}${apply.status === 201 ? "" : " " + apply.text}`);
 
 // Config is applied asynchronously across workers; wait until the route answers.
 let noKey;

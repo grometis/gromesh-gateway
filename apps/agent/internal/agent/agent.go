@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"net"
 	"net/http"
+	"net/url"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -46,6 +48,27 @@ func New(config Config, logger *slog.Logger) (*Agent, error) {
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.ResponseHeaderTimeout = 10 * time.Second
+	// A unix:// Kong URL is requested at a reserved placeholder host that is only ever dialed at its socket.
+	sockets := map[string]string{}
+	for host, u := range map[string]*string{"kong-admin.invalid": &config.KongAdminURL, "kong-status.invalid": &config.KongStatusURL} {
+		if path, ok := unixSocket(*u); ok {
+			sockets[host] = path
+			*u = "http://" + host
+		}
+	}
+	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if host, _, err := net.SplitHostPort(addr); err == nil && sockets[host] != "" {
+			return dialer.DialContext(ctx, "unix", sockets[host])
+		}
+		return dialer.DialContext(ctx, network, addr)
+	}
+	transport.Proxy = func(r *http.Request) (*url.URL, error) {
+		if sockets[r.URL.Hostname()] != "" {
+			return nil, nil
+		}
+		return http.ProxyFromEnvironment(r)
+	}
 	// Never forward bearer tokens (or config credentials) through redirects.
 	httpClient := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	applyTransport := transport.Clone()

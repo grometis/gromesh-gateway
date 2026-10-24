@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -558,5 +559,51 @@ func TestSSEIdleReconnectAndEmptyLastID(t *testing.T) {
 	cp.Emit("id: old\nevent: ping\n\nid:\nevent: ping\n\n")
 	if last := receive(t, cp.EventConnections, nil); last != "" {
 		t.Fatalf("empty event ID did not reset Last-Event-ID: %q", last)
+	}
+}
+
+func TestKongAdminAndStatusOverUnixSockets(t *testing.T) {
+	cp := cpmock.New()
+	t.Cleanup(cp.Close)
+	k := newKong(t)
+	// t.TempDir() can exceed the 104-byte socket path limit on macOS.
+	dir, err := os.MkdirTemp("", "agent-sock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	serve := func(name string) string {
+		path := filepath.Join(dir, name)
+		l, err := net.Listen("unix", path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		server := &http.Server{Handler: k.server.Config.Handler}
+		go server.Serve(l)
+		t.Cleanup(func() { server.Close() })
+		return "unix://" + path
+	}
+	path := filepath.Join(t.TempDir(), "kong.json")
+	a, err := New(Config{
+		ControlPlaneURL: cp.HTTP.URL, RegistrationToken: cpmock.RegistrationToken, NodeID: "node-1", Hostname: "host-1",
+		KongAdminURL: serve("admin.sock"), KongStatusURL: serve("status.sock"), SnapshotPath: path, StateDir: filepath.Join(filepath.Dir(path), "state"),
+	}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.poll, a.heartbeat = 20*time.Millisecond, 25*time.Millisecond
+	k.server.Close() // Nothing may reach Kong over TCP.
+	start(t, a)
+	if r := receive(t, cp.Registrations, nil); r.KongVersion != "3.9.4" {
+		t.Fatalf("Kong version not read through the admin socket: %+v", r)
+	}
+	if idle := waitState(t, cp, "idle", 0); !idle.KongHealthy {
+		t.Fatal("Kong health not read through the status socket")
+	}
+	s := example(t, 1)
+	cp.SetSnapshot(encoded(t, s))
+	waitState(t, cp, "applied", 1)
+	if body := receive(t, k.bodies, nil); !bytes.Equal(body, s.Config) {
+		t.Fatal("config not applied through the admin socket")
 	}
 }

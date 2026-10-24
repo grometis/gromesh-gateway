@@ -4,6 +4,7 @@
 import { execFileSync } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { request as httpRequest } from "node:http";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -34,6 +35,18 @@ async function request(url, options = {}, timeout = 5000) {
   return fetch(url, { ...options, signal: AbortSignal.timeout(timeout) });
 }
 
+// Kong's Admin API listens only on a Unix socket in the kong-admin volume (contract: agent-protocol).
+function admin(path, body) {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest({ socketPath: "/kong/admin/admin.sock", path, method: body ? "POST" : "GET",
+      headers: body ? { "content-type": "application/json" } : {}, timeout: 5000 }, (res) => {
+      let text = "";
+      res.setEncoding("utf8").on("data", (chunk) => { text += chunk; }).on("end", () => resolve({ status: res.statusCode, text }));
+    });
+    req.on("timeout", () => req.destroy(new Error("Admin API timeout"))).on("error", reject).end(body);
+  });
+}
+
 async function inside() {
   const { config, environmentId, clusterId, base, secrets, keys, ids } = JSON.parse(readFileSync(0, "utf8"));
   const sql = async (query, timeout = 5000) => {
@@ -45,14 +58,11 @@ async function inside() {
     check(response.ok, `ClickHouse query failed (HTTP ${response.status})`);
     return response.text();
   };
-  const info = await (await request("http://127.0.0.1:8001/")).json();
+  const info = JSON.parse((await admin("/")).text);
   check(info.configuration?.database === "off", "Kong must be DB-less");
-  check(info.configuration?.admin_listen.every((listener) => listener.startsWith("127.0.0.1:")), "Admin API must remain private");
-  const applied = await request("http://127.0.0.1:8001/config", {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(config),
-  });
+  check(info.configuration?.admin_listen?.join() === "off", "Admin API must have no TCP listener");
+  const applied = await admin("/config", JSON.stringify(config));
   check(applied.status === 201, `Kong rejected platform config (HTTP ${applied.status})`);
-  await applied.arrayBuffer();
 
   // Wait for both workers to observe the declarative config, before timing.
   for (let attempt = 0; ; attempt++) {
