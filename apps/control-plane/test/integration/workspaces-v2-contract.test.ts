@@ -515,6 +515,7 @@ describe("v2 schemas", () => {
     ["/promotions/{promotionId}/post-review/decision", { outcome: "corrective-action", justification: "plantão sem janela", correctiveAction: "INC-42" }, true],
     ["/promotions/{promotionId}/post-review/decision", { outcome: "findings", justification: "plantão sem janela", correctiveAction: "INC-42" }, false],
     ["/promotions/{promotionId}/post-review/decision", { outcome: "approve", justification: "plantão sem janela" }, false],
+    ["/promotions/{promotionId}/post-review/decision", { outcome: "no-findings", justification: "ok" }, false],
   ])("body of %s %j -> %s", (path, value, expected) => {
     expect(bodyOf(path)(value)).toBe(expected);
   });
