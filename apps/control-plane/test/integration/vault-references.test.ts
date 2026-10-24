@@ -56,6 +56,16 @@ describe("vault references in plugin config", () => {
     expect(platform.config.headers).toEqual({ "X-Gromesh-Collector-Token": "{vault://env/gromesh-collector-token}" });
   });
 
+  it("does not publish a reference in another entity either", async () => {
+    const envId = await env();
+    await h.sql.query("insert into services (environment_id, name, protocol, host, port, path) values ($1, 'svc', 'http', 'echo', 80, $2)", [
+      envId, "/{vault://env/gromesh-collector-token}",
+    ]);
+    const res = await h.api("POST", `/environments/${envId}/snapshots`, {});
+    expect(res.status).toBe(422);
+    expect(paths(res.body)).toEqual(["services[0].path"]);
+  });
+
   it("reports them at the document path on import, writing nothing", async () => {
     const envId = await env();
     const document = {

@@ -4,7 +4,7 @@ import type { FieldError } from "./problem.js";
 /**
  * Kong resolves `{vault://...}` in the data plane, where `env` references read the gateway's own environment (the
  * collector token among them). Only platform plugins, compiled by the control plane, may carry references
- * (contract: Vault references).
+ * (contract: Vault references), so no user configuration reaches the data plane with one.
  */
 export function vaultReferenceIssues(value: unknown, path: string): FieldError[] {
   if (typeof value === "string") {
@@ -17,7 +17,12 @@ export function vaultReferenceIssues(value: unknown, path: string): FieldError[]
   return [];
 }
 
-/** The user plugins of a whole state, with the compiler's path style (`plugins[0].config...`). */
+/**
+ * Every user entity of a whole state, with the compiler's path style (`plugins[0].config...`): Kong also resolves
+ * references in fields of other entities (certificate keys, for one).
+ */
 export function stateVaultReferenceIssues(state: GatewayState): FieldError[] {
-  return state.plugins.flatMap((plugin, i) => vaultReferenceIssues(plugin.config ?? {}, `plugins[${i}].config`));
+  return Object.entries(state).flatMap(([kind, list]) =>
+    Array.isArray(list) ? list.flatMap((entity, i) => vaultReferenceIssues(entity, `${kind}[${i}]`)) : [],
+  );
 }

@@ -13,7 +13,9 @@ describe("privileged plugin capabilities", () => {
   it("reserves only the dangerous field of ordinary plugins", () => {
     expect(paths("http-log", { http_endpoint: "http://logs.example.com" })).toEqual([]);
     expect(paths("http-log", { http_endpoint: "http://logs.example.com", custom_fields_by_lua: { a: "return 1" } })).toEqual(["config.custom_fields_by_lua"]);
-    expect(paths("tcp-log", { custom_fields_by_lua: {} })).toEqual(["config.custom_fields_by_lua"]);
+    expect(paths("tcp-log", { custom_fields_by_lua: { a: "return 1" } })).toEqual(["config.custom_fields_by_lua"]);
+    expect(paths("tcp-log", { custom_fields_by_lua: {} })).toEqual([]);
+    expect(paths("tcp-log", { custom_fields_by_lua: null })).toEqual([]);
     expect(paths("rate-limiting", { minute: 5 })).toEqual([]);
   });
 
