@@ -1,0 +1,22 @@
+# Run with GROMESH_ENVIRONMENT_ID=00000000-0000-4000-8000-000000000001 (e2e/key-names.mjs): hotfix F-1.
+tests:
+  - name: environment-pinned-match
+    inputs:
+      - insert_at: decode
+        type: log
+        log_fields:
+          message: "{\"environment_id\": \"00000000-0000-4000-8000-000000000001\", \"started_at\": 1792100000123, \"request\": {\"uri\": \"/ok\", \"method\": \"GET\", \"size\": 100}, \"response\": {\"status\": 200, \"size\": 200}, \"client_ip\": \"127.0.0.1\", \"latencies\": {\"kong\": 1, \"proxy\": 2, \"request\": 3}}"
+    outputs:
+      - extract_from: sanitize
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.environment_id == "00000000-0000-4000-8000-000000000001")
+              assert!(.cluster_id == "00000000-0000-4000-8000-00000000c0c0")
+  - name: environment-pinned-other-environment-dropped
+    no_outputs_from: [sanitize]
+    inputs:
+      - insert_at: decode
+        type: log
+        log_fields:
+          message: "{\"environment_id\": \"11111111-1111-4111-8111-111111111111\", \"started_at\": 1792100000123, \"request\": {\"uri\": \"/forged\", \"method\": \"GET\", \"size\": 100}, \"response\": {\"status\": 200, \"size\": 200}, \"client_ip\": \"127.0.0.1\", \"latencies\": {\"kong\": 1, \"proxy\": 2, \"request\": 3}}"

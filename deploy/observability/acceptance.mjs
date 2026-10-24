@@ -150,8 +150,15 @@ async function inside() {
     response: { status: 201, size: 200, headers: { "Set-Cookie": secrets[7], apikey: secrets[1] } },
     client_ip: "2001:db8::1", latencies: { kong: 1.25, proxy: 2.5, request: 3.75 },
   });
+  const token = process.env.GROMESH_COLLECTOR_TOKEN ?? "";
+  // Hotfix F-1: without this cluster's token the collector refuses the event before parsing it.
+  for (const headers of [{}, { "x-gromesh-collector-token": "wrong" }]) {
+    const refused = await request("http://vector:8080/kong", { method: "POST", headers, body: "[]" }, 5000);
+    check(refused.status === 401, `Vector source must refuse a missing or wrong token (HTTP ${refused.status})`);
+    await refused.arrayBuffer();
+  }
   const ingest = async (body) => {
-    const response = await request("http://vector:8080/kong", { method: "POST", body }, 5000);
+    const response = await request("http://vector:8080/kong", { method: "POST", headers: { "x-gromesh-collector-token": token }, body }, 5000);
     check(response.ok, `Vector source rejected input (HTTP ${response.status})`);
     await response.arrayBuffer();
   };

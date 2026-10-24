@@ -18,6 +18,8 @@ const proxy = process.env.KONG_PROXY_URL ?? "http://127.0.0.1:8000";
 const clickhouse = process.env.CLICKHOUSE_URL ?? "http://127.0.0.1:8123";
 const request = (url, options = {}) => fetch(url, { ...options, signal: AbortSignal.timeout(5000) });
 const check = (ok, message) => assert.ok(ok, message);
+// The compose collector's token (hotfix F-1): the sanitizer cases below post straight to it, like the gateway does.
+const collectorToken = process.env.GROMESH_COLLECTOR_TOKEN ?? "gromesh-dev-collector-token-not-a-secret";
 
 // Execute inside Kong's network namespace (the collector is on the compose network). Never print responses/configs.
 async function insideGateway(endpoint, method, body) {
@@ -27,12 +29,12 @@ async function insideGateway(endpoint, method, body) {
       import { readFileSync } from 'node:fs';
       const body = readFileSync(0, 'utf8');
       const response = await fetch(process.argv[1], {
-        method: process.argv[2], headers: {'content-type': 'application/json'},
+        method: process.argv[2], headers: {'content-type': 'application/json', 'x-gromesh-collector-token': process.argv[3]},
         ...(body ? {body} : {}), signal: AbortSignal.timeout(10000)
       });
       if (!response.ok) throw new Error('Gateway helper HTTP ' + response.status);
       console.log(JSON.stringify(process.argv[2] === 'GET' ? await response.json() : {status: response.status}));
-    `, endpoint, method], { cwd: root, env, timeout: 30_000, maxBuffer: 16 * 1024 * 1024 });
+    `, endpoint, method, collectorToken], { cwd: root, env, timeout: 30_000, maxBuffer: 16 * 1024 * 1024 });
   child.stdin.end(body === undefined ? "" : JSON.stringify(body));
   return new Promise((resolve, reject) => {
     let output = "";

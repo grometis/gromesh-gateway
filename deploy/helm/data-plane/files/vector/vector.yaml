@@ -18,6 +18,15 @@ sources:
     strict_path: true
     decoding:
       codec: bytes
+    # Only this cluster's gateways have the token (contract: Platform analytics); anything else that reaches the
+    # collector, through the proxy or from another pod, gets 401. A previous token is accepted during rotation.
+    auth:
+      strategy: custom
+      source: |
+        got = string(.headers."x-gromesh-collector-token") ?? ""
+        current = get_env_var("GROMESH_COLLECTOR_TOKEN") ?? ""
+        previous = get_env_var("GROMESH_COLLECTOR_TOKEN_PREVIOUS") ?? ""
+        got != "" && (got == current || got == previous)
 
 transforms:
   decode:
@@ -95,6 +104,9 @@ transforms:
       if !starts_with(path, "/") { abort }
       uuid = r'(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
       environment_id = string!(.environment_id)
+      # A token can leak to plugins of the same gateway: pin the environment this collector serves, when configured.
+      expected_environment = downcase(get_env_var("GROMESH_ENVIRONMENT_ID") ?? "")
+      if expected_environment != "" && downcase(environment_id) != expected_environment { abort }
       # The cluster is this collector's own identity (validated by entrypoint.sh), never trusted from the event.
       cluster_id = get_env_var!("GROMESH_CLUSTER_ID")
       if !match(environment_id, uuid) || !match(cluster_id, uuid) { abort }

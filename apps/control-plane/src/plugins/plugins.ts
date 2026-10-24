@@ -8,6 +8,7 @@ import { Ctx, RequiredRole, type RequestContext } from "../auth/auth.js";
 import { contractBody } from "../common/contract.js";
 import { decodeCursor, parseLimit, toPage } from "../common/pagination.js";
 import { notFound, unprocessable, type FieldError } from "../common/problem.js";
+import { vaultReferenceIssues } from "../common/vault-references.js";
 import { DB, type Db, type Executor } from "../db/db.js";
 import { consumers, plugins, routes, services, type PluginRow } from "../db/schema.js";
 import { markDraftChanged, requireEnvironment, uuidParam } from "../environments/environments.js";
@@ -169,6 +170,8 @@ export class PluginsService {
       (!Array.isArray(names) || names.length === 0 || !names.every((name: unknown) => typeof name === "string" && /^[A-Za-z0-9._-]{1,64}$/.test(name)))) {
       throw unprocessable("Invalid plugin", [{ path: "config.key_names", message: "must be a non-empty array of names matching ^[A-Za-z0-9._-]{1,64}$" }]);
     }
+    const references = vaultReferenceIssues(body.config ?? {}, "config");
+    if (references.length > 0) throw unprocessable("Invalid plugin", references);
     await this.validator.validatePlugin({ id, ...body });
   }
 

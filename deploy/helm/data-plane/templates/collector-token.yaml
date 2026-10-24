@@ -1,0 +1,16 @@
+{{- if and .Values.collector.enabled (not .Values.collector.auth.existingSecret) }}
+{{- $name := include "data-plane.collectorTokenSecret" . }}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace $name }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "data-plane.labels" . | nindent 4 }}
+  annotations:
+    # Created once; rotation is an operator step (collector.auth.existingSecret with a previous-token key).
+    helm.sh/resource-policy: keep
+type: Opaque
+data:
+  {{ .Values.collector.auth.existingSecretKey }}: {{ if and $existing (index $existing.data .Values.collector.auth.existingSecretKey) }}{{ index $existing.data .Values.collector.auth.existingSecretKey }}{{ else }}{{ randAlphaNum 48 | b64enc }}{{ end }}
+{{- end }}

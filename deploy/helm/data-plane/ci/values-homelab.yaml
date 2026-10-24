@@ -30,6 +30,8 @@ collector:
   enabled: true
   # Placeholder: each installation sets the UUID the control plane returned for its cluster.
   clusterId: 00000000-0000-4000-8000-000000000000
+  # Placeholder too: the installation sets the UUID of the cluster's environment.
+  environmentId: 00000000-0000-4000-8000-000000000000
   clickhouse:
     endpoint: http://clickhouse.gromesh-development.svc.cluster.local:8123
     existingSecret: gromesh-clickhouse-writer
