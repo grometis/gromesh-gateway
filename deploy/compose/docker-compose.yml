@@ -29,8 +29,9 @@ services:
     entrypoint: ["/bin/sh", "-ec"]
     command:
       - |
-        chown 1001:1001 /kong/declarative
+        chown 1001:1001 /kong/declarative /kong/admin
         chmod 755 /kong/declarative
+        chmod 750 /kong/admin
         if [ ! -e /kong/declarative/kong.json ]; then
           cp /seed/kong.yml /kong/declarative/kong.json
           chown 1001:1001 /kong/declarative/kong.json
@@ -38,21 +39,27 @@ services:
         fi
     volumes:
       - kong-config:/kong/declarative
+      - kong-admin:/kong/admin
       - ./kong:/seed:ro
 
   # Kong OSS data plane in DB-less mode. Swap the image for the in-house 3.9.4 build (images/kong) when ready.
   kong:
     image: ${KONG_IMAGE:-ghcr.io/grometis/gromesh-kong@sha256:ffe28812ade7f8aaec8ff1303b5c5f2e614453b87e1b3bd917401f6ad8b74faf}
+    # Same listeners as the data-plane chart: Admin/status APIs only on Unix sockets in the kong-admin volume,
+    # TCP 8100 only /metrics and /status/ready from outside the container (contract: agent-protocol).
+    entrypoint: [/bin/sh, -ec]
+    command:
+      - rm -f /kong/admin/admin.sock /kong/admin/status.sock && exec /usr/local/bin/gromesh-entrypoint kong docker-start
     environment:
       KONG_DATABASE: "off"
       KONG_DECLARATIVE_CONFIG: /kong/declarative/kong.json
       KONG_PROXY_LISTEN: "0.0.0.0:8000, 0.0.0.0:8443 ssl"
-      KONG_ADMIN_LISTEN: "127.0.0.1:8001"
-      KONG_STATUS_LISTEN: "0.0.0.0:8100"
+      KONG_ADMIN_LISTEN: "off"
+      KONG_ADMIN_GUI_LISTEN: "off"
+      KONG_STATUS_LISTEN: "off"
+      KONG_NGINX_HTTP_INCLUDE: /etc/gromesh/kong/listeners.conf
       KONG_PROXY_ACCESS_LOG: /dev/stdout
       KONG_PROXY_ERROR_LOG: /dev/stderr
-      KONG_ADMIN_ACCESS_LOG: /dev/stdout
-      KONG_ADMIN_ERROR_LOG: /dev/stderr
       KONG_PLUGINS: bundled
       KONG_NGINX_WORKER_PROCESSES: "2"
       # Cold NXDOMAIN, 5s polls: 80.6s baseline -> 10.3s (3.9.3/3.9.4); recover within the 60s log queue.
@@ -63,8 +70,13 @@ services:
       - "127.0.0.1:8000:8000"
       - "127.0.0.1:8443:8443"
       - "127.0.0.1:8100:8100"
+    # The admin-isolation e2e: a name that resolves to the gateway's own loopback.
+    extra_hosts:
+      - "loopback-alias.test:127.0.0.1"
     volumes:
       - kong-config:/kong/declarative:ro
+      - kong-admin:/kong/admin
+      - ../helm/data-plane/files/kong/listeners.conf:/etc/gromesh/kong/listeners.conf:ro
     depends_on:
       kong-config-init:
         condition: service_completed_successfully
@@ -106,11 +118,12 @@ services:
       GROMESH_REGISTRATION_TOKEN: ${GROMESH_REGISTRATION_TOKEN:-}
       GROMESH_NODE_ID: ${GROMESH_NODE_ID:-compose-node}
       GROMESH_STATE_DIR: /var/lib/gromesh
-      KONG_ADMIN_URL: http://127.0.0.1:8001
-      KONG_STATUS_URL: http://127.0.0.1:8100
+      KONG_ADMIN_URL: unix:///kong/admin/admin.sock
+      KONG_STATUS_URL: unix:///kong/admin/status.sock
       SNAPSHOT_PATH: /kong/declarative/kong.json
     volumes:
       - kong-config:/kong/declarative
+      - kong-admin:/kong/admin
       - agent-state:/var/lib/gromesh
     read_only: true
     depends_on:
@@ -121,12 +134,14 @@ services:
     restart: unless-stopped
 
   # `pnpm smoke`: the contract example against the real Kong, from inside its network namespace
-  # (the data-plane Admin API only listens on 127.0.0.1).
+  # (the data-plane Admin API only listens on a Unix socket in the kong-admin volume).
   smoke:
     profiles: [tools]
     image: node:24-alpine
     network_mode: "service:kong"
+    user: "1001:1001"
     volumes:
+      - kong-admin:/kong/admin
       - ../../scripts:/repo/scripts:ro
       - ../../contracts:/repo/contracts:ro
     command: ["node", "/repo/scripts/smoke.mjs"]
@@ -287,7 +302,9 @@ services:
     profiles: [observability-tools]
     image: node:24.18.0-alpine
     network_mode: "service:kong"
+    user: "1001:1001"
     volumes:
+      - kong-admin:/kong/admin
       - ../observability:/repo/deploy/observability:ro
     environment:
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-gromesh-dev-observability}
@@ -305,6 +322,7 @@ services:
 volumes:
   pg-data:
   kong-config:
+  kong-admin:
   agent-state:
   clickhouse-data:
   prometheus-data:

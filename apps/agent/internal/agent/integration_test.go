@@ -8,7 +8,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,12 +20,28 @@ import (
 func TestIntegrationAppliesExampleToComposeKong(t *testing.T) {
 	admin := os.Getenv("KONG_ADMIN_URL")
 	if admin == "" {
-		admin = "http://127.0.0.1:8001"
+		admin = "unix:///kong/admin/admin.sock"
 	}
-	httpClient := &http.Client{Timeout: 3 * time.Second}
-	res, err := httpClient.Get(admin)
+	statusURL := os.Getenv("KONG_STATUS_URL")
+	if statusURL == "" {
+		statusURL = "unix:///kong/admin/status.sock"
+	}
+	cp := cpmock.New()
+	t.Cleanup(cp.Close)
+	a, err := New(Config{
+		ControlPlaneURL: cp.HTTP.URL, RegistrationToken: cpmock.RegistrationToken,
+		NodeID: "integration-node", Hostname: "integration-host", KongAdminURL: admin,
+		KongStatusURL: statusURL, SnapshotPath: filepath.Join(t.TempDir(), "kong.json"),
+		StateDir: filepath.Join(t.TempDir(), "state"),
+	}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	if err != nil {
-		t.Skipf("Kong Admin API is unreachable: %v", err)
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	res, err := a.client.request(ctx, "GET", a.config.KongAdminURL, "", nil, nil)
+	if err != nil {
+		t.Skipf("Kong Admin API is unreachable at %s", admin)
 	}
 	defer res.Body.Close()
 	var info struct {
@@ -38,26 +53,11 @@ func TestIntegrationAppliesExampleToComposeKong(t *testing.T) {
 	if err := json.NewDecoder(res.Body).Decode(&info); err != nil || res.StatusCode != http.StatusOK || info.Configuration.Database != "off" {
 		t.Fatalf("expected a reachable DB-less Kong, HTTP %d: %v", res.StatusCode, err)
 	}
-	cp := cpmock.New()
-	t.Cleanup(cp.Close)
 	data, err := os.ReadFile("../../../../contracts/examples/snapshot.example.json")
 	if err != nil {
 		t.Fatal(err)
 	}
 	cp.SetSnapshot(data)
-	statusURL := os.Getenv("KONG_STATUS_URL")
-	if statusURL == "" {
-		statusURL = "http://127.0.0.1:8100"
-	}
-	a, err := New(Config{
-		ControlPlaneURL: cp.HTTP.URL, RegistrationToken: cpmock.RegistrationToken,
-		NodeID: "integration-node", Hostname: "integration-host", KongAdminURL: admin,
-		KongStatusURL: statusURL, SnapshotPath: filepath.Join(t.TempDir(), "kong.json"),
-		StateDir: filepath.Join(t.TempDir(), "state"),
-	}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
-	if err != nil {
-		t.Fatal(err)
-	}
 	start(t, a)
 	registration := receive(t, cp.Registrations, nil)
 	if registration.KongVersion != info.Version {
@@ -70,15 +70,10 @@ func TestIntegrationAppliesExampleToComposeKong(t *testing.T) {
 	}
 	proxy := os.Getenv("KONG_PROXY_URL")
 	if proxy == "" {
-		u, err := url.Parse(admin)
-		if err != nil {
-			t.Fatal(err)
-		}
-		u.Host = u.Hostname() + ":8000"
-		u.Path = ""
-		proxy = u.String()
+		proxy = "http://127.0.0.1:8000"
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	httpClient := &http.Client{Timeout: 3 * time.Second}
+	ctx, cancel = context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	for {
 		req, _ := http.NewRequestWithContext(ctx, "GET", endpoint(proxy, "/echo"), nil)

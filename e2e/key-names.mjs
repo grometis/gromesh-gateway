@@ -19,7 +19,7 @@ const clickhouse = process.env.CLICKHOUSE_URL ?? "http://127.0.0.1:8123";
 const request = (url, options = {}) => fetch(url, { ...options, signal: AbortSignal.timeout(5000) });
 const check = (ok, message) => assert.ok(ok, message);
 
-// Execute beside Kong so its loopback-only Admin API remains private. Never print responses/configs.
+// Execute inside Kong's network namespace (the collector is on the compose network). Never print responses/configs.
 async function insideGateway(endpoint, method, body) {
   const { stdout: id } = await compose("ps", "-q", "kong");
   const child = execFile("docker", ["run", "--rm", "-i", "--network", `container:${id.trim()}`,
@@ -44,7 +44,37 @@ async function insideGateway(endpoint, method, body) {
     });
   });
 }
-const admin = (method, body) => insideGateway("http://127.0.0.1:8001/config", method, body);
+// Beside Kong with its kong-admin volume: the Admin API listens only on a Unix socket (contract: agent-protocol).
+async function admin(method, body) {
+  const { stdout: id } = await compose("ps", "-q", "kong");
+  const child = execFile("docker", ["run", "--rm", "-i", "--volumes-from", id.trim(), "--user", "1001:1001",
+    NODE_IMAGE, "node", "--input-type=module", "-e", `
+      import { readFileSync } from 'node:fs';
+      import { request } from 'node:http';
+      const body = readFileSync(0, 'utf8');
+      // Kong's Admin API listens only on a Unix socket (contract: agent-protocol); fetch cannot dial it.
+      const response = await new Promise((resolve, reject) => {
+        const req = request({ socketPath: '/kong/admin/admin.sock', path: '/config', method: process.argv[1],
+          headers: {'content-type': 'application/json'}, timeout: 10000 }, (res) => {
+          let text = '';
+          res.setEncoding('utf8').on('data', (chunk) => { text += chunk; }).on('end', () => resolve({ status: res.statusCode, text }));
+        });
+        req.on('timeout', () => req.destroy(new Error('timeout'))).on('error', reject).end(body || undefined);
+      });
+      if (response.status < 200 || response.status > 299) throw new Error('Admin API HTTP ' + response.status);
+      console.log(JSON.stringify(process.argv[1] === 'GET' ? JSON.parse(response.text) : {status: response.status}));
+    `, method], { cwd: root, env, timeout: 30_000, maxBuffer: 16 * 1024 * 1024 });
+  child.stdin.end(body === undefined ? "" : JSON.stringify(body));
+  return new Promise((resolve, reject) => {
+    let output = "";
+    child.stdout.on("data", (chunk) => { output += chunk; });
+    child.on("error", () => reject(new Error("Admin helper failed")));
+    child.on("close", (code) => {
+      if (code !== 0) return reject(new Error("Admin helper failed"));
+      try { resolve(JSON.parse(output)); } catch { reject(new Error("Invalid admin helper result")); }
+    });
+  });
+}
 
 async function login() {
   const base = process.env.CP_URL ?? "http://127.0.0.1:3000/api/v1";

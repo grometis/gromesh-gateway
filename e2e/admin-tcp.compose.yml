@@ -1,0 +1,5 @@
+# Negative control for admin-isolation.spec.ts only: the pre-hotfix TCP Admin API, which the isolation test must detect.
+services:
+  kong:
+    environment:
+      KONG_ADMIN_LISTEN: "127.0.0.1:8001"
