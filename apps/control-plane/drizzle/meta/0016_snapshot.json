@@ -1,5 +1,5 @@
 {
-  "id": "df64e988-6538-412f-b8e8-488c895cc62c",
+  "id": "adde5850-4d22-4073-83d1-1f8272da306f",
   "prevId": "36471869-ae67-44c6-a3e2-4eb66016c09b",
   "version": "7",
   "dialect": "postgresql",
@@ -140,6 +140,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "token_name": {
+          "name": "token_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "owner_id": {
+          "name": "owner_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "calls": {
           "name": "calls",
           "type": "integer",
@@ -148,21 +160,7 @@
         }
       },
       "indexes": {},
-      "foreignKeys": {
-        "api_v1_usage_token_id_api_tokens_id_fk": {
-          "name": "api_v1_usage_token_id_api_tokens_id_fk",
-          "tableFrom": "api_v1_usage",
-          "tableTo": "api_tokens",
-          "columnsFrom": [
-            "token_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
         "api_v1_usage_day_token_uq": {

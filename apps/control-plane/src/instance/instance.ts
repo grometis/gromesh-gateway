@@ -1,14 +1,16 @@
 import { Controller, Get, Inject, Injectable, Logger, Module, type OnApplicationBootstrap, type OnModuleDestroy } from "@nestjs/common";
-import { and, desc, eq, gte, isNotNull, isNull, lt, sql } from "drizzle-orm";
+import { and, desc, gte, isNotNull, isNull, lt, sql } from "drizzle-orm";
 import { API_V1_USAGE, type ApiV1UsageRecorder, RequiredPermission } from "../auth/auth.js";
 import { APP_CONFIG, type AppConfig } from "../config.js";
 import { ENCRYPTOR, type Encryptor } from "../crypto/crypto.js";
 import { DB, type Db } from "../db/db.js";
-import { apiTokens, apiV1Usage } from "../db/schema.js";
+import { apiV1Usage } from "../db/schema.js";
 import { migrationReport } from "../workspaces/migration-report.js";
 
 const WINDOW_DAYS = 30;
 const today = sql`(now() at time zone 'utc')::date`;
+/** The UTC day of a call, taken when it is made (a session call written after midnight keeps its day). */
+const utcDay = () => new Date().toISOString().slice(0, 10);
 
 /**
  * The calls to the v1 operations the controlled migration will cut (decision H-9). A token's call is written at once:
@@ -18,7 +20,8 @@ const today = sql`(now() at time zone 'utc')::date`;
 @Injectable()
 export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBootstrap, OnModuleDestroy {
   private readonly logger = new Logger("ApiV1Usage");
-  private sessionCalls = 0;
+  /** Session calls not written yet, by the UTC day they were made. */
+  private sessionCalls = new Map<string, number>();
   private timer: NodeJS.Timeout | null = null;
 
   constructor(
@@ -38,29 +41,33 @@ export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBoots
     await this.flush();
   }
 
-  async record(tokenId: string | null): Promise<void> {
-    if (tokenId === null) this.sessionCalls++;
-    else await this.add(tokenId, 1);
+  async record(token: { id: string; name: string; ownerId: string } | null): Promise<void> {
+    const day = utcDay();
+    if (token === null) this.sessionCalls.set(day, (this.sessionCalls.get(day) ?? 0) + 1);
+    else await this.add(day, token, 1);
   }
 
-  /** Writes the session calls counted so far and drops the days out of the window. */
+  /** Writes the session calls counted so far, each on its own day, and drops the days out of the window. */
   async flush(): Promise<void> {
-    const n = this.sessionCalls;
-    this.sessionCalls = 0;
-    try {
-      if (n > 0) await this.add(null, n);
-    } catch (error) {
-      this.sessionCalls += n;
-      throw error;
+    const pending = [...this.sessionCalls];
+    this.sessionCalls = new Map();
+    for (const [i, [day, n]] of pending.entries()) {
+      try {
+        await this.add(day, null, n);
+      } catch (error) {
+        // Kept for the next flush, on their own days.
+        for (const [d, m] of pending.slice(i)) this.sessionCalls.set(d, (this.sessionCalls.get(d) ?? 0) + m);
+        throw error;
+      }
     }
     await this.db.delete(apiV1Usage).where(lt(apiV1Usage.day, sql`${today} - ${WINDOW_DAYS - 1}::int`));
   }
 
-  private async add(tokenId: string | null, calls: number): Promise<void> {
+  private async add(day: string, token: { id: string; name: string; ownerId: string } | null, calls: number): Promise<void> {
     await this.db
       .insert(apiV1Usage)
-      .values({ day: sql`${today}`, tokenId, calls })
-      .onConflictDoUpdate({ target: [apiV1Usage.day, apiV1Usage.tokenId], set: { calls: sql`${apiV1Usage.calls} + excluded.calls` } });
+      .values({ day, tokenId: token?.id ?? null, tokenName: token?.name ?? null, ownerId: token?.ownerId ?? null, calls })
+      .onConflictDoUpdate({ target: [apiV1Usage.day, apiV1Usage.tokenId], set: { calls: sql`${apiV1Usage.calls} + excluded.calls`, tokenName: sql`excluded.token_name` } });
   }
 
   /** contract: ApiV1Usage. The window is the last 30 UTC days, today included. */
@@ -72,20 +79,20 @@ export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBoots
       .select({ calls: sql<number>`coalesce(sum(${apiV1Usage.calls}), 0)::int` })
       .from(apiV1Usage)
       .where(and(isNull(apiV1Usage.tokenId), gte(apiV1Usage.day, since)));
-    const tokens = await this.db
+    // Deleted tokens and owners included: their calls are still in the window. The name is the latest one seen.
+    const rows = await this.db
       .select({
-        tokenId: apiTokens.id,
-        tokenName: apiTokens.name,
-        ownerId: apiTokens.userId,
+        tokenId: sql<string>`${apiV1Usage.tokenId}`,
+        tokenName: sql<string>`(array_agg(${apiV1Usage.tokenName} order by ${apiV1Usage.day} desc))[1]`,
+        ownerId: sql<string>`(array_agg(${apiV1Usage.ownerId} order by ${apiV1Usage.day} desc))[1]`,
         calls: sql<number>`sum(${apiV1Usage.calls})::int`,
         lastCalledOn: sql<string>`to_char(max(${apiV1Usage.day}), 'YYYY-MM-DD')`,
       })
       .from(apiV1Usage)
-      .innerJoin(apiTokens, eq(apiTokens.id, apiV1Usage.tokenId))
       .where(and(isNotNull(apiV1Usage.tokenId), gte(apiV1Usage.day, since)))
-      .groupBy(apiTokens.id, apiTokens.name, apiTokens.userId)
-      .orderBy(desc(sql`max(${apiV1Usage.day})`), apiTokens.id);
-    return { windowDays: WINDOW_DAYS as 30, since: window!.since, sessionCalls: session!.calls, tokens };
+      .groupBy(apiV1Usage.tokenId)
+      .orderBy(desc(sql`max(${apiV1Usage.day})`), apiV1Usage.tokenId);
+    return { windowDays: WINDOW_DAYS as 30, since: window!.since, sessionCalls: session!.calls, tokens: rows };
   }
 }
 

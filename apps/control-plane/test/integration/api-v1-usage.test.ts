@@ -1,5 +1,5 @@
 import pg from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Role } from "../../src/auth/environment-access.js";
 import { contractsV2 } from "../../src/common/contract.js";
 import { runMigrations } from "../../src/db/migrate.js";
@@ -74,9 +74,40 @@ describe("the v1 calls the cut will remove, the migration report and one authori
     expect(JSON.stringify(after)).not.toContain(env);
   });
 
+  it("keeps a token's calls in the window after the token and its owner are deleted", async () => {
+    const owner = await h.as("editor");
+    const created = await owner.api("POST", "/users/me/tokens", { name: uniq("gone"), role: "viewer", expiresInDays: 1 });
+    expect((await bearer(created.body.token as string)("GET", `/environments/${env}/services`)).status).toBe(200);
+    expect((await h.api("DELETE", `/users/${owner.id}`)).status).toBe(204);
+    expect((await read()).tokens.find((t) => t.tokenId === created.body.id)).toMatchObject({ tokenName: created.body.name, ownerId: owner.id, calls: 1 });
+  });
+
+  it("counts a token calling a session-only operation the cut reaches, and still refuses it", async () => {
+    const created = await h.api("POST", "/users/me/tokens", { name: uniq("rb"), role: "admin", expiresInDays: 1 });
+    const res = await bearer(created.body.token as string)("POST", `/environments/${env}/snapshots/1/rollback`);
+    expect(res.status).toBe(401);
+    expect((await read()).tokens.find((t) => t.tokenId === created.body.id)).toMatchObject({ calls: 1 });
+  });
+
+  it("writes a session call on the UTC day it was made, even when written after midnight", async () => {
+    await usage.flush();
+    const yesterday = new Date(Date.now() - 24 * 3600_000);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date(`${yesterday.toISOString().slice(0, 10)}T23:59:59.900Z`));
+      await usage.record(null);
+    } finally {
+      vi.useRealTimers();
+    }
+    await usage.flush();
+    const day = yesterday.toISOString().slice(0, 10);
+    const [row] = (await h.sql.query(`select calls from api_v1_usage where token_id is null and day = $1`, [day])).rows;
+    expect(row?.calls).toBeGreaterThanOrEqual(1);
+  });
+
   it("keeps 30 days: older days leave the window and the table", async () => {
     const created = await h.api("POST", "/users/me/tokens", { name: uniq("old"), role: "viewer", expiresInDays: 1 });
-    await h.sql.query(`insert into api_v1_usage (day, token_id, calls) values ((now() at time zone 'utc')::date - 30, $1, 7), ((now() at time zone 'utc')::date - 29, $1, 2)`, [created.body.id]);
+    await h.sql.query(`insert into api_v1_usage (day, token_id, token_name, owner_id, calls) values ((now() at time zone 'utc')::date - 30, $1, $2, $3, 7), ((now() at time zone 'utc')::date - 29, $1, $2, $3, 2)`, [created.body.id, created.body.name, (await h.api("GET", "/me")).body.id]);
     const r = await read();
     expect(r.tokens.find((t) => t.tokenId === created.body.id)).toMatchObject({ calls: 2 });
     expect((await h.sql.query(`select count(*)::int as n from api_v1_usage where token_id = $1`, [created.body.id])).rows[0].n).toBe(1);

@@ -560,13 +560,16 @@ export type ClusterNodeRow = typeof clusterNodes.$inferSelect;
 
 /**
  * Calls to the v1 operations the controlled migration will cut (decision H-9), per UTC day and API token (null: the
- * sessions, i.e. the UI). Kept 30 days; the cut needs no token call in that window.
+ * sessions, i.e. the UI). Kept 30 days; the cut needs no token call in that window. The token's name and owner are
+ * copied, not referenced: deleting the token or its owner must not erase a call from the window.
  */
 export const apiV1Usage = pgTable(
   "api_v1_usage",
   {
     day: date("day").notNull(),
-    tokenId: uuid("token_id").references(() => apiTokens.id, { onDelete: "cascade" }),
+    tokenId: uuid("token_id"),
+    tokenName: text("token_name"),
+    ownerId: uuid("owner_id"),
     calls: integer("calls").notNull(),
   },
   (t) => [unique("api_v1_usage_day_token_uq").on(t.day, t.tokenId).nullsNotDistinct()],
