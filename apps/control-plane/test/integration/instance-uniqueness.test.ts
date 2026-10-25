@@ -206,6 +206,24 @@ describe("uniqueness in the workspace and in the instance", () => {
     }
   });
 
+  it("stops a burst of probing imports at the limit too: one at a time, each sees the previous count", async () => {
+    const [a, b] = [await env(), await env()];
+    const ca = await consumer(a);
+    const iss = uniq("import-burst");
+    expect((await h.api("POST", `/environments/${a}/consumers/${ca}/jwt`, { key: iss })).status).toBe(201);
+    const document = { apiVersion: "gromesh/v1", services: [], routes: [], consumers: [{ username: "app-sky", tags: [], aclGroups: [], keyAuthCredentials: [], jwtCredentials: [{ key: iss, algorithm: "HS256", secret: "s".repeat(40), tags: [] }], basicAuthCredentials: [] }], plugins: [], upstreams: [], certificates: [] };
+    const low = await startHarness({ uniqueConflictMax: 3 });
+    try {
+      const prober = await low.as("editor");
+      // Each into an environment of its own: nothing but the queue orders them.
+      const targets = [b, ...(await Promise.all(Array.from({ length: 5 }, () => env())))];
+      const burst = await Promise.all(targets.map((t) => prober.api("POST", `/environments/${t}/import`, { mode: "merge", document, dryRun: true })));
+      expect(burst.map((r) => r.status).sort()).toEqual([200, 200, 200, 429, 429, 429]);
+    } finally {
+      await low.close();
+    }
+  });
+
   it("has the instance indexes in force on a clean instance", async () => {
     const rows = (await h.sql.query(`select indexname from pg_indexes where indexname like '%instance_uq' order by indexname`)).rows.map((r) => r.indexname);
     expect(rows).toEqual(["basicauth_username_instance_uq", "certificate_snis_name_instance_uq", "jwt_key_instance_uq", "keyauth_key_hash_instance_uq"]);

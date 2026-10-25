@@ -176,7 +176,7 @@ export async function admit(tx: Executor, ctx: RequestContext): Promise<void> {
 }
 
 /** Counts one conflicting attempt against the actor, atomically, and audits it (the kind only, never the value). */
-async function countConflict(tx: Executor, ctx: RequestContext, kind: ConflictKind, limit: ConflictLimit): Promise<void> {
+export async function countConflict(tx: Executor, ctx: RequestContext, kind: ConflictKind, limit: ConflictLimit): Promise<void> {
   const window = sql`make_interval(secs => ${limit.windowMs / 1000})`;
   const fresh = sql`${loginAttempts.windowStartedAt} > now() - ${window}`;
   const failures = sql`case when ${fresh} then ${loginAttempts.failures} + 1 else 1 end`;

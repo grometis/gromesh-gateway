@@ -1,7 +1,7 @@
 import { Controller, Get, HttpCode, Inject, Injectable, Module, Param, Post, Query, Res } from "@nestjs/common";
 import { convertKongConfig, diffGatewayStates, exportConfig, type ConfigDocument } from "@gromesh/compiler";
 import type { Response } from "express";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { stringify } from "yaml";
 import { Ctx, RequiredRole, type RequestContext } from "../auth/auth.js";
 import { audit } from "../audit/audit.js";
@@ -14,7 +14,7 @@ import { DB, type Db } from "../db/db.js";
 import { consumers, environments } from "../db/schema.js";
 import { markDraftChanged, requireEnvironment, uuidParam } from "../environments/environments.js";
 import { loadGatewayState, restoreGatewayState, workspaceDefaultRoutes } from "../gateway/gateway.js";
-import { admit, conflictLimit, lockUnenforcedTables, lockUnique, recordConflict, takenElsewhere, unenforcedKinds, UNIQUE_KINDS } from "../workspaces/instance-uniqueness.js";
+import { admit, conflictLimit, countConflict, lockUnenforcedTables, lockUnique, takenElsewhere, unenforcedKinds, UNIQUE_KINDS } from "../workspaces/instance-uniqueness.js";
 import { PluginCatalog, PluginCatalogModule } from "../plugin-catalog/catalog.js";
 import { PluginsModule, PluginsService } from "../plugins/plugins.js";
 import { redactChanges } from "../snapshots/snapshots.js";
@@ -46,24 +46,25 @@ export class ConfigTransferService {
 
   /**
    * A dry run would otherwise be a free oracle for the credentials of other workspaces: an import whose report or
-   * failure carries an instance conflict counts against the actor and is audited, like a single write's 409.
+   * failure carries an instance conflict counts against the actor and is audited, like a single write's 409. Imports
+   * run one at a time (import_queue) and count inside their own transaction, so each sees the previous one's count:
+   * an actor gets at most the limit plus the import already running.
    */
   async import(ctx: RequestContext, envId: string, request: ImportRequest) {
-    const seen = { conflict: false };
-    try {
-      return await this.importOnce(ctx, envId, request, seen);
-    } finally {
-      if (seen.conflict) await recordConflict(this.db, ctx, "import", conflictLimit(this.config));
-    }
+    const outcome = await this.importOnce(ctx, envId, request);
+    if ("failure" in outcome) throw importFailure(outcome.failure);
+    return outcome.report;
   }
 
-  private async importOnce(ctx: RequestContext, envId: string, request: ImportRequest, seen: { conflict: boolean }) {
+  private async importOnce(ctx: RequestContext, envId: string, request: ImportRequest): Promise<{ report: ReturnType<typeof emptyReport> } | { failure: Parameters<typeof importFailure>[0] }> {
     retry: for (let attempt = 0; ; attempt++) {
       // Kinds without an instance index yet (a legacy repetition blocks them): their tables are locked before the
       // serializable snapshot, so the instance check sees every value committed before it (decision H-5).
       const unenforced = await unenforcedKinds(this.db);
       try {
         return await this.db.transaction(async tx => {
+          // First statements, before the snapshot: one import at a time, then the tables of unenforced kinds.
+          await tx.execute(sql`lock table import_queue in exclusive mode`);
           await lockUnenforcedTables(tx, unenforced);
           await requireEnvironment(tx, envId, true);
           const current = await loadGatewayState(tx, envId, this.enc, this.catalog);
@@ -103,13 +104,14 @@ export class ConfigTransferService {
               consumerIdExists: async id => (await tx.select({ id: consumers.id }).from(consumers).where(eq(consumers.id, id)).limit(1)).length > 0,
             } : undefined, workspaceDefault, instanceTaken);
             errors.push(...plan.errors);
-            if (plan.instanceConflict) seen.conflict = true;
+            if (plan.instanceConflict) await countConflict(tx, ctx, "import", conflictLimit(this.config));
           }
           const mapped = [...(converted?.errors ?? []), ...errors.map(e => ({ ...e, path: converted?.sourcePath(e.path) ?? e.path }))];
           if (mapped.length) {
             const redacted = checkedSchema ? mapped : redactImportErrors(mapped, document, current, this.catalog);
-            if (request.dryRun) return emptyReport(redacted);
-            throw importFailure(redacted);
+            if (request.dryRun) return { report: emptyReport(redacted) };
+            // Commit the count of a conflict (nothing else was written), then fail.
+            return { failure: redacted };
           }
           const changes = redactChanges(diffGatewayStates(current, plan!.state), (name, config) => this.catalog.redactConfig(name, config));
           const report = { added: changes.filter(c => c.change === "added"), modified: changes.filter(c => c.change === "modified"), removed: changes.filter(c => c.change === "removed"), errors: [] };
@@ -122,7 +124,7 @@ export class ConfigTransferService {
             }
             await audit(tx, ctx, { action: "environment.import", entityType: "environment", entityId: envId, environmentId: envId, after: { mode: request.mode, sourceFormat: request.sourceFormat ?? "gromesh/v1", ...report } });
           }
-          return report;
+          return { report };
         }, { isolationLevel: "serializable" });
       } catch (error) {
         let pg: unknown = error;
