@@ -1032,7 +1032,12 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Restores the draft to this version's state and publishes it as a NEW version. 422, with nothing changed, when that state has a forbidden destination (see the description of this API). */
+        /**
+         * @description Restores the draft to this version's state and publishes it as a NEW version. 422, with nothing changed, when that
+         *     state has a forbidden destination (see the description of this API). 409 when the version holds a credential or
+         *     server name another environment of the instance holds now. A session only, never an API token, as the v2
+         *     rollback (decision H-9: one authorization for both APIs).
+         */
         post: operations["rollback"];
         delete?: never;
         options?: never;

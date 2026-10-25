@@ -32,7 +32,11 @@ info:
       - Every mutation is written to the audit log in the same transaction.
       - Migration to v2 (control-plane-v2.openapi.yaml, decision H-9): each environment is the workspace with the same
         id. Every operation here runs on the same services and the same authorization as v2: the roles above are
-        translated to v2 permissions, and no role or token reaches here what v2 would refuse. The uniqueness rules are
+        translated to v2 permissions (viewer → viewer; editor → publisher: it edits, publishes and rolls back; the admin
+        of an environment → workspace-admin, plus its clusters; a global admin → platform-admin), each operation needs
+        the permission v2 needs for it (publishing release.publish, rolling back release.rollback), v2 role bindings
+        add to these roles, and an environment role none is a deny no binding overrides. No role or token reaches here
+        what v2 would refuse. The uniqueness rules are
         the same (credentials and SNIs in the instance). What v1 keeps until the cut: routes created here are
         legacy-preserved (`stripPath` defaults to true, a path is optional), exactly as today; a route without a path
         is listed in the migration report, because the N2 composition refuses it until it gets one, and a route only
@@ -1640,9 +1644,13 @@ paths:
     post:
       tags: [snapshots]
       operationId: rollback
-      security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
+      security: [{ cookieAuth: [], csrfToken: [] }]
       x-required-role: editor
-      description: Restores the draft to this version's state and publishes it as a NEW version. 422, with nothing changed, when that state has a forbidden destination (see the description of this API).
+      description: |
+        Restores the draft to this version's state and publishes it as a NEW version. 422, with nothing changed, when that
+        state has a forbidden destination (see the description of this API). 409 when the version holds a credential or
+        server name another environment of the instance holds now. A session only, never an API token, as the v2
+        rollback (decision H-9: one authorization for both APIs).
       responses:
         "201":
           description: Published
