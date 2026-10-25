@@ -6,8 +6,12 @@ import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { effectiveRole, type EnvironmentRole, RANK, type Role } from "../../src/auth/environment-access.js";
-import { permissionsIn, requiredPermission } from "../../src/auth/permissions.js";
+import type { EnvironmentRole, Role } from "../../src/auth/environment-access.js";
+import { type Held, permissionsIn, requiredPermission, tokenPermissions } from "../../src/auth/permissions.js";
+import { ClustersController } from "../../src/clusters/clusters.js";
+import { EnvironmentsController } from "../../src/environments/environments.js";
+import { ServicesController } from "../../src/gateway/gateway.js";
+import { SnapshotsController } from "../../src/snapshots/snapshots.js";
 import { MIGRATIONS_DIR, runMigrations } from "../../src/db/migrate.js";
 import * as schema from "../../src/db/schema.js";
 import { startHarness } from "./harness.js";
@@ -108,8 +112,33 @@ afterAll(async () => {
   for (const dir of folders) rmSync(dir, { recursive: true, force: true });
 });
 
+/**
+ * The rule the previous version decided with (843b658, src/auth/environment-access.ts and the guard), frozen here so
+ * the expectation never follows the code under test: a global admin is admin everywhere; anyone else has the
+ * environment's role if one is set, else the global one; none hides the environment (404); a token acts with the
+ * lower of its role and that one.
+ */
+const OLD_RANK: Record<Role, number> = { viewer: 1, editor: 2, admin: 3 };
+const oldEffective = (global: Role, override: EnvironmentRole | undefined): EnvironmentRole => (global === "admin" ? "admin" : override ?? global);
+const oldLower = (a: Role, b: Role): Role => (OLD_RANK[a] <= OLD_RANK[b] ? a : b);
+
+/**
+ * Every kind of v1 operation on an environment, with the role 843b658's contract required (deleteEnvironment left out:
+ * its narrowing to a global admin is the contract change of #138). What the guard now requires is read from the
+ * handlers themselves: their V1Permission, else the translation of their role.
+ */
+const meta = (cls: { prototype: object }, method: string) => Reflect.getMetadata("gromesh:v1-permission", (cls.prototype as Record<string, object>)[method]!) as Held[] | undefined;
+const OPERATIONS: { name: string; role: Role; needs: () => readonly Held[] }[] = [
+  { name: "listServices", role: "viewer", needs: () => meta(ServicesController, "list") ?? [requiredPermission("viewer", true)] },
+  { name: "createService", role: "editor", needs: () => meta(ServicesController, "create") ?? [requiredPermission("editor", true)] },
+  { name: "publish", role: "editor", needs: () => meta(SnapshotsController, "publish") ?? [requiredPermission("editor", true)] },
+  { name: "rollback", role: "editor", needs: () => meta(SnapshotsController, "rollback") ?? [requiredPermission("editor", true)] },
+  { name: "updateEnvironment", role: "admin", needs: () => meta(EnvironmentsController, "update") ?? [requiredPermission("admin", true)] },
+  { name: "createCluster", role: "admin", needs: () => meta(ClustersController, "create") ?? [requiredPermission("admin", true)] },
+];
+
 describe("the access matrix the previous version decided, after the migration", () => {
-  it("decides every user × environment × required role exactly as before: nothing widened, nothing lost", async () => {
+  it("decides every user × environment × operation, with and without a token, exactly as before", async () => {
     const url = await freshDatabase("rbac");
     await query(url, dumpSql);
     const people = await seedAccess(url);
@@ -121,27 +150,28 @@ describe("the access matrix the previous version decided, after the migration", 
     try {
       for (const person of people) {
         const [user] = await db.select().from(schema.users).where(eq(schema.users.id, person.id));
-        // Outside any environment: the global role.
-        const instance = await permissionsIn(db, user!, { type: "instance" });
-        for (const required of GLOBAL) {
-          expect(instance.has(requiredPermission(required, false)), `${person.role} at instance, ${required}`).toBe(RANK[person.role] >= RANK[required]);
-          decisions++;
-        }
         for (const env of envs) {
-          const old = effectiveRole(user!, person.overrides.get(env));
-          const held = await permissionsIn(db, user!, { type: "workspace", workspaceId: env });
+          const old = oldEffective(person.role, person.overrides.get(env));
+          const owner = await permissionsIn(db, user!, { type: "workspace", workspaceId: env });
           const label = `${person.role}/${person.overrides.get(env) ?? "-"} in ${env}`;
-          expect(held.has("workspace.read"), `${label}: visible`).toBe(old !== "none");
-          for (const required of GLOBAL) {
-            expect(held.has(requiredPermission(required, true)), `${label}: ${required}`).toBe(old !== "none" && RANK[old] >= RANK[required]);
-            decisions++;
+          expect(owner.has("workspace.read"), `${label}: visible`).toBe(old !== "none");
+          for (const token of [null, ...GLOBAL]) {
+            const held = token ? tokenPermissions(token, owner) : owner;
+            for (const op of OPERATIONS) {
+              const allowedBefore = old !== "none" && OLD_RANK[token ? oldLower(token, old) : old] >= OLD_RANK[op.role];
+              expect(op.needs().some((p) => held.has(p)), `${label}, token ${token ?? "-"}: ${op.name}`).toBe(allowedBefore);
+              decisions++;
+            }
           }
         }
+        // Outside any environment: the global role.
+        const instance = await permissionsIn(db, user!, { type: "instance" });
+        for (const required of GLOBAL) expect(instance.has(requiredPermission(required, false)), `${person.role} at instance, ${required}`).toBe(OLD_RANK[person.role] >= OLD_RANK[required]);
       }
     } finally {
       await pool.end();
     }
-    expect(decisions).toBe(people.length * GLOBAL.length * (1 + envs.length));
+    expect(decisions).toBe(people.length * envs.length * (1 + GLOBAL.length) * OPERATIONS.length);
   });
 });
 
