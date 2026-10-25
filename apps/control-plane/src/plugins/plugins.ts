@@ -14,6 +14,7 @@ import { markDraftChanged, requireEnvironment, uuidParam } from "../environments
 import { pluginSecretContext, ENCRYPTOR, Encryptor } from "../crypto/crypto.js";
 import { PluginCatalog, PluginCatalogModule, SECRET_PLACEHOLDER } from "../plugin-catalog/catalog.js";
 import { KongValidator } from "./kong-validator.js";
+import { anonymousOf, anonymousResolves } from "../workspaces/anonymous.js";
 
 /* ---------------- mapping ---------------- */
 
@@ -180,6 +181,8 @@ export class PluginsService {
     if (s.serviceId && !(await exists(services, s.serviceId))) errors.push({ path: "scope.serviceId", message: "unknown service in this environment" });
     if (s.routeId && !(await exists(routes, s.routeId))) errors.push({ path: "scope.routeId", message: "unknown route in this environment" });
     if (s.consumerId && !(await exists(consumers, s.consumerId))) errors.push({ path: "scope.consumerId", message: "unknown consumer in this environment" });
+    const anonymous = anonymousOf(body.config);
+    if (anonymous !== null && !(await anonymousResolves(tx, envId, anonymous))) errors.push({ path: "config.anonymous", message: "unknown consumer in this environment" });
     if (errors.length > 0) throw unprocessable("Invalid plugin", errors);
   }
 }
