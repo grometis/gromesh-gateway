@@ -4291,6 +4291,7 @@ components:
                       result:
                         const: failed
                   recoveredBy:
+                    type: object
                     required:
                       - kind
                     properties:

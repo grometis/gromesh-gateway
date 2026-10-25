@@ -500,6 +500,7 @@ describe("v2 schemas", () => {
     ["WorkspaceStateSummary", { workspaceKey: u, activeRelease: { version: 4, contentDigest: d, config: { secret: "x" } }, deploymentRevision: 9, convergence: "converged" }, false],
     ["Promotion", { ...emergency, status: "failed", execution: exec("converged") }, false],
     ["Promotion", { ...emergency, status: "converged", execution: exec("failed", "deadline") }, false],
+    ["Promotion", { ...emergency, status: "converged", execution: exec("failed", "deadline"), recoveredBy: null }, false],
     ["Promotion", { ...emergency, status: "converged", execution: exec("failed", "deadline"), recoveredBy: { kind: "reapply", promotionId: null, deploymentRevision: 10, at: "2026-10-24T00:00:00Z" } }, true],
     ["Promotion", { ...emergency, status: "converged", execution: exec("failed", "deadline"), recoveredBy: { kind: "rollback", promotionId: u, deploymentRevision: 10, at: "2026-10-24T00:00:00Z" } }, false],
     ["Promotion", { ...promo, status: "deploying", execution: exec("converged") }, false],
