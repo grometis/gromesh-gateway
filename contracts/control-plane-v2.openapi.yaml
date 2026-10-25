@@ -283,6 +283,43 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403": { $ref: "#/components/responses/Forbidden" }
+  /instance/workspace-migration:
+    get:
+      tags: [ instance ]
+      operationId: getWorkspaceMigrationReport
+      x-scope: instance
+      x-gromesh-requirements: [ GW-WS-02, GW-WS-10, GW-WS-14, GW-RBAC-05 ]
+      x-required-permission: platform.admin
+      x-gromesh-planned: true
+      description: |
+        What the N1 migration (each environment becomes the workspace with the same id) did and what still needs a
+        person: slugs derived from environment names that were adjusted (collision, reserved, invalid) and must be
+        reviewed before the first release, access that changed when the effective role matrix became bindings (only
+        the implicit access to workspaces created later is dropped; nothing is widened), and the routes kept
+        legacy-preserved, with those without a path that the composition of N2 will refuse. A credential or SNI
+        repeated across environments never appears here: it blocks the migration, and the pre-migration check
+        reports it before anything changes. Read-only; null before the migration ran.
+      responses:
+        "200": { description: Report, content: { application/json: { schema: { $ref: "#/components/schemas/WorkspaceMigrationReport" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /instance/api-v1-usage:
+    get:
+      tags: [ instance ]
+      operationId: getApiV1Usage
+      x-scope: instance
+      x-gromesh-requirements: [ GW-RBAC-05 ]
+      x-required-permission: platform.admin
+      x-gromesh-planned: true
+      description: |
+        Calls to the administrative operations of v1 that the controlled migration (decision H-9) will cut (those
+        under /environments/{envId} and /clusters/{clusterId}, and GET and POST /environments) in the last 30 days,
+        per API token, plus the calls made by sessions (the current UI). The cut requires zero token calls in the
+        window. Counted by day; never carries a token value, a path parameter or a body.
+      responses:
+        "200": { description: Usage, content: { application/json: { schema: { $ref: "#/components/schemas/ApiV1Usage" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
   /workspaces:
     get:
       tags: [ workspaces ]
@@ -3679,6 +3716,62 @@ components:
       type: object
       required: [ id, stage, signingKeyIds ]
       properties: { id: { type: string, format: uuid }, stage: { $ref: "#/components/schemas/Stage" }, name: { type: string }, signingKeyIds: { type: array, items: { type: string } } }
+    WorkspaceMigrationReport:
+      type: [ object, "null" ]
+      additionalProperties: false
+      required: [ migratedAt, workspaces, accessChanges ]
+      properties:
+        migratedAt: { type: string, format: date-time }
+        workspaces:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [ workspaceId, name, slug, slugStatus, legacyRoutes, routesWithoutPath ]
+            properties:
+              workspaceId: { type: string, format: uuid }
+              name: { type: string }
+              slug: { type: string }
+              slugStatus:
+                enum: [ derived, adjusted ]
+                description: "adjusted: the name gave a colliding, reserved or invalid slug; the proposed slug needs review before the first release"
+              slugReason: { enum: [ collision, reserved, invalid ] }
+              legacyRoutes: { type: integer, minimum: 0, description: Routes kept pathCompatibility legacy-preserved }
+              routesWithoutPath: { type: integer, minimum: 0, description: Routes the N2 composition refuses until they get a path }
+            if: { properties: { slugStatus: { const: adjusted } } }
+            then: { required: [ slugReason ] }
+            else: { not: { required: [ slugReason ] } }
+        accessChanges:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [ userId, change ]
+            properties:
+              userId: { type: string, format: uuid }
+              change:
+                enum: [ implicit-access-dropped ]
+                description: A global editor or viewer kept every current workspace through bindings but no longer reaches workspaces created later
+    ApiV1Usage:
+      type: object
+      additionalProperties: false
+      required: [ windowDays, since, sessionCalls, tokens ]
+      properties:
+        windowDays: { const: 30 }
+        since: { type: string, format: date }
+        sessionCalls: { type: integer, minimum: 0 }
+        tokens:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [ tokenId, tokenName, ownerId, calls, lastCalledOn ]
+            properties:
+              tokenId: { type: string, format: uuid }
+              tokenName: { type: string }
+              ownerId: { type: string, format: uuid }
+              calls: { type: integer, minimum: 1 }
+              lastCalledOn: { type: string, format: date }
     WorkspaceWrite:
       type: object
       required:

@@ -250,7 +250,10 @@ export interface paths {
         get: operations["getEnvironment"];
         put?: never;
         post?: never;
-        /** @description Refused with 409 while clusters are registered. */
+        /**
+         * @description Refused with 409 while clusters are registered. Only a global admin: an environment admin answers 403 (an
+         *     environment is a workspace, and a workspace admin never deletes the workspace).
+         */
         delete: operations["deleteEnvironment"];
         options?: never;
         head?: never;
@@ -315,7 +318,7 @@ export interface paths {
          *     no natural key and requires an existing id to update. SNI overlap with another certificate that would remain
          *     in the resulting draft is a uniqueness conflict.
          *     Plugins match by (name, resolved service, route, consumer scope), targets by (upstream, target), JWT
-         *     credentials by issuer key and basic-auth credentials by username (both unique within the environment).
+         *     credentials by issuer key and basic-auth credentials by username (both unique in the instance, across environments).
          *     Key-auth matches by existing id within the resolved consumer or by the supplied full key; `keyHint`
          *     is display-only and MUST NOT be used to match a credential. A credential belonging to another consumer,
          *     or an id disagreeing with a natural-key match, is a conflict. Credential ids only match within the resolved
@@ -560,7 +563,11 @@ export interface paths {
         };
         get: operations["listKeyAuthCredentials"];
         put?: never;
-        /** @description If `key` is omitted a random 32-byte key is generated. The full key is returned only in this response. */
+        /**
+         * @description If `key` is omitted a random 32-byte key is generated. The full key is returned only in this response. 409 when
+         *     a supplied `key` is already used by a key-auth credential in the instance (any environment; the message never
+         *     names it).
+         */
         post: operations["createKeyAuthCredential"];
         delete?: never;
         options?: never;
@@ -604,7 +611,7 @@ export interface paths {
          * @description HS256 signs with a shared `secret`: if omitted a random 32-byte secret is generated, and it is returned only in
          *     this response. RS256 and ES256 verify with `rsaPublicKey` (an RSA or EC P-256 public key, despite Kong's field
          *     name). If `key` is omitted a random one is generated. 409 when `key` is already used by a JWT credential in the
-         *     environment. 422 with `path`: `secret` given with RS256/ES256; `rsaPublicKey` missing with RS256/ES256, given
+         *     instance (any environment; the message never names it). 422 with `path`: `secret` given with RS256/ES256; `rsaPublicKey` missing with RS256/ES256, given
          *     with HS256, not a PEM public key, or of the wrong type for the algorithm (RSA for RS256, EC P-256 for ES256).
          */
         post: operations["createJwtCredential"];
@@ -651,7 +658,7 @@ export interface paths {
          *     (`sha1(password + consumerId)`), and the snapshot carries that hash (applied with `_transform: false`), never the
          *     password itself. The hash is treated as a secret: encrypted at rest in the control plane's table and `"REDACTED"`
          *     everywhere except the agent endpoint (API, audit, diff, preview and snapshot envelope). 409 when `username` is
-         *     already used by a basic-auth credential in the environment.
+         *     already used by a basic-auth credential in the instance (any environment; the message never names it).
          */
         post: operations["createBasicAuthCredential"];
         delete?: never;
@@ -810,8 +817,8 @@ export interface paths {
          *     `issuer`, `notBefore`, `notAfter` and `fingerprintSha256` describe the leaf. The key is write-only: it is
          *     stored encrypted and reads back as "REDACTED". 422 with `path`: `cert` when it is not a PEM certificate chain or
          *     its leaf has expired; `key` when it is not a PEM private key, does not match the leaf, or is "REDACTED" here;
-         *     `snis.<i>` when a name is repeated in the request, already belongs to another certificate of the environment,
-         *     or has a wildcard anywhere but as the `*.` prefix.
+         *     `snis.<i>` when a name is repeated in the request, already belongs to another certificate of the instance (any
+         *     environment; the message never names it), or has a wildcard anywhere but as the `*.` prefix.
          *     Expiry is judged only when `cert` is created or replaced: publishing, rolling back and editing only the `snis`
          *     of a certificate that has since expired keep working.
          */
@@ -1399,7 +1406,7 @@ export interface components {
         /** @enum {string} */
         JwtAlgorithm: "HS256" | "RS256" | "ES256";
         JwtCredentialCreate: {
-            /** @description Matched against the token's `iss` claim; unique in the environment */
+            /** @description Matched against the token's `iss` claim; unique in the instance */
             key?: string;
             /** @default HS256 */
             algorithm: components["schemas"]["JwtAlgorithm"];
@@ -1423,7 +1430,7 @@ export interface components {
             createdAt: string;
         };
         BasicAuthCredentialCreate: {
-            /** @description Unique in the environment */
+            /** @description Unique in the instance */
             username: string;
             /** @description Write-only */
             password: string;
@@ -1541,7 +1548,7 @@ export interface components {
             cert: string;
             /** @description PEM private key of the leaf, at most 16 KiB, write-only; REDACTED on a PUT keeps the stored one */
             key: string;
-            /** @description Server names this certificate answers, unique in the environment; a wildcard only as the `*.` prefix */
+            /** @description Server names this certificate answers, unique in the instance; a wildcard only as the `*.` prefix */
             snis: string[];
             tags?: components["schemas"]["Tags"];
         };

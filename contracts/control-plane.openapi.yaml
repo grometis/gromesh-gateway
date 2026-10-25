@@ -30,6 +30,13 @@ info:
         `GET /environments` lists only the environments where the caller's effective role is at least `viewer`
         (a global admin sees all).
       - Every mutation is written to the audit log in the same transaction.
+      - Migration to v2 (control-plane-v2.openapi.yaml, decision H-9): each environment is the workspace with the same
+        id. Every operation here runs on the same services and the same authorization as v2; the roles above are
+        translated to v2 permissions and no rule of this API grants anything v2 would refuse. The administrative
+        operations under `/environments/{envId}` and `/clusters/{clusterId}`, and `GET`/`POST /environments`, are cut
+        (410) only after the UI no longer calls them, no API token called them for 30 days and the migration
+        regression is green; that cut is a contract change of its own. Login, sessions, CSRF, `/me`, users, API
+        tokens, the plugin catalog, the audit log and the agent protocol stay here.
       - Edits change the environment's draft state. Traffic only changes after a publish
         (or automatically when the environment has `publishMode: auto`).
       - Authentication is a session cookie set by `POST /auth/login` (`httpOnly; Secure; SameSite=Strict`).
@@ -450,7 +457,9 @@ paths:
       operationId: deleteEnvironment
       security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: admin
-      description: Refused with 409 while clusters are registered.
+      description: |
+        Refused with 409 while clusters are registered. Only a global admin: an environment admin answers 403 (an
+        environment is a workspace, and a workspace admin never deletes the workspace).
       responses:
         "204": { description: Deleted }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -519,7 +528,7 @@ paths:
         no natural key and requires an existing id to update. SNI overlap with another certificate that would remain
         in the resulting draft is a uniqueness conflict.
         Plugins match by (name, resolved service, route, consumer scope), targets by (upstream, target), JWT
-        credentials by issuer key and basic-auth credentials by username (both unique within the environment).
+        credentials by issuer key and basic-auth credentials by username (both unique in the instance, across environments).
         Key-auth matches by existing id within the resolved consumer or by the supplied full key; `keyHint`
         is display-only and MUST NOT be used to match a credential. A credential belonging to another consumer,
         or an id disagreeing with a natural-key match, is a conflict. Credential ids only match within the resolved
@@ -938,7 +947,10 @@ paths:
       operationId: createKeyAuthCredential
       security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
-      description: If `key` is omitted a random 32-byte key is generated. The full key is returned only in this response.
+      description: |
+        If `key` is omitted a random 32-byte key is generated. The full key is returned only in this response. 409 when
+        a supplied `key` is already used by a key-auth credential in the instance (any environment; the message never
+        names it).
       requestBody:
         required: false
         content:
@@ -1006,7 +1018,7 @@ paths:
         HS256 signs with a shared `secret`: if omitted a random 32-byte secret is generated, and it is returned only in
         this response. RS256 and ES256 verify with `rsaPublicKey` (an RSA or EC P-256 public key, despite Kong's field
         name). If `key` is omitted a random one is generated. 409 when `key` is already used by a JWT credential in the
-        environment. 422 with `path`: `secret` given with RS256/ES256; `rsaPublicKey` missing with RS256/ES256, given
+        instance (any environment; the message never names it). 422 with `path`: `secret` given with RS256/ES256; `rsaPublicKey` missing with RS256/ES256, given
         with HS256, not a PEM public key, or of the wrong type for the algorithm (RSA for RS256, EC P-256 for ES256).
       requestBody:
         required: false
@@ -1072,7 +1084,7 @@ paths:
         (`sha1(password + consumerId)`), and the snapshot carries that hash (applied with `_transform: false`), never the
         password itself. The hash is treated as a secret: encrypted at rest in the control plane's table and `"REDACTED"`
         everywhere except the agent endpoint (API, audit, diff, preview and snapshot envelope). 409 when `username` is
-        already used by a basic-auth credential in the environment.
+        already used by a basic-auth credential in the instance (any environment; the message never names it).
       requestBody:
         required: true
         content:
@@ -1326,8 +1338,8 @@ paths:
         `issuer`, `notBefore`, `notAfter` and `fingerprintSha256` describe the leaf. The key is write-only: it is
         stored encrypted and reads back as "REDACTED". 422 with `path`: `cert` when it is not a PEM certificate chain or
         its leaf has expired; `key` when it is not a PEM private key, does not match the leaf, or is "REDACTED" here;
-        `snis.<i>` when a name is repeated in the request, already belongs to another certificate of the environment,
-        or has a wildcard anywhere but as the `*.` prefix.
+        `snis.<i>` when a name is repeated in the request, already belongs to another certificate of the instance (any
+        environment; the message never names it), or has a wildcard anywhere but as the `*.` prefix.
         Expiry is judged only when `cert` is created or replaced: publishing, rolling back and editing only the `snis`
         of a certificate that has since expired keep working.
       requestBody:
@@ -2296,7 +2308,7 @@ components:
     JwtCredentialCreate:
       type: object
       properties:
-        key: { type: string, minLength: 1, maxLength: 256, description: "Matched against the token's `iss` claim; unique in the environment" }
+        key: { type: string, minLength: 1, maxLength: 256, description: "Matched against the token's `iss` claim; unique in the instance" }
         algorithm: { allOf: [{ $ref: "#/components/schemas/JwtAlgorithm" }], default: HS256 }
         secret: { type: string, minLength: 32, maxLength: 512, description: "HS256 only, write-only" }
         rsaPublicKey: { type: string, minLength: 1, maxLength: 16384, description: "RS256/ES256 only: PEM public key, at most 16 KiB" }
@@ -2316,7 +2328,7 @@ components:
       type: object
       required: [username, password]
       properties:
-        username: { type: string, minLength: 1, maxLength: 256, description: Unique in the environment }
+        username: { type: string, minLength: 1, maxLength: 256, description: Unique in the instance }
         password: { type: string, minLength: 8, maxLength: 256, description: Write-only }
         tags: { $ref: "#/components/schemas/Tags" }
     BasicAuthCredential:
@@ -2418,7 +2430,7 @@ components:
         snis:
           type: array
           maxItems: 100
-          description: Server names this certificate answers, unique in the environment; a wildcard only as the `*.` prefix
+          description: Server names this certificate answers, unique in the instance; a wildcard only as the `*.` prefix
           items: { type: string, maxLength: 253, pattern: "^(\\*\\.)?[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$" }
         tags: { $ref: "#/components/schemas/Tags" }
     Certificate:
