@@ -3,8 +3,8 @@ import { hashIssues, type Target, type Upstream } from "@gromesh/compiler";
 import { and, asc, eq, gt, ilike, or, sql, type SQL } from "drizzle-orm";
 import type { TargetWrite, UpstreamHealthchecks, UpstreamWrite } from "../api-types.js";
 import { audit } from "../audit/audit.js";
-import { Ctx, RequiredRole, type RequestContext } from "../auth/auth.js";
-import { contractBody } from "../common/contract.js";
+import { Ctx, RequiredPermission, RequiredRole, type RequestContext } from "../auth/auth.js";
+import { contractBody, contractBodyV2 } from "../common/contract.js";
 import { decodeCursor, parseLimit, toPage } from "../common/pagination.js";
 import { conflict, notFound, unprocessable } from "../common/problem.js";
 import { assertDestination, destinationPolicy, targetHost, type DestinationPolicy } from "../common/destinations.js";
@@ -12,6 +12,7 @@ import { APP_CONFIG, type AppConfig } from "../config.js";
 import { DB, type Db, type Executor } from "../db/db.js";
 import { services, targets, upstreams, type TargetRow, type UpstreamRow } from "../db/schema.js";
 import { markDraftChanged, requireEnvironment, uuidParam } from "../environments/environments.js";
+import { refuseVarRefs, type WithVarRefs } from "../workspaces/var-refs.js";
 
 /* ---------------- mapping ---------------- */
 
@@ -355,5 +356,88 @@ export class UpstreamsController {
   }
 }
 
-@Module({ controllers: [UpstreamsController], providers: [UpstreamsService] })
+/** control-plane-v2: the same service in the workspace with the environment's id (decision H-9). */
+@Controller("api/v2/workspaces/:workspaceId/upstreams")
+export class WorkspaceUpstreamsController {
+  constructor(private readonly upstreams: UpstreamsService) {}
+
+  @Get()
+  @RequiredPermission("workspace.read", "workspace")
+  list(@Param("workspaceId", uuidParam()) workspaceId: string, @Query() query: Record<string, unknown>) {
+    return this.upstreams.list(workspaceId, query);
+  }
+
+  @Post()
+  @RequiredPermission("gateway.write", "workspace")
+  create(@Ctx() ctx: RequestContext, @Param("workspaceId", uuidParam()) workspaceId: string, @Body(contractBodyV2("WorkspaceUpstreamWrite")) body: UpstreamWrite) {
+    return this.upstreams.create(ctx, workspaceId, body);
+  }
+
+  @Get(":upstreamId")
+  @RequiredPermission("workspace.read", "workspace")
+  get(@Param("workspaceId", uuidParam()) workspaceId: string, @Param("upstreamId", uuidParam()) upstreamId: string) {
+    return this.upstreams.get(workspaceId, upstreamId);
+  }
+
+  @Put(":upstreamId")
+  @RequiredPermission("gateway.write", "workspace")
+  replace(
+    @Ctx() ctx: RequestContext,
+    @Param("workspaceId", uuidParam()) workspaceId: string,
+    @Param("upstreamId", uuidParam()) upstreamId: string,
+    @Body(contractBodyV2("WorkspaceUpstreamWrite")) body: UpstreamWrite,
+  ) {
+    return this.upstreams.replace(ctx, workspaceId, upstreamId, body);
+  }
+
+  @Delete(":upstreamId")
+  @HttpCode(204)
+  @RequiredPermission("gateway.write", "workspace")
+  async remove(@Ctx() ctx: RequestContext, @Param("workspaceId", uuidParam()) workspaceId: string, @Param("upstreamId", uuidParam()) upstreamId: string) {
+    await this.upstreams.remove(ctx, workspaceId, upstreamId);
+  }
+
+  @Get(":upstreamId/targets")
+  @RequiredPermission("workspace.read", "workspace")
+  listTargets(@Param("workspaceId", uuidParam()) workspaceId: string, @Param("upstreamId", uuidParam()) upstreamId: string, @Query() query: Record<string, unknown>) {
+    return this.upstreams.listTargets(workspaceId, upstreamId, query);
+  }
+
+  @Post(":upstreamId/targets")
+  @RequiredPermission("gateway.write", "workspace")
+  createTarget(
+    @Ctx() ctx: RequestContext,
+    @Param("workspaceId", uuidParam()) workspaceId: string,
+    @Param("upstreamId", uuidParam()) upstreamId: string,
+    @Body(contractBodyV2("WorkspaceTargetWrite")) body: WithVarRefs<TargetWrite, "target">,
+  ) {
+    return this.upstreams.createTarget(ctx, workspaceId, upstreamId, refuseVarRefs(body, ["target"]));
+  }
+
+  @Put(":upstreamId/targets/:targetId")
+  @RequiredPermission("gateway.write", "workspace")
+  replaceTarget(
+    @Ctx() ctx: RequestContext,
+    @Param("workspaceId", uuidParam()) workspaceId: string,
+    @Param("upstreamId", uuidParam()) upstreamId: string,
+    @Param("targetId", uuidParam()) targetId: string,
+    @Body(contractBodyV2("WorkspaceTargetWrite")) body: WithVarRefs<TargetWrite, "target">,
+  ) {
+    return this.upstreams.replaceTarget(ctx, workspaceId, upstreamId, targetId, refuseVarRefs(body, ["target"]));
+  }
+
+  @Delete(":upstreamId/targets/:targetId")
+  @HttpCode(204)
+  @RequiredPermission("gateway.write", "workspace")
+  async removeTarget(
+    @Ctx() ctx: RequestContext,
+    @Param("workspaceId", uuidParam()) workspaceId: string,
+    @Param("upstreamId", uuidParam()) upstreamId: string,
+    @Param("targetId", uuidParam()) targetId: string,
+  ) {
+    await this.upstreams.removeTarget(ctx, workspaceId, upstreamId, targetId);
+  }
+}
+
+@Module({ controllers: [UpstreamsController, WorkspaceUpstreamsController], providers: [UpstreamsService] })
 export class UpstreamsModule {}
