@@ -12,7 +12,7 @@ import { certificateKeyContext, ENCRYPTOR, Encryptor } from "../crypto/crypto.js
 import { DB, type Db, type Executor } from "../db/db.js";
 import { certificateSnis, certificates, type CertificateRow } from "../db/schema.js";
 import { markDraftChanged, requireEnvironment, uuidParam } from "../environments/environments.js";
-import { admit, type ConflictLimit, conflictLimit, guardedUniqueWrite, inUse, lockUnique } from "../workspaces/instance-uniqueness.js";
+import { admit, type ConflictLimit, conflictLimit, guardedUniqueWrite, lockTablesForWrite, lockUnique, refuse } from "../workspaces/instance-uniqueness.js";
 import { APP_CONFIG, type AppConfig } from "../config.js";
 
 export const SECRET_PLACEHOLDER = "REDACTED";
@@ -146,8 +146,9 @@ export class CertificatesService {
   async create(ctx: RequestContext, envId: string, body: CertificateWrite) {
     const { leaf, key } = checkCertificate(body, null, true);
     return guardedUniqueWrite(this.db, ctx, "sni", this.conflicts, () => this.db.transaction(async (tx) => {
+      await lockTablesForWrite(tx, ["sni"]);
       await requireEnvironment(tx, envId, true);
-      await this.checkSnisFree(tx, ctx, body.snis, null);
+      if (!(await this.snisFree(tx, ctx, body.snis, null))) return refuse(tx, ctx, "sni", this.conflicts);
       const id = randomUUID();
       const [row] = await tx
         .insert(certificates)
@@ -166,10 +167,11 @@ export class CertificatesService {
     const current = await this.requireCertificate(this.db, envId, certificateId);
     const { leaf, key } = checkCertificate(body, this.enc.open(current.key, certificateKeyContext(current.id)), body.cert !== current.cert);
     return guardedUniqueWrite(this.db, ctx, "sni", this.conflicts, () => this.db.transaction(async (tx) => {
+      await lockTablesForWrite(tx, ["sni"]);
       await requireEnvironment(tx, envId, true);
       const locked = await this.requireCertificate(tx, envId, certificateId);
       const before = toCertificate(locked, (await this.snisOf(tx, [locked.id])).get(locked.id) ?? []);
-      await this.checkSnisFree(tx, ctx, body.snis, certificateId);
+      if (!(await this.snisFree(tx, ctx, body.snis, certificateId))) return refuse(tx, ctx, "sni", this.conflicts);
       const [row] = await tx
         .update(certificates)
         .set({ cert: body.cert, key: this.enc.seal(key, certificateKeyContext(certificateId)), ...leaf, tags: body.tags ?? [], updatedAt: sql`now()` })
@@ -213,8 +215,8 @@ export class CertificatesService {
    * another certificate holding it, in any workspace, is the generic 409 that never names the other one. The lock per
    * kind serializes the writers; the instance index, once in force, is the backstop.
    */
-  private async checkSnisFree(tx: Executor, ctx: RequestContext, names: string[], ownId: string | null): Promise<void> {
-    if (names.length === 0) return;
+  private async snisFree(tx: Executor, ctx: RequestContext, names: string[], ownId: string | null): Promise<boolean> {
+    if (names.length === 0) return true;
     await lockUnique(tx, ["sni"]);
     await admit(tx, ctx);
     const [taken] = await tx
@@ -222,7 +224,7 @@ export class CertificatesService {
       .from(certificateSnis)
       .where(and(inArray(certificateSnis.name, names), ownId ? ne(certificateSnis.certificateId, ownId) : undefined))
       .limit(1);
-    if (taken) throw inUse();
+    return taken === undefined;
   }
 
   private async writeSnis(tx: Executor, envId: string, certificateId: string, names: string[]): Promise<void> {

@@ -12,7 +12,7 @@ import { DB, type Db } from "../db/db.js";
 import { basicAuthCredentials, consumers, jwtCredentials, type BasicAuthCredentialRow, type JwtCredentialRow } from "../db/schema.js";
 import { markDraftChanged, requireEnvironment, uuidParam } from "../environments/environments.js";
 import { requireConsumer } from "./consumers.js";
-import { admit, type ConflictLimit, conflictLimit, guardedUniqueWrite, inUse, lockUnique, takenElsewhere } from "../workspaces/instance-uniqueness.js";
+import { admit, type ConflictLimit, conflictLimit, guardedUniqueWrite, lockTablesForWrite, lockUnique, refuse, takenElsewhere } from "../workspaces/instance-uniqueness.js";
 import { APP_CONFIG, type AppConfig } from "../config.js";
 
 /* ---------------- mapping ---------------- */
@@ -128,6 +128,7 @@ export class CredentialsService {
   async createJwt(ctx: RequestContext, envId: string, consumerId: string, body: JwtCredentialCreate) {
     checkJwt(body);
     return guardedUniqueWrite(this.db, ctx, "jwt-key", this.conflicts, () => this.db.transaction(async (tx) => {
+      await lockTablesForWrite(tx, ["jwt-key"]);
       await requireConsumer(tx, envId, consumerId);
       const secret = body.algorithm === "HS256" ? (body.secret ?? randomBytes(32).toString("base64url")) : null;
       const credential: JwtCredential = {
@@ -144,7 +145,7 @@ export class CredentialsService {
       await requireEnvironment(tx, envId, true);
       await lockUnique(tx, ["jwt-key"]);
       await admit(tx, ctx);
-      if ((await takenElsewhere(tx, "jwt-key", envId, [credential.key])).size > 0) throw inUse();
+      if ((await takenElsewhere(tx, "jwt-key", envId, [credential.key])).size > 0) return refuse(tx, ctx, "jwt-key", this.conflicts);
       const [row] = await tx.insert(jwtCredentials).values({ environmentId: envId, ...jwtValues(credential, this.enc) }).returning();
       const after = toJwtCredential(row!);
       await markDraftChanged(tx, envId);
@@ -178,11 +179,12 @@ export class CredentialsService {
 
   async createBasicAuth(ctx: RequestContext, envId: string, consumerId: string, body: BasicAuthCredentialCreate) {
     return guardedUniqueWrite(this.db, ctx, "basic-auth-username", this.conflicts, () => this.db.transaction(async (tx) => {
+      await lockTablesForWrite(tx, ["basic-auth-username"]);
       await requireConsumer(tx, envId, consumerId);
       await requireEnvironment(tx, envId, true);
       await lockUnique(tx, ["basic-auth-username"]);
       await admit(tx, ctx);
-      if ((await takenElsewhere(tx, "basic-auth-username", envId, [body.username])).size > 0) throw inUse();
+      if ((await takenElsewhere(tx, "basic-auth-username", envId, [body.username])).size > 0) return refuse(tx, ctx, "basic-auth-username", this.conflicts);
       // Only Kong's hash is kept: the password itself is never stored, logged or returned.
       const credential: BasicAuthCredential = { id: randomUUID(), consumerId, username: body.username, passwordHash: basicAuthPasswordHash(consumerId, body.password), tags: body.tags ?? [] };
       const [row] = await tx.insert(basicAuthCredentials).values({ environmentId: envId, ...basicAuthValues(credential, this.enc) }).returning();

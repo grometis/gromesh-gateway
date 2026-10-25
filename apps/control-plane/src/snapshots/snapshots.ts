@@ -40,7 +40,7 @@ import { loadGatewayState, restoreGatewayState, workspaceDefaultRoutes } from ".
 import { AGENT_CHANNEL } from "../clusters/clusters.js";
 import { PluginCatalog, PluginCatalogModule } from "../plugin-catalog/catalog.js";
 import { ENCRYPTOR, Encryptor, snapshotContext } from "../crypto/crypto.js";
-import { admit, conflictLimit, guardedUniqueWrite, lockUnique, UNIQUE_KINDS } from "../workspaces/instance-uniqueness.js";
+import { admit, conflictLimit, guardedUniqueWrite, lockTablesForWrite, lockUnique, refuse, stateCollides, UNIQUE_KINDS } from "../workspaces/instance-uniqueness.js";
 
 type OpenSnapshot = Omit<SnapshotRow, "config" | "state"> & { config: KongDeclarativeConfig; state: GatewayState };
 
@@ -140,11 +140,13 @@ export class SnapshotsService {
    */
   async rollback(ctx: RequestContext, envId: string, version: number) {
     const { row, changeCount } = await guardedUniqueWrite(this.db, ctx, "rollback", conflictLimit(this.config), () => this.db.transaction(async (tx) => {
+      await lockTablesForWrite(tx, UNIQUE_KINDS);
       const env = await requireEnvironment(tx, envId, true);
       const target = await this.requireSnapshot(tx, envId, version);
-      // The restore checks the instance for the version's credentials: under the actor's limit, like a write.
+      // The version's credentials and server names against the instance: under the actor's limit, like a write.
       await lockUnique(tx, UNIQUE_KINDS);
       await admit(tx, ctx);
+      if (await stateCollides(tx, envId, target.state, this.enc)) return refuse(tx, ctx, "rollback", conflictLimit(this.config));
       await restoreGatewayState(tx, envId, target.state, this.enc, this.catalog, target.workspaceDefaultRoutes);
       const prepared = await this.prepare(tx, env);
       if (prepared.current?.hash === prepared.envelope.hash) {

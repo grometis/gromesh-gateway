@@ -191,6 +191,21 @@ describe("uniqueness in the workspace and in the instance", () => {
     }
   });
 
+  it("stops probing at the limit even under a burst: of six concurrent conflicts, three answer 409 and three 429", async () => {
+    const [a, b] = [await env(), await env()];
+    const [ca, cb] = [await consumer(a), await consumer(b)];
+    const iss = uniq("limited-burst");
+    expect((await h.api("POST", `/environments/${a}/consumers/${ca}/jwt`, { key: iss })).status).toBe(201);
+    const low = await startHarness({ uniqueConflictMax: 3 });
+    try {
+      const prober = await low.as("editor");
+      const burst = await Promise.all(Array.from({ length: 6 }, () => prober.api("POST", `/environments/${b}/consumers/${cb}/jwt`, { key: iss })));
+      expect(burst.map((r) => r.status).sort()).toEqual([409, 409, 409, 429, 429, 429]);
+    } finally {
+      await low.close();
+    }
+  });
+
   it("has the instance indexes in force on a clean instance", async () => {
     const rows = (await h.sql.query(`select indexname from pg_indexes where indexname like '%instance_uq' order by indexname`)).rows.map((r) => r.indexname);
     expect(rows).toEqual(["basicauth_username_instance_uq", "certificate_snis_name_instance_uq", "jwt_key_instance_uq", "keyauth_key_hash_instance_uq"]);
@@ -292,6 +307,34 @@ describe("an instance migrated with credentials repeated across environments", (
       await writer.query("rollback").catch(() => undefined);
       await writer.query(`delete from jwt_credentials where key = 'raced-iss'`);
       await writer.end();
+    }
+  });
+
+  it("never lets a writer hold the environment's row while it waits for the table an import locked (no cycle)", async () => {
+    const importer = new pg.Client({ connectionString: url });
+    await importer.connect();
+    try {
+      // What an import does while the JWT index is not in force: the table first, then the environment's row.
+      await importer.query("begin");
+      await importer.query("lock table jwt_credentials in share row exclusive mode");
+      const creating = h.api("POST", `/environments/${id(1)}/consumers/${id(10)}/jwt`, { key: "ordered-iss" });
+      const importerPid = (await importer.query("select pg_backend_pid() as pid")).rows[0].pid;
+      let waiter: number | undefined;
+      for (let i = 0; i < 200 && waiter === undefined; i++) {
+        await new Promise((r) => setTimeout(r, 25));
+        waiter = (await h.sql.query(`select pid from pg_stat_activity where $1 = any(pg_blocking_pids(pid))`, [importerPid])).rows[0]?.pid;
+      }
+      expect(waiter).toBeDefined();
+      // The writer waits at its first statement: it holds no lock on environments, so the import takes the row.
+      const onEnvironments = (await h.sql.query(`select count(*)::int as n from pg_locks l join pg_class c on c.oid = l.relation where l.pid = $1 and c.relname = 'environments' and l.granted`, [waiter])).rows[0].n;
+      expect(onEnvironments).toBe(0);
+      await importer.query(`select id from environments where id = $1 for update`, [id(1)]);
+      await importer.query("commit");
+      expect((await creating).status).toBe(201);
+    } finally {
+      await importer.query("rollback").catch(() => undefined);
+      await importer.query(`delete from jwt_credentials where key = 'ordered-iss'`);
+      await importer.end();
     }
   });
 

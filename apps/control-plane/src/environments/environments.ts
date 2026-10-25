@@ -8,6 +8,7 @@ import { conflict, notFound } from "../common/problem.js";
 import { DB, type Db, type Executor } from "../db/db.js";
 import { clusters, environmentRoles, environments, type EnvironmentRow, type UserRow } from "../db/schema.js";
 import { assignSlug } from "../workspaces/workspaces.js";
+import { lockTablesForWrite, UNIQUE_KINDS } from "../workspaces/instance-uniqueness.js";
 
 export const uuidParam = () => new ParseUUIDPipe({ errorHttpStatusCode: 404 });
 
@@ -95,6 +96,8 @@ export class EnvironmentsService {
 
   async remove(ctx: RequestContext, envId: string) {
     await this.db.transaction(async (tx) => {
+      // The cascade writes the credential tables: they come before the environment's row, as for every writer.
+      await lockTablesForWrite(tx, UNIQUE_KINDS);
       const before = toEnvironment(await requireEnvironment(tx, envId, true));
       const [cluster] = await tx.select({ id: clusters.id }).from(clusters).where(eq(clusters.environmentId, envId)).limit(1);
       if (cluster) throw conflict("Environment still has registered clusters");

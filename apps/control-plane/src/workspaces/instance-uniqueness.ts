@@ -81,8 +81,10 @@ export async function enforceInstanceUniqueness(tx: Executor): Promise<UniqueKin
   const missing = UNIQUE_KINDS.filter((kind) => !present.has(INSTANCE_INDEXES[kind].name));
   if (missing.length === 0) return [];
   const blocked: UniqueKind[] = [];
-  await lockUnique(tx, missing);
+  // The tables first (the order of every writer of them), and only them: SHARE keeps writers out while the repetition
+  // is checked and the index built.
   await tx.execute(sql`set local lock_timeout = '2s'`);
+  await tx.execute(sql.raw(`lock table ${tablesOf(missing).join(", ")} in share mode`));
   for (const kind of missing) {
     const c = COLUMNS[kind];
     const [repeated] = await tx.select({ value: c.value }).from(c.table).groupBy(c.value).having(sql`count(distinct ${c.env}) > 1`).limit(1);
@@ -100,14 +102,25 @@ export async function unenforcedKinds(db: Executor): Promise<UniqueKind[]> {
   return UNIQUE_KINDS.filter((kind) => !present.has(INSTANCE_INDEXES[kind].name));
 }
 
+const TABLE: Record<UniqueKind, string> = { "key-auth-key": "keyauth_credentials", "jwt-key": "jwt_credentials", "basic-auth-username": "basicauth_credentials", sni: "certificate_snis" };
+const tablesOf = (kinds: readonly UniqueKind[]) => [...new Set(kinds.map((k) => TABLE[k]))].sort();
+
+/**
+ * The lock order of every writer of instance-unique values: these tables first, then the environment's row, then
+ * the kind's lock, then the actor's. A writer takes ROW EXCLUSIVE (what its INSERT takes anyway, compatible with
+ * every other writer) as its first statement, so it never holds the environment's row while waiting for a table.
+ */
+export async function lockTablesForWrite(tx: Executor, kinds: readonly UniqueKind[]): Promise<void> {
+  await tx.execute(sql.raw(`lock table ${tablesOf(kinds).join(", ")} in row exclusive mode`));
+}
+
 /**
  * For a serializable (or repeatable read) transaction: as its first statement, the tables of the kinds without an
  * instance index, against concurrent writers. A table lock does not freeze the snapshot (a SELECT would), so the
  * transaction then sees every value committed before it; later writers wait for it.
  */
 export async function lockUnenforcedTables(tx: Executor, kinds: readonly UniqueKind[]): Promise<void> {
-  const tables = [...new Set(kinds.map((k) => ({ "key-auth-key": "keyauth_credentials", "jwt-key": "jwt_credentials", "basic-auth-username": "basicauth_credentials", sni: "certificate_snis" })[k]))].sort();
-  if (tables.length > 0) await tx.execute(sql.raw(`lock table ${tables.join(", ")} in share row exclusive mode`));
+  if (kinds.length > 0) await tx.execute(sql.raw(`lock table ${tablesOf(kinds).join(", ")} in share row exclusive mode`));
 }
 
 /** At start: like enforceInstanceUniqueness, but a lock timeout leaves the indexes for later instead of failing. */
@@ -163,11 +176,11 @@ export async function admit(tx: Executor, ctx: RequestContext): Promise<void> {
 }
 
 /** Counts one conflicting attempt against the actor, atomically, and audits it (the kind only, never the value). */
-export async function recordConflict(db: Db, ctx: RequestContext, kind: ConflictKind, limit: ConflictLimit): Promise<void> {
+async function countConflict(tx: Executor, ctx: RequestContext, kind: ConflictKind, limit: ConflictLimit): Promise<void> {
   const window = sql`make_interval(secs => ${limit.windowMs / 1000})`;
   const fresh = sql`${loginAttempts.windowStartedAt} > now() - ${window}`;
   const failures = sql`case when ${fresh} then ${loginAttempts.failures} + 1 else 1 end`;
-  await db.transaction(async (tx) => {
+  {
     await tx
       .insert(loginAttempts)
       .values({ key: `conflict:${ctx.actor.id}`, failures: 1, windowStartedAt: sql`now()`, lockedUntil: limit.max <= 1 ? sql`now() + ${window}` : null })
@@ -180,20 +193,44 @@ export async function recordConflict(db: Db, ctx: RequestContext, kind: Conflict
         },
       });
     await audit(tx, ctx, { action: "uniqueness.conflict", entityType: kind, after: { kind } });
-  });
+  }
+}
+
+/** The same in a transaction of its own: after a write that failed (an import, a unique violation). */
+export const recordConflict = (db: Db, ctx: RequestContext, kind: ConflictKind, limit: ConflictLimit) => db.transaction((tx) => countConflict(tx, ctx, kind, limit));
+
+/** What a write's transaction returns when it refuses: it commits only the count of the conflict, then the 409. */
+export const REFUSED: unique symbol = Symbol("refused");
+/**
+ * Inside the write's transaction, still under the actor's lock (admit): counts and audits the conflict there, so the
+ * next request of the actor, waiting for that lock, already sees it.
+ */
+export async function refuse(tx: Executor, ctx: RequestContext, kind: ConflictKind, limit: ConflictLimit): Promise<typeof REFUSED> {
+  await countConflict(tx, ctx, kind, limit);
+  return REFUSED;
 }
 
 /**
  * A write that may collide on an instance-unique value: refused up front while the actor is over the limit; every
  * collision answers the same generic 409, is audited and counts against the actor, so a 409 is no oracle.
  */
-export async function guardedUniqueWrite<T>(db: Db, ctx: RequestContext, kind: ConflictKind, limit: ConflictLimit, work: () => Promise<T>): Promise<T> {
+export async function guardedUniqueWrite<T>(db: Db, ctx: RequestContext, kind: ConflictKind, limit: ConflictLimit, work: () => Promise<T | typeof REFUSED>): Promise<T> {
   await assertNotLimited(db, ctx);
+  let result: T | typeof REFUSED;
   try {
-    return await work();
+    result = await work();
   } catch (error) {
     if (!isUniqueConflict(error)) throw error;
     await recordConflict(db, ctx, kind, limit);
     throw inUse();
   }
+  if (result === REFUSED) throw inUse();
+  return result;
+}
+
+/** Whether a state (a version to restore) holds a value another workspace holds; the caller holds the kinds' locks. */
+export async function stateCollides(tx: Executor, envId: string, state: GatewayState, enc: Encryptor): Promise<boolean> {
+  const values = uniqueValues(state, enc);
+  for (const kind of UNIQUE_KINDS) if ((await takenElsewhere(tx, kind, envId, values[kind])).size > 0) return true;
+  return false;
 }
