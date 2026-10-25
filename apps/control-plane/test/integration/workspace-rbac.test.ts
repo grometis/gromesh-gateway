@@ -2,7 +2,11 @@ import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { RANK, type Role } from "../../src/auth/environment-access.js";
-import { BUILTIN_ROLES, LEGACY_CLUSTERS, legacyPermissions, PERMISSIONS, requiredPermission, tokenPermissions } from "../../src/auth/permissions.js";
+import { eq } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { BUILTIN_ROLES, LEGACY_CLUSTERS, legacyPermissions, PERMISSIONS, permissionsIn, requiredPermission, tokenPermissions } from "../../src/auth/permissions.js";
+import * as schema from "../../src/db/schema.js";
+import { users } from "../../src/db/schema.js";
 import { type ApiResponse, startHarness, uniq, type Harness } from "./harness.js";
 
 // N1-C3: one authorization for both APIs (decision H-9). v1 roles are translated to v2 permissions; v2 role bindings
@@ -123,6 +127,27 @@ describe("role bindings through /api/v2, honored by v1 and v2 alike", () => {
     // Through v1, as before: the role changes and its binding with it.
     expect((await h.api("PUT", `/users/${hidden.id}/environment-roles`, { items: [] })).status).toBe(200);
     expect((await hidden.api("POST", `/environments/${a}/services`, { name: uniq("svc"), protocol: "http", host: "a.example.com", port: 80 })).status).toBe(201);
+  });
+
+  it("decides from one snapshot: the global role, the environment role and the grants are read in one statement", async () => {
+    const a = await env();
+    const target = await user("viewer", [{ env: a, role: "none" }]);
+    const grant = await v2api(h.api, "POST", `/workspaces/${a}/role-bindings`, { subjectType: "user", subjectId: target.id, role: "workspace-admin" });
+    expect(grant.status).toBe(201);
+    let statements = 0;
+    const db = drizzle(h.sql, { schema, logger: { logQuery: () => void statements++ } });
+    const decide = async () => {
+      const [row] = await db.select().from(users).where(eq(users.id, target.id));
+      statements = 0;
+      const held = await permissionsIn(db, row!, { type: "workspace", workspaceId: a });
+      expect(statements).toBe(1);
+      return held;
+    };
+    // The deny prevails over the grant; once both change, only the new state counts: never the old grant without the deny.
+    expect([...(await decide())]).toEqual([]);
+    expect((await v2api(h.api, "POST", `/role-bindings/${grant.body.id}/revoke`)).status).toBe(204);
+    await h.sql.query(`delete from environment_roles where user_id = $1 and environment_id = $2`, [target.id, a]);
+    expect([...(await decide())].sort()).toEqual([...BUILTIN_ROLES.viewer].sort());
   });
 
   it("follows an environment role an older replica writes (only environment_roles) at once, in v1 and v2", async () => {

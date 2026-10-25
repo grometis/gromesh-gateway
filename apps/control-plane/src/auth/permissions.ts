@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { and, eq, gt, isNull, or, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { Executor } from "../db/db.js";
-import { environmentRoles, roleBindings, workspaces, type UserRow } from "../db/schema.js";
+import { environmentRoles, roleBindings, users, workspaces, type UserRow } from "../db/schema.js";
 import type { Role } from "./environment-access.js";
 
 /** The v2 permission catalog and built-in roles (contracts/control-plane-v2.openapi.yaml, info; a test compares). */
@@ -110,24 +110,31 @@ export async function v1BindingById(tx: Executor, id: string): Promise<V1Binding
  * Everything a user may do in a scope. At instance scope: its global v1 role translated plus its instance grants. In a
  * workspace: its v1 environment role there if it has one (none: nothing at all, whatever was granted), else its global
  * role; plus its v2 grants of the instance and of the workspace. A global admin is platform administration everywhere.
+ * One statement reads all of it, so the decision sees a single snapshot: a grant revoked and a deny lifted in between
+ * never combine into access no committed state gave.
  */
 export async function permissionsIn(tx: Executor, user: UserRow, scope: Scope): Promise<Set<Held>> {
-  const rows = await tx
-    .select({ role: roleBindings.role, permissions: roleBindings.permissions })
-    .from(roleBindings)
-    .where(
-      and(
-        eq(roleBindings.subjectId, user.id),
-        isNull(roleBindings.revokedAt),
-        or(isNull(roleBindings.expiresAt), gt(roleBindings.expiresAt, sql`now()`)),
-        scope.type === "instance" ? eq(roleBindings.scopeType, "instance") : or(eq(roleBindings.scopeType, "instance"), eq(roleBindings.workspaceId, scope.workspaceId)),
-      ),
-    );
-  const globalAdmin = user.role === "admin";
-  const [v1] = scope.type === "workspace" && !globalAdmin ? await v1Bindings(tx, { subjectId: user.id, workspaceId: scope.workspaceId }) : [];
-  if (v1 && v1.role === null) return new Set();
-  const out = new Set<Held>(v1 ? roleSet(v1.role!) : legacyPermissions(user.role, globalAdmin));
-  for (const r of rows) {
+  const workspaceId = scope.type === "workspace" ? scope.workspaceId : null;
+  const { rows } = await tx.execute<{ global: Role | null; v1: Role | "none" | null; grants: { role: string | null; permissions: string[] | null }[] }>(sql`
+    select
+      (select ${users.role} from ${users} where ${users.id} = ${user.id}) as global,
+      (select ${environmentRoles.role} from ${environmentRoles} where ${environmentRoles.userId} = ${user.id} and ${environmentRoles.environmentId} = ${workspaceId}) as v1,
+      coalesce((
+        select json_agg(json_build_object('role', ${roleBindings.role}, 'permissions', ${roleBindings.permissions}))
+        from ${roleBindings}
+        where ${roleBindings.subjectId} = ${user.id}
+          and ${roleBindings.revokedAt} is null
+          and (${roleBindings.expiresAt} is null or ${roleBindings.expiresAt} > now())
+          and (${roleBindings.scopeType} = 'instance' or ${roleBindings.workspaceId} = ${workspaceId})
+      ), '[]'::json) as grants`);
+  const { global, v1, grants } = rows[0]!;
+  // A user deleted meanwhile holds nothing.
+  if (global === null) return new Set();
+  const globalAdmin = global === "admin";
+  const own = workspaceId !== null && !globalAdmin ? v1 : null;
+  if (own === "none") return new Set();
+  const out = new Set<Held>(own ? roleSet(LEGACY_ROLE[own]) : legacyPermissions(global, globalAdmin));
+  for (const r of grants) {
     if (r.role !== null) for (const p of roleSet(r.role)) if (p !== LEGACY_CLUSTERS) out.add(p);
     for (const p of r.permissions ?? []) if ((PERMISSIONS as readonly string[]).includes(p)) out.add(p as Permission);
   }
