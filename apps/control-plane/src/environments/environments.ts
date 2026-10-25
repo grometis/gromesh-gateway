@@ -2,7 +2,7 @@ import { Body, Controller, Delete, Get, HttpCode, Inject, Injectable, Module, Pa
 import { and, asc, eq, sql } from "drizzle-orm";
 import type { EnvironmentWrite } from "../api-types.js";
 import { audit } from "../audit/audit.js";
-import { type AuthenticatedRequest, Ctx, RequiredRole, type RequestContext } from "../auth/auth.js";
+import { type AuthenticatedRequest, Ctx, RequiredRole, type RequestContext, V1Permission } from "../auth/auth.js";
 import { contractBody } from "../common/contract.js";
 import { conflict, notFound } from "../common/problem.js";
 import { DB, type Db, type Executor } from "../db/db.js";
@@ -138,6 +138,8 @@ export class EnvironmentsController {
   @Delete(":envId")
   @HttpCode(204)
   @RequiredRole("admin")
+  // An environment is a workspace: a workspace admin never deletes it (GW-ADMIN-07).
+  @V1Permission("platform.admin")
   async remove(@Ctx() ctx: RequestContext, @Param("envId", uuidParam()) envId: string) {
     await this.envs.remove(ctx, envId);
   }

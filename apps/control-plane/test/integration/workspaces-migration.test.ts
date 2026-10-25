@@ -251,6 +251,9 @@ describe("N1 migration from every earlier version", () => {
     ]);
     expect(await query(url, `select distinct path_compatibility from routes`)).toEqual([{ path_compatibility: "legacy-preserved" }]);
     expect(await query(url, `select name from data_migrations`)).toEqual([{ name: "n1-workspaces" }]);
+    // N1-C3 copies nothing: a v1 environment role is read where it is (environment_roles, kept above), and no
+    // v2 grant exists before someone makes one.
+    expect(await query(url, `select count(*)::int as n from role_bindings`)).toEqual([{ n: 0 }]);
   });
 });
 
