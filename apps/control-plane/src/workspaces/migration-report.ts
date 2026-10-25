@@ -3,8 +3,8 @@ import { and, asc, eq, gt, or, sql } from "drizzle-orm";
 import { type Encryptor, snapshotContext } from "../crypto/crypto.js";
 import type { Db, Executor } from "../db/db.js";
 import { basicAuthCredentials, certificateSnis, dataMigrations, environments, jwtCredentials, keyAuthCredentials, routes, snapshots, workspaces } from "../db/schema.js";
-import { enforceInstanceUniquenessSoon, type UniqueKind, uniqueValues } from "./instance-uniqueness.js";
-import { backfillWorkspaces } from "./workspaces.js";
+import { type UniqueKind, uniqueValues } from "./instance-uniqueness.js";
+import { proposeSlug } from "./slug.js";
 
 type Source = "draft" | "active-snapshot" | "rollback-candidate";
 type EntityType = "key-auth-credential" | "jwt-credential" | "basic-auth-credential" | "certificate";
@@ -86,13 +86,11 @@ export async function uniquenessBlockers(tx: Executor, enc: Encryptor): Promise<
 }
 
 /**
- * The N1 migration report (contract: getWorkspaceMigrationReport). Reading it also fills in late slugs and puts in
- * force the instance index of every kind no two drafts repeat, each in a short transaction; the report itself is read
- * in a read-only one that holds no lock writers wait on.
+ * The N1 migration report (contract: getWorkspaceMigrationReport), read in a read-only transaction: reading it changes
+ * nothing. The instance indexes are put in force when a replica starts; a workspace an older replica created without
+ * a slug shows the slug the backfill will give it (the same proposal, in the same order).
  */
 export async function migrationReport(db: Db, enc: Encryptor) {
-  await db.transaction((tx) => backfillWorkspaces(tx));
-  await enforceInstanceUniquenessSoon(db);
   return db.transaction((tx) => readReport(tx, enc), { isolationLevel: "repeatable read", accessMode: "read only" });
 }
 
@@ -112,11 +110,18 @@ async function readReport(tx: Executor, enc: Encryptor) {
     .from(workspaces)
     .innerJoin(environments, eq(environments.id, workspaces.id))
     .orderBy(asc(environments.createdAt), asc(workspaces.id));
+  const taken = new Set(rows.flatMap((r) => (r.slug ? [r.slug] : [])));
+  const named = rows.map((r) => {
+    if (r.slug) return r;
+    const proposal = proposeSlug(r.name, taken);
+    taken.add(proposal.slug);
+    return { ...r, slug: proposal.slug, slugStatus: proposal.status, slugReason: proposal.reason ?? null };
+  });
   return {
     migratedAt: marker!.appliedAt.toISOString(),
     status: blockers.length > 0 ? ("blocked" as const) : ("complete" as const),
     blockers,
-    workspaces: rows.map((r) => ({
+    workspaces: named.map((r) => ({
       workspaceId: r.workspaceId,
       name: r.name,
       slug: r.slug!,

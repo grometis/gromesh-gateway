@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ENCRYPTOR, type Encryptor } from "../../src/crypto/crypto.js";
 import { runMigrations } from "../../src/db/migrate.js";
 import * as schema from "../../src/db/schema.js";
-import { enforceInstanceUniqueness } from "../../src/workspaces/instance-uniqueness.js";
+import { enforceInstanceUniqueness, enforceInstanceUniquenessSoon } from "../../src/workspaces/instance-uniqueness.js";
 import { migrationReport } from "../../src/workspaces/migration-report.js";
 import { selfSigned } from "./certs.js";
 import { startHarness, uniq, type Harness } from "./harness.js";
@@ -440,6 +440,17 @@ describe("an instance migrated with credentials repeated across environments", (
     expect(again.status).toBe(409);
   });
 
+  it("changes nothing when read: a workspace still without a slug shows the one the backfill will give it", async () => {
+    // What an older replica does during a rolling upgrade: the trigger creates the workspace, without a slug.
+    await h.sql.query(`insert into environments (id, name) values ($1, 'Legado Tardio')`, [id(3)]);
+    const before = (await h.sql.query(`select (select count(*)::int from workspaces where slug is null) as pending, (select count(*)::int from data_migrations) as marks, (select count(*)::int from pg_indexes where indexname like '%instance_uq') as indexes`)).rows[0];
+    const r = await report();
+    expect(r.workspaces.find((w) => w.workspaceId === id(3))).toMatchObject({ slug: "legado-tardio", slugStatus: "derived" });
+    expect((await h.sql.query(`select (select count(*)::int from workspaces where slug is null) as pending, (select count(*)::int from data_migrations) as marks, (select count(*)::int from pg_indexes where indexname like '%instance_uq') as indexes`)).rows[0]).toEqual(before);
+    expect(before.pending).toBe(1);
+    await h.sql.query(`delete from environments where id = $1`, [id(3)]);
+  });
+
   it("counts a published version and a rollback candidate as blockers too, and completes once the last one is gone", async () => {
     // Environment two publishes (its version holds the repeated values), then drops them from its draft.
     for (const path of [`/environments/${id(2)}/snapshots`]) expect((await h.api("POST", path, {})).status).toBe(201);
@@ -448,7 +459,9 @@ describe("an instance migrated with credentials repeated across environments", (
     let r = await report();
     expect(r.status).toBe("blocked");
     expect(r.blockers.flatMap((b) => b.occurrences.map((o) => o.source)).sort()).toEqual(["active-snapshot", "active-snapshot", "draft", "draft"]);
-    // The draft no longer repeats anything: the instance indexes are in force.
+    // Reading the report changes nothing; the next start puts in force the indexes the drafts no longer hold back.
+    expect(await indexes()).toEqual(["certificate_snis_name_instance_uq", "keyauth_key_hash_instance_uq"]);
+    await enforceInstanceUniquenessSoon(db());
     expect(await indexes()).toEqual(["basicauth_username_instance_uq", "certificate_snis_name_instance_uq", "jwt_key_instance_uq", "keyauth_key_hash_instance_uq"]);
     // A newer version without them leaves the old one as a rollback candidate, still a blocker.
     await h.sql.query(`update environments set has_unpublished_changes = true where id = $1`, [id(2)]);
