@@ -4,8 +4,8 @@ import type { Certificate } from "@gromesh/compiler";
 import { and, asc, eq, gt, inArray, ne, sql } from "drizzle-orm";
 import type { CertificateWrite } from "../api-types.js";
 import { audit } from "../audit/audit.js";
-import { Ctx, RequiredRole, type RequestContext } from "../auth/auth.js";
-import { contractBody } from "../common/contract.js";
+import { Ctx, RequiredPermission, RequiredRole, type RequestContext } from "../auth/auth.js";
+import { contractBody, contractBodyV2 } from "../common/contract.js";
 import { decodeCursor, parseLimit, toPage } from "../common/pagination.js";
 import { type FieldError, notFound, unprocessable } from "../common/problem.js";
 import { certificateKeyContext, ENCRYPTOR, Encryptor } from "../crypto/crypto.js";
@@ -14,6 +14,7 @@ import { certificateSnis, certificates, type CertificateRow } from "../db/schema
 import { markDraftChanged, requireEnvironment, uuidParam } from "../environments/environments.js";
 import { admit, type ConflictLimit, conflictLimit, guardedUniqueWrite, lockTablesForWrite, lockUnique, refuse } from "../workspaces/instance-uniqueness.js";
 import { APP_CONFIG, type AppConfig } from "../config.js";
+import { refuseVarRefs, type WithVarRefs } from "../workspaces/var-refs.js";
 
 export const SECRET_PLACEHOLDER = "REDACTED";
 const PEM_CERT = /-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g;
@@ -296,5 +297,47 @@ export class CertificatesController {
   }
 }
 
-@Module({ controllers: [CertificatesController], providers: [CertificatesService] })
+/** control-plane-v2: the same service in the workspace with the environment's id (decision H-9). */
+@Controller("api/v2/workspaces/:workspaceId/certificates")
+export class WorkspaceCertificatesController {
+  constructor(private readonly certs: CertificatesService) {}
+
+  @Get()
+  @RequiredPermission("workspace.read", "workspace")
+  list(@Param("workspaceId", uuidParam()) workspaceId: string, @Query() query: Record<string, unknown>) {
+    return this.certs.list(workspaceId, query);
+  }
+
+  @Post()
+  @RequiredPermission("gateway.write", "workspace")
+  create(@Ctx() ctx: RequestContext, @Param("workspaceId", uuidParam()) workspaceId: string, @Body(contractBodyV2("WorkspaceCertificateWrite")) body: WithVarRefs<CertificateWrite, "cert" | "key">) {
+    return this.certs.create(ctx, workspaceId, refuseVarRefs(body, ["cert", "key"]));
+  }
+
+  @Get(":certificateId")
+  @RequiredPermission("workspace.read", "workspace")
+  get(@Param("workspaceId", uuidParam()) workspaceId: string, @Param("certificateId", uuidParam()) certificateId: string) {
+    return this.certs.get(workspaceId, certificateId);
+  }
+
+  @Put(":certificateId")
+  @RequiredPermission("gateway.write", "workspace")
+  replace(
+    @Ctx() ctx: RequestContext,
+    @Param("workspaceId", uuidParam()) workspaceId: string,
+    @Param("certificateId", uuidParam()) certificateId: string,
+    @Body(contractBodyV2("WorkspaceCertificateWrite")) body: WithVarRefs<CertificateWrite, "cert" | "key">,
+  ) {
+    return this.certs.replace(ctx, workspaceId, certificateId, refuseVarRefs(body, ["cert", "key"]));
+  }
+
+  @Delete(":certificateId")
+  @HttpCode(204)
+  @RequiredPermission("gateway.write", "workspace")
+  async remove(@Ctx() ctx: RequestContext, @Param("workspaceId", uuidParam()) workspaceId: string, @Param("certificateId", uuidParam()) certificateId: string) {
+    await this.certs.remove(ctx, workspaceId, certificateId);
+  }
+}
+
+@Module({ controllers: [CertificatesController, WorkspaceCertificatesController], providers: [CertificatesService] })
 export class CertificatesModule {}

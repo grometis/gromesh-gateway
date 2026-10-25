@@ -9,6 +9,14 @@ import { Reflector } from "@nestjs/core";
 import { AccessController } from "../../src/access/access.js";
 import { deriveCoreProfile } from "../../src/common/contract.js";
 import { PathCompatibilityController } from "../../src/workspaces/path-compatibility.js";
+import { WorkspacesController } from "../../src/workspaces/workspaces-api.js";
+import { WorkspaceRoutesController, WorkspaceServicesController } from "../../src/gateway/gateway.js";
+import { WorkspaceConsumersController } from "../../src/consumers/consumers.js";
+import { WorkspaceCredentialsController } from "../../src/consumers/credentials.js";
+import { WorkspaceUpstreamsController } from "../../src/upstreams/upstreams.js";
+import { WorkspaceCertificatesController } from "../../src/certificates/certificates.js";
+import { WorkspacePluginsController } from "../../src/plugins/plugins.js";
+import { WorkspaceConfigTransferController } from "../../src/config-transfer/config-transfer.js";
 import { startHarness, type Harness } from "./harness.js";
 
 // N0: the Workspaces contracts (v2) are planned; nothing here is implemented yet. These tests keep them coherent until
@@ -82,7 +90,19 @@ describe("planned operations", () => {
   it("declares on every v2 handler the contract's permission, scope and session rule", () => {
     const reflector = new Reflector();
     const handlers = new Map<string, { permission: string; scope: string; sessionOnly: boolean }>();
-    for (const controller of [AccessController, PathCompatibilityController]) {
+    for (const controller of [
+      AccessController,
+      PathCompatibilityController,
+      WorkspacesController,
+      WorkspaceServicesController,
+      WorkspaceRoutesController,
+      WorkspaceConsumersController,
+      WorkspaceCredentialsController,
+      WorkspaceUpstreamsController,
+      WorkspaceCertificatesController,
+      WorkspacePluginsController,
+      WorkspaceConfigTransferController,
+    ]) {
       const base = (Reflect.getMetadata("path", controller) as string).replace(/^\/?/, "/");
       for (const name of Object.getOwnPropertyNames(controller.prototype)) {
         const fn = (controller.prototype as unknown as Record<string, () => unknown>)[name]!;

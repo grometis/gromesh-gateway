@@ -4,7 +4,7 @@ import { and, asc, count, eq, gt, ilike, or, sql, type SQL } from "drizzle-orm";
 import type { PgColumn } from "drizzle-orm/pg-core";
 import type { RouteWrite, ServiceWrite } from "../api-types.js";
 import { audit } from "../audit/audit.js";
-import { Ctx, RequiredRole, type RequestContext } from "../auth/auth.js";
+import { Ctx, RequiredPermission, RequiredRole, type RequestContext } from "../auth/auth.js";
 import { contractBody } from "../common/contract.js";
 import { decodeCursor, parseLimit, toPage } from "../common/pagination.js";
 import { conflict, notFound, unprocessable } from "../common/problem.js";
@@ -302,11 +302,17 @@ export class GatewayService {
     });
   }
 
-  async deleteService(ctx: RequestContext, envId: string, serviceId: string) {
+  /** v2 also refuses while plugins are scoped to the service (v1 deletes them with it). */
+  async deleteService(ctx: RequestContext, envId: string, serviceId: string, options: { keepPlugins?: boolean } = {}) {
     await this.db.transaction(async (tx) => {
-      const before = toService(await this.requireService(tx, envId, serviceId));
+      // Locked first: a route or plugin created meanwhile (it takes the row's key share) waits, then is counted.
+      const before = toService(await this.requireService(tx, envId, serviceId, true));
       const [ref] = await tx.select({ n: count() }).from(routes).where(eq(routes.serviceId, serviceId));
       if (ref && ref.n > 0) throw conflict(`Service is used by ${ref.n} route(s); delete them first`);
+      if (options.keepPlugins) {
+        const [scoped] = await tx.select({ n: count() }).from(plugins).where(eq(plugins.serviceId, serviceId));
+        if (scoped && scoped.n > 0) throw conflict(`Service is used by ${scoped.n} plugin(s); delete them first`);
+      }
       await tx.delete(services).where(eq(services.id, serviceId));
       await markDraftChanged(tx, envId);
       await audit(tx, ctx, { action: "service.delete", entityType: "service", entityId: serviceId, environmentId: envId, before });
@@ -315,7 +321,7 @@ export class GatewayService {
 
   /* routes */
 
-  async listRoutes(envId: string, query: Record<string, unknown>) {
+  async listRoutes<T = ReturnType<typeof toRoute>>(envId: string, query: Record<string, unknown>, map: (r: RouteRow) => T = toRoute as (r: RouteRow) => T) {
     await requireEnvironment(this.db, envId);
     const limit = parseLimit(query.limit);
     let where = listFilter(routes.environmentId, routes.name, routes.id, envId, query.q, query.cursor);
@@ -326,11 +332,11 @@ export class GatewayService {
       .where(where)
       .orderBy(asc(routes.name), asc(routes.id))
       .limit(limit + 1);
-    return toPage(rows, limit, (r) => r.name, toRoute);
+    return toPage(rows, limit, (r) => r.name, map);
   }
 
-  async getRoute(envId: string, routeId: string) {
-    return toRoute(await this.requireRoute(this.db, envId, routeId));
+  async getRoute<T = ReturnType<typeof toRoute>>(envId: string, routeId: string, map: (r: RouteRow) => T = toRoute as (r: RouteRow) => T) {
+    return map(await this.requireRoute(this.db, envId, routeId));
   }
 
   async createRoute(ctx: RequestContext, envId: string, body: RouteWrite) {
@@ -372,11 +378,12 @@ export class GatewayService {
 
   /* helpers */
 
-  private async requireService(tx: Executor, envId: string, serviceId: string): Promise<ServiceRow> {
-    const [row] = await tx
+  private async requireService(tx: Executor, envId: string, serviceId: string, lock = false): Promise<ServiceRow> {
+    const q = tx
       .select()
       .from(services)
       .where(and(eq(services.id, serviceId), eq(services.environmentId, envId)));
+    const [row] = lock ? await q.for("update") : await q;
     if (!row) throw notFound("Service");
     return row;
   }
@@ -487,5 +494,60 @@ export class RoutesController {
   }
 }
 
-@Module({ controllers: [ServicesController, RoutesController], providers: [GatewayService] })
+/* ---------------- control-plane-v2: the same services, scoped to a workspace (decision H-9) ---------------- */
+
+/** The workspace is the environment with the same id (N1-X1); a service balances through its host until N2. */
+const toWorkspaceService = (envId: string, s: ReturnType<typeof toService>) => ({ ...s, workspaceId: envId, upstreamId: null });
+const toWorkspaceRoute = (r: RouteRow) => ({ ...toRoute(r), pathCompatibility: r.pathCompatibility });
+
+@Controller("api/v2/workspaces/:workspaceId/services")
+export class WorkspaceServicesController {
+  constructor(private readonly gw: GatewayService) {}
+
+  @Get()
+  @RequiredPermission("workspace.read", "workspace")
+  async list(@Param("workspaceId", uuidParam()) workspaceId: string, @Query() query: Record<string, unknown>) {
+    const page = await this.gw.listServices(workspaceId, query);
+    return { ...page, items: page.items.map((s) => toWorkspaceService(workspaceId, s)) };
+  }
+
+  @Get(":serviceId")
+  @RequiredPermission("workspace.read", "workspace")
+  async get(@Param("workspaceId", uuidParam()) workspaceId: string, @Param("serviceId", uuidParam()) serviceId: string) {
+    return toWorkspaceService(workspaceId, await this.gw.getService(workspaceId, serviceId));
+  }
+
+  @Delete(":serviceId")
+  @HttpCode(204)
+  @RequiredPermission("gateway.write", "workspace")
+  async remove(@Ctx() ctx: RequestContext, @Param("workspaceId", uuidParam()) workspaceId: string, @Param("serviceId", uuidParam()) serviceId: string) {
+    await this.gw.deleteService(ctx, workspaceId, serviceId, { keepPlugins: true });
+  }
+}
+
+@Controller("api/v2/workspaces/:workspaceId/routes")
+export class WorkspaceRoutesController {
+  constructor(private readonly gw: GatewayService) {}
+
+  @Get()
+  @RequiredPermission("workspace.read", "workspace")
+  list(@Param("workspaceId", uuidParam()) workspaceId: string, @Query() query: Record<string, unknown>) {
+    return this.gw.listRoutes(workspaceId, query, toWorkspaceRoute);
+  }
+
+  @Get(":routeId")
+  @RequiredPermission("workspace.read", "workspace")
+  get(@Param("workspaceId", uuidParam()) workspaceId: string, @Param("routeId", uuidParam()) routeId: string) {
+    return this.gw.getRoute(workspaceId, routeId, toWorkspaceRoute);
+  }
+
+  @Delete(":routeId")
+  @HttpCode(204)
+  @RequiredPermission("gateway.write", "workspace")
+  async remove(@Ctx() ctx: RequestContext, @Param("workspaceId", uuidParam()) workspaceId: string, @Param("routeId", uuidParam()) routeId: string) {
+    await this.gw.deleteRoute(ctx, workspaceId, routeId);
+  }
+}
+
+@Module({ controllers: [ServicesController, RoutesController, WorkspaceServicesController, WorkspaceRoutesController], providers: [GatewayService] })
 export class GatewayModule {}

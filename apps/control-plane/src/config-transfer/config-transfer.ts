@@ -3,7 +3,7 @@ import { convertKongConfig, diffGatewayStates, exportConfig, type ConfigDocument
 import type { Response } from "express";
 import { eq, sql } from "drizzle-orm";
 import { stringify } from "yaml";
-import { Ctx, RequiredRole, type RequestContext } from "../auth/auth.js";
+import { Ctx, RequiredPermission, RequiredRole, type RequestContext } from "../auth/auth.js";
 import { audit } from "../audit/audit.js";
 import { contracts } from "../common/contract.js";
 import { unprocessable } from "../common/problem.js";
@@ -160,5 +160,21 @@ export class ConfigTransferController {
   @RequiredRole("editor")
   import(@Ctx() ctx: RequestContext, @Param("envId", uuidParam()) envId: string, @ImportBody(new ImportBodyPipe()) request: ImportRequest) { return this.transfer.import(ctx, envId, request); }
 }
-@Module({ imports: [PluginCatalogModule, PluginsModule], controllers: [ConfigTransferController], providers: [ConfigTransferService] })
+/**
+ * control-plane-v2: the v1 export with the environment read as the workspace of the same id. No draft field can hold
+ * a VarRef yet (no variable can be declared). Importing waits for the platform-only plugin capabilities (F-1).
+ */
+@Controller("api/v2/workspaces/:workspaceId")
+export class WorkspaceConfigTransferController {
+  constructor(private readonly transfer: ConfigTransferService) {}
+  @Get("export")
+  @RequiredPermission("workspace.read", "workspace")
+  async export(@Param("workspaceId", uuidParam()) workspaceId: string, @Query("format") format: unknown, @Res() response: Response) {
+    if (format !== undefined && format !== "yaml" && format !== "json") throw unprocessable("Invalid export format", [{ path: "format", message: "must be yaml or json" }]);
+    const document = await this.transfer.export(workspaceId);
+    if (format === "json") response.type("application/json").send(document);
+    else response.type("application/yaml").send(stringify(document));
+  }
+}
+@Module({ imports: [PluginCatalogModule, PluginsModule], controllers: [ConfigTransferController, WorkspaceConfigTransferController], providers: [ConfigTransferService] })
 export class ConfigTransferModule {}

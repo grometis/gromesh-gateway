@@ -27,6 +27,7 @@ import { CryptoModule } from "./crypto/crypto.js";
 import { AccessModule } from "./access/access.js";
 import { PathCompatibilityModule } from "./workspaces/path-compatibility.js";
 import { WorkspacesModule } from "./workspaces/workspaces.js";
+import { WorkspacesApiModule } from "./workspaces/workspaces-api.js";
 
 @Module({})
 export class AppModule {
@@ -58,6 +59,7 @@ export class AppModule {
         WorkspacesModule,
         AccessModule,
         PathCompatibilityModule,
+        WorkspacesApiModule,
       ],
       providers: [
         { provide: APP_CONFIG, useValue: config },

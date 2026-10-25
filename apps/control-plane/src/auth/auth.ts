@@ -50,7 +50,7 @@ export interface AuthenticatedRequest extends Request {
   user?: UserRow;
   session?: { idHash: string; csrfToken: string };
   /** How the request authenticated: a session, or an API token (then the effective role is capped by it). */
-  auth?: ({ via: "session" } | { via: "token"; tokenId: string; tokenName: string }) & { role: Role; permissions: ReadonlySet<Held> };
+  auth?: ({ via: "session" } | { via: "token"; tokenId: string; tokenName: string; tokenRole: Role }) & { role: Role; permissions: ReadonlySet<Held> };
 }
 
 const ROLE_KEY = "gromesh:required-role";
@@ -110,7 +110,7 @@ export class AuthGuard implements CanActivate {
     const caller = await this.authenticate(context, req, meta<boolean>(SESSION_ONLY_KEY) === true);
     const decision = v2 ? await this.decideV2(caller, v2, req.params) : await this.decideV1(caller, required as Role, meta<Held[]>(V1_PERMISSION_KEY), req.params);
     req.user = caller.user;
-    req.auth = caller.token ? { via: "token", tokenId: caller.token.id, tokenName: caller.token.name, ...decision } : { via: "session", ...decision };
+    req.auth = caller.token ? { via: "token", tokenId: caller.token.id, tokenName: caller.token.name, tokenRole: caller.token.role, ...decision } : { via: "session", ...decision };
     if (caller.session) req.session = { idHash: caller.session.idHash, csrfToken: caller.session.csrfToken };
     return true;
   }

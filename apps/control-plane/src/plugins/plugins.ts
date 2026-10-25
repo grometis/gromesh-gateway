@@ -4,7 +4,7 @@ import type { Plugin } from "@gromesh/compiler";
 import { and, asc, eq, gt, isNull, or, sql, type SQL } from "drizzle-orm";
 import type { PluginWrite } from "../api-types.js";
 import { audit } from "../audit/audit.js";
-import { Ctx, RequiredRole, type RequestContext } from "../auth/auth.js";
+import { Ctx, RequiredPermission, RequiredRole, type RequestContext } from "../auth/auth.js";
 import { contractBody } from "../common/contract.js";
 import { decodeCursor, parseLimit, toPage } from "../common/pagination.js";
 import { notFound, unprocessable, type FieldError } from "../common/problem.js";
@@ -230,5 +230,33 @@ export class PluginsController {
   }
 }
 
-@Module({ imports: [PluginCatalogModule], controllers: [PluginsController], providers: [PluginsService, KongValidator], exports: [PluginsService] })
+/**
+ * control-plane-v2: the same service in the workspace with the environment's id (decision H-9). Writing waits for
+ * the platform-only capabilities (pre/post-function, file-log, *_by_lua, ambient cloud credentials) of the F-1 track.
+ */
+@Controller("api/v2/workspaces/:workspaceId/plugins")
+export class WorkspacePluginsController {
+  constructor(private readonly plugins: PluginsService) {}
+
+  @Get()
+  @RequiredPermission("workspace.read", "workspace")
+  list(@Param("workspaceId", uuidParam()) workspaceId: string, @Query() query: Record<string, unknown>) {
+    return this.plugins.list(workspaceId, query);
+  }
+
+  @Get(":pluginId")
+  @RequiredPermission("workspace.read", "workspace")
+  get(@Param("workspaceId", uuidParam()) workspaceId: string, @Param("pluginId", uuidParam()) pluginId: string) {
+    return this.plugins.get(workspaceId, pluginId);
+  }
+
+  @Delete(":pluginId")
+  @HttpCode(204)
+  @RequiredPermission("gateway.write", "workspace")
+  async remove(@Ctx() ctx: RequestContext, @Param("workspaceId", uuidParam()) workspaceId: string, @Param("pluginId", uuidParam()) pluginId: string) {
+    await this.plugins.remove(ctx, workspaceId, pluginId);
+  }
+}
+
+@Module({ imports: [PluginCatalogModule], controllers: [PluginsController, WorkspacePluginsController], providers: [PluginsService, KongValidator], exports: [PluginsService] })
 export class PluginsModule {}

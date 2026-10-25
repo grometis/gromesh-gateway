@@ -4,8 +4,8 @@ import { basicAuthPasswordHash, type BasicAuthCredential, type JwtCredential } f
 import { and, asc, eq, sql } from "drizzle-orm";
 import type { AclGroups, BasicAuthCredentialCreate, JwtCredentialCreate } from "../api-types.js";
 import { audit } from "../audit/audit.js";
-import { Ctx, RequiredRole, type RequestContext } from "../auth/auth.js";
-import { contractBody } from "../common/contract.js";
+import { Ctx, RequiredPermission, RequiredRole, type RequestContext } from "../auth/auth.js";
+import { contractBody, contractBodyV2 } from "../common/contract.js";
 import { notFound, unprocessable } from "../common/problem.js";
 import { basicAuthHashContext, ENCRYPTOR, Encryptor, jwtSecretContext } from "../crypto/crypto.js";
 import { DB, type Db } from "../db/db.js";
@@ -307,5 +307,86 @@ export class CredentialsController {
     @Body(contractBody("AclGroups")) body: AclGroups,
   ) {
     return this.credentials.replaceAclGroups(ctx, envId, consumerId, body);
+  }
+}
+
+/** control-plane-v2: the same service in the workspace with the environment's id (decision H-9). */
+@Controller("api/v2/workspaces/:workspaceId/consumers/:consumerId")
+export class WorkspaceCredentialsController {
+  constructor(private readonly credentials: CredentialsService) {}
+
+  @Get("jwt")
+  @RequiredPermission("workspace.read", "workspace")
+  listJwt(@Param("workspaceId", uuidParam()) workspaceId: string, @Param("consumerId", uuidParam()) consumerId: string) {
+    return this.credentials.listJwt(workspaceId, consumerId);
+  }
+
+  @Post("jwt")
+  @RequiredPermission("gateway.write", "workspace")
+  createJwt(
+    @Ctx() ctx: RequestContext,
+    @Param("workspaceId", uuidParam()) workspaceId: string,
+    @Param("consumerId", uuidParam()) consumerId: string,
+    @Body(contractBodyV2("WorkspaceJwtCredentialCreate")) body: JwtCredentialCreate,
+  ) {
+    return this.credentials.createJwt(ctx, workspaceId, consumerId, body);
+  }
+
+  @Delete("jwt/:credentialId")
+  @HttpCode(204)
+  @RequiredPermission("gateway.write", "workspace")
+  async removeJwt(
+    @Ctx() ctx: RequestContext,
+    @Param("workspaceId", uuidParam()) workspaceId: string,
+    @Param("consumerId", uuidParam()) consumerId: string,
+    @Param("credentialId", uuidParam()) credentialId: string,
+  ) {
+    await this.credentials.removeJwt(ctx, workspaceId, consumerId, credentialId);
+  }
+
+  @Get("basic-auth")
+  @RequiredPermission("workspace.read", "workspace")
+  listBasicAuth(@Param("workspaceId", uuidParam()) workspaceId: string, @Param("consumerId", uuidParam()) consumerId: string) {
+    return this.credentials.listBasicAuth(workspaceId, consumerId);
+  }
+
+  @Post("basic-auth")
+  @RequiredPermission("gateway.write", "workspace")
+  createBasicAuth(
+    @Ctx() ctx: RequestContext,
+    @Param("workspaceId", uuidParam()) workspaceId: string,
+    @Param("consumerId", uuidParam()) consumerId: string,
+    @Body(contractBodyV2("WorkspaceBasicAuthCredentialCreate")) body: BasicAuthCredentialCreate,
+  ) {
+    return this.credentials.createBasicAuth(ctx, workspaceId, consumerId, body);
+  }
+
+  @Delete("basic-auth/:credentialId")
+  @HttpCode(204)
+  @RequiredPermission("gateway.write", "workspace")
+  async removeBasicAuth(
+    @Ctx() ctx: RequestContext,
+    @Param("workspaceId", uuidParam()) workspaceId: string,
+    @Param("consumerId", uuidParam()) consumerId: string,
+    @Param("credentialId", uuidParam()) credentialId: string,
+  ) {
+    await this.credentials.removeBasicAuth(ctx, workspaceId, consumerId, credentialId);
+  }
+
+  @Get("acl-groups")
+  @RequiredPermission("workspace.read", "workspace")
+  getAclGroups(@Param("workspaceId", uuidParam()) workspaceId: string, @Param("consumerId", uuidParam()) consumerId: string) {
+    return this.credentials.getAclGroups(workspaceId, consumerId);
+  }
+
+  @Put("acl-groups")
+  @RequiredPermission("gateway.write", "workspace")
+  replaceAclGroups(
+    @Ctx() ctx: RequestContext,
+    @Param("workspaceId", uuidParam()) workspaceId: string,
+    @Param("consumerId", uuidParam()) consumerId: string,
+    @Body(contractBodyV2("WorkspaceAclGroups")) body: AclGroups,
+  ) {
+    return this.credentials.replaceAclGroups(ctx, workspaceId, consumerId, body);
   }
 }

@@ -4,15 +4,15 @@ import { credentialKeyHint, type Consumer, type KeyAuthCredential } from "@grome
 import { and, asc, eq, gt, ilike, or, sql, type SQL } from "drizzle-orm";
 import type { ConsumerWrite, KeyAuthCredentialWrite } from "../api-types.js";
 import { audit } from "../audit/audit.js";
-import { Ctx, RequiredRole, type RequestContext } from "../auth/auth.js";
-import { contractBody, inlineBody } from "../common/contract.js";
+import { Ctx, RequiredPermission, RequiredRole, type RequestContext } from "../auth/auth.js";
+import { contractBody, contractBodyV2, inlineBody } from "../common/contract.js";
 import { decodeCursor, parseLimit, toPage } from "../common/pagination.js";
 import { conflict, notFound, unprocessable } from "../common/problem.js";
 import { credentialContext, ENCRYPTOR, Encryptor } from "../crypto/crypto.js";
 import { DB, type Db, type Executor } from "../db/db.js";
 import { consumers, keyAuthCredentials, type ConsumerRow, type KeyAuthCredentialRow } from "../db/schema.js";
 import { markDraftChanged, requireEnvironment, uuidParam } from "../environments/environments.js";
-import { CredentialsController, CredentialsService } from "./credentials.js";
+import { CredentialsController, CredentialsService, WorkspaceCredentialsController } from "./credentials.js";
 import { usedAsAnonymous } from "../workspaces/anonymous.js";
 import { admit, type ConflictLimit, conflictLimit, guardedUniqueWrite, lockTablesForWrite, lockUnique, refuse, takenElsewhere } from "../workspaces/instance-uniqueness.js";
 import { APP_CONFIG, type AppConfig } from "../config.js";
@@ -272,5 +272,79 @@ export class ConsumersController {
   }
 }
 
-@Module({ controllers: [ConsumersController, CredentialsController], providers: [ConsumersService, CredentialsService] })
+/** control-plane-v2: the same service in the workspace with the environment's id (decision H-9). */
+@Controller("api/v2/workspaces/:workspaceId/consumers")
+export class WorkspaceConsumersController {
+  constructor(private readonly consumers: ConsumersService) {}
+
+  @Get()
+  @RequiredPermission("workspace.read", "workspace")
+  list(@Param("workspaceId", uuidParam()) workspaceId: string, @Query() query: Record<string, unknown>) {
+    return this.consumers.list(workspaceId, query);
+  }
+
+  @Post()
+  @RequiredPermission("gateway.write", "workspace")
+  create(@Ctx() ctx: RequestContext, @Param("workspaceId", uuidParam()) workspaceId: string, @Body(contractBodyV2("WorkspaceConsumerWrite")) body: ConsumerWrite) {
+    return this.consumers.create(ctx, workspaceId, body);
+  }
+
+  @Get(":consumerId")
+  @RequiredPermission("workspace.read", "workspace")
+  get(@Param("workspaceId", uuidParam()) workspaceId: string, @Param("consumerId", uuidParam()) consumerId: string) {
+    return this.consumers.get(workspaceId, consumerId);
+  }
+
+  @Put(":consumerId")
+  @RequiredPermission("gateway.write", "workspace")
+  replace(
+    @Ctx() ctx: RequestContext,
+    @Param("workspaceId", uuidParam()) workspaceId: string,
+    @Param("consumerId", uuidParam()) consumerId: string,
+    @Body(contractBodyV2("WorkspaceConsumerWrite")) body: ConsumerWrite,
+  ) {
+    return this.consumers.replace(ctx, workspaceId, consumerId, body);
+  }
+
+  @Delete(":consumerId")
+  @HttpCode(204)
+  @RequiredPermission("gateway.write", "workspace")
+  async remove(@Ctx() ctx: RequestContext, @Param("workspaceId", uuidParam()) workspaceId: string, @Param("consumerId", uuidParam()) consumerId: string) {
+    await this.consumers.remove(ctx, workspaceId, consumerId);
+  }
+
+  @Get(":consumerId/key-auth")
+  @RequiredPermission("workspace.read", "workspace")
+  listKeyAuth(@Param("workspaceId", uuidParam()) workspaceId: string, @Param("consumerId", uuidParam()) consumerId: string) {
+    return this.consumers.listKeyAuth(workspaceId, consumerId);
+  }
+
+  @Post(":consumerId/key-auth")
+  @RequiredPermission("gateway.write", "workspace")
+  createKeyAuth(
+    @Ctx() ctx: RequestContext,
+    @Param("workspaceId", uuidParam()) workspaceId: string,
+    @Param("consumerId", uuidParam()) consumerId: string,
+    @Body(contractBodyV2(inlineBody("/workspaces/{workspaceId}/consumers/{consumerId}/key-auth", "post"))) body: KeyAuthCredentialWrite,
+  ) {
+    return this.consumers.createKeyAuth(ctx, workspaceId, consumerId, body);
+  }
+
+  @Delete(":consumerId/key-auth/:credentialId")
+  @HttpCode(204)
+  @RequiredPermission("gateway.write", "workspace")
+  async removeKeyAuth(
+    @Ctx() ctx: RequestContext,
+    @Param("workspaceId", uuidParam()) workspaceId: string,
+    @Param("consumerId", uuidParam()) consumerId: string,
+    @Param("credentialId", uuidParam()) credentialId: string,
+  ) {
+    await this.consumers.removeKeyAuth(ctx, workspaceId, consumerId, credentialId);
+  }
+}
+
+@Module({
+  controllers: [ConsumersController, CredentialsController, WorkspaceConsumersController, WorkspaceCredentialsController],
+  providers: [ConsumersService, CredentialsService],
+})
 export class ConsumersModule {}
