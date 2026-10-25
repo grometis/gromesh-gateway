@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import {
   boolean,
   check,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -193,7 +194,8 @@ export const services = pgTable(
     tags: text("tags").array().notNull().default(sql`'{}'::text[]`),
     ...timestamps,
   },
-  (t) => [uniqueIndex("services_env_name_uq").on(t.environmentId, t.name)],
+  // Referenced with the workspace (composite foreign keys): nothing can point at an entity of another workspace.
+  (t) => [uniqueIndex("services_env_name_uq").on(t.environmentId, t.name), unique("services_env_id_uq").on(t.environmentId, t.id)],
 );
 
 /** Load-balancing pools; a service whose host equals `name` balances across the targets. */
@@ -217,7 +219,7 @@ export const upstreams = pgTable(
     tags: text("tags").array().notNull().default(sql`'{}'::text[]`),
     ...timestamps,
   },
-  (t) => [uniqueIndex("upstreams_env_name_uq").on(t.environmentId, t.name)],
+  (t) => [uniqueIndex("upstreams_env_name_uq").on(t.environmentId, t.name), unique("upstreams_env_id_uq").on(t.environmentId, t.id)],
 );
 
 export const targets = pgTable(
@@ -227,15 +229,17 @@ export const targets = pgTable(
     environmentId: uuid("environment_id")
       .notNull()
       .references(() => environments.id, { onDelete: "cascade" }),
-    upstreamId: uuid("upstream_id")
-      .notNull()
-      .references(() => upstreams.id, { onDelete: "cascade" }),
+    upstreamId: uuid("upstream_id").notNull(),
     target: text("target").notNull(),
     weight: integer("weight").notNull().default(100),
     tags: text("tags").array().notNull().default(sql`'{}'::text[]`),
     ...timestamps,
   },
-  (t) => [uniqueIndex("targets_upstream_target_uq").on(t.upstreamId, t.target), index("targets_env_idx").on(t.environmentId)],
+  (t) => [
+    uniqueIndex("targets_upstream_target_uq").on(t.upstreamId, t.target),
+    index("targets_env_idx").on(t.environmentId),
+    foreignKey({ name: "targets_upstream_fk", columns: [t.environmentId, t.upstreamId], foreignColumns: [upstreams.environmentId, upstreams.id] }).onDelete("cascade"),
+  ],
 );
 
 /** TLS certificates; `key` is sealed (enc:v2, context certificates.key + id) and never leaves the API. */
@@ -256,7 +260,7 @@ export const certificates = pgTable(
     tags: text("tags").array().notNull().default(sql`'{}'::text[]`),
     ...timestamps,
   },
-  (t) => [index("certificates_env_idx").on(t.environmentId)],
+  (t) => [index("certificates_env_idx").on(t.environmentId), unique("certificates_env_id_uq").on(t.environmentId, t.id)],
 );
 
 /** One row per server name: the unique index keeps SNIs unique in the environment, races included. */
@@ -266,12 +270,14 @@ export const certificateSnis = pgTable(
     environmentId: uuid("environment_id")
       .notNull()
       .references(() => environments.id, { onDelete: "cascade" }),
-    certificateId: uuid("certificate_id")
-      .notNull()
-      .references(() => certificates.id, { onDelete: "cascade" }),
+    certificateId: uuid("certificate_id").notNull(),
     name: text("name").notNull(),
   },
-  (t) => [primaryKey({ columns: [t.environmentId, t.name] }), index("certificate_snis_cert_idx").on(t.certificateId)],
+  (t) => [
+    primaryKey({ columns: [t.environmentId, t.name] }),
+    index("certificate_snis_cert_idx").on(t.certificateId),
+    foreignKey({ name: "certificate_snis_certificate_fk", columns: [t.environmentId, t.certificateId], foreignColumns: [certificates.environmentId, certificates.id] }).onDelete("cascade"),
+  ],
 );
 
 export const routes = pgTable(
@@ -281,10 +287,8 @@ export const routes = pgTable(
     environmentId: uuid("environment_id")
       .notNull()
       .references(() => environments.id, { onDelete: "cascade" }),
-    // RESTRICT: a service with routes cannot be deleted (409 for the API).
-    serviceId: uuid("service_id")
-      .notNull()
-      .references(() => services.id, { onDelete: "restrict" }),
+    // RESTRICT (composite foreign key below): a service with routes cannot be deleted (409 for the API).
+    serviceId: uuid("service_id").notNull(),
     name: text("name").notNull(),
     protocols: text("protocols").array().notNull().default(sql`'{http,https}'::text[]`),
     methods: text("methods").array(),
@@ -303,6 +307,8 @@ export const routes = pgTable(
   (t) => [
     uniqueIndex("routes_env_name_uq").on(t.environmentId, t.name),
     index("routes_service_idx").on(t.serviceId),
+    unique("routes_env_id_uq").on(t.environmentId, t.id),
+    foreignKey({ name: "routes_service_fk", columns: [t.environmentId, t.serviceId], foreignColumns: [services.environmentId, services.id] }).onDelete("restrict"),
     check("routes_path_compatibility_ck", sql`${t.pathCompatibility} in ('legacy-preserved', 'workspace-default')`),
     check("routes_workspace_default_paths_ck", sql`${t.pathCompatibility} = 'legacy-preserved' or coalesce(cardinality(${t.paths}), 0) > 0`),
   ],
@@ -325,6 +331,7 @@ export const consumers = pgTable(
   (t) => [
     uniqueIndex("consumers_env_username_uq").on(t.environmentId, t.username),
     uniqueIndex("consumers_env_custom_id_uq").on(t.environmentId, t.customId),
+    unique("consumers_env_id_uq").on(t.environmentId, t.id),
   ],
 );
 
@@ -335,9 +342,7 @@ export const keyAuthCredentials = pgTable(
     environmentId: uuid("environment_id")
       .notNull()
       .references(() => environments.id, { onDelete: "cascade" }),
-    consumerId: uuid("consumer_id")
-      .notNull()
-      .references(() => consumers.id, { onDelete: "cascade" }),
+    consumerId: uuid("consumer_id").notNull(),
     // Kong needs the clear key in the declarative config, so it is stored encrypted (see crypto/), not hashed.
     key: text("key").notNull(),
     // sha256 of the clear key: uniqueness per environment without decrypting.
@@ -345,7 +350,11 @@ export const keyAuthCredentials = pgTable(
     tags: text("tags").array().notNull().default(sql`'{}'::text[]`),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [uniqueIndex("keyauth_env_key_hash_uq").on(t.environmentId, t.keyHash), index("keyauth_consumer_idx").on(t.consumerId)],
+  (t) => [
+    uniqueIndex("keyauth_env_key_hash_uq").on(t.environmentId, t.keyHash),
+    index("keyauth_consumer_idx").on(t.consumerId),
+    foreignKey({ name: "keyauth_consumer_fk", columns: [t.environmentId, t.consumerId], foreignColumns: [consumers.environmentId, consumers.id] }).onDelete("cascade"),
+  ],
 );
 
 export const jwtCredentials = pgTable(
@@ -355,9 +364,7 @@ export const jwtCredentials = pgTable(
     environmentId: uuid("environment_id")
       .notNull()
       .references(() => environments.id, { onDelete: "cascade" }),
-    consumerId: uuid("consumer_id")
-      .notNull()
-      .references(() => consumers.id, { onDelete: "cascade" }),
+    consumerId: uuid("consumer_id").notNull(),
     // The issuer: public, matched against the token's iss claim.
     key: text("key").notNull(),
     algorithm: text("algorithm").notNull(),
@@ -367,7 +374,11 @@ export const jwtCredentials = pgTable(
     tags: text("tags").array().notNull().default(sql`'{}'::text[]`),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [uniqueIndex("jwt_env_key_uq").on(t.environmentId, t.key), index("jwt_consumer_idx").on(t.consumerId)],
+  (t) => [
+    uniqueIndex("jwt_env_key_uq").on(t.environmentId, t.key),
+    index("jwt_consumer_idx").on(t.consumerId),
+    foreignKey({ name: "jwt_consumer_fk", columns: [t.environmentId, t.consumerId], foreignColumns: [consumers.environmentId, consumers.id] }).onDelete("cascade"),
+  ],
 );
 
 export const basicAuthCredentials = pgTable(
@@ -377,9 +388,7 @@ export const basicAuthCredentials = pgTable(
     environmentId: uuid("environment_id")
       .notNull()
       .references(() => environments.id, { onDelete: "cascade" }),
-    consumerId: uuid("consumer_id")
-      .notNull()
-      .references(() => consumers.id, { onDelete: "cascade" }),
+    consumerId: uuid("consumer_id").notNull(),
     username: text("username").notNull(),
     // Kong's salted hash, never the password; still a secret, so sealed (enc:v2, context
     // basicauth_credentials.password_hash + id).
@@ -387,7 +396,11 @@ export const basicAuthCredentials = pgTable(
     tags: text("tags").array().notNull().default(sql`'{}'::text[]`),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [uniqueIndex("basicauth_env_username_uq").on(t.environmentId, t.username), index("basicauth_consumer_idx").on(t.consumerId)],
+  (t) => [
+    uniqueIndex("basicauth_env_username_uq").on(t.environmentId, t.username),
+    index("basicauth_consumer_idx").on(t.consumerId),
+    foreignKey({ name: "basicauth_consumer_fk", columns: [t.environmentId, t.consumerId], foreignColumns: [consumers.environmentId, consumers.id] }).onDelete("cascade"),
+  ],
 );
 
 export const plugins = pgTable(
@@ -399,17 +412,23 @@ export const plugins = pgTable(
       .references(() => environments.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     enabled: boolean("enabled").notNull().default(true),
-    // A scoped plugin goes away with the entity it is attached to.
-    serviceId: uuid("service_id").references(() => services.id, { onDelete: "cascade" }),
-    routeId: uuid("route_id").references(() => routes.id, { onDelete: "cascade" }),
-    consumerId: uuid("consumer_id").references(() => consumers.id, { onDelete: "cascade" }),
+    // A scoped plugin goes away with the entity it is attached to, always one of its own workspace (foreign keys below).
+    serviceId: uuid("service_id"),
+    routeId: uuid("route_id"),
+    consumerId: uuid("consumer_id"),
     config: jsonb("config").$type<Record<string, unknown>>().notNull(),
     protocols: text("protocols").array(),
     tags: text("tags").array().notNull().default(sql`'{}'::text[]`),
     ...timestamps,
   },
   // Kong allows one instance of a plugin per (name, service, route, consumer); NULL counts as a value.
-  (t) => [unique("plugins_env_scope_uq").on(t.environmentId, t.name, t.serviceId, t.routeId, t.consumerId).nullsNotDistinct()],
+  (t) => [
+    unique("plugins_env_scope_uq").on(t.environmentId, t.name, t.serviceId, t.routeId, t.consumerId).nullsNotDistinct(),
+    // A null scope column is not checked (MATCH SIMPLE): an unscoped plugin references nothing.
+    foreignKey({ name: "plugins_service_fk", columns: [t.environmentId, t.serviceId], foreignColumns: [services.environmentId, services.id] }).onDelete("cascade"),
+    foreignKey({ name: "plugins_route_fk", columns: [t.environmentId, t.routeId], foreignColumns: [routes.environmentId, routes.id] }).onDelete("cascade"),
+    foreignKey({ name: "plugins_consumer_fk", columns: [t.environmentId, t.consumerId], foreignColumns: [consumers.environmentId, consumers.id] }).onDelete("cascade"),
+  ],
 );
 
 export const snapshots = pgTable(
