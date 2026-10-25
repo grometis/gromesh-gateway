@@ -299,11 +299,12 @@ paths:
         legacy-preserved, with those without a path that the composition of N2 will refuse.
         It is also the pre-check of the uniqueness the instance needs (decision H-5): a key-auth key, JWT key,
         basic-auth username or SNI repeated across environments, in a draft, an active snapshot or a snapshot that a
-        rollback could restore, is a blocker. While a blocker exists the status is blocked: the instance-wide unique
-        constraints are not in force yet (new writes are already refused as conflicts), no second workspace can be composed
-        on an instance, and each blocker names only the workspaces, entities and snapshot versions involved, never a
-        key, hash, username or server name. Once the last blocker is fixed the constraints are applied and the
-        status becomes complete. Read-only.
+        rollback could restore, is a blocker; each names only the workspaces, entities and snapshot versions involved,
+        never a key, hash, username or server name. The instance-wide unique index of a kind is in force as soon as no
+        two drafts repeat a value of that kind (until then the service checks every write and refuses a repetition as
+        a conflict); a version holding a value another workspace holds is never restored (the rollback is a conflict).
+        While any blocker exists the status is blocked and no second workspace can be composed on an instance; once
+        the last one is gone the status becomes complete. Reading the report also puts in force the indexes it can.
       responses:
         "200": { description: Report, content: { application/json: { schema: { $ref: "#/components/schemas/WorkspaceMigrationReport" } } } }
         "401": { $ref: "#/components/responses/Unauthorized" }
