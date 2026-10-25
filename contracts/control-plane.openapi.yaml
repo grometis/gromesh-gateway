@@ -925,9 +925,11 @@ paths:
       operationId: deleteConsumer
       security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
+      description: 409 while a plugin of the environment uses the consumer as `anonymous`.
       responses:
         "204": { description: Deleted (credentials and consumer-scoped plugins are deleted with it) }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
   /environments/{envId}/consumers/{consumerId}/key-auth:
     parameters: [{ $ref: "#/components/parameters/EnvId" }, { $ref: "#/components/parameters/ConsumerId" }]
     get:
@@ -1433,7 +1435,10 @@ paths:
       operationId: createPlugin
       security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
-      description: "`config` is validated against the plugin schema of the Kong version pinned by the platform."
+      description: |
+        `config` is validated against the plugin schema of the Kong version pinned by the platform. 422 at
+        `config.anonymous` when it is set and is neither the id nor the username of a consumer of this environment (an
+        environment is a workspace: a plugin never falls back to another workspace's consumer).
       requestBody:
         required: true
         content:
@@ -1466,6 +1471,7 @@ paths:
       operationId: replacePlugin
       security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
+      description: Same 422 rules as the creation, `config.anonymous` included.
       requestBody:
         required: true
         content:

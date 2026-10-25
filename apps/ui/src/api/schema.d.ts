@@ -545,6 +545,7 @@ export interface paths {
         get: operations["getConsumer"];
         put: operations["replaceConsumer"];
         post?: never;
+        /** @description 409 while a plugin of the environment uses the consumer as `anonymous`. */
         delete: operations["deleteConsumer"];
         options?: never;
         head?: never;
@@ -864,7 +865,11 @@ export interface paths {
         };
         get: operations["listPlugins"];
         put?: never;
-        /** @description `config` is validated against the plugin schema of the Kong version pinned by the platform. */
+        /**
+         * @description `config` is validated against the plugin schema of the Kong version pinned by the platform. 422 at
+         *     `config.anonymous` when it is set and is neither the id nor the username of a consumer of this environment (an
+         *     environment is a workspace: a plugin never falls back to another workspace's consumer).
+         */
         post: operations["createPlugin"];
         delete?: never;
         options?: never;
@@ -883,6 +888,7 @@ export interface paths {
             cookie?: never;
         };
         get: operations["getPlugin"];
+        /** @description Same 422 rules as the creation, `config.anonymous` included. */
         put: operations["replacePlugin"];
         post?: never;
         delete: operations["deletePlugin"];
@@ -3673,6 +3679,7 @@ export interface operations {
                 content?: never;
             };
             404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
         };
     };
     listKeyAuthCredentials: {

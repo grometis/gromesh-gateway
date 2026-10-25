@@ -606,8 +606,10 @@ Nas tarefas abaixo, `workspace_id` é a coluna `environment_id` das entidades, q
 valor já é o id do Workspace): `unique (workspace_id, …)` e as FKs `(workspace_id, id)` usam essa coluna.
 Tarefas pequenas, um PR cada; `src/db/schema.ts` e `drizzle/` mudam por uma frente por vez, na ordem N1-X1 →
 N1-X2 → N1-X3 → N1-C3. Toda migração é testada sobre bancos com os dados de cada versão anterior (0000…0011). Nenhuma
-tarefa cria um segundo Workspace operacional: a criação pela API fica bloqueada até a N2; dois Workspaces só existem
-em fixture de teste.
+tarefa põe dois Workspaces no mesmo data plane: a criação de Workspace pela v2 (`createWorkspace`, que os põe nos
+clusters da instância) fica bloqueada até a N2, e dois Workspaces na mesma instância só existem em fixture de teste. A v1
+continua criando environments como hoje (preservação do comportamento atual): cada um vira um Workspace com clusters
+próprios (`clusters.environment_id`) e snapshot próprio, sem composição.
 
 | Tarefa | Depende de | Escopo | Aceite |
 | --- | --- | --- | --- |
