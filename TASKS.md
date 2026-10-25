@@ -602,6 +602,8 @@ dos gates da N2.
   dias (métrica da N1-X5); (3) migração e regressão verdes em integração e e2e, com o roteiro de retorno ensaiado. O
   corte responde 410 e é tarefa própria, com PR de contrato.
 
+Nas tarefas abaixo, `workspace_id` é a coluna `environment_id` das entidades, que a N1-X1 mantém com esse nome (o
+valor já é o id do Workspace): `unique (workspace_id, …)` e as FKs `(workspace_id, id)` usam essa coluna.
 Tarefas pequenas, um PR cada; `src/db/schema.ts` e `drizzle/` mudam por uma frente por vez, na ordem N1-X1 →
 N1-X2 → N1-X3 → N1-C3. Toda migração é testada sobre bancos com os dados de cada versão anterior (0000…0011). Nenhuma
 tarefa cria um segundo Workspace operacional: a criação pela API fica bloqueada até a N2; dois Workspaces só existem
