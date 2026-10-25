@@ -150,6 +150,9 @@ info:
         becomes `<name>.<slug>.gromesh.internal` (a service refers to its upstream only by upstreamId; the suffix
         `.gromesh.internal` is refused as a free host of a service, target or plugin URL). Entity ids are UUIDs
         generated on dev and preserved on hml and prd; nothing is created directly on hml or prd.
+      - Credential secrets (decision H-14): the server generates every key-auth key and HS256 JWT secret, in both
+        APIs and in an import (a supplied value answers 422 at its field; an imported credential gets a generated one,
+        listed without its value). Delivered by task N1-X6.
       - Consumer identity (decision H-5): username and customId are unique in the WORKSPACE. Two workspaces may each
         have a consumer app-sky; they are independent consumers. On the node the compiler emits username
         `<slug>~<username>` and custom_id `<slug>~<customId>` (unique in the instance because the slug is); the API,
@@ -282,6 +285,53 @@ paths:
         "200": { description: Instance, content: { application/json: { schema: { $ref: "#/components/schemas/Instance" } } } }
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /instance/workspace-migration:
+    get:
+      tags: [ instance ]
+      operationId: getWorkspaceMigrationReport
+      x-scope: instance
+      x-gromesh-requirements: [ GW-WS-02, GW-WS-10, GW-WS-14, GW-RBAC-05 ]
+      x-required-permission: platform.admin
+      x-gromesh-planned: true
+      description: |
+        What the N1 migration (each environment becomes the workspace with the same id) did and what still needs a
+        person: slugs derived from environment names that were adjusted (collision, reserved, invalid) and must be
+        reviewed before the first release, access that changed when the v1 roles moved (in N1 the environment roles
+        become bindings, none a deny no grant overrides, and the global roles stay v1 roles: nothing is dropped or
+        widened in N1; the list names every active global editor or viewer, who keeps every current workspace but
+        reaches no workspace created from N2 on, since a new workspace grants no implicit access: only
+        platform-admin and whoever is bound to it), and the routes kept legacy-preserved, with those without a path that the composition of N2 will refuse.
+        It is also the pre-check of the uniqueness the instance needs (decision H-5): a key-auth key, JWT key,
+        basic-auth username or SNI repeated across environments, in a draft, an active snapshot or a snapshot that a
+        rollback could restore, is a blocker; each names only the workspaces, entities and snapshot versions involved,
+        never a key, hash, username or server name. The instance-wide unique index of a kind is in force as soon as no
+        two drafts repeat a value of that kind (until then the service checks every write and refuses a repetition as
+        a conflict); a version holding a value another workspace holds is never restored (the rollback is a conflict).
+        While any blocker exists the status is blocked and no second workspace can be composed on an instance; once
+        the last one is gone the status becomes complete. Reading the report changes nothing: each replica puts in force
+        the indexes no blocker holds back when it starts, under the lock that serializes the replicas, waiting at most
+        2 s for writers and leaving it to the next start otherwise.
+      responses:
+        "200": { description: Report, content: { application/json: { schema: { $ref: "#/components/schemas/WorkspaceMigrationReport" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /instance/api-v1-usage:
+    get:
+      tags: [ instance ]
+      operationId: getApiV1Usage
+      x-scope: instance
+      x-gromesh-requirements: [ GW-RBAC-05 ]
+      x-required-permission: platform.admin
+      x-gromesh-planned: true
+      description: |
+        Calls to the administrative operations of v1 that the controlled migration (decision H-9) will cut (those
+        under /environments/{envId} and /clusters/{clusterId}, and GET and POST /environments) in the last 30 days,
+        per API token, plus the calls made by sessions (the current UI). The cut requires zero token calls in the
+        window. Counted by day; never carries a token value, a path parameter or a body.
+      responses:
+        "200": { description: Usage, content: { application/json: { schema: { $ref: "#/components/schemas/ApiV1Usage" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
   /workspaces:
     get:
@@ -1447,8 +1497,8 @@ paths:
         in the resulting draft is a uniqueness conflict.
         Plugins match by (name, resolved service, route, consumer scope), targets by (upstream, target), JWT
         credentials by issuer key and basic-auth credentials by username (both unique in the instance, across workspaces).
-        Key-auth matches by existing id within the resolved consumer or by the supplied full key; `keyHint`
-        is display-only and MUST NOT be used to match a credential. A credential belonging to another consumer,
+        Key-auth matches by existing id within the resolved consumer (until N1-X6, also by the supplied full key);
+        `keyHint` is display-only and MUST NOT be used to match a credential. A credential belonging to another consumer,
         or an id disagreeing with a natural-key match, is a conflict. Credential ids only match within the resolved
         consumer; unmatched ids are source identities, not requested ids for creation. New ids are generated
         by the control plane, except for the consumer-id preservation rule for prehashed basic-auth below.
@@ -1467,9 +1517,12 @@ paths:
 
         A supplied `REDACTED`, or an omitted secret on a matched entity, keeps the current secret in either mode,
         as with certificate PUT. For a NEW credential/certificate/plugin secret, `REDACTED` or a missing value
-        is 422 at that secret path; import never auto-generates credentials. This applies to key-auth keys,
-        basic-auth passwords, HS256 JWT secrets, certificate keys and plugin fields marked `encrypted` that
-        the selected plugin configuration requires. Optional inactive plugin secret fields may remain absent.
+        is 422 at that secret path; import never auto-generates credentials. This applies to basic-auth passwords,
+        certificate keys and plugin fields marked `encrypted` that the selected plugin configuration requires (and,
+        until N1-X6, to key-auth keys and HS256 JWT secrets). Decision H-14, delivered by N1-X6: the server generates
+        every key-auth key and HS256 JWT secret, so a document never sets one; a new key-auth or HS256 JWT credential
+        gets a generated value, whether the document supplies one (a Gromesh or a Kong document) or not, and the
+        report lists it in `regeneratedCredentials`, without any value; a matched credential keeps its stored value. Optional inactive plugin secret fields may remain absent.
         A secret slot without a stored value is new even on a matched plugin or credential.
         RS256/ES256 JWT credentials require a valid public key and must not supply a secret. Existing certificate
         keys must still match the leaf; all current entity write validations, including certificate expiry on
@@ -2100,7 +2153,9 @@ paths:
         - cookieAuth: []
           csrfToken: []
         - bearerApiToken: []
-      description: If `key` is omitted a random 32-byte key is generated. The full key is returned only in this response.
+      description: |
+        The server generates every key (random, 32 bytes), returned only in this response; a supplied `key` answers
+        422 at `key` (decision H-14, delivered by task N1-X6: until then a supplied value is still accepted).
       requestBody:
         required: false
         content:
@@ -2111,6 +2166,7 @@ paths:
                 key:
                   type: string
                   minLength: 16
+                  description: "Refused (422) once N1-X6 delivers decision H-14: the server generates the key"
                 tags:
                   $ref: ./control-plane.openapi.yaml#/components/schemas/Tags
               additionalProperties: false
@@ -2220,8 +2276,8 @@ paths:
           csrfToken: []
         - bearerApiToken: []
       description: |
-        HS256 signs with a shared `secret`: if omitted a random 32-byte secret is generated, and it is returned only in
-        this response. RS256 and ES256 verify with `rsaPublicKey` (an RSA or EC P-256 public key, despite Kong's field
+        HS256 signs with a shared secret the server generates (random, 32 bytes), returned only in this response; a
+        supplied `secret` answers 422 at `secret` (decision H-14, delivered by task N1-X6: until then a supplied value is still accepted). RS256 and ES256 verify with `rsaPublicKey` (an RSA or EC P-256 public key, despite Kong's field
         name). If `key` is omitted a random one is generated. 409 when `key` is already used by a JWT credential in the
         instance (any workspace; generic conflict). 422 with `path`: `secret` given with RS256/ES256; `rsaPublicKey` missing with RS256/ES256, given
         with HS256, not a PEM public key, or of the wrong type for the algorithm (RSA for RS256, EC P-256 for ES256).
@@ -3679,6 +3735,91 @@ components:
       type: object
       required: [ id, stage, signingKeyIds ]
       properties: { id: { type: string, format: uuid }, stage: { $ref: "#/components/schemas/Stage" }, name: { type: string }, signingKeyIds: { type: array, items: { type: string } } }
+    WorkspaceMigrationReport:
+      type: object
+      additionalProperties: false
+      required: [ migratedAt, status, blockers, workspaces, accessChanges ]
+      if: { properties: { status: { const: complete } } }
+      then: { properties: { blockers: { maxItems: 0 } } }
+      else: { properties: { blockers: { minItems: 1 } } }
+      properties:
+        migratedAt: { type: string, format: date-time }
+        status: { enum: [ complete, blocked ] }
+        blockers:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [ kind, occurrences ]
+            properties:
+              kind: { enum: [ key-auth-key, jwt-key, basic-auth-username, sni ] }
+              occurrences:
+                type: array
+                minItems: 2
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [ workspaceId, source, entityType, entityId, snapshotVersion ]
+                  properties:
+                    workspaceId: { type: string, format: uuid }
+                    source: { enum: [ draft, active-snapshot, rollback-candidate ] }
+                    entityType: { enum: [ key-auth-credential, jwt-credential, basic-auth-credential, certificate ] }
+                    entityId: { type: string, format: uuid }
+                    snapshotVersion: { type: [ integer, "null" ], minimum: 1, description: null for the draft }
+                  if: { properties: { source: { const: draft } } }
+                  then: { properties: { snapshotVersion: { type: "null" } } }
+                  else: { properties: { snapshotVersion: { type: integer } } }
+        workspaces:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [ workspaceId, name, slug, slugStatus, legacyRoutes, routesWithoutPath ]
+            properties:
+              workspaceId: { type: string, format: uuid }
+              name: { type: string }
+              slug: { type: string }
+              slugStatus:
+                enum: [ derived, adjusted ]
+                description: "adjusted: the name gave a colliding, reserved or invalid slug; the proposed slug needs review before the first release"
+              slugReason: { enum: [ collision, reserved, invalid ] }
+              legacyRoutes: { type: integer, minimum: 0, description: Routes kept pathCompatibility legacy-preserved }
+              routesWithoutPath: { type: integer, minimum: 0, description: Routes the N2 composition refuses until they get a path }
+            if: { properties: { slugStatus: { const: adjusted } } }
+            then: { required: [ slugReason ] }
+            else: { not: { required: [ slugReason ] } }
+        accessChanges:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [ userId, globalRole, change ]
+            properties:
+              userId: { type: string, format: uuid }
+              globalRole: { enum: [ editor, viewer ] }
+              change:
+                enum: [ implicit-access-dropped ]
+                description: The user keeps every current workspace but no longer reaches workspaces created from N2 on, unless bound to them
+    ApiV1Usage:
+      type: object
+      additionalProperties: false
+      required: [ windowDays, since, sessionCalls, tokens ]
+      properties:
+        windowDays: { const: 30 }
+        since: { type: string, format: date }
+        sessionCalls: { type: integer, minimum: 0 }
+        tokens:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [ tokenId, tokenName, ownerId, calls, lastCalledOn ]
+            properties:
+              tokenId: { type: string, format: uuid }
+              tokenName: { type: string }
+              ownerId: { type: string, format: uuid }
+              calls: { type: integer, minimum: 1 }
+              lastCalledOn: { type: string, format: date }
     WorkspaceWrite:
       type: object
       required:
