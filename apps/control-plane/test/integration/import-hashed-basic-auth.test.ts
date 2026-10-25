@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { afterAll, beforeAll, expect, test, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import type { EntityChange, KongDeclarativeConfig } from "@gromesh/compiler";
 import { basicAuthHashContext, ENCRYPTOR, Encryptor } from "../../src/crypto/crypto.js";
 import { DB, type Db } from "../../src/db/db.js";
@@ -12,9 +12,13 @@ afterAll(async () => { await h?.close(); });
 interface Report { added: EntityChange[]; modified: EntityChange[]; removed: EntityChange[]; errors: { path: string; message: string }[] }
 const password = "original-import-password";
 const hash = (id: string, value = password) => createHash("sha1").update(value + id).digest("hex");
-const source = (id: string | undefined, suppliedHash = id ? hash(id) : "a".repeat(40)) => ({
+// A basic-auth username is unique in the instance (decision H-5): each test has its own, so the files sharing the
+// database never collide, and two environments importing one document collide only where a test says so.
+let LOGIN = "";
+beforeEach(() => { LOGIN = uniq("login"); });
+const source = (id: string | undefined, suppliedHash = id ? hash(id) : "a".repeat(40), username = LOGIN) => ({
   _format_version: "3.0", _transform: false,
-  consumers: [{ id, username: "imported", basicauth_credentials: [{ username: "login", password: suppliedHash }] }],
+  consumers: [{ id, username: "imported", basicauth_credentials: [{ username, password: suppliedHash }] }],
 });
 async function environment() {
   const result = await h.api<{ id: string }>("POST", "/environments", { name: uniq("hashed-import") });
@@ -68,7 +72,7 @@ test("previews an exact source UUID without reserving it, then stores the unchan
   const document = {
     _format_version: "3.0", _transform: false,
     consumers: [{ id, username: "imported" }, { id: randomUUID(), username: "ordinary" }],
-    basicauth_credentials: [{ consumer: { id }, username: "login", password: suppliedHash }],
+    basicauth_credentials: [{ consumer: { id }, username: LOGIN, password: suppliedHash }],
   };
   const before = await state(envId);
   const preview = await imported(envId, document, "replace", true);
@@ -114,6 +118,7 @@ test("previews an exact source UUID without reserving it, then stores the unchan
 
 test("matches the target UUID before natural identifiers in merge and replace, and preserves omitted or REDACTED matched hashes", async () => {
   for (const mode of ["merge", "replace"]) {
+    LOGIN = uniq("login"); // a new environment per mode, so a username of its own
     const envId = await environment();
     const consumer = await h.api<{ id: string }>("POST", `/environments/${envId}/consumers`, { username: "before", customId: "stable-custom" });
     const id = consumer.body.id;
@@ -125,7 +130,7 @@ test("matches the target UUID before natural identifiers in merge and replace, a
     const renamed = await h.api<{ username: string }>("GET", `/environments/${envId}/consumers/${id}`);
     expect(renamed.body.username).toBe("imported");
     for (const marker of ["REDACTED", undefined]) {
-      const preserved = { ...document, consumers: [{ ...document.consumers[0], basicauth_credentials: [{ username: "login", password: marker }] }] };
+      const preserved = { ...document, consumers: [{ ...document.consumers[0], basicauth_credentials: [{ username: LOGIN, password: marker }] }] };
       const result = await imported(envId, preserved, mode);
       expect(result.status).toBe(200);
       expect((await stored(envId))[0]).toMatchObject({ id: first.id, opened: first.opened });
@@ -147,7 +152,7 @@ test("rejects missing or invalid source UUIDs and malformed hashes at original p
   }
   for (const suppliedHash of [23, null, [], { toString: null }]) {
     const document = source(randomUUID());
-    await expectErrors(envId, { ...document, consumers: [{ ...document.consumers[0], basicauth_credentials: [{ username: "login", password: suppliedHash }] }] }, [{ path: passwordPath, message: `must be a 40-character lowercase hex hash; ${saltReason}` }]);
+    await expectErrors(envId, { ...document, consumers: [{ ...document.consumers[0], basicauth_credentials: [{ username: LOGIN, password: suppliedHash }] }] }, [{ path: passwordPath, message: `must be a 40-character lowercase hex hash; ${saltReason}` }]);
   }
   await expectErrors(envId, source(undefined, "invalid-hash"), [{ path: passwordPath, message: saltReason }]);
   await expectErrors(envId, source(randomUUID(), "REDACTED"), [{ path: passwordPath, message: "a real secret is required for a new secret slot" }]);
@@ -200,7 +205,7 @@ test("REDACTED and omitted passwords still require a preserved source id on matc
   expect((await imported(envId, source(id))).status).toBe(200);
   for (const marker of ["REDACTED", undefined]) {
     for (const sourceId of [undefined, id.toUpperCase()]) {
-      const document = { ...source(sourceId), consumers: [{ ...source(sourceId).consumers[0], basicauth_credentials: [{ username: "login", password: marker }] }] };
+      const document = { ...source(sourceId), consumers: [{ ...source(sourceId).consumers[0], basicauth_credentials: [{ username: LOGIN, password: marker }] }] };
       await expectErrors(envId, document, [
         { path: passwordPath, message: saltReason },
         ...(sourceId ? [{ path: "document.consumers.0.id", message: "must be a lowercase canonical UUID" }] : []),
@@ -234,7 +239,7 @@ test("rejects globally used UUIDs without disclosure, preserving row counts and 
 test("never falls back to a natural match with another id, even when replace would delete it", async () => {
   const envId = await environment();
   const existing = await h.api<{ id: string }>("POST", `/environments/${envId}/consumers`, { username: "imported", customId: "taken" });
-  expect((await h.api("POST", `/environments/${envId}/consumers/${existing.body.id}/basic-auth`, { username: "login", password })).status).toBe(201);
+  expect((await h.api("POST", `/environments/${envId}/consumers/${existing.body.id}/basic-auth`, { username: LOGIN, password })).status).toBe(201);
   const other = await h.api<{ id: string }>("POST", `/environments/${envId}/consumers`, { username: "other" });
   const before = await state(envId);
   for (const mode of ["merge", "replace"]) for (const id of [randomUUID(), other.body.id]) {
@@ -255,6 +260,7 @@ test("never falls back to a natural match with another id, even when replace wou
 
 test("keeps absent/true transform passwords as plaintext and generates consumer ids, including 40 hex passwords", async () => {
   for (const transform of [undefined, true]) {
+    LOGIN = uniq("login"); // a new environment per variant, so a username of its own
     const envId = await environment();
     const requested = randomUUID();
     const suppliedPassword = "b".repeat(40);
@@ -275,7 +281,8 @@ test("concurrent imports cannot claim the same globally free UUID in different e
   // generic document error, so the exact error-array assertion below must fail without that branch.
   const transaction = vi.spyOn(h.app.get<Db>(DB), "transaction").mockRejectedValueOnce({ cause: { code: "23505", constraint: "consumers_pkey" } });
   try {
-    const results = await Promise.all(ids.map(envId => imported(envId, source(id))));
+    // Each environment its own username: the two imports collide on the consumer UUID only.
+    const results = await Promise.all(ids.map(envId => imported(envId, source(id, undefined, uniq("login")))));
     expect(results.map(r => r.status).sort()).toEqual([200, 422]);
     expect(transaction.mock.calls.length).toBeGreaterThanOrEqual(3);
     const rejected = results.find(r => r.status === 422)!;

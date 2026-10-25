@@ -10,9 +10,13 @@ import { upstreamValues, targetValues } from "../upstreams/upstreams.js";
 import type { PluginCatalog } from "../plugin-catalog/catalog.js";
 import type { PluginsService } from "../plugins/plugins.js";
 import { anonymousOf, namesConsumer } from "../workspaces/anonymous.js";
+import type { UniqueKind } from "../workspaces/instance-uniqueness.js";
 
 /** Resolves a complete proposed domain state without writing. Every diagnostic uses a document path. */
-export async function planImport(document: ConfigDocument, current: GatewayState, mode: "merge" | "replace", catalog: PluginCatalog, plugins: PluginsService, destinations: DestinationPolicy, preservation?: { identity: ImportIdentity; consumerIdExists: (id: string) => Promise<boolean> }, workspaceDefaultRoutes: ReadonlySet<string> = new Set()) {
+/** The values of a kind (key-auth keys in clear) another workspace of the instance already holds. */
+export type InstanceTaken = (kind: UniqueKind, values: string[]) => Promise<Set<string>>;
+
+export async function planImport(document: ConfigDocument, current: GatewayState, mode: "merge" | "replace", catalog: PluginCatalog, plugins: PluginsService, destinations: DestinationPolicy, preservation?: { identity: ImportIdentity; consumerIdExists: (id: string) => Promise<boolean> }, workspaceDefaultRoutes: ReadonlySet<string> = new Set(), instanceTaken?: InstanceTaken) {
   const errors: FieldError[] = [];
   const paths = new Map<string, string>();
   const add = (path: string, message: string) => errors.push({ path, message });
@@ -182,6 +186,19 @@ export async function planImport(document: ConfigDocument, current: GatewayState
     upsert(result.plugins, value, path);
   }
   retain(result.plugins, current.plugins);
+  // Credentials and server names are unique in the instance (decision H-5): each one another workspace holds is an
+  // errors[] entry at its path, with the same generic message as a single write's 409.
+  if (instanceTaken) {
+    const check = async <T extends { id: string }>(kind: UniqueKind, items: T[], value: (item: T) => string[], field: (i: number) => string) => {
+      const documented = items.filter(item => paths.has(item.id));
+      const taken = await instanceTaken(kind, documented.flatMap(value));
+      for (const item of documented) value(item).forEach((v, i) => { if (taken.has(v)) add(`${paths.get(item.id)}.${field(i)}`, "already in use in this instance"); });
+    };
+    await check("key-auth-key", result.keyAuthCredentials, k => [k.key], () => "key");
+    await check("jwt-key", result.jwtCredentials!, j => [j.key], () => "key");
+    await check("basic-auth-username", result.basicAuthCredentials!, b => [b.username], () => "username");
+    await check("sni", result.certificates!, c => c.snis, i => `snis.${i}`);
+  }
   // `anonymous` names a consumer of the resulting draft, never another workspace's (decision H-1).
   for (const plugin of result.plugins) {
     const anonymous = anonymousOf(plugin.config);

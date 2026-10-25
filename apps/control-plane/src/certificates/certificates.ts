@@ -12,6 +12,8 @@ import { certificateKeyContext, ENCRYPTOR, Encryptor } from "../crypto/crypto.js
 import { DB, type Db, type Executor } from "../db/db.js";
 import { certificateSnis, certificates, type CertificateRow } from "../db/schema.js";
 import { markDraftChanged, requireEnvironment, uuidParam } from "../environments/environments.js";
+import { type ConflictLimit, conflictLimit, guardedUniqueWrite, inUse, lockUnique } from "../workspaces/instance-uniqueness.js";
+import { APP_CONFIG, type AppConfig } from "../config.js";
 
 export const SECRET_PLACEHOLDER = "REDACTED";
 const PEM_CERT = /-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g;
@@ -112,10 +114,15 @@ export function restoredLeaf(cert: string): LeafInfo {
 
 @Injectable()
 export class CertificatesService {
+  private readonly conflicts: ConflictLimit;
+
   constructor(
     @Inject(DB) private readonly db: Db,
     @Inject(ENCRYPTOR) private readonly enc: Encryptor,
-  ) {}
+    @Inject(APP_CONFIG) config: AppConfig,
+  ) {
+    this.conflicts = conflictLimit(config);
+  }
 
   async list(envId: string, query: Record<string, unknown>) {
     await requireEnvironment(this.db, envId);
@@ -138,9 +145,9 @@ export class CertificatesService {
 
   async create(ctx: RequestContext, envId: string, body: CertificateWrite) {
     const { leaf, key } = checkCertificate(body, null, true);
-    return this.db.transaction(async (tx) => {
+    return guardedUniqueWrite(this.db, ctx, "sni", this.conflicts, () => this.db.transaction(async (tx) => {
       await requireEnvironment(tx, envId, true);
-      await this.checkSnisFree(tx, envId, body.snis, null);
+      await this.checkSnisFree(tx, body.snis, null);
       const id = randomUUID();
       const [row] = await tx
         .insert(certificates)
@@ -151,18 +158,18 @@ export class CertificatesService {
       await markDraftChanged(tx, envId);
       await audit(tx, ctx, { action: "certificate.create", entityType: "certificate", entityId: id, environmentId: envId, after });
       return after;
-    });
+    }));
   }
 
   async replace(ctx: RequestContext, envId: string, certificateId: string, body: CertificateWrite) {
     // The stored key is read before validation: "REDACTED" keeps it, and it must still match the new leaf.
     const current = await this.requireCertificate(this.db, envId, certificateId);
     const { leaf, key } = checkCertificate(body, this.enc.open(current.key, certificateKeyContext(current.id)), body.cert !== current.cert);
-    return this.db.transaction(async (tx) => {
+    return guardedUniqueWrite(this.db, ctx, "sni", this.conflicts, () => this.db.transaction(async (tx) => {
       await requireEnvironment(tx, envId, true);
       const locked = await this.requireCertificate(tx, envId, certificateId);
       const before = toCertificate(locked, (await this.snisOf(tx, [locked.id])).get(locked.id) ?? []);
-      await this.checkSnisFree(tx, envId, body.snis, certificateId);
+      await this.checkSnisFree(tx, body.snis, certificateId);
       const [row] = await tx
         .update(certificates)
         .set({ cert: body.cert, key: this.enc.seal(key, certificateKeyContext(certificateId)), ...leaf, tags: body.tags ?? [], updatedAt: sql`now()` })
@@ -174,7 +181,7 @@ export class CertificatesService {
       await markDraftChanged(tx, envId);
       await audit(tx, ctx, { action: "certificate.update", entityType: "certificate", entityId: certificateId, environmentId: envId, before, after });
       return after;
-    });
+    }));
   }
 
   async remove(ctx: RequestContext, envId: string, certificateId: string) {
@@ -201,16 +208,20 @@ export class CertificatesService {
     return out;
   }
 
-  /** Runs with the environment row locked, so two writers cannot both take a name (the primary key is the backstop). */
-  private async checkSnisFree(tx: Executor, envId: string, names: string[], ownId: string | null): Promise<void> {
+  /**
+   * A server name belongs to one certificate in the whole instance (Kong matches it across the node, decision H-5):
+   * another certificate holding it, in any workspace, is the generic 409 that never names the other one. The lock per
+   * kind serializes the writers; the instance index, once in force, is the backstop.
+   */
+  private async checkSnisFree(tx: Executor, names: string[], ownId: string | null): Promise<void> {
     if (names.length === 0) return;
-    const taken = await tx
+    await lockUnique(tx, ["sni"]);
+    const [taken] = await tx
       .select({ name: certificateSnis.name })
       .from(certificateSnis)
-      .where(and(eq(certificateSnis.environmentId, envId), inArray(certificateSnis.name, names), ownId ? ne(certificateSnis.certificateId, ownId) : undefined));
-    const used = new Set(taken.map((t) => t.name));
-    const errors = names.flatMap((name, i) => (used.has(name) ? [{ path: `snis.${i}`, message: `"${name}" already belongs to another certificate of this environment` }] : []));
-    if (errors.length > 0) throw unprocessable("Invalid certificate", errors);
+      .where(and(inArray(certificateSnis.name, names), ownId ? ne(certificateSnis.certificateId, ownId) : undefined))
+      .limit(1);
+    if (taken) throw inUse();
   }
 
   private async writeSnis(tx: Executor, envId: string, certificateId: string, names: string[]): Promise<void> {

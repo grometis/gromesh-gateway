@@ -37,7 +37,11 @@ test("exports the draft and imports into an empty environment, with no implicit 
 
 // Each fixture goes through the existing write services, independently of the import implementation.
 
-const secrets = { key: "fixture-key-auth-secret-12345", jwt: "fixture-jwt-secret-".repeat(3), password: "fixture-basic-password", plugin: "fixture-plugin-password" };
+// Unique in the instance (decision H-5): other test files share the database, so these carry a suffix of this run.
+const RUN = uniq("ei");
+const ISSUER_HS = `issuer-hs-${RUN}`, ISSUER_RS = `issuer-rs-${RUN}`, LOGIN = `login-${RUN}`;
+const SNI = `import-${RUN}.example.test`, ALIAS = `alias-${RUN}.example.test`, OTHER_SNI = `other-${RUN}.example.test`;
+const secrets = { key: `fixture-key-auth-secret-12345-${RUN}`, jwt: "fixture-jwt-secret-".repeat(3), password: "fixture-basic-password", plugin: "fixture-plugin-password" };
 const issuedCert = selfSigned("import.example.test");
 // Omit the redundant public point: its base64 lines also occur in the public certificate.
 const cert = { ...issuedCert, key: execFileSync("openssl", ["ec", "-no_public"], { input: issuedCert.key, encoding: "utf8", stdio: ["pipe", "pipe", "ignore"] }) };
@@ -47,22 +51,27 @@ async function createEnvironment(mode = "manual") {
   expect(response.status).toBe(201);
   return `/environments/${response.body.id}`;
 }
+// Credentials and server names are unique in the instance (decision H-5): each fixture holds the same ones, so the
+// previous fixture's environment leaves the instance first (the tests of this file run in sequence).
+const fixtures: string[] = [];
 async function fixture() {
+  for (const old of fixtures.splice(0)) await h.api("DELETE", old);
   const base = await createEnvironment();
+  fixtures.push(base);
   const post = async (path: string, body: unknown) => { const res = await h.api("POST", base + path, body); expect(res.status, JSON.stringify(res.body)).toBe(201); return res.body; };
   const service = await post("/services", { name: "backend", protocol: "http", host: "pool.test", port: 80, path: "/", retries: 2, connectTimeoutMs: 1000, tags: ["team:test"] });
   const route = await post("/routes", { name: "public", serviceId: service.id, paths: ["/public"], methods: ["GET"] });
   const consumer = await post("/consumers", { username: "partner", customId: "partner-custom" });
   await post(`/consumers/${consumer.id}/key-auth`, { key: secrets.key });
-  await post(`/consumers/${consumer.id}/jwt`, { key: "issuer-hs", algorithm: "HS256", secret: secrets.jwt });
-  await post(`/consumers/${consumer.id}/jwt`, { key: "issuer-rs", algorithm: "RS256", rsaPublicKey: rsa });
-  await post(`/consumers/${consumer.id}/basic-auth`, { username: "login", password: secrets.password });
+  await post(`/consumers/${consumer.id}/jwt`, { key: ISSUER_HS, algorithm: "HS256", secret: secrets.jwt });
+  await post(`/consumers/${consumer.id}/jwt`, { key: ISSUER_RS, algorithm: "RS256", rsaPublicKey: rsa });
+  await post(`/consumers/${consumer.id}/basic-auth`, { username: LOGIN, password: secrets.password });
   expect((await h.api("PUT", `${base}/consumers/${consumer.id}/acl-groups`, { groups: ["partners", "readers"] })).status).toBe(200);
   await post("/plugins", { name: "key-auth", scope: { routeId: route.id }, config: { key_names: ["apikey"] } });
   await post("/plugins", { name: "rate-limiting", scope: { serviceId: service.id, consumerId: consumer.id }, config: { minute: 10, policy: "redis", redis: { host: "redis.test", port: 6379, password: secrets.plugin } } });
   const upstream = await post("/upstreams", { name: "pool.test", algorithm: "consistent-hashing", hashOn: "header", hashOnHeader: "X-Partner", healthchecks: { active: { type: "http", httpPath: "/health" }, passive: { unhealthyTimeouts: 4 } } });
   await post(`/upstreams/${upstream.id}/targets`, { target: "echo:80", weight: 100 });
-  await post("/certificates", { cert: cert.cert, key: cert.key, snis: ["import.example.test", "alias.example.test"] });
+  await post("/certificates", { cert: cert.cert, key: cert.key, snis: [SNI, ALIAS] });
   return base;
 }
 async function exportDocument(base: string): Promise<ConfigDocument> {
@@ -117,7 +126,11 @@ test("(a,e) redacted YAML/JSON export, new environment import and explicit publi
   // A short last line of the PEM key (e.g. "AwEH") is not secret: the P-256 public key in the certificate starts the same way.
   const allSecrets = [...Object.values(secrets), ...(await openedSecrets(source)).basic, ...cert.key.split("\n").filter(l => l.length >= 16 && !l.startsWith("-----"))];
   for (const representation of [JSON.stringify(document), yaml.body]) for (const secret of allSecrets) expect(representation).not.toContain(secret);
+  // The copy carries the same credentials and server names: in the same instance the source leaves first (H-5).
+  expect((await h.api("DELETE", source)).status).toBe(204);
+  fixtures.splice(0);
   const target = await createEnvironment("auto");
+  fixtures.push(target);
   const empty = await stateOf(target);
   const missing = await importDocument(target, document);
   expect(missing.status).toBe(422);
@@ -268,11 +281,11 @@ test("natural-key/id conflicts and hint-only new credentials are 422, without an
   const base = await fixture();
   const second = await h.api("POST", `${base}/consumers`, { username: "other", customId: "other-custom" });
   await h.api("POST", `${base}/consumers/${second.body.id}/key-auth`, { key: "second-key-auth-123456" });
-  await h.api("POST", `${base}/certificates`, { cert: cert.cert, key: cert.key, snis: ["other.example.test"] });
+  await h.api("POST", `${base}/certificates`, { cert: cert.cert, key: cert.key, snis: [OTHER_SNI] });
   const document = await exportDocument(base);
   const before = await stateOf(base);
-  const originalCertificate = document.certificates.find(c => c.snis.includes("alias.example.test"))!;
-  const otherCertificate = document.certificates.find(c => c.snis.includes("other.example.test"))!;
+  const originalCertificate = document.certificates.find(c => c.snis.includes(ALIAS))!;
+  const otherCertificate = document.certificates.find(c => c.snis.includes(OTHER_SNI))!;
   const partner = document.consumers.find(c => c.username === "partner")!;
   const other = document.consumers.find(c => c.username === "other")!;
   const cases: [string, (d: ConfigDocument) => void][] = [
@@ -280,7 +293,7 @@ test("natural-key/id conflicts and hint-only new credentials are 422, without an
     ["document.consumers.0.keyAuthCredentials.0", d => { d.consumers = [{ ...partner, keyAuthCredentials: [{ id: other.keyAuthCredentials[0]!.id, key: secrets.key }] }]; }],
     ["document.consumers.0.keyAuthCredentials.0.key", d => { d.consumers = [{ ...partner, keyAuthCredentials: [{ keyHint: partner.keyAuthCredentials[0]!.keyHint }] }]; }],
     ["document.certificates.0", d => { d.certificates = [{ ...originalCertificate, id: otherCertificate.id }]; }],
-    ["document.certificates.0.snis.0", d => { d.certificates = [{ ...originalCertificate, snis: ["other.example.test", "alias.example.test"] }]; }],
+    ["document.certificates.0.snis.0", d => { d.certificates = [{ ...originalCertificate, snis: [OTHER_SNI, ALIAS] }]; }],
   ];
   for (const [path, mutate] of cases) {
     const bad = structuredClone(document); mutate(bad);

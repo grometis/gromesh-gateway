@@ -10,6 +10,7 @@ import { AtRestService } from "./crypto/at-rest.js";
 import { UsersService } from "./users/users.js";
 import { DB, type Db } from "./db/db.js";
 import { backfillWorkspaces } from "./workspaces/workspaces.js";
+import { enforceInstanceUniqueness } from "./workspaces/instance-uniqueness.js";
 
 /** Shared by main.ts and the integration tests, so tests run the real app wiring. */
 export async function createApp(config: AppConfig, opts: { logger?: false | LogLevel[] } = {}): Promise<INestApplication> {
@@ -33,6 +34,8 @@ export async function createApp(config: AppConfig, opts: { logger?: false | LogL
   // Also without migrateOnStart: a replica of the previous version may have created an environment (whose workspace
   // the trigger left without a slug) after the migration ran.
   await app.get<Db>(DB).transaction((tx) => backfillWorkspaces(tx));
+  // The instance-wide unique indexes of every kind no value of which is repeated across workspaces (decision H-5).
+  await app.get<Db>(DB).transaction((tx) => enforceInstanceUniqueness(tx));
   // Rows written before the encryption migration (or with an older key, after a rotation) are sealed here.
   await app.get(AtRestService).encryptExisting();
   if (config.bootstrapAdmin) {

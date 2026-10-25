@@ -1,4 +1,4 @@
-import { Controller, Get, HttpCode, Inject, Injectable, Module, Param, Post, Query, Res } from "@nestjs/common";
+import { Controller, Get, HttpCode, HttpException, Inject, Injectable, Module, Param, Post, Query, Res } from "@nestjs/common";
 import { convertKongConfig, diffGatewayStates, exportConfig, type ConfigDocument } from "@gromesh/compiler";
 import type { Response } from "express";
 import { eq } from "drizzle-orm";
@@ -14,12 +14,13 @@ import { DB, type Db } from "../db/db.js";
 import { consumers, environments } from "../db/schema.js";
 import { markDraftChanged, requireEnvironment, uuidParam } from "../environments/environments.js";
 import { loadGatewayState, restoreGatewayState, workspaceDefaultRoutes } from "../gateway/gateway.js";
+import { assertNotLimited, conflictLimit, lockUnique, recordConflict, takenElsewhere, UNIQUE_KINDS } from "../workspaces/instance-uniqueness.js";
 import { PluginCatalog, PluginCatalogModule } from "../plugin-catalog/catalog.js";
 import { PluginsModule, PluginsService } from "../plugins/plugins.js";
 import { redactChanges } from "../snapshots/snapshots.js";
 import { emptyReport, ImportBody, ImportBodyPipe, importFailure, type ImportRequest, schemaErrors } from "./document.js";
 import { redactImportErrors } from "./redaction.js";
-import { planImport } from "./plan.js";
+import { type InstanceTaken, planImport } from "./plan.js";
 
 @Injectable()
 export class ConfigTransferService {
@@ -30,7 +31,7 @@ export class ConfigTransferService {
     @Inject(ENCRYPTOR) private readonly enc: Encryptor,
     private readonly catalog: PluginCatalog,
     private readonly plugins: PluginsService,
-    @Inject(APP_CONFIG) config: AppConfig,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {
     this.destinations = destinationPolicy(config);
   }
@@ -43,7 +44,25 @@ export class ConfigTransferService {
     }, { isolationLevel: "repeatable read", accessMode: "read only" });
   }
 
+  /**
+   * A dry run would otherwise be a free oracle for the credentials of other workspaces: an import whose report or
+   * failure carries an instance conflict counts against the actor and is audited, like a single write's 409.
+   */
   async import(ctx: RequestContext, envId: string, request: ImportRequest) {
+    await assertNotLimited(this.db, ctx);
+    const collided = (errors: { message: string }[] | undefined) => (errors ?? []).some(e => e.message === "already in use in this instance");
+    try {
+      const report = await this.importOnce(ctx, envId, request);
+      if (collided(report.errors)) await recordConflict(this.db, ctx, "import", conflictLimit(this.config));
+      return report;
+    } catch (error) {
+      // A failed import is an HttpException carrying the report (importFailure).
+      if (error instanceof HttpException && collided((error.getResponse() as { errors?: { message: string }[] }).errors)) await recordConflict(this.db, ctx, "import", conflictLimit(this.config));
+      throw error;
+    }
+  }
+
+  private async importOnce(ctx: RequestContext, envId: string, request: ImportRequest) {
     retry: for (let attempt = 0; ; attempt++) {
       try {
         return await this.db.transaction(async tx => {
@@ -71,10 +90,17 @@ export class ConfigTransferService {
           let plan: Awaited<ReturnType<typeof planImport>> | undefined;
           if (!checkedSchema && !invalidPrehashedPassword) {
             const workspaceDefault = new Set(await workspaceDefaultRoutes(tx, envId));
+            await lockUnique(tx, UNIQUE_KINDS);
+            const instanceTaken: InstanceTaken = async (kind, values) => {
+              if (kind !== "key-auth-key") return takenElsewhere(tx, kind, envId, values);
+              const prints = values.map(v => this.enc.fingerprint(v));
+              const taken = await takenElsewhere(tx, kind, envId, prints);
+              return new Set(values.filter((_v, i) => taken.has(prints[i]!)));
+            };
             plan = await planImport(document, current, request.mode, this.catalog, this.plugins, this.destinations, converted ? {
               identity: converted.identity,
               consumerIdExists: async id => (await tx.select({ id: consumers.id }).from(consumers).where(eq(consumers.id, id)).limit(1)).length > 0,
-            } : undefined, workspaceDefault);
+            } : undefined, workspaceDefault, instanceTaken);
             errors.push(...plan.errors);
           }
           const mapped = [...(converted?.errors ?? []), ...errors.map(e => ({ ...e, path: converted?.sourcePath(e.path) ?? e.path }))];

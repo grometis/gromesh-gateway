@@ -76,6 +76,8 @@ export async function startHarness(overrides: Partial<AppConfig> = {}): Promise<
       // Every test shares 127.0.0.1: the per-address lockout is exercised by its own test with a low threshold,
       // and the progressive delay by its own test with a non-zero base.
       loginMaxFailuresPerIp: 1_000_000,
+      // Every test acts as the same bootstrap admin: the conflict limit is exercised by its own test with a low max.
+      uniqueConflictMax: 1_000_000,
       loginDelayBaseMs: 0,
       kongValidatorUrl: KONG_VALIDATOR_URL,
       // k2 readable everywhere: the rotation test re-seals shared rows with it while other files run.

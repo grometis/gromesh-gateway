@@ -14,6 +14,8 @@ import { consumers, keyAuthCredentials, type ConsumerRow, type KeyAuthCredential
 import { markDraftChanged, requireEnvironment, uuidParam } from "../environments/environments.js";
 import { CredentialsController, CredentialsService } from "./credentials.js";
 import { usedAsAnonymous } from "../workspaces/anonymous.js";
+import { type ConflictLimit, conflictLimit, guardedUniqueWrite, inUse, lockUnique, takenElsewhere } from "../workspaces/instance-uniqueness.js";
+import { APP_CONFIG, type AppConfig } from "../config.js";
 
 /* ---------------- mapping ---------------- */
 
@@ -50,10 +52,15 @@ const consumerName = sql<string>`coalesce(${consumers.username}, ${consumers.cus
 
 @Injectable()
 export class ConsumersService {
+  private readonly conflicts: ConflictLimit;
+
   constructor(
     @Inject(DB) private readonly db: Db,
     @Inject(ENCRYPTOR) private readonly enc: Encryptor,
-  ) {}
+    @Inject(APP_CONFIG) config: AppConfig,
+  ) {
+    this.conflicts = conflictLimit(config);
+  }
 
   async list(envId: string, query: Record<string, unknown>) {
     await requireEnvironment(this.db, envId);
@@ -135,9 +142,12 @@ export class ConsumersService {
   }
 
   async createKeyAuth(ctx: RequestContext, envId: string, consumerId: string, body: KeyAuthCredentialWrite) {
-    return this.db.transaction(async (tx) => {
+    return guardedUniqueWrite(this.db, ctx, "key-auth-key", this.conflicts, () => this.db.transaction(async (tx) => {
       await requireConsumer(tx, envId, consumerId);
       const key = body.key ?? randomBytes(32).toString("base64url");
+      // Kong looks a key up across the whole node: unique in the instance (decision H-5).
+      await lockUnique(tx, ["key-auth-key"]);
+      if ((await takenElsewhere(tx, "key-auth-key", envId, [this.enc.fingerprint(key)])).size > 0) throw inUse();
       const [row] = await tx
         .insert(keyAuthCredentials)
         .values({ environmentId: envId, ...keyAuthValues({ id: randomUUID(), consumerId, key, tags: body.tags ?? [] }, this.enc) })
@@ -146,7 +156,7 @@ export class ConsumersService {
       await markDraftChanged(tx, envId);
       await audit(tx, ctx, { action: "keyauth.create", entityType: "keyauth_credential", entityId: after.id, environmentId: envId, after });
       return { ...after, key };
-    });
+    }));
   }
 
   async removeKeyAuth(ctx: RequestContext, envId: string, consumerId: string, credentialId: string) {

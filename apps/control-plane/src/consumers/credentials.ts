@@ -12,6 +12,8 @@ import { DB, type Db } from "../db/db.js";
 import { basicAuthCredentials, consumers, jwtCredentials, type BasicAuthCredentialRow, type JwtCredentialRow } from "../db/schema.js";
 import { markDraftChanged, uuidParam } from "../environments/environments.js";
 import { requireConsumer } from "./consumers.js";
+import { type ConflictLimit, conflictLimit, guardedUniqueWrite, inUse, lockUnique, takenElsewhere } from "../workspaces/instance-uniqueness.js";
+import { APP_CONFIG, type AppConfig } from "../config.js";
 
 /* ---------------- mapping ---------------- */
 
@@ -101,10 +103,15 @@ function publicKeyProblem(pem: string, algorithm: "RS256" | "ES256"): string | n
 
 @Injectable()
 export class CredentialsService {
+  private readonly conflicts: ConflictLimit;
+
   constructor(
     @Inject(DB) private readonly db: Db,
     @Inject(ENCRYPTOR) private readonly enc: Encryptor,
-  ) {}
+    @Inject(APP_CONFIG) config: AppConfig,
+  ) {
+    this.conflicts = conflictLimit(config);
+  }
 
   /* jwt */
 
@@ -120,7 +127,7 @@ export class CredentialsService {
 
   async createJwt(ctx: RequestContext, envId: string, consumerId: string, body: JwtCredentialCreate) {
     checkJwt(body);
-    return this.db.transaction(async (tx) => {
+    return guardedUniqueWrite(this.db, ctx, "jwt-key", this.conflicts, () => this.db.transaction(async (tx) => {
       await requireConsumer(tx, envId, consumerId);
       const secret = body.algorithm === "HS256" ? (body.secret ?? randomBytes(32).toString("base64url")) : null;
       const credential: JwtCredential = {
@@ -132,12 +139,15 @@ export class CredentialsService {
         rsaPublicKey: body.rsaPublicKey ?? null,
         tags: body.tags ?? [],
       };
+      // Kong finds the credential by its key across the whole node: unique in the instance (decision H-5).
+      await lockUnique(tx, ["jwt-key"]);
+      if ((await takenElsewhere(tx, "jwt-key", envId, [credential.key])).size > 0) throw inUse();
       const [row] = await tx.insert(jwtCredentials).values({ environmentId: envId, ...jwtValues(credential, this.enc) }).returning();
       const after = toJwtCredential(row!);
       await markDraftChanged(tx, envId);
       await audit(tx, ctx, { action: "jwt.create", entityType: "jwt_credential", entityId: after.id, environmentId: envId, after });
       return secret === null ? after : { ...after, secret };
-    });
+    }));
   }
 
   async removeJwt(ctx: RequestContext, envId: string, consumerId: string, credentialId: string) {
@@ -164,8 +174,10 @@ export class CredentialsService {
   }
 
   async createBasicAuth(ctx: RequestContext, envId: string, consumerId: string, body: BasicAuthCredentialCreate) {
-    return this.db.transaction(async (tx) => {
+    return guardedUniqueWrite(this.db, ctx, "basic-auth-username", this.conflicts, () => this.db.transaction(async (tx) => {
       await requireConsumer(tx, envId, consumerId);
+      await lockUnique(tx, ["basic-auth-username"]);
+      if ((await takenElsewhere(tx, "basic-auth-username", envId, [body.username])).size > 0) throw inUse();
       // Only Kong's hash is kept: the password itself is never stored, logged or returned.
       const credential: BasicAuthCredential = { id: randomUUID(), consumerId, username: body.username, passwordHash: basicAuthPasswordHash(consumerId, body.password), tags: body.tags ?? [] };
       const [row] = await tx.insert(basicAuthCredentials).values({ environmentId: envId, ...basicAuthValues(credential, this.enc) }).returning();
@@ -173,7 +185,7 @@ export class CredentialsService {
       await markDraftChanged(tx, envId);
       await audit(tx, ctx, { action: "basicauth.create", entityType: "basicauth_credential", entityId: after.id, environmentId: envId, after });
       return after;
-    });
+    }));
   }
 
   async removeBasicAuth(ctx: RequestContext, envId: string, consumerId: string, credentialId: string) {

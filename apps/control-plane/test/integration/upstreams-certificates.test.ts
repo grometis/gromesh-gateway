@@ -140,7 +140,7 @@ describe("certificates", () => {
     expect((config.snis as { name: string; certificate: string }[]).map((s) => s.name).sort()).toEqual(["*.example.test", "api.example.test"]);
   });
 
-  it("applies the 422 rules: PEM, key mismatch, REDACTED on creation, expired leaf, repeated or taken SNIs", async () => {
+  it("applies the 422 rules (PEM, key mismatch, REDACTED on creation, expired leaf, repeated SNIs) and the 409 of a taken SNI", async () => {
     const envId = await env();
     const a = selfSigned("a.example.test");
     const b = selfSigned("b.example.test");
@@ -158,7 +158,10 @@ describe("certificates", () => {
     expect(await paths({ cert: a.cert, key: a.key, snis: ["a.example.test", "a.example.test"] })).toEqual(["snis.1"]);
     expect(await paths({ cert: a.cert, key: a.key, snis: ["foo.*.example.test"] })).toEqual(["snis.0"]);
     expect((await h.api("POST", `/environments/${envId}/certificates`, { cert: a.cert, key: a.key, snis: ["a.example.test"] })).status).toBe(201);
-    expect(await paths({ cert: b.cert, key: b.key, snis: ["b.example.test", "a.example.test"] })).toEqual(["snis.1"]);
+    // A name another certificate holds, in this environment or any other, is the generic conflict (decision H-5).
+    const taken = await h.api("POST", `/environments/${envId}/certificates`, { cert: b.cert, key: b.key, snis: ["b.example.test", "a.example.test"] });
+    expect(taken.status).toBe(409);
+    expect(taken.body.detail).toBe("Already in use in this instance");
   });
 
   it("keeps the key with REDACTED on a PUT, judges expiry only when cert changes, and survives a rollback", async () => {
