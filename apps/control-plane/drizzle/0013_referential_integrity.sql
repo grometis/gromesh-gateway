@@ -63,16 +63,25 @@ END;
 $$;--> statement-breakpoint
 CREATE TRIGGER "plugins_anonymous" BEFORE INSERT OR UPDATE OF "config", "environment_id" ON "plugins" FOR EACH ROW EXECUTE FUNCTION "gromesh_plugin_anonymous"();--> statement-breakpoint
 CREATE FUNCTION "gromesh_consumer_anonymous"() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+  by_id boolean;
+  by_name boolean;
 BEGIN
-  IF TG_OP = 'UPDATE' AND NEW."username" IS NOT DISTINCT FROM OLD."username" AND NEW."environment_id" = OLD."environment_id" THEN RETURN NEW; END IF;
   -- The whole workspace is going away (its environment is already deleted): its plugins go with it.
   IF NOT EXISTS (SELECT 1 FROM "environments" e WHERE e."id" = OLD."environment_id") THEN RETURN COALESCE(NEW, OLD); END IF;
+  IF TG_OP = 'DELETE' OR NEW."environment_id" <> OLD."environment_id" THEN
+    by_id := true; by_name := OLD."username" IS NOT NULL;   -- the consumer leaves the workspace
+  ELSIF NEW."username" IS DISTINCT FROM OLD."username" THEN
+    by_id := false; by_name := OLD."username" IS NOT NULL;  -- a rename only breaks a reference by the old username
+  ELSE
+    RETURN NEW;
+  END IF;
   IF EXISTS (
     SELECT 1 FROM "plugins" p
     WHERE p."environment_id" = OLD."environment_id"
-      AND (lower(p."config"->>'anonymous') = OLD."id"::text OR (OLD."username" IS NOT NULL AND p."config"->>'anonymous' = OLD."username"))
-      -- A plugin scoped to this very consumer goes with it.
-      AND p."consumer_id" IS DISTINCT FROM (CASE WHEN TG_OP = 'DELETE' THEN OLD."id" END)
+      AND ((by_id AND lower(p."config"->>'anonymous') = OLD."id"::text) OR (by_name AND p."config"->>'anonymous' = OLD."username"))
+      -- A plugin scoped to the very consumer being deleted goes with it.
+      AND NOT (TG_OP = 'DELETE' AND p."consumer_id" IS NOT DISTINCT FROM OLD."id")
   ) THEN
     RAISE EXCEPTION 'consumer % is used as anonymous by a plugin', OLD."id" USING ERRCODE = '23503', CONSTRAINT = 'plugins_anonymous_consumer';
   END IF;

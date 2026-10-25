@@ -150,7 +150,17 @@ describe("referential integrity between workspaces", () => {
     const [{ id: pid }] = (await h.sql.query(`insert into plugins (environment_id, name, config) values ($1, 'basic-auth', jsonb_build_object('anonymous', $2::text)) returning id`, [a.env, a.consumer])).rows;
     await expect(h.sql.query(`update plugins set config = jsonb_build_object('anonymous', $2::text) where id = $1`, [pid, b.consumer])).rejects.toThrow(/anonymous/);
     await expect(h.sql.query(`delete from consumers where id = $1`, [a.consumer])).rejects.toThrow(/anonymous/);
+    // Named by id: renaming the consumer keeps the reference, leaving the workspace does not.
+    await h.sql.query(`update consumers set username = 'renamed-by-sql' where id = $1`, [a.consumer]);
+    await h.sql.query(`update consumers set username = 'app-sky' where id = $1`, [a.consumer]);
     await h.sql.query(`delete from plugins where id = $1`, [pid]);
+    // Named by username, in a route plugin (no consumer scope): renaming or moving the consumer is refused.
+    const loose = (await h.api("POST", `/environments/${a.env}/consumers`, { username: uniq("loose") })).body;
+    const [{ id: rid }] = (await h.sql.query(`insert into plugins (environment_id, name, route_id, config) values ($1, 'basic-auth', $2, jsonb_build_object('anonymous', $3::text)) returning id`, [a.env, a.route, loose.username])).rows;
+    await expect(h.sql.query(`update consumers set username = 'renamed-by-sql' where id = $1`, [loose.id])).rejects.toThrow(/anonymous/);
+    await expect(h.sql.query(`update consumers set environment_id = $2 where id = $1`, [loose.id, b.env])).rejects.toThrow(/anonymous/);
+    await expect(h.sql.query(`update consumers set custom_id = 'other' where id = $1 returning id`, [loose.id])).resolves.toBeDefined();
+    await h.sql.query(`delete from plugins where id = $1`, [rid]);
     // Negative control, on the private database: without the trigger the same write goes through.
     const client = new pg.Client({ connectionString: privateDb });
     await client.connect();
@@ -202,8 +212,11 @@ describe("referential integrity between workspaces", () => {
     expect(rolled.body.detail).toBe("A plugin of this configuration uses as anonymous a consumer it does not hold");
     expect((await h.sql.query(`select count(*)::int as n from plugins where environment_id = $1 and name = 'key-auth'`, [c.env])).rows[0].n).toBe(0);
     // Deleting the whole workspace still cascades through consumers used as anonymous.
-    await h.api("POST", `${e}/plugins`, { name: "key-auth", config: { key_names: ["k"], anonymous: "app-sky" }, scope: { routeId: c.route } });
+    const kept = await h.api("POST", `${e}/plugins`, { name: "key-auth", config: { key_names: ["k"], anonymous: "app-sky" }, scope: { routeId: c.route } });
+    expect(kept.status, JSON.stringify(kept.body)).toBe(201);
+    expect((await h.sql.query(`select count(*)::int as n from plugins where id = $1 and config->>'anonymous' = 'app-sky'`, [kept.body.id])).rows[0].n).toBe(1);
     expect((await h.sql.query(`delete from environments where id = $1 returning id`, [c.env])).rows).toHaveLength(1);
+    expect((await h.sql.query(`select count(*)::int as n from plugins where id = $1`, [kept.body.id])).rows[0].n).toBe(0);
   });
 
   // Each composite foreign key, written around the service as only a direct database write could.
