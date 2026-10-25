@@ -199,6 +199,28 @@ describe("N1 workspaces migration", () => {
   });
 });
 
+/**
+ * What each earlier version could hold, written with the columns that version had (a block applies from the migration
+ * that created its tables on); after the N1 migrations every row must read back unchanged.
+ */
+const VERSION_SEED: { since: number; table: string; sql: string }[] = [
+  { since: 0, table: "environments", sql: `insert into environments (id, name) values ('${id(1)}', 'Legado Único'), ('${id(2)}', 'legado unico')` },
+  { since: 0, table: "services", sql: `insert into services (id, environment_id, name, protocol, host, port, path) values ('${id(10)}', '${id(1)}', 'svc', 'http', 'a.example.com', 80, '/v1'), ('${id(11)}', '${id(2)}', 'svc', 'https', 'b.example.com', 443, null)` },
+  { since: 0, table: "routes", sql: `insert into routes (id, environment_id, service_id, name, paths, hosts, strip_path, preserve_host) values ('${id(20)}', '${id(1)}', '${id(10)}', 'with-path', '{/a}', null, true, false), ('${id(21)}', '${id(1)}', '${id(10)}', 'host-only', null, '{a.example.com}', true, true), ('${id(22)}', '${id(2)}', '${id(11)}', 'full', '{/b}', null, false, false)` },
+  { since: 0, table: "audit_events", sql: `insert into audit_events (id, actor, action, environment_id, entity_type) values ('${id(30)}', '{"type":"system","id":"seed"}', 'seed', '${id(1)}', 'environment')` },
+  { since: 2, table: "consumers", sql: `insert into consumers (id, environment_id, username, custom_id) values ('${id(40)}', '${id(1)}', 'app-sky', 'sky-1'), ('${id(41)}', '${id(2)}', 'app-sky', 'sky-1')` },
+  { since: 2, table: "plugins", sql: `insert into plugins (id, environment_id, name, route_id, config) values ('${id(50)}', '${id(1)}', 'cors', '${id(20)}', '{"origins":["*"]}'), ('${id(51)}', '${id(2)}', 'rate-limiting', null, '{"minute":5}')` },
+  { since: 3, table: "clusters", sql: `insert into clusters (id, environment_id, name, registration_token_hash) values ('${id(60)}', '${id(1)}', 'edge', 'h1'), ('${id(61)}', '${id(2)}', 'edge', 'h2')` },
+  { since: 4, table: "users", sql: `insert into users (id, email, name, role, password_hash) values ('${id(70)}', 'u@example.com', 'U', 'editor', 'x')` },
+  { since: 7, table: "upstreams", sql: `insert into upstreams (id, environment_id, name, healthchecks) values ('${id(80)}', '${id(1)}', 'pool', '{"active":null,"passive":null}')` },
+  { since: 7, table: "targets", sql: `insert into targets (id, environment_id, upstream_id, target) values ('${id(81)}', '${id(1)}', '${id(80)}', 'backend.example.com:8080')` },
+  { since: 7, table: "certificates", sql: `insert into certificates (id, environment_id, cert, key, subject, issuer, not_before, not_after, fingerprint_sha256) values ('${id(90)}', '${id(2)}', 'c', 'k', 'CN=b', 'CN=b', '2026-01-01', '2027-01-01', 'f')` },
+  { since: 7, table: "certificate_snis", sql: `insert into certificate_snis (environment_id, certificate_id, name) values ('${id(2)}', '${id(90)}', 'b.example.com')` },
+  { since: 8, table: "jwt_credentials", sql: `insert into jwt_credentials (id, environment_id, consumer_id, key, algorithm, rsa_public_key) values ('${id(100)}', '${id(1)}', '${id(40)}', 'issuer-1', 'RS256', 'pem')` },
+  { since: 8, table: "basicauth_credentials", sql: `insert into basicauth_credentials (id, environment_id, consumer_id, username, password_hash) values ('${id(101)}', '${id(2)}', '${id(41)}', 'login-2', 'h')` },
+  { since: 10, table: "environment_roles", sql: `insert into environment_roles (user_id, environment_id, role) values ('${id(70)}', '${id(2)}', 'none')` },
+];
+
 describe("N1 migration from every earlier version", () => {
   afterAll(async () => {
     const admin = new pg.Client({ connectionString: ADMIN_URL });
@@ -208,16 +230,27 @@ describe("N1 migration from every earlier version", () => {
     for (const dir of folders) rmSync(dir, { recursive: true, force: true });
   });
 
-  it.each(journal.entries.filter((e) => e.idx < N1).map((e) => [e.idx, e.tag] as const))("upgrades a database at %i (%s)", async (idx) => {
+  it.each(journal.entries.filter((e) => e.idx < N1).map((e) => [e.idx, e.tag] as const))("upgrades a database at %i (%s) without changing a row", async (idx) => {
     const url = await freshDatabase(`v${idx}`);
     await runMigrations(url, folderUpTo(idx));
-    // environments(id, name) exists since the first migration.
-    await query(url, `insert into environments (id, name) values ($1, 'Legado Único'), ($2, 'legado unico')`, [id(1), id(2)]);
+    const blocks = VERSION_SEED.filter((b) => b.since <= idx);
+    for (const b of blocks) await query(url, b.sql);
+    // Every column the version had, row by row, ordered by the whole row.
+    const read = async (table: string, columns: string[]) => query(url, `select ${columns.map((c) => `"${c}"`).join(", ")} from ${table} order by ${columns.map((c) => `"${c}"::text`).join(", ")}`);
+    const tables = [...new Set(blocks.map((b) => b.table))];
+    const before: Record<string, { columns: string[]; rows: unknown[] }> = {};
+    for (const t of tables) {
+      const columns = (await query(url, `select column_name from information_schema.columns where table_schema = 'public' and table_name = $1 order by ordinal_position`, [t])).map((r) => r.column_name as string);
+      before[t] = { columns, rows: await read(t, columns) };
+    }
     await runMigrations(url);
+    for (const t of tables) expect(await read(t, before[t]!.columns), t).toEqual(before[t]!.rows);
     expect(await query(url, `select id::text, slug, slug_status, slug_reason from workspaces order by id`)).toEqual([
       { id: id(1), slug: "legado-unico", slug_status: "derived", slug_reason: null },
       { id: id(2), slug: "legado-unico-2", slug_status: "adjusted", slug_reason: "collision" },
     ]);
+    expect(await query(url, `select distinct path_compatibility from routes`)).toEqual([{ path_compatibility: "legacy-preserved" }]);
+    expect(await query(url, `select name from data_migrations`)).toEqual([{ name: "n1-workspaces" }]);
   });
 });
 
@@ -366,6 +399,72 @@ describe("N1 slug backfill under interruption, concurrency and an older replica"
   });
 });
 
+describe("N1 slug reconciliation while running", () => {
+  afterAll(async () => {
+    const admin = new pg.Client({ connectionString: ADMIN_URL });
+    await admin.connect();
+    for (const name of created) await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
+    await admin.end();
+  });
+
+  it("fills in the slug of an environment an older replica creates while the new replicas are running", async () => {
+    const url = await restorePreN1("running");
+    await runMigrations(url);
+    const h = await startHarness({ databaseUrl: url, workspaceSlugPollMs: 50 });
+    try {
+      await query(url, `insert into environments (id, name) values ($1, 'late-legacy-writer')`, [id(78)]);
+      let slug: string | null = null;
+      for (let i = 0; i < 100 && slug === null; i++) {
+        await new Promise((r) => setTimeout(r, 50));
+        slug = (await query(url, `select slug from workspaces where id = $1`, [id(78)]))[0].slug;
+      }
+      expect(slug).toBe("late-legacy-writer");
+    } finally {
+      await h.close();
+    }
+  });
+});
+
+describe("one data plane serves one workspace", () => {
+  let h: Harness;
+  beforeAll(async () => {
+    h = await startHarness();
+  });
+  afterAll(async () => {
+    await h?.close();
+  });
+
+  it("gives each environment's clusters only that workspace's configuration", async () => {
+    const agent = async (path: string, token: string, body?: unknown) =>
+      fetch(`${await h.app.getUrl()}/agent/v1/${path}`, {
+        method: body === undefined ? "GET" : "POST",
+        headers: { authorization: `Bearer ${token}`, ...(body ? { "content-type": "application/json" } : {}) },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+    const nodes: { env: string; token: string; hash: string }[] = [];
+    for (const name of [uniq("dp-a"), uniq("dp-b")]) {
+      const env = (await h.api("POST", "/environments", { name })).body.id as string;
+      const svc = (await h.api("POST", `/environments/${env}/services`, { name: "svc", protocol: "http", host: `${name}.example.com`, port: 80 })).body.id;
+      await h.api("POST", `/environments/${env}/routes`, { name: "r", serviceId: svc, paths: ["/r"] });
+      const hash = (await h.api("POST", `/environments/${env}/snapshots`, {})).body.hash as string;
+      const cluster = (await h.api("POST", `/environments/${env}/clusters`, { name: "edge" })).body;
+      const registered = await agent("register", cluster.registrationToken, { nodeId: "n1", hostname: "h", kongVersion: "3.9.4", agentVersion: "0.1.0" });
+      expect(registered.status).toBe(200);
+      nodes.push({ env, token: ((await registered.json()) as { nodeToken: string }).nodeToken, hash });
+    }
+    for (const node of nodes) {
+      const current = await agent("snapshots/current", node.token);
+      expect(current.status).toBe(200);
+      const body = (await current.json()) as { environmentId: string; hash: string };
+      expect({ environmentId: body.environmentId, hash: body.hash }).toEqual({ environmentId: node.env, hash: node.hash });
+    }
+    expect(nodes[0]!.hash).not.toBe(nodes[1]!.hash);
+    // A cluster belongs to exactly one environment, in the database.
+    const [{ nullable }] = (await h.sql.query(`select is_nullable as nullable from information_schema.columns where table_name = 'clusters' and column_name = 'environment_id'`)).rows;
+    expect(nullable).toBe("NO");
+  });
+});
+
 describe("path compatibility through rollback and import", () => {
   let h: Harness;
   beforeAll(async () => {
@@ -402,5 +501,19 @@ describe("path compatibility through rollback and import", () => {
     expect(await cls()).toBe("workspace-default");
     const r3 = (await h.sql.query(`select path_compatibility as c from routes where environment_id = $1 and name = 'r3'`, [env])).rows[0].c;
     expect(r3).toBe("legacy-preserved");
+
+    // Removing the path of a workspace-default route is the same error in a dry run (its report, 200) and for real (422).
+    const without = (await h.api("GET", `${e}/export?format=json`)).body;
+    const index = without.routes.findIndex((r: { name: string }) => r.name === "r");
+    without.routes[index] = { ...without.routes[index], paths: [], hosts: ["r.example.com"] };
+    const error = { path: `document.routes.${index}.paths`, message: "required for a workspace-default route" };
+    const dry = await h.api("POST", `${e}/import`, { mode: "merge", document: without, dryRun: true });
+    expect(dry.status).toBe(200);
+    expect(dry.body.errors).toContainEqual(error);
+    expect(dry.body.modified).toEqual([]);
+    const real = await h.api("POST", `${e}/import`, { mode: "merge", document: without, dryRun: false });
+    expect(real.status).toBe(422);
+    expect(real.body.errors).toContainEqual(error);
+    expect(await cls()).toBe("workspace-default");
   });
 });

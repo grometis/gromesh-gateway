@@ -55,6 +55,8 @@ export interface AppConfig {
   autoPublishDelayMs: number;
   /** How often each replica looks for due auto-publish environments; 0 disables the poller. */
   autoPublishPollMs: number;
+  /** How often each replica fills in workspace slugs an older replica left empty (rolling upgrade); 0 disables it. */
+  workspaceSlugPollMs: number;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -103,6 +105,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     migrateOnStart: env.MIGRATE_ON_START === "true",
     autoPublishDelayMs: Number(env.AUTO_PUBLISH_DELAY_MS ?? 3000),
     autoPublishPollMs: Number(env.AUTO_PUBLISH_POLL_MS ?? 1000),
+    workspaceSlugPollMs: Number(env.WORKSPACE_SLUG_POLL_MS ?? 30_000),
   };
 }
 

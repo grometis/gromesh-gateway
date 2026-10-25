@@ -1,5 +1,7 @@
+import { Inject, Injectable, Logger, Module, type OnApplicationBootstrap, type OnModuleDestroy } from "@nestjs/common";
 import { asc, eq, isNotNull, isNull, sql } from "drizzle-orm";
-import type { Executor } from "../db/db.js";
+import { APP_CONFIG, type AppConfig } from "../config.js";
+import { DB, type Db, type Executor } from "../db/db.js";
 import { dataMigrations, environments, workspaces } from "../db/schema.js";
 import { proposeSlug } from "./slug.js";
 
@@ -47,3 +49,47 @@ export async function backfillWorkspaces(tx: Executor): Promise<number> {
   await tx.insert(dataMigrations).values({ name: "n1-workspaces" }).onConflictDoNothing();
   return pending.length;
 }
+
+/**
+ * Per-replica poller for the window of a rolling upgrade: a replica of the previous version still creates
+ * environments, whose workspace the trigger leaves without a slug. A cheap probe; the backfill only when needed.
+ */
+@Injectable()
+export class WorkspaceSlugReconciler implements OnApplicationBootstrap, OnModuleDestroy {
+  private readonly logger = new Logger("WorkspaceSlugReconciler");
+  private timer: NodeJS.Timeout | null = null;
+  private running: Promise<void> | null = null;
+
+  constructor(
+    @Inject(DB) private readonly db: Db,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
+  ) {}
+
+  onApplicationBootstrap(): void {
+    if (this.config.workspaceSlugPollMs <= 0) return;
+    this.timer = setInterval(() => void this.tick(), this.config.workspaceSlugPollMs);
+    this.timer.unref();
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+    await this.running;
+  }
+
+  async tick(): Promise<void> {
+    if (this.running) return;
+    this.running = (async () => {
+      const [pending] = await this.db.select({ id: workspaces.id }).from(workspaces).where(isNull(workspaces.slug)).limit(1);
+      if (pending) await this.db.transaction((tx) => backfillWorkspaces(tx));
+    })()
+      .catch((err: unknown) => this.logger.error(err instanceof Error ? err.stack : String(err)))
+      .finally(() => {
+        this.running = null;
+      });
+    await this.running;
+  }
+}
+
+@Module({ providers: [WorkspaceSlugReconciler] })
+export class WorkspacesModule {}

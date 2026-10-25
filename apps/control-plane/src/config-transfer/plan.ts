@@ -11,7 +11,7 @@ import type { PluginCatalog } from "../plugin-catalog/catalog.js";
 import type { PluginsService } from "../plugins/plugins.js";
 
 /** Resolves a complete proposed domain state without writing. Every diagnostic uses a document path. */
-export async function planImport(document: ConfigDocument, current: GatewayState, mode: "merge" | "replace", catalog: PluginCatalog, plugins: PluginsService, destinations: DestinationPolicy, preservation?: { identity: ImportIdentity; consumerIdExists: (id: string) => Promise<boolean> }) {
+export async function planImport(document: ConfigDocument, current: GatewayState, mode: "merge" | "replace", catalog: PluginCatalog, plugins: PluginsService, destinations: DestinationPolicy, preservation?: { identity: ImportIdentity; consumerIdExists: (id: string) => Promise<boolean> }, workspaceDefaultRoutes: ReadonlySet<string> = new Set()) {
   const errors: FieldError[] = [];
   const paths = new Map<string, string>();
   const add = (path: string, message: string) => errors.push({ path, message });
@@ -63,6 +63,8 @@ export async function planImport(document: ConfigDocument, current: GatewayState
     errors.push(...routeErrors(body).map(e => ({ ...e, path: `${path}${e.path === "(body)" ? "" : `.${e.path}`}` })));
     const normalized = routeValues(body);
     const value: Route = { ...body, ...normalized, id: current.routes.find(c => c.name === r.name)?.id ?? randomUUID(), methods: normalized.methods ?? undefined, hosts: normalized.hosts ?? undefined, paths: normalized.paths ?? undefined, headers: normalized.headers ?? undefined };
+    // A workspace-default route keeps that classification through an import (same id), so it keeps a path.
+    if (workspaceDefaultRoutes.has(value.id) && !(value.paths && value.paths.length > 0)) add(`${path}.paths`, "required for a workspace-default route");
     upsert(result.routes, value, path);
   }
   retain(result.routes, current.routes);

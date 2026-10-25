@@ -13,7 +13,7 @@ import { ENCRYPTOR, Encryptor } from "../crypto/crypto.js";
 import { DB, type Db } from "../db/db.js";
 import { consumers, environments } from "../db/schema.js";
 import { markDraftChanged, requireEnvironment, uuidParam } from "../environments/environments.js";
-import { loadGatewayState, restoreGatewayState } from "../gateway/gateway.js";
+import { loadGatewayState, restoreGatewayState, workspaceDefaultRoutes } from "../gateway/gateway.js";
 import { PluginCatalog, PluginCatalogModule } from "../plugin-catalog/catalog.js";
 import { PluginsModule, PluginsService } from "../plugins/plugins.js";
 import { redactChanges } from "../snapshots/snapshots.js";
@@ -70,10 +70,11 @@ export class ConfigTransferService {
           const invalidPrehashedPassword = converted && [...converted.identity.prehashedPasswords].some(path => conversionErrorPaths.has(converted.sourcePath(path)));
           let plan: Awaited<ReturnType<typeof planImport>> | undefined;
           if (!checkedSchema && !invalidPrehashedPassword) {
+            const workspaceDefault = new Set(await workspaceDefaultRoutes(tx, envId));
             plan = await planImport(document, current, request.mode, this.catalog, this.plugins, this.destinations, converted ? {
               identity: converted.identity,
               consumerIdExists: async id => (await tx.select({ id: consumers.id }).from(consumers).where(eq(consumers.id, id)).limit(1)).length > 0,
-            } : undefined);
+            } : undefined, workspaceDefault);
             errors.push(...plan.errors);
           }
           const mapped = [...(converted?.errors ?? []), ...errors.map(e => ({ ...e, path: converted?.sourcePath(e.path) ?? e.path }))];
