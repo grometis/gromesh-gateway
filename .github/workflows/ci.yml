@@ -563,8 +563,46 @@ jobs:
           SCAN_PLATFORM: linux/${{ matrix.arch }}
         run: node scripts/scan-changed-images.mjs "$BASE"
 
+  # The N1 migration against what the previous version wrote: every earlier schema, the database the pre-N1 code
+  # wrote (same hashes, same access matrix), the way back from the pre-migration backup restored on a copy, and
+  # the time on a large database (in the job summary).
+  migration-regression:
+    needs: changes
+    if: needs.changes.outputs.all == 'true' || (needs.changes.outputs.bot != 'true' && needs.changes.outputs.code == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: gromesh
+          POSTGRES_PASSWORD: gromesh
+          POSTGRES_DB: gromesh
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U gromesh" --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgres://gromesh:gromesh@127.0.0.1:5432/gromesh
+      MIGRATION_REGRESSION: "1"
+      MIGRATION_SCALE: "500"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter "@gromesh/control-plane^..." build
+      # pg_dump and psql of the server's own version: run inside the service container.
+      - name: Point the tests at the server's pg_dump and psql
+        run: echo "GROMESH_PG_TOOLS=docker exec -i $(docker ps -q --filter ancestor=postgres:16-alpine)" >> "$GITHUB_ENV"
+      - name: Migration regression
+        working-directory: apps/control-plane
+        run: pnpm exec vitest run --config vitest.config.ts test/integration/migration-regression.test.ts test/integration/workspaces-migration.test.ts
+
   ci-ok:
-    needs: [changes, checks, ui-acceptance, agent, e2e, mvp-e2e, image-scan]
+    needs: [changes, checks, ui-acceptance, agent, e2e, mvp-e2e, image-scan, migration-regression]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

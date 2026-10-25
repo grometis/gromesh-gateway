@@ -207,6 +207,8 @@ const VERSION_SEED: { since: number; table: string; sql: string }[] = [
   { since: 0, table: "environments", sql: `insert into environments (id, name) values ('${id(1)}', 'Legado Único'), ('${id(2)}', 'legado unico')` },
   { since: 0, table: "services", sql: `insert into services (id, environment_id, name, protocol, host, port, path) values ('${id(10)}', '${id(1)}', 'svc', 'http', 'a.example.com', 80, '/v1'), ('${id(11)}', '${id(2)}', 'svc', 'https', 'b.example.com', 443, null)` },
   { since: 0, table: "routes", sql: `insert into routes (id, environment_id, service_id, name, paths, hosts, strip_path, preserve_host) values ('${id(20)}', '${id(1)}', '${id(10)}', 'with-path', '{/a}', null, true, false), ('${id(21)}', '${id(1)}', '${id(10)}', 'host-only', null, '{a.example.com}', true, true), ('${id(22)}', '${id(2)}', '${id(11)}', 'full', '{/b}', null, false, false)` },
+  // A published version of each era: its config, hash and state must cross the migration untouched.
+  { since: 0, table: "snapshots", sql: `insert into snapshots (environment_id, version, hash, config, state, message, created_by) values ('${id(1)}', 1, 'sha256:${"1".repeat(64)}', '{"_format_version":"3.0","services":[{"name":"svc","host":"a.example.com"}]}', '{"services":[],"routes":[],"consumers":[],"keyAuthCredentials":[],"plugins":[]}', 'seed', '{"type":"system","id":"seed"}')` },
   { since: 0, table: "audit_events", sql: `insert into audit_events (id, actor, action, environment_id, entity_type) values ('${id(30)}', '{"type":"system","id":"seed"}', 'seed', '${id(1)}', 'environment')` },
   { since: 2, table: "consumers", sql: `insert into consumers (id, environment_id, username, custom_id) values ('${id(40)}', '${id(1)}', 'app-sky', 'sky-1'), ('${id(41)}', '${id(2)}', 'app-sky', 'sky-1')` },
   { since: 2, table: "plugins", sql: `insert into plugins (id, environment_id, name, route_id, config) values ('${id(50)}', '${id(1)}', 'cors', '${id(20)}', '{"origins":["*"]}'), ('${id(51)}', '${id(2)}', 'rate-limiting', null, '{"minute":5}')` },
@@ -217,7 +219,7 @@ const VERSION_SEED: { since: number; table: string; sql: string }[] = [
   { since: 7, table: "certificates", sql: `insert into certificates (id, environment_id, cert, key, subject, issuer, not_before, not_after, fingerprint_sha256) values ('${id(90)}', '${id(2)}', 'c', 'k', 'CN=b', 'CN=b', '2026-01-01', '2027-01-01', 'f')` },
   { since: 7, table: "certificate_snis", sql: `insert into certificate_snis (environment_id, certificate_id, name) values ('${id(2)}', '${id(90)}', 'b.example.com')` },
   { since: 8, table: "jwt_credentials", sql: `insert into jwt_credentials (id, environment_id, consumer_id, key, algorithm, rsa_public_key) values ('${id(100)}', '${id(1)}', '${id(40)}', 'issuer-1', 'RS256', 'pem')` },
-  { since: 8, table: "basicauth_credentials", sql: `insert into basicauth_credentials (id, environment_id, consumer_id, username, password_hash) values ('${id(101)}', '${id(2)}', '${id(41)}', 'login-2', 'h')` },
+  { since: 8, table: "basicauth_credentials", sql: `insert into basicauth_credentials (id, environment_id, consumer_id, username, password_hash) values ('${id(101)}', '${id(2)}', '${id(41)}', 'login-2', '${"a".repeat(40)}')` },
   { since: 10, table: "environment_roles", sql: `insert into environment_roles (user_id, environment_id, role) values ('${id(70)}', '${id(2)}', 'none')` },
 ];
 
@@ -254,6 +256,27 @@ describe("N1 migration from every earlier version", () => {
     // N1-C3 copies nothing: a v1 environment role is read where it is (environment_roles, kept above), and no
     // v2 grant exists before someone makes one.
     expect(await query(url, `select count(*)::int as n from role_bindings`)).toEqual([{ n: 0 }]);
+    // What the data plane would get: the migrated draft compiles as the same rows written on a fresh install.
+    const native = await freshDatabase(`v${idx}_native`);
+    await runMigrations(native);
+    for (const b of blocks) await query(native, b.sql);
+    const hashes = async (database: string) => {
+      // The harness logs in as its bootstrap admin, which the bootstrap does not create once a user exists (seed 4+).
+      await query(database, `insert into users (id, email, name, role, password_hash) values (gen_random_uuid(), 'admin@harness.test', 'Admin', 'admin', $1) on conflict do nothing`, [HARNESS_ADMIN_HASH]);
+      const h = await startHarness({ databaseUrl: database, migrateOnStart: false });
+      try {
+        const out: string[] = [];
+        for (const env of [id(1), id(2)]) {
+          const res = await h.api("GET", `/environments/${env}/publish-preview`);
+          expect(res.status, JSON.stringify(res.body)).toBe(200);
+          out.push(res.body.draftHash);
+        }
+        return out;
+      } finally {
+        await h.close();
+      }
+    };
+    expect(await hashes(url)).toEqual(await hashes(native));
   });
 });
 
@@ -268,6 +291,8 @@ const before = JSON.parse(readFileSync(new URL("pre-n1.json", FIXTURE), "utf8"))
   environments: { id: string; name: string; draftHash: string; hasChanges: boolean; snapshots: { version: number; hash: string }[] }[];
 };
 const dump = readFileSync(new URL("pre-n1.sql", FIXTURE), "utf8");
+/** The harness admin's password hash, as the pre-N1 code stored it. */
+const HARNESS_ADMIN_HASH = /'admin@harness\.test', 'Admin', 'admin', true, '([^']+)'/.exec(dump)![1]!;
 // pg_dump's psql meta-commands (\restrict) are not SQL.
 const dumpSql = dump.split("\n").filter((l) => !l.startsWith("\\")).join("\n");
 const dumpCounts = (table: string) => dump.split(`INSERT INTO public.${table} `).length - 1;
