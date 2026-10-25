@@ -1,4 +1,6 @@
+import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { runMigrations } from "../../src/db/migrate.js";
 import { startHarness, uniq, type Harness } from "./harness.js";
 
 // N1-X2: every entity belongs to exactly one workspace, and nothing points across workspaces — refused by the service
@@ -46,14 +48,52 @@ describe("referential integrity between workspaces", () => {
     return { env, service, route, upstream, target, consumer, keyAuth, certificate: cert.id, plugin };
   }
 
+  // The private database of the negative controls: migrated, with one row of each entity in two workspaces.
+  let privateDb: string;
+  let pa: Fixture;
+  let pb: Fixture;
+  const ADMIN_URL = process.env.TEST_DATABASE_URL ?? "postgres://gromesh:gromesh@127.0.0.1:5432/gromesh";
+  const privateName = `gromesh_ri_${Date.now()}_${process.pid}`;
+  async function privateFixture(n: number): Promise<Fixture> {
+    const id = (k: number) => `00000000-0000-4000-8000-${String(n * 100 + k).padStart(12, "0")}`;
+    const f: Fixture = { env: id(1), service: id(2), route: id(3), upstream: id(4), target: id(5), consumer: id(6), keyAuth: id(7), certificate: id(8), plugin: id(9) };
+    const c = new pg.Client({ connectionString: privateDb });
+    await c.connect();
+    try {
+      await c.query(`insert into environments (id, name) values ($1, $2)`, [f.env, `p${n}`]);
+      await c.query(`insert into services (id, environment_id, name, protocol, host, port) values ($1, $2, 'svc', 'http', 'a.example.com', 80)`, [f.service, f.env]);
+      await c.query(`insert into routes (id, environment_id, service_id, name, paths) values ($1, $2, $3, 'r', '{/r}')`, [f.route, f.env, f.service]);
+      await c.query(`insert into upstreams (id, environment_id, name, healthchecks) values ($1, $2, 'pool', '{"active":null,"passive":null}')`, [f.upstream, f.env]);
+      await c.query(`insert into consumers (id, environment_id, username) values ($1, $2, 'app-sky')`, [f.consumer, f.env]);
+      await c.query(`insert into certificates (id, environment_id, cert, key, subject, issuer, not_before, not_after, fingerprint_sha256) values ($1, $2, 'c', 'k', 's', 'i', now(), now(), 'f')`, [f.certificate, f.env]);
+    } finally {
+      await c.end();
+    }
+    return f;
+  }
+
   beforeAll(async () => {
     h = await startHarness();
     a = await fixture();
     b = await fixture();
+    const admin = new pg.Client({ connectionString: ADMIN_URL });
+    await admin.connect();
+    await admin.query(`CREATE DATABASE "${privateName}"`);
+    await admin.end();
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${privateName}`;
+    privateDb = url.toString();
+    await runMigrations(privateDb);
+    pa = await privateFixture(1);
+    pb = await privateFixture(2);
   });
 
   afterAll(async () => {
     await h?.close();
+    const admin = new pg.Client({ connectionString: ADMIN_URL });
+    await admin.connect();
+    await admin.query(`DROP DATABASE IF EXISTS "${privateName}" WITH (FORCE)`);
+    await admin.end();
   });
 
   it("refuses through the API a reference to an entity of another workspace", async () => {
@@ -111,15 +151,18 @@ describe("referential integrity between workspaces", () => {
     await expect(h.sql.query(`update plugins set config = jsonb_build_object('anonymous', $2::text) where id = $1`, [pid, b.consumer])).rejects.toThrow(/anonymous/);
     await expect(h.sql.query(`delete from consumers where id = $1`, [a.consumer])).rejects.toThrow(/anonymous/);
     await h.sql.query(`delete from plugins where id = $1`, [pid]);
-    // Negative control: without the trigger the same write goes through.
-    const client = await h.sql.connect();
+    // Negative control, on the private database: without the trigger the same write goes through.
+    const client = new pg.Client({ connectionString: privateDb });
+    await client.connect();
     try {
+      const write = `insert into plugins (environment_id, name, config) values ($1, 'key-auth', jsonb_build_object('anonymous', $2::text))`;
+      await expect(client.query(write, [pa.env, pb.consumer])).rejects.toThrow(/anonymous/);
       await client.query("begin");
       await client.query("drop trigger plugins_anonymous on plugins");
-      await expect(client.query(`insert into plugins (environment_id, name, config) values ($1, 'key-auth', jsonb_build_object('anonymous', $2::text))`, [a.env, b.consumer])).resolves.toBeDefined();
+      await expect(client.query(write, [pa.env, pb.consumer])).resolves.toBeDefined();
     } finally {
       await client.query("rollback");
-      client.release();
+      await client.end();
     }
   });
 
@@ -139,14 +182,13 @@ describe("referential integrity between workspaces", () => {
     // A version published before the rule, with a dangling anonymous, is not restored.
     const first = await h.api("POST", `${e}/snapshots`, {});
     expect(first.status, JSON.stringify(first.body)).toBe(201);
+    // Written as before the rule: triggers off for this session only (no table lock).
     const client = await h.sql.connect();
     try {
-      await client.query("begin");
-      await client.query("alter table plugins disable trigger plugins_anonymous");
+      await client.query("set session_replication_role = replica");
       await client.query(`insert into plugins (environment_id, name, route_id, config) values ($1, 'key-auth', $2, jsonb_build_object('key_names', jsonb_build_array('k'), 'anonymous', $3::text))`, [c.env, c.route, b.consumer]);
-      await client.query("alter table plugins enable trigger plugins_anonymous");
-      await client.query("commit");
     } finally {
+      await client.query("set session_replication_role = origin");
       client.release();
     }
     await h.sql.query(`update environments set has_unpublished_changes = true where id = $1`, [c.env]);
@@ -185,16 +227,21 @@ describe("referential integrity between workspaces", () => {
     await expect(h.sql.query(text, values(a, b))).rejects.toThrow(new RegExp(constraint));
   });
 
+  // On a database of its own: dropping a constraint locks the table, and the other test files share theirs.
   it.each(crossWrites.slice(0, 9))("would accept that write without %s (negative control)", async (constraint, text, values) => {
     const table = text.match(/^insert into (\w+)/)![1]!;
-    const client = await h.sql.connect();
+    const client = new pg.Client({ connectionString: privateDb });
+    await client.connect();
     try {
       await client.query("begin");
+      await expect(client.query(text, values(pa, pb)), "refused with the constraint").rejects.toThrow(new RegExp(constraint));
+      await client.query("rollback");
+      await client.query("begin");
       await client.query(`alter table ${table} drop constraint ${constraint}`);
-      await expect(client.query(text, values(a, b))).resolves.toBeDefined();
+      await expect(client.query(text, values(pa, pb))).resolves.toBeDefined();
     } finally {
       await client.query("rollback");
-      client.release();
+      await client.end();
     }
   });
 
