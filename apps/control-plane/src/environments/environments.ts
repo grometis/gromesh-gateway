@@ -7,6 +7,7 @@ import { contractBody } from "../common/contract.js";
 import { conflict, notFound } from "../common/problem.js";
 import { DB, type Db, type Executor } from "../db/db.js";
 import { clusters, environmentRoles, environments, type EnvironmentRow, type UserRow } from "../db/schema.js";
+import { assignSlug } from "../workspaces/workspaces.js";
 
 export const uuidParam = () => new ParseUUIDPipe({ errorHttpStatusCode: 404 });
 
@@ -65,6 +66,8 @@ export class EnvironmentsService {
         .insert(environments)
         .values({ name: body.name, description: body.description ?? null, publishMode: body.publishMode ?? "manual" })
         .returning();
+      // The trigger created its workspace (same id); renaming the environment later never changes the slug.
+      await assignSlug(tx, row!.id, body.name);
       const env = toEnvironment(row!);
       await audit(tx, ctx, { action: "environment.create", entityType: "environment", entityId: env.id, environmentId: env.id, after: env });
       return env;
