@@ -906,6 +906,7 @@ paths:
       operationId: replaceConsumer
       security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
+      description: 409 when the username changes while a plugin of the environment uses that username as `anonymous`.
       requestBody:
         required: true
         content:
@@ -917,6 +918,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Consumer" }
+        "409": { $ref: "#/components/responses/Conflict" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/ValidationError" }
