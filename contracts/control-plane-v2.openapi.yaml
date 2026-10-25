@@ -294,9 +294,10 @@ paths:
       description: |
         What the N1 migration (each environment becomes the workspace with the same id) did and what still needs a
         person: slugs derived from environment names that were adjusted (collision, reserved, invalid) and must be
-        reviewed before the first release, access that changed when the effective role matrix became bindings (only
-        the implicit access to workspaces created later is dropped; nothing is widened), and the routes kept
-        legacy-preserved, with those without a path that the composition of N2 will refuse.
+        reviewed before the first release, access that changed when the v1 roles moved (in N1 the environment roles
+        become bindings, none a deny no grant overrides, and the global roles stay v1 roles: nothing is dropped or
+        widened, so the list is empty until a phase drops the implicit access of global roles to workspaces created
+        later), and the routes kept legacy-preserved, with those without a path that the composition of N2 will refuse.
         It is also the pre-check of the uniqueness the instance needs (decision H-5): a key-auth key, JWT key,
         basic-auth username or SNI repeated across environments, in a draft, an active snapshot or a snapshot that a
         rollback could restore, is a blocker; each names only the workspaces, entities and snapshot versions involved,
