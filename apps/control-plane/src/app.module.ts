@@ -25,6 +25,7 @@ import { AtRestModule } from "./crypto/at-rest.module.js";
 import { ConfigTransferModule } from "./config-transfer/config-transfer.js";
 import { CryptoModule } from "./crypto/crypto.js";
 import { AccessModule } from "./access/access.js";
+import { PathCompatibilityModule } from "./workspaces/path-compatibility.js";
 import { WorkspacesModule } from "./workspaces/workspaces.js";
 
 @Module({})
@@ -56,6 +57,7 @@ export class AppModule {
         ConfigTransferModule,
         WorkspacesModule,
         AccessModule,
+        PathCompatibilityModule,
       ],
       providers: [
         { provide: APP_CONFIG, useValue: config },

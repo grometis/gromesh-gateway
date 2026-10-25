@@ -8,6 +8,7 @@ import { hashConfig } from "@gromesh/compiler";
 import { Reflector } from "@nestjs/core";
 import { AccessController } from "../../src/access/access.js";
 import { deriveCoreProfile } from "../../src/common/contract.js";
+import { PathCompatibilityController } from "../../src/workspaces/path-compatibility.js";
 import { startHarness, type Harness } from "./harness.js";
 
 // N0: the Workspaces contracts (v2) are planned; nothing here is implemented yet. These tests keep them coherent until
@@ -81,7 +82,7 @@ describe("planned operations", () => {
   it("declares on every v2 handler the contract's permission, scope and session rule", () => {
     const reflector = new Reflector();
     const handlers = new Map<string, { permission: string; scope: string; sessionOnly: boolean }>();
-    for (const controller of [AccessController]) {
+    for (const controller of [AccessController, PathCompatibilityController]) {
       const base = (Reflect.getMetadata("path", controller) as string).replace(/^\/?/, "/");
       for (const name of Object.getOwnPropertyNames(controller.prototype)) {
         const fn = (controller.prototype as unknown as Record<string, () => unknown>)[name]!;
@@ -89,7 +90,7 @@ describe("planned operations", () => {
         const method = Reflect.getMetadata("method", fn) as number | undefined;
         if (path === undefined || method === undefined) continue;
         const meta = reflector.get("gromesh:required-permission", fn) as { permission: string; scope: string };
-        handlers.set(`${["GET", "POST", "PUT", "DELETE", "PATCH"][method]} ${base}/${path}`.replace(/\/+/g, "/"), { ...meta, sessionOnly: reflector.get("gromesh:session-only", fn) === true });
+        handlers.set(`${["GET", "POST", "PUT", "DELETE", "PATCH"][method]} ${base}/${path}`.replace(/\/+/g, "/").replace(/\/$/, ""), { ...meta, sessionOnly: reflector.get("gromesh:session-only", fn) === true });
       }
     }
     const implemented = v2Ops.filter(({ op }) => !op["x-gromesh-planned"]);
