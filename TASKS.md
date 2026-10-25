@@ -625,8 +625,9 @@ próprios (`clusters.environment_id`) e snapshot próprio, sem composição.
 | N1-C4 Regressão e ensaio da migração | todas da N1 | job de regressão: banco com dados de cada versão → migração → snapshots com o mesmo hash, matriz RBAC igual, `mvp-e2e` verde; roteiro de retorno (restaurar o backup anterior à migração) ensaiado em cópia | job verde na CI; relatório de tempo da migração; roteiro de retorno executado no ensaio; nada aplicado no homelab |
 
 **Critério de conclusão da N1:** todos os aceites acima verdes, comportamento atual preservado (hash, UI, RBAC) e
-nenhum Workspace além dos migrados. A N1 não ativa nada no data plane: composição, prefixo, `gromesh-workspace` e
-tags são da N2.
+nenhum data plane com mais de um Workspace: além dos migrados, só os environments que a v1 continua criando, cada um
+com clusters e snapshot próprios; a v2 não cria Workspace. A N1 não ativa nada no data plane: composição, prefixo,
+`gromesh-workspace` e tags são da N2.
 
 Riscos: migração longa em tabelas grandes (ensaiar o tempo numa cópia, sem tocar no homelab); credenciais repetidas
 entre environments em instalações com vários environments (hoje a unicidade é por environment; a pré-checagem bloqueia
