@@ -1455,7 +1455,6 @@ paths:
           $ref: "#/components/responses/ValidationError"
       x-required-permission: workspace.read
       x-scope: workspace
-      x-gromesh-planned: true
       x-gromesh-requirements:
         - GW-WS-04
     parameters:

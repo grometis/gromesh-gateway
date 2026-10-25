@@ -1,5 +1,10 @@
 import { unprocessable } from "../common/problem.js";
 
+/** Upstream hosts the compiler generates for workspaces (<name>.<slug>.gromesh.internal): never a free host. */
+export function refuseReservedHost(path: string, host: string): void {
+  if (/(^|\.)gromesh\.internal\.?$/i.test(host)) throw unprocessable("Invalid request", [{ path, message: "the .gromesh.internal suffix is reserved for the hosts the platform generates" }]);
+}
+
 export type VarRef = { $var: string };
 /** `T` with a VarRef allowed on `F`. */
 export type WithVarRefs<T, F extends keyof T> = { [K in keyof T]: K extends F ? T[K] | VarRef : T[K] };

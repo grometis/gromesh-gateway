@@ -31,9 +31,11 @@ describe("workspace entities through /api/v2", () => {
     const res = await client(entry.method.toUpperCase(), `/../v2${path}${query}`, body);
     called.add(operationId);
     const code = String(res.status);
-    if (res.status < 300 && entry.op.responses[code]?.content) {
+    // JSON bodies against the schema; a YAML export is compared with the JSON one by its own test.
+    if (res.status < 300 && entry.op.responses[code]?.content && res.contentType?.includes("json")) {
       const validate = contractsV2.validator(pointer(entry.path, entry.method, code));
-      expect(validate(res.body), `${operationId}: ${JSON.stringify(validate.errors)}`).toBe(true);
+      // A copy: the validator fills in schema defaults.
+      expect(validate(structuredClone(res.body)), `${operationId}: ${JSON.stringify(validate.errors)}`).toBe(true);
     }
     return res;
   }
@@ -151,11 +153,16 @@ describe("workspace entities through /api/v2", () => {
     const varRef = await call(h.api, "createTarget", { workspaceId: a, upstreamId: id }, { target: { $var: "BACKEND" } });
     expect(varRef.status).toBe(422);
     expect(varRef.body.errors).toEqual([{ path: "target", message: "variable BACKEND is not declared in this workspace" }]);
+    // The hosts the platform generates for workspace upstreams are never a free target.
+    const reserved = await call(h.api, "createTarget", { workspaceId: a, upstreamId: id }, { target: "pool.other.gromesh.internal:8080" });
+    expect(reserved.status).toBe(422);
+    expect(reserved.body.errors.map((e: { path: string }) => e.path)).toEqual(["target"]);
     const target = await call(h.api, "createTarget", { workspaceId: a, upstreamId: id }, { target: "backend.example.com:8080" });
     expect(target.status, JSON.stringify(target.body)).toBe(201);
     expect((await call(h.api, "createTarget", { workspaceId: a, upstreamId: id }, { target: "backend.example.com:8080" })).status).toBe(409);
     expect((await call(h.api, "replaceTarget", { workspaceId: a, upstreamId: id, targetId: target.body.id }, { target: "backend.example.com:8081", weight: 5 })).body.weight).toBe(5);
     expect((await call(h.api, "replaceTarget", { workspaceId: a, upstreamId: id, targetId: target.body.id }, { target: { $var: "BACKEND" } })).status).toBe(422);
+    expect((await call(h.api, "replaceTarget", { workspaceId: a, upstreamId: id, targetId: target.body.id }, { target: "x.GROMESH.internal.:80" })).status).toBe(422);
     expect((await call(h.api, "listTargets", { workspaceId: a, upstreamId: id })).body.items).toHaveLength(1);
     expect((await call(h.api, "deleteTarget", { workspaceId: a, upstreamId: id, targetId: target.body.id })).status).toBe(204);
     expect((await call(h.api, "deleteUpstream", { workspaceId: a, upstreamId: id })).status).toBe(204);
@@ -205,6 +212,46 @@ describe("workspace entities through /api/v2", () => {
     expect(actions).toEqual(expect.arrayContaining(["route.delete", "plugin.delete", "service.delete"]));
   });
 
+  it("refuses deleting a service a plugin is being scoped to by a concurrent writer", async () => {
+    const svc = (await h.api("POST", `/environments/${a}/services`, { name: uniq("race"), protocol: "http", host: "race.example.com", port: 80 })).body.id as string;
+    const writer = await h.sql.connect();
+    try {
+      // A v1 write (or an older replica) creating a plugin on the service, not committed yet.
+      await writer.query("begin");
+      await writer.query(`insert into plugins (id, environment_id, name, service_id, config) values (gen_random_uuid(), $1, 'cors', $2, '{}')`, [a, svc]);
+      const removal = call(h.api, "deleteService", { workspaceId: a, serviceId: svc });
+      const waiting = async () => (await h.sql.query(`select count(*)::int as n from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'`)).rows[0].n > 0;
+      for (let i = 0; i < 200 && !(await waiting()); i++) await new Promise((r) => setTimeout(r, 10));
+      expect(await waiting()).toBe(true);
+      await writer.query("commit");
+      expect((await removal).status).toBe(409);
+    } finally {
+      writer.release();
+    }
+    expect((await h.sql.query(`select count(*)::int as n from plugins where service_id = $1`, [svc])).rows[0].n).toBe(1);
+  });
+
+  it("pages only the workspaces a user may read, however many it may not read come first", async () => {
+    const reader = await h.as("viewer");
+    const denied: string[] = [];
+    for (let i = 0; i < 12; i++) denied.push((await h.api("POST", "/environments", { name: `0-denied-${uniq("d")}` })).body.id as string);
+    await h.api("PUT", `/users/${reader.id}/environment-roles`, { items: denied.map((environmentId) => ({ environmentId, role: "none" })) });
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    let pages = 0;
+    do {
+      const page: ApiResponse = await call(reader.api, "listWorkspaces", {}, undefined, `?limit=1${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+      seen.push(...page.body.items.map((w: { id: string }) => w.id));
+      cursor = page.body.nextCursor;
+      pages++;
+    } while (cursor);
+    // The denied ones (first by name) never appear and take no page; every readable one appears once.
+    expect(seen.filter((id) => denied.includes(id))).toEqual([]);
+    expect(new Set(seen).size).toBe(seen.length);
+    expect(seen).toEqual(expect.arrayContaining([a, b]));
+    expect(pages).toBe(seen.length);
+  });
+
   it("decides every operation with the v2 guard: read needs workspace.read, a change gateway.write, out of scope 404", async () => {
     const viewer = await h.as("viewer");
     expect((await call(viewer.api, "listConsumers", { workspaceId: a })).status).toBe(200);
@@ -227,11 +274,25 @@ describe("workspace entities through /api/v2", () => {
     expect((await call(h.api, "listServices", { workspaceId: unknown })).status).toBe(404);
   });
 
-  it("exercised every implemented gateway-entity and workspace-reading operation", () => {
+  it("exports the workspace's draft as the v1 environment export, in JSON and YAML", async () => {
+    const json = await call(h.api, "exportWorkspaceConfig", { workspaceId: a }, undefined, "?format=json");
+    expect(json.status).toBe(200);
+    expect(json.body.apiVersion).toBe("gromesh/v1");
+    expect(json.body).toEqual((await h.api("GET", `/environments/${a}/export?format=json`)).body);
+    const yaml = await call(h.api, "exportWorkspaceConfig", { workspaceId: a });
+    expect(yaml.status).toBe(200);
+    expect(parse(yaml.body as string)).toEqual(json.body);
+    expect((await call(h.api, "exportWorkspaceConfig", { workspaceId: a }, undefined, "?format=xml")).status).toBe(422);
+    const hidden = await h.as("viewer");
+    await h.api("PUT", `/users/${hidden.id}/environment-roles`, { items: [{ environmentId: a, role: "none" }] });
+    expect((await call(hidden.api, "exportWorkspaceConfig", { workspaceId: a })).status).toBe(404);
+  });
+
+  it("exercised every implemented gateway-entity, export and workspace-reading operation", () => {
     const implemented = [...OPS.values()]
-      .filter(({ path, op }) => !op["x-gromesh-planned"] && /^\/workspaces(\/\{workspaceId\})?(\/(services|routes|consumers|upstreams|certificates|plugins)(?!.*path-compatibility)|$)/.test(path))
+      .filter(({ path, op }) => !op["x-gromesh-planned"] && /^\/workspaces(\/\{workspaceId\})?(\/(services|routes|consumers|upstreams|certificates|plugins|export)(?!.*path-compatibility)|$)/.test(path))
       .map(({ op }) => op.operationId as string);
-    expect(implemented.length).toBe(41);
+    expect(implemented.length).toBe(42);
     expect(implemented.filter((id) => !called.has(id))).toEqual([]);
   });
 });

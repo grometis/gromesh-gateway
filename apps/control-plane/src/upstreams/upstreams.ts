@@ -12,7 +12,7 @@ import { APP_CONFIG, type AppConfig } from "../config.js";
 import { DB, type Db, type Executor } from "../db/db.js";
 import { services, targets, upstreams, type TargetRow, type UpstreamRow } from "../db/schema.js";
 import { markDraftChanged, requireEnvironment, uuidParam } from "../environments/environments.js";
-import { refuseVarRefs, type WithVarRefs } from "../workspaces/var-refs.js";
+import { refuseReservedHost, refuseVarRefs, type WithVarRefs } from "../workspaces/var-refs.js";
 
 /* ---------------- mapping ---------------- */
 
@@ -356,6 +356,13 @@ export class UpstreamsController {
   }
 }
 
+/** A v2 target: plain (no variable can be declared yet) and never a host the platform generates. */
+function workspaceTarget(body: WithVarRefs<TargetWrite, "target">): TargetWrite {
+  const plain = refuseVarRefs(body, ["target"]);
+  refuseReservedHost("target", targetHost(plain.target));
+  return plain;
+}
+
 /** control-plane-v2: the same service in the workspace with the environment's id (decision H-9). */
 @Controller("api/v2/workspaces/:workspaceId/upstreams")
 export class WorkspaceUpstreamsController {
@@ -411,7 +418,7 @@ export class WorkspaceUpstreamsController {
     @Param("upstreamId", uuidParam()) upstreamId: string,
     @Body(contractBodyV2("WorkspaceTargetWrite")) body: WithVarRefs<TargetWrite, "target">,
   ) {
-    return this.upstreams.createTarget(ctx, workspaceId, upstreamId, refuseVarRefs(body, ["target"]));
+    return this.upstreams.createTarget(ctx, workspaceId, upstreamId, workspaceTarget(body));
   }
 
   @Put(":upstreamId/targets/:targetId")
@@ -423,7 +430,7 @@ export class WorkspaceUpstreamsController {
     @Param("targetId", uuidParam()) targetId: string,
     @Body(contractBodyV2("WorkspaceTargetWrite")) body: WithVarRefs<TargetWrite, "target">,
   ) {
-    return this.upstreams.replaceTarget(ctx, workspaceId, upstreamId, targetId, refuseVarRefs(body, ["target"]));
+    return this.upstreams.replaceTarget(ctx, workspaceId, upstreamId, targetId, workspaceTarget(body));
   }
 
   @Delete(":upstreamId/targets/:targetId")

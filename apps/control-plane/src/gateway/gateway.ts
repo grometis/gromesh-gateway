@@ -305,7 +305,8 @@ export class GatewayService {
   /** v2 also refuses while plugins are scoped to the service (v1 deletes them with it). */
   async deleteService(ctx: RequestContext, envId: string, serviceId: string, options: { keepPlugins?: boolean } = {}) {
     await this.db.transaction(async (tx) => {
-      const before = toService(await this.requireService(tx, envId, serviceId));
+      // Locked first: a route or plugin created meanwhile (it takes the row's key share) waits, then is counted.
+      const before = toService(await this.requireService(tx, envId, serviceId, true));
       const [ref] = await tx.select({ n: count() }).from(routes).where(eq(routes.serviceId, serviceId));
       if (ref && ref.n > 0) throw conflict(`Service is used by ${ref.n} route(s); delete them first`);
       if (options.keepPlugins) {
@@ -377,11 +378,12 @@ export class GatewayService {
 
   /* helpers */
 
-  private async requireService(tx: Executor, envId: string, serviceId: string): Promise<ServiceRow> {
-    const [row] = await tx
+  private async requireService(tx: Executor, envId: string, serviceId: string, lock = false): Promise<ServiceRow> {
+    const q = tx
       .select()
       .from(services)
       .where(and(eq(services.id, serviceId), eq(services.environmentId, envId)));
+    const [row] = lock ? await q.for("update") : await q;
     if (!row) throw notFound("Service");
     return row;
   }
