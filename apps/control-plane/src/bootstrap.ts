@@ -8,6 +8,8 @@ import { runMigrations } from "./db/migrate.js";
 import { configureImportParser } from "./config-transfer/document.js";
 import { AtRestService } from "./crypto/at-rest.js";
 import { UsersService } from "./users/users.js";
+import { DB, type Db } from "./db/db.js";
+import { backfillWorkspaces } from "./workspaces/workspaces.js";
 
 /** Shared by main.ts and the integration tests, so tests run the real app wiring. */
 export async function createApp(config: AppConfig, opts: { logger?: false | LogLevel[] } = {}): Promise<INestApplication> {
@@ -28,6 +30,9 @@ export async function createApp(config: AppConfig, opts: { logger?: false | LogL
   if (config.trustProxy !== false) (app.getHttpAdapter().getInstance() as import("express").Express).set("trust proxy", config.trustProxy);
   app.set("client ip header", config.clientIpHeader);
   await app.init();
+  // Also without migrateOnStart: a replica of the previous version may have created an environment (whose workspace
+  // the trigger left without a slug) after the migration ran.
+  await app.get<Db>(DB).transaction((tx) => backfillWorkspaces(tx));
   // Rows written before the encryption migration (or with an older key, after a rotation) are sealed here.
   await app.get(AtRestService).encryptExisting();
   if (config.bootstrapAdmin) {

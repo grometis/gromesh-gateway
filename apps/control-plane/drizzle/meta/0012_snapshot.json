@@ -1,5 +1,5 @@
 {
-  "id": "185a8ecd-1c6f-4b7e-a80c-c67aa863cc4b",
+  "id": "5549b175-8edd-4887-b329-2dfc2ba7dcd3",
   "prevId": "3c1d6f22-18ad-4e2e-8246-13bc6f33c23e",
   "version": "7",
   "dialect": "postgresql",
@@ -2058,6 +2058,13 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "workspace_default_routes": {
+          "name": "workspace_default_routes",
+          "type": "uuid[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::uuid[]"
         },
         "created_by": {
           "name": "created_by",

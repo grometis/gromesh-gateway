@@ -1,6 +1,6 @@
 import { asc, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import type { Executor } from "../db/db.js";
-import { environments, workspaces } from "../db/schema.js";
+import { dataMigrations, environments, workspaces } from "../db/schema.js";
 import { proposeSlug } from "./slug.js";
 
 /** Serializes slug assignment across replicas, so two workspaces never get the same proposal. */
@@ -22,9 +22,10 @@ export async function assignSlug(tx: Executor, workspaceId: string, name: string
 }
 
 /**
- * Fills in the slug of every workspace that has none: those the N1 migration created from existing environments (and
- * any environment an older replica created during a rolling upgrade). Oldest environment first, so the result does not
- * depend on which replica runs it; idempotent.
+ * Fills in the slug of every workspace that has none: those the N1 migration created from existing environments, and
+ * any environment an older replica created during a rolling upgrade (so it runs after the migrations and on every
+ * start). Oldest environment first, so the result does not depend on which replica runs it; idempotent. The
+ * transaction that leaves no workspace without a slug records the N1 data migration as done.
  */
 export async function backfillWorkspaces(tx: Executor): Promise<number> {
   await tx.execute(sql`select pg_advisory_xact_lock(${SLUG_LOCK_KEY})`);
@@ -34,7 +35,6 @@ export async function backfillWorkspaces(tx: Executor): Promise<number> {
     .innerJoin(environments, eq(environments.id, workspaces.id))
     .where(isNull(workspaces.slug))
     .orderBy(asc(environments.createdAt), asc(environments.id));
-  if (pending.length === 0) return 0;
   const taken = await takenSlugs(tx);
   for (const w of pending) {
     const proposal = proposeSlug(w.name, taken);
@@ -44,5 +44,6 @@ export async function backfillWorkspaces(tx: Executor): Promise<number> {
       .set({ slug: proposal.slug, slugStatus: proposal.status, slugReason: proposal.reason ?? null, updatedAt: sql`now()` })
       .where(eq(workspaces.id, w.id));
   }
+  await tx.insert(dataMigrations).values({ name: "n1-workspaces" }).onConflictDoNothing();
   return pending.length;
 }

@@ -425,6 +425,9 @@ export const snapshots = pgTable(
     // Source state, so a rollback can restore the draft exactly.
     state: jsonb("state").$type<SealedJson | GatewayState>().notNull(),
     message: text("message"),
+    // Routes that were workspace-default when this version was published: a rollback restores exactly that
+    // (before N1 every route was legacy-preserved, so older versions hold none).
+    workspaceDefaultRoutes: uuid("workspace_default_routes").array().notNull().default(sql`'{}'::uuid[]`),
     createdBy: jsonb("created_by").$type<Actor>().notNull(),
     rollbackOf: integer("rollback_of"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

@@ -1,10 +1,14 @@
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { migrate } from "drizzle-orm/node-postgres/migrator";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { MIGRATIONS_DIR, runMigrations } from "../../src/db/migrate.js";
-import { startHarness, type Harness } from "./harness.js";
+import * as schema from "../../src/db/schema.js";
+import { backfillWorkspaces } from "../../src/workspaces/workspaces.js";
+import { startHarness, uniq, type Harness } from "./harness.js";
 
 // N1-X1: each environment becomes the workspace with the same id, and nothing the data plane receives changes.
 const ADMIN_URL = process.env.TEST_DATABASE_URL ?? "postgres://gromesh:gromesh@127.0.0.1:5432/gromesh";
@@ -214,5 +218,189 @@ describe("N1 migration from every earlier version", () => {
       { id: id(1), slug: "legado-unico", slug_status: "derived", slug_reason: null },
       { id: id(2), slug: "legado-unico-2", slug_status: "adjusted", slug_reason: "collision" },
     ]);
+  });
+});
+
+/**
+ * The real "before": a database written by the pre-N1 code (main 843b658: four environments with services, upstreams,
+ * targets, routes with and without a path, consumers with key-auth/JWT/basic-auth credentials and ACL groups, plugins,
+ * certificates, two published versions each and a pending draft in two of them), dumped with pg_dump, and the snapshot
+ * and draft hashes that code computed. The fixture's secrets are sealed with the harness's test keys.
+ */
+const FIXTURE = new URL("./fixtures/", import.meta.url);
+const before = JSON.parse(readFileSync(new URL("pre-n1.json", FIXTURE), "utf8")) as {
+  environments: { id: string; name: string; draftHash: string; hasChanges: boolean; snapshots: { version: number; hash: string }[] }[];
+};
+const dump = readFileSync(new URL("pre-n1.sql", FIXTURE), "utf8");
+// pg_dump's psql meta-commands (\restrict) are not SQL.
+const dumpSql = dump.split("\n").filter((l) => !l.startsWith("\\")).join("\n");
+const dumpCounts = (table: string) => dump.split(`INSERT INTO public.${table} `).length - 1;
+
+async function restorePreN1(label: string): Promise<string> {
+  const url = await freshDatabase(label);
+  await query(url, dumpSql);
+  return url;
+}
+
+describe("N1 migration of a database written by the pre-N1 code", () => {
+  let url: string;
+  let h: Harness;
+
+  beforeAll(async () => {
+    url = await restorePreN1("pre_n1");
+    await runMigrations(url);
+    h = await startHarness({ databaseUrl: url });
+  });
+
+  afterAll(async () => {
+    await h?.close();
+    const admin = new pg.Client({ connectionString: ADMIN_URL });
+    await admin.connect();
+    for (const name of created) await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
+    await admin.end();
+  });
+
+  it("keeps every row", async () => {
+    for (const table of ["environments", "services", "routes", "upstreams", "targets", "consumers", "keyauth_credentials", "jwt_credentials", "basicauth_credentials", "plugins", "certificates", "certificate_snis", "snapshots", "users"]) {
+      const [{ n }] = await query(url, `select count(*)::int as n from ${table}`);
+      expect(n, table).toBe(dumpCounts(table));
+    }
+    // The harness's own login adds events; every event of the dump is still there.
+    const dumped = [...dump.matchAll(/INSERT INTO public\.audit_events VALUES \('([0-9a-f-]{36})'/g)].map((m) => m[1]);
+    expect(dumped.length).toBe(dumpCounts("audit_events"));
+    const [{ n }] = await query(url, `select count(*)::int as n from audit_events where id = any($1::uuid[])`, [dumped]);
+    expect(n).toBe(dumped.length);
+  });
+
+  it("keeps every published version and the draft exactly as the old code computed them", async () => {
+    for (const env of before.environments) {
+      const snapshots = await h.api("GET", `/environments/${env.id}/snapshots`);
+      expect(snapshots.body.items.map((s: { version: number; hash: string }) => ({ version: s.version, hash: s.hash })), env.name).toEqual(env.snapshots);
+      const preview = await h.api("GET", `/environments/${env.id}/publish-preview`);
+      expect({ draftHash: preview.body.draftHash, hasChanges: preview.body.hasChanges }, env.name).toEqual({ draftHash: env.draftHash, hasChanges: env.hasChanges });
+    }
+  });
+
+  it("publishes the same configuration the old code would have, and rolls back to the old versions", async () => {
+    for (const env of before.environments) {
+      const published = await h.api("POST", `/environments/${env.id}/snapshots`, { message: "after N1" });
+      if (env.hasChanges) {
+        expect(published.status, env.name).toBe(201);
+        expect(published.body.hash, env.name).toBe(env.draftHash);
+      } else {
+        // The draft compiles to the current version's configuration: nothing to publish.
+        expect(published.status, env.name).toBe(409);
+      }
+      const rolled = await h.api("POST", `/environments/${env.id}/snapshots/1/rollback`);
+      expect(rolled.status, `${env.name}: ${JSON.stringify(rolled.body)}`).toBe(201);
+      expect(rolled.body.hash, env.name).toBe(env.snapshots.find((s) => s.version === 1)!.hash);
+    }
+    const [{ n }] = await query(url, `select count(*)::int as n from routes where path_compatibility <> 'legacy-preserved'`);
+    expect(n).toBe(0);
+  });
+
+  it("gives every environment its workspace and slug", async () => {
+    const rows = await query(url, `select e.name, w.slug, w.slug_status, w.slug_reason, w.migrated_at is not null as migrated from workspaces w join environments e using (id) order by e.created_at`);
+    expect(rows).toEqual([
+      { name: "TVRO", slug: "tvro", slug_status: "derived", slug_reason: null, migrated: true },
+      { name: "tvro.", slug: "tvro-2", slug_status: "adjusted", slug_reason: "collision", migrated: true },
+      { name: "api", slug: "api-2", slug_status: "adjusted", slug_reason: "reserved", migrated: true },
+      { name: "Pagamentos_PIX", slug: "pagamentos-pix", slug_status: "derived", slug_reason: null, migrated: true },
+    ]);
+  });
+});
+
+describe("N1 slug backfill under interruption, concurrency and an older replica", () => {
+  afterAll(async () => {
+    const admin = new pg.Client({ connectionString: ADMIN_URL });
+    await admin.connect();
+    for (const name of created) await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
+    await admin.end();
+  });
+
+  /** The SQL migrations only, as a process killed before the backfill would leave them. */
+  async function sqlOnly(url: string) {
+    const pool = new pg.Pool({ connectionString: url, max: 1 });
+    try {
+      await migrate(drizzle(pool), { migrationsFolder: MIGRATIONS_DIR });
+    } finally {
+      await pool.end();
+    }
+  }
+  const state = (url: string) => query(url, `select (select count(*)::int from workspaces where slug is null) as pending, (select count(*)::int from data_migrations where name = 'n1-workspaces') as done`);
+
+  it("records the data migration only once no workspace lacks a slug, and finishes it when run again", async () => {
+    const url = await restorePreN1("interrupted");
+    await sqlOnly(url);
+    expect(await state(url)).toEqual([{ pending: 4, done: 0 }]);
+    await runMigrations(url);
+    expect(await state(url)).toEqual([{ pending: 0, done: 1 }]);
+  });
+
+  it("gives the same slugs when two replicas backfill at once", async () => {
+    const url = await restorePreN1("concurrent");
+    await sqlOnly(url);
+    const pools = [new pg.Pool({ connectionString: url, max: 1 }), new pg.Pool({ connectionString: url, max: 1 })];
+    try {
+      const done = await Promise.all(pools.map((p) => drizzle(p, { schema }).transaction((tx) => backfillWorkspaces(tx))));
+      // The advisory lock serializes them: one fills the four slugs, the other finds nothing left.
+      expect(done.sort()).toEqual([0, 4]);
+    } finally {
+      await Promise.all(pools.map((p) => p.end()));
+    }
+    expect((await query(url, `select slug from workspaces order by slug`)).map((r) => r.slug)).toEqual(["api-2", "pagamentos-pix", "tvro", "tvro-2"]);
+  });
+
+  it("fills in, on the next start, the slug of an environment an older replica created after the migration", async () => {
+    const url = await restorePreN1("old_replica");
+    await runMigrations(url);
+    // The previous version inserts the environment without knowing about slugs; the trigger creates its workspace.
+    await query(url, `insert into environments (id, name) values ($1, 'legacy-writer')`, [id(77)]);
+    expect(await query(url, `select slug from workspaces where id = $1`, [id(77)])).toEqual([{ slug: null }]);
+    const h = await startHarness({ databaseUrl: url, migrateOnStart: false });
+    try {
+      expect(await query(url, `select slug, slug_status from workspaces where id = $1`, [id(77)])).toEqual([{ slug: "legacy-writer", slug_status: "derived" }]);
+    } finally {
+      await h.close();
+    }
+  });
+});
+
+describe("path compatibility through rollback and import", () => {
+  let h: Harness;
+  beforeAll(async () => {
+    h = await startHarness();
+  });
+  afterAll(async () => {
+    await h?.close();
+  });
+
+  it("restores a version's workspace-default routes exactly, and an import keeps the classification of the routes it keeps", async () => {
+    const env = (await h.api("POST", "/environments", { name: uniq("pc") })).body.id as string;
+    const e = `/environments/${env}`;
+    const svc = (await h.api("POST", `${e}/services`, { name: "svc", protocol: "http", host: "a.example.com", port: 80 })).body.id;
+    const route = (await h.api("POST", `${e}/routes`, { name: "r", serviceId: svc, paths: ["/r"] })).body.id;
+    const cls = async () => (await h.sql.query(`select path_compatibility as c from routes where id = $1`, [route])).rows[0]?.c;
+    expect(await cls()).toBe("legacy-preserved");
+    // Only v2 (N1-X4) and convertRoutePathCompatibility (N1-C2) make a route workspace-default; here the database does.
+    await h.sql.query(`update routes set path_compatibility = 'workspace-default' where id = $1`, [route]);
+    expect((await h.api("POST", `${e}/snapshots`, { message: "v1" })).status).toBe(201);
+    expect((await h.sql.query(`select workspace_default_routes::text[] as r from snapshots where environment_id = $1 and version = 1`, [env])).rows[0].r).toEqual([route]);
+    await h.sql.query(`update routes set path_compatibility = 'legacy-preserved' where id = $1`, [route]);
+    await h.api("POST", `${e}/routes`, { name: "r2", serviceId: svc, paths: ["/r2"] });
+    expect((await h.api("POST", `${e}/snapshots`, { message: "v2" })).status).toBe(201);
+    expect((await h.api("POST", `${e}/snapshots/1/rollback`)).status).toBe(201);
+    expect(await cls()).toBe("workspace-default");
+    expect((await h.api("POST", `${e}/snapshots/2/rollback`)).status).toBe(201);
+    expect(await cls()).toBe("legacy-preserved");
+
+    await h.sql.query(`update routes set path_compatibility = 'workspace-default' where id = $1`, [route]);
+    const doc = (await h.api("GET", `${e}/export?format=json`)).body;
+    doc.routes.push({ name: "r3", service: "svc", paths: ["/r3"] });
+    const imported = await h.api("POST", `${e}/import`, { mode: "merge", document: doc, dryRun: false });
+    expect(imported.status, JSON.stringify(imported.body)).toBe(200);
+    expect(await cls()).toBe("workspace-default");
+    const r3 = (await h.sql.query(`select path_compatibility as c from routes where environment_id = $1 and name = 'r3'`, [env])).rows[0].c;
+    expect(r3).toBe("legacy-preserved");
   });
 });
