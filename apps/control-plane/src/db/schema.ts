@@ -159,10 +159,10 @@ export const importQueue = pgTable("import_queue", {
 
 /**
  * Who may do what (decision H-9: one authorization for both APIs). A user's permissions in a workspace are its global
- * v1 role translated, replaced there by its v1 environment role (origin v1-environment-role: written by v1, with
- * environment_roles, in the same transaction; none is a deny that prevails over every grant there), plus the v2 grants
- * of the workspace and of the instance. A v2 grant names a built-in role or permissions; groups, custom roles and v2
- * denies are later phases. Revoking keeps the row (revoked_at) for the audit trail.
+ * v1 role translated, replaced there by its v1 environment role (environment_roles, read as it is: none is a deny that
+ * prevails over every grant there), plus these v2 grants of the workspace and of the instance. A grant names a
+ * built-in role or permissions and allows; groups, custom roles and denies are later phases. Revoking keeps the row
+ * (revoked_at) for the audit trail.
  */
 export const roleBindings = pgTable(
   "role_bindings",
@@ -176,8 +176,6 @@ export const roleBindings = pgTable(
     workspaceId: uuid("workspace_id").references(() => workspaces.id, { onDelete: "cascade" }),
     role: text("role"),
     permissions: text("permissions").array(),
-    effect: text("effect", { enum: ["allow", "deny"] }).notNull().default("allow"),
-    origin: text("origin", { enum: ["v2", "v1-environment-role"] }).notNull().default("v2"),
     // Fixed when granted: the grantor held platform.admin, so only platform administration revokes it.
     grantedByPlatform: boolean("granted_by_platform").notNull().default(false),
     expiresAt: timestamp("expires_at", { withTimezone: true }),
@@ -189,14 +187,9 @@ export const roleBindings = pgTable(
   (t) => [
     index("role_bindings_subject_idx").on(t.subjectId),
     index("role_bindings_workspace_idx").on(t.workspaceId),
-    // One v1 environment role per user and workspace.
-    uniqueIndex("role_bindings_v1_uq").on(t.subjectId, t.workspaceId).where(sql`${t.origin} = 'v1-environment-role' and ${t.revokedAt} is null`),
     check("role_bindings_scope_ck", sql`(${t.scopeType} = 'workspace') = (${t.workspaceId} is not null)`),
     check("role_bindings_grant_ck", sql`(${t.role} is null) <> (${t.permissions} is null)`),
     check("role_bindings_subject_type_ck", sql`${t.subjectType} = 'user'`),
-    check("role_bindings_origin_ck", sql`${t.origin} in ('v2', 'v1-environment-role') and (${t.origin} = 'v2' or ${t.scopeType} = 'workspace')`),
-    // The only deny of the core is a v1 environment role none (the contract's core exception).
-    check("role_bindings_effect_ck", sql`${t.effect} = 'allow' or (${t.effect} = 'deny' and ${t.origin} = 'v1-environment-role')`),
   ],
 );
 export type RoleBindingRow = typeof roleBindings.$inferSelect;

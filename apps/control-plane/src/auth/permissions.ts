@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { and, eq, gt, isNull, or, sql } from "drizzle-orm";
 import type { Executor } from "../db/db.js";
-import { roleBindings, workspaces, type UserRow } from "../db/schema.js";
+import { environmentRoles, roleBindings, workspaces, type UserRow } from "../db/schema.js";
 import type { Role } from "./environment-access.js";
 
 /** The v2 permission catalog and built-in roles (contracts/control-plane-v2.openapi.yaml, info; a test compares). */
@@ -32,11 +32,12 @@ export const BUILTIN_ROLES = {
 export type BuiltinRole = keyof typeof BUILTIN_ROLES;
 export const isBuiltinRole = (name: string): name is BuiltinRole => Object.hasOwn(BUILTIN_ROLES, name);
 
-/** A built-in role's stable id (UUID v5 shape of its name), the same on every instance. */
-export function builtinRoleId(name: BuiltinRole): string {
-  const h = createHash("sha1").update(`gromesh-role:${name}`).digest("hex");
+/** A stable id in UUID v5 shape, the same on every instance. */
+function stableId(name: string): string {
+  const h = createHash("sha1").update(name).digest("hex");
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-5${h.slice(13, 16)}-${((parseInt(h.slice(16, 18), 16) & 0x3f) | 0x80).toString(16)}${h.slice(18, 20)}-${h.slice(20, 32)}`;
 }
+export const builtinRoleId = (name: BuiltinRole): string => stableId(`gromesh-role:${name}`);
 
 /**
  * A v1 power with no v2 equivalent in a workspace: the admin of an environment manages its clusters (v2 keeps clusters
@@ -69,13 +70,50 @@ export function requiredPermission(role: Role, inWorkspace: boolean): Permission
 export type Scope = { type: "instance" } | { type: "workspace"; workspaceId: string };
 
 /**
+ * A v1 environment role seen as a binding of its workspace (read-only: v1 changes it). It is read from
+ * environment_roles itself, never copied, so no writer (an older replica included) can leave it out of step.
+ */
+export interface V1Binding {
+  id: string;
+  subjectId: string;
+  workspaceId: string;
+  /** null: none, a deny that prevails over every grant there. */
+  role: BuiltinRole | null;
+  createdAt: Date;
+}
+export const v1BindingId = (userId: string, workspaceId: string): string => stableId(`gromesh-v1-binding:${userId}:${workspaceId}`);
+export async function v1Bindings(tx: Executor, where: { subjectId?: string; workspaceId?: string }): Promise<V1Binding[]> {
+  const rows = await tx
+    .select()
+    .from(environmentRoles)
+    .where(
+      and(
+        where.subjectId ? eq(environmentRoles.userId, where.subjectId) : undefined,
+        where.workspaceId ? eq(environmentRoles.environmentId, where.workspaceId) : undefined,
+      ),
+    );
+  return rows.map((r) => ({
+    id: v1BindingId(r.userId, r.environmentId),
+    subjectId: r.userId,
+    workspaceId: r.environmentId,
+    role: r.role === "none" ? null : LEGACY_ROLE[r.role],
+    createdAt: r.createdAt,
+  }));
+}
+
+/** The v1 binding with this id, if any (its id derives from the user and the workspace, so the roles are scanned). */
+export async function v1BindingById(tx: Executor, id: string): Promise<V1Binding | undefined> {
+  return (await v1Bindings(tx, {})).find((b) => b.id === id);
+}
+
+/**
  * Everything a user may do in a scope. At instance scope: its global v1 role translated plus its instance grants. In a
  * workspace: its v1 environment role there if it has one (none: nothing at all, whatever was granted), else its global
  * role; plus its v2 grants of the instance and of the workspace. A global admin is platform administration everywhere.
  */
 export async function permissionsIn(tx: Executor, user: UserRow, scope: Scope): Promise<Set<Held>> {
   const rows = await tx
-    .select({ role: roleBindings.role, permissions: roleBindings.permissions, effect: roleBindings.effect, origin: roleBindings.origin, scopeType: roleBindings.scopeType })
+    .select({ role: roleBindings.role, permissions: roleBindings.permissions })
     .from(roleBindings)
     .where(
       and(
@@ -86,11 +124,10 @@ export async function permissionsIn(tx: Executor, user: UserRow, scope: Scope): 
       ),
     );
   const globalAdmin = user.role === "admin";
-  const v1 = scope.type === "workspace" && !globalAdmin ? rows.find((r) => r.origin === "v1-environment-role") : undefined;
-  if (v1?.effect === "deny") return new Set();
-  const out = new Set<Held>(v1 ? roleSet(v1.role ?? "") : legacyPermissions(user.role, globalAdmin));
+  const [v1] = scope.type === "workspace" && !globalAdmin ? await v1Bindings(tx, { subjectId: user.id, workspaceId: scope.workspaceId }) : [];
+  if (v1 && v1.role === null) return new Set();
+  const out = new Set<Held>(v1 ? roleSet(v1.role!) : legacyPermissions(user.role, globalAdmin));
   for (const r of rows) {
-    if (r.origin !== "v2" || r.effect !== "allow") continue;
     if (r.role !== null) for (const p of roleSet(r.role)) if (p !== LEGACY_CLUSTERS) out.add(p);
     for (const p of r.permissions ?? []) if ((PERMISSIONS as readonly string[]).includes(p)) out.add(p as Permission);
   }

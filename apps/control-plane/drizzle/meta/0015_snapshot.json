@@ -1,5 +1,5 @@
 {
-  "id": "8a0df161-2c44-4617-a49b-c0a7d539c8d9",
+  "id": "36471869-ae67-44c6-a3e2-4eb66016c09b",
   "prevId": "81eb2571-781f-4e59-a43a-fcda5977a4cf",
   "version": "7",
   "dialect": "postgresql",
@@ -1688,20 +1688,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "effect": {
-          "name": "effect",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'allow'"
-        },
-        "origin": {
-          "name": "origin",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'v2'"
-        },
         "granted_by_platform": {
           "name": "granted_by_platform",
           "type": "boolean",
@@ -1771,28 +1757,6 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
-        },
-        "role_bindings_v1_uq": {
-          "name": "role_bindings_v1_uq",
-          "columns": [
-            {
-              "expression": "subject_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "workspace_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"role_bindings\".\"origin\" = 'v1-environment-role' and \"role_bindings\".\"revoked_at\" is null",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
         }
       },
       "foreignKeys": {
@@ -1851,14 +1815,6 @@
         "role_bindings_subject_type_ck": {
           "name": "role_bindings_subject_type_ck",
           "value": "\"role_bindings\".\"subject_type\" = 'user'"
-        },
-        "role_bindings_origin_ck": {
-          "name": "role_bindings_origin_ck",
-          "value": "\"role_bindings\".\"origin\" in ('v2', 'v1-environment-role') and (\"role_bindings\".\"origin\" = 'v2' or \"role_bindings\".\"scope_type\" = 'workspace')"
-        },
-        "role_bindings_effect_ck": {
-          "name": "role_bindings_effect_ck",
-          "value": "\"role_bindings\".\"effect\" = 'allow' or (\"role_bindings\".\"effect\" = 'deny' and \"role_bindings\".\"origin\" = 'v1-environment-role')"
         }
       },
       "isRLSEnabled": false

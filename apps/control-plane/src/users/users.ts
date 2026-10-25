@@ -130,7 +130,6 @@ export class UsersService {
     if (before.length === 0 && items.length === 0) return before;
     await tx.delete(environmentRoles).where(eq(environmentRoles.userId, userId));
     if (items.length > 0) await tx.insert(environmentRoles).values(items.map((item) => ({ userId, environmentId: item.environmentId, role: item.role })));
-    // A trigger keeps their v1 bindings, which the authorization reads (decision H-9), in this same transaction.
     const after = await environmentRolesOf(tx, userId);
     await audit(tx, ctx, { action: "user.environment_roles.replace", entityType: "user", entityId: userId, before: { items: before }, after: { items: after } });
     return after;

@@ -251,9 +251,9 @@ describe("N1 migration from every earlier version", () => {
     ]);
     expect(await query(url, `select distinct path_compatibility from routes`)).toEqual([{ path_compatibility: "legacy-preserved" }]);
     expect(await query(url, `select name from data_migrations`)).toEqual([{ name: "n1-workspaces" }]);
-    // Every environment role is the v1 binding of its workspace (N1-C3): none a deny.
-    const bindings = await query(url, `select subject_id::text, workspace_id::text, role, effect, origin from role_bindings order by subject_id`);
-    expect(bindings).toEqual(idx >= 10 ? [{ subject_id: id(70), workspace_id: id(2), role: null, effect: "deny", origin: "v1-environment-role" }] : []);
+    // N1-C3 copies nothing: a v1 environment role is read where it is (environment_roles, kept above), and no
+    // v2 grant exists before someone makes one.
+    expect(await query(url, `select count(*)::int as n from role_bindings`)).toEqual([{ n: 0 }]);
   });
 });
 
@@ -518,40 +518,5 @@ describe("path compatibility through rollback and import", () => {
     expect(real.status).toBe(422);
     expect(real.body.errors).toContainEqual(error);
     expect(await cls()).toBe("workspace-default");
-  });
-});
-
-describe("N1 role bindings copy under an older replica's write", () => {
-  afterAll(async () => {
-    const admin = new pg.Client({ connectionString: ADMIN_URL });
-    await admin.connect();
-    for (const name of created) await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
-    await admin.end();
-    for (const dir of folders) rmSync(dir, { recursive: true, force: true });
-  });
-
-  it("copies the environment role an older replica commits while the migration runs, never the one it replaced", async () => {
-    const url = await freshDatabase("rb_race");
-    const bindings = journal.entries.find((e) => e.tag.endsWith("_role_bindings"))!.idx;
-    await runMigrations(url, folderUpTo(bindings - 1));
-    await query(url, `insert into environments (id, name) values ($1, 'race')`, [id(1)]);
-    await query(url, `insert into users (id, email, name, role, password_hash) values ($1, 'race@example.com', 'race', 'viewer', 'x')`, [id(2)]);
-    await query(url, `insert into environment_roles (user_id, environment_id, role) values ($1, $2, 'admin')`, [id(2), id(1)]);
-    // The previous version demotes the admin to none and has not committed yet when the migration starts.
-    const replica = new pg.Client({ connectionString: url });
-    await replica.connect();
-    try {
-      await replica.query("begin");
-      await replica.query(`update environment_roles set role = 'none' where user_id = $1`, [id(2)]);
-      const migration = runMigrations(url);
-      const blocked = async () => (await query(url, `select count(*)::int as n from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'`))[0].n > 0;
-      for (let i = 0; i < 200 && !(await blocked()); i++) await new Promise((r) => setTimeout(r, 25));
-      expect(await blocked()).toBe(true);
-      await replica.query("commit");
-      await migration;
-    } finally {
-      await replica.end();
-    }
-    expect(await query(url, `select role, effect from role_bindings where subject_id = $1 and origin = 'v1-environment-role'`, [id(2)])).toEqual([{ role: null, effect: "deny" }]);
   });
 });

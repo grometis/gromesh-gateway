@@ -2,7 +2,7 @@ import { Body, Controller, Get, HttpCode, HttpStatus, Inject, Injectable, Module
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { audit } from "../audit/audit.js";
 import { type AuthenticatedRequest, Ctx, RequiredPermission, type RequestContext, SessionOnly } from "../auth/auth.js";
-import { BUILTIN_ROLES, builtinRoleId, type Held, isBuiltinRole, type Permission } from "../auth/permissions.js";
+import { BUILTIN_ROLES, builtinRoleId, type Held, isBuiltinRole, type Permission, type V1Binding, v1BindingById, v1Bindings } from "../auth/permissions.js";
 import { contractBodyV2 } from "../common/contract.js";
 import { notFound, ProblemException, unprocessable, type FieldError } from "../common/problem.js";
 import { DB, type Db } from "../db/db.js";
@@ -32,15 +32,32 @@ export function toRoleBinding(r: RoleBindingRow) {
     scope: { type: r.scopeType, workspaceId: r.workspaceId },
     subjectType: r.subjectType,
     subjectId: r.subjectId,
-    effect: r.effect,
-    // v1-environment-role: written by the v1 environment roles (read-only here); v2: granted through this API.
-    origin: r.origin,
+    effect: "allow" as const,
+    origin: "v2" as const,
     ...(r.role !== null ? { role: r.role } : { permissions: r.permissions ?? [] }),
     expiresAt: r.expiresAt?.toISOString() ?? null,
     justification: r.justification,
     grantedBy: r.grantedBy ?? "",
     createdAt: r.createdAt.toISOString(),
     revokedAt: r.revokedAt?.toISOString() ?? null,
+  };
+}
+
+/** A v1 environment role as the read-only binding it is in v2 (none: a deny). */
+export function toV1RoleBinding(b: V1Binding) {
+  return {
+    id: b.id,
+    scope: { type: "workspace" as const, workspaceId: b.workspaceId },
+    subjectType: "user" as const,
+    subjectId: b.subjectId,
+    effect: b.role === null ? ("deny" as const) : ("allow" as const),
+    origin: "v1-environment-role" as const,
+    ...(b.role !== null ? { role: b.role } : { permissions: [] }),
+    expiresAt: null,
+    justification: null,
+    grantedBy: "",
+    createdAt: b.createdAt.toISOString(),
+    revokedAt: null,
   };
 }
 
@@ -61,7 +78,8 @@ export class AccessService {
       .from(roleBindings)
       .where(scope.type === "workspace" ? eq(roleBindings.workspaceId, scope.workspaceId) : eq(roleBindings.scopeType, "instance"))
       .orderBy(asc(roleBindings.createdAt), asc(roleBindings.id));
-    return rows.map(toRoleBinding);
+    const v1 = scope.type === "workspace" ? (await v1Bindings(this.db, { workspaceId: scope.workspaceId })).map(toV1RoleBinding) : [];
+    return [...v1, ...rows.map(toRoleBinding)].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
   }
 
   /**
@@ -120,9 +138,11 @@ export class AccessService {
   async revoke(ctx: RequestContext, held: ReadonlySet<Held>, bindingId: string) {
     await this.db.transaction(async (tx) => {
       const [row] = await tx.select().from(roleBindings).where(eq(roleBindings.id, bindingId)).for("update");
-      if (!row) throw notFound("Role binding");
+      if (!row) {
+        if (await v1BindingById(tx, bindingId)) throw new ProblemException(HttpStatus.FORBIDDEN, "A v1 environment role: change it through the environment roles of the user");
+        throw notFound("Role binding");
+      }
       if (row.revokedAt) return;
-      if (row.origin === "v1-environment-role") throw new ProblemException(HttpStatus.FORBIDDEN, "A v1 environment role: change it through the environment roles of the user");
       // Platform administration revokes any grant; anyone else needs every permission it grants, and never one the
       // platform made (fixed when granted, whatever the grantor became since).
       if (!held.has("platform.admin")) {

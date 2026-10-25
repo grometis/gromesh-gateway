@@ -18,7 +18,7 @@ import { effectiveRole, environmentOf, lower, RANK, type Role } from "./environm
 import { notFound } from "../common/problem.js";
 import { and, eq } from "drizzle-orm";
 import { environmentRoles, roleBindings } from "../db/schema.js";
-import { type Held, type Permission, permissionsIn, requiredPermission, type Scope, tokenPermissions, workspaceExists } from "./permissions.js";
+import { type Held, type Permission, permissionsIn, requiredPermission, type Scope, tokenPermissions, v1BindingById, workspaceExists } from "./permissions.js";
 import { sessionCookie, SessionService } from "./sessions.js";
 
 /** `ggt_` plus 32 random bytes in unpadded base64url (43 characters), as the contract's pattern says. */
@@ -165,8 +165,10 @@ export class AuthGuard implements CanActivate {
     } else if (scope === "binding") {
       const bindingId = typeof params.bindingId === "string" ? params.bindingId : "";
       const [binding] = UUID.test(bindingId) ? await this.db.select().from(roleBindings).where(eq(roleBindings.id, bindingId)) : [];
-      if (!binding) throw notFound("Role binding");
-      where = binding.scopeType === "workspace" ? { type: "workspace", workspaceId: binding.workspaceId! } : { type: "instance" };
+      const v1 = !binding && UUID.test(bindingId) ? await v1BindingById(this.db, bindingId) : undefined;
+      if (binding) where = binding.scopeType === "workspace" ? { type: "workspace", workspaceId: binding.workspaceId! } : { type: "instance" };
+      else if (v1) where = { type: "workspace", workspaceId: v1.workspaceId };
+      else throw notFound("Role binding");
     }
     const owner = await permissionsIn(this.db, caller.user, where);
     if (where.type === "workspace" && !owner.has("workspace.read")) throw notFound(scope === "binding" ? "Role binding" : "Workspace");

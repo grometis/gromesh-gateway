@@ -135,7 +135,8 @@ describe("role bindings through /api/v2, honored by v1 and v2 alike", () => {
     expect((await v2api(target.api, "GET", `/workspaces/${a}/role-bindings`)).status).toBe(404);
     await h.sql.query(`delete from environment_roles where user_id = $1 and environment_id = $2`, [target.id, a]);
     expect((await target.api("GET", `/environments/${a}/services`)).status).toBe(200);
-    expect((await h.sql.query(`select count(*)::int as n from role_bindings where subject_id = $1 and origin = 'v1-environment-role'`, [target.id])).rows[0].n).toBe(0);
+    const listed = (await v2api(h.api, "GET", `/workspaces/${a}/role-bindings`)).body as { subjectId: string }[];
+    expect(listed.filter((b) => b.subjectId === target.id)).toEqual([]);
   });
 
   it("validates a grant against the core profile of the contract (what later phases bring is refused by the contract)", async () => {
