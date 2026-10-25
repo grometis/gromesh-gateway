@@ -3725,6 +3725,9 @@ components:
       type: object
       additionalProperties: false
       required: [ migratedAt, status, blockers, workspaces, accessChanges ]
+      if: { properties: { status: { const: complete } } }
+      then: { properties: { blockers: { maxItems: 0 } } }
+      else: { properties: { blockers: { minItems: 1 } } }
       properties:
         migratedAt: { type: string, format: date-time }
         status: { enum: [ complete, blocked ] }
