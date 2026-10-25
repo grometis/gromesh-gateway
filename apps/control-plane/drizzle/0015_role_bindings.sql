@@ -30,6 +30,9 @@ CREATE UNIQUE INDEX "role_bindings_v1_uq" ON "role_bindings" USING btree ("subje
 -- N1: every environment role becomes the v1 binding of its workspace (the same id): the role replaces the global one
 -- there (viewer, editor → publisher: a v1 editor publishes and rolls back; admin → workspace-admin), and none is a deny
 -- that prevails over every grant there. v1 keeps writing environment_roles and these rows together.
+-- No writer may slip between this copy and the trigger below (a replica of the previous version during a rolling
+-- upgrade): the lock waits for the writes in flight and holds the rest until the migration commits.
+LOCK TABLE "environment_roles" IN SHARE ROW EXCLUSIVE MODE;--> statement-breakpoint
 INSERT INTO "role_bindings" ("subject_id", "scope_type", "workspace_id", "role", "permissions", "effect", "origin")
 SELECT "user_id", 'workspace', "environment_id",
   CASE "role" WHEN 'viewer' THEN 'viewer' WHEN 'editor' THEN 'publisher' WHEN 'admin' THEN 'workspace-admin' END,
