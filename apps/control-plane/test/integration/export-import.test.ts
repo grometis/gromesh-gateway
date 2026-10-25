@@ -114,7 +114,8 @@ test("(a,e) redacted YAML/JSON export, new environment import and explicit publi
   const yaml = await h.api<string>("GET", `${source}/export`);
   expect(yaml.contentType).toContain("application/yaml");
   expect(parse(yaml.body)).toEqual(document);
-  const allSecrets = [...Object.values(secrets), ...(await openedSecrets(source)).basic, ...cert.key.split("\n").filter(l => l && !l.startsWith("-----"))];
+  // A short last line of the PEM key (e.g. "AwEH") is not secret: the P-256 public key in the certificate starts the same way.
+  const allSecrets = [...Object.values(secrets), ...(await openedSecrets(source)).basic, ...cert.key.split("\n").filter(l => l.length >= 16 && !l.startsWith("-----"))];
   for (const representation of [JSON.stringify(document), yaml.body]) for (const secret of allSecrets) expect(representation).not.toContain(secret);
   const target = await createEnvironment("auto");
   const empty = await stateOf(target);
