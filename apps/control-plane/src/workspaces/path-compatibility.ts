@@ -30,18 +30,17 @@ export function kongUpstreamPath(servicePath: string | null, requestPath: string
   return base.endsWith("/") ? base + postfix : `${base}/${postfix}`;
 }
 
-// What follows the route's path in a request; a character no path holds, shown as {rest}.
+// What follows the route's path in a request, and what a regex path matched: characters no path holds, shown as
+// {rest} and {match}.
 const REST = "\u0000";
-const show = (v: string) => v.replaceAll(REST, "{rest}");
+const MATCH = "/\u0001";
+const show = (v: string) => v.replaceAll(MATCH, "{match}").replaceAll(REST, "{rest}");
 
-/** The request exactly at the path, then one going on past it. */
-function samples(servicePath: string | null, path: string, strip: boolean, publicPath: string): string {
-  const rest = path.endsWith("/") ? REST : `/${REST}`;
-  return [path, path + rest]
-    .map((request) => {
-      const prefixed = publicPath + request.slice(path.length);
-      return `${show(strip ? request : prefixed)} -> ${show(kongUpstreamPath(servicePath, strip ? request : prefixed, strip ? path : ""))}`;
-    })
+/** The request exactly at what the route matches (`matched`), then one going on past it, and what reaches the upstream. */
+function samples(servicePath: string | null, matched: string, strip: boolean, prefix: string): string {
+  const rest = matched.endsWith("/") ? REST : `/${REST}`;
+  return [matched, matched + rest]
+    .map((request) => `${show(prefix + request)} -> ${show(kongUpstreamPath(servicePath, prefix + request, strip ? prefix + matched : ""))}`)
     .join("; ");
 }
 
@@ -49,22 +48,19 @@ function samples(servicePath: string | null, path: string, strip: boolean, publi
  * What converting a legacy-preserved route to the workspace default (decision D1) changes, path by path: today the
  * upstream receives what its strip_path gives; in the workspace default the public path is /<slug><path> (a regex
  * ~/<slug>(?:<regex>)) and the full path, prefix included, reaches the upstream (stripPath false). A regex matches a
- * sequence only the request decides: {match} is it, {rest} what follows. The digest covers everything the paths
- * depend on (the route's paths and stripPath, its service's path and the slug), so any change to them changes it.
+ * sequence only the request decides ({match}; stripped whole when stripPath is true). The digest covers everything the
+ * paths depend on (the route's paths and stripPath, its service and the service's path, and the slug).
  */
 export function routePathDiff(route: { id: string; paths: string[] | null; stripPath: boolean; pathCompatibility: string }, service: { id: string; path: string | null }, slug: string) {
-  const join = (base: string | null, tail: string) => `${(base ?? "/").replace(/\/+$/, "")}${tail}`;
   const paths = (route.paths ?? []).map((p) => {
-    if (p.startsWith("~")) {
-      const publicPath = `~/${slug}(?:${p.slice(1)})`;
-      return {
-        publicPath,
-        upstreamBefore: `${p}: {match}{rest} -> ${route.stripPath ? join(service.path, "/{rest}") : join(service.path, "{match}{rest}")}`,
-        upstreamAfter: `${publicPath}: /${slug}{match}{rest} -> ${join(service.path, `/${slug}{match}{rest}`)}`,
-      };
-    }
-    const publicPath = `/${slug}${p}`;
-    return { publicPath, upstreamBefore: samples(service.path, p, route.stripPath, p), upstreamAfter: samples(service.path, p, false, publicPath) };
+    const regex = p.startsWith("~");
+    const matched = regex ? MATCH : p;
+    const head = (v: string) => (regex ? `${p}: ${v}` : v);
+    return {
+      publicPath: regex ? `~/${slug}(?:${p.slice(1)})` : `/${slug}${p}`,
+      upstreamBefore: head(samples(service.path, matched, route.stripPath, "")),
+      upstreamAfter: head(samples(service.path, matched, false, `/${slug}`)),
+    };
   });
   const inputs = { routeId: route.id, paths: route.paths ?? [], stripPath: route.stripPath, serviceId: service.id, servicePath: service.path, slug };
   const diffDigest = `sha256:${createHash("sha256").update(JSON.stringify({ inputs, paths })).digest("hex")}`;

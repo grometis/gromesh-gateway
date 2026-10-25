@@ -43,11 +43,28 @@ describe("routePathDiff", () => {
     const [stripped] = routePathDiff({ ...route, paths: ["~/orders/[0-9]+"] }, service, "tvro").paths;
     expect(stripped).toEqual({
       publicPath: "~/tvro(?:/orders/[0-9]+)",
-      upstreamBefore: "~/orders/[0-9]+: {match}{rest} -> /v1/{rest}",
-      upstreamAfter: "~/tvro(?:/orders/[0-9]+): /tvro{match}{rest} -> /v1/tvro{match}{rest}",
+      upstreamBefore: "~/orders/[0-9]+: {match} -> /v1; {match}/{rest} -> /v1/{rest}",
+      upstreamAfter: "~/orders/[0-9]+: /tvro{match} -> /v1/tvro{match}; /tvro{match}/{rest} -> /v1/tvro{match}/{rest}",
     });
     const [kept] = routePathDiff({ ...route, stripPath: false, paths: ["~/orders/[0-9]+"] }, service, "tvro").paths;
-    expect(kept!.upstreamBefore).toBe("~/orders/[0-9]+: {match}{rest} -> /v1{match}{rest}");
+    expect(kept!.upstreamBefore).toBe("~/orders/[0-9]+: {match} -> /v1{match}; {match}/{rest} -> /v1{match}/{rest}");
+  });
+
+  it("renders a regex exactly as Kong composes the request it stands for", () => {
+    // /orders/42 is what ~/orders/[0-9]+ matches in /orders/42/items.
+    for (const [servicePath, strip, request, upstream] of [
+      ["/v1", true, "/orders/42", "/v1"],
+      ["/v1", true, "/orders/42/items", "/v1/items"],
+      ["/v1/", true, "/orders/42/items", "/v1/items"],
+      [null, true, "/orders/42/items", "/items"],
+      ["/v1", false, "/orders/42/items", "/v1/orders/42/items"],
+    ] as const) {
+      expect(kongUpstreamPath(servicePath, request, strip ? "/orders/42" : "")).toBe(upstream);
+      const [diff] = routePathDiff({ ...route, stripPath: strip, paths: ["~/orders/[0-9]+"] }, { ...service, path: servicePath }, "tvro").paths;
+      const shown = Object.fromEntries(diff!.upstreamBefore.split(": ")[1]!.split("; ").map((s) => s.split(" -> ")));
+      const sample = request.endsWith("/items") ? "{match}/{rest}" : "{match}";
+      expect(shown[sample]!.replace("{match}", "/orders/42").replace("{rest}", "items")).toBe(upstream);
+    }
   });
 
   it("changes the digest with anything the paths depend on", () => {
