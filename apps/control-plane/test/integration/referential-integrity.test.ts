@@ -68,6 +68,100 @@ describe("referential integrity between workspaces", () => {
     expect((await h.api("POST", `/environments/${a.env}/consumers/${b.consumer}/key-auth`, {})).status).toBe(404);
     expect((await h.api("POST", `/environments/${a.env}/upstreams/${b.upstream}/targets`, { target: "x.example.com:80" })).status).toBe(404);
     expect((await h.api("GET", `/environments/${a.env}/routes/${b.route}`)).status).toBe(404);
+    // Every credential type under another workspace's consumer, and every replacement pointing across.
+    expect((await h.api("POST", `/environments/${a.env}/consumers/${b.consumer}/jwt`, {})).status).toBe(404);
+    expect((await h.api("POST", `/environments/${a.env}/consumers/${b.consumer}/basic-auth`, { username: uniq("u"), password: "a-long-password" })).status).toBe(404);
+    expect((await h.api("PUT", `/environments/${a.env}/consumers/${b.consumer}/acl-groups`, { groups: ["x"] })).status).toBe(404);
+    const replacedRoute = await h.api("PUT", `/environments/${a.env}/routes/${a.route}`, { name: "orders", serviceId: b.service, paths: ["/orders"] });
+    expect(replacedRoute.status).toBe(422);
+    expect(replacedRoute.body.errors).toEqual([{ path: "serviceId", message: "unknown service in this environment" }]);
+    const replacedPlugin = await h.api("PUT", `/environments/${a.env}/plugins/${a.plugin}`, { name: "cors", config: { origins: ["*"] }, scope: { routeId: b.route } });
+    expect(replacedPlugin.status).toBe(422);
+    expect(replacedPlugin.body.errors.map((e: { path: string }) => e.path)).toEqual(["scope.routeId"]);
+    // Nothing changed in either workspace.
+    expect((await h.api("GET", `/environments/${a.env}/routes/${a.route}`)).body.serviceId).toBe(a.service);
+  });
+
+  it("resolves anonymous only to a consumer of the plugin's own workspace (by id or username)", async () => {
+    const onlyB = (await h.api("POST", `/environments/${b.env}/consumers`, { username: uniq("only-b") })).body;
+    const plugin = (config: Record<string, unknown>) => h.api("POST", `/environments/${a.env}/plugins`, { name: "key-auth", config: { key_names: ["apikey"], ...config }, scope: { routeId: a.route } });
+    for (const anonymous of [b.consumer, b.consumer.toUpperCase(), onlyB.username, "nobody"]) {
+      const refused = await plugin({ anonymous });
+      expect(refused.status, anonymous).toBe(422);
+      expect(refused.body.errors, anonymous).toEqual([{ path: "config.anonymous", message: "unknown consumer in this environment" }]);
+    }
+    // "app-sky" exists in both workspaces: in A it is A's own consumer (decision H-5).
+    const byName = await plugin({ anonymous: "app-sky" });
+    expect(byName.status, JSON.stringify(byName.body)).toBe(201);
+    const byId = await h.api("PUT", `/environments/${a.env}/plugins/${byName.body.id}`, { name: "key-auth", config: { key_names: ["apikey"], anonymous: a.consumer.toUpperCase() }, scope: { routeId: a.route } });
+    expect(byId.status, JSON.stringify(byId.body)).toBe(200);
+    // A consumer used as anonymous can be neither deleted nor renamed; another consumer can.
+    expect((await h.api("DELETE", `/environments/${a.env}/consumers/${a.consumer}`)).status).toBe(409);
+    await h.api("PUT", `/environments/${a.env}/plugins/${byName.body.id}`, { name: "key-auth", config: { key_names: ["apikey"], anonymous: "app-sky" }, scope: { routeId: a.route } });
+    expect((await h.api("PUT", `/environments/${a.env}/consumers/${a.consumer}`, { username: "app-sky-renamed" })).status).toBe(409);
+    expect((await h.api("PUT", `/environments/${a.env}/consumers/${a.consumer}`, { username: "app-sky", customId: "sky-x" })).status).toBe(200);
+    expect((await h.api("PUT", `/environments/${b.env}/consumers/${b.consumer}`, { username: "app-sky-renamed" })).status).toBe(200);
+    await h.api("PUT", `/environments/${b.env}/consumers/${b.consumer}`, { username: "app-sky" });
+    expect((await h.api("DELETE", `/environments/${a.env}/plugins/${byName.body.id}`)).status).toBe(204);
+  });
+
+  it("refuses anonymous across workspaces in the database too", async () => {
+    await expect(h.sql.query(`insert into plugins (environment_id, name, config) values ($1, 'key-auth', jsonb_build_object('anonymous', $2::text))`, [a.env, b.consumer])).rejects.toThrow(/plugins_anonymous_consumer|anonymous/);
+    const [{ id: pid }] = (await h.sql.query(`insert into plugins (environment_id, name, config) values ($1, 'basic-auth', jsonb_build_object('anonymous', $2::text)) returning id`, [a.env, a.consumer])).rows;
+    await expect(h.sql.query(`update plugins set config = jsonb_build_object('anonymous', $2::text) where id = $1`, [pid, b.consumer])).rejects.toThrow(/anonymous/);
+    await expect(h.sql.query(`delete from consumers where id = $1`, [a.consumer])).rejects.toThrow(/anonymous/);
+    await h.sql.query(`delete from plugins where id = $1`, [pid]);
+    // Negative control: without the trigger the same write goes through.
+    const client = await h.sql.connect();
+    try {
+      await client.query("begin");
+      await client.query("drop trigger plugins_anonymous on plugins");
+      await expect(client.query(`insert into plugins (environment_id, name, config) values ($1, 'key-auth', jsonb_build_object('anonymous', $2::text))`, [a.env, b.consumer])).resolves.toBeDefined();
+    } finally {
+      await client.query("rollback");
+      client.release();
+    }
+  });
+
+  it("refuses an import, and a rollback, whose plugin falls back to a consumer it does not hold", async () => {
+    const c = await fixture();
+    const e = `/environments/${c.env}`;
+    // The fixture's certificate is a placeholder row that does not compile; this workspace publishes.
+    await h.sql.query(`delete from certificates where environment_id = $1`, [c.env]);
+    const doc = (await h.api("GET", `${e}/export?format=json`)).body;
+    doc.plugins.push({ name: "key-auth", config: { key_names: ["k"], anonymous: b.consumer }, scope: { route: "orders" } });
+    const index = doc.plugins.length - 1;
+    for (const dryRun of [true, false]) {
+      const res = await h.api("POST", `${e}/import`, { mode: "merge", document: doc, dryRun });
+      expect(res.status, `dryRun ${dryRun}`).toBe(dryRun ? 200 : 422);
+      expect(res.body.errors, `dryRun ${dryRun}`).toContainEqual({ path: `document.plugins.${index}.config.anonymous`, message: "unknown consumer in the resulting draft" });
+    }
+    // A version published before the rule, with a dangling anonymous, is not restored.
+    const first = await h.api("POST", `${e}/snapshots`, {});
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    const client = await h.sql.connect();
+    try {
+      await client.query("begin");
+      await client.query("alter table plugins disable trigger plugins_anonymous");
+      await client.query(`insert into plugins (environment_id, name, route_id, config) values ($1, 'key-auth', $2, jsonb_build_object('key_names', jsonb_build_array('k'), 'anonymous', $3::text))`, [c.env, c.route, b.consumer]);
+      await client.query("alter table plugins enable trigger plugins_anonymous");
+      await client.query("commit");
+    } finally {
+      client.release();
+    }
+    await h.sql.query(`update environments set has_unpublished_changes = true where id = $1`, [c.env]);
+    const dangling = await h.api("POST", `${e}/snapshots`, {});
+    expect(dangling.status, JSON.stringify(dangling.body)).toBe(201);
+    await h.sql.query(`delete from plugins where environment_id = $1 and name = 'key-auth'`, [c.env]);
+    const fixed = await h.api("POST", `${e}/snapshots`, {});
+    expect(fixed.status, JSON.stringify(fixed.body)).toBe(201);
+    const rolled = await h.api("POST", `${e}/snapshots/2/rollback`);
+    expect(rolled.status).toBe(409);
+    expect(rolled.body.detail).toBe("A plugin of this configuration uses as anonymous a consumer it does not hold");
+    expect((await h.sql.query(`select count(*)::int as n from plugins where environment_id = $1 and name = 'key-auth'`, [c.env])).rows[0].n).toBe(0);
+    // Deleting the whole workspace still cascades through consumers used as anonymous.
+    await h.api("POST", `${e}/plugins`, { name: "key-auth", config: { key_names: ["k"], anonymous: "app-sky" }, scope: { routeId: c.route } });
+    expect((await h.sql.query(`delete from environments where id = $1 returning id`, [c.env])).rows).toHaveLength(1);
   });
 
   // Each composite foreign key, written around the service as only a direct database write could.

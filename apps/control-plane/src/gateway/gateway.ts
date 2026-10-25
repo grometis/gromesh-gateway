@@ -20,6 +20,7 @@ import { pluginValues } from "../plugins/plugins.js";
 import { credentialContext, type Encryptor, pluginSecretContext } from "../crypto/crypto.js";
 import type { PluginCatalog } from "../plugin-catalog/catalog.js";
 import { markDraftChanged, requireEnvironment, uuidParam } from "../environments/environments.js";
+import { anonymousOf, namesConsumer } from "../workspaces/anonymous.js";
 
 /* ---------------- mapping ---------------- */
 
@@ -174,6 +175,11 @@ export async function restoreGatewayState(
   catalog: PluginCatalog,
   workspaceDefault?: readonly string[],
 ): Promise<void> {
+  // A version whose plugin falls back to a consumer it does not hold (written before the rule) is not restored.
+  for (const plugin of state.plugins) {
+    const anonymous = anonymousOf(plugin.config);
+    if (anonymous !== null && !state.consumers.some((c) => namesConsumer(anonymous, c))) throw conflict("A plugin of this configuration uses as anonymous a consumer it does not hold");
+  }
   const keep = new Set(workspaceDefault ?? (await workspaceDefaultRoutes(tx, envId)));
   const lost = state.routes.filter((r) => keep.has(r.id) && !(r.paths && r.paths.length > 0));
   if (lost.length > 0) {

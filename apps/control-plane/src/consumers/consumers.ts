@@ -7,12 +7,13 @@ import { audit } from "../audit/audit.js";
 import { Ctx, RequiredRole, type RequestContext } from "../auth/auth.js";
 import { contractBody, inlineBody } from "../common/contract.js";
 import { decodeCursor, parseLimit, toPage } from "../common/pagination.js";
-import { notFound, unprocessable } from "../common/problem.js";
+import { conflict, notFound, unprocessable } from "../common/problem.js";
 import { credentialContext, ENCRYPTOR, Encryptor } from "../crypto/crypto.js";
 import { DB, type Db, type Executor } from "../db/db.js";
 import { consumers, keyAuthCredentials, type ConsumerRow, type KeyAuthCredentialRow } from "../db/schema.js";
 import { markDraftChanged, requireEnvironment, uuidParam } from "../environments/environments.js";
 import { CredentialsController, CredentialsService } from "./credentials.js";
+import { usedAsAnonymous } from "../workspaces/anonymous.js";
 
 /* ---------------- mapping ---------------- */
 
@@ -93,9 +94,14 @@ export class ConsumersService {
     checkConsumer(body);
     return this.db.transaction(async (tx) => {
       const before = toConsumer(await requireConsumer(tx, envId, consumerId));
+      const values = consumerValues(body);
+      // A plugin naming this consumer as anonymous by its username would lose it.
+      if (before.username != null && values.username !== before.username && (await usedAsAnonymous(tx, envId, { username: before.username }))) {
+        throw conflict("The consumer is used as anonymous by a plugin");
+      }
       const [row] = await tx
         .update(consumers)
-        .set({ ...consumerValues(body), updatedAt: sql`now()` })
+        .set({ ...values, updatedAt: sql`now()` })
         .where(eq(consumers.id, consumerId))
         .returning();
       const after = toConsumer(row!);
@@ -109,6 +115,7 @@ export class ConsumersService {
   async remove(ctx: RequestContext, envId: string, consumerId: string) {
     await this.db.transaction(async (tx) => {
       const before = toConsumer(await requireConsumer(tx, envId, consumerId));
+      if (await usedAsAnonymous(tx, envId, { id: consumerId, username: before.username })) throw conflict("The consumer is used as anonymous by a plugin");
       await tx.delete(consumers).where(eq(consumers.id, consumerId));
       await markDraftChanged(tx, envId);
       await audit(tx, ctx, { action: "consumer.delete", entityType: "consumer", entityId: consumerId, environmentId: envId, before });

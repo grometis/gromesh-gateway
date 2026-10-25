@@ -9,6 +9,7 @@ import { routeErrors, routeValues, serviceValues } from "../gateway/gateway.js";
 import { upstreamValues, targetValues } from "../upstreams/upstreams.js";
 import type { PluginCatalog } from "../plugin-catalog/catalog.js";
 import type { PluginsService } from "../plugins/plugins.js";
+import { anonymousOf, namesConsumer } from "../workspaces/anonymous.js";
 
 /** Resolves a complete proposed domain state without writing. Every diagnostic uses a document path. */
 export async function planImport(document: ConfigDocument, current: GatewayState, mode: "merge" | "replace", catalog: PluginCatalog, plugins: PluginsService, destinations: DestinationPolicy, preservation?: { identity: ImportIdentity; consumerIdExists: (id: string) => Promise<boolean> }, workspaceDefaultRoutes: ReadonlySet<string> = new Set()) {
@@ -181,6 +182,14 @@ export async function planImport(document: ConfigDocument, current: GatewayState
     upsert(result.plugins, value, path);
   }
   retain(result.plugins, current.plugins);
+  // `anonymous` names a consumer of the resulting draft, never another workspace's (decision H-1).
+  for (const plugin of result.plugins) {
+    const anonymous = anonymousOf(plugin.config);
+    if (anonymous === null || result.consumers.some(c => namesConsumer(anonymous, c))) continue;
+    const path = paths.get(plugin.id);
+    if (path) add(`${path}.config.anonymous`, "unknown consumer in the resulting draft");
+    else add("document.consumers", `a plugin outside the document uses as anonymous a consumer the import removes or renames (${plugin.name})`);
+  }
   // Compiler validation covers the resulting draft, including cross-entity uniqueness and ACL/hash rules.
   for (const issue of [...validate(result), ...destinationIssues(result, destinations)]) {
     const normalized = issue.path.replace(/\[(\d+)\]/g, ".$1");
