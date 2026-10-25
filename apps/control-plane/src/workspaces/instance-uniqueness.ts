@@ -77,14 +77,15 @@ export async function assertStateFree(tx: Executor, envId: string, state: Gatewa
  * table (a re-seal on another replica, say) only postpones it to the next start or report instead of stalling writers.
  */
 export async function enforceInstanceUniqueness(tx: Executor): Promise<UniqueKind[]> {
-  const present = new Set((await tx.execute<{ name: string }>(sql`select indexname as name from pg_indexes where schemaname = 'public'`)).rows.map((r) => r.name));
-  const missing = UNIQUE_KINDS.filter((kind) => !present.has(INSTANCE_INDEXES[kind].name));
-  if (missing.length === 0) return [];
+  const candidates = await unenforcedKinds(tx);
+  if (candidates.length === 0) return [];
   const blocked: UniqueKind[] = [];
-  // The tables first (the order of every writer of them), and only them: SHARE keeps writers out while the repetition
-  // is checked and the index built.
+  // The tables first (the order of every writer of them), and only them: SHARE ROW EXCLUSIVE keeps writers out while
+  // the repetition is checked and the index built, and another replica doing the same waits (CREATE INDEX IF NOT
+  // EXISTS is not safe when two run at once). Read again once held: the other one may have built some meanwhile.
   await tx.execute(sql`set local lock_timeout = '2s'`);
-  await tx.execute(sql.raw(`lock table ${tablesOf(missing).join(", ")} in share mode`));
+  await tx.execute(sql.raw(`lock table ${tablesOf(candidates).join(", ")} in share row exclusive mode`));
+  const missing = (await unenforcedKinds(tx)).filter((kind) => candidates.includes(kind));
   for (const kind of missing) {
     const c = COLUMNS[kind];
     const [repeated] = await tx.select({ value: c.value }).from(c.table).groupBy(c.value).having(sql`count(distinct ${c.env}) > 1`).limit(1);

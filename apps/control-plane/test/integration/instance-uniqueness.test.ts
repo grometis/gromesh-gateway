@@ -255,6 +255,58 @@ describe("uniqueness in the workspace and in the instance", () => {
   });
 });
 
+describe("two replicas putting the instance indexes in force at once", () => {
+  const name = `gromesh_uq_race_${Date.now()}_${process.pid}`;
+  let url: string;
+
+  beforeAll(async () => {
+    const admin = new pg.Client({ connectionString: ADMIN_URL });
+    await admin.connect();
+    await admin.query(`CREATE DATABASE "${name}"`);
+    await admin.end();
+    const u = new URL(ADMIN_URL);
+    u.pathname = `/${name}`;
+    url = u.toString();
+    await runMigrations(url);
+  });
+
+  afterAll(async () => {
+    const admin = new pg.Client({ connectionString: ADMIN_URL });
+    await admin.connect();
+    await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
+    await admin.end();
+  });
+
+  it("lets the second wait for the first and find the indexes built, instead of failing on a duplicate", async () => {
+    const pools = [new pg.Pool({ connectionString: url, max: 1 }), new pg.Pool({ connectionString: url, max: 1 })];
+    const probe = new pg.Pool({ connectionString: url, max: 1 });
+    try {
+      let release!: () => void;
+      const held = new Promise<void>((r) => (release = r));
+      let built!: () => void;
+      const firstBuilt = new Promise<void>((r) => (built = r));
+      // The first builds every index and keeps its transaction open; the second starts meanwhile.
+      const first = drizzle(pools[0]!, { schema }).transaction(async (tx) => {
+        const blocked = await enforceInstanceUniqueness(tx);
+        built();
+        await held;
+        return blocked;
+      });
+      await firstBuilt;
+      const second = drizzle(pools[1]!, { schema }).transaction((tx) => enforceInstanceUniqueness(tx));
+      const waiting = async () => (await probe.query(`select count(*)::int as n from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'`)).rows[0].n > 0;
+      for (let i = 0; i < 80 && !(await waiting()); i++) await new Promise((r) => setTimeout(r, 10));
+      expect(await waiting()).toBe(true);
+      release();
+      expect(await first).toEqual([]);
+      expect(await second).toEqual([]);
+      expect((await probe.query(`select count(*)::int as n from pg_indexes where indexname like '%instance_uq'`)).rows[0].n).toBe(4);
+    } finally {
+      await Promise.all([...pools, probe].map((p) => p.end()));
+    }
+  });
+});
+
 describe("an instance migrated with credentials repeated across environments", () => {
   let url: string;
   let h: Harness;
