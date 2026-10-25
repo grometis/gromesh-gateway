@@ -224,6 +224,31 @@ describe("uniqueness in the workspace and in the instance", () => {
     }
   });
 
+  it("locks the actor out even when the imports waited in the queue longer than the window", async () => {
+    const [a, b] = [await env(), await env()];
+    const ca = await consumer(a);
+    const iss = uniq("slow-queue");
+    expect((await h.api("POST", `/environments/${a}/consumers/${ca}/jwt`, { key: iss })).status).toBe(201);
+    const document = { apiVersion: "gromesh/v1", services: [], routes: [], consumers: [{ username: "app-sky", tags: [], aclGroups: [], keyAuthCredentials: [], jwtCredentials: [{ key: iss, algorithm: "HS256", secret: "s".repeat(40), tags: [] }], basicAuthCredentials: [] }], plugins: [], upstreams: [], certificates: [] };
+    // A one-second window, and a queue held for longer than that before the imports run.
+    const low = await startHarness({ uniqueConflictMax: 3, loginLockoutMs: 1000 });
+    const holder = await low.sql.connect();
+    try {
+      const prober = await low.as("editor");
+      const targets = [b, ...(await Promise.all(Array.from({ length: 5 }, () => env())))];
+      await holder.query("begin");
+      await holder.query("lock table import_queue in exclusive mode");
+      const burst = Promise.all(targets.map((t) => prober.api("POST", `/environments/${t}/import`, { mode: "merge", document, dryRun: true })));
+      await new Promise((r) => setTimeout(r, 1500));
+      await holder.query("commit");
+      expect((await burst).map((r) => r.status).sort()).toEqual([200, 200, 200, 429, 429, 429]);
+    } finally {
+      await holder.query("rollback").catch(() => undefined);
+      holder.release();
+      await low.close();
+    }
+  });
+
   it("has the instance indexes in force on a clean instance", async () => {
     const rows = (await h.sql.query(`select indexname from pg_indexes where indexname like '%instance_uq' order by indexname`)).rows.map((r) => r.indexname);
     expect(rows).toEqual(["basicauth_username_instance_uq", "certificate_snis_name_instance_uq", "jwt_key_instance_uq", "keyauth_key_hash_instance_uq"]);

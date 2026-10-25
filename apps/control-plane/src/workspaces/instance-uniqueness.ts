@@ -175,21 +175,24 @@ export async function admit(tx: Executor, ctx: RequestContext): Promise<void> {
   await assertNotLimited(tx, ctx);
 }
 
-/** Counts one conflicting attempt against the actor, atomically, and audits it (the kind only, never the value). */
+/**
+ * Counts one conflicting attempt against the actor, atomically, and audits it (the kind only, never the value). The
+ * clock is the current one, not the transaction's start (now()): an import counts after waiting in its queue.
+ */
 export async function countConflict(tx: Executor, ctx: RequestContext, kind: ConflictKind, limit: ConflictLimit): Promise<void> {
   const window = sql`make_interval(secs => ${limit.windowMs / 1000})`;
-  const fresh = sql`${loginAttempts.windowStartedAt} > now() - ${window}`;
+  const fresh = sql`${loginAttempts.windowStartedAt} > clock_timestamp() - ${window}`;
   const failures = sql`case when ${fresh} then ${loginAttempts.failures} + 1 else 1 end`;
   {
     await tx
       .insert(loginAttempts)
-      .values({ key: `conflict:${ctx.actor.id}`, failures: 1, windowStartedAt: sql`now()`, lockedUntil: limit.max <= 1 ? sql`now() + ${window}` : null })
+      .values({ key: `conflict:${ctx.actor.id}`, failures: 1, windowStartedAt: sql`clock_timestamp()`, lockedUntil: limit.max <= 1 ? sql`clock_timestamp() + ${window}` : null })
       .onConflictDoUpdate({
         target: loginAttempts.key,
         set: {
           failures,
-          windowStartedAt: sql`case when ${fresh} then ${loginAttempts.windowStartedAt} else now() end`,
-          lockedUntil: sql`case when ${failures} >= ${limit.max} then now() + ${window} else null end`,
+          windowStartedAt: sql`case when ${fresh} then ${loginAttempts.windowStartedAt} else clock_timestamp() end`,
+          lockedUntil: sql`case when ${failures} >= ${limit.max} then clock_timestamp() + ${window} else null end`,
         },
       });
     await audit(tx, ctx, { action: "uniqueness.conflict", entityType: kind, after: { kind } });
