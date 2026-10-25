@@ -1,8 +1,8 @@
 import type { GatewayState } from "@gromesh/compiler";
-import { and, asc, eq, gt, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, or, sql } from "drizzle-orm";
 import { type Encryptor, snapshotContext } from "../crypto/crypto.js";
 import type { Db, Executor } from "../db/db.js";
-import { basicAuthCredentials, certificateSnis, dataMigrations, environments, jwtCredentials, keyAuthCredentials, routes, snapshots, workspaces } from "../db/schema.js";
+import { basicAuthCredentials, certificateSnis, dataMigrations, environments, jwtCredentials, keyAuthCredentials, routes, snapshots, users, workspaces } from "../db/schema.js";
 import { type UniqueKind, uniqueValues } from "./instance-uniqueness.js";
 import { proposeSlug } from "./slug.js";
 
@@ -110,6 +110,11 @@ async function readReport(tx: Executor, enc: Encryptor) {
     .from(workspaces)
     .innerJoin(environments, eq(environments.id, workspaces.id))
     .orderBy(asc(environments.createdAt), asc(workspaces.id));
+  const implicit = await tx
+    .select({ id: users.id, role: users.role })
+    .from(users)
+    .where(and(eq(users.active, true), inArray(users.role, ["editor", "viewer"])))
+    .orderBy(asc(users.id));
   const taken = new Set(rows.flatMap((r) => (r.slug ? [r.slug] : [])));
   const named = rows.map((r) => {
     if (r.slug) return r;
@@ -130,7 +135,7 @@ async function readReport(tx: Executor, enc: Encryptor) {
       legacyRoutes: r.legacyRoutes,
       routesWithoutPath: r.routesWithoutPath,
     })),
-    // The role matrix becomes bindings in N1-C3, which reports what changed here.
-    accessChanges: [] as { userId: string; change: "implicit-access-dropped" }[],
+    // N1 keeps the global v1 roles; from N2 on a new workspace grants them no implicit access (the N2 gate).
+    accessChanges: implicit.map((u) => ({ userId: u.id, globalRole: u.role as "editor" | "viewer", change: "implicit-access-dropped" as const })),
   };
 }

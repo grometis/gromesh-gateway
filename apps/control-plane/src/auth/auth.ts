@@ -37,6 +37,23 @@ export interface BearerResolver {
   resolve(bearer: string, ip: string | null): Promise<ResolvedBearer | null>;
 }
 
+/** Counts the calls to the v1 operations the controlled migration will cut (decision H-9; src/instance). */
+export const API_V1_USAGE = Symbol("API_V1_USAGE");
+export interface ApiV1UsageRecorder {
+  /** `tokenId` null: a session (the UI). */
+  record(tokenId: string | null): Promise<void>;
+}
+
+/**
+ * The v1 operations the cut reaches: those under /environments/{envId} and /clusters/{clusterId} (their route has the
+ * parameter), and GET and POST /environments.
+ */
+function cutByMigration(req: Request): boolean {
+  if (typeof req.params.envId === "string" || typeof req.params.clusterId === "string") return true;
+  const route = (req as Request & { route?: { path?: unknown } }).route?.path;
+  return route === "/api/v1/environments" && (req.method === "GET" || req.method === "POST");
+}
+
 export type { Role } from "./environment-access.js";
 
 export interface RequestContext {
@@ -95,6 +112,7 @@ export class AuthGuard implements CanActivate {
     private readonly sessions: SessionService,
     @Inject(BEARER_RESOLVER) private readonly tokens: BearerResolver,
     @Inject(DB) private readonly db: Db,
+    @Inject(API_V1_USAGE) private readonly usage: ApiV1UsageRecorder,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -108,6 +126,8 @@ export class AuthGuard implements CanActivate {
     }
     const req = context.switchToHttp().getRequest<AuthenticatedRequest>();
     const caller = await this.authenticate(context, req, meta<boolean>(SESSION_ONLY_KEY) === true);
+    // Counted once the caller is known, whatever the decision: a refused call still depends on v1.
+    if (!v2 && cutByMigration(req)) await this.usage.record(caller.token?.id ?? null);
     const decision = v2 ? await this.decideV2(caller, v2, req.params) : await this.decideV1(caller, required as Role, meta<Held[]>(V1_PERMISSION_KEY), req.params);
     req.user = caller.user;
     req.auth = caller.token ? { via: "token", tokenId: caller.token.id, tokenName: caller.token.name, tokenRole: caller.token.role, ...decision } : { via: "session", ...decision };

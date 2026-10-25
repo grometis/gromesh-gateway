@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import {
   boolean,
   check,
+  date,
   foreignKey,
   index,
   integer,
@@ -556,6 +557,20 @@ export const clusterNodes = pgTable("cluster_nodes", {
 
 export type ClusterRow = typeof clusters.$inferSelect;
 export type ClusterNodeRow = typeof clusterNodes.$inferSelect;
+
+/**
+ * Calls to the v1 operations the controlled migration will cut (decision H-9), per UTC day and API token (null: the
+ * sessions, i.e. the UI). Kept 30 days; the cut needs no token call in that window.
+ */
+export const apiV1Usage = pgTable(
+  "api_v1_usage",
+  {
+    day: date("day").notNull(),
+    tokenId: uuid("token_id").references(() => apiTokens.id, { onDelete: "cascade" }),
+    calls: integer("calls").notNull(),
+  },
+  (t) => [unique("api_v1_usage_day_token_uq").on(t.day, t.tokenId).nullsNotDistinct()],
+);
 
 export type UpstreamRow = typeof upstreams.$inferSelect;
 export type TargetRow = typeof targets.$inferSelect;

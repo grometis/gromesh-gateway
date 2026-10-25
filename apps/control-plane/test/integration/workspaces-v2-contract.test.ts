@@ -17,6 +17,7 @@ import { WorkspaceUpstreamsController } from "../../src/upstreams/upstreams.js";
 import { WorkspaceCertificatesController } from "../../src/certificates/certificates.js";
 import { WorkspacePluginsController } from "../../src/plugins/plugins.js";
 import { WorkspaceConfigTransferController } from "../../src/config-transfer/config-transfer.js";
+import { InstanceController } from "../../src/instance/instance.js";
 import { startHarness, type Harness } from "./harness.js";
 
 // N0: the Workspaces contracts (v2) are planned; nothing here is implemented yet. These tests keep them coherent until
@@ -102,6 +103,7 @@ describe("planned operations", () => {
       WorkspaceCertificatesController,
       WorkspacePluginsController,
       WorkspaceConfigTransferController,
+      InstanceController,
     ]) {
       const base = (Reflect.getMetadata("path", controller) as string).replace(/^\/?/, "/");
       for (const name of Object.getOwnPropertyNames(controller.prototype)) {

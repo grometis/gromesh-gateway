@@ -28,6 +28,7 @@ import { AccessModule } from "./access/access.js";
 import { PathCompatibilityModule } from "./workspaces/path-compatibility.js";
 import { WorkspacesModule } from "./workspaces/workspaces.js";
 import { WorkspacesApiModule } from "./workspaces/workspaces-api.js";
+import { InstanceModule } from "./instance/instance.js";
 
 @Module({})
 export class AppModule {
@@ -60,6 +61,7 @@ export class AppModule {
         AccessModule,
         PathCompatibilityModule,
         WorkspacesApiModule,
+        InstanceModule,
       ],
       providers: [
         { provide: APP_CONFIG, useValue: config },
