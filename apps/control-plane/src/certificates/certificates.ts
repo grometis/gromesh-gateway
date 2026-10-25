@@ -12,7 +12,7 @@ import { certificateKeyContext, ENCRYPTOR, Encryptor } from "../crypto/crypto.js
 import { DB, type Db, type Executor } from "../db/db.js";
 import { certificateSnis, certificates, type CertificateRow } from "../db/schema.js";
 import { markDraftChanged, requireEnvironment, uuidParam } from "../environments/environments.js";
-import { type ConflictLimit, conflictLimit, guardedUniqueWrite, inUse, lockUnique } from "../workspaces/instance-uniqueness.js";
+import { admit, type ConflictLimit, conflictLimit, guardedUniqueWrite, inUse, lockUnique } from "../workspaces/instance-uniqueness.js";
 import { APP_CONFIG, type AppConfig } from "../config.js";
 
 export const SECRET_PLACEHOLDER = "REDACTED";
@@ -147,7 +147,7 @@ export class CertificatesService {
     const { leaf, key } = checkCertificate(body, null, true);
     return guardedUniqueWrite(this.db, ctx, "sni", this.conflicts, () => this.db.transaction(async (tx) => {
       await requireEnvironment(tx, envId, true);
-      await this.checkSnisFree(tx, body.snis, null);
+      await this.checkSnisFree(tx, ctx, body.snis, null);
       const id = randomUUID();
       const [row] = await tx
         .insert(certificates)
@@ -169,7 +169,7 @@ export class CertificatesService {
       await requireEnvironment(tx, envId, true);
       const locked = await this.requireCertificate(tx, envId, certificateId);
       const before = toCertificate(locked, (await this.snisOf(tx, [locked.id])).get(locked.id) ?? []);
-      await this.checkSnisFree(tx, body.snis, certificateId);
+      await this.checkSnisFree(tx, ctx, body.snis, certificateId);
       const [row] = await tx
         .update(certificates)
         .set({ cert: body.cert, key: this.enc.seal(key, certificateKeyContext(certificateId)), ...leaf, tags: body.tags ?? [], updatedAt: sql`now()` })
@@ -213,9 +213,10 @@ export class CertificatesService {
    * another certificate holding it, in any workspace, is the generic 409 that never names the other one. The lock per
    * kind serializes the writers; the instance index, once in force, is the backstop.
    */
-  private async checkSnisFree(tx: Executor, names: string[], ownId: string | null): Promise<void> {
+  private async checkSnisFree(tx: Executor, ctx: RequestContext, names: string[], ownId: string | null): Promise<void> {
     if (names.length === 0) return;
     await lockUnique(tx, ["sni"]);
+    await admit(tx, ctx);
     const [taken] = await tx
       .select({ name: certificateSnis.name })
       .from(certificateSnis)

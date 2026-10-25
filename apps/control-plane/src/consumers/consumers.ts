@@ -14,7 +14,7 @@ import { consumers, keyAuthCredentials, type ConsumerRow, type KeyAuthCredential
 import { markDraftChanged, requireEnvironment, uuidParam } from "../environments/environments.js";
 import { CredentialsController, CredentialsService } from "./credentials.js";
 import { usedAsAnonymous } from "../workspaces/anonymous.js";
-import { type ConflictLimit, conflictLimit, guardedUniqueWrite, inUse, lockUnique, takenElsewhere } from "../workspaces/instance-uniqueness.js";
+import { admit, type ConflictLimit, conflictLimit, guardedUniqueWrite, inUse, lockUnique, takenElsewhere } from "../workspaces/instance-uniqueness.js";
 import { APP_CONFIG, type AppConfig } from "../config.js";
 
 /* ---------------- mapping ---------------- */
@@ -145,8 +145,11 @@ export class ConsumersService {
     return guardedUniqueWrite(this.db, ctx, "key-auth-key", this.conflicts, () => this.db.transaction(async (tx) => {
       await requireConsumer(tx, envId, consumerId);
       const key = body.key ?? randomBytes(32).toString("base64url");
-      // Kong looks a key up across the whole node: unique in the instance (decision H-5).
+      // Kong looks a key up across the whole node: unique in the instance (decision H-5). The environment's row
+      // first, then the lock: the order of every writer of these values (rollback, import, certificates).
+      await requireEnvironment(tx, envId, true);
       await lockUnique(tx, ["key-auth-key"]);
+      await admit(tx, ctx);
       if ((await takenElsewhere(tx, "key-auth-key", envId, [this.enc.fingerprint(key)])).size > 0) throw inUse();
       const [row] = await tx
         .insert(keyAuthCredentials)

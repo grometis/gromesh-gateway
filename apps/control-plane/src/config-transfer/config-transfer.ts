@@ -1,4 +1,4 @@
-import { Controller, Get, HttpCode, HttpException, Inject, Injectable, Module, Param, Post, Query, Res } from "@nestjs/common";
+import { Controller, Get, HttpCode, Inject, Injectable, Module, Param, Post, Query, Res } from "@nestjs/common";
 import { convertKongConfig, diffGatewayStates, exportConfig, type ConfigDocument } from "@gromesh/compiler";
 import type { Response } from "express";
 import { eq } from "drizzle-orm";
@@ -14,7 +14,7 @@ import { DB, type Db } from "../db/db.js";
 import { consumers, environments } from "../db/schema.js";
 import { markDraftChanged, requireEnvironment, uuidParam } from "../environments/environments.js";
 import { loadGatewayState, restoreGatewayState, workspaceDefaultRoutes } from "../gateway/gateway.js";
-import { assertNotLimited, conflictLimit, lockUnique, recordConflict, takenElsewhere, UNIQUE_KINDS } from "../workspaces/instance-uniqueness.js";
+import { admit, conflictLimit, lockUnenforcedTables, lockUnique, recordConflict, takenElsewhere, unenforcedKinds, UNIQUE_KINDS } from "../workspaces/instance-uniqueness.js";
 import { PluginCatalog, PluginCatalogModule } from "../plugin-catalog/catalog.js";
 import { PluginsModule, PluginsService } from "../plugins/plugins.js";
 import { redactChanges } from "../snapshots/snapshots.js";
@@ -49,23 +49,22 @@ export class ConfigTransferService {
    * failure carries an instance conflict counts against the actor and is audited, like a single write's 409.
    */
   async import(ctx: RequestContext, envId: string, request: ImportRequest) {
-    await assertNotLimited(this.db, ctx);
-    const collided = (errors: { message: string }[] | undefined) => (errors ?? []).some(e => e.message === "already in use in this instance");
+    const seen = { conflict: false };
     try {
-      const report = await this.importOnce(ctx, envId, request);
-      if (collided(report.errors)) await recordConflict(this.db, ctx, "import", conflictLimit(this.config));
-      return report;
-    } catch (error) {
-      // A failed import is an HttpException carrying the report (importFailure).
-      if (error instanceof HttpException && collided((error.getResponse() as { errors?: { message: string }[] }).errors)) await recordConflict(this.db, ctx, "import", conflictLimit(this.config));
-      throw error;
+      return await this.importOnce(ctx, envId, request, seen);
+    } finally {
+      if (seen.conflict) await recordConflict(this.db, ctx, "import", conflictLimit(this.config));
     }
   }
 
-  private async importOnce(ctx: RequestContext, envId: string, request: ImportRequest) {
+  private async importOnce(ctx: RequestContext, envId: string, request: ImportRequest, seen: { conflict: boolean }) {
     retry: for (let attempt = 0; ; attempt++) {
+      // Kinds without an instance index yet (a legacy repetition blocks them): their tables are locked before the
+      // serializable snapshot, so the instance check sees every value committed before it (decision H-5).
+      const unenforced = await unenforcedKinds(this.db);
       try {
         return await this.db.transaction(async tx => {
+          await lockUnenforcedTables(tx, unenforced);
           await requireEnvironment(tx, envId, true);
           const current = await loadGatewayState(tx, envId, this.enc, this.catalog);
           const converted = request.sourceFormat === "kong-declarative-3.0" ? convertKongConfig(request.document, request.mode === "merge" ? current : undefined) : null;
@@ -90,7 +89,9 @@ export class ConfigTransferService {
           let plan: Awaited<ReturnType<typeof planImport>> | undefined;
           if (!checkedSchema && !invalidPrehashedPassword) {
             const workspaceDefault = new Set(await workspaceDefaultRoutes(tx, envId));
+            // After the environment's row lock, the order every writer of these values follows.
             await lockUnique(tx, UNIQUE_KINDS);
+            await admit(tx, ctx);
             const instanceTaken: InstanceTaken = async (kind, values) => {
               if (kind !== "key-auth-key") return takenElsewhere(tx, kind, envId, values);
               const prints = values.map(v => this.enc.fingerprint(v));
@@ -102,6 +103,7 @@ export class ConfigTransferService {
               consumerIdExists: async id => (await tx.select({ id: consumers.id }).from(consumers).where(eq(consumers.id, id)).limit(1)).length > 0,
             } : undefined, workspaceDefault, instanceTaken);
             errors.push(...plan.errors);
+            if (plan.instanceConflict) seen.conflict = true;
           }
           const mapped = [...(converted?.errors ?? []), ...errors.map(e => ({ ...e, path: converted?.sourcePath(e.path) ?? e.path }))];
           if (mapped.length) {

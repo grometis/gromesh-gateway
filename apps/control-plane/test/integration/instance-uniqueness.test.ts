@@ -129,6 +129,68 @@ describe("uniqueness in the workspace and in the instance", () => {
     expect(rolled.body.detail).toBe("Already in use in this instance");
   });
 
+  it("counts every one of concurrent conflicts (no lost update) and audits a rollback's", async () => {
+    const [a, b] = [await env(), await env()];
+    const [ca, cb] = [await consumer(a), await consumer(b)];
+    const iss = uniq("burst");
+    expect((await h.api("POST", `/environments/${a}/consumers/${ca}/jwt`, { key: iss })).status).toBe(201);
+    const actor = await h.as("editor");
+    const burst = await Promise.all(Array.from({ length: 5 }, () => actor.api("POST", `/environments/${b}/consumers/${cb}/jwt`, { key: iss })));
+    expect(burst.map((r) => r.status)).toEqual([409, 409, 409, 409, 409]);
+    expect((await h.sql.query(`select failures from login_attempts where key = $1`, [`conflict:${actor.id}`])).rows[0].failures).toBe(5);
+    // A rollback that collides is audited too (kind rollback, no value).
+    const e = `/environments/${b}`;
+    const free = uniq("later");
+    const own = (await h.api("POST", `${e}/consumers/${cb}/jwt`, { key: free })).body;
+    expect((await h.api("POST", `${e}/snapshots`, {})).status).toBe(201);
+    await h.api("DELETE", `${e}/consumers/${cb}/jwt/${own.id}`);
+    expect((await h.api("POST", `${e}/snapshots`, {})).status).toBe(201);
+    expect((await h.api("POST", `/environments/${a}/consumers/${ca}/jwt`, { key: free })).status).toBe(201);
+    expect((await actor.api("POST", `${e}/snapshots/1/rollback`)).status).toBe(409);
+    const audited = (await h.sql.query(`select after from audit_events where action = 'uniqueness.conflict' and entity_type = 'rollback' and actor->>'id' = $1`, [actor.id])).rows;
+    expect(audited).toEqual([{ after: { kind: "rollback" } }]);
+  });
+
+  it("counts an import conflict even when the redaction rewrites its message", async () => {
+    const [a, b] = [await env(), await env()];
+    const ca = await consumer(a);
+    const iss = uniq("redacted");
+    expect((await h.api("POST", `/environments/${a}/consumers/${ca}/jwt`, { key: iss })).status).toBe(201);
+    const actor = await h.as("editor");
+    // A password equal to a word of the message: the redaction replaces it in the diagnostics.
+    const document = { apiVersion: "gromesh/v1", services: [], routes: [], consumers: [{ username: "app-sky", tags: [], aclGroups: [], keyAuthCredentials: [], jwtCredentials: [{ key: iss, algorithm: "HS256", secret: "s".repeat(40), tags: [] }], basicAuthCredentials: [{ username: uniq("u"), password: "instance", tags: [] }] }], plugins: [], upstreams: [], certificates: [] };
+    const dry = await actor.api("POST", `/environments/${b}/import`, { mode: "merge", document, dryRun: true });
+    expect(dry.status).toBe(200);
+    expect(dry.body.errors.length).toBeGreaterThan(0);
+    expect((await h.sql.query(`select count(*)::int as n from audit_events where action = 'uniqueness.conflict' and entity_type = 'import' and actor->>'id' = $1`, [actor.id])).rows[0].n).toBe(1);
+  });
+
+  it("takes the environment's row before the uniqueness lock, as rollback and import do (no lock-order deadlock)", async () => {
+    const a = await env();
+    const ca = await consumer(a);
+    const holder = await h.sql.connect();
+    try {
+      await holder.query("begin");
+      await holder.query(`select id from environments where id = $1 for update`, [a]);
+      const creating = h.api("POST", `/environments/${a}/consumers/${ca}/jwt`, { key: uniq("ordered") });
+      // The backend of the creation, blocked on the row the holder keeps.
+      let waiter: number | undefined;
+      for (let i = 0; i < 200 && waiter === undefined; i++) {
+        await new Promise((r) => setTimeout(r, 25));
+        waiter = (await h.sql.query(`select pid from pg_stat_activity where wait_event_type = 'Lock' and $1 = any(pg_blocking_pids(pid))`, [(await holder.query("select pg_backend_pid() as pid")).rows[0].pid])).rows[0]?.pid;
+      }
+      expect(waiter).toBeDefined();
+      // While it waits for the row, it holds no uniqueness lock a rollback of this workspace would then wait for.
+      const held = (await h.sql.query(`select count(*)::int as n from pg_locks where pid = $1 and locktype = 'advisory' and classid = $2 and granted`, [waiter, 0x6772_7563])).rows[0].n;
+      expect(held).toBe(0);
+      await holder.query("commit");
+      expect((await creating).status).toBe(201);
+    } finally {
+      await holder.query("rollback").catch(() => undefined);
+      holder.release();
+    }
+  });
+
   it("has the instance indexes in force on a clean instance", async () => {
     const rows = (await h.sql.query(`select indexname from pg_indexes where indexname like '%instance_uq' order by indexname`)).rows.map((r) => r.indexname);
     expect(rows).toEqual(["basicauth_username_instance_uq", "certificate_snis_name_instance_uq", "jwt_key_instance_uq", "keyauth_key_hash_instance_uq"]);
@@ -142,7 +204,7 @@ describe("an instance migrated with credentials repeated across environments", (
   const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
   let pool: pg.Pool;
   const db = () => drizzle(pool, { schema });
-  const report = () => db().transaction((tx) => migrationReport(tx, h.app.get<Encryptor>(ENCRYPTOR)));
+  const report = () => migrationReport(db(), h.app.get<Encryptor>(ENCRYPTOR));
 
   beforeAll(async () => {
     const admin = new pg.Client({ connectionString: ADMIN_URL });
@@ -196,6 +258,43 @@ describe("an instance migrated with credentials repeated across environments", (
     expect(r.workspaces.map((w) => ({ name: w.name, slug: w.slug }))).toEqual([{ name: "one", slug: "one" }, { name: "two", slug: "two" }]);
   });
 
+  it("reports a repeated credential kept from the draft by a merge, in the dry run and as the 422", async () => {
+    const document = { apiVersion: "gromesh/v1", services: [{ name: "only-a-service", protocol: "http", host: "a.example.com", port: 80, tags: [] }], routes: [], consumers: [], plugins: [], upstreams: [], certificates: [] };
+    const dry = await h.api("POST", `/environments/${id(1)}/import`, { mode: "merge", document, dryRun: true });
+    expect(dry.status).toBe(200);
+    expect(dry.body.errors).toContainEqual({ path: "document", message: "an entity kept from the draft holds a value already in use in this instance" });
+    const real = await h.api("POST", `/environments/${id(1)}/import`, { mode: "merge", document, dryRun: false });
+    expect(real.status).toBe(422);
+    expect(real.body.errors).toContainEqual({ path: "document", message: "an entity kept from the draft holds a value already in use in this instance" });
+  });
+
+  it("sees a value another workspace commits while the import waits, though its snapshot is serializable", async () => {
+    const writer = new pg.Client({ connectionString: url });
+    await writer.connect();
+    try {
+      // Another workspace writes a key and has not committed yet (the JWT index is not in force: keys repeat).
+      await writer.query("begin");
+      await writer.query(`insert into jwt_credentials (environment_id, consumer_id, key, algorithm, secret) values ($1, $2, 'raced-iss', 'HS256', $3)`, [id(2), id(20), "s".repeat(40)]);
+      const document = { apiVersion: "gromesh/v1", services: [], routes: [], consumers: [{ username: "app-sky", tags: [], aclGroups: [], keyAuthCredentials: [], jwtCredentials: [{ key: "raced-iss", algorithm: "HS256", secret: "s".repeat(40), tags: [] }], basicAuthCredentials: [] }], plugins: [], upstreams: [], certificates: [] };
+      const importing = h.api("POST", `/environments/${id(1)}/import`, { mode: "merge", document, dryRun: false });
+      const writerPid = (await writer.query("select pg_backend_pid() as pid")).rows[0].pid;
+      let blocked = false;
+      for (let i = 0; i < 200 && !blocked; i++) {
+        await new Promise((r) => setTimeout(r, 25));
+        blocked = (await h.sql.query(`select count(*)::int as n from pg_stat_activity where $1 = any(pg_blocking_pids(pid))`, [writerPid])).rows[0].n > 0;
+      }
+      expect(blocked).toBe(true);
+      await writer.query("commit");
+      const res = await importing;
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(res.body.errors).toContainEqual({ path: "document.consumers.0.jwtCredentials.0.key", message: "already in use in this instance" });
+    } finally {
+      await writer.query("rollback").catch(() => undefined);
+      await writer.query(`delete from jwt_credentials where key = 'raced-iss'`);
+      await writer.end();
+    }
+  });
+
   it("still refuses a new repetition through the service while the index is not in force", async () => {
     const res = await h.api("POST", `/environments/${id(2)}/consumers/${id(20)}/jwt`, { key: "shared-iss-2" });
     expect(res.status).toBe(201);
@@ -225,5 +324,55 @@ describe("an instance migrated with credentials repeated across environments", (
     r = await report();
     expect(r).toMatchObject({ status: "complete", blockers: [] });
     expect(await db().transaction((tx) => enforceInstanceUniqueness(tx))).toEqual([]);
+  });
+});
+
+describe("an instance whose key-auth fingerprints were not all filled in (an interrupted 0005)", () => {
+  const name = `gromesh_fp_${Date.now()}_${process.pid}`;
+  let url: string;
+  let h: Harness;
+  const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+
+  beforeAll(async () => {
+    const admin = new pg.Client({ connectionString: ADMIN_URL });
+    await admin.connect();
+    await admin.query(`CREATE DATABASE "${name}"`);
+    await admin.end();
+    const u = new URL(ADMIN_URL);
+    u.pathname = `/${name}`;
+    url = u.toString();
+    await runMigrations(url);
+    // The same key in two environments, its fingerprint still empty: the start of the application fills it in.
+    const c = new pg.Client({ connectionString: url });
+    await c.connect();
+    await c.query(`insert into environments (id, name) values ('${id(1)}', 'one'), ('${id(2)}', 'two')`);
+    await c.query(`insert into consumers (id, environment_id, username) values ('${id(10)}', '${id(1)}', 'app-sky'), ('${id(20)}', '${id(2)}', 'app-sky')`);
+    await c.query(`insert into keyauth_credentials (id, environment_id, consumer_id, key, key_hash) values ('${id(11)}', '${id(1)}', '${id(10)}', 'same-legacy-key-0123', null), ('${id(21)}', '${id(2)}', '${id(20)}', 'same-legacy-key-0123', null)`);
+    await c.end();
+  });
+
+  afterAll(async () => {
+    await h?.close();
+    const admin = new pg.Client({ connectionString: ADMIN_URL });
+    await admin.connect();
+    await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
+    await admin.end();
+  });
+
+  it("starts, fills the fingerprints first and leaves the repeated key a blocker, not an instance index", async () => {
+    h = await startHarness({ databaseUrl: url });
+    const rows = (await h.sql.query(`select key_hash from keyauth_credentials order by id`)).rows;
+    expect(rows.every((r) => typeof r.key_hash === "string" && r.key_hash.length > 0)).toBe(true);
+    expect(rows[0].key_hash).toBe(rows[1].key_hash);
+    const indexes = (await h.sql.query(`select indexname from pg_indexes where indexname = 'keyauth_key_hash_instance_uq'`)).rows;
+    expect(indexes).toEqual([]);
+    const pool = new pg.Pool({ connectionString: url, max: 1 });
+    try {
+      const r = await migrationReport(drizzle(pool, { schema }), h.app.get<Encryptor>(ENCRYPTOR));
+      expect(r.status).toBe("blocked");
+      expect(r.blockers.map((b) => b.kind)).toEqual(["key-auth-key"]);
+    } finally {
+      await pool.end();
+    }
   });
 });

@@ -40,6 +40,7 @@ import { loadGatewayState, restoreGatewayState, workspaceDefaultRoutes } from ".
 import { AGENT_CHANNEL } from "../clusters/clusters.js";
 import { PluginCatalog, PluginCatalogModule } from "../plugin-catalog/catalog.js";
 import { ENCRYPTOR, Encryptor, snapshotContext } from "../crypto/crypto.js";
+import { admit, conflictLimit, guardedUniqueWrite, lockUnique, UNIQUE_KINDS } from "../workspaces/instance-uniqueness.js";
 
 type OpenSnapshot = Omit<SnapshotRow, "config" | "state"> & { config: KongDeclarativeConfig; state: GatewayState };
 
@@ -133,17 +134,24 @@ export class SnapshotsService {
   }
 
   /** Restores the draft to `version` and publishes it as a new version (unpublished edits are discarded). */
+  /**
+   * A version holding a value another workspace took since is not restored: the same generic 409, audited and limited
+   * like a single write's, so an old version is no oracle either.
+   */
   async rollback(ctx: RequestContext, envId: string, version: number) {
-    const { row, changeCount } = await this.db.transaction(async (tx) => {
+    const { row, changeCount } = await guardedUniqueWrite(this.db, ctx, "rollback", conflictLimit(this.config), () => this.db.transaction(async (tx) => {
       const env = await requireEnvironment(tx, envId, true);
       const target = await this.requireSnapshot(tx, envId, version);
+      // The restore checks the instance for the version's credentials: under the actor's limit, like a write.
+      await lockUnique(tx, UNIQUE_KINDS);
+      await admit(tx, ctx);
       await restoreGatewayState(tx, envId, target.state, this.enc, this.catalog, target.workspaceDefaultRoutes);
       const prepared = await this.prepare(tx, env);
       if (prepared.current?.hash === prepared.envelope.hash) {
         throw conflict(`Nothing to roll back: version ${version} has the same configuration as the current version`);
       }
       return this.commit(tx, ctx, env, prepared, { message: `Rollback to version ${version}`, rollbackOf: version });
-    });
+    }));
     return toSnapshotSummary(row, true, changeCount);
   }
 

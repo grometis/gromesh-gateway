@@ -1,6 +1,6 @@
 import { HttpStatus } from "@nestjs/common";
 import type { GatewayState } from "@gromesh/compiler";
-import { and, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import { audit } from "../audit/audit.js";
 import type { RequestContext } from "../auth/auth.js";
 import type { AppConfig } from "../config.js";
@@ -71,17 +71,54 @@ export async function assertStateFree(tx: Executor, envId: string, state: Gatewa
   for (const kind of UNIQUE_KINDS) if ((await takenElsewhere(tx, kind, envId, values[kind])).size > 0) throw inUse();
 }
 
-/** Creates the instance-wide index of every kind no value of which is repeated across workspaces; returns the rest. */
+/**
+ * Puts in force the instance-wide index of every kind no two drafts repeat; returns the kinds still blocked. An index
+ * already there is found without touching the table; a missing one is built under a short lock timeout, so a busy
+ * table (a re-seal on another replica, say) only postpones it to the next start or report instead of stalling writers.
+ */
 export async function enforceInstanceUniqueness(tx: Executor): Promise<UniqueKind[]> {
+  const present = new Set((await tx.execute<{ name: string }>(sql`select indexname as name from pg_indexes where schemaname = 'public'`)).rows.map((r) => r.name));
+  const missing = UNIQUE_KINDS.filter((kind) => !present.has(INSTANCE_INDEXES[kind].name));
+  if (missing.length === 0) return [];
   const blocked: UniqueKind[] = [];
-  await lockUnique(tx, UNIQUE_KINDS);
-  for (const kind of UNIQUE_KINDS) {
+  await lockUnique(tx, missing);
+  await tx.execute(sql`set local lock_timeout = '2s'`);
+  for (const kind of missing) {
     const c = COLUMNS[kind];
     const [repeated] = await tx.select({ value: c.value }).from(c.table).groupBy(c.value).having(sql`count(distinct ${c.env}) > 1`).limit(1);
-    if (repeated) blocked.push(kind);
+    // A key-auth fingerprint not filled in yet (another replica runs crypto/at-rest) could hide a repetition.
+    const [unknown] = kind === "key-auth-key" ? await tx.select({ id: keyAuthCredentials.id }).from(keyAuthCredentials).where(isNull(keyAuthCredentials.keyHash)).limit(1) : [];
+    if (repeated || unknown) blocked.push(kind);
     else await tx.execute(sql.raw(INSTANCE_INDEXES[kind].ddl));
   }
   return blocked;
+}
+
+/** The kinds whose instance index is not in force yet (read from the catalog, without touching the tables). */
+export async function unenforcedKinds(db: Executor): Promise<UniqueKind[]> {
+  const present = new Set((await db.execute<{ name: string }>(sql`select indexname as name from pg_indexes where schemaname = 'public'`)).rows.map((r) => r.name));
+  return UNIQUE_KINDS.filter((kind) => !present.has(INSTANCE_INDEXES[kind].name));
+}
+
+/**
+ * For a serializable (or repeatable read) transaction: as its first statement, the tables of the kinds without an
+ * instance index, against concurrent writers. A table lock does not freeze the snapshot (a SELECT would), so the
+ * transaction then sees every value committed before it; later writers wait for it.
+ */
+export async function lockUnenforcedTables(tx: Executor, kinds: readonly UniqueKind[]): Promise<void> {
+  const tables = [...new Set(kinds.map((k) => ({ "key-auth-key": "keyauth_credentials", "jwt-key": "jwt_credentials", "basic-auth-username": "basicauth_credentials", sni: "certificate_snis" })[k]))].sort();
+  if (tables.length > 0) await tx.execute(sql.raw(`lock table ${tables.join(", ")} in share row exclusive mode`));
+}
+
+/** At start: like enforceInstanceUniqueness, but a lock timeout leaves the indexes for later instead of failing. */
+export async function enforceInstanceUniquenessSoon(db: Db): Promise<void> {
+  try {
+    await db.transaction((tx) => enforceInstanceUniqueness(tx));
+  } catch (error) {
+    let cur: unknown = error;
+    for (let i = 0; i < 3 && cur && typeof cur === "object"; i++, cur = (cur as { cause?: unknown }).cause) if ((cur as { code?: string }).code === "55P03") return;
+    throw error;
+  }
 }
 
 /* ---------------- failed attempts: audited and limited (a 409 must not become an existence oracle) ---------------- */
@@ -104,32 +141,53 @@ function isUniqueConflict(error: unknown): boolean {
   return false;
 }
 
+/** What collided: a value of a kind, an import or a rollback. */
+export type ConflictKind = UniqueKind | "import" | "rollback";
+const ACTOR_LOCK_CLASS = 0x6772_6163; // "grac"
+
 /** 429 while the actor's conflicting writes are over the limit. */
-export async function assertNotLimited(db: Db, ctx: RequestContext): Promise<void> {
-  const [row] = await db.select().from(loginAttempts).where(eq(loginAttempts.key, `conflict:${ctx.actor.id}`));
+async function assertNotLimited(tx: Executor, ctx: RequestContext): Promise<void> {
+  const [row] = await tx.select().from(loginAttempts).where(eq(loginAttempts.key, `conflict:${ctx.actor.id}`));
   const lockedFor = row?.lockedUntil ? row.lockedUntil.getTime() - Date.now() : 0;
   if (lockedFor > 0) throw new ProblemException(HttpStatus.TOO_MANY_REQUESTS, "Too many conflicting writes", undefined, undefined, { "Retry-After": String(Math.ceil(lockedFor / 1000)) });
 }
 
-/** Counts one conflicting attempt against the actor and audits it (the kind only, never the value). */
-export async function recordConflict(db: Db, ctx: RequestContext, kind: UniqueKind | "import", limit: ConflictLimit): Promise<void> {
-  const key = `conflict:${ctx.actor.id}`;
+/**
+ * Right before the existence check of a write: the actor's lock (after the environment row and the kind's lock, the
+ * order of every writer) and the limit read again under it, so concurrent requests of one actor cannot all pass the
+ * limit and then all probe. Held until the write commits; other actors are not affected.
+ */
+export async function admit(tx: Executor, ctx: RequestContext): Promise<void> {
+  await tx.execute(sql`select pg_advisory_xact_lock(${ACTOR_LOCK_CLASS}, hashtext(${ctx.actor.id}))`);
+  await assertNotLimited(tx, ctx);
+}
+
+/** Counts one conflicting attempt against the actor, atomically, and audits it (the kind only, never the value). */
+export async function recordConflict(db: Db, ctx: RequestContext, kind: ConflictKind, limit: ConflictLimit): Promise<void> {
+  const window = sql`make_interval(secs => ${limit.windowMs / 1000})`;
+  const fresh = sql`${loginAttempts.windowStartedAt} > now() - ${window}`;
+  const failures = sql`case when ${fresh} then ${loginAttempts.failures} + 1 else 1 end`;
   await db.transaction(async (tx) => {
-    const now = new Date();
-    const [current] = await tx.select().from(loginAttempts).where(eq(loginAttempts.key, key)).for("update");
-    const inWindow = current && now.getTime() - current.windowStartedAt.getTime() < limit.windowMs;
-    const failures = inWindow ? current.failures + 1 : 1;
-    const values = { failures, windowStartedAt: inWindow ? current.windowStartedAt : now, lockedUntil: failures >= limit.max ? new Date(now.getTime() + limit.windowMs) : null };
-    await tx.insert(loginAttempts).values({ key, ...values }).onConflictDoUpdate({ target: loginAttempts.key, set: values });
+    await tx
+      .insert(loginAttempts)
+      .values({ key: `conflict:${ctx.actor.id}`, failures: 1, windowStartedAt: sql`now()`, lockedUntil: limit.max <= 1 ? sql`now() + ${window}` : null })
+      .onConflictDoUpdate({
+        target: loginAttempts.key,
+        set: {
+          failures,
+          windowStartedAt: sql`case when ${fresh} then ${loginAttempts.windowStartedAt} else now() end`,
+          lockedUntil: sql`case when ${failures} >= ${limit.max} then now() + ${window} else null end`,
+        },
+      });
     await audit(tx, ctx, { action: "uniqueness.conflict", entityType: kind, after: { kind } });
   });
 }
 
 /**
- * Runs a write that may collide on an instance-unique value. Every collision answers the same generic 409, is audited
- * and counts against the actor: past the limit the actor gets 429 until the window ends, so a 409 is no oracle.
+ * A write that may collide on an instance-unique value: refused up front while the actor is over the limit; every
+ * collision answers the same generic 409, is audited and counts against the actor, so a 409 is no oracle.
  */
-export async function guardedUniqueWrite<T>(db: Db, ctx: RequestContext, kind: UniqueKind, limit: ConflictLimit, work: () => Promise<T>): Promise<T> {
+export async function guardedUniqueWrite<T>(db: Db, ctx: RequestContext, kind: ConflictKind, limit: ConflictLimit, work: () => Promise<T>): Promise<T> {
   await assertNotLimited(db, ctx);
   try {
     return await work();

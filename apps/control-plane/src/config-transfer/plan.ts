@@ -132,7 +132,7 @@ export async function planImport(document: ConfigDocument, current: GatewayState
   retain(result.keyAuthCredentials, current.keyAuthCredentials);
   retain(result.jwtCredentials!, current.jwtCredentials ?? []);
   retain(result.basicAuthCredentials!, current.basicAuthCredentials ?? []);
-  if (preservationConflict) return { state: result, errors };
+  if (preservationConflict) return { state: result, errors, instanceConflict: false };
   for (const [i, u] of document.upstreams.entries()) {
     const path = `document.upstreams.${i}`;
     const { targets, ...body } = u;
@@ -186,13 +186,20 @@ export async function planImport(document: ConfigDocument, current: GatewayState
     upsert(result.plugins, value, path);
   }
   retain(result.plugins, current.plugins);
-  // Credentials and server names are unique in the instance (decision H-5): each one another workspace holds is an
-  // errors[] entry at its path, with the same generic message as a single write's 409.
+  // Credentials and server names are unique in the instance (decision H-5): each one of the resulting draft that
+  // another workspace holds is an errors[] entry at its path (one kept from the draft: at "document"), with the same
+  // generic message as a single write's 409. The caller learns of it from `instanceConflict`, not from the message.
+  let instanceConflict = false;
   if (instanceTaken) {
     const check = async <T extends { id: string }>(kind: UniqueKind, items: T[], value: (item: T) => string[], field: (i: number) => string) => {
-      const documented = items.filter(item => paths.has(item.id));
-      const taken = await instanceTaken(kind, documented.flatMap(value));
-      for (const item of documented) value(item).forEach((v, i) => { if (taken.has(v)) add(`${paths.get(item.id)}.${field(i)}`, "already in use in this instance"); });
+      const taken = await instanceTaken(kind, items.flatMap(value));
+      for (const item of items) value(item).forEach((v, i) => {
+        if (!taken.has(v)) return;
+        instanceConflict = true;
+        const path = paths.get(item.id);
+        if (path) add(`${path}.${field(i)}`, "already in use in this instance");
+        else add("document", "an entity kept from the draft holds a value already in use in this instance");
+      });
     };
     await check("key-auth-key", result.keyAuthCredentials, k => [k.key], () => "key");
     await check("jwt-key", result.jwtCredentials!, j => [j.key], () => "key");
@@ -216,5 +223,5 @@ export async function planImport(document: ConfigDocument, current: GatewayState
     const base = entity && paths.get(entity.id);
     add(base ? `${base}${rest.length ? `.${rest.join(".")}` : ""}` : "document", issue.message.replace(/"[^"]*"/g, '"[value]"'));
   }
-  return { state: result, errors };
+  return { state: result, errors, instanceConflict };
 }

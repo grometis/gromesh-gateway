@@ -10,9 +10,9 @@ import { notFound, unprocessable } from "../common/problem.js";
 import { basicAuthHashContext, ENCRYPTOR, Encryptor, jwtSecretContext } from "../crypto/crypto.js";
 import { DB, type Db } from "../db/db.js";
 import { basicAuthCredentials, consumers, jwtCredentials, type BasicAuthCredentialRow, type JwtCredentialRow } from "../db/schema.js";
-import { markDraftChanged, uuidParam } from "../environments/environments.js";
+import { markDraftChanged, requireEnvironment, uuidParam } from "../environments/environments.js";
 import { requireConsumer } from "./consumers.js";
-import { type ConflictLimit, conflictLimit, guardedUniqueWrite, inUse, lockUnique, takenElsewhere } from "../workspaces/instance-uniqueness.js";
+import { admit, type ConflictLimit, conflictLimit, guardedUniqueWrite, inUse, lockUnique, takenElsewhere } from "../workspaces/instance-uniqueness.js";
 import { APP_CONFIG, type AppConfig } from "../config.js";
 
 /* ---------------- mapping ---------------- */
@@ -139,8 +139,11 @@ export class CredentialsService {
         rsaPublicKey: body.rsaPublicKey ?? null,
         tags: body.tags ?? [],
       };
-      // Kong finds the credential by its key across the whole node: unique in the instance (decision H-5).
+      // Kong finds the credential by its key across the whole node: unique in the instance (decision H-5). The
+      // environment's row first, then the lock, as every writer of these values does.
+      await requireEnvironment(tx, envId, true);
       await lockUnique(tx, ["jwt-key"]);
+      await admit(tx, ctx);
       if ((await takenElsewhere(tx, "jwt-key", envId, [credential.key])).size > 0) throw inUse();
       const [row] = await tx.insert(jwtCredentials).values({ environmentId: envId, ...jwtValues(credential, this.enc) }).returning();
       const after = toJwtCredential(row!);
@@ -176,7 +179,9 @@ export class CredentialsService {
   async createBasicAuth(ctx: RequestContext, envId: string, consumerId: string, body: BasicAuthCredentialCreate) {
     return guardedUniqueWrite(this.db, ctx, "basic-auth-username", this.conflicts, () => this.db.transaction(async (tx) => {
       await requireConsumer(tx, envId, consumerId);
+      await requireEnvironment(tx, envId, true);
       await lockUnique(tx, ["basic-auth-username"]);
+      await admit(tx, ctx);
       if ((await takenElsewhere(tx, "basic-auth-username", envId, [body.username])).size > 0) throw inUse();
       // Only Kong's hash is kept: the password itself is never stored, logged or returned.
       const credential: BasicAuthCredential = { id: randomUUID(), consumerId, username: body.username, passwordHash: basicAuthPasswordHash(consumerId, body.password), tags: body.tags ?? [] };
