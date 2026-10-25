@@ -507,8 +507,11 @@ describe("RBAC matrix from the contract", () => {
         const effective = owner === "none" ? "none" : via === "token" ? lower(tokenRole, owner) : owner;
         const res = await client(op.method, await at(op, place), mutation(op.method) ? {} : undefined);
         const what = `global ${global}, ${roleInA} in A, by ${via}: ${op.id} in ${scoped(op) ? name : "no environment"} → ${res.status}`;
+        // An environment is a workspace: only a global admin deletes it, never its own admin (GW-ADMIN-07).
+        const globalAdminOnly = op.id === "deleteEnvironment";
+        const allowed = globalAdminOnly ? global === "admin" && (via === "session" || tokenRole === "admin") : RANK[effective as Operation["role"]] >= RANK[op.role];
         if (effective === "none") expect(res.status, what).toBe(404);
-        else if (RANK[effective] < RANK[op.role]) expect(res.status, what).toBe(403);
+        else if (!allowed) expect(res.status, what).toBe(403);
         else {
           expect([401, 403], what).not.toContain(res.status);
           expect(res.status, what).toBeLessThan(500);

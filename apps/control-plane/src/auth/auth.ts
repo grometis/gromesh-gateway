@@ -14,7 +14,11 @@ import type { Actor, UserRow } from "../db/schema.js";
 import { clientAddress } from "../common/client-address.js";
 import { ProblemException } from "../common/problem.js";
 import { DB, type Db } from "../db/db.js";
-import { environmentAccess, lower, RANK, type Role } from "./environment-access.js";
+import { effectiveRole, environmentOf, lower, RANK, type Role } from "./environment-access.js";
+import { notFound } from "../common/problem.js";
+import { and, eq } from "drizzle-orm";
+import { environmentRoles, roleBindings } from "../db/schema.js";
+import { type Permission, permissionsIn, requiredPermission, type Scope, tokenPermissions, workspaceExists } from "./permissions.js";
 import { sessionCookie, SessionService } from "./sessions.js";
 
 /** `ggt_` plus 32 random bytes in unpadded base64url (43 characters), as the contract's pattern says. */
@@ -46,11 +50,13 @@ export interface AuthenticatedRequest extends Request {
   user?: UserRow;
   session?: { idHash: string; csrfToken: string };
   /** How the request authenticated: a session, or an API token (then the effective role is capped by it). */
-  auth?: ({ via: "session" } | { via: "token"; tokenId: string; tokenName: string }) & { role: Role };
+  auth?: ({ via: "session" } | { via: "token"; tokenId: string; tokenName: string }) & { role: Role; permissions: ReadonlySet<Permission> };
 }
 
 const ROLE_KEY = "gromesh:required-role";
 const SESSION_ONLY_KEY = "gromesh:session-only";
+const PERMISSION_KEY = "gromesh:required-permission";
+const V1_PERMISSION_KEY = "gromesh:v1-permission";
 export const CSRF_HEADER = "x-csrf-token";
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
@@ -62,6 +68,13 @@ export const Public = () => SetMetadata(ROLE_KEY, "public");
 
 /** Operations an API token may not call (token and user management, the session itself): a session only. */
 export const SessionOnly = () => SetMetadata(SESSION_ONLY_KEY, true);
+
+/** v2: mirrors `x-required-permission` and `x-scope` (where the permission is checked) in control-plane-v2. */
+export type PermissionScope = "instance" | "workspace" | "binding";
+export const RequiredPermission = (permission: Permission, scope: PermissionScope) => SetMetadata(PERMISSION_KEY, { permission, scope });
+
+/** v1: the permission an operation needs when it is not the translation of its role (deleteEnvironment, GW-ADMIN-07). */
+export const V1Permission = (permission: Permission) => SetMetadata(V1_PERMISSION_KEY, permission);
 
 /**
  * Session cookie → user, then the contract's role ladder. Mutations additionally need the session's CSRF
@@ -81,27 +94,33 @@ export class AuthGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const required = this.reflector.getAllAndOverride<Role | "public" | undefined>(ROLE_KEY, [context.getHandler(), context.getClass()]);
+    const meta = <T>(key: string) => this.reflector.getAllAndOverride<T | undefined>(key, [context.getHandler(), context.getClass()]);
+    const required = meta<Role | "public">(ROLE_KEY);
+    const v2 = meta<{ permission: Permission; scope: PermissionScope }>(PERMISSION_KEY);
     if (required === "public") return true;
-    if (!required) {
-      // Fail closed: a handler without RequiredRole is a bug, not a public endpoint.
+    if (!required && !v2) {
+      // Fail closed: a handler without RequiredRole or RequiredPermission is a bug, not a public endpoint.
       throw new ProblemException(HttpStatus.FORBIDDEN, "Endpoint has no role requirement");
     }
     const req = context.switchToHttp().getRequest<AuthenticatedRequest>();
+    const caller = await this.authenticate(context, req, meta<boolean>(SESSION_ONLY_KEY) === true);
+    const decision = v2 ? await this.decideV2(caller, v2, req.params) : await this.decideV1(caller, required as Role, meta<Permission>(V1_PERMISSION_KEY), req.params);
+    req.user = caller.user;
+    req.auth = caller.token ? { via: "token", tokenId: caller.token.id, tokenName: caller.token.name, ...decision } : { via: "session", ...decision };
+    if (caller.session) req.session = { idHash: caller.session.idHash, csrfToken: caller.session.csrfToken };
+    return true;
+  }
+
+  /** A bearer token (alone, no CSRF) or the session cookie with its CSRF token on mutations. */
+  private async authenticate(context: ExecutionContext, req: AuthenticatedRequest, sessionOnly: boolean) {
     const authorization = req.header("authorization");
     if (authorization !== undefined) {
-      const sessionOnly = this.reflector.getAllAndOverride<boolean | undefined>(SESSION_ONLY_KEY, [context.getHandler(), context.getClass()]);
       if (sessionOnly) throw new ProblemException(HttpStatus.UNAUTHORIZED, "This operation requires a session, not an API token");
       const bearer = /^Bearer\s+(\S+)$/i.exec(authorization)?.[1] ?? "";
       // An unparsable value is resolved as any other invalid token: same answer, same failure counter.
       const resolved = await this.tokens.resolve(TOKEN_PATTERN.test(bearer) ? bearer : "ggt_invalid", clientAddress(req));
       if (!resolved) throw new ProblemException(HttpStatus.UNAUTHORIZED, "Invalid or expired API token");
-      const access = await environmentAccess(this.db, resolved.user, req.params);
-      const role = access ? lower(resolved.token.role, access.role) : resolved.role;
-      if (!atLeast(role, required)) throw new ProblemException(HttpStatus.FORBIDDEN, `Requires role ${required}`);
-      req.user = resolved.user;
-      req.auth = { via: "token", tokenId: resolved.token.id, tokenName: resolved.token.name, role };
-      return true;
+      return { user: resolved.user, token: resolved.token, session: null };
     }
     const id = sessionCookie(req.headers.cookie);
     const session = id ? await this.sessions.resolve(id) : null;
@@ -109,22 +128,67 @@ export class AuthGuard implements CanActivate {
     if (!SAFE_METHODS.has(req.method) && !sameToken(req.header(CSRF_HEADER), session.csrfToken)) {
       throw new ProblemException(HttpStatus.FORBIDDEN, "CSRF token missing or invalid");
     }
-    const access = await environmentAccess(this.db, session.user, req.params);
-    const role = access?.role ?? session.user.role;
-    if (!atLeast(role, required)) throw new ProblemException(HttpStatus.FORBIDDEN, `Requires role ${required}`);
     // A slid expiry goes back to the browser, so the cookie's own Max-Age slides with it.
     if (session.renewed && id) context.switchToHttp().getResponse<Response>().setHeader("Set-Cookie", this.sessions.cookie(id));
-    req.user = session.user;
-    req.session = { idHash: session.idHash, csrfToken: session.csrfToken };
-    req.auth = { via: "session", role };
-    return true;
+    return { user: session.user, token: null, session };
+  }
+
+  /**
+   * v1 (decision H-9): the operation's role becomes a permission, checked like any v2 one, in the environment (the
+   * workspace) of `{envId}` or of `{clusterId}`, else at instance scope. Without v2 bindings this is exactly the role
+   * ladder of the v1 contract; an environment the caller may not read answers 404, as before.
+   */
+  private async decideV1(caller: Caller, required: Role, override: Permission | undefined, params: Params) {
+    const place = await environmentOf(this.db, params);
+    const scope: Scope = place ? { type: "workspace", workspaceId: place.environmentId } : { type: "instance" };
+    const owner = await permissionsIn(this.db, caller.user, scope);
+    if (place && !owner.has("workspace.read")) throw notFound(place.via === "envId" ? "Environment" : "Cluster");
+    const permissions = caller.token ? tokenPermissions(caller.token.role, owner) : owner;
+    if (!permissions.has(override ?? requiredPermission(required, place !== null))) throw new ProblemException(HttpStatus.FORBIDDEN, `Requires role ${required}`);
+    // The v1 role services still read (masking): the effective one there, capped by the token.
+    const own = place ? await this.legacyRole(caller.user, place.environmentId) : caller.user.role;
+    return { role: caller.token ? lower(caller.token.role, own) : own, permissions };
+  }
+
+  /** v2: the permission in the operation's scope; a workspace (or binding) the caller may not see answers 404. */
+  private async decideV2(caller: Caller, { permission, scope }: { permission: Permission; scope: PermissionScope }, params: Params) {
+    let where: Scope = { type: "instance" };
+    if (scope === "workspace") {
+      const workspaceId = typeof params.workspaceId === "string" ? params.workspaceId : "";
+      if (!UUID.test(workspaceId) || !(await workspaceExists(this.db, workspaceId))) throw notFound("Workspace");
+      where = { type: "workspace", workspaceId };
+    } else if (scope === "binding") {
+      const bindingId = typeof params.bindingId === "string" ? params.bindingId : "";
+      const [binding] = UUID.test(bindingId) ? await this.db.select().from(roleBindings).where(eq(roleBindings.id, bindingId)) : [];
+      if (!binding) throw notFound("Role binding");
+      where = binding.scopeType === "workspace" ? { type: "workspace", workspaceId: binding.workspaceId! } : { type: "instance" };
+    }
+    const owner = await permissionsIn(this.db, caller.user, where);
+    if (where.type === "workspace" && !owner.has("workspace.read")) throw notFound(scope === "binding" ? "Role binding" : "Workspace");
+    const permissions = caller.token ? tokenPermissions(caller.token.role, owner) : owner;
+    if (!permissions.has(permission)) throw new ProblemException(HttpStatus.FORBIDDEN, `Requires permission ${permission}`);
+    const own = where.type === "workspace" ? await this.legacyRole(caller.user, where.workspaceId) : caller.user.role;
+    return { role: caller.token ? lower(caller.token.role, own) : own, permissions };
+  }
+
+  /** The v1 role in a workspace: its override (none counts as viewer for masking: access came from a binding). */
+  private async legacyRole(user: UserRow, workspaceId: string): Promise<Role> {
+    const [override] = await this.db
+      .select({ role: environmentRoles.role })
+      .from(environmentRoles)
+      .where(and(eq(environmentRoles.userId, user.id), eq(environmentRoles.environmentId, workspaceId)));
+    const role = effectiveRole(user, override?.role);
+    return role === "none" ? "viewer" : role;
   }
 }
 
-/** Fail closed: a role the ladder does not know (a malformed row, say) never passes. */
-function atLeast(role: Role, required: Role): boolean {
-  return RANK[role] >= RANK[required];
+type Params = Partial<Record<string, string | string[]>>;
+interface Caller {
+  user: UserRow;
+  token: { id: string; name: string; role: Role } | null;
+  session: { idHash: string; csrfToken: string } | null;
 }
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Constant-time comparison; a missing header or a different length is simply invalid. */
 function sameToken(given: string | undefined, expected: string): boolean {

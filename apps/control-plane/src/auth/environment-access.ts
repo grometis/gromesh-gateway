@@ -28,6 +28,25 @@ export async function environmentRolesOf(db: Executor, userId: string): Promise<
     .orderBy(asc(environmentRoles.environmentId));
 }
 
+/** The environment a request is about (from `{envId}`, or the environment of `{clusterId}`); 404 when it does not exist. */
+export async function environmentOf(db: Executor, params: Partial<Record<string, string | string[]>>): Promise<{ environmentId: string; via: "envId" | "clusterId" } | null> {
+  const envId = typeof params.envId === "string" ? params.envId : undefined;
+  const clusterId = typeof params.clusterId === "string" ? params.clusterId : undefined;
+  if (envId !== undefined) {
+    if (!UUID.test(envId)) throw notFound("Environment");
+    const [row] = await db.select({ id: environments.id }).from(environments).where(eq(environments.id, envId));
+    if (!row) throw notFound("Environment");
+    return { environmentId: row.id, via: "envId" };
+  }
+  if (clusterId !== undefined) {
+    if (!UUID.test(clusterId)) throw notFound("Cluster");
+    const [row] = await db.select({ environmentId: clusters.environmentId }).from(clusters).where(eq(clusters.id, clusterId));
+    if (!row) throw notFound("Cluster");
+    return { environmentId: row.environmentId, via: "clusterId" };
+  }
+  return null;
+}
+
 /**
  * The environment a request is about (from `{envId}`, or the environment of `{clusterId}`) and the user's effective
  * role there; null when the route belongs to no environment. A missing environment and one the user may not see

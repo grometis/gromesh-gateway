@@ -5,6 +5,8 @@ import addFormats from "ajv-formats";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { hashConfig } from "@gromesh/compiler";
+import { Reflector } from "@nestjs/core";
+import { AccessController } from "../../src/access/access.js";
 import { startHarness, type Harness } from "./harness.js";
 
 // N0: the Workspaces contracts (v2) are planned; nothing here is implemented yet. These tests keep them coherent until
@@ -58,14 +60,44 @@ describe("planned operations", () => {
     await h?.close();
   });
 
-  it("marks every v2 operation x-gromesh-planned, and none has a handler", () => {
+  // The implementation phases remove x-gromesh-planned operation by operation: an implemented operation has its
+  // handler under /api/v2 with the contract's permission, scope and session rule; a planned one has none.
+  it("has a handler for every implemented v2 operation and none for a planned one", () => {
     expect(v2Ops.length).toBeGreaterThan(80);
     expect(agentOps.length).toBe(7);
-    for (const { op } of [...v2Ops, ...agentOps]) expect(op["x-gromesh-planned"], op.operationId).toBe(true);
-    const express = h.app.getHttpAdapter().getInstance() as { router: { stack: { route?: { path: string } }[] } };
-    const routes = express.router.stack.flatMap((layer) => (layer.route ? [layer.route.path] : []));
-    expect(routes.length).toBeGreaterThan(40);
-    expect(routes.filter((r) => r.startsWith("/api/v2") || r.startsWith("/agent/v2"))).toEqual([]);
+    for (const { op } of agentOps) expect(op["x-gromesh-planned"], op.operationId).toBe(true);
+    const express = h.app.getHttpAdapter().getInstance() as { router: { stack: { route?: { path: string; methods: Record<string, boolean> } }[] } };
+    const routes = new Set(express.router.stack.flatMap((layer) => (layer.route ? Object.keys(layer.route.methods).map((m) => `${m.toUpperCase()} ${layer.route!.path}`) : [])));
+    expect(routes.size).toBeGreaterThan(40);
+    const nest = (path: string) => `/api/v2${path.replace(/\{([a-zA-Z]+)\}/g, ":$1")}`;
+    for (const { path, method, op } of v2Ops) {
+      const has = routes.has(`${method.toUpperCase()} ${nest(path)}`);
+      expect(has, `${op.operationId} ${op["x-gromesh-planned"] ? "is planned but has a handler" : "has no handler"}`).toBe(!op["x-gromesh-planned"]);
+    }
+    expect([...routes].filter((r) => r.includes(" /agent/v2"))).toEqual([]);
+  });
+
+  it("declares on every v2 handler the contract's permission, scope and session rule", () => {
+    const reflector = new Reflector();
+    const handlers = new Map<string, { permission: string; scope: string; sessionOnly: boolean }>();
+    for (const controller of [AccessController]) {
+      const base = (Reflect.getMetadata("path", controller) as string).replace(/^\/?/, "/");
+      for (const name of Object.getOwnPropertyNames(controller.prototype)) {
+        const fn = (controller.prototype as unknown as Record<string, () => unknown>)[name]!;
+        const path = Reflect.getMetadata("path", fn) as string | undefined;
+        const method = Reflect.getMetadata("method", fn) as number | undefined;
+        if (path === undefined || method === undefined) continue;
+        const meta = reflector.get("gromesh:required-permission", fn) as { permission: string; scope: string };
+        handlers.set(`${["GET", "POST", "PUT", "DELETE", "PATCH"][method]} ${base}/${path}`.replace(/\/+/g, "/"), { ...meta, sessionOnly: reflector.get("gromesh:session-only", fn) === true });
+      }
+    }
+    const implemented = v2Ops.filter(({ op }) => !op["x-gromesh-planned"]);
+    expect(implemented.length).toBe(handlers.size);
+    for (const { path, method, op } of implemented) {
+      const key = `${method.toUpperCase()} /api/v2${path.replace(/\{([a-zA-Z]+)\}/g, ":$1")}`;
+      const schemes = (op.security ?? v2.security).flatMap((sec: Doc) => Object.keys(sec));
+      expect(handlers.get(key), `${op.operationId} (${key})`).toEqual({ permission: op["x-required-permission"], scope: op["x-scope"], sessionOnly: !schemes.includes("bearerApiToken") });
+    }
   });
 });
 

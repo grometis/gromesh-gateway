@@ -495,7 +495,6 @@ paths:
       x-scope: workspace
       x-gromesh-requirements: [ GW-RBAC-01, GW-RBAC-02 ]
       x-required-permission: members.read
-      x-gromesh-planned: true
       responses:
         "200": { description: Bindings, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/RoleBinding" } } } } }
         "401":
@@ -509,7 +508,6 @@ paths:
       x-gromesh-requirements: [ GW-RBAC-01, GW-RBAC-05, GW-RBAC-11, GW-ADMIN-03 ]
       security: [ { cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] } ]
       x-required-permission: members.manage
-      x-gromesh-planned: true
       description: |
         A workspace admin grants roles to existing users or groups in this workspace; it cannot change group
         membership, cannot grant platform permissions and cannot grant more than it holds. Temporary bindings require
@@ -528,7 +526,6 @@ paths:
       x-gromesh-requirements: [ GW-RBAC-01, GW-RBAC-03 ]
       x-required-permission: members.read
       x-scope: instance
-      x-gromesh-planned: true
       description: Instance-scoped bindings (e.g. who may confirm, approve and execute the provisioning of a workspace that does not exist yet).
       responses:
         "200": { description: Bindings, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/RoleBinding" } } } } }
@@ -541,7 +538,6 @@ paths:
       x-gromesh-requirements: [ GW-RBAC-01, GW-RBAC-03, GW-ADMIN-03 ]
       x-required-permission: platform.admin
       x-scope: instance
-      x-gromesh-planned: true
       description: Grants instance-scoped roles (e.g. provisioning-approver) without granting platform administration.
       security: [ { cookieAuth: [], csrfToken: [] } ]
       requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/RoleBindingWrite" } } } }
@@ -635,7 +631,6 @@ paths:
       security: [ { cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] } ]
       x-required-permission: members.manage
       x-scope: binding
-      x-gromesh-planned: true
       description: |
         Immediate; sessions and tokens re-evaluate on the next request. The guard loads the binding first: deny
         bindings and bindings granted by the platform can only be revoked by platform.admin; otherwise the caller
@@ -1335,7 +1330,6 @@ paths:
       x-gromesh-requirements: [ GW-RBAC-07 ]
       x-required-permission: members.read
       x-scope: instance
-      x-gromesh-planned: true
       responses:
         "200": { description: Roles, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Role" } } } } }
         "401":
