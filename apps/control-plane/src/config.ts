@@ -57,6 +57,8 @@ export interface AppConfig {
   autoPublishPollMs: number;
   /** How often each replica fills in workspace slugs an older replica left empty (rolling upgrade); 0 disables it. */
   workspaceSlugPollMs: number;
+  /** Conflicting writes on an instance-unique value (credential, SNI) per actor before a 429 for `loginLockoutMs`. */
+  uniqueConflictMax: number;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -106,6 +108,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     autoPublishDelayMs: Number(env.AUTO_PUBLISH_DELAY_MS ?? 3000),
     autoPublishPollMs: Number(env.AUTO_PUBLISH_POLL_MS ?? 1000),
     workspaceSlugPollMs: Number(env.WORKSPACE_SLUG_POLL_MS ?? 30_000),
+    uniqueConflictMax: Number(env.UNIQUE_CONFLICT_MAX ?? 20),
   };
 }
 

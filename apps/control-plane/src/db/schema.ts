@@ -148,6 +148,14 @@ export const workspaces = pgTable(
 );
 export type WorkspaceRow = typeof workspaces.$inferSelect;
 
+/**
+ * Never written: an import locks it (EXCLUSIVE, as its first statement) so imports run one at a time and each sees
+ * the conflicts the previous one counted. A table lock does not freeze the serializable snapshot; a row lock would.
+ */
+export const importQueue = pgTable("import_queue", {
+  id: integer("id").primaryKey(),
+});
+
 /** Data migrations that changed the meaning of existing rows, by name ("n1-workspaces"), with when they ran. */
 export const dataMigrations = pgTable("data_migrations", {
   name: text("name").primaryKey(),

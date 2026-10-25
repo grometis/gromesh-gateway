@@ -21,6 +21,7 @@ import { credentialContext, type Encryptor, pluginSecretContext } from "../crypt
 import type { PluginCatalog } from "../plugin-catalog/catalog.js";
 import { markDraftChanged, requireEnvironment, uuidParam } from "../environments/environments.js";
 import { anonymousOf, namesConsumer } from "../workspaces/anonymous.js";
+import { assertStateFree } from "../workspaces/instance-uniqueness.js";
 
 /* ---------------- mapping ---------------- */
 
@@ -180,6 +181,8 @@ export async function restoreGatewayState(
     const anonymous = anonymousOf(plugin.config);
     if (anonymous !== null && !state.consumers.some((c) => namesConsumer(anonymous, c))) throw conflict("A plugin of this configuration uses as anonymous a consumer it does not hold");
   }
+  // Nor one holding a credential or server name another workspace holds now (decision H-5).
+  await assertStateFree(tx, envId, state, enc);
   const keep = new Set(workspaceDefault ?? (await workspaceDefaultRoutes(tx, envId)));
   const lost = state.routes.filter((r) => keep.has(r.id) && !(r.paths && r.paths.length > 0));
   if (lost.length > 0) {
