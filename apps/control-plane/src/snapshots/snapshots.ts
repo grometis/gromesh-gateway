@@ -27,7 +27,7 @@ import {
 import { and, desc, eq, lt, sql } from "drizzle-orm";
 import type { PublishRequest } from "../api-types.js";
 import { audit } from "../audit/audit.js";
-import { Ctx, RequiredRole, type RequestContext, type Role } from "../auth/auth.js";
+import { Ctx, RequiredRole, type RequestContext, type Role, SessionOnly } from "../auth/auth.js";
 import { contractBody } from "../common/contract.js";
 import { decodeCursor, encodeCursor, parseLimit } from "../common/pagination.js";
 import { conflict, notFound, ProblemException, unprocessable } from "../common/problem.js";
@@ -436,6 +436,8 @@ export class SnapshotsController {
   @Post("snapshots/:version/rollback")
   @HttpCode(201)
   @RequiredRole("editor")
+  // A session only, as the v2 rollback (decision H-9).
+  @SessionOnly()
   rollback(@Ctx() ctx: RequestContext, @Param("envId", uuidParam()) envId: string, @Param("version", versionParam()) version: number) {
     return this.snapshotsService.rollback(ctx, envId, version);
   }
