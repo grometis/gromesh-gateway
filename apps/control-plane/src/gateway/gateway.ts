@@ -151,8 +151,34 @@ export async function loadGatewayState(tx: Executor, envId: string, enc: Encrypt
   };
 }
 
-/** Replaces the environment's draft with `state`, keeping entity ids (rollback). */
-export async function restoreGatewayState(tx: Executor, envId: string, state: GatewayState, enc: Encryptor, catalog: PluginCatalog): Promise<void> {
+/** The routes of the draft that are workspace-default (the rest are legacy-preserved). */
+export async function workspaceDefaultRoutes(tx: Executor, envId: string): Promise<string[]> {
+  const rows = await tx
+    .select({ id: routes.id })
+    .from(routes)
+    .where(and(eq(routes.environmentId, envId), eq(routes.pathCompatibility, "workspace-default")))
+    .orderBy(asc(routes.id));
+  return rows.map((r) => r.id);
+}
+
+/**
+ * Replaces the environment's draft with `state`, keeping entity ids. The routes of `workspaceDefault` are restored
+ * workspace-default (a rollback passes the version's own list); without it, a route keeps the classification its id
+ * has in the draft being replaced (import), and any other route is legacy-preserved.
+ */
+export async function restoreGatewayState(
+  tx: Executor,
+  envId: string,
+  state: GatewayState,
+  enc: Encryptor,
+  catalog: PluginCatalog,
+  workspaceDefault?: readonly string[],
+): Promise<void> {
+  const keep = new Set(workspaceDefault ?? (await workspaceDefaultRoutes(tx, envId)));
+  const lost = state.routes.filter((r) => keep.has(r.id) && !(r.paths && r.paths.length > 0));
+  if (lost.length > 0) {
+    throw unprocessable("A workspace-default route keeps at least one path", lost.map((r) => ({ path: `routes.${r.name}.paths`, message: "required for a workspace-default route" })));
+  }
   // Dependents first: plugins and credentials reference the rest, routes reference services (ON DELETE RESTRICT).
   await tx.delete(plugins).where(eq(plugins.environmentId, envId));
   await tx.delete(keyAuthCredentials).where(eq(keyAuthCredentials.environmentId, envId));
@@ -174,7 +200,9 @@ export async function restoreGatewayState(tx: Executor, envId: string, state: Ga
     await tx.insert(services).values(state.services.map((s) => ({ id: s.id, environmentId: envId, ...serviceValues(s) })));
   }
   if (state.routes.length > 0) {
-    await tx.insert(routes).values(state.routes.map((r) => ({ id: r.id, environmentId: envId, ...routeValues(r) })));
+    await tx.insert(routes).values(
+      state.routes.map((r) => ({ id: r.id, environmentId: envId, ...routeValues(r), pathCompatibility: keep.has(r.id) ? ("workspace-default" as const) : ("legacy-preserved" as const) })),
+    );
   }
   if (state.consumers.length > 0) {
     await tx.insert(consumers).values(state.consumers.map((c) => ({ id: c.id, environmentId: envId, ...consumerValues(c), aclGroups: c.aclGroups ?? [] })));

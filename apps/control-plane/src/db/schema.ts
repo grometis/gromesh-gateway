@@ -113,6 +113,46 @@ export const environments = pgTable(
   (t) => [uniqueIndex("environments_name_uq").on(t.name)],
 );
 
+/**
+ * The workspace each environment is (N1): the same id, so every entity's `environment_id` is the workspace it belongs
+ * to. A trigger inserts the row with each environment; the application fills in the slug (`proposeSlug`), in the
+ * same transaction on creation and in `backfillWorkspaces` for the rows the migration created.
+ */
+export const workspaces = pgTable(
+  "workspaces",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .references(() => environments.id, { onDelete: "cascade" }),
+    // Logical identity shared by the same workspace across instances.
+    key: uuid("key").notNull().defaultRandom(),
+    slug: text("slug"),
+    slugStatus: text("slug_status", { enum: ["derived", "adjusted"] }),
+    slugReason: text("slug_reason", { enum: ["collision", "invalid", "reserved"] }),
+    // Set by the first release: the slug never changes afterwards.
+    slugLockedAt: timestamp("slug_locked_at", { withTimezone: true }),
+    status: text("status", { enum: ["active", "archived"] }).notNull().default("active"),
+    // Set on the rows the N1 migration created from the environments that already existed.
+    migratedAt: timestamp("migrated_at", { withTimezone: true }),
+    ...timestamps,
+  },
+  (t) => [
+    uniqueIndex("workspaces_key_uq").on(t.key),
+    uniqueIndex("workspaces_slug_uq").on(t.slug),
+    check("workspaces_slug_ck", sql`${t.slug} ~ '^[a-z][a-z0-9-]{1,39}$'`),
+    // A slug always comes with its status, and an adjusted one with the reason (and only then).
+    check("workspaces_slug_status_ck", sql`(${t.slug} is null) = (${t.slugStatus} is null) and (${t.slugReason} is not null) = (${t.slugStatus} is not distinct from 'adjusted')`),
+    check("workspaces_status_ck", sql`${t.status} in ('active', 'archived')`),
+  ],
+);
+export type WorkspaceRow = typeof workspaces.$inferSelect;
+
+/** Data migrations that changed the meaning of existing rows, by name ("n1-workspaces"), with when they ran. */
+export const dataMigrations = pgTable("data_migrations", {
+  name: text("name").primaryKey(),
+  appliedAt: timestamp("applied_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 /** A role that replaces the user's global role in one environment; `none` hides the environment. */
 export const environmentRoles = pgTable(
   "environment_roles",
@@ -255,11 +295,16 @@ export const routes = pgTable(
     preserveHost: boolean("preserve_host").notNull().default(false),
     analyticsRetentionDays: integer("analytics_retention_days"),
     tags: text("tags").array().notNull().default(sql`'{}'::text[]`),
+    // legacy-preserved: an existing route, or one created through v1, keeps its strip_path until
+    // convertRoutePathCompatibility; workspace-default (v2) always has a path.
+    pathCompatibility: text("path_compatibility", { enum: ["legacy-preserved", "workspace-default"] }).notNull().default("legacy-preserved"),
     ...timestamps,
   },
   (t) => [
     uniqueIndex("routes_env_name_uq").on(t.environmentId, t.name),
     index("routes_service_idx").on(t.serviceId),
+    check("routes_path_compatibility_ck", sql`${t.pathCompatibility} in ('legacy-preserved', 'workspace-default')`),
+    check("routes_workspace_default_paths_ck", sql`${t.pathCompatibility} = 'legacy-preserved' or coalesce(cardinality(${t.paths}), 0) > 0`),
   ],
 );
 
@@ -380,6 +425,9 @@ export const snapshots = pgTable(
     // Source state, so a rollback can restore the draft exactly.
     state: jsonb("state").$type<SealedJson | GatewayState>().notNull(),
     message: text("message"),
+    // Routes that were workspace-default when this version was published: a rollback restores exactly that
+    // (before N1 every route was legacy-preserved, so older versions hold none).
+    workspaceDefaultRoutes: uuid("workspace_default_routes").array().notNull().default(sql`'{}'::uuid[]`),
     createdBy: jsonb("created_by").$type<Actor>().notNull(),
     rollbackOf: integer("rollback_of"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

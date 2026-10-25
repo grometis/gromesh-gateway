@@ -64,7 +64,8 @@ export const CLICKHOUSE_ADMIN = {
 
 /** Each call is one more control-plane replica on the shared test database. */
 export async function startHarness(overrides: Partial<AppConfig> = {}): Promise<Harness> {
-  const databaseUrl = inject("databaseUrl");
+  // A test may bring its own database (the migration tests); every other one shares the run's.
+  const databaseUrl = overrides.databaseUrl ?? inject("databaseUrl");
   // The harness sets its own bootstrap admin: the shell's variables must not win.
   const env: NodeJS.ProcessEnv = { ...process.env, DATABASE_URL: databaseUrl, BOOTSTRAP_ADMIN_EMAIL: undefined, BOOTSTRAP_ADMIN_PASSWORD: undefined };
   const app: INestApplication = await createApp(

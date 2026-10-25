@@ -36,7 +36,7 @@ import { destinationIssues, destinationPolicy, type DestinationPolicy } from "..
 import { DB, type Db, type Executor, type Tx } from "../db/db.js";
 import { environments, snapshots, type EnvironmentRow, type SnapshotRow } from "../db/schema.js";
 import { requireEnvironment, uuidParam } from "../environments/environments.js";
-import { loadGatewayState, restoreGatewayState } from "../gateway/gateway.js";
+import { loadGatewayState, restoreGatewayState, workspaceDefaultRoutes } from "../gateway/gateway.js";
 import { AGENT_CHANNEL } from "../clusters/clusters.js";
 import { PluginCatalog, PluginCatalogModule } from "../plugin-catalog/catalog.js";
 import { ENCRYPTOR, Encryptor, snapshotContext } from "../crypto/crypto.js";
@@ -137,7 +137,7 @@ export class SnapshotsService {
     const { row, changeCount } = await this.db.transaction(async (tx) => {
       const env = await requireEnvironment(tx, envId, true);
       const target = await this.requireSnapshot(tx, envId, version);
-      await restoreGatewayState(tx, envId, target.state, this.enc, this.catalog);
+      await restoreGatewayState(tx, envId, target.state, this.enc, this.catalog, target.workspaceDefaultRoutes);
       const prepared = await this.prepare(tx, env);
       if (prepared.current?.hash === prepared.envelope.hash) {
         throw conflict(`Nothing to roll back: version ${version} has the same configuration as the current version`);
@@ -298,6 +298,7 @@ export class SnapshotsService {
         config: this.enc.sealJson(envelope.config, snapshotContext(env.id, envelope.version, "config")),
         state: this.enc.sealJson(state, snapshotContext(env.id, envelope.version, "state")),
         message: opts.message,
+        workspaceDefaultRoutes: await workspaceDefaultRoutes(tx, env.id),
         createdBy: ctx.actor,
         rollbackOf: opts.rollbackOf,
         createdAt: new Date(envelope.createdAt),

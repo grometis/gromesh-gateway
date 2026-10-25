@@ -1,0 +1,69 @@
+{
+  "capturedWith": "843b658",
+  "environments": [
+    {
+      "id": "cb880720-f6e4-4621-82fb-2776eb8007b1",
+      "name": "TVRO",
+      "draftHash": "sha256:25561d8d356f9e4688057bdbea33e93b56bcd516f3f716271409d410216deef1",
+      "hasChanges": true,
+      "snapshots": [
+        {
+          "version": 2,
+          "hash": "sha256:d857b57b25c4cc9754ca7e94e45d9707a21c0f11d6210985200f3076e6e7c86c"
+        },
+        {
+          "version": 1,
+          "hash": "sha256:4d45a6e83cbaa1800630cf412fdd4dadd214113e42f96401a48994e1a5a7026e"
+        }
+      ]
+    },
+    {
+      "id": "f549c314-49d9-4638-ab71-b2a764918c5e",
+      "name": "tvro.",
+      "draftHash": "sha256:3c6a6f1eca3211b250533ab4c1ad4ec9b792a81885a8336d2c136fd1844e0ca6",
+      "hasChanges": false,
+      "snapshots": [
+        {
+          "version": 2,
+          "hash": "sha256:3c6a6f1eca3211b250533ab4c1ad4ec9b792a81885a8336d2c136fd1844e0ca6"
+        },
+        {
+          "version": 1,
+          "hash": "sha256:2e3ab3ffb8b9d350e8f80908346b58a69159e043fcee6b1b66b4551226c7056c"
+        }
+      ]
+    },
+    {
+      "id": "26483d97-1fc7-4e4f-b947-05fdb7258cf8",
+      "name": "api",
+      "draftHash": "sha256:86b0e594069bc0c60a6414439769aa0426967b785256c5f1b47f7edfe3c3fc12",
+      "hasChanges": true,
+      "snapshots": [
+        {
+          "version": 2,
+          "hash": "sha256:5d0b4f60bbc595be3efbf57e3e35b88538c3b25cc625d69c5b30d9f85b320b34"
+        },
+        {
+          "version": 1,
+          "hash": "sha256:ac7dff1a71f18f6bec837986db4a945adfb3aa00c33184b2f093d684aafa301e"
+        }
+      ]
+    },
+    {
+      "id": "d3fb7048-4cde-4f7d-b781-67a2b1b5711c",
+      "name": "Pagamentos_PIX",
+      "draftHash": "sha256:ffb50d60aa8f5630df4603f9495f00cc4f8e9c1ed047527fec4b264e0c7cd01c",
+      "hasChanges": false,
+      "snapshots": [
+        {
+          "version": 2,
+          "hash": "sha256:ffb50d60aa8f5630df4603f9495f00cc4f8e9c1ed047527fec4b264e0c7cd01c"
+        },
+        {
+          "version": 1,
+          "hash": "sha256:894963eefb2fb8938034a84edc07a2b1c8f549d03b74c51e2d2c519da8482f75"
+        }
+      ]
+    }
+  ]
+}
