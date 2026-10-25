@@ -7,6 +7,29 @@ import { parse } from "yaml";
 import { loadConfig } from "../config.js";
 import { unprocessable } from "./problem.js";
 
+/**
+ * The core profile of control-plane-v2 (its info conventions): an operation or oneOf alternative marked
+ * x-gromesh-phase is removed; a marked property is forbidden in its parent unless x-gromesh-core-profile states the
+ * exact core exception. Handlers validate against it, and the contract test derives with this same function.
+ */
+export function deriveCoreProfile<T>(doc: T): T {
+  const core = structuredClone(doc) as { components?: unknown };
+  const derive = (v: unknown): void => {
+    if (!v || typeof v !== "object") return;
+    const node = v as { oneOf?: unknown[]; properties?: Record<string, Record<string, unknown> | null>; allOf?: unknown[] };
+    if (Array.isArray(node.oneOf)) node.oneOf = node.oneOf.filter((alt) => !(alt && typeof alt === "object" && "x-gromesh-phase" in alt));
+    if (node.properties) {
+      for (const [name, prop] of Object.entries(node.properties)) {
+        if (!prop || !("x-gromesh-phase" in prop)) continue;
+        node.allOf = [...(node.allOf ?? []), prop["x-gromesh-core-profile"] ?? { not: { required: [name] } }];
+      }
+    }
+    Object.values(v).forEach(derive);
+  };
+  derive(core.components);
+  return core as T;
+}
+
 /** Every contract file is registered under this base, so their relative `$ref`s ("./control-plane.openapi.yaml#…") resolve. */
 const BASE = "https://gromesh.dev/contracts/";
 
@@ -22,6 +45,8 @@ class ContractRegistry {
   constructor(
     private readonly main: string,
     private readonly files: readonly string[],
+    /** Applied to the main contract before it is registered (the core profile of v2). */
+    private readonly profile: <T>(doc: T) => T = (doc) => doc,
   ) {}
 
   /** `schemaName` is a component name, or a JSON pointer ("#/paths/…") for request bodies defined inline. */
@@ -42,7 +67,8 @@ class ContractRegistry {
     addFormats.default(ajv);
     for (const file of this.files) {
       const text = readFileSync(resolve(dir, file), "utf8");
-      const doc = (file.endsWith(".json") ? JSON.parse(text) : parse(text)) as Record<string, unknown>;
+      const parsed = (file.endsWith(".json") ? JSON.parse(text) : parse(text)) as Record<string, unknown>;
+      const doc = file === this.main ? this.profile(parsed) : parsed;
       ajv.addSchema({ ...doc, $id: `${BASE}${file}` });
     }
     this.ajv = ajv;
@@ -59,14 +85,14 @@ function loadContractsDir(): string {
 }
 
 export const contracts = new ContractRegistry("control-plane.openapi.yaml", ["control-plane.openapi.yaml", "snapshot.schema.json"]);
-/** control-plane-v2 (Workspaces), with the v1 contract, the agent protocol and the snapshot schemas it refers to. */
+/** control-plane-v2 (Workspaces) in its core profile, with the v1 contract, the agent protocol and the snapshot schemas it refers to. */
 export const contractsV2 = new ContractRegistry("control-plane-v2.openapi.yaml", [
   "control-plane-v2.openapi.yaml",
   "control-plane.openapi.yaml",
   "agent-protocol-v2.openapi.yaml",
   "snapshot.schema.json",
   "snapshot-v2.schema.json",
-]);
+], deriveCoreProfile);
 
 export function toFieldErrors(errors: ErrorObject[] | null | undefined): { path: string; message: string }[] {
   return (errors ?? []).map((e) => {

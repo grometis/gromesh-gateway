@@ -37,3 +37,23 @@ SELECT "user_id", 'workspace', "environment_id",
   CASE WHEN "role" = 'none' THEN 'deny' ELSE 'allow' END,
   'v1-environment-role'
 FROM "environment_roles";
+--> statement-breakpoint
+-- The v1 bindings follow environment_roles in the same transaction whatever writes it (a replica of the previous
+-- version during a rolling upgrade included): the authorization never reads a stale environment role.
+CREATE FUNCTION "gromesh_environment_role_binding"() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP IN ('UPDATE', 'DELETE') THEN
+    DELETE FROM "role_bindings" WHERE "origin" = 'v1-environment-role' AND "subject_id" = OLD."user_id" AND "workspace_id" = OLD."environment_id";
+  END IF;
+  IF TG_OP IN ('INSERT', 'UPDATE') THEN
+    INSERT INTO "role_bindings" ("subject_id", "scope_type", "workspace_id", "role", "permissions", "effect", "origin")
+    VALUES (NEW."user_id", 'workspace', NEW."environment_id",
+      CASE NEW."role" WHEN 'viewer' THEN 'viewer' WHEN 'editor' THEN 'publisher' WHEN 'admin' THEN 'workspace-admin' END,
+      CASE WHEN NEW."role" = 'none' THEN '{}'::text[] END,
+      CASE WHEN NEW."role" = 'none' THEN 'deny' ELSE 'allow' END,
+      'v1-environment-role');
+  END IF;
+  RETURN NULL;
+END;
+$$;--> statement-breakpoint
+CREATE TRIGGER "environment_roles_binding" AFTER INSERT OR UPDATE OR DELETE ON "environment_roles" FOR EACH ROW EXECUTE FUNCTION "gromesh_environment_role_binding"();

@@ -7,6 +7,7 @@ import { parse } from "yaml";
 import { hashConfig } from "@gromesh/compiler";
 import { Reflector } from "@nestjs/core";
 import { AccessController } from "../../src/access/access.js";
+import { deriveCoreProfile } from "../../src/common/contract.js";
 import { startHarness, type Harness } from "./harness.js";
 
 // N0: the Workspaces contracts (v2) are planned; nothing here is implemented yet. These tests keep them coherent until
@@ -365,19 +366,7 @@ describe("state machines in the contracts", () => {
 describe("core profile (L1 to L10 blocked in the core)", () => {
   // Derivation from the info conventions: a marked operation or oneOf alternative is removed; a marked property is
   // forbidden in its parent unless x-gromesh-core-profile states the exact core exception.
-  const core = JSON.parse(JSON.stringify(v2));
-  const derive = (v: Doc): void => {
-    if (!v || typeof v !== "object") return;
-    if (Array.isArray(v.oneOf)) v.oneOf = v.oneOf.filter((alt: Doc) => !(alt && alt["x-gromesh-phase"]));
-    if (v.properties) {
-      for (const [name, prop] of Object.entries(v.properties as Record<string, Doc>)) {
-        if (!prop || !prop["x-gromesh-phase"]) continue;
-        v.allOf = [...(v.allOf ?? []), prop["x-gromesh-core-profile"] ?? { not: { required: [name] } }];
-      }
-    }
-    Object.values(v).forEach(derive);
-  };
-  derive(core.components);
+  const core = deriveCoreProfile(v2);
   const coreAjv = newAjv();
   coreAjv.addSchema({ ...core, $id: `${BASE}core.openapi.yaml` });
   const validCore = (name: string, value: unknown) => coreAjv.getSchema(`${BASE}core.openapi.yaml#/components/schemas/${name}`)!(value);

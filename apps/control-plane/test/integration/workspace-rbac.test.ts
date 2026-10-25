@@ -125,6 +125,27 @@ describe("role bindings through /api/v2, honored by v1 and v2 alike", () => {
     expect((await hidden.api("POST", `/environments/${a}/services`, { name: uniq("svc"), protocol: "http", host: "a.example.com", port: 80 })).status).toBe(201);
   });
 
+  it("follows an environment role an older replica writes (only environment_roles) at once, in v1 and v2", async () => {
+    const a = await env();
+    const target = await user("viewer", [{ env: a, role: "admin" }]);
+    expect((await target.api("GET", `/environments/${a}/services`)).status).toBe(200);
+    // What the previous version does: it knows nothing about role bindings.
+    await h.sql.query(`update environment_roles set role = 'none' where user_id = $1 and environment_id = $2`, [target.id, a]);
+    expect((await target.api("GET", `/environments/${a}/services`)).status).toBe(404);
+    expect((await v2api(target.api, "GET", `/workspaces/${a}/role-bindings`)).status).toBe(404);
+    await h.sql.query(`delete from environment_roles where user_id = $1 and environment_id = $2`, [target.id, a]);
+    expect((await target.api("GET", `/environments/${a}/services`)).status).toBe(200);
+    expect((await h.sql.query(`select count(*)::int as n from role_bindings where subject_id = $1 and origin = 'v1-environment-role'`, [target.id])).rows[0].n).toBe(0);
+  });
+
+  it("validates a grant against the core profile of the contract (what later phases bring is refused by the contract)", async () => {
+    const a = await env();
+    const target = await user("viewer");
+    const res = await v2api(h.api, "POST", `/workspaces/${a}/role-bindings`, { subjectType: "user", subjectId: target.id, role: "viewer", expiresAt: null });
+    expect(res.status).toBe(422);
+    expect(res.body.detail).toBe("Request body does not match the contract");
+  });
+
   it("gives clusters to platform administration and to a v1 environment admin, never through a workspace grant", async () => {
     const a = await env();
     const target = await user("viewer");
@@ -146,7 +167,8 @@ describe("role bindings through /api/v2, honored by v1 and v2 alike", () => {
       [{ permissions: ["platform.admin"] }, "permissions"],
       [{ role: "custom-role" }, "role"],
       [{ role: "viewer", effect: "deny" }, "effect"],
-      [{ role: "viewer", expiresAt: new Date(Date.now() + 3600_000).toISOString(), justification: "for a while" }, "expiresAt"],
+      // The core profile: an expiring grant is a rollback.emergency one (refused by the contract itself).
+      [{ role: "viewer", expiresAt: new Date(Date.now() + 3600_000).toISOString(), justification: "for a while" }, "permissions"],
     ] as const) {
       const res = await post(body);
       expect(res.status, JSON.stringify(body)).toBe(422);

@@ -59,15 +59,6 @@ export function legacyPermissions(role: Role, globalAdmin: boolean): readonly He
 const roleSet = (role: string): readonly Held[] =>
   role === "workspace-admin" ? [...BUILTIN_ROLES["workspace-admin"], LEGACY_CLUSTERS] : isBuiltinRole(role) ? BUILTIN_ROLES[role] : [];
 
-/**
- * The binding a v1 environment role is (the same mapping as the N1 migration): it replaces the global role in that
- * workspace; none is a deny that prevails over every grant there.
- */
-export function v1EnvironmentBinding(userId: string, workspaceId: string, role: Role | "none") {
-  const common = { subjectId: userId, scopeType: "workspace" as const, workspaceId, origin: "v1-environment-role" as const };
-  return role === "none" ? { ...common, role: null, permissions: [] as string[], effect: "deny" as const } : { ...common, role: LEGACY_ROLE[role], permissions: null, effect: "allow" as const };
-}
-
 /** What a v1 `x-required-role` requires by default, as one permission (an operation may name its own: V1Permission). */
 export function requiredPermission(role: Role, inWorkspace: boolean): Permission {
   if (role === "viewer") return "workspace.read";
