@@ -918,7 +918,6 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Consumer" }
-        "409": { $ref: "#/components/responses/Conflict" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/ValidationError" }

@@ -543,6 +543,7 @@ export interface paths {
             cookie?: never;
         };
         get: operations["getConsumer"];
+        /** @description 409 when the username changes while a plugin of the environment uses that username as `anonymous`. */
         put: operations["replaceConsumer"];
         post?: never;
         /** @description 409 while a plugin of the environment uses the consumer as `anonymous`. */
