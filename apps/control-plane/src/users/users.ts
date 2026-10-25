@@ -10,8 +10,9 @@ import { contractBody } from "../common/contract.js";
 import { decodeCursor, parseLimit, toPage } from "../common/pagination.js";
 import { conflict, notFound, unprocessable } from "../common/problem.js";
 import { DB, type Db, type Executor } from "../db/db.js";
-import { environmentRoles, environments, users, type UserRow } from "../db/schema.js";
+import { environmentRoles, roleBindings, environments, users, type UserRow } from "../db/schema.js";
 import { uuidParam } from "../environments/environments.js";
+import { v1EnvironmentBinding } from "../auth/permissions.js";
 
 /** The contract's User: never the password hash. */
 export function toUser(r: UserRow) {
@@ -130,6 +131,9 @@ export class UsersService {
     if (before.length === 0 && items.length === 0) return before;
     await tx.delete(environmentRoles).where(eq(environmentRoles.userId, userId));
     if (items.length > 0) await tx.insert(environmentRoles).values(items.map((item) => ({ userId, environmentId: item.environmentId, role: item.role })));
+    // The authorization reads the v1 bindings of these roles (decision H-9): written with them, never apart.
+    await tx.delete(roleBindings).where(and(eq(roleBindings.subjectId, userId), eq(roleBindings.origin, "v1-environment-role")));
+    if (items.length > 0) await tx.insert(roleBindings).values(items.map((item) => v1EnvironmentBinding(userId, item.environmentId, item.role)));
     const after = await environmentRolesOf(tx, userId);
     await audit(tx, ctx, { action: "user.environment_roles.replace", entityType: "user", entityId: userId, before: { items: before }, after: { items: after } });
     return after;

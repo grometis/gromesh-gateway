@@ -18,7 +18,7 @@ import { effectiveRole, environmentOf, lower, RANK, type Role } from "./environm
 import { notFound } from "../common/problem.js";
 import { and, eq } from "drizzle-orm";
 import { environmentRoles, roleBindings } from "../db/schema.js";
-import { type Permission, permissionsIn, requiredPermission, type Scope, tokenPermissions, workspaceExists } from "./permissions.js";
+import { type Held, type Permission, permissionsIn, requiredPermission, type Scope, tokenPermissions, workspaceExists } from "./permissions.js";
 import { sessionCookie, SessionService } from "./sessions.js";
 
 /** `ggt_` plus 32 random bytes in unpadded base64url (43 characters), as the contract's pattern says. */
@@ -50,7 +50,7 @@ export interface AuthenticatedRequest extends Request {
   user?: UserRow;
   session?: { idHash: string; csrfToken: string };
   /** How the request authenticated: a session, or an API token (then the effective role is capped by it). */
-  auth?: ({ via: "session" } | { via: "token"; tokenId: string; tokenName: string }) & { role: Role; permissions: ReadonlySet<Permission> };
+  auth?: ({ via: "session" } | { via: "token"; tokenId: string; tokenName: string }) & { role: Role; permissions: ReadonlySet<Held> };
 }
 
 const ROLE_KEY = "gromesh:required-role";
@@ -73,8 +73,12 @@ export const SessionOnly = () => SetMetadata(SESSION_ONLY_KEY, true);
 export type PermissionScope = "instance" | "workspace" | "binding";
 export const RequiredPermission = (permission: Permission, scope: PermissionScope) => SetMetadata(PERMISSION_KEY, { permission, scope });
 
-/** v1: the permission an operation needs when it is not the translation of its role (deleteEnvironment, GW-ADMIN-07). */
-export const V1Permission = (permission: Permission) => SetMetadata(V1_PERMISSION_KEY, permission);
+/**
+ * v1: the permission an operation needs when it is not the default for its role, any of them (publishing needs
+ * release.publish, rolling back release.rollback, deleting an environment platform.admin, its clusters platform
+ * administration or the v1 admin of that environment).
+ */
+export const V1Permission = (...anyOf: Held[]) => SetMetadata(V1_PERMISSION_KEY, anyOf);
 
 /**
  * Session cookie → user, then the contract's role ladder. Mutations additionally need the session's CSRF
@@ -104,7 +108,7 @@ export class AuthGuard implements CanActivate {
     }
     const req = context.switchToHttp().getRequest<AuthenticatedRequest>();
     const caller = await this.authenticate(context, req, meta<boolean>(SESSION_ONLY_KEY) === true);
-    const decision = v2 ? await this.decideV2(caller, v2, req.params) : await this.decideV1(caller, required as Role, meta<Permission>(V1_PERMISSION_KEY), req.params);
+    const decision = v2 ? await this.decideV2(caller, v2, req.params) : await this.decideV1(caller, required as Role, meta<Held[]>(V1_PERMISSION_KEY), req.params);
     req.user = caller.user;
     req.auth = caller.token ? { via: "token", tokenId: caller.token.id, tokenName: caller.token.name, ...decision } : { via: "session", ...decision };
     if (caller.session) req.session = { idHash: caller.session.idHash, csrfToken: caller.session.csrfToken };
@@ -138,13 +142,14 @@ export class AuthGuard implements CanActivate {
    * workspace) of `{envId}` or of `{clusterId}`, else at instance scope. Without v2 bindings this is exactly the role
    * ladder of the v1 contract; an environment the caller may not read answers 404, as before.
    */
-  private async decideV1(caller: Caller, required: Role, override: Permission | undefined, params: Params) {
+  private async decideV1(caller: Caller, required: Role, override: Held[] | undefined, params: Params) {
     const place = await environmentOf(this.db, params);
     const scope: Scope = place ? { type: "workspace", workspaceId: place.environmentId } : { type: "instance" };
     const owner = await permissionsIn(this.db, caller.user, scope);
     if (place && !owner.has("workspace.read")) throw notFound(place.via === "envId" ? "Environment" : "Cluster");
     const permissions = caller.token ? tokenPermissions(caller.token.role, owner) : owner;
-    if (!permissions.has(override ?? requiredPermission(required, place !== null))) throw new ProblemException(HttpStatus.FORBIDDEN, `Requires role ${required}`);
+    const needed = override ?? [requiredPermission(required, place !== null)];
+    if (!needed.some((p) => permissions.has(p))) throw new ProblemException(HttpStatus.FORBIDDEN, `Requires role ${required}`);
     // The v1 role services still read (masking): the effective one there, capped by the token.
     const own = place ? await this.legacyRole(caller.user, place.environmentId) : caller.user.role;
     return { role: caller.token ? lower(caller.token.role, own) : own, permissions };

@@ -2,7 +2,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { Body, Controller, Delete, Get, HttpCode, Inject, Injectable, Module, Param, Post } from "@nestjs/common";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { audit } from "../audit/audit.js";
-import { Ctx, RequiredRole, type RequestContext } from "../auth/auth.js";
+import { Ctx, RequiredRole, type RequestContext, V1Permission } from "../auth/auth.js";
+import { LEGACY_CLUSTERS } from "../auth/permissions.js";
 import { contractBody, inlineBody } from "../common/contract.js";
 import { notFound } from "../common/problem.js";
 import { DB, type Db, type Executor } from "../db/db.js";
@@ -154,6 +155,8 @@ export class ClustersController {
 
   @Post("environments/:envId/clusters")
   @RequiredRole("admin")
+  // Platform administration, or the v1 admin of the environment (no v2 grant gives a workspace its clusters).
+  @V1Permission("platform.admin", LEGACY_CLUSTERS)
   create(
     @Ctx() ctx: RequestContext,
     @Param("envId", uuidParam()) envId: string,
@@ -171,6 +174,8 @@ export class ClustersController {
   @Delete("clusters/:clusterId")
   @HttpCode(204)
   @RequiredRole("admin")
+  // Platform administration, or the v1 admin of the environment (no v2 grant gives a workspace its clusters).
+  @V1Permission("platform.admin", LEGACY_CLUSTERS)
   remove(@Ctx() ctx: RequestContext, @Param("clusterId", uuidParam()) id: string) {
     return this.clusters.remove(ctx, id);
   }
@@ -178,6 +183,8 @@ export class ClustersController {
   @Post("clusters/:clusterId/rotate-token")
   @HttpCode(200)
   @RequiredRole("admin")
+  // Platform administration, or the v1 admin of the environment (no v2 grant gives a workspace its clusters).
+  @V1Permission("platform.admin", LEGACY_CLUSTERS)
   rotate(@Ctx() ctx: RequestContext, @Param("clusterId", uuidParam()) id: string) {
     return this.clusters.rotate(ctx, id);
   }

@@ -251,6 +251,9 @@ describe("N1 migration from every earlier version", () => {
     ]);
     expect(await query(url, `select distinct path_compatibility from routes`)).toEqual([{ path_compatibility: "legacy-preserved" }]);
     expect(await query(url, `select name from data_migrations`)).toEqual([{ name: "n1-workspaces" }]);
+    // Every environment role is the v1 binding of its workspace (N1-C3): none a deny.
+    const bindings = await query(url, `select subject_id::text, workspace_id::text, role, effect, origin from role_bindings order by subject_id`);
+    expect(bindings).toEqual(idx >= 10 ? [{ subject_id: id(70), workspace_id: id(2), role: null, effect: "deny", origin: "v1-environment-role" }] : []);
   });
 });
 

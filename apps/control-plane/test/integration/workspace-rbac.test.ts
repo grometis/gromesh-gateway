@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { RANK, type Role } from "../../src/auth/environment-access.js";
-import { BUILTIN_ROLES, legacyPermissions, PERMISSIONS, requiredPermission, tokenPermissions } from "../../src/auth/permissions.js";
+import { BUILTIN_ROLES, LEGACY_CLUSTERS, legacyPermissions, PERMISSIONS, requiredPermission, tokenPermissions } from "../../src/auth/permissions.js";
 import { type ApiResponse, startHarness, uniq, type Harness } from "./harness.js";
 
 // N1-C3: one authorization for both APIs (decision H-9). v1 roles are translated to v2 permissions; v2 role bindings
@@ -28,6 +28,14 @@ describe("the permission model", () => {
           expect(held.has(requiredPermission(required, inWorkspace)), `${role} vs ${required}, workspace ${inWorkspace}`).toBe(RANK[role] >= RANK[required]);
         }
       }
+    }
+  });
+
+  it("lets every v1 role at or above editor publish and roll back, and nobody below", () => {
+    for (const role of ROLES) {
+      const held = new Set(legacyPermissions(role, false));
+      for (const p of ["release.publish", "release.rollback"] as const) expect(held.has(p), `${role}: ${p}`).toBe(RANK[role] >= RANK.editor);
+      expect(held.has(LEGACY_CLUSTERS), `${role}: clusters`).toBe(role === "admin");
     }
   });
 
@@ -77,24 +85,53 @@ describe("role bindings through /api/v2, honored by v1 and v2 alike", () => {
   it("lets a workspace admin grant within the workspace; the grant opens v1 and v2 there at once, and its revocation closes them", async () => {
     const a = await env();
     const admin = await user("viewer", [{ env: a, role: "admin" }]);
-    const hidden = await user("viewer", [{ env: a, role: "none" }]);
-    // Hidden: the workspace does not exist for it, in v1 and in v2.
-    expect((await hidden.api("GET", `/environments/${a}/services`)).status).toBe(404);
-    expect((await v2api(hidden.api, "GET", `/workspaces/${a}/role-bindings`)).status).toBe(404);
-    const created = await v2api(admin.api, "POST", `/workspaces/${a}/role-bindings`, { subjectType: "user", subjectId: hidden.id, role: "editor" });
+    const plain = await user("viewer");
+    const service = () => plain.api("POST", `/environments/${a}/services`, { name: uniq("svc"), protocol: "http", host: "a.example.com", port: 80 });
+    expect((await service()).status).toBe(403);
+    const created = await v2api(admin.api, "POST", `/workspaces/${a}/role-bindings`, { subjectType: "user", subjectId: plain.id, role: "editor" });
     expect(created.status, JSON.stringify(created.body)).toBe(201);
-    expect(created.body).toMatchObject({ scope: { type: "workspace", workspaceId: a }, subjectType: "user", subjectId: hidden.id, effect: "allow", role: "editor", grantedBy: admin.id, revokedAt: null });
-    // The same guard decides v1: the binding makes it an editor of the environment.
-    expect((await hidden.api("POST", `/environments/${a}/services`, { name: uniq("svc"), protocol: "http", host: "a.example.com", port: 80 })).status).toBe(201);
-    expect((await v2api(hidden.api, "GET", `/workspaces/${a}/role-bindings`)).status).toBe(200);
-    // Not elsewhere.
+    expect(created.body).toMatchObject({ scope: { type: "workspace", workspaceId: a }, subjectType: "user", subjectId: plain.id, effect: "allow", origin: "v2", role: "editor", grantedBy: admin.id, revokedAt: null });
+    // The same guard decides v1: the binding makes it an editor of the environment, there only.
+    expect((await service()).status).toBe(201);
     const b = await env();
-    expect((await hidden.api("POST", `/environments/${b}/services`, { name: uniq("svc"), protocol: "http", host: "a.example.com", port: 80 })).status).toBe(403);
+    expect((await plain.api("POST", `/environments/${b}/services`, { name: uniq("svc"), protocol: "http", host: "a.example.com", port: 80 })).status).toBe(403);
+    // Editor is not publisher: no publishing through v1 either (v2 needs release.publish).
+    expect((await plain.api("POST", `/environments/${a}/snapshots`, {})).status).toBe(403);
     // Revoked: the very next request is decided without it.
     expect((await v2api(admin.api, "POST", `/role-bindings/${created.body.id}/revoke`)).status).toBe(204);
-    expect((await hidden.api("GET", `/environments/${a}/services`)).status).toBe(404);
+    expect((await service()).status).toBe(403);
     const audit = (await h.sql.query(`select action from audit_events where entity_id = $1 order by at`, [created.body.id])).rows.map((r) => r.action);
     expect(audit).toEqual(["role_binding.create", "role_binding.revoke"]);
+  });
+
+  it("keeps an environment role none a deny no workspace grant overrides, and shows the v1 roles as read-only bindings", async () => {
+    const a = await env();
+    const admin = await user("viewer", [{ env: a, role: "admin" }]);
+    const hidden = await user("viewer", [{ env: a, role: "none" }]);
+    const granted = await v2api(admin.api, "POST", `/workspaces/${a}/role-bindings`, { subjectType: "user", subjectId: hidden.id, role: "editor" });
+    expect(granted.status).toBe(201);
+    expect((await hidden.api("GET", `/environments/${a}/services`)).status).toBe(404);
+    expect((await v2api(hidden.api, "GET", `/workspaces/${a}/role-bindings`)).status).toBe(404);
+    const listed = (await v2api(admin.api, "GET", `/workspaces/${a}/role-bindings`)).body as { id: string; subjectId: string; origin: string; effect: string; role?: string }[];
+    const v1 = listed.filter((x) => x.origin === "v1-environment-role");
+    expect(v1.map((x) => ({ subjectId: x.subjectId, effect: x.effect, role: x.role })).sort((x, y) => x.effect.localeCompare(y.effect))).toEqual([
+      { subjectId: admin.id, effect: "allow", role: "workspace-admin" },
+      { subjectId: hidden.id, effect: "deny", role: undefined },
+    ]);
+    const deny = v1.find((x) => x.effect === "deny")!;
+    expect((await v2api(h.api, "POST", `/role-bindings/${deny.id}/revoke`)).status).toBe(403);
+    // Through v1, as before: the role changes and its binding with it.
+    expect((await h.api("PUT", `/users/${hidden.id}/environment-roles`, { items: [] })).status).toBe(200);
+    expect((await hidden.api("POST", `/environments/${a}/services`, { name: uniq("svc"), protocol: "http", host: "a.example.com", port: 80 })).status).toBe(201);
+  });
+
+  it("gives clusters to platform administration and to a v1 environment admin, never through a workspace grant", async () => {
+    const a = await env();
+    const target = await user("viewer");
+    expect((await v2api(h.api, "POST", `/workspaces/${a}/role-bindings`, { subjectType: "user", subjectId: target.id, role: "workspace-admin" })).status).toBe(201);
+    expect((await target.api("POST", `/environments/${a}/clusters`, { name: uniq("edge") })).status).toBe(403);
+    const v1admin = await user("viewer", [{ env: a, role: "admin" }]);
+    expect((await v1admin.api("POST", `/environments/${a}/clusters`, { name: uniq("edge") })).status).toBe(201);
   });
 
   it("never grants more than the granter holds, nor platform administration inside a workspace, nor what later phases bring", async () => {
@@ -118,6 +155,25 @@ describe("role bindings through /api/v2, honored by v1 and v2 alike", () => {
     const group = await v2api(admin.api, "POST", `/workspaces/${a}/role-bindings`, { subjectType: "group", subjectId: target.id, role: "viewer" });
     expect(group.status).toBe(422);
     expect((await post({ subjectId: "00000000-0000-4000-8000-000000000000", role: "viewer" })).status).toBe(422);
+  });
+
+  it("protects a platform grant whatever its grantor becomes, and lets platform administration revoke any grant", async () => {
+    const a = await env();
+    const platform = await user("viewer");
+    expect((await v2api(h.api, "POST", "/role-bindings", { subjectType: "user", subjectId: platform.id, role: "platform-admin" })).status).toBe(201);
+    const target = await user("viewer");
+    const grant = await v2api(platform.api, "POST", `/workspaces/${a}/role-bindings`, { subjectType: "user", subjectId: target.id, role: "editor" });
+    expect(grant.status, JSON.stringify(grant.body)).toBe(201);
+    const local = await user("viewer", [{ env: a, role: "admin" }]);
+    expect((await v2api(local.api, "POST", `/role-bindings/${grant.body.id}/revoke`)).status).toBe(403);
+    // An emergency grant: platform administration revokes it without holding rollback.emergency itself.
+    const soon = new Date(Date.now() + 24 * 3600_000).toISOString();
+    const emergency = await v2api(h.api, "POST", `/workspaces/${a}/role-bindings`, { subjectType: "user", subjectId: target.id, permissions: ["rollback.emergency"], expiresAt: soon, justification: "incident 7, on call" });
+    expect(emergency.status).toBe(201);
+    expect((await v2api(h.api, "POST", `/role-bindings/${emergency.body.id}/revoke`)).status).toBe(204);
+    // Any expiresAt, null included, belongs to an emergency grant only (the core profile).
+    const nulled = await v2api(h.api, "POST", `/workspaces/${a}/role-bindings`, { subjectType: "user", subjectId: target.id, role: "viewer", expiresAt: null });
+    expect(nulled.status).toBe(422);
   });
 
   it("grants rollback.emergency only from platform administration, to a user, for at most 7 days", async () => {

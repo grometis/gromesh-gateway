@@ -2,7 +2,7 @@ import { Body, Controller, Get, HttpCode, HttpStatus, Inject, Injectable, Module
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { audit } from "../audit/audit.js";
 import { type AuthenticatedRequest, Ctx, RequiredPermission, type RequestContext, SessionOnly } from "../auth/auth.js";
-import { BUILTIN_ROLES, builtinRoleId, isBuiltinRole, type Permission } from "../auth/permissions.js";
+import { BUILTIN_ROLES, builtinRoleId, type Held, isBuiltinRole, type Permission } from "../auth/permissions.js";
 import { contractBodyV2 } from "../common/contract.js";
 import { notFound, ProblemException, unprocessable, type FieldError } from "../common/problem.js";
 import { DB, type Db } from "../db/db.js";
@@ -33,6 +33,8 @@ export function toRoleBinding(r: RoleBindingRow) {
     subjectType: r.subjectType,
     subjectId: r.subjectId,
     effect: r.effect,
+    // v1-environment-role: written by the v1 environment roles (read-only here); v2: granted through this API.
+    origin: r.origin,
     ...(r.role !== null ? { role: r.role } : { permissions: r.permissions ?? [] }),
     expiresAt: r.expiresAt?.toISOString() ?? null,
     justification: r.justification,
@@ -67,14 +69,15 @@ export class AccessService {
    * roles are L3) or permissions; never more than the caller holds; rollback.emergency only directly to a user, for
    * at most 7 days, with a justification, by platform administration.
    */
-  async create(ctx: RequestContext, held: ReadonlySet<Permission>, scope: BindingScope, body: RoleBindingWrite) {
+  async create(ctx: RequestContext, held: ReadonlySet<Held>, scope: BindingScope, body: RoleBindingWrite) {
     const errors: FieldError[] = [];
     if (body.subjectType !== "user") errors.push({ path: "subjectType", message: "groups arrive in a later phase (L2)" });
     if ((body.effect ?? "allow") !== "allow") errors.push({ path: "effect", message: "deny bindings arrive in a later phase (L3)" });
     if (body.role !== undefined && !isBuiltinRole(body.role)) errors.push({ path: "role", message: "custom roles arrive in a later phase (L3)" });
     const permissions = granted(body);
     const emergency = permissions.includes("rollback.emergency");
-    if (body.expiresAt != null && !emergency) errors.push({ path: "expiresAt", message: "only a rollback.emergency grant expires in this phase (L4)" });
+    // The core profile: any expiresAt (null included) belongs to a rollback.emergency grant only.
+    if ("expiresAt" in body && !emergency) errors.push({ path: "expiresAt", message: "only a rollback.emergency grant expires in this phase (L4)" });
     if (emergency) {
       const until = body.expiresAt ? Date.parse(body.expiresAt) : NaN;
       if (!(until > Date.now() && until - Date.now() <= EMERGENCY_MAX_MS)) errors.push({ path: "expiresAt", message: "must be in the next 7 days" });
@@ -101,6 +104,7 @@ export class AccessService {
           expiresAt: body.expiresAt ? new Date(body.expiresAt) : null,
           justification: body.justification ?? null,
           grantedBy: ctx.actor.id,
+          grantedByPlatform: held.has("platform.admin"),
         })
         .returning();
       const after = toRoleBinding(row!);
@@ -113,15 +117,19 @@ export class AccessService {
    * Immediate: the next request of a session or token is decided without it. A binding granted by a platform admin
    * is revoked only by platform administration; anyone else needs members.manage there and every permission it grants.
    */
-  async revoke(ctx: RequestContext, held: ReadonlySet<Permission>, bindingId: string) {
+  async revoke(ctx: RequestContext, held: ReadonlySet<Held>, bindingId: string) {
     await this.db.transaction(async (tx) => {
       const [row] = await tx.select().from(roleBindings).where(eq(roleBindings.id, bindingId)).for("update");
       if (!row) throw notFound("Role binding");
       if (row.revokedAt) return;
-      const [grantor] = row.grantedBy ? await tx.select({ role: users.role }).from(users).where(eq(users.id, row.grantedBy)) : [];
-      if (grantor?.role === "admin" && !held.has("platform.admin")) throw new ProblemException(HttpStatus.FORBIDDEN, "Granted by the platform: only platform administration revokes it");
-      const missing = granted({ role: row.role ?? undefined, permissions: (row.permissions ?? []) as Permission[] }).filter((p) => !held.has(p));
-      if (missing.length > 0) throw new ProblemException(HttpStatus.FORBIDDEN, `Cannot revoke what you do not hold: ${missing.join(", ")}`);
+      if (row.origin === "v1-environment-role") throw new ProblemException(HttpStatus.FORBIDDEN, "A v1 environment role: change it through the environment roles of the user");
+      // Platform administration revokes any grant; anyone else needs every permission it grants, and never one the
+      // platform made (fixed when granted, whatever the grantor became since).
+      if (!held.has("platform.admin")) {
+        if (row.grantedByPlatform) throw new ProblemException(HttpStatus.FORBIDDEN, "Granted by the platform: only platform administration revokes it");
+        const missing = granted({ role: row.role ?? undefined, permissions: (row.permissions ?? []) as Permission[] }).filter((p) => !held.has(p));
+        if (missing.length > 0) throw new ProblemException(HttpStatus.FORBIDDEN, `Cannot revoke what you do not hold: ${missing.join(", ")}`);
+      }
       await tx.update(roleBindings).set({ revokedAt: sql`now()` }).where(and(eq(roleBindings.id, bindingId), isNull(roleBindings.revokedAt)));
       await audit(tx, ctx, { action: "role_binding.revoke", entityType: "role_binding", entityId: bindingId, environmentId: row.workspaceId ?? undefined, before: toRoleBinding(row) });
     });
