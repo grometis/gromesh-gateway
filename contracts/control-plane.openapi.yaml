@@ -31,8 +31,13 @@ info:
         (a global admin sees all).
       - Every mutation is written to the audit log in the same transaction.
       - Migration to v2 (control-plane-v2.openapi.yaml, decision H-9): each environment is the workspace with the same
-        id. Every operation here runs on the same services and the same authorization as v2; the roles above are
-        translated to v2 permissions and no rule of this API grants anything v2 would refuse. The administrative
+        id. Every operation here runs on the same services and the same authorization as v2: the roles above are
+        translated to v2 permissions, and no role or token reaches here what v2 would refuse. The uniqueness rules are
+        the same (credentials and SNIs in the instance). What v1 keeps until the cut: routes created here are
+        legacy-preserved (`stripPath` defaults to true, a path is optional), exactly as today; a route without a path
+        is listed in the migration report, because the N2 composition refuses it until it gets one, and a route only
+        becomes the workspace default through v2 (convertRoutePathCompatibility). A service still balances across the
+        upstream whose name is its `host`. The administrative
         operations under `/environments/{envId}` and `/clusters/{clusterId}`, and `GET`/`POST /environments`, are cut
         (410) only after the UI no longer calls them, no API token called them for 30 days and the migration
         regression is green; that cut is a contract change of its own. Login, sessions, CSRF, `/me`, users, API
@@ -1338,8 +1343,8 @@ paths:
         `issuer`, `notBefore`, `notAfter` and `fingerprintSha256` describe the leaf. The key is write-only: it is
         stored encrypted and reads back as "REDACTED". 422 with `path`: `cert` when it is not a PEM certificate chain or
         its leaf has expired; `key` when it is not a PEM private key, does not match the leaf, or is "REDACTED" here;
-        `snis.<i>` when a name is repeated in the request, already belongs to another certificate of the instance (any
-        environment; the message never names it), or has a wildcard anywhere but as the `*.` prefix.
+        `snis.<i>` when a name is repeated in the request or has a wildcard anywhere but as the `*.` prefix. 409 when a
+        name already belongs to another certificate of the instance (any environment; the message never names it).
         Expiry is judged only when `cert` is created or replaced: publishing, rolling back and editing only the `snis`
         of a certificate that has since expired keep working.
       requestBody:
@@ -1354,6 +1359,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Certificate" }
               example: {"id": "0c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f", "cert": "-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIUExample\n-----END CERTIFICATE-----\n", "key": "REDACTED", "snis": ["api.example.com", "*.example.com"], "tags": [], "subject": "CN=api.example.com", "issuer": "CN=Example CA", "notBefore": "2026-10-01T00:00:00Z", "notAfter": "2027-10-01T00:00:00Z", "fingerprintSha256": "3A:7F:1C:9D:4E:2B:8A:6F:0D:5C:1E:9B:7A:3F:2D:8C:6E:4B:1A:9F:0C:7D:5E:3B:2A:8F:6C:4D:1B:9E:0F:7A", "createdAt": "2026-10-15T12:00:00Z", "updatedAt": "2026-10-15T12:00:00Z"}
+        "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/ValidationError" }
         "404": { $ref: "#/components/responses/NotFound" }
   /environments/{envId}/certificates/{certificateId}:
@@ -1377,7 +1383,7 @@ paths:
       x-required-role: editor
       description: |
         `key: "REDACTED"` keeps the stored key, which must then still match the leaf of the new `cert` (422 on `key`
-        otherwise). Same 422 rules as the creation; an unchanged `cert` is not judged on expiry.
+        otherwise). Same 422 and 409 rules as the creation; an unchanged `cert` is not judged on expiry.
       requestBody:
         required: true
         content:
@@ -1391,6 +1397,7 @@ paths:
               schema: { $ref: "#/components/schemas/Certificate" }
               example: {"id": "0c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f", "cert": "-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIUExample\n-----END CERTIFICATE-----\n", "key": "REDACTED", "snis": ["api.example.com", "*.example.com"], "tags": [], "subject": "CN=api.example.com", "issuer": "CN=Example CA", "notBefore": "2026-10-01T00:00:00Z", "notAfter": "2027-10-01T00:00:00Z", "fingerprintSha256": "3A:7F:1C:9D:4E:2B:8A:6F:0D:5C:1E:9B:7A:3F:2D:8C:6E:4B:1A:9F:0C:7D:5E:3B:2A:8F:6C:4D:1B:9E:0F:7A", "createdAt": "2026-10-15T12:00:00Z", "updatedAt": "2026-10-15T12:00:00Z"}
         "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/ValidationError" }
     delete:
       tags: [certificates]

@@ -592,9 +592,11 @@ dos gates da N2.
 - **H-9, migração v1 → v2:** migração controlada, sem duas APIs administrativas equivalentes permanentes. Cada
   handler v1 de `/environments/{envId}/…` passa a chamar o mesmo serviço e o mesmo guard da v2 (Workspace = id do
   environment, papel v1 traduzido para permissões); não existe regra de autorização própria da v1. As regras da v2
-  valem também pela v1: route nova sem path → 422; `stripPath: true` padrão da v1 só nas routes `legacy-preserved`;
-  unicidade de credenciais por instância; upstream por `upstreamId` (mudança visível para clientes v1, vai nas notas
-  da N1). Ficam na v1 sem substituto: login, logout, CSRF, `/me`, usuários, tokens, catálogo de plugins, auditoria e
+  valem também pela v1: a mesma autorização e a unicidade de credenciais e SNI por instância (409). Para preservar o
+  comportamento atual, a v1 mantém a semântica dela até o corte: route criada pela v1 é `legacy-preserved`
+  (`stripPath: true` padrão, path opcional; sem path entra no relatório da migração e é recusada só pela composição
+  da N2) e o service continua apontando o upstream pelo `host`; só a v2 cria routes `workspace-default` e usa
+  `upstreamId`. Ficam na v1 sem substituto: login, logout, CSRF, `/me`, usuários, tokens, catálogo de plugins, auditoria e
   registro do agente. Corte das operações administrativas v1 (64 com `{envId}`/`{clusterId}`, mais `GET`/`POST
   /environments`) só quando: (1) a UI não chamar nenhuma delas (e2e); (2) nenhuma chamada v1 por token `ggt_` em 30
   dias (métrica da N1-X5); (3) migração e regressão verdes em integração e e2e, com o roteiro de retorno ensaiado. O

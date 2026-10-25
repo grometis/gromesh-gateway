@@ -296,9 +296,14 @@ paths:
         person: slugs derived from environment names that were adjusted (collision, reserved, invalid) and must be
         reviewed before the first release, access that changed when the effective role matrix became bindings (only
         the implicit access to workspaces created later is dropped; nothing is widened), and the routes kept
-        legacy-preserved, with those without a path that the composition of N2 will refuse. A credential or SNI
-        repeated across environments never appears here: it blocks the migration, and the pre-migration check
-        reports it before anything changes. Read-only; null before the migration ran.
+        legacy-preserved, with those without a path that the composition of N2 will refuse.
+        It is also the pre-check of the uniqueness the instance needs (decision H-5): a key-auth key, JWT key,
+        basic-auth username or SNI repeated across environments, in a draft, an active snapshot or a snapshot that a
+        rollback could restore, is a blocker. While a blocker exists the status is blocked: the instance-wide unique
+        constraints are not in force yet (new writes are already refused as conflicts), no second workspace can be composed
+        on an instance, and each blocker names only the workspaces, entities and snapshot versions involved, never a
+        key, hash, username or server name. Once the last blocker is fixed the constraints are applied and the
+        status becomes complete. Read-only.
       responses:
         "200": { description: Report, content: { application/json: { schema: { $ref: "#/components/schemas/WorkspaceMigrationReport" } } } }
         "401": { $ref: "#/components/responses/Unauthorized" }
@@ -3717,11 +3722,36 @@ components:
       required: [ id, stage, signingKeyIds ]
       properties: { id: { type: string, format: uuid }, stage: { $ref: "#/components/schemas/Stage" }, name: { type: string }, signingKeyIds: { type: array, items: { type: string } } }
     WorkspaceMigrationReport:
-      type: [ object, "null" ]
+      type: object
       additionalProperties: false
-      required: [ migratedAt, workspaces, accessChanges ]
+      required: [ migratedAt, status, blockers, workspaces, accessChanges ]
       properties:
         migratedAt: { type: string, format: date-time }
+        status: { enum: [ complete, blocked ] }
+        blockers:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [ kind, occurrences ]
+            properties:
+              kind: { enum: [ key-auth-key, jwt-key, basic-auth-username, sni ] }
+              occurrences:
+                type: array
+                minItems: 2
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [ workspaceId, source, entityType, entityId, snapshotVersion ]
+                  properties:
+                    workspaceId: { type: string, format: uuid }
+                    source: { enum: [ draft, active-snapshot, rollback-candidate ] }
+                    entityType: { enum: [ key-auth-credential, jwt-credential, basic-auth-credential, certificate ] }
+                    entityId: { type: string, format: uuid }
+                    snapshotVersion: { type: [ integer, "null" ], minimum: 1, description: null for the draft }
+                  if: { properties: { source: { const: draft } } }
+                  then: { properties: { snapshotVersion: { type: "null" } } }
+                  else: { properties: { snapshotVersion: { type: integer } } }
         workspaces:
           type: array
           items:

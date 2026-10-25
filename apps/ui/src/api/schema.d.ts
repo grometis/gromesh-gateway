@@ -817,8 +817,8 @@ export interface paths {
          *     `issuer`, `notBefore`, `notAfter` and `fingerprintSha256` describe the leaf. The key is write-only: it is
          *     stored encrypted and reads back as "REDACTED". 422 with `path`: `cert` when it is not a PEM certificate chain or
          *     its leaf has expired; `key` when it is not a PEM private key, does not match the leaf, or is "REDACTED" here;
-         *     `snis.<i>` when a name is repeated in the request, already belongs to another certificate of the instance (any
-         *     environment; the message never names it), or has a wildcard anywhere but as the `*.` prefix.
+         *     `snis.<i>` when a name is repeated in the request or has a wildcard anywhere but as the `*.` prefix. 409 when a
+         *     name already belongs to another certificate of the instance (any environment; the message never names it).
          *     Expiry is judged only when `cert` is created or replaced: publishing, rolling back and editing only the `snis`
          *     of a certificate that has since expired keep working.
          */
@@ -842,7 +842,7 @@ export interface paths {
         get: operations["getCertificate"];
         /**
          * @description `key: "REDACTED"` keeps the stored key, which must then still match the leaf of the new `cert` (422 on `key`
-         *     otherwise). Same 422 rules as the creation; an unchanged `cert` is not judged on expiry.
+         *     otherwise). Same 422 and 409 rules as the creation; an unchanged `cert` is not judged on expiry.
          */
         put: operations["replaceCertificate"];
         post?: never;
@@ -4419,6 +4419,7 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
             422: components["responses"]["ValidationError"];
         };
     };
@@ -4510,6 +4511,7 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
             422: components["responses"]["ValidationError"];
         };
     };
