@@ -816,7 +816,6 @@ paths:
       x-gromesh-requirements: [ GW-WS-13 ]
       x-required-permission: workspace.admin
       x-scope: workspace
-      x-gromesh-planned: true
       description: |
         The only way to turn a migrated route (pathCompatibility legacy-preserved) into the workspace default (full path
         with the prefix to the upstream, stripPath false; decision D1). Requires echoing the diff of public and upstream
