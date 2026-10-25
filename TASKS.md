@@ -81,6 +81,7 @@ git worktree add ../gg-codex  -b task/W1-X1-kong-image
 | N1-X4 | Codex | N1-X3, N1-C1, N1-C2, N1-C3 | `apps/control-plane/` (módulos v2), `contracts/` (só remover `x-gromesh-planned`) |
 | N1-X5 | Codex | N1-X4 | `apps/control-plane/` (handlers v1 e métrica), `apps/ui/` só se um teste da UI precisar de ajuste sem mudar a tela |
 | N1-C4 | Claude | todas da N1 | `e2e/`, `apps/control-plane/test/`, `.github/workflows/` (só o job de regressão da migração) |
+| N1-X6 | Claude | N1-C0 | `apps/control-plane/src/consumers/`, `apps/control-plane/src/config-transfer/`, `apps/control-plane/test/`, `apps/ui/` só se um teste da UI informar a chave |
 
 Ordem de merge na semana 3: W2-C2 → W3-X1 → W3-C1 → W3-X2. Quem mergeia depois faz rebase; `src/db/schema.ts` e `drizzle/` são alterados por uma frente por vez.
 
@@ -623,6 +624,7 @@ próprios (`clusters.environment_id`) e snapshot próprio, sem composição.
 | N1-X4 Endpoints v2 | N1-X3, N1-C1, N1-C2, N1-C3 | Workspaces (leitura; criação recusada além do migrado até a N2), entidades do gateway, variáveis, export/import por Workspace (`gromesh/v1` não transporta variáveis; VarRef → 422 no campo); `x-gromesh-planned` removida operação a operação | integração por operação contra o contrato (corpos fechados, 409/422 de conflito); cobertura contrato ↔ handlers; o teste "marcada sem handler" continua valendo para o resto |
 | N1-X5 Compatibilidade temporária com a v1 | N1-X4 | handlers v1 de `/environments/{envId}/…` sobre os serviços e o guard da v2 (Workspace = id do environment, papel v1 traduzido para permissões); contador de chamadas v1 por token `ggt_` | a mesma matriz RBAC passa pelas duas APIs; teste de bypass (permissão v1 sem a v2 → 403/404); e2e da UI atual sem regressão; nenhuma regra de autorização exclusiva da v1 |
 | N1-C4 Regressão e ensaio da migração | todas da N1 | job de regressão: banco com dados de cada versão → migração → snapshots com o mesmo hash, matriz RBAC igual, `mvp-e2e` verde; roteiro de retorno (restaurar o backup anterior à migração) ensaiado em cópia | job verde na CI; relatório de tempo da migração; roteiro de retorno executado no ensaio; nada aplicado no homelab |
+| N1-X6 Credenciais só geradas pelo servidor (H-14) | N1-C0 | chave key-auth e segredo HS256 do JWT só gerados pelo servidor: `key`/`secret` informados → 422 no campo (v1 e v2); no import (documento Gromesh ou Kong), credencial nova recebe valor gerado e o relatório a lista em `regeneratedCredentials`, sem valores; credencial casada mantém o valor guardado; key-auth casa só por id | integração: 422 no campo nas duas APIs; import com chave → regenerada, listada sem valor, chave do documento nunca aceita no Kong; nenhuma colisão de chave entre Workspaces possível pela API |
 
 **Critério de conclusão da N1:** todos os aceites acima verdes, comportamento atual preservado (hash, UI, RBAC) e
 nenhum data plane com mais de um Workspace: além dos migrados, só os environments que a v1 continua criando, cada um
@@ -641,6 +643,12 @@ Nenhum Workspace é ativável sem estes testes em Kong real e Kubernetes compat�
 contenção real do tráfego; orçamento de detecção e encerramento (incluindo as folgas K, Ks e Kx medidas);
 keepalive e WebSocket; supervisor travado; relógio monotônico e `bootId`; admissão de pods; perda da sonda e da
 comunicação; recriação de pod e troca de nó; ordem de encerramento dos sidecars; controles negativos de isolamento.
+
+Gate de acesso (decisão do PO na revisão da N1): um Workspace criado a partir da N2 nasce sem acesso implícito de
+editor ou viewer global (menor privilégio): só `platform-admin` e quem for atribuído a ele. Os papéis globais v1 sem
+bindings valem só para a N1; o relatório da migração (`accessChanges`) lista quem perde o acesso implícito. As
+variáveis (N1-X4b) ficam para a N2, como a escrita v2 de service, route e plugin e o import v2 (estes também
+dependem da trilha F-1).
 
 ## Backlog (pós-MVP, em ordem de prioridade)
 

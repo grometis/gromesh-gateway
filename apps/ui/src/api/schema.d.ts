@@ -319,8 +319,8 @@ export interface paths {
          *     in the resulting draft is a uniqueness conflict.
          *     Plugins match by (name, resolved service, route, consumer scope), targets by (upstream, target), JWT
          *     credentials by issuer key and basic-auth credentials by username (both unique in the instance, across environments).
-         *     Key-auth matches by existing id within the resolved consumer or by the supplied full key; `keyHint`
-         *     is display-only and MUST NOT be used to match a credential. A credential belonging to another consumer,
+         *     Key-auth matches by existing id within the resolved consumer (until N1-X6, also by the supplied full key);
+         *     `keyHint` is display-only and MUST NOT be used to match a credential. A credential belonging to another consumer,
          *     or an id disagreeing with a natural-key match, is a conflict. Credential ids only match within the resolved
          *     consumer; unmatched ids are source identities, not requested ids for creation. New ids are generated
          *     by the control plane, except for the consumer-id preservation rule for prehashed basic-auth below.
@@ -339,9 +339,12 @@ export interface paths {
          *
          *     A supplied `REDACTED`, or an omitted secret on a matched entity, keeps the current secret in either mode,
          *     as with certificate PUT. For a NEW credential/certificate/plugin secret, `REDACTED` or a missing value
-         *     is 422 at that secret path; import never auto-generates credentials. This applies to key-auth keys,
-         *     basic-auth passwords, HS256 JWT secrets, certificate keys and plugin fields marked `encrypted` that
-         *     the selected plugin configuration requires. Optional inactive plugin secret fields may remain absent.
+         *     is 422 at that secret path; import never auto-generates credentials. This applies to basic-auth passwords,
+         *     certificate keys and plugin fields marked `encrypted` that the selected plugin configuration requires (and,
+         *     until N1-X6, to key-auth keys and HS256 JWT secrets). Decision H-14, delivered by N1-X6: the server generates
+         *     every key-auth key and HS256 JWT secret, so a document never sets one; a new key-auth or HS256 JWT credential
+         *     gets a generated value, whether the document supplies one (a Gromesh or a Kong document) or not, and the
+         *     report lists it in `regeneratedCredentials`, without any value; a matched credential keeps its stored value. Optional inactive plugin secret fields may remain absent.
          *     A secret slot without a stored value is new even on a matched plugin or credential.
          *     RS256/ES256 JWT credentials require a valid public key and must not supply a secret. Existing certificate
          *     keys must still match the leaf; all current entity write validations, including certificate expiry on
@@ -566,9 +569,9 @@ export interface paths {
         get: operations["listKeyAuthCredentials"];
         put?: never;
         /**
-         * @description If `key` is omitted a random 32-byte key is generated. The full key is returned only in this response. 409 when
-         *     a supplied `key` is already used by a key-auth credential in the instance (any environment; the message never
-         *     names it).
+         * @description The server generates every key: a random 32-byte key, returned only in this response. A supplied `key` answers
+         *     422 at `key` (decision H-14, delivered by task N1-X6: until then a supplied value is still accepted, and 409 when it is already used by a key-auth credential in the instance, any
+         *     environment; the message never names it).
          */
         post: operations["createKeyAuthCredential"];
         delete?: never;
@@ -610,8 +613,8 @@ export interface paths {
         get: operations["listJwtCredentials"];
         put?: never;
         /**
-         * @description HS256 signs with a shared `secret`: if omitted a random 32-byte secret is generated, and it is returned only in
-         *     this response. RS256 and ES256 verify with `rsaPublicKey` (an RSA or EC P-256 public key, despite Kong's field
+         * @description HS256 signs with a shared secret the server generates (random, 32 bytes), returned only in this response; a
+         *     supplied `secret` answers 422 at `secret` (decision H-14, delivered by task N1-X6: until then a supplied value is still accepted). RS256 and ES256 verify with `rsaPublicKey` (an RSA or EC P-256 public key, despite Kong's field
          *     name). If `key` is omitted a random one is generated. 409 when `key` is already used by a JWT credential in the
          *     instance (any environment; the message never names it). 422 with `path`: `secret` given with RS256/ES256; `rsaPublicKey` missing with RS256/ES256, given
          *     with HS256, not a PEM public key, or of the wrong type for the algorithm (RSA for RS256, EC P-256 for ES256).
@@ -1422,7 +1425,7 @@ export interface components {
             key?: string;
             /** @default HS256 */
             algorithm: components["schemas"]["JwtAlgorithm"];
-            /** @description HS256 only, write-only */
+            /** @description HS256 only, write-only; refused (422) once N1-X6 delivers decision H-14: the server generates it */
             secret?: string;
             /** @description RS256/ES256 only: PEM public key, at most 16 KiB */
             rsaPublicKey?: string;
@@ -1865,6 +1868,22 @@ export interface components {
                 change?: "removed";
             })[];
             errors: components["schemas"]["FieldError"][];
+            /**
+             * @description Decision H-14 (delivered by N1-X6, always present from then on): every key-auth or HS256 JWT credential the
+             *     import creates gets a key or secret the server generates, whatever the document supplied; each one is
+             *     listed here by its document path and id, never with a value. Empty when there is an error.
+             */
+            regeneratedCredentials?: {
+                /** @description The credential's document path, e.g. document.consumers.0.keyAuthCredentials.1 */
+                path: string;
+                /** @enum {unknown} */
+                credentialType: "key-auth" | "jwt";
+                /**
+                 * Format: uuid
+                 * @description Provisional in a dry run
+                 */
+                credentialId: string;
+            }[];
         } & unknown;
         EntityChange: {
             /** @enum {string} */
@@ -3727,6 +3746,7 @@ export interface operations {
         requestBody?: {
             content: {
                 "application/json": {
+                    /** @description Refused (422) once N1-X6 delivers decision H-14: the server generates the key */
                     key?: string;
                     tags?: components["schemas"]["Tags"];
                 };
