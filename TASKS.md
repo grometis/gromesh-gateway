@@ -71,6 +71,16 @@ git worktree add ../gg-codex  -b task/W1-X1-kong-image
 | P6-X1 | Codex | P6-C0 | `apps/control-plane/`, `deploy/helm/*/templates/`, `deploy/helm/*/values.yaml` (só os comentários), `deploy/helm/*/ci/check.sh`, `.github/workflows/ci.yml` (só o passo do chart do data plane) |
 | P6-C2 | Claude | P6-X1 | `deploy/helm/*/ci/values-homelab.yaml` |
 | N0-C0 | Claude | W0 aprovada | `contracts/` (só arquivos v2 e exemplos novos), `apps/control-plane/test/integration/workspaces-v2-contract.test.ts`, `package.json` (só `lint:contracts`) |
+| N1-C0 | Claude | N0 mergeada | `contracts/` (PR de contrato: só o que a N1 precisa e o v2 ainda não tem) |
+| N1-C1 | Claude | — | `apps/control-plane/src/workspaces/slug.ts` e o teste de unidade dele |
+| N1-X1 | Codex | N1-C0 | `apps/control-plane/src/db/schema.ts`, `apps/control-plane/drizzle/`, `apps/control-plane/src/environments/`, `apps/control-plane/src/workspaces/` (exceto `slug.ts`), `apps/control-plane/test/` |
+| N1-X2 | Codex | N1-X1 | `apps/control-plane/src/db/schema.ts`, `apps/control-plane/drizzle/`, validação de referência em `src/gateway/`, `src/consumers/`, `src/plugins/`, `src/certificates/`, `src/upstreams/`, `apps/control-plane/test/` |
+| N1-X3 | Codex | N1-X2 | os mesmos de N1-X2, mais `src/workspaces/migration-report*` |
+| N1-C2 | Claude | N1-X1 | `apps/control-plane/src/gateway/` (routes), `apps/control-plane/src/workspaces/`, `contracts/` (só remover `x-gromesh-planned` de `convertRoutePathCompatibility`), `apps/control-plane/test/` |
+| N1-C3 | Claude | N1-X3 | `apps/control-plane/src/auth/`, `apps/control-plane/src/common/`, `apps/control-plane/src/db/schema.ts`, `apps/control-plane/drizzle/`, `apps/control-plane/test/` |
+| N1-X4 | Codex | N1-X3, N1-C1, N1-C2, N1-C3 | `apps/control-plane/` (módulos v2), `contracts/` (só remover `x-gromesh-planned`) |
+| N1-X5 | Codex | N1-X4 | `apps/control-plane/` (handlers v1 e métrica), `apps/ui/` só se um teste da UI precisar de ajuste sem mudar a tela |
+| N1-C4 | Claude | todas da N1 | `e2e/`, `apps/control-plane/test/`, `.github/workflows/` (só o job de regressão da migração) |
 
 Ordem de merge na semana 3: W2-C2 → W3-X1 → W3-C1 → W3-X2. Quem mergeia depois faz rebase; `src/db/schema.ts` e `drizzle/` são alterados por uma frente por vez.
 
@@ -590,18 +600,34 @@ dos gates da N2.
   dias (métrica da N1-X5); (3) migração e regressão verdes em integração e e2e, com o roteiro de retorno ensaiado. O
   corte responde 410 e é tarefa própria, com PR de contrato.
 
+Tarefas pequenas, um PR cada; `src/db/schema.ts` e `drizzle/` mudam por uma frente por vez, na ordem N1-X1 →
+N1-X2 → N1-X3 → N1-C3. Toda migração é testada sobre bancos com os dados de cada versão anterior (0000…0011). Nenhuma
+tarefa cria um segundo Workspace operacional: a criação pela API fica bloqueada até a N2; dois Workspaces só existem
+em fixture de teste.
+
 | Tarefa | Depende de | Escopo | Aceite |
 | --- | --- | --- | --- |
-| N1-C0 Contrato | N0 mergeada | tirar `x-gromesh-planned` só das operações que a N1 implementa (Workspaces, entidades, variáveis, bindings, papéis, compatibilidade de routes); métrica de uso da v1 por token | lint + teste de contrato; teste "marcada sem handler" continua valendo para o resto |
-| N1-X1 Modelo de dados | N1-C0 | `workspaces` (id = env.id, key, slug imutável após o primeiro release), `environment_id` → `workspace_id`, FKs compostas `(workspace_id, id)`, unicidades por Workspace (nomes, username, `custom_id`) e por instância (credenciais, SNI), `check (cardinality(paths) > 0)` só nas routes novas | migração sobre bancos com dados de cada versão anterior; UUIDs preservados; referência cruzada recusada pelo banco; duplicata de credencial entre environments bloqueia a migração com relatório; snapshot de cada environment com o mesmo hash antes e depois |
-| N1-X2 Inventário de routes | N1-X1 | `pathCompatibility: legacy-preserved` em toda route existente; relatório de path público e upstream antes/depois; `convertRoutePathCompatibility` explícita, por route e auditada | integração: nenhuma conversão em lote; route sem path listada e bloqueada só para a composição v2, sem mudar o tráfego atual |
-| N1-X3 Autorização | N1-X1 | guard por `x-required-permission` e `x-scope`; bindings por Workspace e por instância; papéis embutidos; token = mínimo entre token e dono; decisões só por sessão | matriz RBAC gerada do contrato; 404 fora do escopo, 403 sem permissão; nenhum handler sem permissão; token tentando decidir → 401/403 |
-| N1-X4 API v2 | N1-X3 | Workspaces (criação bloqueada além do migrado até a N2), entidades do gateway, variáveis, export/import por Workspace (`gromesh/v1` não transporta variáveis; VarRef no conteúdo → 422 no campo) | integração por operação; `x-gromesh-planned` removida operação a operação; dois Workspaces de fixture com consumer `app-sky` cada → ambos aceitos; credencial repetida entre eles → 409 genérico; `anonymous` de outro Workspace → 422 |
-| N1-X5 Compatibilidade v1 | N1-X3, N1-X4 | handlers v1 sobre os serviços e o guard v2; contador de chamadas v1 por token `ggt_` | a mesma matriz RBAC passa pelas duas APIs; teste de bypass (permissão v1 sem a v2 → 403/404); e2e da UI atual sem regressão |
+| N1-C0 Contrato complementar | N0 mergeada | o que a N1 precisa e o v2 não tem: relatório de pré-checagem da migração (leitura, `platform-admin`), contador de uso da v1 por token, aviso de depreciação nas operações v1 que serão cortadas; tudo `x-gromesh-planned` | lint + teste de contrato; aprovação do Fabrício antes de qualquer código |
+| N1-C1 Slug e identidade lógica | — | função pura de slug (GW-WS-10): minúsculas, sem acento, espaço → hífen, só `[a-z0-9-]`, lista de reservados (B §3.3, `gromesh-*`); colisão → sufixo proposto e listado, nunca aplicado em silêncio; `key` do Workspace (UUID) separado do slug | unidade: tabela de casos (acentos, emoji, reservados, vazio, colisão, limite de tamanho); mesmo nome → mesmo slug |
+| N1-X1 Modelo de dados e migração estrutural | N1-C0 | `workspaces` (`id` = `environments.id`, `key`, `slug`, `slug_locked_at`), `environment_id` → `workspace_id` em todas as entidades, `environments` mantido como visão da v1 com os mesmos ids; `role_bindings` vazia; coluna `path_compatibility` (`legacy-preserved` em toda route existente); `check (cardinality(paths) > 0)` só para routes novas | migração sobre cada versão anterior; UUIDs, contagens e conteúdo preservados; snapshot de cada environment com o **mesmo hash** antes e depois; v1 e UI sem regressão (integração + e2e); tempo medido num banco sintético grande |
+| N1-X2 Propriedade e integridade referencial | N1-X1 | FKs compostas `(workspace_id, id)`: route → service, service → upstream, target → upstream, credencial → consumer, SNI → certificado, plugin → service/route/consumer, `anonymous` → consumer; o serviço recusa antes do banco (422 com `path`) | integração: cada referência cruzada entre dois Workspaces de fixture recusada pelo serviço **e** pelo banco (insert direto); nome `gromesh-*` reservado → 422; dados migrados sem violação |
+| N1-X3 Unicidade por Workspace e por instância | N1-X2 | por Workspace: nomes, `username` e `custom_id` de consumer (H-5); por instância: chave key-auth (HMAC), `key` JWT, username basic-auth, SNI; pré-checagem com relatório sobre rascunho, snapshot ativo e candidatos a rollback (C §8.3): credencial repetida entre environments bloqueia a migração, username/`custom_id` repetidos não | integração: `app-sky` em dois Workspaces → ambos aceitos; credencial repetida → 409 genérico que não nomeia o outro Workspace, auditado e limitado; corrida concorrente resolvida pelo índice; relatório lista cada bloqueio sem valores secretos |
+| N1-C2 Inventário de routes legadas | N1-X1 | relatório por route (path público e upstream antes/depois, `stripPath`, route sem path); `convertRoutePathCompatibility` por route, explícita e auditada | integração: nenhuma conversão em lote nem implícita; tráfego atual igual (hash do snapshot); route sem path listada e bloqueada só para a futura composição v2 |
+| N1-C3 RBAC e escopo por Workspace | N1-X3 | guard por `x-required-permission`/`x-scope`; bindings por Workspace e por instância; papéis embutidos do catálogo; migração da matriz efetiva (C §8.6: override do environment, `none` → `deny`, `admin` → `platform-admin`); token = interseção entre escopos do token e permissões atuais do dono; decisões só por sessão com CSRF | matriz usuários × Workspaces × operações antes e depois **sem nenhuma ampliação**; matriz RBAC gerada do contrato; fora do escopo → 404, sem permissão → 403; token tentando decidir → 401/403; nenhum handler sem permissão |
+| N1-X4 Endpoints v2 | N1-X3, N1-C1, N1-C2, N1-C3 | Workspaces (leitura; criação recusada além do migrado até a N2), entidades do gateway, variáveis, export/import por Workspace (`gromesh/v1` não transporta variáveis; VarRef → 422 no campo); `x-gromesh-planned` removida operação a operação | integração por operação contra o contrato (corpos fechados, 409/422 de conflito); cobertura contrato ↔ handlers; o teste "marcada sem handler" continua valendo para o resto |
+| N1-X5 Compatibilidade temporária com a v1 | N1-X4 | handlers v1 de `/environments/{envId}/…` sobre os serviços e o guard da v2 (Workspace = id do environment, papel v1 traduzido para permissões); contador de chamadas v1 por token `ggt_` | a mesma matriz RBAC passa pelas duas APIs; teste de bypass (permissão v1 sem a v2 → 403/404); e2e da UI atual sem regressão; nenhuma regra de autorização exclusiva da v1 |
+| N1-C4 Regressão e ensaio da migração | todas da N1 | job de regressão: banco com dados de cada versão → migração → snapshots com o mesmo hash, matriz RBAC igual, `mvp-e2e` verde; roteiro de retorno (restaurar o backup anterior à migração) ensaiado em cópia | job verde na CI; relatório de tempo da migração; roteiro de retorno executado no ensaio; nada aplicado no homelab |
 
-Riscos: migração longa em tabelas grandes (ensaiar o tempo numa cópia do banco do homelab, sem tocar no homelab);
-clientes v1 com routes sem path ou que dependem de `stripPath: true`; tokens `ggt_` usados fora da UI; slug derivado
-de nome de environment que colide ou é reservado (relatório antes do primeiro release, nunca sufixo silencioso).
+**Critério de conclusão da N1:** todos os aceites acima verdes, comportamento atual preservado (hash, UI, RBAC) e
+nenhum Workspace além dos migrados. A N1 não ativa nada no data plane: composição, prefixo, `gromesh-workspace` e
+tags são da N2.
+
+Riscos: migração longa em tabelas grandes (ensaiar o tempo numa cópia, sem tocar no homelab); credenciais repetidas
+entre environments em instalações com vários environments (hoje a unicidade é por environment; a pré-checagem bloqueia
+e o relatório orienta a correção); clientes v1 com routes sem path ou que dependem de `stripPath: true`; tokens
+`ggt_` usados fora da UI (o corte espera 30 dias sem chamadas); slug derivado de nome de environment que colide ou é
+reservado (relatório antes do primeiro release); papéis v1 traduzidos que ampliem acesso (bloqueado pelo aceite da
+N1-C3).
 
 ### N2 — gates obrigatórios, ainda não comprovados
 Nenhum Workspace é ativável sem estes testes em Kong real e Kubernetes compatível (≥ 1.33 ou versão validada):
