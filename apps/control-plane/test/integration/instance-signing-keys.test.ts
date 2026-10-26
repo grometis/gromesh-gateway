@@ -8,7 +8,7 @@ import { AtRestService } from "../../src/crypto/at-rest.js";
 import { ENCRYPTOR, type Encryptor, instanceSigningKeyContext } from "../../src/crypto/crypto.js";
 import { DB, type Db } from "../../src/db/db.js";
 import { runMigrations } from "../../src/db/migrate.js";
-import { InstanceSigner, type Jws, NoSigningKeyError, thumbprint } from "../../src/instance/signing-keys.js";
+import { InstanceSigner, type Jws, NoSigningKeyError, SIGNING_KEYS_LOCK_KEY, thumbprint } from "../../src/instance/signing-keys.js";
 import { type ApiClient, ENCRYPTION_KEYS, startHarness, uniq, type Harness } from "./harness.js";
 
 // N4-D3: the instance's own signing keys and the signer the isolation admissions use. A database of its own: the
@@ -347,6 +347,70 @@ describe("instance signing keys (N4-D3)", () => {
     expect(signedKid).toBe(next.kid);
     expect(revokedAt).toBeGreaterThanOrEqual(committedAt);
     await expect(db.transaction((tx) => signer.sign(tx, "gromesh-admission+json", {}))).rejects.toBeInstanceOf(NoSigningKeyError);
+  });
+
+  it("reads the clock after its locks: a key that expires while a signature or a retire waits is not used nor counted", { timeout: 90_000 }, async () => {
+    // Expires 3 s from now on the database's clock. Each wait below first sees the caller blocked on a lock while the
+    // key still covers now (so its transaction began before the expiry), then lasts until the key is past it.
+    const expireSoon = (kid: string) => h.sql.query("update instance_signing_keys set valid_until = clock_timestamp() + interval '3 seconds' where kid = $1", [kid]);
+    const pastIt = (kid: string) => async () => {
+      for (let i = 0; ; i++) {
+        const { rows } = await h.sql.query("select count(*)::int as n from pg_locks l join pg_stat_activity a on a.pid = l.pid where not l.granted and a.datname = current_database()");
+        if (rows[0].n > 0) break;
+        if (i > 200) throw new Error("the caller never waited on the lock");
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      expect((await h.sql.query("select valid_until > clock_timestamp() as covers from instance_signing_keys where kid = $1", [kid])).rows[0].covers).toBe(true);
+      while ((await h.sql.query("select valid_until > clock_timestamp() as covers from instance_signing_keys where kid = $1", [kid])).rows[0].covers) await new Promise((r) => setTimeout(r, 100));
+    };
+    const holding = async (lock: string, params: unknown[], work: () => Promise<void>) => {
+      const holder = new pg.Client({ connectionString: dbUrl });
+      await holder.connect();
+      try {
+        await holder.query("begin");
+        await holder.query(lock, params);
+        await work();
+      } finally {
+        await holder.query("commit").catch(() => undefined);
+        await holder.end();
+      }
+    };
+    // The signer: the newest key is chosen before its share lock is granted, and expires while it waits.
+    const older = (await create()).body as Key;
+    await h.sql.query("update instance_signing_keys set valid_from = now() - interval '1 hour' where kid = $1", [older.kid]);
+    const newest = (await create()).body as Key;
+    await expireSoon(newest.kid);
+    let signing!: Promise<{ kid: string }>;
+    await holding("select 1 from instance_signing_keys where kid = $1 for update", [newest.kid], async () => {
+      signing = db.transaction((tx) => signer.sign(tx, "gromesh-admission+json", {}));
+      signing.catch(() => undefined);
+      await pastIt(newest.kid)();
+    });
+    expect((await signing).kid).toBe(older.kid);
+    // With no other key, the same wait refuses instead of signing with the expired one.
+    await reset();
+    const only = (await create()).body as Key;
+    await expireSoon(only.kid);
+    let refused!: Promise<unknown>;
+    await holding("select 1 from instance_signing_keys where kid = $1 for update", [only.kid], async () => {
+      refused = db.transaction((tx) => signer.sign(tx, "gromesh-admission+json", {}));
+      refused.catch(() => undefined);
+      await pastIt(only.kid)();
+    });
+    await expect(refused).rejects.toBeInstanceOf(NoSigningKeyError);
+    // Retire: B covers now when retire(A) starts, and expires while it waits for the keys' lock: A is not retired.
+    await reset();
+    const a = (await create()).body as Key;
+    const b = (await create()).body as Key;
+    await expireSoon(b.kid);
+    let retiring!: Promise<{ status: number }>;
+    await holding("select pg_advisory_xact_lock($1)", [SIGNING_KEYS_LOCK_KEY], async () => {
+      retiring = v2(h.api, "POST", `/instance/signing-keys/${a.kid}/retire`, { justification });
+      await pastIt(b.kid)();
+    });
+    expect((await retiring).status).toBe(409);
+    expect((await keys()).find((k) => k.kid === a.kid)!.status).toBe("active");
+    expect((await db.transaction((tx) => signer.sign(tx, "gromesh-admission+json", {}))).kid).toBe(a.kid);
   });
 
   it("re-seals the keys on an encryption key rotation, so dropping the old key loses none", { timeout: 90_000 }, async () => {

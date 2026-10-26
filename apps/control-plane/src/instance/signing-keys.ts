@@ -56,20 +56,33 @@ export class InstanceSigner {
   constructor(@Inject(ENCRYPTOR) private readonly enc: Encryptor) {}
 
   async sign(tx: Executor, typ: SignedTyp, claims: Record<string, unknown>): Promise<{ jws: Jws; kid: string }> {
-    const [key] = await tx
-      .select({ kid: instanceSigningKeys.kid, publicKey: instanceSigningKeys.publicKey, privateKey: instanceSigningKeys.privateKey })
-      .from(instanceSigningKeys)
-      .where(and(isNull(instanceSigningKeys.revokedAt), isNull(instanceSigningKeys.retiredAt), lte(instanceSigningKeys.validFrom, sql`clock_timestamp()`), gt(instanceSigningKeys.validUntil, sql`clock_timestamp()`)))
-      .orderBy(desc(instanceSigningKeys.validFrom), asc(instanceSigningKeys.kid))
-      .limit(1)
-      .for("share");
-    if (!key) throw new NoSigningKeyError();
+    const key = await this.usableKey(tx);
     const d = this.enc.open(key.privateKey, instanceSigningKeyContext(key.kid));
     const privateKey = createPrivateKey({ key: { kty: "OKP", crv: "Ed25519", x: key.publicKey, d }, format: "jwk" });
     const header = Buffer.from(JSON.stringify({ alg: "EdDSA", kid: key.kid, typ })).toString("base64url");
     const payload = Buffer.from(JSON.stringify(claims)).toString("base64url");
     const signature = sign(null, Buffer.from(`${header}.${payload}`, "ascii"), privateKey).toString("base64url");
     return { jws: { protected: header, payload, signature }, kid: key.kid };
+  }
+
+  /**
+   * The filter runs before the share lock is granted: a key that expired (or was retired) while the lock was awaited
+   * is checked again on the clock read after it, and then skipped for the next one.
+   */
+  private async usableKey(tx: Executor) {
+    const usable = and(isNull(instanceSigningKeys.revokedAt), isNull(instanceSigningKeys.retiredAt), lte(instanceSigningKeys.validFrom, sql`clock_timestamp()`), gt(instanceSigningKeys.validUntil, sql`clock_timestamp()`));
+    for (;;) {
+      const [key] = await tx
+        .select({ kid: instanceSigningKeys.kid, publicKey: instanceSigningKeys.publicKey, privateKey: instanceSigningKeys.privateKey })
+        .from(instanceSigningKeys)
+        .where(usable)
+        .orderBy(desc(instanceSigningKeys.validFrom), asc(instanceSigningKeys.kid))
+        .limit(1)
+        .for("share");
+      if (!key) throw new NoSigningKeyError();
+      const [still] = await tx.select({ kid: instanceSigningKeys.kid }).from(instanceSigningKeys).where(and(eq(instanceSigningKeys.kid, key.kid), usable));
+      if (still) return key;
+    }
   }
 }
 
@@ -90,21 +103,22 @@ export class SigningKeysService {
   async create(ctx: RequestContext, validUntil: string) {
     return this.db.transaction(async (tx) => {
       await tx.execute(sql`select pg_advisory_xact_lock(${SIGNING_KEYS_LOCK_KEY})`);
+      // Every instant here is the clock after the lock, never now() (when the transaction began, before any wait).
       const [range] = await tx
-        .execute<{ ok: boolean }>(sql`select (${validUntil}::timestamptz > now() + interval '1 day' and ${validUntil}::timestamptz <= now() + interval '730 days') as ok`)
+        .execute<{ ok: boolean }>(sql`select (${validUntil}::timestamptz > clock_timestamp() + interval '1 day' and ${validUntil}::timestamptz <= clock_timestamp() + interval '730 days') as ok`)
         .then((r) => r.rows);
       if (!range?.ok) throw unprocessable("validUntil out of range", [{ path: "validUntil", message: "must be more than 1 day and at most 730 days from now" }]);
       const [active] = await tx
         .select({ n: sql<number>`count(*)::int` })
         .from(instanceSigningKeys)
-        .where(and(isNull(instanceSigningKeys.retiredAt), isNull(instanceSigningKeys.revokedAt), gt(instanceSigningKeys.validUntil, sql`now()`)));
+        .where(and(isNull(instanceSigningKeys.retiredAt), isNull(instanceSigningKeys.revokedAt), gt(instanceSigningKeys.validUntil, sql`clock_timestamp()`)));
       // An active key past its validUntil signs nothing again and no longer takes a place.
       if ((active?.n ?? 0) >= MAX_ACTIVE) throw conflict(`At most ${MAX_ACTIVE} instance signing keys are active at a time`);
       const jwk = generateKeyPairSync("ed25519").privateKey.export({ format: "jwk" });
       const kid = thumbprint(jwk.x!);
       const [row] = await tx
         .insert(instanceSigningKeys)
-        .values({ kid, publicKey: jwk.x!, privateKey: this.enc.seal(jwk.d!, instanceSigningKeyContext(kid)), validFrom: sql`now()`, validUntil: sql`${validUntil}::timestamptz` })
+        .values({ kid, publicKey: jwk.x!, privateKey: this.enc.seal(jwk.d!, instanceSigningKeyContext(kid)), validFrom: sql`clock_timestamp()`, validUntil: sql`${validUntil}::timestamptz` })
         .returning();
       await audit(tx, ctx, { action: "instance.signing-key.create", entityType: "instance-signing-key", entityId: kid, after: auditView(row!) });
       return toKey(row!);
@@ -117,19 +131,20 @@ export class SigningKeysService {
       const key = await this.locked(tx, kid);
       if (status(key) !== "active") throw conflict("Only an active key can be retired");
       const [covers] = await tx
-        .select({ yes: sql<boolean>`${instanceSigningKeys.validFrom} <= now() and ${instanceSigningKeys.validUntil} > now()` })
+        .select({ yes: sql<boolean>`${instanceSigningKeys.validFrom} <= clock_timestamp() and ${instanceSigningKeys.validUntil} > clock_timestamp()` })
         .from(instanceSigningKeys)
         .where(eq(instanceSigningKeys.kid, kid));
-      // A key past its validUntil signs nothing any more: retiring it can never leave the instance unable to sign.
+      // Read on the clock after both locks (now() is when the transaction began, maybe before a key expired while it
+      // waited). A key past its validUntil signs nothing any more: retiring it never leaves the instance unable to sign.
       if (covers?.yes) {
         const [other] = await tx
           .select({ kid: instanceSigningKeys.kid })
           .from(instanceSigningKeys)
-          .where(and(ne(instanceSigningKeys.kid, kid), isNull(instanceSigningKeys.retiredAt), isNull(instanceSigningKeys.revokedAt), lte(instanceSigningKeys.validFrom, sql`now()`), gt(instanceSigningKeys.validUntil, sql`now()`)))
+          .where(and(ne(instanceSigningKeys.kid, kid), isNull(instanceSigningKeys.retiredAt), isNull(instanceSigningKeys.revokedAt), lte(instanceSigningKeys.validFrom, sql`clock_timestamp()`), gt(instanceSigningKeys.validUntil, sql`clock_timestamp()`)))
           .limit(1);
         if (!other) throw conflict("No other active key covers now: retiring this one would leave the instance unable to sign");
       }
-      const [row] = await tx.update(instanceSigningKeys).set({ retiredAt: sql`now()` }).where(eq(instanceSigningKeys.kid, kid)).returning();
+      const [row] = await tx.update(instanceSigningKeys).set({ retiredAt: sql`clock_timestamp()` }).where(eq(instanceSigningKeys.kid, kid)).returning();
       await audit(tx, ctx, { action: "instance.signing-key.retire", entityType: "instance-signing-key", entityId: kid, before: auditView(key), after: { ...auditView(row!), retiredAt: row!.retiredAt!.toISOString(), justification } });
       return toKey(row!);
     });
@@ -141,7 +156,7 @@ export class SigningKeysService {
       // For update: waits for every signature still holding the key (share lock), and no later one finds it usable.
       const key = await this.locked(tx, kid);
       if (key.revokedAt) throw conflict("The key is already revoked");
-      const [row] = await tx.update(instanceSigningKeys).set({ revokedAt: sql`now()` }).where(eq(instanceSigningKeys.kid, kid)).returning();
+      const [row] = await tx.update(instanceSigningKeys).set({ revokedAt: sql`clock_timestamp()` }).where(eq(instanceSigningKeys.kid, kid)).returning();
       const openAdmissions = await this.openAdmissions(tx, kid);
       await audit(tx, ctx, { action: "instance.signing-key.revoke", entityType: "instance-signing-key", entityId: kid, before: auditView(key), after: { ...auditView(row!), revokedAt: row!.revokedAt!.toISOString(), justification, openAdmissions } });
       return { key: toKey(row!), openAdmissions };
