@@ -4,7 +4,7 @@ import { API_V1_USAGE, type ApiV1UsageRecorder, RequiredPermission } from "../au
 import { APP_CONFIG, type AppConfig } from "../config.js";
 import { ENCRYPTOR, type Encryptor } from "../crypto/crypto.js";
 import { DB, type Db } from "../db/db.js";
-import { apiV1Usage } from "../db/schema.js";
+import { apiV1Usage, apiV1UsageCoverage } from "../db/schema.js";
 import { migrationReport } from "../workspaces/migration-report.js";
 
 const WINDOW_DAYS = 30;
@@ -16,12 +16,18 @@ const utcDay = () => new Date().toISOString().slice(0, 10);
  * The calls to the v1 operations the controlled migration will cut (decision H-9). A token's call is written at once:
  * a call lost to a crash could let the cut through. Session calls (the UI, one row a day) are added up here and
  * written every few seconds, so concurrent requests do not queue on that row.
+ *
+ * No call counted proves nothing about a day nobody was counting: each write also marks its UTC day as covered, and a
+ * token call that could not be written (the call is refused) marks its day as failed. The report's `since` is the
+ * first day from which every day is covered and none failed.
  */
 @Injectable()
 export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBootstrap, OnModuleDestroy {
   private readonly logger = new Logger("ApiV1Usage");
   /** Session calls not written yet, by the UTC day they were made. */
   private sessionCalls = new Map<string, number>();
+  /** Token calls that could not be written, by the UTC day they were made. */
+  private failures = new Map<string, number>();
   private timer: NodeJS.Timeout | null = null;
 
   constructor(
@@ -43,12 +49,36 @@ export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBoots
 
   async record(token: { id: string; name: string; ownerId: string } | null): Promise<void> {
     const day = utcDay();
-    if (token === null) this.sessionCalls.set(day, (this.sessionCalls.get(day) ?? 0) + 1);
-    else await this.add(day, token, 1);
+    if (token === null) {
+      this.sessionCalls.set(day, (this.sessionCalls.get(day) ?? 0) + 1);
+      return;
+    }
+    try {
+      await this.add(day, token, 1);
+    } catch (error) {
+      this.failures.set(day, (this.failures.get(day) ?? 0) + 1);
+      throw error;
+    }
   }
 
-  /** Writes the session calls counted so far, each on its own day, and drops the days out of the window. */
+  /**
+   * Marks today as covered with the failures not written yet, writes the session calls counted so far, each on its
+   * own day, and drops the days out of the window.
+   */
   async flush(): Promise<void> {
+    const failed = this.failures;
+    this.failures = new Map();
+    const days = new Map([[utcDay(), 0], ...failed]);
+    try {
+      await this.db
+        .insert(apiV1UsageCoverage)
+        .values([...days].map(([day, failures]) => ({ day, failures })))
+        .onConflictDoUpdate({ target: apiV1UsageCoverage.day, set: { failures: sql`${apiV1UsageCoverage.failures} + excluded.failures` } });
+    } catch (error) {
+      // Kept for the next flush: a failure is never dropped.
+      for (const [d, m] of failed) this.failures.set(d, (this.failures.get(d) ?? 0) + m);
+      throw error;
+    }
     const pending = [...this.sessionCalls];
     this.sessionCalls = new Map();
     for (const [i, [day, n]] of pending.entries()) {
@@ -61,6 +91,7 @@ export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBoots
       }
     }
     await this.db.delete(apiV1Usage).where(lt(apiV1Usage.day, sql`${today} - ${WINDOW_DAYS - 1}::int`));
+    await this.db.delete(apiV1UsageCoverage).where(lt(apiV1UsageCoverage.day, sql`${today} - ${WINDOW_DAYS - 1}::int`));
   }
 
   private async add(day: string, token: { id: string; name: string; ownerId: string } | null, calls: number): Promise<void> {
@@ -74,7 +105,15 @@ export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBoots
   async read() {
     await this.flush();
     const since = sql`${today} - ${WINDOW_DAYS - 1}::int`;
-    const [window] = await this.db.execute<{ since: string }>(sql`select to_char(${since}, 'YYYY-MM-DD') as since`).then((r) => r.rows);
+    // The day after the last one in the window nobody covered or a write failed on (tomorrow when today did).
+    const [window] = await this.db
+      .execute<{ since: string }>(sql`
+        select to_char(coalesce((
+          select max(d.day) from generate_series(${since}, ${today}, interval '1 day') as d(day)
+          left join ${apiV1UsageCoverage} c on c.day = d.day::date
+          where c.day is null or c.failures > 0
+        )::date + 1, ${since}), 'YYYY-MM-DD') as since`)
+      .then((r) => r.rows);
     const [session] = await this.db
       .select({ calls: sql<number>`coalesce(sum(${apiV1Usage.calls}), 0)::int` })
       .from(apiV1Usage)

@@ -1,5 +1,5 @@
 {
-  "id": "adde5850-4d22-4073-83d1-1f8272da306f",
+  "id": "cb2d26aa-6951-4f65-b741-af97ec13310d",
   "prevId": "36471869-ae67-44c6-a3e2-4eb66016c09b",
   "version": "7",
   "dialect": "postgresql",
@@ -172,6 +172,32 @@
           ]
         }
       },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.api_v1_usage_coverage": {
+      "name": "api_v1_usage_coverage",
+      "schema": "",
+      "columns": {
+        "day": {
+          "name": "day",
+          "type": "date",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "failures": {
+          "name": "failures",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false

@@ -15,6 +15,7 @@ describe("the v1 calls the cut will remove, the migration report and one authori
   let h: Harness;
   let usage: ApiV1UsageService;
   let env: string;
+  let dbUrl: string;
   const v2 = (client: ApiClient, method: string, path: string, body?: unknown) => client(method, `/../v2${path}`, body);
   const read = async () => {
     const res = await v2(h.api, "GET", "/instance/api-v1-usage");
@@ -32,7 +33,8 @@ describe("the v1 calls the cut will remove, the migration report and one authori
     await admin.end();
     const url = new URL(ADMIN_URL);
     url.pathname = `/${name}`;
-    await runMigrations(url.toString());
+    dbUrl = url.toString();
+    await runMigrations(dbUrl);
     // No timer: the test flushes the session calls itself.
     h = await startHarness({ databaseUrl: url.toString(), apiV1UsageFlushMs: 0 });
     usage = h.app.get(ApiV1UsageService);
@@ -111,6 +113,50 @@ describe("the v1 calls the cut will remove, the migration report and one authori
     const r = await read();
     expect(r.tokens.find((t) => t.tokenId === created.body.id)).toMatchObject({ calls: 2 });
     expect((await h.sql.query(`select count(*)::int as n from api_v1_usage where token_id = $1`, [created.body.id])).rows[0].n).toBe(1);
+  });
+
+  it("counts every one of concurrent token calls, through two replicas of the control plane", async () => {
+    const created = await h.api("POST", "/users/me/tokens", { name: uniq("burst"), role: "viewer", expiresInDays: 1 });
+    const token = created.body.token as string;
+    const other = await startHarness({ databaseUrl: dbUrl, apiV1UsageFlushMs: 0 });
+    try {
+      const via = (base: Harness) => (method: string, path: string) => base.anonymous(method, path, undefined, { authorization: `Bearer ${token}` });
+      const calls = await Promise.all(Array.from({ length: 40 }, (_, i) => via(i % 2 ? other : h)("GET", `/environments/${env}/services`)));
+      expect(calls.map((c) => c.status)).toEqual(Array(40).fill(200));
+    } finally {
+      await other.close();
+    }
+    expect((await read()).tokens.find((t) => t.tokenId === created.body.id)).toMatchObject({ calls: 40 });
+  });
+
+  it("starts the 30 days only once counting began, and restarts them after a day nobody counted or a write failed", async () => {
+    const day = (n: number) => h.sql.query(`select to_char((now() at time zone 'utc')::date - $1::int, 'YYYY-MM-DD') as d`, [n]).then((r) => r.rows[0].d as string);
+    // Counting began today (this database): nothing before it is known.
+    expect((await read()).since).toBe(await day(0));
+    await h.sql.query(`insert into api_v1_usage_coverage (day, failures) select (now() at time zone 'utc')::date - n, 0 from generate_series(1, 29) n`);
+    expect((await read()).since).toBe(await day(29));
+    await h.sql.query(`update api_v1_usage_coverage set failures = 1 where day = (now() at time zone 'utc')::date - 10`);
+    expect((await read()).since).toBe(await day(9));
+    await h.sql.query(`delete from api_v1_usage_coverage where day = (now() at time zone 'utc')::date - 5`);
+    expect((await read()).since).toBe(await day(4));
+    await h.sql.query(`delete from api_v1_usage_coverage where day < (now() at time zone 'utc')::date`);
+  });
+
+  it("refuses a token call it cannot count, and keeps today out of the 30 days, even when the next write fails too", async () => {
+    const created = await h.api("POST", "/users/me/tokens", { name: uniq("lost"), role: "viewer", expiresInDays: 1 });
+    await h.sql.query(`alter table api_v1_usage rename to api_v1_usage_off`);
+    try {
+      expect((await bearer(created.body.token as string)("GET", `/environments/${env}/services`)).status).toBe(500);
+      await h.sql.query(`alter table api_v1_usage_coverage rename to api_v1_usage_coverage_off`);
+      await expect(usage.flush()).rejects.toThrow();
+      await h.sql.query(`alter table api_v1_usage_coverage_off rename to api_v1_usage_coverage`);
+    } finally {
+      await h.sql.query(`alter table if exists api_v1_usage_off rename to api_v1_usage`);
+    }
+    const tomorrow = (await h.sql.query(`select to_char((now() at time zone 'utc')::date + 1, 'YYYY-MM-DD') as d`)).rows[0].d;
+    expect((await read()).since).toBe(tomorrow);
+    expect((await h.sql.query(`select failures from api_v1_usage_coverage where day = (now() at time zone 'utc')::date`)).rows[0].failures).toBe(1);
+    await h.sql.query(`update api_v1_usage_coverage set failures = 0`);
   });
 
   it("serves the usage and the migration report to platform administration only", async () => {

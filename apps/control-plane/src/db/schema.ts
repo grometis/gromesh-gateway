@@ -575,6 +575,12 @@ export const apiV1Usage = pgTable(
   (t) => [unique("api_v1_usage_day_token_uq").on(t.day, t.tokenId).nullsNotDistinct()],
 );
 
+// The UTC days a replica was counting (a row) and the token calls it could not write (failures).
+export const apiV1UsageCoverage = pgTable("api_v1_usage_coverage", {
+  day: date("day").primaryKey(),
+  failures: integer("failures").notNull().default(0),
+});
+
 export type UpstreamRow = typeof upstreams.$inferSelect;
 export type TargetRow = typeof targets.$inferSelect;
 export type CertificateRow = typeof certificates.$inferSelect;
