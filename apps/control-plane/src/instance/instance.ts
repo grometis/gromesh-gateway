@@ -4,7 +4,7 @@ import { and, asc, desc, eq, gte, isNotNull, isNull, lt, sql } from "drizzle-orm
 import { API_V1_USAGE, type ApiV1UsageRecorder, RequiredPermission } from "../auth/auth.js";
 import { APP_CONFIG, type AppConfig } from "../config.js";
 import { ENCRYPTOR, type Encryptor } from "../crypto/crypto.js";
-import { BEFORE_POOL_END, DB, type Db } from "../db/db.js";
+import { BEFORE_POOL_END, DB, type Db, type Executor } from "../db/db.js";
 import { apiV1Usage, apiV1UsageReplicas } from "../db/schema.js";
 import { migrationReport } from "../workspaces/migration-report.js";
 
@@ -15,6 +15,8 @@ const WINDOW_DAYS = 30;
  * claims completeness only up to this long ago.
  */
 export const CONFIRM_MS = 120_000;
+/** How long a request waits, at most, for its count to be written. */
+const WRITE_MS = 2_000;
 const today = sql`(now() at time zone 'utc')::date`;
 /** The UTC day of a call, taken when it is made (a session call written after midnight keeps its day). */
 const utcDay = () => new Date().toISOString().slice(0, 10);
@@ -102,7 +104,7 @@ export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBoots
     }
     // Admitted by begin() (the guard): its admission bounds every confirmation until end().
     try {
-      await this.add(day, token, 1);
+      await this.write(day, token);
     } catch (error) {
       // The call goes on; its day is not complete. While stopping there may be no next confirmation: this one
       // carries the failure.
@@ -172,8 +174,26 @@ export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBoots
     await this.db.delete(apiV1UsageReplicas).where(and(lt(apiV1UsageReplicas.seenAt, windowStart), eq(apiV1UsageReplicas.closed, true)));
   }
 
-  private async add(day: string, token: { id: string; name: string; ownerId: string } | null, calls: number): Promise<void> {
-    await this.db
+  /**
+   * A token call's count, bounded: the request never waits more than WRITE_MS for it. Past that the day is not
+   * complete (the write may still land, which only counts the call too), and the statement is cancelled by the
+   * database, so a blocked row does not hold connections of the pool either.
+   */
+  private async write(day: string, token: { id: string; name: string; ownerId: string }): Promise<void> {
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_resolve, reject) => (timer = setTimeout(() => reject(new Error(`not written within ${WRITE_MS} ms`)), WRITE_MS)));
+    try {
+      await Promise.race([this.db.transaction(async (tx) => {
+        await tx.execute(sql.raw(`set local statement_timeout = ${WRITE_MS}`));
+        await this.add(day, token, 1, tx);
+      }), timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async add(day: string, token: { id: string; name: string; ownerId: string } | null, calls: number, db: Executor = this.db): Promise<void> {
+    await db
       .insert(apiV1Usage)
       .values({ day, tokenId: token?.id ?? null, tokenName: token?.name ?? null, ownerId: token?.ownerId ?? null, calls })
       .onConflictDoUpdate({ target: [apiV1Usage.day, apiV1Usage.tokenId], set: { calls: sql`${apiV1Usage.calls} + excluded.calls`, tokenName: sql`excluded.token_name` } });

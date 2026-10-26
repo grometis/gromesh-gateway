@@ -273,6 +273,27 @@ describe("the v1 calls the cut will remove, the migration report and one authori
     expect((await read()).since).toBe(await day(29));
   });
 
+  it("does not hold a request behind a blocked count: served within the bound, its day not complete", async () => {
+    const created = await h.api("POST", "/users/me/tokens", { name: uniq("blocked"), role: "viewer", expiresInDays: 1 });
+    await h.sql.query(`update api_v1_usage_replicas set started_at = ${at(29)}`);
+    // A first call creates today's row of the token; another transaction then holds it.
+    expect((await bearer(created.body.token as string)("GET", `/environments/${env}/services`)).status).toBe(200);
+    const holder = await h.sql.connect();
+    try {
+      await holder.query("begin");
+      await holder.query("select calls from api_v1_usage where token_id = $1 for update", [created.body.id]);
+      const started = Date.now();
+      expect((await bearer(created.body.token as string)("GET", `/environments/${env}/services`)).status).toBe(200);
+      expect(Date.now() - started).toBeLessThan(5_000);
+    } finally {
+      await holder.query("rollback");
+      holder.release();
+    }
+    expect((await read()).since).toBe(await day(-1));
+    await h.sql.query(`update api_v1_usage_replicas set failed_on = '{}'`);
+    expect((await read()).since).toBe(await day(29));
+  });
+
   it("serves the usage and the migration report to platform administration only", async () => {
     const editor = await h.as("editor");
     expect((await v2(editor.api, "GET", "/instance/api-v1-usage")).status).toBe(403);
