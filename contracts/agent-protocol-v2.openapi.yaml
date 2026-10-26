@@ -373,7 +373,7 @@ components:
         bootId: { type: string, format: uuid }
         admissionId: { type: string, format: uuid }
         seq: { type: integer, minimum: 1 }
-        prevDigest: { oneOf: [{ $ref: "#/components/schemas/Digest" }, { type: "null" }], description: "Digest of the previous report; null only for seq 1" }
+        prevDigest: { oneOf: [{ $ref: "#/components/schemas/Digest" }, { type: "null" }], description: "sha256 of the previous report's payload bytes as signed (base64url-decoded payload member of its JWS); null only for seq 1" }
         state: { $ref: "#/components/schemas/PodIsolationState" }
         failedCapabilities: { type: array, uniqueItems: true, items: { enum: [CAP-1, CAP-2, CAP-3, CAP-4, CAP-5, CAP-6, CAP-7, guard-canary] } }
         challenge: { type: [string, "null"], pattern: "^[A-Za-z0-9_-]{22,64}$" }
