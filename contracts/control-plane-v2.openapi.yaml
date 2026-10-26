@@ -328,9 +328,12 @@ paths:
         Calls to the administrative operations of v1 that the controlled migration (decision H-9) will cut (those
         under /environments/{envId} and /clusters/{clusterId}, and GET and POST /environments) in the last 30 days,
         per API token, plus the calls made by sessions (the current UI). The cut requires zero token calls in the
-        window and `since` on the window's first day: no call counted proves nothing about a day nobody was counting.
-        A v1 token call whose count cannot be written is refused (500) and marks its day as failed. Counted by day;
-        never carries a token value, a path parameter or a body.
+        window, `since` on the window's first day and `completeThrough` at the time of the cut: no call counted proves
+        nothing about a time nobody was counting. Every control-plane replica confirms its counting at least every
+        few seconds; a v1 token call whose count cannot be written is refused (500) and its day goes with the next
+        confirmation; a replica silent for longer than two minutes without stopping cleanly may have lost one. A
+        release that does not count (a rollback) is seen only while no counting replica runs: running both at once
+        is outside what this report can see. Counted by day; never carries a token value, a path parameter or a body.
       responses:
         "200": { description: Usage, content: { application/json: { schema: { $ref: "#/components/schemas/ApiV1Usage" } } } }
         "401": { $ref: "#/components/responses/Unauthorized" }
@@ -3756,18 +3759,23 @@ components:
     ApiV1Usage:
       type: object
       additionalProperties: false
-      required: [ windowDays, since, sessionCalls, tokens ]
+      required: [ windowDays, since, completeThrough, sessionCalls, tokens ]
       properties:
         windowDays: { const: 30 }
         since:
           type: string
           format: date
           description: |
-            The first UTC day from which the counting is complete through today: every day from it on had a replica
-            counting and no token call it failed to write. Days before the counting started (the release that
-            delivers this operation) or without a replica counting (a rollback to an older release) are not complete,
-            nor is a day with a failed write (`since` is then the day after it, tomorrow when it is today). The
-            window's first day (today − 29) at most.
+            The first UTC day from which the counting is complete through `completeThrough`: every moment from that
+            day's start on was counted by a replica (a gap shorter than two minutes, a restart, is not a gap), no
+            token call failed to be written and no replica went silent without stopping cleanly. A day before the
+            counting started (the release that delivers this operation), with a gap (a rollback to a release that
+            does not count) or with a loss is not complete: `since` is then the day after it (tomorrow when it is
+            today). The window's first day (today − 29) at most.
+        completeThrough:
+          type: string
+          format: date-time
+          description: The moment up to which `since` is confirmed (two minutes ago); a later call is not claimed.
         sessionCalls: { type: integer, minimum: 0 }
         tokens:
           type: array
