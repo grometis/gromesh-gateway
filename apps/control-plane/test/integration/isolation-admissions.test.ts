@@ -283,6 +283,35 @@ describe("isolation admissions and reports (N2-D3a)", () => {
     expect((await c.poll(again.requestId)).outcome).toBe("pending");
   });
 
+  it("measures the 45 s on the clock read after the cluster's lock, not when the poll began", { timeout: 60_000 }, async () => {
+    const c = await cluster();
+    const asked = await c.ask(new Probe());
+    await h.sql.query("update isolation_admissions set requested_at = clock_timestamp() - interval '43 seconds' where id = $1", [asked.requestId]);
+    const holder = new pg.Client({ connectionString: dbUrl });
+    await holder.connect();
+    let polled!: Promise<{ status: number; body: { outcome: string; reason?: string } }>;
+    try {
+      await holder.query("begin");
+      await holder.query("select pg_advisory_xact_lock($1, hashtext($2))", [0x6772_6973, c.id]);
+      polled = c.call("GET", `/admission-requests/${asked.requestId}`);
+      // The poll waits on the lock from before the 45 s until after them.
+      for (let i = 0; ; i++) {
+        const { rows } = await h.sql.query("select count(*)::int as n from pg_locks l join pg_stat_activity a on a.pid = l.pid where not l.granted and a.datname = current_database()");
+        if (rows[0].n > 0) break;
+        if (i > 300) throw new Error("the poll never waited on the lock");
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      expect((await h.sql.query("select requested_at > clock_timestamp() - interval '45 seconds' as early from isolation_admissions where id = $1", [asked.requestId])).rows[0].early).toBe(true);
+      while ((await h.sql.query("select requested_at > clock_timestamp() - interval '45.2 seconds' as early from isolation_admissions where id = $1", [asked.requestId])).rows[0].early) await new Promise((r) => setTimeout(r, 100));
+    } finally {
+      await holder.query("commit").catch(() => undefined);
+      await holder.end();
+    }
+    const res = await polled;
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ outcome: "refused", reason: "timeout" });
+  });
+
   it("verifies every report with the probe key bound to its admission, before reading it, and refuses anything else", async () => {
     const c = await cluster();
     const pa = new Probe();

@@ -22,7 +22,10 @@ import {
 import { uuidParam } from "../environments/environments.js";
 import { InstanceSigner, type Jws, NoSigningKeyError, SigningKeysModule } from "../instance/signing-keys.js";
 
-/** Serializes every isolation decision of a cluster across replicas (requests, decisions, reports, releases, timers). */
+/**
+ * Serializes every isolation decision of a cluster across replicas (requests, decisions, reports, releases, timers).
+ * Every instant is clock_timestamp(), read after the lock: now() is when the transaction began, before any wait.
+ */
 const CLUSTER_LOCK_CLASS = 0x6772_6973; // "gris"
 const DECISION_SECONDS = 45;
 const START_DEADLINE_MINUTES = 5;
@@ -159,22 +162,22 @@ export class IsolationService {
   private async refresh(tx: Executor, cluster: ClusterRow): Promise<void> {
     const expired = await tx
       .update(isolationAdmissions)
-      .set({ outcome: "refused", reason: "timeout", decidedAt: sql`now()` })
-      .where(and(eq(isolationAdmissions.clusterId, cluster.id), eq(isolationAdmissions.outcome, "pending"), lte(isolationAdmissions.requestedAt, sql`now() - make_interval(secs => ${DECISION_SECONDS})`)))
+      .set({ outcome: "refused", reason: "timeout", decidedAt: sql`clock_timestamp()` })
+      .where(and(eq(isolationAdmissions.clusterId, cluster.id), eq(isolationAdmissions.outcome, "pending"), lte(isolationAdmissions.requestedAt, sql`clock_timestamp() - make_interval(secs => ${DECISION_SECONDS})`)))
       .returning();
     for (const r of expired) await this.auditRefusal(tx, cluster, SYSTEM, r);
     const lastContact = sql`coalesce(${isolationAdmissions.lastReportAt}, ${isolationAdmissions.decidedAt})`;
     const silent = await tx
       .select()
       .from(isolationAdmissions)
-      .where(and(eq(isolationAdmissions.clusterId, cluster.id), eq(isolationAdmissions.state, "open"), lte(lastContact, sql`now() - make_interval(secs => ${COMMUNICATION_SECONDS})`)));
+      .where(and(eq(isolationAdmissions.clusterId, cluster.id), eq(isolationAdmissions.state, "open"), lte(lastContact, sql`clock_timestamp() - make_interval(secs => ${COMMUNICATION_SECONDS})`)));
     for (const a of silent) {
       const open = await this.openPendencies(tx, a.admissionId!);
       if (open.length === 0) {
         await this.openPendency(tx, cluster, SYSTEM, a, "communication-failure", null);
         continue;
       }
-      const [stale] = await tx.select({ yes: sql<boolean>`${lastContact} <= now() - make_interval(mins => ${UNCONFIRMED_MINUTES})` }).from(isolationAdmissions).where(eq(isolationAdmissions.id, a.id));
+      const [stale] = await tx.select({ yes: sql<boolean>`${lastContact} <= clock_timestamp() - make_interval(mins => ${UNCONFIRMED_MINUTES})` }).from(isolationAdmissions).where(eq(isolationAdmissions.id, a.id));
       if (!stale?.yes) continue;
       for (const p of open.filter((p) => p.lifecycle === "communication-failure")) {
         await tx.update(isolationPendencies).set({ lifecycle: "unconfirmed-isolation", kind: "unconfirmed-isolation" }).where(eq(isolationPendencies.id, p.id));
@@ -246,7 +249,7 @@ export class IsolationService {
     const [key] = await tx
       .select({ kid: instanceSigningKeys.kid })
       .from(instanceSigningKeys)
-      .where(and(sql`${instanceSigningKeys.revokedAt} is null`, sql`${instanceSigningKeys.retiredAt} is null`, lte(instanceSigningKeys.validFrom, sql`now()`), gt(instanceSigningKeys.validUntil, sql`now()`)))
+      .where(and(sql`${instanceSigningKeys.revokedAt} is null`, sql`${instanceSigningKeys.retiredAt} is null`, lte(instanceSigningKeys.validFrom, sql`clock_timestamp()`), gt(instanceSigningKeys.validUntil, sql`clock_timestamp()`)))
       .limit(1);
     if (!key) return this.refuse(tx, cluster, ctx, row, "no-signing-key");
     const unanswered = await tx.execute<{ n: number }>(sql`
@@ -264,7 +267,7 @@ export class IsolationService {
         // Recorded first, then signed: the document only ever names what the database already holds.
         const [granted] = await sp
           .update(isolationAdmissions)
-          .set({ outcome: "granted", decidedAt: sql`now()`, admissionId, state: "open", startDeadline: sql`now() + make_interval(mins => ${START_DEADLINE_MINUTES})` })
+          .set({ outcome: "granted", decidedAt: sql`clock_timestamp()`, admissionId, state: "open", startDeadline: sql`clock_timestamp() + make_interval(mins => ${START_DEADLINE_MINUTES})` })
           .where(and(eq(isolationAdmissions.id, row.id), eq(isolationAdmissions.outcome, "pending")))
           .returning();
         const claims = {
@@ -288,7 +291,7 @@ export class IsolationService {
   }
 
   private async refuse(tx: Executor, cluster: ClusterRow, ctx: RequestContext, row: IsolationAdmissionRow, reason: "pendency-open" | "no-signing-key") {
-    const [refused] = await tx.update(isolationAdmissions).set({ outcome: "refused", reason, decidedAt: sql`now()` }).where(eq(isolationAdmissions.id, row.id)).returning();
+    const [refused] = await tx.update(isolationAdmissions).set({ outcome: "refused", reason, decidedAt: sql`clock_timestamp()` }).where(eq(isolationAdmissions.id, row.id)).returning();
     await this.auditRefusal(tx, cluster, ctx, refused!);
     return refused!;
   }
@@ -299,7 +302,7 @@ export class IsolationService {
     const [latest] = await this.db
       .select({ challenge: isolationAdmissions.challenge })
       .from(isolationAdmissions)
-      .where(and(eq(isolationAdmissions.clusterId, cluster.id), eq(isolationAdmissions.outcome, "pending"), gt(isolationAdmissions.requestedAt, sql`now() - make_interval(secs => ${DECISION_SECONDS})`)))
+      .where(and(eq(isolationAdmissions.clusterId, cluster.id), eq(isolationAdmissions.outcome, "pending"), gt(isolationAdmissions.requestedAt, sql`clock_timestamp() - make_interval(secs => ${DECISION_SECONDS})`)))
       .orderBy(desc(isolationAdmissions.requestedAt), desc(isolationAdmissions.id))
       .limit(1);
     return { challenge: latest?.challenge ?? null };
@@ -310,7 +313,7 @@ export class IsolationService {
     const rows = await this.db
       .select({ release: isolationReleases.release })
       .from(isolationReleases)
-      .where(and(eq(isolationReleases.clusterId, cluster.id), gt(isolationReleases.expiresAt, sql`now()`)))
+      .where(and(eq(isolationReleases.clusterId, cluster.id), gt(isolationReleases.expiresAt, sql`clock_timestamp()`)))
       .orderBy(asc(isolationReleases.createdAt), asc(isolationReleases.id));
     return { items: rows.map((r) => r.release) };
   }
@@ -432,7 +435,7 @@ export class IsolationService {
           await tx.update(isolationPendencies).set({ lifecycle: "confirmed-violation", kind: "confirmed-violation", capability: next.failedCapabilities.join(",") }).where(eq(isolationPendencies.id, p.id));
           await audit(tx, ctx, { action: "isolation.pendency.supersede", entityType: "isolation-pendency", entityId: p.id, environmentId: cluster.environmentId, before: { lifecycle: p.lifecycle }, after: { lifecycle: "confirmed-violation", admissionId, seq: next.seq } });
         } else if ((p.lifecycle === "communication-failure" || p.lifecycle === "unconfirmed-isolation") && !violation) {
-          await tx.update(isolationPendencies).set({ lifecycle: "closed", closedAt: sql`now()`, closeReason: "chain-resumed" }).where(eq(isolationPendencies.id, p.id));
+          await tx.update(isolationPendencies).set({ lifecycle: "closed", closedAt: sql`clock_timestamp()`, closeReason: "chain-resumed" }).where(eq(isolationPendencies.id, p.id));
           await audit(tx, ctx, { action: "isolation.pendency.close", entityType: "isolation-pendency", entityId: p.id, environmentId: cluster.environmentId, before: { lifecycle: p.lifecycle }, after: { lifecycle: "closed", reason: "chain-resumed", admissionId, seq: next.seq } });
         }
       }
@@ -446,14 +449,14 @@ export class IsolationService {
         .set({
           ackedSeq: next.seq,
           lastDigest: next.digest,
-          lastReportAt: sql`now()`,
+          lastReportAt: sql`clock_timestamp()`,
           lastState: next.state,
           lastFailed: next.failedCapabilities,
           leaseRemainingMs: next.leaseRemainingMs,
-          ...(CONCLUSIVE.has(next.state) ? { lastConclusiveAt: sql`now()` } : {}),
+          ...(CONCLUSIVE.has(next.state) ? { lastConclusiveAt: sql`clock_timestamp()` } : {}),
           ...(next.final ? { kongStopConfirmed: next.kongStopConfirmed } : {}),
           violationReleased: covered,
-          ...(closes ? { state: "closed" as const, closedAt: sql`now()`, closeReason: next.finalReason === "node-reboot" ? "node-reboot" : "kong-stop-confirmed" } : {}),
+          ...(closes ? { state: "closed" as const, closedAt: sql`clock_timestamp()`, closeReason: next.finalReason === "node-reboot" ? "node-reboot" : "kong-stop-confirmed" } : {}),
         })
         .where(eq(isolationAdmissions.admissionId, admissionId))
         .returning()) as [IsolationAdmissionRow];
@@ -529,14 +532,14 @@ export class IsolationService {
       if (!p) throw notFound("Pendency");
       if (p.lifecycle !== "confirmed-violation" && p.lifecycle !== "unconfirmed-isolation") throw conflict(p.lifecycle === "communication-failure" ? "A communication-failure is not releasable" : "The pendency is not open");
       const kind = p.lifecycle;
-      await tx.update(isolationPendencies).set({ lifecycle: "released", closedAt: sql`now()`, closeReason: "released", releasedBy: ctx.actor, justification: body.justification }).where(eq(isolationPendencies.id, p.id));
+      await tx.update(isolationPendencies).set({ lifecycle: "released", closedAt: sql`clock_timestamp()`, closeReason: "released", releasedBy: ctx.actor, justification: body.justification }).where(eq(isolationPendencies.id, p.id));
       if (p.admissionId) {
         await tx
           .update(isolationAdmissions)
-          .set(kind === "unconfirmed-isolation" ? { state: "closed-without-proof", closedAt: sql`now()`, closeReason: "released" } : { violationReleased: true })
+          .set(kind === "unconfirmed-isolation" ? { state: "closed-without-proof", closedAt: sql`clock_timestamp()`, closeReason: "released" } : { violationReleased: true })
           .where(and(eq(isolationAdmissions.admissionId, p.admissionId), kind === "unconfirmed-isolation" ? eq(isolationAdmissions.state, "open") : undefined));
       }
-      const { rows } = await tx.execute<{ at: Date }>(sql`select now() + make_interval(mins => ${RELEASE_MINUTES}) as at`);
+      const { rows } = await tx.execute<{ at: Date }>(sql`select clock_timestamp() + make_interval(mins => ${RELEASE_MINUTES}) as at`);
       const expiresAt = new Date(rows[0]!.at).toISOString();
       let signed: { jws: Jws; kid: string };
       try {
