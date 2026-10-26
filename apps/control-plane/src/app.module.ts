@@ -29,6 +29,7 @@ import { PathCompatibilityModule } from "./workspaces/path-compatibility.js";
 import { WorkspacesModule } from "./workspaces/workspaces.js";
 import { WorkspacesApiModule } from "./workspaces/workspaces-api.js";
 import { InstanceModule } from "./instance/instance.js";
+import { SigningKeysModule } from "./instance/signing-keys.js";
 
 @Module({})
 export class AppModule {
@@ -62,6 +63,7 @@ export class AppModule {
         PathCompatibilityModule,
         WorkspacesApiModule,
         InstanceModule,
+        SigningKeysModule,
       ],
       providers: [
         { provide: APP_CONFIG, useValue: config },

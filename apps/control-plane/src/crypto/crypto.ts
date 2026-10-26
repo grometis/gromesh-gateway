@@ -22,6 +22,7 @@ export const pluginSecretContext = (id: string, path: string[]): SealContext => 
 export const certificateKeyContext = (id: string): SealContext => ({ table: "certificates", column: "key", id });
 export const jwtSecretContext = (id: string): SealContext => ({ table: "jwt_credentials", column: "secret", id });
 export const basicAuthHashContext = (id: string): SealContext => ({ table: "basicauth_credentials", column: "password_hash", id });
+export const instanceSigningKeyContext = (kid: string): SealContext => ({ table: "instance_signing_keys", column: "private_key", id: kid });
 export const snapshotContext = (environmentId: string, version: number, column: "config" | "state"): SealContext => ({ table: "snapshots", column, id: `${environmentId}:${version}` });
 
 const aad = (keyId: string, ctx: SealContext | null) => Buffer.from(ctx ? [keyId, ctx.table, ctx.column, ctx.id].join("\0") : keyId);
