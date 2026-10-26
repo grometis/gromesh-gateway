@@ -160,6 +160,32 @@ describe("instance signing keys (N4-D3)", () => {
     expect((await create()).status).toBe(409);
   });
 
+  it("does not count an active key past its validUntil, and always lets it be retired", async () => {
+    const a = (await create()).body as Key;
+    const b = (await create()).body as Key;
+    expect((await create()).status).toBe(409);
+    const expire = (kid: string) => h.sql.query("update instance_signing_keys set valid_from = now() - interval '2 days', valid_until = now() - interval '1 second' where kid = $1", [kid]);
+    // Both expired: neither takes a place, and two new keys get in (the third still does not).
+    await expire(a.kid);
+    await expire(b.kid);
+    const c = (await create()).body as Key;
+    expect(c.status).toBe("active");
+    expect((await create()).status).toBe(201);
+    expect((await create()).status).toBe(409);
+    // An expired key is retired even with no other active key covering now; one still covering now is not.
+    await reset();
+    const alone = (await create()).body as Key;
+    const expired = (await create()).body as Key;
+    await expire(expired.kid);
+    const retire = (kid: string) => v2(h.api, "POST", `/instance/signing-keys/${kid}/retire`, { justification });
+    expect((await retire(alone.kid)).status).toBe(409);
+    await expire(alone.kid);
+    expect((await retire(alone.kid)).status).toBe(200);
+    expect((await retire(expired.kid)).status).toBe(200);
+    // Control: the signer never used them once expired.
+    await expect(db.transaction((tx) => signer.sign(tx, "gromesh-admission+json", {}))).rejects.toBeInstanceOf(NoSigningKeyError);
+  });
+
   it("is for the platform admin only, and its mutations for a session with CSRF only", { timeout: 90_000 }, async () => {
     const key = (await create()).body as Key;
     const editor = await h.as("editor");

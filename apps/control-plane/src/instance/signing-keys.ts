@@ -97,7 +97,8 @@ export class SigningKeysService {
       const [active] = await tx
         .select({ n: sql<number>`count(*)::int` })
         .from(instanceSigningKeys)
-        .where(and(isNull(instanceSigningKeys.retiredAt), isNull(instanceSigningKeys.revokedAt)));
+        .where(and(isNull(instanceSigningKeys.retiredAt), isNull(instanceSigningKeys.revokedAt), gt(instanceSigningKeys.validUntil, sql`now()`)));
+      // An active key past its validUntil signs nothing again and no longer takes a place.
       if ((active?.n ?? 0) >= MAX_ACTIVE) throw conflict(`At most ${MAX_ACTIVE} instance signing keys are active at a time`);
       const jwk = generateKeyPairSync("ed25519").privateKey.export({ format: "jwk" });
       const kid = thumbprint(jwk.x!);
@@ -115,12 +116,19 @@ export class SigningKeysService {
       await tx.execute(sql`select pg_advisory_xact_lock(${SIGNING_KEYS_LOCK_KEY})`);
       const key = await this.locked(tx, kid);
       if (status(key) !== "active") throw conflict("Only an active key can be retired");
-      const [other] = await tx
-        .select({ kid: instanceSigningKeys.kid })
+      const [covers] = await tx
+        .select({ yes: sql<boolean>`${instanceSigningKeys.validFrom} <= now() and ${instanceSigningKeys.validUntil} > now()` })
         .from(instanceSigningKeys)
-        .where(and(ne(instanceSigningKeys.kid, kid), isNull(instanceSigningKeys.retiredAt), isNull(instanceSigningKeys.revokedAt), lte(instanceSigningKeys.validFrom, sql`now()`), gt(instanceSigningKeys.validUntil, sql`now()`)))
-        .limit(1);
-      if (!other) throw conflict("No other active key covers now: retiring this one would leave the instance unable to sign");
+        .where(eq(instanceSigningKeys.kid, kid));
+      // A key past its validUntil signs nothing any more: retiring it can never leave the instance unable to sign.
+      if (covers?.yes) {
+        const [other] = await tx
+          .select({ kid: instanceSigningKeys.kid })
+          .from(instanceSigningKeys)
+          .where(and(ne(instanceSigningKeys.kid, kid), isNull(instanceSigningKeys.retiredAt), isNull(instanceSigningKeys.revokedAt), lte(instanceSigningKeys.validFrom, sql`now()`), gt(instanceSigningKeys.validUntil, sql`now()`)))
+          .limit(1);
+        if (!other) throw conflict("No other active key covers now: retiring this one would leave the instance unable to sign");
+      }
       const [row] = await tx.update(instanceSigningKeys).set({ retiredAt: sql`now()` }).where(eq(instanceSigningKeys.kid, kid)).returning();
       await audit(tx, ctx, { action: "instance.signing-key.retire", entityType: "instance-signing-key", entityId: kid, before: auditView(key), after: { ...auditView(row!), retiredAt: row!.retiredAt!.toISOString(), justification } });
       return toKey(row!);
