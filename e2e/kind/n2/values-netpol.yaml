@@ -1,0 +1,11 @@
+# The data plane chart's NetworkPolicy as a Workspaces installation in this lab would render it. Upstreams are
+# filled in by run.mjs (the allowed backends' addresses are only known once the fixtures run).
+agent:
+  token: lab-placeholder
+  controlPlaneUrl: https://control-plane.invalid:443
+networkPolicy:
+  enabled: true
+  # No control plane in this lab: TEST-NET-1, never routed.
+  controlPlanePeers:
+    - ipBlock:
+        cidr: 192.0.2.10/32
