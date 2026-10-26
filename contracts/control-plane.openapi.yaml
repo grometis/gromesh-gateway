@@ -566,7 +566,7 @@ paths:
         Decision H-14 (N1-X6): only the server generates a key-auth key or an HS256 JWT secret, and only through
         createKeyAuthCredential, createJwtCredential or their rotation, which show it once; an import never sets,
         generates or returns one. A key or secret a document supplies (a Gromesh or a Kong document) is ignored:
-        never stored, compared, logged or echoed. A matched credential keeps its stored value and its status. A new
+        never stored, compared, logged or echoed. A matched credential keeps its stored value and its status, unless the document changes its algorithm (below). A new
         key-auth or HS256 JWT credential is imported with its metadata only (id, consumer, tags; the JWT `key` and
         algorithm) as `status: pending-reprovision`: it is left out of every published configuration, so it
         authenticates nothing, until an editor rotates it (rotateKeyAuthCredential, rotateJwtCredential), which
@@ -3019,10 +3019,11 @@ components:
         pendingCredentials:
           type: array
           description: |
-            Decision H-14: every key-auth or HS256 JWT credential the import creates, imported without a key or secret
-            as `status: pending-reprovision` (it authenticates nothing until rotated), by its document path and id,
-            never with a value. Empty when there is an error. A matched credential is never listed: it keeps its
-            stored value and status. Always present once N1-X6 is delivered.
+            Decision H-14: every key-auth or HS256 JWT credential the import leaves without a key or secret, as
+            `status: pending-reprovision` (it authenticates nothing until rotated): each one it creates, and a matched
+            JWT credential it changes from RS256/ES256 to HS256. By document path and id, never with a value. Empty
+            when there is an error. Any other matched credential is not listed: it keeps its stored value and status.
+            Always present once N1-X6 is delivered.
           items: { $ref: "#/components/schemas/ImportedCredentialRef" }
         regeneratedCredentials:
           type: array
