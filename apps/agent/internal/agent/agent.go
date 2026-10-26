@@ -325,6 +325,12 @@ func (a *Agent) refresh(ctx context.Context, environmentID string) {
 
 func (a *Agent) MetricsHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Kong shares the pod's network namespace: a route aimed at the agent's own address must not read it, as Kong's
+		// 8100 refuses its own pod (loopback, or the address the connection arrived on).
+		if fromOwnPod(r) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 		if r.URL.Path != "/metrics" {
 			http.NotFound(w, r)
 			return
@@ -332,4 +338,34 @@ func (a *Agent) MetricsHandler() http.Handler {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 		fmt.Fprintf(w, "# TYPE gromesh_agent_applied_version gauge\ngromesh_agent_applied_version %d\n# TYPE gromesh_agent_apply_failures_total counter\ngromesh_agent_apply_failures_total %d\n# TYPE gromesh_agent_last_success_timestamp_seconds gauge\ngromesh_agent_last_success_timestamp_seconds %d\n", a.appliedGauge.Load(), a.failures.Load(), a.lastSuccess.Load())
 	})
+}
+
+// fromOwnPod: loopback, unspecified, unparsable, or any address of this pod's own interfaces (a client in the pod can
+// bind its source to the pod IP and still connect through loopback).
+func fromOwnPod(r *http.Request) bool {
+	remote, _, err := net.SplitHostPort(r.RemoteAddr)
+	ip := net.ParseIP(remote)
+	if err != nil || ip == nil {
+		return true
+	}
+	if ip.IsLoopback() || ip.IsUnspecified() {
+		return true
+	}
+	if local, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr); ok {
+		if host, _, err := net.SplitHostPort(local.String()); err == nil {
+			if own := net.ParseIP(host); own != nil && own.Equal(ip) {
+				return true
+			}
+		}
+	}
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return true
+	}
+	for _, a := range addrs {
+		if n, ok := a.(*net.IPNet); ok && n.IP.Equal(ip) {
+			return true
+		}
+	}
+	return false
 }
