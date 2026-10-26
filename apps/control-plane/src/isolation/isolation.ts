@@ -252,14 +252,21 @@ export class IsolationService {
       .where(and(sql`${instanceSigningKeys.revokedAt} is null`, sql`${instanceSigningKeys.retiredAt} is null`, lte(instanceSigningKeys.validFrom, sql`clock_timestamp()`), gt(instanceSigningKeys.validUntil, sql`clock_timestamp()`)))
       .limit(1);
     if (!key) return this.refuse(tx, cluster, ctx, row, "no-signing-key");
+    // Only the cluster's current challenge (the latest pending request's, the one the agents hand out) can admit: an
+    // answer to a superseded one says nothing about the time since. The superseded request stays pending, without a
+    // new challenge, and is current again once the newer ones are decided.
+    const current = await this.currentChallenge(tx, cluster.id);
+    if (current?.id !== row.id) return row;
     const unanswered = await tx.execute<{ n: number }>(sql`
       select count(*)::int as n from ${isolationAdmissions} a
       where a.cluster_id = ${cluster.id} and a.state = 'open' and not exists (
         select 1 from ${isolationReports} r
         where r.admission_id = a.admission_id and r.seq <= a.acked_seq and r.challenge = ${row.challenge}
           and not exists (select 1 from ${isolationReports} v where v.admission_id = a.admission_id and v.seq >= r.seq and v.seq <= a.acked_seq and v.state = 'violation')
+          and not exists (select 1 from ${isolationReports} g where g.admission_id = a.admission_id and g.seq > a.acked_seq)
       )`);
-    // Answered: a report of its contiguous chain carries this challenge and nothing from it on is a violation.
+    // Answered: a report of its contiguous chain carries this challenge, nothing from it on is a violation, and nothing
+    // waits above a gap (what it says is not known in order yet).
     if ((unanswered.rows[0]?.n ?? 1) !== 0) return row;
     try {
       return await tx.transaction(async (sp) => {
@@ -296,16 +303,20 @@ export class IsolationService {
     return refused!;
   }
 
-  /** The latest challenge of a request still waiting for its decision. */
-  async challenge(req: Request) {
-    const { cluster } = await this.gateway.node(this.db, bearer(req));
-    const [latest] = await this.db
-      .select({ challenge: isolationAdmissions.challenge })
+  /** The cluster's current challenge: that of the latest request still waiting for its decision. */
+  private async currentChallenge(db: Executor, clusterId: string) {
+    const [latest] = await db
+      .select({ id: isolationAdmissions.id, challenge: isolationAdmissions.challenge })
       .from(isolationAdmissions)
-      .where(and(eq(isolationAdmissions.clusterId, cluster.id), eq(isolationAdmissions.outcome, "pending"), gt(isolationAdmissions.requestedAt, sql`clock_timestamp() - make_interval(secs => ${DECISION_SECONDS})`)))
+      .where(and(eq(isolationAdmissions.clusterId, clusterId), eq(isolationAdmissions.outcome, "pending"), gt(isolationAdmissions.requestedAt, sql`clock_timestamp() - make_interval(secs => ${DECISION_SECONDS})`)))
       .orderBy(desc(isolationAdmissions.requestedAt), desc(isolationAdmissions.id))
       .limit(1);
-    return { challenge: latest?.challenge ?? null };
+    return latest;
+  }
+
+  async challenge(req: Request) {
+    const { cluster } = await this.gateway.node(this.db, bearer(req));
+    return { challenge: (await this.currentChallenge(this.db, cluster.id))?.challenge ?? null };
   }
 
   async releases(req: Request) {
@@ -407,8 +418,21 @@ export class IsolationService {
       finalReason: report.finalReason ?? null,
       kongStopConfirmed: report.kongStopConfirmed ?? null,
     });
+    // Authenticated and bound to its admission: a violation counts when it arrives, even above a gap (the ack still
+    // stops at the contiguous prefix). Only the in-order chain can show it is the sticky state a release covers.
+    if (report.state === "violation" && !a.violationReleased) await this.violationReceived(tx, cluster, ctx, a, report);
     accepted(a.admissionId!, report.seq, true);
     return null;
+  }
+
+  private async violationReceived(tx: Executor, cluster: ClusterRow, ctx: RequestContext, a: IsolationAdmissionRow, report: ProbeReport) {
+    const open = await this.openPendencies(tx, a.admissionId!);
+    if (open.some((p) => p.lifecycle === "confirmed-violation")) return;
+    const capability = report.failedCapabilities.join(",");
+    const silent = open.find((p) => p.lifecycle === "communication-failure");
+    if (!silent) return this.openPendency(tx, cluster, ctx, a, "confirmed-violation", capability);
+    await tx.update(isolationPendencies).set({ lifecycle: "confirmed-violation", kind: "confirmed-violation", capability }).where(eq(isolationPendencies.id, silent.id));
+    await audit(tx, ctx, { action: "isolation.pendency.supersede", entityType: "isolation-pendency", entityId: silent.id, environmentId: cluster.environmentId, before: { lifecycle: silent.lifecycle }, after: { lifecycle: "confirmed-violation", admissionId: a.admissionId, seq: report.seq } });
   }
 
   /**

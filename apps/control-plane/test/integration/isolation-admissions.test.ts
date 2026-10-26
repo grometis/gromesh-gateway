@@ -256,6 +256,55 @@ describe("isolation admissions and reports (N2-D3a)", () => {
     expect((await c.poll(cReq.requestId)).outcome).toBe("granted");
   });
 
+  it("admits only on the cluster's current challenge: an answer to a superseded one grants nothing", async () => {
+    const c = await cluster();
+    const pa = new Probe();
+    const a = await admit(c, pa);
+    const b = await c.ask(new Probe());
+    // A answers B's challenge, then another request supersedes it before B is decided.
+    await c.send(pa.next(c.id, a.admissionId, { challenge: b.challenge }));
+    const pd = new Probe();
+    const d = await c.ask(pd);
+    expect((await c.call("GET", "/challenge")).body).toEqual({ challenge: d.challenge });
+    expect((await c.poll(b.requestId)).outcome).toBe("pending");
+    // Control: the same answer to the current challenge admits D.
+    await c.send(pa.next(c.id, a.admissionId, { challenge: d.challenge }));
+    const dGranted = await c.poll(d.requestId);
+    expect(dGranted.outcome).toBe("granted");
+    // B is current again with its own challenge, but D (admitted since) has not answered it: still pending.
+    expect((await c.call("GET", "/challenge")).body).toEqual({ challenge: b.challenge });
+    expect((await c.poll(b.requestId)).outcome).toBe("pending");
+    const dAdmission = acceptsInstance(dGranted.admission!, "gromesh-admission+json", await trust())!.admissionId as string;
+    await c.send(pd.next(c.id, dAdmission, { challenge: b.challenge }));
+    expect((await c.poll(b.requestId)).outcome).toBe("granted");
+  });
+
+  it("counts an authenticated violation when it arrives, even above a gap, and never an answer with reports waiting there", async () => {
+    const c = await cluster();
+    const pa = new Probe();
+    const a = await admit(c, pa);
+    const b = await c.ask(new Probe());
+    const clean = pa.next(c.id, a.admissionId, { challenge: b.challenge });
+    pa.next(c.id, a.admissionId);
+    const violation = pa.next(c.id, a.admissionId, { state: "violation", failedCapabilities: ["CAP-2"] });
+    expect(await c.send(clean, violation)).toEqual({ acks: [{ admissionId: a.admissionId, ackedSeq: 1 }], rejected: [] });
+    expect((await pendencyRows(c.id)).map((p) => [p.lifecycle, p.capability, p.admission_id])).toEqual([["confirmed-violation", "CAP-2", a.admissionId]]);
+    expect(await c.poll(b.requestId)).toMatchObject({ outcome: "refused", reason: "pendency-open" });
+    // Control: the same gap with a clean report above it opens nothing, but B waits until the gap is filled.
+    const c2 = await cluster();
+    const pq = new Probe();
+    const q = await admit(c2, pq);
+    const e = await c2.ask(new Probe());
+    const answer = pq.next(c2.id, q.admissionId, { challenge: e.challenge });
+    const missing = pq.next(c2.id, q.admissionId);
+    const above = pq.next(c2.id, q.admissionId);
+    expect(await c2.send(answer, above)).toEqual({ acks: [{ admissionId: q.admissionId, ackedSeq: 1 }], rejected: [] });
+    expect(await pendencyRows(c2.id)).toEqual([]);
+    expect((await c2.poll(e.requestId)).outcome).toBe("pending");
+    await c2.send(missing);
+    expect((await c2.poll(e.requestId)).outcome).toBe("granted");
+  });
+
   it("decides a cluster's requests one at a time across replicas: two at once never admit each other unanswered", async () => {
     const c = await cluster();
     const asked = await Promise.all([new Probe(), new Probe(), new Probe()].map((p) => c.ask(p)));
