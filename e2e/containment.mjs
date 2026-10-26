@@ -130,8 +130,9 @@ async function main() {
       const handler = join(pluginsDir, "kong/plugins/gromesh-route-guard/handler.lua");
       writeFileSync(handler, readFileSync(handler, "utf8").replace("local current, err = lease.current(conf.lease_file)", "local current, err = true, nil"));
     }
-    // The guard's lease parser, run by the LuaJIT of the real image.
+    // The guard's lease parser, run by the LuaJIT of the real image, on the fixture the Go readers are tested with.
     await docker("run", "--rm", "-v", `${join(root, "images/kong/plugins")}:/plugins:ro`, "-v", `${join(root, "e2e/lua")}:/t:ro`,
+      "-v", `${join(root, "apps/isolation/internal/lease/testdata/parity.txt")}:/parity.txt:ro`,
       "--entrypoint", "/usr/local/openresty/luajit/bin/luajit", harness.kongImage, "/t/lease-parse.lua");
     const { id, proxy } = await harness.gateway(config, { supervised: contained, pluginsDir });
 

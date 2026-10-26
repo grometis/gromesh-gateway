@@ -15,7 +15,9 @@ local REREAD_NS = 1000000000LL
 local BOOT_ID_FILE = "/proc/sys/kernel/random/boot_id"
 local TIME_OFFSETS_FILE = "/proc/self/timens_offsets"
 local TIME_NAMESPACE_FILE = "/proc/self/ns/time"
-local UUID = "^%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x$"
+local H = "[0-9a-f]"
+-- Lowercase only, as the Go readers (and the downward API and boot_id) write them.
+local UUID = "^" .. H:rep(8) .. "%-" .. H:rep(4) .. "%-" .. H:rep(4) .. "%-" .. H:rep(4) .. "%-" .. H:rep(12) .. "$"
 
 local _M = {}
 
@@ -175,22 +177,12 @@ local function offsets_zero()
   return seen.monotonic == true and seen.boottime == true
 end
 
-local function load(path)
-  local text = read(path)
-  if not text then
-    return nil, "lease unreadable"
-  end
-  local doc = parse(text)
-  if not doc then
-    return nil, "lease malformed"
-  end
-  local issued, expires = doc.issuedBoottimeNs, doc.expiresBoottimeNs
-  local pod = os.getenv("GROMESH_POD_UID")
-  local boot = (read(BOOT_ID_FILE) or ""):gsub("%s+$", "")
+-- The rules on a parsed document for this pod and boot, except the time (checked against the clock per request).
+local function validate(doc, pod, boot)
   if type(pod) ~= "string" or not pod:match(UUID) or doc.podUid ~= pod then
     return nil, "lease of another pod"
   end
-  if not boot:match(UUID) or doc.bootId ~= boot then
+  if type(boot) ~= "string" or not boot:match(UUID) or doc.bootId ~= boot then
     return nil, "lease of another boot"
   end
   if doc.state ~= "ok" and doc.state ~= "inconclusive" then
@@ -206,13 +198,29 @@ local function load(path)
   if not doc.admissionId:match(UUID) or #doc.nonce < 22 or #doc.nonce > 64 or doc.nonce:find("[^%w_-]") then
     return nil, "lease fields inconsistent"
   end
-  if expires - issued ~= VALIDITY_NS then
+  if doc.expiresBoottimeNs - doc.issuedBoottimeNs ~= VALIDITY_NS then
     return nil, "lease validity is not 33 s"
+  end
+  return { issued = doc.issuedBoottimeNs, expires = doc.expiresBoottimeNs, nonce = doc.nonce }
+end
+
+local function load(path)
+  local text = read(path)
+  if not text then
+    return nil, "lease unreadable"
+  end
+  local doc = parse(text)
+  if not doc then
+    return nil, "lease malformed"
+  end
+  local lease, err = validate(doc, os.getenv("GROMESH_POD_UID"), (read(BOOT_ID_FILE) or ""):gsub("%s+$", ""))
+  if not lease then
+    return nil, err
   end
   if not offsets_zero() then
     return nil, "time namespace offset is not zero"
   end
-  return { issued = issued, expires = expires, nonce = doc.nonce }
+  return lease
 end
 
 -- Returns the lease when it is valid now, or nil and the reason.
@@ -237,5 +245,8 @@ function _M.current(path)
   end
   return lease
 end
+
+-- For e2e/lua/lease-parse.lua only: the pure parts, against the same fixture as the Go readers.
+_M._parse, _M._validate = parse, validate
 
 return _M

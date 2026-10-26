@@ -52,7 +52,9 @@ type harness struct {
 	clock    atomic.Uint64
 }
 
-func start(t *testing.T, mode string, valid bool) *harness { return startWith(t, mode, valid, 100*time.Millisecond) }
+func start(t *testing.T, mode string, valid bool) *harness {
+	return startWith(t, mode, valid, 100*time.Millisecond)
+}
 
 func startWith(t *testing.T, mode string, valid bool, period time.Duration) *harness {
 	h := &harness{t: t, dir: t.TempDir(), stop: make(chan os.Signal, 1), children: make(chan os.Signal, 16), done: make(chan int, 1), finished: make(chan struct{})}

@@ -1,6 +1,7 @@
 package lease
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -64,12 +65,12 @@ func TestCheck(t *testing.T) {
 	}
 }
 
-const good = `{"state":"ok","podUid":"p","bootId":"b","admissionId":"a","issuedBoottimeNs":18446744073709551615,"expiresBoottimeNs":2,"nonce":"n","capabilities":["CAP-1"],"issuedAt":"t"}`
+const good = `{"state":"ok","podUid":"p","bootId":"b","admissionId":"a","issuedBoottimeNs":999999999999999999,"expiresBoottimeNs":2,"nonce":"n","capabilities":["CAP-1"],"issuedAt":"t"}`
 
 func TestParseIsStrict(t *testing.T) {
 	l, err := Parse([]byte(good))
-	if err != nil || l.IssuedBoottimeNs != 18446744073709551615 {
-		t.Fatalf("a full uint64 boottime must parse exactly: %v %d", err, l.IssuedBoottimeNs)
+	if err != nil || l.IssuedBoottimeNs != 999999999999999999 {
+		t.Fatalf("an 18-digit boottime must parse exactly: %v %d", err, l.IssuedBoottimeNs)
 	}
 	for _, text := range []string{
 		"", "{", "[]", good + "]", good + "}", good + " {}",
@@ -84,7 +85,7 @@ func TestParseIsStrict(t *testing.T) {
 		strings.Replace(good, `"expiresBoottimeNs":2`, `"expiresBoottimeNs":018`, 1),
 		strings.Replace(good, `"state":"ok"`, `"state":null`, 1),
 		strings.Replace(good, `["CAP-1"]`, `"CAP-1"`, 1),
-		strings.Replace(good, `"issuedBoottimeNs":18446744073709551615`, `"issuedBoottimeNs":18446744073709551616`, 1),
+		strings.Replace(good, `"issuedBoottimeNs":999999999999999999`, `"issuedBoottimeNs":1000000000000000000`, 1),
 		strings.Replace(good, `"state":"ok"`, `"state":"o\u006b"`, 1),
 		strings.Replace(good, `"state":"ok"`, `"\u0073tate":"ok"`, 1),
 		strings.Replace(good, `["CAP-1"]`, `[null]`, 1),
@@ -103,3 +104,25 @@ type clockError struct{}
 func (clockError) Error() string { return "boom" }
 
 var errClock = clockError{}
+
+// testdata/parity.txt is read by this test and by e2e/lua/lease-parse.lua (the guard): both readers must accept and
+// refuse exactly the same documents for pod 6a1f3c2e-0b7d-4c1a-9f10-000000000001 and the boot below, at issue time.
+func TestParityWithTheGuard(t *testing.T) {
+	data, err := os.ReadFile("testdata/parity.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		verdict, doc, ok := strings.Cut(line, "|")
+		if !ok || strings.HasPrefix(line, "#") {
+			continue
+		}
+		l, err := Parse([]byte(doc))
+		if err == nil {
+			err = Check(l, Node{PodUID: pod, BootID: boot, Now: l.IssuedBoottimeNs, TimeNamespaceZero: true})
+		}
+		if (err == nil) != (verdict == "accept") {
+			t.Errorf("line %d (%s): %v", i+1, verdict, err)
+		}
+	}
+}

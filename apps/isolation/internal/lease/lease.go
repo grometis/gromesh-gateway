@@ -60,8 +60,8 @@ func Read(path string) (Lease, error) {
 // the declared types, unsigned integers written only with digits, and nothing after the object.
 func Parse(data []byte) (Lease, error) {
 	// The probe writes no escapes; both readers refuse any, in names as in values, so they never disagree on a document.
-	if bytes.IndexByte(data, '\\') >= 0 {
-		return Lease{}, errors.New("lease malformed: escape")
+	if bytes.IndexByte(data, '\\') >= 0 || bytes.IndexByte(data, 0x7f) >= 0 {
+		return Lease{}, errors.New("lease malformed: escape or control character")
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
@@ -138,7 +138,8 @@ func Parse(data []byte) (Lease, error) {
 }
 
 var (
-	digits       = regexp.MustCompile(`^(0|[1-9][0-9]{0,19})$`)
+	// At most 18 digits (31 years of boot time): the range both readers hold exactly (the guard's int64).
+	digits       = regexp.MustCompile(`^(0|[1-9][0-9]{0,17})$`)
 	capabilityRE = regexp.MustCompile(`^CAP-[1-7]$`)
 )
 

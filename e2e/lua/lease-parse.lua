@@ -2,7 +2,6 @@
 package.path = "/plugins/?.lua;" .. package.path
 local src = io.open("/plugins/kong/plugins/gromesh-route-guard/lease.lua"):read("*a")
 -- The parser is local to the module; expose it to this test only.
-src = src:gsub("return _M%s*$", "_M._parse = parse\nreturn _M")
 local M = assert(loadstring(src))()
 local good = '{"state":"ok","podUid":"p","bootId":"b","admissionId":"a","issuedBoottimeNs":181886753698070,"expiresBoottimeNs":181919753698070,"nonce":"n","capabilities":["CAP-1","CAP-2"],"issuedAt":"t"}'
 local d = assert(M._parse(good), "good must parse")
@@ -32,4 +31,17 @@ for i, text in ipairs(bad) do
   assert(M._parse(text) == nil, "must refuse #" .. i .. ": " .. text)
 end
 -- Escapes are refused by both readers (the probe writes none); the capability list is checked by load().
+-- The parity fixture shared with the Go readers (apps/isolation/internal/lease/testdata/parity.txt).
+local pod, boot = "6a1f3c2e-0b7d-4c1a-9f10-000000000001", "0b5d6a4e-1f2c-4d3b-8a9e-7c6b5a4d3e2f"
+local lines = 0
+for line in io.open("/parity.txt"):lines() do
+  local verdict, doc = line:match("^(%a+)|(.*)$")
+  if verdict then
+    lines = lines + 1
+    local parsed = M._parse(doc)
+    local ok = parsed ~= nil and M._validate(parsed, pod, boot) ~= nil
+    assert(ok == (verdict == "accept"), "parity line " .. lines .. " (" .. verdict .. "): " .. doc)
+  end
+end
+print("lease parity: " .. lines .. " documents, same verdict as the Go readers")
 print("lease parser: ok, " .. #bad .. " malformed documents refused")
