@@ -11,6 +11,8 @@ return {
     { config = {
         type = "record",
         fields = {
+          -- The isolation-probe's lease (read-only for the kong container); there is no way to turn the check off.
+          { lease_file = { type = "string", required = true, default = "/gromesh/isolation/lease.json", match = "^/" } },
           -- "/<slug>" of the route's Workspace; absent on a platform route.
           { prefix = { type = "string", required = false, match = "^/[a-z][a-z0-9-]*$" } },
           -- What the route's only authenticator answers for a credential it does not know; absent without one.

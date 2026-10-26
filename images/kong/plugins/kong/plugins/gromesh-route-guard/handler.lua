@@ -1,6 +1,9 @@
--- Runs before every other plugin of the route: a request whose normalized path is not under the route's Workspace
--- prefix is answered as if no route matched, before any authentication or other effect. Defense in depth: the
--- compiler already emits every path of a Workspace route under its prefix.
+-- Runs before every other plugin of the route. Without a valid isolation lease the request gets 503 (containment:
+-- the supervisor stops Kong as well, independently). A request whose normalized path is not under the route's
+-- Workspace prefix is answered as if no route matched, before any authentication or other effect. Defense in depth:
+-- the compiler already emits every path of a Workspace route under its prefix.
+
+local lease = require "kong.plugins.gromesh-route-guard.lease"
 
 local NOT_FOUND = "no Route matched with those values"
 
@@ -17,6 +20,12 @@ local function present(value)
 end
 
 function RouteGuardHandler:access(conf)
+  local current, err = lease.current(conf.lease_file)
+  if not current then
+    kong.log.warn("containment: ", err)
+    return kong.response.error(503)
+  end
+
   local prefix = present(conf.prefix)
   local auth = present(conf.auth)
   -- Read by gromesh-workspace after the route's authenticator; a route without a guard is never served.

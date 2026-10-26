@@ -30,6 +30,7 @@ jobs:
       code: ${{ steps.filter.outputs.code || 'false' }}
       ui: ${{ steps.filter.outputs.ui || 'false' }}
       agent: ${{ steps.filter.outputs.agent || 'false' }}
+      isolation: ${{ steps.filter.outputs.isolation || 'false' }}
       charts: ${{ steps.filter.outputs.charts || 'false' }}
       heavy: ${{ steps.filter.outputs.heavy || 'false' }}
       kind: ${{ steps.filter.outputs.kind || 'false' }}
@@ -79,6 +80,9 @@ jobs:
             agent:
               - *workflow
               - apps/agent/**
+            isolation:
+              - *workflow
+              - apps/isolation/**
             charts:
               - *workflow
               - deploy/helm/**
@@ -288,6 +292,23 @@ jobs:
         with:
           go-version-file: apps/agent/go.mod
           # Standard library only: there is no go.sum to key a module cache on.
+          cache: false
+      - run: go vet ./...
+      - run: go test -race ./...
+
+  # Lease, supervisor and liveness of the Workspaces data plane (fail-closed containment); on Linux for CLOCK_BOOTTIME.
+  isolation:
+    needs: changes
+    if: needs.changes.outputs.all == 'true' || (needs.changes.outputs.bot != 'true' && needs.changes.outputs.isolation == 'true')
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/isolation
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: apps/isolation/go.mod
           cache: false
       - run: go vet ./...
       - run: go test -race ./...
@@ -602,7 +623,7 @@ jobs:
         run: pnpm exec vitest run --config vitest.config.ts test/integration/migration-regression.test.ts test/integration/workspaces-migration.test.ts
 
   ci-ok:
-    needs: [changes, checks, ui-acceptance, agent, e2e, mvp-e2e, image-scan, migration-regression]
+    needs: [changes, checks, ui-acceptance, agent, isolation, e2e, mvp-e2e, image-scan, migration-regression]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
