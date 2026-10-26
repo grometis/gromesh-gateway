@@ -25,6 +25,9 @@ func fake(t *testing.T, dir, mode string) []string {
 		body += `trap 'sleep 0.3; exit 0' QUIT; trap '' TERM; `
 	case "stuck":
 		body += `trap '' TERM QUIT; `
+	case "orphan":
+		// The master leaves on its own and its worker stays behind (until killed).
+		body += `sleep 0.3; exit 3; `
 	}
 	body += `while :; do sleep 0.05; done`
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
@@ -46,7 +49,9 @@ type harness struct {
 	clock    atomic.Uint64
 }
 
-func start(t *testing.T, mode string, valid bool) *harness {
+func start(t *testing.T, mode string, valid bool) *harness { return startWith(t, mode, valid, 100*time.Millisecond) }
+
+func startWith(t *testing.T, mode string, valid bool, period time.Duration) *harness {
 	h := &harness{t: t, dir: t.TempDir(), stop: make(chan os.Signal, 1), children: make(chan os.Signal, 16), done: make(chan int, 1), finished: make(chan struct{})}
 	h.valid.Store(valid)
 	signal.Notify(h.children, syscall.SIGCHLD)
@@ -61,7 +66,7 @@ func start(t *testing.T, mode string, valid bool) *harness {
 		},
 		Boottime:  func() (uint64, error) { return h.clock.Add(1), nil },
 		StateFile: filepath.Join(h.dir, "kong-state.json"),
-		Period:    100 * time.Millisecond,
+		Period:    period,
 		KillAfter: 200 * time.Millisecond,
 		Drain:     time.Second,
 		Logf: func(format string, args ...any) {
@@ -217,5 +222,30 @@ func TestInvalidLeaseDuringDrainKillsAtOnce(t *testing.T) {
 	}
 	if took := time.Since(began); took > 600*time.Millisecond {
 		t.Fatalf("lost lease during the drain took %s to stop nginx", took)
+	}
+}
+
+func TestAMasterLeavingItsWorkerBehindIsNotRestartedBesideIt(t *testing.T) {
+	h := start(t, "orphan", true)
+	eventually(t, time.Second, "nginx running", func() bool { return alive(h.pid("worker")) })
+	first, worker := h.pid("master"), h.pid("worker")
+	eventually(t, 3*time.Second, "restarted after the exit", func() bool { p := h.pid("master"); return p != first && alive(p) })
+	if alive(worker) {
+		t.Fatal("a new nginx started while the previous worker was still alive")
+	}
+}
+
+func TestDrainDeadlineDoesNotWaitForThePeriod(t *testing.T) {
+	h := startWith(t, "stuck", true, 2*time.Second)
+	eventually(t, 3*time.Second, "nginx running", func() bool { return alive(h.pid("master")) })
+	began := time.Now()
+	h.stop <- syscall.SIGQUIT
+	select {
+	case <-h.done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("did not stop")
+	}
+	if took := time.Since(began); took > time.Second+300*time.Millisecond {
+		t.Fatalf("drain took %s with Dk = 1 s and a 2 s period", took)
 	}
 }

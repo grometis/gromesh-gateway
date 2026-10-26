@@ -3,7 +3,6 @@
 -- zero time namespace offset. Read through FFI, never ngx.now: the wall clock never decides. Any doubt is invalid.
 
 local ffi = require "ffi"
-local cjson = require "cjson.safe"
 
 -- Kong's own modules may already declare these; a second declaration is an error, so each one is tried alone.
 pcall(ffi.cdef, "struct timespec { long tv_sec; long tv_nsec; };")
@@ -15,6 +14,7 @@ local VALIDITY_NS = 33000000000LL
 local REREAD_NS = 1000000000LL
 local BOOT_ID_FILE = "/proc/sys/kernel/random/boot_id"
 local TIME_OFFSETS_FILE = "/proc/self/timens_offsets"
+local TIME_NAMESPACE_FILE = "/proc/self/ns/time"
 local UUID = "^%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x$"
 
 local _M = {}
@@ -39,37 +39,139 @@ local function read(path)
   return text
 end
 
--- Exact 64-bit integers: a JSON number goes through a double in cjson, which loses nanoseconds after ~104 days.
-local function int64_field(text, name)
-  local digits = text:match('"' .. name .. '"%s*:%s*(%d+)%s*[,}]')
-  if not digits or #digits > 18 then
+local FIELDS = {
+  state = "string", podUid = "string", bootId = "string", admissionId = "string", nonce = "string", issuedAt = "string",
+  issuedBoottimeNs = "integer", expiresBoottimeNs = "integer", capabilities = "strings",
+}
+local FIELD_COUNT = 9
+
+-- The lease is one flat object written by the probe. It is parsed here, strictly, rather than with cjson: every field
+-- exactly once and no other, no escapes, no nesting, nothing after the object, and the integers read from their
+-- digits into int64 (a JSON number goes through a double in cjson, which loses nanoseconds after ~104 days).
+local function parse(text)
+  local pos = 1
+  local function ws()
+    pos = text:find("[^ \t\r\n]", pos) or (#text + 1)
+  end
+  local function char(c)
+    if text:sub(pos, pos) ~= c then
+      return false
+    end
+    pos = pos + 1
+    return true
+  end
+  local function str()
+    if not char('"') then
+      return nil
+    end
+    local stop = text:find('["\\%c]', pos)
+    if not stop or text:sub(stop, stop) ~= '"' then
+      return nil
+    end
+    local value = text:sub(pos, stop - 1)
+    pos = stop + 1
+    return value
+  end
+  local function integer()
+    local digits = text:match("^%d+", pos)
+    if not digits or #digits > 18 or (#digits > 1 and digits:sub(1, 1) == "0") then
+      return nil
+    end
+    pos = pos + #digits
+    if text:sub(pos, pos):match("[%.eE%-+]") then
+      return nil
+    end
+    local v = 0LL
+    for i = 1, #digits do
+      v = v * 10 + (digits:byte(i) - 48)
+    end
+    return v
+  end
+  local function strings()
+    if not char("[") then
+      return nil
+    end
+    local list = {}
+    ws()
+    if char("]") then
+      return list
+    end
+    repeat
+      ws()
+      local item = str()
+      if not item then
+        return nil
+      end
+      list[#list + 1] = item
+      ws()
+    until not char(",")
+    return char("]") and list or nil
+  end
+
+  ws()
+  if not char("{") then
     return nil
   end
-  local v = 0LL
-  for i = 1, #digits do
-    v = v * 10 + (digits:byte(i) - 48)
+  local doc, count = {}, 0
+  repeat
+    ws()
+    local key = str()
+    local kind = key and FIELDS[key]
+    if not kind or doc[key] ~= nil then
+      return nil
+    end
+    ws()
+    if not char(":") then
+      return nil
+    end
+    ws()
+    local value
+    if kind == "string" then value = str() elseif kind == "integer" then value = integer() else value = strings() end
+    if value == nil then
+      return nil
+    end
+    doc[key], count = value, count + 1
+    ws()
+  until not char(",")
+  if not char("}") then
+    return nil
   end
-  return v
+  ws()
+  if pos <= #text or count ~= FIELD_COUNT then
+    return nil
+  end
+  return doc
 end
 
+-- Zero only when the file lists exactly monotonic and boottime with 0 0, or when the kernel has no time namespaces
+-- (neither the file nor /proc/self/ns/time). Anything else is a doubt.
 local function offsets_zero()
   local f, err = io.open(TIME_OFFSETS_FILE, "rb")
   if not f then
-    -- A kernel without time namespaces has no file; any other error is a doubt.
-    return type(err) == "string" and err:find("No such file", 1, true) ~= nil
+    if type(err) ~= "string" or not err:find("No such file", 1, true) then
+      return false
+    end
+    local ns, ns_err = io.open(TIME_NAMESPACE_FILE, "rb")
+    if ns then
+      ns:close()
+      return false
+    end
+    return type(ns_err) == "string" and ns_err:find("No such file", 1, true) ~= nil
   end
   local text = f:read("*a")
   f:close()
   if not text then
     return false
   end
+  local seen = {}
   for line in text:gmatch("[^\n]+") do
     local clock, sec, nsec = line:match("^(%S+)%s+(%S+)%s+(%S+)%s*$")
-    if not clock or sec ~= "0" or nsec ~= "0" then
+    if (clock ~= "monotonic" and clock ~= "boottime") or seen[clock] or sec ~= "0" or nsec ~= "0" then
       return false
     end
+    seen[clock] = true
   end
-  return true
+  return seen.monotonic == true and seen.boottime == true
 end
 
 local function load(path)
@@ -77,14 +179,11 @@ local function load(path)
   if not text then
     return nil, "lease unreadable"
   end
-  local doc = cjson.decode(text)
-  if type(doc) ~= "table" then
+  local doc = parse(text)
+  if not doc then
     return nil, "lease malformed"
   end
-  local issued, expires = int64_field(text, "issuedBoottimeNs"), int64_field(text, "expiresBoottimeNs")
-  if not issued or not expires then
-    return nil, "lease malformed"
-  end
+  local issued, expires = doc.issuedBoottimeNs, doc.expiresBoottimeNs
   local pod = os.getenv("GROMESH_POD_UID")
   local boot = (read(BOOT_ID_FILE) or ""):gsub("%s+$", "")
   if type(pod) ~= "string" or not pod:match(UUID) or doc.podUid ~= pod then
@@ -95,6 +194,9 @@ local function load(path)
   end
   if doc.state ~= "ok" and doc.state ~= "inconclusive" then
     return nil, "lease state " .. tostring(doc.state)
+  end
+  if not doc.admissionId:match(UUID) or #doc.nonce < 22 or #doc.nonce > 64 or doc.nonce:find("[^%w_-]") then
+    return nil, "lease fields inconsistent"
   end
   if expires - issued ~= VALIDITY_NS then
     return nil, "lease validity is not 33 s"

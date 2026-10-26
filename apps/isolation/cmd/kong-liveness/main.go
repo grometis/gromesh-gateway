@@ -5,9 +5,12 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/gromesh/gateway/apps/isolation/internal/lease"
@@ -41,8 +44,12 @@ func live() error {
 		return fmt.Errorf("supervisor heartbeat older than %s", maxHeartbeatAge)
 	}
 	// Whether nginx runs is read from the container's own PID namespace, not from the supervisor.
-	if !nginxRunning() {
+	running, err := nginxRunning()
+	if !running {
 		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("cannot tell whether nginx runs: %w", err)
 	}
 	l, err := lease.Read(env("GROMESH_LEASE_FILE", "/gromesh/isolation/lease.json"))
 	if err == nil {
@@ -54,17 +61,29 @@ func live() error {
 	return nil
 }
 
-func nginxRunning() bool {
+// nginxRunning reads every process of the container's PID namespace; only a process that vanished during the scan is
+// skipped, any other error is a doubt (reported as running).
+func nginxRunning() (bool, error) {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
-		return true
+		return true, err
 	}
 	for _, e := range entries {
-		if comm, err := os.ReadFile("/proc/" + e.Name() + "/comm"); err == nil && strings.TrimSpace(string(comm)) == "nginx" {
-			return true
+		if _, err := strconv.Atoi(e.Name()); err != nil {
+			continue
+		}
+		comm, err := os.ReadFile("/proc/" + e.Name() + "/comm")
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ESRCH) {
+			continue
+		}
+		if err != nil {
+			return true, err
+		}
+		if strings.TrimSpace(string(comm)) == "nginx" {
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 func env(name, fallback string) string {

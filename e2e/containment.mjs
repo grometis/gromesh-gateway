@@ -31,14 +31,17 @@ const config = composeWorkspaces([{
   },
 }]);
 
-/** 200 | 503 | ... | "down" when nothing accepts the connection. */
+/**
+ * 200 | 503 | ... ; "down" when the connection is refused or closed without an answer (Docker's port proxy accepts
+ * and closes when nothing listens behind it); "timeout" when nothing answered in time, which proves nothing.
+ */
 async function probe(proxy) {
   try {
     const res = await fetch(`${proxy}/tvro/recarga`, { signal: AbortSignal.timeout(1500) });
     await res.arrayBuffer();
     return res.status;
-  } catch {
-    return "down";
+  } catch (error) {
+    return error?.name === "TimeoutError" || error?.name === "AbortError" ? "timeout" : "down";
   }
 }
 
@@ -54,6 +57,21 @@ function keepalive(proxy) {
     socket.on("connect", () => socket.write(`GET /tvro/recarga HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n\r\n`));
     setTimeout(() => reject(new Error("keepalive request unanswered")), 5000);
   });
+}
+
+/** Polls the container's PID namespace until no nginx process is left; returns when, or null. */
+async function nginxGone(id, timeoutMs) {
+  const began = Date.now();
+  for (;;) {
+    if ((await nginxProcesses(id)) === 0) return Date.now();
+    if (Date.now() - began > timeoutMs) return null;
+    await sleep(50);
+  }
+}
+
+async function heartbeat(id) {
+  const { stdout } = await docker("exec", id, "cat", "/gromesh/kong-state/kong-state.json");
+  return JSON.parse(stdout).heartbeatBoottimeNs;
 }
 
 async function nginxProcesses(id) {
@@ -72,10 +90,29 @@ async function until(proxy, ok, timeoutMs) {
   }
 }
 
+/** After mode("ok"): wait for a valid lease newer than the switch (the negative control serves without one). */
+async function freshLease(harness) {
+  const after = Date.now();
+  await harness.waitFor("a fresh valid lease", async () => {
+    const { stdout } = await docker("exec", harness.writer, "cat", "/gromesh/isolation/lease.json");
+    const lease = JSON.parse(stdout);
+    return lease.state === "ok" && Date.parse(lease.issuedAt) >= Math.floor(after / 1000) * 1000;
+  }, { timeoutMs: 10_000 });
+}
+
 async function leaseExpiry(harness) {
   // The writer's own view of the lease it last wrote, and of the boot clock (same kernel as the gateway).
-  const { stdout } = await docker("exec", harness.writer, "sh", "-c", "cat /gromesh/isolation/lease.json; echo; cat /proc/uptime");
-  const [lease, uptime] = stdout.trim().split("\n");
+  // Until the writer has replaced a deliberately malformed document of a previous step.
+  let lease, uptime;
+  for (let attempt = 0; ; attempt++) {
+    const { stdout } = await docker("exec", harness.writer, "sh", "-c", "cat /gromesh/isolation/lease.json; echo; cat /proc/uptime");
+    [lease, uptime] = stdout.trim().split("\n");
+    try {
+      if (JSON.parse(lease).state === "ok") break;
+    } catch { /* not yet */ }
+    if (attempt > 30) throw new Error(`no valid lease to measure from: ${lease}`);
+    await sleep(100);
+  }
   const { expiresBoottimeNs } = JSON.parse(lease);
   const nowNs = Math.round(Number(uptime.split(" ")[0]) * 1e9);
   return Date.now() + (expiresBoottimeNs - nowNs) / 1e6;
@@ -93,6 +130,9 @@ async function main() {
       const handler = join(pluginsDir, "kong/plugins/gromesh-route-guard/handler.lua");
       writeFileSync(handler, readFileSync(handler, "utf8").replace("local current, err = lease.current(conf.lease_file)", "local current, err = true, nil"));
     }
+    // The guard's lease parser, run by the LuaJIT of the real image.
+    await docker("run", "--rm", "-v", `${join(root, "images/kong/plugins")}:/plugins:ro`, "-v", `${join(root, "e2e/lua")}:/t:ro`,
+      "--entrypoint", "/usr/local/openresty/luajit/bin/luajit", harness.kongImage, "/t/lease-parse.lua");
     const { id, proxy } = await harness.gateway(config, { supervised: contained, pluginsDir });
 
     // Cold start without a lease: no nginx, no listener.
@@ -106,7 +146,8 @@ async function main() {
 
     await harness.waitFor("the first lease", async () => (await docker("exec", harness.writer, "test", "-s", "/gromesh/isolation/lease.json"), true));
 
-    // Loss of the lease with traffic and an open keepalive connection.
+    // Loss of the lease with traffic and an open keepalive connection; every milestone measured from the expiry the
+    // writer observed in the node's CLOCK_BOOTTIME.
     const conn = await keepalive(proxy);
     check(conn.first === "200", `keepalive request → ${conn.first}`);
     harness.mode("stop");
@@ -114,39 +155,52 @@ async function main() {
     await sleep(1000);
     const expiry = await leaseExpiry(harness);
     const refused = await until(proxy, (s) => s !== 200, 40_000);
-    const down = await until(proxy, (s) => s === "down", 6_000);
-    const after503 = refused.at === null ? null : refused.at - expiry;
-    expectContained(refused.at !== null && after503 <= 1500, `requests still served ${after503 ?? "∞"} ms after the lease expired (budget C = 1 s)`);
-    expectContained(down.at !== null && down.at - expiry <= 2500, `Kong still running ${down.at === null ? "∞" : down.at - expiry} ms after the lease expired (budget S + F = 2 s)`);
+    const gone = await nginxGone(id, 8_000);
+    const since = (t) => (t === null ? Infinity : Math.round(t - expiry));
+    expectContained(refused.status === 503 && since(refused.at) <= 1500, `requests still served ${since(refused.at)} ms after the lease expired, then ${refused.status} (budget C = 1 s, 503)`);
+    expectContained(since(gone) <= 2500, `Kong still running ${since(gone)} ms after the lease expired (budget S + F = 2 s)`);
     await Promise.race([conn.closed, sleep(1000)]);
-    expectContained(conn.closedAt() !== null, "the keepalive connection opened before the loss stayed open");
+    expectContained(since(conn.closedAt()) <= 2500, `the keepalive connection opened before the loss stayed open ${since(conn.closedAt())} ms after the expiry`);
     conn.socket.destroy();
     await sleep(3000);
     expectContained((await probe(proxy)) === "down" && (await nginxProcesses(id)) === 0, "Kong restarted without a valid lease");
-    console.log(`lease expired → 503 after ${Math.round(after503 ?? Infinity)} ms, Kong stopped after ${down.at === null ? "∞" : Math.round(down.at - expiry)} ms`);
+    console.log(`lease expired → 503 after ${since(refused.at)} ms, every nginx process gone after ${since(gone)} ms, keepalive closed after ${since(conn.closedAt())} ms`);
 
-    // A lease of another boot, another pod, or in violation never serves.
-    for (const bad of ["other-boot", "other-pod", "violation"]) {
+    // A lease of another boot, another pod, in violation, or that no strict reader may accept never serves.
+    for (const bad of ["other-boot", "other-pod", "violation", "duplicate-state", "trailing-data"]) {
       harness.mode("ok");
+      await freshLease(harness);
       check((await until(proxy, (s) => s === 200, 30_000)).status === 200, `back after a valid lease (before ${bad})`);
+      const switched = Date.now();
       harness.mode(bad);
-      const stopped = await until(proxy, (s) => s === "down", 6_000);
-      expectContained(stopped.at !== null, `a lease with ${bad} kept Kong running (${stopped.status})`);
+      const stoppedAt = await nginxGone(id, 6_000);
+      expectContained(stoppedAt !== null, `a lease with ${bad} kept Kong running`);
+      if (stoppedAt !== null) console.log(`${bad}: Kong stopped ${stoppedAt - switched} ms after the writer switched`);
     }
 
-    // The supervisor frozen: the guard alone answers 503 and the liveness fails (kubelet path, B §3.5.3).
+    // The supervisor frozen from the daemon (an ancestor PID namespace: inside the container PID 1 ignores SIGSTOP).
     harness.mode("ok");
+    await freshLease(harness);
     check((await until(proxy, (s) => s === 200, 30_000)).status === 200, "back after a valid lease (before the frozen supervisor)");
-    if (contained) await docker("exec", id, "kill", "-STOP", "1");
+    if (contained) {
+      await docker("kill", "--signal", "STOP", id);
+      const beat = await heartbeat(id);
+      await sleep(4000);
+      check((await heartbeat(id)) === beat, "the supervisor must really be frozen: its heartbeat moved");
+      // Lease still valid, heartbeat stale: the liveness alone fails.
+      const live = await docker("exec", id, "/gromesh/bin/kong-liveness").then(() => "passed", (e) => e.stderr ?? "failed");
+      check(/heartbeat/.test(live), `with a valid lease and a frozen supervisor the liveness must fail on the heartbeat: ${live}`);
+    }
     harness.mode("stop");
-    const guardOnly = await until(proxy, (s) => s === 503, 40_000);
-    expectContained(guardOnly.status === 503, `with the supervisor frozen an expired lease must still get 503 (${guardOnly.status})`);
+    await sleep(1000);
+    const frozenExpiry = await leaseExpiry(harness);
+    const guardOnly = await until(proxy, (s) => s !== 200, 40_000);
+    const guardAfter = guardOnly.at === null ? Infinity : Math.round(guardOnly.at - frozenExpiry);
+    expectContained(guardOnly.status === 503 && guardAfter <= 1500, `with the supervisor frozen an expired lease must get 503 within 1 s: ${guardOnly.status} after ${guardAfter} ms`);
     if (contained) {
       check((await nginxProcesses(id)) > 0, "nginx keeps running while its supervisor is frozen");
-      const live = await docker("exec", id, "/gromesh/bin/kong-liveness").then(() => "passed", (e) => e.stderr ?? "failed");
-      check(live !== "passed" && /heartbeat|lease/.test(live), `the liveness must fail with a frozen supervisor and an expired lease: ${live}`);
-      await docker("exec", id, "kill", "-CONT", "1");
-      check((await until(proxy, (s) => s === "down", 6_000)).status === "down", "the resumed supervisor stops Kong");
+      await docker("kill", "--signal", "CONT", id);
+      check((await nginxGone(id, 6_000)) !== null, "the resumed supervisor stops Kong");
     }
 
     if (failures.length > 0) throw new Error(`Containment failed:\n- ${failures.join("\n- ")}`);

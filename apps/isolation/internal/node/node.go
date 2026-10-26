@@ -10,8 +10,9 @@ import (
 )
 
 const (
-	BootIDFile      = "/proc/sys/kernel/random/boot_id"
-	TimeOffsetsFile = "/proc/self/timens_offsets"
+	BootIDFile        = "/proc/sys/kernel/random/boot_id"
+	TimeOffsetsFile   = "/proc/self/timens_offsets"
+	TimeNamespaceFile = "/proc/self/ns/time"
 )
 
 // Observe reads the reader's own view; podUID comes from the downward API (GROMESH_POD_UID).
@@ -25,11 +26,13 @@ func Observe(podUID string) lease.Node {
 	return n
 }
 
-// A kernel without time namespaces has no offsets file: zero by definition.
+// Zero only when the offsets file lists exactly monotonic and boottime with 0 0, or when the kernel has no time
+// namespaces at all (neither the offsets file nor /proc/self/ns/time). Anything else is a doubt.
 func timeNamespaceZero() bool {
 	b, err := os.ReadFile(TimeOffsetsFile)
 	if errors.Is(err, os.ErrNotExist) {
-		return true
+		_, nsErr := os.Lstat(TimeNamespaceFile)
+		return errors.Is(nsErr, os.ErrNotExist)
 	}
 	if err != nil {
 		return false
@@ -37,16 +40,14 @@ func timeNamespaceZero() bool {
 	return offsetsZero(string(b))
 }
 
-// offsetsZero parses lines "<clock> <seconds> <nanoseconds>".
 func offsetsZero(text string) bool {
+	seen := map[string]bool{}
 	for _, line := range strings.Split(strings.TrimSpace(text), "\n") {
 		f := strings.Fields(line)
-		if len(f) == 0 {
-			continue
-		}
-		if len(f) != 3 || f[1] != "0" || f[2] != "0" {
+		if len(f) != 3 || (f[0] != "monotonic" && f[0] != "boottime") || seen[f[0]] || f[1] != "0" || f[2] != "0" {
 			return false
 		}
+		seen[f[0]] = true
 	}
-	return true
+	return seen["monotonic"] && seen["boottime"]
 }

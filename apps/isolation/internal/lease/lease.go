@@ -8,8 +8,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
+	"strconv"
 	"time"
 )
 
@@ -54,19 +56,73 @@ func Read(path string) (Lease, error) {
 	return Parse(data)
 }
 
-// Parse decodes a lease strictly: unknown fields and trailing data are refused.
+// Parse decodes a lease strictly, as the guard does: one top-level object, every field exactly once, no other field,
+// the declared types, unsigned integers written only with digits, and nothing after the object.
 func Parse(data []byte) (Lease, error) {
-	var l Lease
 	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&l); err != nil {
-		return Lease{}, fmt.Errorf("lease malformed: %w", err)
+	dec.UseNumber()
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return Lease{}, errors.New("lease malformed: not an object")
 	}
-	if dec.More() {
+	fields := map[string]json.RawMessage{}
+	for dec.More() {
+		tok, err := dec.Token()
+		key, ok := tok.(string)
+		if err != nil || !ok {
+			return Lease{}, errors.New("lease malformed: key")
+		}
+		if _, dup := fields[key]; dup {
+			return Lease{}, fmt.Errorf("lease malformed: duplicate %q", key)
+		}
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			return Lease{}, fmt.Errorf("lease malformed: %w", err)
+		}
+		fields[key] = raw
+	}
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('}') {
+		return Lease{}, errors.New("lease malformed: unterminated object")
+	}
+	if _, err := dec.Token(); err != io.EOF {
 		return Lease{}, errors.New("lease malformed: trailing data")
+	}
+	var l Lease
+	str := func(name string, into *string) error {
+		raw, ok := fields[name]
+		if !ok || json.Unmarshal(raw, into) != nil || len(raw) == 0 || raw[0] != '"' {
+			return fmt.Errorf("lease malformed: %s", name)
+		}
+		return nil
+	}
+	num := func(name string, into *uint64) error {
+		raw, ok := fields[name]
+		if !ok || !digits.Match(raw) {
+			return fmt.Errorf("lease malformed: %s", name)
+		}
+		v, err := strconv.ParseUint(string(raw), 10, 64)
+		*into = v
+		return err
+	}
+	for _, err := range []error{
+		str("state", &l.State), str("podUid", &l.PodUID), str("bootId", &l.BootID), str("admissionId", &l.AdmissionID),
+		num("issuedBoottimeNs", &l.IssuedBoottimeNs), num("expiresBoottimeNs", &l.ExpiresBoottimeNs),
+		str("nonce", &l.Nonce), str("issuedAt", &l.IssuedAt),
+	} {
+		if err != nil {
+			return Lease{}, err
+		}
+	}
+	raw, ok := fields["capabilities"]
+	if !ok || len(raw) == 0 || raw[0] != '[' || json.Unmarshal(raw, &l.Capabilities) != nil {
+		return Lease{}, errors.New("lease malformed: capabilities")
+	}
+	if len(fields) != 9 {
+		return Lease{}, errors.New("lease malformed: unknown field")
 	}
 	return l, nil
 }
+
+var digits = regexp.MustCompile(`^(0|[1-9][0-9]{0,19})$`)
 
 // Check returns nil only for a lease that is valid for this reader right now.
 func Check(l Lease, n Node) error {

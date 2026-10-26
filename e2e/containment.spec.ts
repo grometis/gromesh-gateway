@@ -23,7 +23,8 @@ test("negative control: without the lease check and the supervisor the same chec
   const run = exec(process.execPath, [script], { timeout: 590_000, env: { ...process.env, CONTAINMENT: "off" } });
   const failure = await run.then(() => null, (error: { stderr?: string }) => error.stderr ?? "");
   expect(failure, "containment must fail without its mechanisms").not.toBeNull();
-  expect(failure).toContain("requests still served ∞ ms after the lease expired");
-  expect(failure).toContain("Kong still running ∞ ms after the lease expired");
-  expect(failure).toContain("with the supervisor frozen an expired lease must still get 503 (200)");
+  expect(failure).toContain("requests still served Infinity ms after the lease expired");
+  expect(failure).toContain("Kong still running Infinity ms after the lease expired");
+  expect(failure).toContain("a lease with duplicate-state kept Kong running");
+  expect(failure).toContain("with the supervisor frozen an expired lease must get 503 within 1 s: 200");
 });

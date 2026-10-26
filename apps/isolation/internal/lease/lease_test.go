@@ -64,14 +64,31 @@ func TestCheck(t *testing.T) {
 	}
 }
 
+const good = `{"state":"ok","podUid":"p","bootId":"b","admissionId":"a","issuedBoottimeNs":18446744073709551615,"expiresBoottimeNs":2,"nonce":"n","capabilities":["CAP-1"],"issuedAt":"t"}`
+
 func TestParseIsStrict(t *testing.T) {
-	for _, text := range []string{"", "{", `{"state":"ok","extra":1}`, `{"state":"ok"} {}`, `{"issuedBoottimeNs":-1}`} {
+	l, err := Parse([]byte(good))
+	if err != nil || l.IssuedBoottimeNs != 18446744073709551615 {
+		t.Fatalf("a full uint64 boottime must parse exactly: %v %d", err, l.IssuedBoottimeNs)
+	}
+	for _, text := range []string{
+		"", "{", "[]", good + "]", good + "}", good + " {}",
+		strings.Replace(good, `"state":"ok"`, `"state":"violation","state":"ok"`, 1),
+		strings.Replace(good, `"expiresBoottimeNs":2`, `"expiresBoottimeNs":2,"expiresBoottimeNs":3`, 1),
+		strings.Replace(good, `"nonce":"n",`, ``, 1),
+		strings.Replace(good, `"issuedAt":"t"`, `"issuedAt":"t","extra":1`, 1),
+		strings.Replace(good, `"expiresBoottimeNs":2`, `"expiresBoottimeNs":2.0`, 1),
+		strings.Replace(good, `"expiresBoottimeNs":2`, `"expiresBoottimeNs":2e3`, 1),
+		strings.Replace(good, `"expiresBoottimeNs":2`, `"expiresBoottimeNs":-2`, 1),
+		strings.Replace(good, `"expiresBoottimeNs":2`, `"expiresBoottimeNs":"2"`, 1),
+		strings.Replace(good, `"expiresBoottimeNs":2`, `"expiresBoottimeNs":018`, 1),
+		strings.Replace(good, `"state":"ok"`, `"state":null`, 1),
+		strings.Replace(good, `["CAP-1"]`, `"CAP-1"`, 1),
+		strings.Replace(good, `"issuedBoottimeNs":18446744073709551615`, `"issuedBoottimeNs":18446744073709551616`, 1),
+	} {
 		if _, err := Parse([]byte(text)); err == nil {
 			t.Errorf("%q must be refused", text)
 		}
-	}
-	if _, err := Parse([]byte(`{"state":"ok","issuedBoottimeNs":18446744073709551615}`)); err != nil {
-		t.Errorf("a full uint64 boottime must parse exactly: %v", err)
 	}
 }
 

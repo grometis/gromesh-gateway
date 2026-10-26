@@ -7,6 +7,7 @@ package supervisor
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -39,16 +40,20 @@ type State struct {
 }
 
 type supervisor struct {
-	cfg      Config
+	cfg Config
+	// pid is nginx's master; pgid its process group, kept until no process of the group is left.
 	pid      int
+	pgid     int
 	exited   chan string
 	state    State
 	stopping bool
-	deadline time.Time
+	drain    <-chan time.Time
 }
 
-// Run blocks until the pod is stopped (signal on stop) and nginx has exited. children delivers SIGCHLD.
+// Run blocks until the pod is stopped (signal on stop) and nginx's whole process group has exited. children delivers
+// SIGCHLD.
 func Run(cfg Config, stop <-chan os.Signal, children <-chan os.Signal) int {
+	becomeSubreaper()
 	s := &supervisor{cfg: cfg, exited: make(chan string, 1)}
 	tick := time.NewTicker(cfg.Period)
 	defer tick.Stop()
@@ -56,29 +61,27 @@ func Run(cfg Config, stop <-chan os.Signal, children <-chan os.Signal) int {
 	for {
 		select {
 		case <-stop:
-			if s.pid == 0 {
-				s.write()
-				return 0
-			}
 			if !s.stopping {
 				s.stopping = true
-				s.deadline = time.Now().Add(cfg.Drain)
-				s.cfg.Logf("stop signal: draining nginx for at most %s", cfg.Drain)
-				s.signal(syscall.SIGQUIT)
+				if s.pgid != 0 {
+					s.cfg.Logf("stop signal: draining nginx for at most %s", cfg.Drain)
+					s.signal(syscall.SIGQUIT)
+					// A timer of its own: the drain never outlasts Dk by a period of the ticker.
+					s.drain = time.After(cfg.Drain)
+				}
 			}
+		case <-s.drain:
+			s.cfg.Logf("drain exceeded %s: killing nginx", s.cfg.Drain)
+			s.signal(syscall.SIGKILL)
+			s.awaitExit(s.cfg.KillAfter)
 		case <-children:
 			s.reap()
 		case status := <-s.exited:
 			s.onExit(status)
-			if s.stopping {
-				s.write()
-				return 0
-			}
 		case <-tick.C:
 		}
 		s.evaluate()
-		// The exit may have been collected while killing (lost lease or Dk exceeded during the drain).
-		if s.stopping && s.pid == 0 {
+		if s.stopping && s.pgid == 0 {
 			s.write()
 			return 0
 		}
@@ -95,11 +98,10 @@ func (s *supervisor) evaluate() {
 	case s.pid != 0 && err != nil:
 		s.cfg.Logf("lease invalid (%v): stopping nginx", err)
 		s.kill()
-	case s.pid != 0 && s.stopping && time.Now().After(s.deadline):
-		s.cfg.Logf("drain exceeded %s: killing nginx", s.cfg.Drain)
-		s.signal(syscall.SIGKILL)
-		s.awaitExit(s.cfg.KillAfter)
-	case s.pid == 0 && err == nil && !s.stopping:
+	case s.pid == 0 && s.pgid != 0:
+		// The master is gone but part of its group is not yet: never a new nginx beside it.
+		s.confirmGroupGone()
+	case s.pgid == 0 && err == nil && !s.stopping:
 		s.start()
 	}
 	s.write()
@@ -114,7 +116,7 @@ func (s *supervisor) start() {
 		s.cfg.Logf("cannot start nginx: %v", err)
 		return
 	}
-	s.pid = proc.Pid
+	s.pid, s.pgid = proc.Pid, proc.Pid
 	s.state.Nginx, s.state.Pid = "running", s.pid
 	s.cfg.Logf("lease valid: nginx started (pid %d)", s.pid)
 }
@@ -132,8 +134,8 @@ func (s *supervisor) kill() {
 }
 
 func (s *supervisor) signal(sig syscall.Signal) {
-	if s.pid != 0 {
-		_ = syscall.Kill(-s.pid, sig)
+	if s.pgid != 0 {
+		_ = syscall.Kill(-s.pgid, sig)
 	}
 }
 
@@ -175,10 +177,29 @@ func (s *supervisor) reap() {
 
 func (s *supervisor) onExit(status string) {
 	s.cfg.Logf("nginx (pid %d) exited: %s", s.pid, status)
-	// No worker may outlive its master: whatever is left of the group goes with it.
-	_ = syscall.Kill(-s.pid, syscall.SIGKILL)
 	s.pid = 0
-	s.state.Nginx, s.state.Pid, s.state.LastExit = "stopped", 0, status
+	s.state.Pid, s.state.LastExit = 0, status
+	s.confirmGroupGone()
+}
+
+// confirmGroupGone kills what is left of the group and reaps until none of its processes exists, for at most
+// KillAfter. Until then the state stays running and no new nginx starts.
+func (s *supervisor) confirmGroupGone() {
+	end := time.Now().Add(s.cfg.KillAfter)
+	for {
+		_ = syscall.Kill(-s.pgid, syscall.SIGKILL)
+		s.reap()
+		if err := syscall.Kill(-s.pgid, 0); errors.Is(err, syscall.ESRCH) {
+			s.pgid = 0
+			s.state.Nginx = "stopped"
+			return
+		}
+		if time.Now().After(end) {
+			s.cfg.Logf("process group %d still has processes after SIGKILL", s.pgid)
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func (s *supervisor) write() {
@@ -187,7 +208,8 @@ func (s *supervisor) write() {
 		// Without the clock there is no heartbeat: the liveness fails, which is the safe side.
 		return
 	}
-	if s.pid == 0 {
+	s.state.Nginx = "running"
+	if s.pgid == 0 {
 		s.state.Nginx = "stopped"
 	}
 	s.state.HeartbeatBoottimeNs, s.state.Stopping = now, s.stopping
