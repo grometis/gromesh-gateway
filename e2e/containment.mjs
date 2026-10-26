@@ -157,10 +157,14 @@ async function main() {
     const refused = await until(proxy, (s) => s !== 200, 40_000);
     const gone = await nginxGone(id, 8_000);
     const since = (t) => (t === null ? Infinity : Math.round(t - expiry));
-    expectContained(refused.status === 503 && since(refused.at) <= 1500, `requests still served ${since(refused.at)} ms after the lease expired, then ${refused.status} (budget C = 1 s, 503)`);
-    expectContained(since(gone) <= 2500, `Kong still running ${since(gone)} ms after the lease expired (budget S + F = 2 s)`);
-    await Promise.race([conn.closed, sleep(1000)]);
-    expectContained(since(conn.closedAt()) <= 2500, `the keepalive connection opened before the loss stayed open ${since(conn.closedAt())} ms after the expiry`);
+    // The contract's budgets plus only the measurement's own uncertainty: the polling interval and /proc/uptime's 10 ms.
+    const SLACK = 150;
+    // Supervised, Kong may already be gone at the first sample after the expiry: a refused request is either 503 or
+    // no gateway at all. The 503 of the guard alone is proven below, with the supervisor frozen.
+    expectContained((refused.status === 503 || refused.status === "down") && since(refused.at) <= 1000 + SLACK, `requests still served ${since(refused.at)} ms after the lease expired, then ${refused.status} (budget C = 1 s)`);
+    expectContained(since(gone) <= 2000 + SLACK, `Kong still running ${since(gone)} ms after the lease expired (budget S + F = 2 s)`);
+    await Promise.race([conn.closed, sleep(2500)]);
+    expectContained(since(conn.closedAt()) <= 2000 + SLACK, `the keepalive connection opened before the loss stayed open ${since(conn.closedAt())} ms after the expiry`);
     conn.socket.destroy();
     await sleep(3000);
     expectContained((await probe(proxy)) === "down" && (await nginxProcesses(id)) === 0, "Kong restarted without a valid lease");
@@ -196,7 +200,7 @@ async function main() {
     const frozenExpiry = await leaseExpiry(harness);
     const guardOnly = await until(proxy, (s) => s !== 200, 40_000);
     const guardAfter = guardOnly.at === null ? Infinity : Math.round(guardOnly.at - frozenExpiry);
-    expectContained(guardOnly.status === 503 && guardAfter <= 1500, `with the supervisor frozen an expired lease must get 503 within 1 s: ${guardOnly.status} after ${guardAfter} ms`);
+    expectContained(guardOnly.status === 503 && guardAfter <= 1000 + 150, `with the supervisor frozen an expired lease must get 503 within 1 s: ${guardOnly.status} after ${guardAfter} ms`);
     if (contained) {
       check((await nginxProcesses(id)) > 0, "nginx keeps running while its supervisor is frozen");
       await docker("kill", "--signal", "CONT", id);

@@ -19,13 +19,16 @@ import (
 // on SIGQUIT after a delay (graceful drain) or ignores SIGTERM and SIGQUIT (a stuck master).
 func fake(t *testing.T, dir, mode string) []string {
 	script := filepath.Join(dir, "nginx.sh")
-	body := `echo $$ > "` + dir + `/master"; sleep 300 & echo $! > "` + dir + `/worker"; `
+	// The traps come first: the master's pid file is the signal that it is ready for the test's signals.
+	body := ""
 	switch mode {
 	case "drain":
 		body += `trap 'sleep 0.3; exit 0' QUIT; trap '' TERM; `
 	case "stuck":
 		body += `trap '' TERM QUIT; `
-	case "orphan":
+	}
+	body += `sleep 300 & echo $! > "` + dir + `/worker"; echo $$ > "` + dir + `/master"; `
+	if mode == "orphan" {
 		// The master leaves on its own and its worker stays behind (until killed).
 		body += `sleep 0.3; exit 3; `
 	}

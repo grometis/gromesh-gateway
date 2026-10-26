@@ -31,4 +31,5 @@ local bad = {
 for i, text in ipairs(bad) do
   assert(M._parse(text) == nil, "must refuse #" .. i .. ": " .. text)
 end
+-- Escapes are refused by both readers (the probe writes none); the capability list is checked by load().
 print("lease parser: ok, " .. #bad .. " malformed documents refused")

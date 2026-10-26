@@ -87,9 +87,10 @@ func Parse(data []byte) (Lease, error) {
 		return Lease{}, errors.New("lease malformed: trailing data")
 	}
 	var l Lease
+	// The probe writes no escapes; both readers refuse them, so they never disagree on a document.
 	str := func(name string, into *string) error {
 		raw, ok := fields[name]
-		if !ok || json.Unmarshal(raw, into) != nil || len(raw) == 0 || raw[0] != '"' {
+		if !ok || len(raw) == 0 || raw[0] != '"' || bytes.IndexByte(raw, '\\') >= 0 || json.Unmarshal(raw, into) != nil {
 			return fmt.Errorf("lease malformed: %s", name)
 		}
 		return nil
@@ -113,8 +114,18 @@ func Parse(data []byte) (Lease, error) {
 		}
 	}
 	raw, ok := fields["capabilities"]
-	if !ok || len(raw) == 0 || raw[0] != '[' || json.Unmarshal(raw, &l.Capabilities) != nil {
+	var items []json.RawMessage
+	if !ok || len(raw) == 0 || raw[0] != '[' || json.Unmarshal(raw, &items) != nil {
 		return Lease{}, errors.New("lease malformed: capabilities")
+	}
+	seen := map[string]bool{}
+	for _, item := range items {
+		var c string
+		if len(item) == 0 || item[0] != '"' || bytes.IndexByte(item, '\\') >= 0 || json.Unmarshal(item, &c) != nil || !capabilityRE.MatchString(c) || seen[c] {
+			return Lease{}, errors.New("lease malformed: capabilities")
+		}
+		seen[c] = true
+		l.Capabilities = append(l.Capabilities, c)
 	}
 	if len(fields) != 9 {
 		return Lease{}, errors.New("lease malformed: unknown field")
@@ -122,7 +133,10 @@ func Parse(data []byte) (Lease, error) {
 	return l, nil
 }
 
-var digits = regexp.MustCompile(`^(0|[1-9][0-9]{0,19})$`)
+var (
+	digits       = regexp.MustCompile(`^(0|[1-9][0-9]{0,19})$`)
+	capabilityRE = regexp.MustCompile(`^CAP-[1-7]$`)
+)
 
 // Check returns nil only for a lease that is valid for this reader right now.
 func Check(l Lease, n Node) error {

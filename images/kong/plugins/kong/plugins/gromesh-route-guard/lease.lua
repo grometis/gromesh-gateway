@@ -46,7 +46,8 @@ local FIELDS = {
 local FIELD_COUNT = 9
 
 -- The lease is one flat object written by the probe. It is parsed here, strictly, rather than with cjson: every field
--- exactly once and no other, no escapes, no nesting, nothing after the object, and the integers read from their
+-- exactly once and no other, no escapes (the probe writes none, and the Go readers refuse them too), no nesting,
+-- nothing after the object, and the integers read from their
 -- digits into int64 (a JSON number goes through a double in cjson, which loses nanoseconds after ~104 days).
 local function parse(text)
   local pos = 1
@@ -194,6 +195,13 @@ local function load(path)
   end
   if doc.state ~= "ok" and doc.state ~= "inconclusive" then
     return nil, "lease state " .. tostring(doc.state)
+  end
+  local capabilities = {}
+  for _, c in ipairs(doc.capabilities) do
+    if not c:match("^CAP%-[1-7]$") or capabilities[c] then
+      return nil, "lease fields inconsistent"
+    end
+    capabilities[c] = true
   end
   if not doc.admissionId:match(UUID) or #doc.nonce < 22 or #doc.nonce > 64 or doc.nonce:find("[^%w_-]") then
     return nil, "lease fields inconsistent"
