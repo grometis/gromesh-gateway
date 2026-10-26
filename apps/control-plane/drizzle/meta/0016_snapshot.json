@@ -1,5 +1,5 @@
 {
-  "id": "cb2d26aa-6951-4f65-b741-af97ec13310d",
+  "id": "970ee1b5-60be-4ec2-b776-b5688ee0c0a4",
   "prevId": "36471869-ae67-44c6-a3e2-4eb66016c09b",
   "version": "7",
   "dialect": "postgresql",
@@ -176,22 +176,41 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.api_v1_usage_coverage": {
-      "name": "api_v1_usage_coverage",
+    "public.api_v1_usage_replicas": {
+      "name": "api_v1_usage_replicas",
       "schema": "",
       "columns": {
-        "day": {
-          "name": "day",
-          "type": "date",
+        "replica_id": {
+          "name": "replica_id",
+          "type": "uuid",
           "primaryKey": true,
           "notNull": true
         },
-        "failures": {
-          "name": "failures",
-          "type": "integer",
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "seen_at": {
+          "name": "seen_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "failed_on": {
+          "name": "failed_on",
+          "type": "date[]",
           "primaryKey": false,
           "notNull": true,
-          "default": 0
+          "default": "'{}'::date[]"
+        },
+        "closed": {
+          "name": "closed",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         }
       },
       "indexes": {},

@@ -22,7 +22,7 @@ describe("the v1 calls the cut will remove, the migration report and one authori
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     const validate = contractsV2.validator("ApiV1Usage");
     expect(validate(structuredClone(res.body)), JSON.stringify(validate.errors)).toBe(true);
-    return res.body as { windowDays: number; since: string; sessionCalls: number; tokens: { tokenId: string; tokenName: string; ownerId: string; calls: number; lastCalledOn: string }[] };
+    return res.body as { windowDays: number; since: string; completeThrough: string; sessionCalls: number; tokens: { tokenId: string; tokenName: string; ownerId: string; calls: number; lastCalledOn: string }[] };
   };
   const bearer = (token: string): ApiClient => (method, path, body) => h.anonymous(method, path, body, { authorization: `Bearer ${token}` });
 
@@ -129,34 +129,64 @@ describe("the v1 calls the cut will remove, the migration report and one authori
     expect((await read()).tokens.find((t) => t.tokenId === created.body.id)).toMatchObject({ calls: 40 });
   });
 
-  it("starts the 30 days only once counting began, and restarts them after a day nobody counted or a write failed", async () => {
-    const day = (n: number) => h.sql.query(`select to_char((now() at time zone 'utc')::date - $1::int, 'YYYY-MM-DD') as d`, [n]).then((r) => r.rows[0].d as string);
-    // Counting began today (this database): nothing before it is known.
-    expect((await read()).since).toBe(await day(0));
-    await h.sql.query(`insert into api_v1_usage_coverage (day, failures) select (now() at time zone 'utc')::date - n, 0 from generate_series(1, 29) n`);
+  const day = (n: number) => h.sql.query(`select to_char((now() at time zone 'utc')::date - $1::int, 'YYYY-MM-DD') as d`, [n]).then((r) => r.rows[0].d as string);
+  /** Midnight UTC n days ago, plus some hours. */
+  const at = (n: number, hours = 0) => `((now() at time zone 'utc')::date - ${n})::timestamp at time zone 'utc' + interval '${hours} hours'`;
+  const mine = () => usage["replicaId" as keyof ApiV1UsageService] as unknown as string;
+
+  it("starts the 30 days only once a replica counted a whole UTC day, and restarts them after a time nobody counted", async () => {
+    // Counting began today, after midnight: today is not complete, nothing before it is known.
+    expect((await read()).since).toBe(await day(-1));
+    await h.sql.query(`delete from api_v1_usage_replicas where replica_id <> $1`, [mine()]);
+    await h.sql.query(`update api_v1_usage_replicas set started_at = ${at(29)} where replica_id = $1`, [mine()]);
+    const r = await read();
+    expect(r.since).toBe(await day(29));
+    expect(Date.parse(r.completeThrough)).toBeLessThan(Date.now() - 60_000);
+    // A rollback to a release that does not count, from 08:00 of five days ago to noon of four days ago.
+    await h.sql.query(`insert into api_v1_usage_replicas (replica_id, started_at, seen_at, closed) values (gen_random_uuid(), ${at(29)}, ${at(5, 8)}, true)`);
+    await h.sql.query(`update api_v1_usage_replicas set started_at = ${at(4, 12)} where replica_id = $1`, [mine()]);
+    expect((await read()).since).toBe(await day(3));
+    // A restart shorter than the margin is no gap.
+    await h.sql.query(`delete from api_v1_usage_replicas where replica_id <> $1`, [mine()]);
+    await h.sql.query(`insert into api_v1_usage_replicas (replica_id, started_at, seen_at, closed) values (gen_random_uuid(), ${at(29)}, ${at(5, 8)}, true)`);
+    await h.sql.query(`update api_v1_usage_replicas set started_at = ${at(5, 8)} + interval '1 minute' where replica_id = $1`, [mine()]);
     expect((await read()).since).toBe(await day(29));
-    await h.sql.query(`update api_v1_usage_coverage set failures = 1 where day = (now() at time zone 'utc')::date - 10`);
-    expect((await read()).since).toBe(await day(9));
-    await h.sql.query(`delete from api_v1_usage_coverage where day = (now() at time zone 'utc')::date - 5`);
-    expect((await read()).since).toBe(await day(4));
-    await h.sql.query(`delete from api_v1_usage_coverage where day < (now() at time zone 'utc')::date`);
   });
 
-  it("refuses a token call it cannot count, and keeps today out of the 30 days, even when the next write fails too", async () => {
+  it("restarts the 30 days after a replica went silent without stopping cleanly: it may have lost a call", async () => {
+    await h.sql.query(`insert into api_v1_usage_replicas (replica_id, started_at, seen_at) values (gen_random_uuid(), ${at(29)}, ${at(10, 12)})`);
+    expect((await read()).since).toBe(await day(9));
+    await h.sql.query(`delete from api_v1_usage_replicas where seen_at = ${at(10, 12)}`);
+    expect((await read()).since).toBe(await day(29));
+  });
+
+  it("refuses a token call it cannot count; once that replica confirms, every replica's report restarts the 30 days", async () => {
     const created = await h.api("POST", "/users/me/tokens", { name: uniq("lost"), role: "viewer", expiresInDays: 1 });
-    await h.sql.query(`alter table api_v1_usage rename to api_v1_usage_off`);
+    const other = await startHarness({ databaseUrl: dbUrl, apiV1UsageFlushMs: 0 });
     try {
-      expect((await bearer(created.body.token as string)("GET", `/environments/${env}/services`)).status).toBe(500);
-      await h.sql.query(`alter table api_v1_usage_coverage rename to api_v1_usage_coverage_off`);
-      await expect(usage.flush()).rejects.toThrow();
-      await h.sql.query(`alter table api_v1_usage_coverage_off rename to api_v1_usage_coverage`);
+      const theirs = other.app.get(ApiV1UsageService);
+      await h.sql.query(`update api_v1_usage_replicas set started_at = ${at(29)}`);
+      vi.spyOn(theirs as unknown as { add: () => Promise<void> }, "add").mockRejectedValueOnce(new Error("write failed"));
+      const failedAt = Date.now();
+      expect((await other.anonymous("GET", `/environments/${env}/services`, undefined, { authorization: `Bearer ${created.body.token as string}` })).status).toBe(500);
+      // Not confirmed yet: this replica's report does not claim the time of the failure.
+      const before = await read();
+      expect(before.since).toBe(await day(29));
+      expect(Date.parse(before.completeThrough)).toBeLessThan(failedAt);
+      // The confirmation fails too: the failure is kept for the next one.
+      await other.sql.query(`alter table api_v1_usage_replicas rename to api_v1_usage_replicas_off`);
+      try {
+        await expect(theirs.flush()).rejects.toThrow();
+      } finally {
+        await other.sql.query(`alter table api_v1_usage_replicas_off rename to api_v1_usage_replicas`);
+      }
+      await theirs.flush();
+      expect((await read()).since).toBe(await day(-1));
     } finally {
-      await h.sql.query(`alter table if exists api_v1_usage_off rename to api_v1_usage`);
+      await other.close();
     }
-    const tomorrow = (await h.sql.query(`select to_char((now() at time zone 'utc')::date + 1, 'YYYY-MM-DD') as d`)).rows[0].d;
-    expect((await read()).since).toBe(tomorrow);
-    expect((await h.sql.query(`select failures from api_v1_usage_coverage where day = (now() at time zone 'utc')::date`)).rows[0].failures).toBe(1);
-    await h.sql.query(`update api_v1_usage_coverage set failures = 0`);
+    await h.sql.query(`update api_v1_usage_replicas set failed_on = '{}'`);
+    expect((await read()).since).toBe(await day(29));
   });
 
   it("serves the usage and the migration report to platform administration only", async () => {
@@ -224,5 +254,5 @@ describe("the v1 calls the cut will remove, the migration report and one authori
       }
     }
     expect(compared).toBeGreaterThanOrEqual(15 * operations.length);
-  });
+  }, 120_000);
 });

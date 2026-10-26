@@ -575,10 +575,14 @@ export const apiV1Usage = pgTable(
   (t) => [unique("api_v1_usage_day_token_uq").on(t.day, t.tokenId).nullsNotDistinct()],
 );
 
-// The UTC days a replica was counting (a row) and the token calls it could not write (failures).
-export const apiV1UsageCoverage = pgTable("api_v1_usage_coverage", {
-  day: date("day").primaryKey(),
-  failures: integer("failures").notNull().default(0),
+// Each control-plane replica counting the v1 calls: from its start, confirmed up to seen_at (its last write), with
+// the UTC days of the token calls it could not write; closed once stopped cleanly.
+export const apiV1UsageReplicas = pgTable("api_v1_usage_replicas", {
+  replicaId: uuid("replica_id").primaryKey(),
+  startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
+  seenAt: timestamp("seen_at", { withTimezone: true }).notNull(),
+  failedOn: date("failed_on").array().notNull().default(sql`'{}'::date[]`),
+  closed: boolean("closed").notNull().default(false),
 });
 
 export type UpstreamRow = typeof upstreams.$inferSelect;
