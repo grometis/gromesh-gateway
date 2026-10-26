@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/gromesh/gateway/apps/isolation/internal/lease"
+	"io"
+	"syscall"
 )
 
 // Timing of agent-protocol-v2 (B §3.5.3): period P, round T, inconclusive tolerance I, guard-missing backoff.
@@ -405,7 +407,7 @@ func (p *Probe) refreshAdmission(boot string) {
 	} else if p.State.AdmissionID != "" {
 		p.State.AdmissionID, p.State.FreshAdmission = "", false
 	}
-	raw, err := os.ReadFile(filepath.Join(p.Handoff, "admission.jws"))
+	raw, err := readHandoff(filepath.Join(p.Handoff, "admission.jws"))
 	if err != nil {
 		return
 	}
@@ -473,14 +475,21 @@ func (p *Probe) save() {
 	}
 }
 
-// writeSynced replaces path atomically and durably: write, fsync, rename, fsync the directory.
+// writeSynced replaces path atomically and durably: a fresh exclusive temporary (never an existing name, which could
+// be a planted symlink in a shared directory), fsync, rename over the target (which replaces a symlink rather than
+// following it), fsync the directory.
 func writeSynced(path string, data []byte, mode os.FileMode) error {
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
 	if err != nil {
 		return err
 	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
 	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Chmod(mode); err != nil {
 		f.Close()
 		return err
 	}
@@ -499,4 +508,18 @@ func writeSynced(path string, data []byte, mode os.FileMode) error {
 		dir.Close()
 	}
 	return nil
+}
+
+// readHandoff reads a file the agent wrote: only a regular file, never through a symlink, never blocking on a FIFO.
+func readHandoff(path string) ([]byte, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 64<<10 {
+		return nil, errors.New("not a regular file of at most 64 KiB")
+	}
+	return io.ReadAll(io.LimitReader(f, 64<<10))
 }

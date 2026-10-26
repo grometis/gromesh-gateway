@@ -508,3 +508,34 @@ func TestPortsAndJWSAlphabetAreStrict(t *testing.T) {
 		t.Fatal("a signature with a JSON newline was accepted")
 	}
 }
+
+func TestAHostileHandoffCannotReachThePrivateKey(t *testing.T) {
+	dir := t.TempDir()
+	w := newWorld(t, dir)
+	key := filepath.Join(w.p.Dir, "probe.key")
+	before, _ := os.ReadFile(key)
+	// The agent plants symlinks named like a temporary the probe could use, and a FIFO as the admission.
+	for _, name := range []string{"probe.pub.tmp", ".probe.pub.tmp"} {
+		_ = os.Symlink(key, filepath.Join(w.p.Handoff, name))
+	}
+	_ = os.Remove(filepath.Join(w.p.Handoff, "admission.jws"))
+	if err := syscall.Mkfifo(filepath.Join(w.p.Handoff, "admission.jws"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w.p = w.probe(dir, w.p.InstanceKey)
+	done := make(chan struct{})
+	go func() { w.round(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a FIFO as the admission blocked the round")
+	}
+	after, _ := os.ReadFile(key)
+	if string(before) != string(after) {
+		t.Fatal("the private key was overwritten through the handoff")
+	}
+	_ = os.Remove(filepath.Join(w.p.Handoff, "admission.jws"))
+	_ = os.Symlink(key, filepath.Join(w.p.Handoff, "admission.jws"))
+	w.round()
+	w.expect("awaiting-admission", false)
+}
