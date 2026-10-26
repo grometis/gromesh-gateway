@@ -596,3 +596,131 @@ func TestAReportIsExposedOnlyOnceItsSeqIsSaved(t *testing.T) {
 		t.Fatalf("chain at seq %d", w.p.State.Chain.Seq)
 	}
 }
+
+// snapshot is the probe's state file and queue at one moment.
+type snapshot struct {
+	state []byte
+	queue map[string]bool
+}
+
+func (w *world) snapshot() snapshot {
+	w.t.Helper()
+	state, err := os.ReadFile(w.p.stateFile())
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	s := snapshot{state: state, queue: map[string]bool{}}
+	entries, _ := os.ReadDir(w.p.queueDir())
+	for _, e := range entries {
+		s.queue[e.Name()] = true
+	}
+	return s
+}
+
+// crashBack puts the state file back as it was in the snapshot, and the queue too unless keepQueue: a crash before
+// the writes since.
+func (w *world) crashBack(s snapshot, keepQueue bool) {
+	w.t.Helper()
+	if err := os.WriteFile(w.p.stateFile(), s.state, 0o644); err != nil {
+		w.t.Fatal(err)
+	}
+	if keepQueue {
+		return
+	}
+	entries, _ := os.ReadDir(w.p.queueDir())
+	for _, e := range entries {
+		if !s.queue[e.Name()] {
+			_ = os.Remove(filepath.Join(w.p.queueDir(), e.Name()))
+		}
+	}
+	// Nor was any of those reports exposed.
+	var saved Persisted
+	_ = json.Unmarshal(s.state, &saved)
+	for _, o := range w.outbox() {
+		if o.report.Seq > saved.Chain.Seq {
+			_ = os.Remove(filepath.Join(w.p.Handoff, "outbox", o.name))
+		}
+	}
+}
+
+// relayAcks is a restart that crashes right after relaying acks, before anything else is saved.
+func (w *world) relayAcks() {
+	w.p.mu.Lock()
+	w.p.drainAcks()
+	w.p.mu.Unlock()
+}
+
+// A crash after a report was queued and before the state counted it; on the restart a forged ack removes the queue
+// and the probe crashes again: what the first restart recovered from the queue is not lost.
+func TestWhatARestartRecoversFromTheQueueIsSavedBeforeAnyAck(t *testing.T) {
+	dir := t.TempDir()
+	w := newWorld(t, dir)
+	w.admit(nil)
+	w.round()
+	before := w.snapshot()
+	w.round()
+	w.crashBack(before, true)
+	w.p = w.probe(dir)
+	w.ack(admissionID, 2)
+	w.relayAcks()
+	w.p = w.probe(dir)
+	w.round()
+	if w.p.State.Chain.Seq != 3 {
+		t.Fatalf("after two crashes the chain reused seq %d", w.p.State.Chain.Seq)
+	}
+}
+
+// The same two crashes around the final report: the admission it ended is never served again.
+func TestAnEndedAdmissionRecoveredFromTheQueueIsSavedBeforeAnyAck(t *testing.T) {
+	w2 := newWorld(t, t.TempDir())
+	w2.admit(nil)
+	w2.round()
+	before := w2.snapshot()
+	w2.p.Terminate(true)
+	w2.crashBack(before, true)
+	w2.p = w2.probe(filepath.Dir(w2.p.Dir))
+	w2.ack(admissionID, 2)
+	w2.relayAcks()
+	w2.p = w2.probe(filepath.Dir(w2.p.Dir))
+	for range 3 {
+		w2.round()
+		if w2.leaseValid() == nil {
+			t.Fatalf("served again on the ended admission (%s)", w2.p.State.State)
+		}
+		w2.expect("awaiting-admission", false)
+	}
+}
+
+// CAP-2 is latched, a later round detects it again and the probe crashes before the state counts that detection:
+// a release the agent kept, covering only the earlier detection, does not end the violation.
+func TestARepeatedDetectionLostInACrashIsNotCoveredByAnOlderRelease(t *testing.T) {
+	dir := t.TempDir()
+	w := newWorld(t, dir)
+	w.admit(nil)
+	w.round()
+	w.net.set("forbidden-CAP-2:80", true)
+	w.round()
+	w.net.set("forbidden-CAP-2:80", false)
+	w.round()
+	if w.p.State.Chain.ViolationSeq != 2 {
+		t.Fatalf("violation seq %d", w.p.State.Chain.ViolationSeq)
+	}
+	before := w.snapshot()
+	w.net.set("forbidden-CAP-2:80", true)
+	w.round()
+	w.net.set("forbidden-CAP-2:80", false)
+	// Only the latch was written when it crashed.
+	w.crashBack(before, false)
+	w.p = w.probe(dir)
+	w.releases(covering("6a1f3c2e-0b7d-4c1a-9f10-0000000000f1", admissionID, 3))
+	w.round()
+	w.expect("violation", false)
+	// The report of the round after the restart carries the detection: a release must cover it.
+	seq := w.p.State.Chain.ViolationSeq
+	if seq != 4 {
+		t.Fatalf("violation seq %d after the restart's report", seq)
+	}
+	w.releases(covering("6a1f3c2e-0b7d-4c1a-9f10-0000000000f2", admissionID, seq))
+	w.round()
+	w.expect("verifying", true)
+}

@@ -178,8 +178,8 @@ func (p *Probe) emit(r Report) error {
 	if r.Final {
 		c.Closed = true
 	}
-	if r.State == "violation" && (p.State.ViolationEvidence || c.ViolationSeq == 0) {
-		c.ViolationSeq, p.State.ViolationEvidence = r.Seq, false
+	if r.State == "violation" && (p.detectionPending() || c.ViolationSeq == 0) {
+		c.ViolationSeq, p.State.ReportedDetection = r.Seq, p.State.Detection
 	}
 	if err := p.save(); err != nil {
 		// Not exposed until the seq is saved: an ack could otherwise remove the only durable copy of the advance.

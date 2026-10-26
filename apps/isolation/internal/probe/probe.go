@@ -120,9 +120,11 @@ type Persisted struct {
 	// one. Neither ends a violation: a release counts only once, and only if it arrived after the violation.
 	StaleReleases []string `json:"staleReleases,omitempty"`
 	UsedReleases  []string `json:"usedReleases,omitempty"`
-	// ViolationEvidence: a detection the chain has not reported yet (a forbidden target answered this round, or the
-	// latch holds one the state never saved); the next violation report moves Chain.ViolationSeq.
-	ViolationEvidence bool `json:"violationEvidence,omitempty"`
+	// Detection counts the rounds' detections (a forbidden target answered), written in the latch with each one;
+	// ReportedDetection is the last one a saved violation report carried. While one is pending, the next violation
+	// report moves Chain.ViolationSeq and no release ends the violation.
+	Detection         uint64 `json:"detection,omitempty"`
+	ReportedDetection uint64 `json:"reportedDetection,omitempty"`
 }
 
 func (p *Probe) leaseFile() string     { return filepath.Join(p.Dir, "lease.json") }
@@ -177,17 +179,15 @@ func (p *Probe) Open() error {
 		// The final report was saved but not yet the admission's end (a crash in between): it ends here.
 		p.State.ClosedAdmissions = keepLast(append(p.State.ClosedAdmissions, c.AdmissionID), 64)
 	}
-	// The latch is the first thing a violation writes: a crash after it cannot lose the violation.
+	// The latch is the first thing a violation writes: a crash after it cannot lose the violation, nor a detection
+	// (the same capability again included) whose report the state never saved.
 	if data, err := os.ReadFile(p.violationFile()); err == nil {
-		var latched []string
-		if json.Unmarshal(data, &latched) != nil || len(latched) == 0 {
-			latched = []string{"unknown"}
+		var l latch
+		if json.Unmarshal(data, &l) != nil || len(l.Violated) == 0 || l.Detection == 0 {
+			l = latch{Violated: []string{"unknown"}, Detection: p.State.ReportedDetection + 1}
 		}
-		if p.State.State != "violation" || len(mergeUnique(p.State.Violated, latched)) != len(p.State.Violated) {
-			// A violation the state never saved (a crash right after the latch): it has not been reported.
-			p.State.ViolationEvidence = true
-		}
-		p.State.Violated = mergeUnique(p.State.Violated, latched)
+		p.State.Violated = mergeUnique(p.State.Violated, l.Violated)
+		p.State.Detection = max(p.State.Detection, l.Detection)
 		p.State.State = "violation"
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -195,8 +195,20 @@ func (p *Probe) Open() error {
 	if p.State.State == "" {
 		p.State.State = "awaiting-admission"
 	}
+	// What was recovered from the queue and the latch is saved before any ack is relayed or report exposed: an ack
+	// could otherwise remove the only copy of it. Until a save succeeds, neither happens (see saved).
+	_ = p.save()
 	return writeSynced(filepath.Join(p.Handoff, "probe.pub"), []byte(p.PublicKey()), 0o644)
 }
+
+// latch is the content of violation.json.
+type latch struct {
+	Violated  []string `json:"violated"`
+	Detection uint64   `json:"detection"`
+}
+
+// detectionPending: a detection whose violation report is not saved yet.
+func (p *Probe) detectionPending() bool { return p.State.Detection > p.State.ReportedDetection }
 
 func (p *Probe) PublicKey() string { return b64.EncodeToString(p.publicKey()) }
 
@@ -298,7 +310,8 @@ func (p *Probe) prepare() bool {
 		}
 		old := p.State
 		p.State = Persisted{State: state, BootID: boot, Violated: old.Violated, Corrupt: old.Corrupt, Chain: old.Chain,
-			ClosedAdmissions: old.ClosedAdmissions, StaleReleases: old.StaleReleases, UsedReleases: old.UsedReleases}
+			ClosedAdmissions: old.ClosedAdmissions, StaleReleases: old.StaleReleases, UsedReleases: old.UsedReleases,
+			Detection: old.Detection, ReportedDetection: old.ReportedDetection}
 	}
 	p.loadReleases()
 	p.refreshAdmission(boot)
@@ -406,7 +419,7 @@ func (p *Probe) loadReleases() {
 // before a later detection, does not.
 func (p *Probe) release() string {
 	c := p.State.Chain
-	if c.AdmissionID == "" || c.AdmissionID != p.State.AdmissionID || c.ViolationSeq == 0 || p.State.ViolationEvidence {
+	if c.AdmissionID == "" || c.AdmissionID != p.State.AdmissionID || c.ViolationSeq == 0 || p.detectionPending() {
 		// The chain has not reported this violation (a detection, or a violation carried from an earlier admission) yet:
 		// no release can cover it.
 		return ""
@@ -620,17 +633,18 @@ func (p *Probe) violate(capabilities []string) {
 	if len(p.State.Violated) == 0 {
 		p.State.Violated = []string{"unknown"}
 	}
-	// The latch first: a crash between the writes below can never lose the violation.
-	data, _ := json.Marshal(p.State.Violated)
+	if len(capabilities) > 0 {
+		// A round that detected a failure: its report moves Chain.ViolationSeq, the latched rounds after it do not.
+		p.State.Detection++
+	}
+	// The latch first, with the detection: a crash between the writes below can never lose the violation, nor make a
+	// repeated detection of a latched capability look already reported.
+	data, _ := json.Marshal(latch{Violated: p.State.Violated, Detection: max(p.State.Detection, 1)})
 	if err := writeSynced(p.violationFile(), data, 0o644); err != nil {
 		p.Logf("violation latch not written: %v", err)
 	}
 	if p.State.State != "violation" {
 		p.Logf("violation of %v: containment", p.State.Violated)
-	}
-	if len(capabilities) > 0 {
-		// A round that detected a failure: its report moves Chain.ViolationSeq, the latched rounds after it do not.
-		p.State.ViolationEvidence = true
 	}
 	p.State.State, p.State.Passes, p.State.GuardVerified = "violation", 0, false
 	p.withdraw("violation")
