@@ -10,9 +10,9 @@ import { migrationReport } from "../workspaces/migration-report.js";
 
 const WINDOW_DAYS = 30;
 /**
- * How long a replica's counting may go unconfirmed: a gap between replicas shorter than this (a restart) is not a
- * gap, a replica silent for longer without stopping cleanly may have refused a call it could not write, and the
- * report claims completeness only up to this long ago.
+ * How long a replica's counting may go unconfirmed: a gap after a replica's last confirmation shorter than this (a
+ * restart) is not a gap, a replica silent for longer without stopping cleanly may have lost a call, and the report
+ * claims completeness only up to this long ago.
  */
 export const CONFIRM_MS = 120_000;
 const today = sql`(now() at time zone 'utc')::date`;
@@ -25,8 +25,9 @@ const utcDay = () => new Date().toISOString().slice(0, 10);
  * written every few seconds, so concurrent requests do not queue on that row.
  *
  * No call counted proves nothing about a time nobody was counting: each replica keeps a row from its start, confirmed
- * by every flush up to then and closed when it stops cleanly. A token call that could not be written is refused and
- * its time goes with the next confirmation; a replica that stops confirming without closing may have lost one.
+ * by every flush up to then (never past a token call still being written) and closed when it stops cleanly with
+ * nothing in flight. A token call that could not be written is refused and its day goes with the next confirmation;
+ * a replica that stops confirming without closing may have lost one at any time since, as far as anyone can tell.
  */
 @Injectable()
 export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBootstrap, OnModuleDestroy {
@@ -37,6 +38,9 @@ export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBoots
   private sessionCalls = new Map<string, number>();
   /** The UTC days of the token calls not written since the last confirmation. */
   private failedOn = new Set<string>();
+  /** When each token call still being written started. */
+  private readonly inFlight = new Map<symbol, number>();
+  private closed = false;
   private timer: NodeJS.Timeout | null = null;
 
   constructor(
@@ -54,9 +58,14 @@ export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBoots
   async onModuleDestroy(): Promise<void> {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    // The calls being written finish first (a few seconds at most): their failures go with the last confirmation.
+    for (let i = 0; i < 100 && this.inFlight.size > 0; i++) await new Promise((r) => setTimeout(r, 50));
     await this.flush();
-    // Only a clean stop closes the row: otherwise its silence counts as a possible loss.
-    await this.db.update(apiV1UsageReplicas).set({ seenAt: sql`now()`, closed: true }).where(eq(apiV1UsageReplicas.replicaId, this.replicaId));
+    // Only a clean stop with nothing in flight closes the row: otherwise its silence counts as a possible loss.
+    if (this.inFlight.size === 0 && this.failedOn.size === 0) {
+      await this.db.update(apiV1UsageReplicas).set({ seenAt: new Date(), closed: true }).where(eq(apiV1UsageReplicas.replicaId, this.replicaId));
+      this.closed = true;
+    }
   }
 
   async record(token: { id: string; name: string; ownerId: string } | null): Promise<void> {
@@ -65,11 +74,17 @@ export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBoots
       this.sessionCalls.set(day, (this.sessionCalls.get(day) ?? 0) + 1);
       return;
     }
+    const call = Symbol();
+    this.inFlight.set(call, Date.now());
     try {
       await this.add(day, token, 1);
     } catch (error) {
       this.failedOn.add(day);
+      // Past the last confirmation (a call that came in while stopping): the row opens again with it.
+      if (this.closed) await this.confirm().catch(() => undefined);
       throw error;
+    } finally {
+      this.inFlight.delete(call);
     }
   }
 
@@ -77,13 +92,19 @@ export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBoots
   private async confirm(): Promise<void> {
     const failed = this.failedOn;
     this.failedOn = new Set();
+    // Up to now, or to the start of the oldest token call still being written (it may still fail).
+    const seenAt = new Date(Math.min(Date.now(), ...this.inFlight.values()));
     try {
       await this.db
         .insert(apiV1UsageReplicas)
-        .values({ replicaId: this.replicaId, startedAt: this.startedAt, seenAt: sql`now()`, failedOn: [...failed] })
+        .values({ replicaId: this.replicaId, startedAt: this.startedAt, seenAt, failedOn: [...failed] })
         .onConflictDoUpdate({
           target: apiV1UsageReplicas.replicaId,
-          set: { seenAt: sql`now()`, failedOn: sql`array(select distinct unnest(${apiV1UsageReplicas.failedOn} || excluded.failed_on) order by 1)` },
+          set: {
+            seenAt: sql`greatest(${apiV1UsageReplicas.seenAt}, excluded.seen_at)`,
+            failedOn: sql`array(select distinct unnest(${apiV1UsageReplicas.failedOn} || excluded.failed_on) order by 1)`,
+            closed: sql`${apiV1UsageReplicas.closed} and cardinality(excluded.failed_on) = 0`,
+          },
         });
     } catch (error) {
       for (const d of failed) this.failedOn.add(d);
@@ -124,16 +145,18 @@ export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBoots
     await this.flush();
     const since = sql`${today} - ${WINDOW_DAYS - 1}::int`;
     const margin = sql`make_interval(secs => ${CONFIRM_MS / 1000})`;
-    // A day is complete when the replicas' rows, each widened by the margin, cover it from its start (to now less the
-    // margin, for today), no call failed on it and no replica went silent on it without closing. The report's since
-    // is the day after the last incomplete one in the window.
+    // A day is complete when the replicas' rows, each extended by the margin past its last confirmation, cover it from
+    // its start (to now less the margin, for today), no call failed on it and no replica that went silent without
+    // closing could have lost one on it (from its last confirmation on, while its row is kept). The report's since is
+    // the day after the last incomplete one in the window.
     const [window] = await this.db
       .execute<{ since: string; completeThrough: string }>(sql`
         with cover as (
-          select range_agg(tstzrange(started_at - ${margin}, seen_at + ${margin}, '[]')) as m from ${apiV1UsageReplicas}
+          select range_agg(tstzrange(started_at, seen_at + ${margin}, '[]')) as m from ${apiV1UsageReplicas}
         ), lost as (
           select unnest(failed_on) as day from ${apiV1UsageReplicas}
-          union select (seen_at at time zone 'utc')::date from ${apiV1UsageReplicas} where not closed and seen_at < now() - ${margin}
+          union select generate_series((seen_at at time zone 'utc')::date, ${today}, interval '1 day')::date
+          from ${apiV1UsageReplicas} where not closed and seen_at < now() - ${margin}
         ), days as (
           select g::date as day, g::date::timestamp at time zone 'utc' as starts,
                  least((g::date + 1)::timestamp at time zone 'utc', now() - ${margin}) as ends

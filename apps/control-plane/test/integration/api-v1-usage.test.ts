@@ -146,17 +146,54 @@ describe("the v1 calls the cut will remove, the migration report and one authori
     await h.sql.query(`insert into api_v1_usage_replicas (replica_id, started_at, seen_at, closed) values (gen_random_uuid(), ${at(29)}, ${at(5, 8)}, true)`);
     await h.sql.query(`update api_v1_usage_replicas set started_at = ${at(4, 12)} where replica_id = $1`, [mine()]);
     expect((await read()).since).toBe(await day(3));
-    // A restart shorter than the margin is no gap.
+    // A restart: two minutes without a replica is no gap, three are.
     await h.sql.query(`delete from api_v1_usage_replicas where replica_id <> $1`, [mine()]);
     await h.sql.query(`insert into api_v1_usage_replicas (replica_id, started_at, seen_at, closed) values (gen_random_uuid(), ${at(29)}, ${at(5, 8)}, true)`);
-    await h.sql.query(`update api_v1_usage_replicas set started_at = ${at(5, 8)} + interval '1 minute' where replica_id = $1`, [mine()]);
+    await h.sql.query(`update api_v1_usage_replicas set started_at = ${at(5, 8)} + interval '2 minutes' where replica_id = $1`, [mine()]);
     expect((await read()).since).toBe(await day(29));
+    await h.sql.query(`update api_v1_usage_replicas set started_at = ${at(5, 8)} + interval '3 minutes' where replica_id = $1`, [mine()]);
+    expect((await read()).since).toBe(await day(4));
+    await h.sql.query(`delete from api_v1_usage_replicas where replica_id <> $1`, [mine()]);
+    await h.sql.query(`update api_v1_usage_replicas set started_at = ${at(29)} where replica_id = $1`, [mine()]);
   });
 
-  it("restarts the 30 days after a replica went silent without stopping cleanly: it may have lost a call", async () => {
-    await h.sql.query(`insert into api_v1_usage_replicas (replica_id, started_at, seen_at) values (gen_random_uuid(), ${at(29)}, ${at(10, 12)})`);
-    expect((await read()).since).toBe(await day(9));
-    await h.sql.query(`delete from api_v1_usage_replicas where seen_at = ${at(10, 12)}`);
+  it("keeps the 30 days from completing while a replica that went silent without stopping cleanly is on record", async () => {
+    // Last confirmed one second before midnight: it may have lost a call on any day since, today included.
+    await h.sql.query(`insert into api_v1_usage_replicas (replica_id, started_at, seen_at) values (gen_random_uuid(), ${at(29)}, ${at(10)} - interval '1 second')`);
+    expect((await read()).since).toBe(await day(-1));
+    await h.sql.query(`delete from api_v1_usage_replicas where seen_at = ${at(10)} - interval '1 second'`);
+    expect((await read()).since).toBe(await day(29));
+    // Kept while it can matter: pruned only once its last confirmation leaves the window.
+    await h.sql.query(`insert into api_v1_usage_replicas (replica_id, started_at, seen_at) values (gen_random_uuid(), ${at(40)}, ${at(30, 12)}), (gen_random_uuid(), ${at(40)}, ${at(31, 12)})`);
+    await usage.flush();
+    expect((await h.sql.query(`select count(*)::int as n from api_v1_usage_replicas where started_at = ${at(40)}`)).rows[0].n).toBe(1);
+    await h.sql.query(`delete from api_v1_usage_replicas where started_at = ${at(40)}`);
+  });
+
+  it("never confirms past a token call still being written, and a stop waits for it before closing", async () => {
+    const created = await h.api("POST", "/users/me/tokens", { name: uniq("slow"), role: "viewer", expiresInDays: 1 });
+    const other = await startHarness({ databaseUrl: dbUrl, apiV1UsageFlushMs: 0 });
+    const theirs = other.app.get(ApiV1UsageService);
+    const id = theirs["replicaId" as keyof ApiV1UsageService] as unknown as string;
+    await h.sql.query(`update api_v1_usage_replicas set started_at = ${at(29)}`);
+    let fail!: () => void;
+    vi.spyOn(theirs as unknown as { add: () => Promise<void> }, "add").mockImplementationOnce(() => new Promise((_resolve, reject) => (fail = () => reject(new Error("write failed")))));
+    const startedAt = Date.now();
+    const call = other.anonymous("GET", `/environments/${env}/services`, undefined, { authorization: `Bearer ${created.body.token as string}` });
+    for (let i = 0; i < 100 && !fail; i++) await new Promise((r) => setTimeout(r, 10));
+    await theirs.flush();
+    const seen = (await h.sql.query(`select seen_at from api_v1_usage_replicas where replica_id = $1`, [id])).rows[0].seen_at as Date;
+    expect(seen.getTime()).toBeLessThanOrEqual(startedAt + 1000);
+    // The stop waits for the call: its failure is confirmed, so the row is closed with the day it failed on.
+    const stopping = other.close();
+    await new Promise((r) => setTimeout(r, 100));
+    fail();
+    expect((await call).status).toBe(500);
+    await stopping;
+    const row = (await h.sql.query(`select closed, failed_on::text[] as failed from api_v1_usage_replicas where replica_id = $1`, [id])).rows[0];
+    expect(row).toEqual({ closed: true, failed: [await day(0)] });
+    expect((await read()).since).toBe(await day(-1));
+    await h.sql.query(`update api_v1_usage_replicas set failed_on = '{}'`);
     expect((await read()).since).toBe(await day(29));
   });
 
