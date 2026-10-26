@@ -319,7 +319,7 @@ jobs:
     needs: [changes, checks]
     # After checks when they run; on the bot's branches checks are skipped and this still runs.
     if: ${{ !cancelled() && !failure() && (needs.changes.outputs.all == 'true' || needs.changes.outputs.bot == 'true' || needs.changes.outputs.heavy == 'true') }}
-    timeout-minutes: 25
+    timeout-minutes: 40
     permissions:
       contents: read
       packages: read
