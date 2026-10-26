@@ -585,6 +585,44 @@ describe("isolation admissions and reports (N2-D3a)", () => {
     }
   });
 
+  it("names in a release every open admission of the pendency's scope, each through the seq acknowledged so far", async () => {
+    const c = await cluster();
+    const pa = new Probe();
+    const a = await admit(c, pa);
+    const pb = new Probe();
+    const askB = await c.ask(pb);
+    await c.send(pa.next(c.id, a.admissionId, { challenge: askB.challenge }));
+    const b = acceptsInstance((await c.poll(askB.requestId)).admission!, "gromesh-admission+json", await trust())!.admissionId as string;
+    await c.send(pb.next(c.id, b));
+    // C closes (Kong stopped) before the release: no longer open, not named.
+    const pc = new Probe();
+    const askC = await c.ask(pc);
+    await c.send(pa.next(c.id, a.admissionId, { challenge: askC.challenge }), pb.next(c.id, b, { challenge: askC.challenge }));
+    const cAdmission = acceptsInstance((await c.poll(askC.requestId)).admission!, "gromesh-admission+json", await trust())!.admissionId as string;
+    await c.send(pc.next(c.id, cAdmission, { final: true, finalReason: "pod-terminated", kongStopConfirmed: true }));
+    // Another cluster's open admission is never named either.
+    const other = await cluster();
+    const elsewhere = await admit(other, new Probe());
+    // A violates at seq 3; B's seq 4 arrives above a gap (seq 3 missing): stored, not acknowledged, not counted.
+    expect((await c.send(pa.next(c.id, a.admissionId, { state: "violation", failedCapabilities: ["CAP-1"] }))).acks).toEqual([{ admissionId: a.admissionId, ackedSeq: 3 }]);
+    pb.next(c.id, b);
+    expect((await c.send(pb.next(c.id, b))).acks).toEqual([{ admissionId: b, ackedSeq: 2 }]);
+    const [p] = (await c.isolation()).pendencies;
+    expect((await v2(h.api, "POST", `/clusters/${c.id}/isolation-releases`, { pendencyId: p!.id, justification })).status).toBe(201);
+    const [release] = ((await c.call("GET", "/releases")).body as { items: Jws[] }).items;
+    const claims = acceptsInstance(release!, "gromesh-isolation-release+json", await trust())!;
+    const validate = agentContractsV2.validator("IsolationReleaseClaims");
+    expect(validate(structuredClone(claims)), JSON.stringify(validate.errors)).toBe(true);
+    expect(Object.keys(claims)).toEqual(["clusterId", "pendencyId", "kind", "expiresAt", "admissions"]);
+    expect(claims.admissions).toEqual([{ admissionId: a.admissionId, throughSeq: 3 }, { admissionId: b, throughSeq: 2 }]);
+    const named = (claims.admissions as { admissionId: string }[]).map((x) => x.admissionId);
+    expect(named).not.toContain(cAdmission);
+    expect(named).not.toContain(elsewhere.admissionId);
+    // Negative control of the schema: the same claims without admissions are not a release.
+    const { admissions: _, ...without } = claims;
+    expect(validate(without)).toBe(false);
+  });
+
   it("an answer in violation is no answer: the chain must be clean from the answer on", async () => {
     const c = await cluster();
     const pa = new Probe();

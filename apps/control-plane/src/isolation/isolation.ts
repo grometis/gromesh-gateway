@@ -583,6 +583,14 @@ export class IsolationService {
       if (!p) throw notFound("Pendency");
       if (p.lifecycle !== "confirmed-violation" && p.lifecycle !== "unconfirmed-isolation") throw conflict(p.lifecycle === "communication-failure" ? "A communication-failure is not releasable" : "The pendency is not open");
       const kind = p.lifecycle;
+      // Every admission open in the pendency's scope as the release is issued (the orphan it closes included), each
+      // with the chain acknowledged so far: a probe leaves violation only for reports up to that seq.
+      const covered = await tx
+        .select({ admissionId: isolationAdmissions.admissionId, throughSeq: isolationAdmissions.ackedSeq })
+        .from(isolationAdmissions)
+        .where(and(eq(isolationAdmissions.clusterId, cluster.id), eq(isolationAdmissions.state, "open"), p.scope === "node" ? eq(isolationAdmissions.nodeName, p.nodeName ?? "") : undefined))
+        .orderBy(asc(isolationAdmissions.decidedAt), asc(isolationAdmissions.admissionId));
+      const admissions = covered.map((a) => ({ admissionId: a.admissionId!, throughSeq: a.throughSeq }));
       await tx.update(isolationPendencies).set({ lifecycle: "released", closedAt: sql`clock_timestamp()`, closeReason: "released", releasedBy: ctx.actor, justification: body.justification }).where(eq(isolationPendencies.id, p.id));
       if (p.admissionId) {
         await tx
@@ -594,13 +602,13 @@ export class IsolationService {
       const expiresAt = new Date(rows[0]!.at).toISOString();
       let signed: { jws: Jws; kid: string };
       try {
-        signed = await this.signer.sign(tx, "gromesh-isolation-release+json", { clusterId: cluster.id, pendencyId: p.id, kind, expiresAt });
+        signed = await this.signer.sign(tx, "gromesh-isolation-release+json", { clusterId: cluster.id, pendencyId: p.id, kind, expiresAt, admissions });
       } catch (error) {
         if (error instanceof NoSigningKeyError) throw conflict("No active instance signing key covers now: nothing was released");
         throw error;
       }
       await tx.insert(isolationReleases).values({ clusterId: cluster.id, pendencyId: p.id, kind, release: signed.jws, kid: signed.kid, expiresAt: sql`${expiresAt}::timestamptz` });
-      await audit(tx, ctx, { action: "isolation.release", entityType: "isolation-pendency", entityId: p.id, environmentId: cluster.environmentId, before: { lifecycle: kind }, after: { lifecycle: "released", clusterId: cluster.id, admissionId: p.admissionId, kid: signed.kid, expiresAt, justification: body.justification } });
+      await audit(tx, ctx, { action: "isolation.release", entityType: "isolation-pendency", entityId: p.id, environmentId: cluster.environmentId, before: { lifecycle: kind }, after: { lifecycle: "released", clusterId: cluster.id, admissionId: p.admissionId, admissions, kid: signed.kid, expiresAt, justification: body.justification } });
     });
     this.logger.warn(`Isolation pendency ${body.pendencyId} of cluster ${clusterId} released by ${ctx.actor.name ?? ctx.actor.id}`);
   }
