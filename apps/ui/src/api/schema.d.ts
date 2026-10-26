@@ -1382,12 +1382,14 @@ export interface components {
             /**
              * @description Why automatic publication is paused for this environment, or null when it is not. "import": the draft
              *     came from an import (POST /environments/{envId}/import), which never publishes by itself, so
-             *     publishMode auto does not publish this draft, nor later edits to it. Automatic publication resumes
+             *     publishMode auto does not publish this draft, nor later edits to it. "privileged": the draft changes a
+             *     privileged plugin capability (see Privileged plugin capabilities), which only a platform admin publishes.
+             *     Automatic publication resumes
              *     after the next explicit publish (POST /environments/{envId}/snapshots). Always null with publishMode
              *     manual. Read-only: it cannot be set through EnvironmentWrite.
              * @enum {string|null}
              */
-            readonly autoPublishPausedReason: "import" | null;
+            readonly autoPublishPausedReason: "import" | "privileged" | null;
         } & components["schemas"]["Timestamps"];
         EnvironmentWrite: {
             name: components["schemas"]["Name"];
@@ -3252,6 +3254,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+            /** @description Also a privileged plugin capability without the platform admin (see Privileged plugin capabilities). */
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             /** @description Nothing was written (all or nothing); errors[] lists every error and the change arrays are empty */
@@ -4790,8 +4793,11 @@ export interface operations {
                     "application/json": components["schemas"]["Plugin"];
                 };
             };
+            /** @description Also a privileged plugin capability without the platform admin (see Privileged plugin capabilities). */
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+            /** @description Includes a config string with a vault reference (see Vault references). */
             422: components["responses"]["ValidationError"];
         };
     };
@@ -4844,8 +4850,11 @@ export interface operations {
                     "application/json": components["schemas"]["Plugin"];
                 };
             };
+            /** @description Also a privileged plugin capability without the platform admin (see Privileged plugin capabilities). */
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+            /** @description Includes a config string with a vault reference (see Vault references). */
             422: components["responses"]["ValidationError"];
         };
     };
@@ -4868,6 +4877,8 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Also a privileged plugin capability without the platform admin (see Privileged plugin capabilities). */
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
         };
     };
@@ -5044,6 +5055,8 @@ export interface operations {
                     "application/json": components["schemas"]["SnapshotSummary"];
                 };
             };
+            /** @description Also a privileged plugin capability without the platform admin (see Privileged plugin capabilities). */
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             422: components["responses"]["ValidationError"];
@@ -5123,6 +5136,8 @@ export interface operations {
                     "application/json": components["schemas"]["SnapshotSummary"];
                 };
             };
+            /** @description Also a privileged plugin capability without the platform admin (see Privileged plugin capabilities). */
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             /** @description Target has the same configuration as the current version */
             409: components["responses"]["Conflict"];

@@ -72,6 +72,31 @@ info:
         import answer 422 when the resulting state has such a destination (rows written before the rule existed).
         The control plane does not resolve DNS: a name that resolves to one of these addresses is not detected here,
         which is why the data plane must not expose privileged listeners over TCP.
+      - Vault references. A plugin `config` string containing `{vault://` answers 422 with the `path` of that field
+        (`config.headers.X-Token`, or `document.plugins.0.config...` on import): Kong resolves references in the data
+        plane, where they read the gateway's own environment (e.g. the collector token below). A publication or
+        rollback whose state has such a string in any user entity (a service path, a certificate key, rows written
+        before the rule) answers 422 with that path (`services[0].path`). Platform plugins are compiled by the
+        control plane itself and are the only configuration that carries references.
+      - Privileged plugin capabilities. Configuration that runs code in the gateway or uses the gateway pod's own
+        credentials is reserved to the platform admin (global role `admin`; an API token must also have role
+        `admin`); an environment admin or editor gets 403. Privileged: the plugins `pre-function`, `post-function`
+        and `file-log`; the field `custom_fields_by_lua` of any plugin; `aws-lambda` without both `aws_key` and
+        `aws_secret`; `ai-proxy`, `ai-request-transformer` and `ai-response-transformer` with
+        `auth.gcp_use_service_account: true`, or with the `bedrock` provider without both AWS keys. The rule applies
+        to creating, replacing and deleting such a plugin, to an import that changes one, and to a publish or rollback
+        whose privileged plugins (with their scope and config) differ from those of the current version, so rows
+        written before the rule existed and older versions cannot go live without the platform admin. Auto-publish
+        never publishes such a change: the environment pauses (`autoPublishPausedReason: privileged`) until a platform
+        admin publishes.
+      - Platform analytics (http-log). The platform http-log plugin sends the header `X-Gromesh-Collector-Token`
+        with the value `{vault://env/gromesh-collector-token}`, which each gateway resolves from its own
+        `GROMESH_COLLECTOR_TOKEN`; the control plane never stores, returns, audits or diffs the token. The cluster's
+        collector refuses (401) every event without that cluster's token, and drops an event whose `environment_id`
+        differs from the environment the collector is configured for. Each cluster has its own token, and the
+        collector sets `cluster_id` itself, so a token never writes another cluster or environment. During a rotation
+        the collector also accepts the previous token until it is removed. Configuration able to read the token in the
+        gateway is a privileged capability (see above).
       - Secrets are write-only: credential keys, JWT secrets, `encrypted` plugin fields and certificate private keys
         read back as `"REDACTED"` for every role. Only the agent endpoint delivers the real values. Basic-auth
         passwords are never returned anywhere; the control plane keeps only Kong's salted hash, which is a secret too:
@@ -691,7 +716,7 @@ paths:
                     errors: [{ path: document.consumers.0.basicAuthCredentials.0.password, message: a real secret is required for a new secret slot }]
                     pendingCredentials: []
         "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
+        "403": { $ref: "#/components/responses/Forbidden", description: "Also a privileged plugin capability without the platform admin (see Privileged plugin capabilities)." }
         "404": { $ref: "#/components/responses/NotFound" }
         "422":
           description: Nothing was written (all or nothing); errors[] lists every error and the change arrays are empty
@@ -1550,13 +1575,14 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/PluginWrite" }
       responses:
+        "403": { $ref: "#/components/responses/Forbidden", description: "Also a privileged plugin capability without the platform admin (see Privileged plugin capabilities)." }
         "201":
           description: Created
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Plugin" }
         "409": { $ref: "#/components/responses/Conflict" }
-        "422": { $ref: "#/components/responses/ValidationError" }
+        "422": { $ref: "#/components/responses/ValidationError", description: "Includes a config string with a vault reference (see Vault references)." }
         "404": { $ref: "#/components/responses/NotFound" }
   /environments/{envId}/plugins/{pluginId}:
     parameters: [{ $ref: "#/components/parameters/EnvId" }, { $ref: "#/components/parameters/PluginId" }]
@@ -1583,6 +1609,7 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/PluginWrite" }
       responses:
+        "403": { $ref: "#/components/responses/Forbidden", description: "Also a privileged plugin capability without the platform admin (see Privileged plugin capabilities)." }
         "200":
           description: Replaced
           content:
@@ -1590,13 +1617,14 @@ paths:
               schema: { $ref: "#/components/schemas/Plugin" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
-        "422": { $ref: "#/components/responses/ValidationError" }
+        "422": { $ref: "#/components/responses/ValidationError", description: "Includes a config string with a vault reference (see Vault references)." }
     delete:
       tags: [plugins]
       operationId: deletePlugin
       security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
       responses:
+        "403": { $ref: "#/components/responses/Forbidden", description: "Also a privileged plugin capability without the platform admin (see Privileged plugin capabilities)." }
         "204": { description: Deleted }
         "404": { $ref: "#/components/responses/NotFound" }
   /plugin-schemas:
@@ -1690,6 +1718,7 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/PublishRequest" }
       responses:
+        "403": { $ref: "#/components/responses/Forbidden", description: "Also a privileged plugin capability without the platform admin (see Privileged plugin capabilities)." }
         "201":
           description: Published
           content:
@@ -1752,6 +1781,7 @@ paths:
         server name another environment of the instance holds now. A session only, never an API token, as the v2
         rollback (decision H-9: one authorization for both APIs).
       responses:
+        "403": { $ref: "#/components/responses/Forbidden", description: "Also a privileged plugin capability without the platform admin (see Privileged plugin capabilities)." }
         "201":
           description: Published
           content:
@@ -2305,12 +2335,14 @@ components:
             hasUnpublishedChanges: { type: boolean }
             autoPublishPausedReason:
               type: [string, "null"]
-              enum: [import, null]
+              enum: [import, privileged, null]
               readOnly: true
               description: |
                 Why automatic publication is paused for this environment, or null when it is not. "import": the draft
                 came from an import (POST /environments/{envId}/import), which never publishes by itself, so
-                publishMode auto does not publish this draft, nor later edits to it. Automatic publication resumes
+                publishMode auto does not publish this draft, nor later edits to it. "privileged": the draft changes a
+                privileged plugin capability (see Privileged plugin capabilities), which only a platform admin publishes.
+                Automatic publication resumes
                 after the next explicit publish (POST /environments/{envId}/snapshots). Always null with publishMode
                 manual. Read-only: it cannot be set through EnvironmentWrite.
         - { $ref: "#/components/schemas/Timestamps" }
