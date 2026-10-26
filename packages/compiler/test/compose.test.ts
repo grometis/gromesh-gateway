@@ -89,7 +89,7 @@ describe("composeWorkspaces", () => {
     }
     expect(cfg.plugins.find((p) => p.name === "gromesh-route-guard" && p.route === id("b", 2))?.config).toEqual({
       prefix: "/assine",
-      auth: { plugin: "key-auth", anonymous: null, message: "Unauthorized", www_authenticate: "Key" },
+      auth: { plugin: "key-auth", anonymous: null, hide_credentials: false, message: "Unauthorized", www_authenticate: "Key" },
     });
   });
 
@@ -97,10 +97,11 @@ describe("composeWorkspaces", () => {
     const guard = (extra: Partial<GatewayState>) =>
       composeWorkspaces(members(extra)).plugins.find((p) => p.name === "gromesh-route-guard" && p.route === id("a", 2))?.config.auth;
     const on = (name: string, config: Record<string, unknown>) => ({ plugins: [{ id: id("a", 6), name, scope: { routeId: id("a", 2) }, config }] });
-    expect(guard(on("basic-auth", {}))).toEqual({ plugin: "basic-auth", anonymous: null, message: "Unauthorized", www_authenticate: 'Basic realm="service"' });
+    expect(guard(on("basic-auth", {}))).toEqual({ plugin: "basic-auth", anonymous: null, hide_credentials: false, message: "Unauthorized", www_authenticate: 'Basic realm="service"' });
+    expect(guard(on("basic-auth", { hide_credentials: true }))).toMatchObject({ hide_credentials: true });
     expect(guard(on("basic-auth", { realm: "pix" }))).toMatchObject({ www_authenticate: 'Basic realm="pix"' });
     expect(guard(on("key-auth", { realm: "pix" }))).toMatchObject({ www_authenticate: 'Key realm="pix"' });
-    expect(guard(on("jwt", {}))).toEqual({ plugin: "jwt", anonymous: null, message: "No credentials found for given 'iss'", www_authenticate: 'Bearer error="invalid_token"' });
+    expect(guard(on("jwt", {}))).toEqual({ plugin: "jwt", anonymous: null, hide_credentials: false, message: "No credentials found for given 'iss'", www_authenticate: 'Bearer error="invalid_token"' });
     expect(guard(on("jwt", { key_claim_name: "kid", realm: "r" }))).toMatchObject({ message: "No credentials found for given 'kid'", www_authenticate: 'Bearer realm="r" error="invalid_token"' });
     // anonymous by logical username is emitted by id: the username on the node is namespaced.
     expect(guard(on("key-auth", { anonymous: "guest" }))).toMatchObject({ anonymous: id("a", 4) });
@@ -111,10 +112,11 @@ describe("composeWorkspaces", () => {
   it("emits regex paths inside the prefix group and refuses regexes that could leave it", () => {
     const cfg = composeWorkspaces(members({ routes: [{ id: id("a", 2), name: "pix", serviceId: id("a", 1), paths: ["~/pag/x|/rh/.*", "/"] }] }));
     expect(cfg.routes.find((r) => r.id === id("a", 2))?.paths).toEqual(["~/tvro(?:/pag/x|/rh/.*)", "/tvro/"]);
-    for (const bad of ["/a|b", "/a)|(/b", "/?x", "/*", "x", "/(?i)x", "/(?i:x)", "/(\\w)\\1", "/\\Qa\\E", "/(*ACCEPT)", "/a\\K", "/[a", "/(a", "/a|", "/(?P=n)", "/(?#c)"]) {
+    for (const bad of ["/a|b", "/a)|(/b", "/?x", "/*", "x", "/(?i)x", "/(?i:x)", "/(\\w)\\1", "/\\Qa\\E", "/(*ACCEPT)", "/a\\K", "/[a", "/(a", "/a|", "/(?P=n)", "/(?#c)", "/a(?=b)", "/(?<=a)b",
+      "/[[:alpha:](])|/assine/.*(?:[[:alpha:])]?", "/[a[)]]|/b", "/\\c)|(/x", "/[\\c]"]) {
       expect(regexIssue(bad), bad).not.toBeNull();
     }
-    for (const good of ["/pag/x|/rh/.*", "/v[0-9]+/(?:a|b)", "/(?<id>[0-9]+)$", "/a(?=b)", "/[)|(]x", "/a\\|b", "/\\d{2,4}"]) {
+    for (const good of ["/pag/x|/rh/.*", "/v[0-9]+/(?:a|b)", "/(?<id>[0-9]+)$", "/(?P<id>x)", "/[)|(]x", "/[]a]", "/[^]a]", "/a\\|b", "/\\d{2,4}"]) {
       expect(regexIssue(good), good).toBeNull();
     }
     const found = issues(() => composeWorkspaces(members({ routes: [{ id: id("a", 2), name: "pix", serviceId: id("a", 1), paths: ["~/a|b"] }] })));
@@ -139,6 +141,30 @@ describe("composeWorkspaces", () => {
     // The same name only runs once (the most specific instance); a disabled one does not count.
     expect(() => composeWorkspaces(members({ plugins: [{ id: id("a", 6), name: "key-auth", scope: route }, { id: id("a", 9), name: "key-auth" }] }))).not.toThrow();
     expect(() => composeWorkspaces(members({ plugins: [{ id: id("a", 6), name: "key-auth", scope: route }, { id: id("a", 9), name: "jwt", scope: service, enabled: false }] }))).not.toThrow();
+  });
+
+  it("follows Kong's precedence for the effective authenticator, whatever the input order (route+service > route > service > global)", () => {
+    const routeAnon = { id: id("a", 6), name: "key-auth", scope: { routeId: id("a", 2) }, config: { anonymous: "guest" } };
+    const routeService = { id: id("a", 9), name: "key-auth", scope: { routeId: id("a", 2), serviceId: id("a", 1) }, config: {} };
+    const policy = (plugins: Plugin[]) => composeWorkspaces(members({ plugins })).plugins.find((p) => p.name === "gromesh-route-guard" && p.route === id("a", 2))?.config.auth;
+    expect(policy([routeAnon, routeService])).toMatchObject({ anonymous: null });
+    expect(policy([routeService, routeAnon])).toMatchObject({ anonymous: null });
+    // A route+service instance for another service never applies to the route.
+    const other = { services: [state("a").services[0]!, { id: id("a", 99), name: "other", protocol: "http" as const, host: "other.example", port: 80 }] };
+    const elsewhere = composeWorkspaces(members({ ...other, plugins: [routeAnon, { ...routeService, scope: { routeId: id("a", 2), serviceId: id("a", 99) } }] }));
+    expect(elsewhere.plugins.find((p) => p.name === "gromesh-route-guard" && p.route === id("a", 2))?.config.auth).toMatchObject({ anonymous: id("a", 4) });
+    expect(policy([{ id: id("a", 9), name: "key-auth", scope: { serviceId: id("a", 1) }, config: {} }, { id: id("a", 13), name: "key-auth", config: { anonymous: "guest" } }])).toMatchObject({ anonymous: null });
+  });
+
+  it("a disabled instance is omitted and never shadows an enabled broader one: the route keeps its authenticator", () => {
+    const cfg = composeWorkspaces(members({ plugins: [
+      { id: id("a", 13), name: "key-auth", config: {} },
+      { id: id("a", 6), name: "key-auth", scope: { routeId: id("a", 2) }, enabled: false },
+    ] }));
+    const onRoute = cfg.plugins.filter((p) => p.name === "key-auth" && p.route === id("a", 2));
+    expect(onRoute.map((p) => p.enabled)).toEqual([true]);
+    expect(cfg.plugins.some((p) => p.id === id("a", 6))).toBe(false);
+    expect(cfg.plugins.find((p) => p.name === "gromesh-route-guard" && p.route === id("a", 2))?.config.auth).toMatchObject({ plugin: "key-auth" });
   });
 
   it("refuses ldap-auth, session, hmac-auth, acme and oauth2 in any Workspace scope, and authenticators per consumer", () => {

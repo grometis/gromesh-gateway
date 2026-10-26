@@ -32,6 +32,8 @@ const NOT_WORKSPACE_WIDE = new Set(["rate-limiting", "response-ratelimiting", "p
 export interface RouteAuthPolicy {
   plugin: "key-auth" | "basic-auth" | "jwt";
   anonymous: string | null;
+  /** basic-auth only: an unknown credential has both Authorization headers removed on its way to anonymous. */
+  hide_credentials: boolean;
   message: string;
   www_authenticate: string;
 }
@@ -202,6 +204,8 @@ function namespaced(m: WorkspaceMember, platform: Plugin[]): GatewayState {
   // Workspace-wide plugins are one instance per route, unless the route or its service has its own (more specific).
   const plugins: Plugin[] = [];
   for (const p of state.plugins) {
+    // Kong never loads a disabled instance; omitting it also frees its scope for an emulated Workspace-wide one.
+    if (p.enabled === false) continue;
     const scope = p.scope ?? {};
     const config = WORKSPACE_AUTHENTICATORS.has(p.name) && p.config?.anonymous != null
       ? { ...p.config, anonymous: anonymousId(state, p.config.anonymous) }
@@ -211,7 +215,7 @@ function namespaced(m: WorkspaceMember, platform: Plugin[]): GatewayState {
       continue;
     }
     for (const r of state.routes) {
-      const shadowed = state.plugins.some((o) => o.name === p.name && !o.scope?.consumerId && (o.scope?.routeId === r.id || (!o.scope?.routeId && o.scope?.serviceId === r.serviceId)));
+      const shadowed = state.plugins.some((o) => o !== p && o.name === p.name && o.enabled !== false && scopeRank(o, r) >= 1);
       if (!shadowed) plugins.push({ ...p, id: derivedId(`workspace-plugin:${p.id}:${r.id}`), scope: { routeId: r.id }, config, tags: tags(p.tags) });
     }
   }
@@ -252,18 +256,31 @@ function namespaced(m: WorkspaceMember, platform: Plugin[]): GatewayState {
   };
 }
 
-/** For each authenticator name, the instance Kong runs on the route: route, else service, else Workspace-wide, else platform. */
+/**
+ * Where an instance applies to a route without a consumer, in Kong 3.9.4's order (runloop/plugins_iterator.lua,
+ * lookup_cfg): route+service 3, route 2, service 1, global 0; -1 when it does not apply. Consumer combinations are
+ * never authenticators.
+ */
+function scopeRank(p: Plugin, r: Route): number {
+  const s = p.scope ?? {};
+  if (s.consumerId) return -1;
+  if (s.routeId && s.routeId !== r.id) return -1;
+  if (s.serviceId && s.serviceId !== r.serviceId) return -1;
+  return s.routeId && s.serviceId ? 3 : s.routeId ? 2 : s.serviceId ? 1 : 0;
+}
+
+/** For each authenticator name, the instance Kong runs on the route: the most specific enabled one, else the platform's. */
 function effectiveAuthenticators(state: GatewayState, platform: Plugin[], route: Route): Plugin[] {
   const enabled = (p: Plugin) => p.enabled !== false && AUTHENTICATORS.has(p.name) && !p.scope?.consumerId;
   const own = state.plugins.filter(enabled);
   const names = new Set([...own, ...platform.filter(enabled)].map((p) => p.name));
   const found: Plugin[] = [];
   for (const name of [...names].sort()) {
-    const instance =
-      own.find((p) => p.name === name && p.scope?.routeId === route.id) ??
-      own.find((p) => p.name === name && !p.scope?.routeId && p.scope?.serviceId === route.serviceId) ??
-      own.find((p) => p.name === name && !p.scope?.routeId && !p.scope?.serviceId) ??
-      platform.find((p) => p.name === name && enabled(p));
+    let best: Plugin | undefined;
+    for (const p of own) {
+      if (p.name === name && scopeRank(p, route) >= 0 && (!best || scopeRank(p, route) > scopeRank(best, route))) best = p;
+    }
+    const instance = best ?? platform.find((p) => p.name === name && enabled(p));
     if (instance) found.push(instance);
   }
   return found;
@@ -276,12 +293,12 @@ function authPolicy(state: GatewayState, p: Plugin): RouteAuthPolicy | null {
   const anonymous = config.anonymous == null ? null : anonymousId(state, config.anonymous);
   switch (p.name) {
     case "key-auth":
-      return { plugin: "key-auth", anonymous, message: "Unauthorized", www_authenticate: realm === null ? "Key" : `Key realm="${realm}"` };
+      return { plugin: "key-auth", anonymous, hide_credentials: false, message: "Unauthorized", www_authenticate: realm === null ? "Key" : `Key realm="${realm}"` };
     case "basic-auth":
-      return { plugin: "basic-auth", anonymous, message: "Unauthorized", www_authenticate: `Basic realm="${realm ?? "service"}"` };
+      return { plugin: "basic-auth", anonymous, hide_credentials: config.hide_credentials === true, message: "Unauthorized", www_authenticate: `Basic realm="${realm ?? "service"}"` };
     case "jwt": {
       const claim = typeof config.key_claim_name === "string" ? config.key_claim_name : "iss";
-      return { plugin: "jwt", anonymous, message: `No credentials found for given '${claim}'`, www_authenticate: `${realm === null ? "Bearer" : `Bearer realm="${realm}"`} error="invalid_token"` };
+      return { plugin: "jwt", anonymous, hide_credentials: false, message: `No credentials found for given '${claim}'`, www_authenticate: `${realm === null ? "Bearer" : `Bearer realm="${realm}"`} error="invalid_token"` };
     }
     default:
       return null;
@@ -296,12 +313,16 @@ function anonymousId(state: GatewayState, value: unknown): string | null {
 }
 
 /**
- * A user regex is emitted as `~/<slug>(?:<regex>)`. It must not leave the group or the prefix: balanced groups, no
- * inline flags, verbs, backreferences, `\Q…\E`, `\K` or `\G`, and every top-level alternative starts with a literal
- * `/` that is not quantified (so `/a|b` cannot match `/<slug>b…`).
+ * A user regex is emitted as `~/<slug>(?:<regex>)` and matched by Kong 3.9.4's router (traditional_compatible: the
+ * Rust regex engine, where a `[` inside a class opens a nested class). It must not leave the group or the prefix:
+ * balanced groups; only `(?:…)` and named groups; no `[` inside a class (nested and POSIX classes), no `\c`, no
+ * backreferences, `\Q…\E`, `\K` or `\G`; and every top-level alternative starts with a literal `/` that is not
+ * quantified (so `/a|b` cannot match `/<slug>b…`).
  */
 export function regexIssue(re: string): string | null {
   if (re.length === 0 || re.length > MAX_REGEX) return `a regex path must have 1 to ${MAX_REGEX} characters after '~'`;
+  const forbiddenEscape = /[1-9QEKGgkc]/;
+  const escapeMessage = "backreferences, \\Q…\\E, \\K, \\G and \\c are not allowed in a regex path";
   let depth = 0;
   let branchStart = true;
   for (let i = 0; i < re.length; i++) {
@@ -314,15 +335,16 @@ export function regexIssue(re: string): string | null {
     if (c === "\\") {
       const next = re[i + 1];
       if (next === undefined) return "a regex path must not end with a lone backslash";
-      if (/[1-9QEKGgk]/.test(next)) return "backreferences, \\Q…\\E, \\K and \\G are not allowed in a regex path";
+      if (forbiddenEscape.test(next)) return escapeMessage;
       i++;
     } else if (c === "[") {
       let j = i + 1;
       if (re[j] === "^") j++;
       if (re[j] === "]") j++;
       for (; j < re.length && re[j] !== "]"; j++) {
+        if (re[j] === "[") return "nested and POSIX character classes are not allowed in a regex path";
         if (re[j] === "\\") {
-          if (/[1-9QEKGgk]/.test(re[j + 1] ?? "")) return "backreferences, \\Q…\\E, \\K and \\G are not allowed in a regex path";
+          if (forbiddenEscape.test(re[j + 1] ?? "")) return escapeMessage;
           j++;
         }
       }
@@ -330,8 +352,8 @@ export function regexIssue(re: string): string | null {
       i = j;
     } else if (c === "(") {
       if (re[i + 1] === "*") return "verbs are not allowed in a regex path";
-      if (re[i + 1] === "?" && !/^\?(:|=|!|<=|<!|>|<[A-Za-z_][A-Za-z0-9_]*>|P<[A-Za-z_][A-Za-z0-9_]*>)/.test(re.slice(i + 1))) {
-        return "inline flags and other (?…) constructs are not allowed in a regex path";
+      if (re[i + 1] === "?" && !/^\?(:|<[A-Za-z_][A-Za-z0-9_]*>|P<[A-Za-z_][A-Za-z0-9_]*>)/.test(re.slice(i + 1))) {
+        return "inline flags, lookarounds and other (?…) constructs are not allowed in a regex path";
       }
       depth++;
     } else if (c === ")") {
