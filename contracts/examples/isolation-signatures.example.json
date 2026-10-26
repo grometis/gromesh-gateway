@@ -116,14 +116,20 @@
   },
   "release": {
     "protected": "eyJhbGciOiJFZERTQSIsImtpZCI6IkxkdVU2WU5nc0lSYkNsZkxZWVhmZzVWRVdMM1M1cThUc3J2VjAxTlJhaWMiLCJ0eXAiOiJncm9tZXNoLWlzb2xhdGlvbi1yZWxlYXNlK2pzb24ifQ",
-    "payload": "eyJjbHVzdGVySWQiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMGMwMDEiLCJwZW5kZW5jeUlkIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDBlMDAxIiwia2luZCI6ImNvbmZpcm1lZC12aW9sYXRpb24iLCJleHBpcmVzQXQiOiIyMDI2LTEwLTI2VDEyOjE1OjAwWiJ9",
-    "signature": "4lOms35isIwyH4-6uUw2RcCYQO5cSeYLA45mPtRIJEawWN7t02QOBR5fk8U-VyZtAmogt7XzHdmT3LHd5uqcAA"
+    "payload": "eyJjbHVzdGVySWQiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMGMwMDEiLCJwZW5kZW5jeUlkIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDBlMDAxIiwia2luZCI6ImNvbmZpcm1lZC12aW9sYXRpb24iLCJleHBpcmVzQXQiOiIyMDI2LTEwLTI2VDEyOjE1OjAwWiIsImFkbWlzc2lvbnMiOlt7ImFkbWlzc2lvbklkIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDBhMDAxIiwidGhyb3VnaFNlcSI6MX1dfQ",
+    "signature": "XDAhVIMIDTeIwOR6_zWqi1rGvOeeZl_jSw2_Lr3PVzccFdmLemOQOBlvJtJdt4Dx0YNcU-ojFUyMz1wnTdoQAQ"
   },
   "releaseClaims": {
     "clusterId": "00000000-0000-4000-8000-00000000c001",
     "pendencyId": "00000000-0000-4000-8000-00000000e001",
     "kind": "confirmed-violation",
-    "expiresAt": "2026-10-26T12:15:00Z"
+    "expiresAt": "2026-10-26T12:15:00Z",
+    "admissions": [
+      {
+        "admissionId": "00000000-0000-4000-8000-00000000a001",
+        "throughSeq": 1
+      }
+    ]
   },
   "report": {
     "protected": "eyJhbGciOiJFZERTQSIsInR5cCI6Imdyb21lc2gtcHJvYmUtcmVwb3J0K2pzb24ifQ",

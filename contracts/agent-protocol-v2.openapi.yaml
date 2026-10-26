@@ -409,13 +409,27 @@ components:
         rejected: { type: array, items: { type: object, additionalProperties: false, required: [index, reason], properties: { index: { type: integer, minimum: 0 }, reason: { enum: [bad-signature, unknown-admission, other-pod, other-boot, integrity-conflict] } } } }
     IsolationReleaseClaims:
       type: object
-      description: Payload of a release JWS, signed with the instance key; it never replaces a pod's own proof.
+      description: |
+        Payload of a release JWS, signed with the instance key; it never replaces a pod's own proof. A probe leaves
+        violation only with a release that names its own admission with a throughSeq at least the seq of every report
+        it signed in violation: a release kept by the agent and shown after a later violation does not cover it.
       additionalProperties: false
-      required: [clusterId, pendencyId, kind, expiresAt]
+      required: [clusterId, pendencyId, kind, expiresAt, admissions]
       properties:
         clusterId: { type: string, format: uuid }
         pendencyId: { type: string, format: uuid }
         kind: { enum: [confirmed-violation, unconfirmed-isolation] }
+        admissions:
+          type: array
+          uniqueItems: true
+          description: Each open admission of the pendency's scope when the release was issued, with the highest seq of its chain the control plane had acknowledged
+          items:
+            type: object
+            additionalProperties: false
+            required: [admissionId, throughSeq]
+            properties:
+              admissionId: { type: string, format: uuid }
+              throughSeq: { type: integer, minimum: 0 }
         expiresAt: { type: string, format: date-time, description: "15 min; checked by the control plane's clock" }
     IsolationLease:
       type: object
