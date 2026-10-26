@@ -215,6 +215,12 @@ export class AtRestService {
     throw new Error(`Could not re-seal ${table} ${id}: the row kept changing`);
   }
 
+  /** Fails while a key-auth credential has no fingerprint yet (migration 0005 still running on another replica). */
+  async assertFingerprinted(): Promise<void> {
+    const [row] = await this.db.select({ pending: sql<number>`count(*)::int` }).from(keyAuthCredentials).where(isNull(keyAuthCredentials.keyHash));
+    if ((row?.pending ?? 0) > 0) throw new Error(`${row?.pending} key-auth credentials still without a fingerprint (another replica is filling them in): start again later`);
+  }
+
   /** The part of migration 0005 that needs the fingerprint key: run after every credential has a key_hash. */
   private async finishKeyHashMigration(): Promise<void> {
     const [row] = await this.db.select({ pending: sql<number>`count(*)::int` }).from(keyAuthCredentials).where(isNull(keyAuthCredentials.keyHash));
@@ -229,8 +235,12 @@ export class AtRestService {
       )
       .then((r) => r.rows);
     if (state?.done) return;
-    await this.db.execute(sql`alter table keyauth_credentials alter column key_hash set not null`);
-    await this.db.execute(sql`create unique index if not exists keyauth_env_key_hash_uq on keyauth_credentials (environment_id, key_hash)`);
-    await this.db.execute(sql`drop index if exists keyauth_env_key_uq`);
+    // Bounded: behind another replica's open write the start fails (and is retried) instead of queueing every reader.
+    await this.db.transaction(async (tx) => {
+      await tx.execute(sql`set local lock_timeout = '2s'`);
+      await tx.execute(sql`alter table keyauth_credentials alter column key_hash set not null`);
+      await tx.execute(sql`create unique index if not exists keyauth_env_key_hash_uq on keyauth_credentials (environment_id, key_hash)`);
+      await tx.execute(sql`drop index if exists keyauth_env_key_uq`);
+    });
   }
 }

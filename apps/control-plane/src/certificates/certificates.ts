@@ -189,6 +189,10 @@ export class CertificatesService {
 
   async remove(ctx: RequestContext, envId: string, certificateId: string) {
     await this.db.transaction(async (tx) => {
+      // The order of every writer of these tables (rollback, import): the tables, then the environment's row, before
+      // any row is deleted.
+      await lockTablesForWrite(tx, ["sni"]);
+      await requireEnvironment(tx, envId, true);
       const row = await this.requireCertificate(tx, envId, certificateId);
       const before = toCertificate(row, (await this.snisOf(tx, [row.id])).get(row.id) ?? []);
       await tx.delete(certificates).where(eq(certificates.id, certificateId));
