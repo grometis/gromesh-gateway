@@ -18,6 +18,13 @@ type Config struct {
 	KongStatusURL     string
 	SnapshotPath      string
 	StateDir          string
+	// Workspaces mode (GROMESH_HANDOFF_DIR set): the agent asks for the pod's isolation admission and carries the
+	// probe's documents through the handoff; it never interprets them.
+	HandoffDir string
+	PodUID     string
+	PodName    string
+	NodeName   string
+	BootIDFile string
 }
 
 func ConfigFromEnv() (Config, error) {
@@ -38,6 +45,9 @@ func ConfigFromEnv() (Config, error) {
 		KongStatusURL: value("KONG_STATUS_URL", "unix:///kong/admin/status.sock"),
 		SnapshotPath:  value("SNAPSHOT_PATH", "/kong/declarative/kong.json"),
 		StateDir:      value("GROMESH_STATE_DIR", defaultStateDir),
+		HandoffDir:    os.Getenv("GROMESH_HANDOFF_DIR"), PodUID: os.Getenv("GROMESH_POD_UID"),
+		PodName: os.Getenv("GROMESH_POD_NAME"), NodeName: os.Getenv("GROMESH_NODE_NAME"),
+		BootIDFile: value("GROMESH_BOOT_ID_FILE", "/proc/sys/kernel/random/boot_id"),
 	}
 	return c, c.validate()
 }
@@ -48,6 +58,9 @@ func (c Config) validate() error {
 	}
 	if c.NodeID == "" || c.Hostname == "" || c.SnapshotPath == "" {
 		return fmt.Errorf("node ID, hostname and snapshot path are required")
+	}
+	if c.HandoffDir != "" && (!uuidPattern.MatchString(c.PodUID) || c.PodName == "" || len(c.PodName) > 253 || c.NodeName == "" || len(c.NodeName) > 253 || c.BootIDFile == "") {
+		return fmt.Errorf("GROMESH_HANDOFF_DIR requires GROMESH_POD_UID (UUID), GROMESH_POD_NAME and GROMESH_NODE_NAME")
 	}
 	for _, field := range []struct {
 		name, value string

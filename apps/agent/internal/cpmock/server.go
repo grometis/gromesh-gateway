@@ -49,6 +49,7 @@ type Server struct {
 	closed            chan struct{}
 	nodeToken         string
 	registrationToken string
+	isolation         http.Handler
 }
 
 func New() *Server {
@@ -64,8 +65,30 @@ func New() *Server {
 	mux.HandleFunc("GET /agent/v1/snapshots/current", s.current)
 	mux.HandleFunc("GET /agent/v1/events", s.events)
 	mux.HandleFunc("POST /agent/v1/status", s.status)
+	mux.HandleFunc("/agent/v2/isolation/", s.isolationRequest)
 	s.HTTP = httptest.NewServer(mux)
 	return s
+}
+
+// SetIsolation serves the agent protocol v2 isolation operations with h, behind the node token.
+func (s *Server) SetIsolation(h http.Handler) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.isolation = h
+}
+
+func (s *Server) isolationRequest(w http.ResponseWriter, r *http.Request) {
+	if !authorized(w, r, s.currentNodeToken()) {
+		return
+	}
+	s.mu.Lock()
+	h := s.isolation
+	s.mu.Unlock()
+	if h == nil {
+		http.NotFound(w, r)
+		return
+	}
+	h.ServeHTTP(w, r)
 }
 
 func (s *Server) Close() {
