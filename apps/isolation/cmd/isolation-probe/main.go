@@ -1,5 +1,5 @@
 // isolation-probe is the native sidecar that proves the kong pod's isolation and issues its lease.
-// isolation-probe        run (rounds every 15 s; the guard canary every second while verifying)
+// isolation-probe        run (rounds every 15 s; the guard canary every second while a lease is out)
 // isolation-probe ready  exec readiness: the pod is Ready only in state ok with a valid lease (the probe never listens)
 // Environment: GROMESH_POD_UID, GROMESH_CLUSTER_ID, GROMESH_INSTANCE_PUBLIC_KEY (Ed25519, base64url),
 // GROMESH_PROBE_DIR, GROMESH_HANDOFF_DIR, GROMESH_PROBE_CONFIG, GROMESH_CANARY_URL.
@@ -54,7 +54,7 @@ func main() {
 				return probe.CanaryResult{Unreachable: true}
 			}
 			_ = res.Body.Close()
-			return probe.CanaryResult{Status: res.StatusCode, Nonce: res.Header.Get("X-Gromesh-Lease-Nonce")}
+			return probe.CanaryResult{Status: res.StatusCode, Nonce: res.Header.Get("X-Gromesh-Lease-Nonce"), ConfigHash: res.Header.Get("X-Gromesh-Config-Hash")}
 		},
 		BootID: func() string {
 			b, _ := os.ReadFile(node.BootIDFile)
@@ -72,13 +72,12 @@ func main() {
 	defer tick.Stop()
 	var last time.Time
 	for {
+		// The canary every second while a lease is out: a configuration without the guard is caught within 1 s.
 		if time.Since(last) >= probe.Period {
 			last = time.Now()
 			p.Round(ctx)
-			p.CanaryStep(ctx)
-		} else if p.State.State == "verifying" || p.State.State == "kong-unavailable" {
-			p.CanaryStep(ctx)
 		}
+		p.CanaryStep(ctx)
 		select {
 		case <-ctx.Done():
 			// The final report (kongStopConfirmed) is task N2-D3.

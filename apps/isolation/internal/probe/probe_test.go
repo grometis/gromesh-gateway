@@ -5,10 +5,12 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -24,10 +26,11 @@ const (
 
 // fakeNet: addresses in `open` accept connections; `slow` ones hang until the round budget ends.
 type fakeNet struct {
-	mu   sync.Mutex
-	open map[string]bool
-	slow map[string]bool
-	dns  bool
+	mu         sync.Mutex
+	open       map[string]bool
+	slow       map[string]bool
+	unresolved map[string]bool
+	dns        bool
 }
 
 func (n *fakeNet) Dial(ctx context.Context, address string) error {
@@ -41,13 +44,16 @@ func (n *fakeNet) Dial(ctx context.Context, address string) error {
 	if open {
 		return nil
 	}
-	return errors.New("connection refused")
+	if n.unresolved[address] {
+		return &net.OpError{Op: "dial", Err: &net.DNSError{Err: "no such host", Name: address, IsNotFound: true}}
+	}
+	return &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}
 }
 func (n *fakeNet) Get(ctx context.Context, url string) (int, error) {
-	if n.Dial(ctx, url) == nil {
-		return 200, nil
+	if err := n.Dial(ctx, url); err != nil {
+		return 0, err
 	}
-	return 0, errors.New("connection refused")
+	return 200, nil
 }
 func (n *fakeNet) Resolve(context.Context, string) error {
 	if n.dns {
@@ -67,6 +73,7 @@ func config() Config {
 		checks = append(checks, Check{Capability: c, Kind: "tcp", Name: c, Address: "forbidden-" + c + ":80"})
 	}
 	checks = append(checks, Check{Capability: "CAP-4", Kind: "dns", Name: "cluster dns", Host: "kubernetes.default.svc"})
+	checks = append(checks, Check{Capability: "CAP-1", Kind: "tcp-open", Name: "allowed backend", Address: "backend:80"})
 	return Config{Checks: checks}
 }
 
@@ -83,7 +90,7 @@ type world struct {
 
 func newWorld(t *testing.T, dir string) *world {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
-	w := &world{t: t, net: &fakeNet{open: map[string]bool{}, slow: map[string]bool{}, dns: true}, now: 1_000 * uint64(time.Second), boot: boot1, instKey: priv}
+	w := &world{t: t, net: &fakeNet{open: map[string]bool{"backend:80": true}, slow: map[string]bool{}, unresolved: map[string]bool{}, dns: true}, now: 1_000 * uint64(time.Second), boot: boot1, instKey: priv}
 	w.p = w.probe(dir, pub)
 	return w
 }
@@ -92,9 +99,9 @@ func (w *world) probe(dir string, pub ed25519.PublicKey) *Probe {
 	p := &Probe{
 		Dir: filepath.Join(dir, "probe"), Handoff: filepath.Join(dir, "handoff"), ClusterID: cluster, PodUID: pod, InstanceKey: pub,
 		Config: config(), Network: w.net,
-		Canary:   func(context.Context) CanaryResult { return w.canary },
-		BootID:   func() string { return w.boot },
-		Boottime: func() (uint64, error) { return w.now, nil },
+		Canary:    func(context.Context) CanaryResult { return w.canary },
+		BootID:    func() string { return w.boot },
+		Boottime:  func() (uint64, error) { return w.now, nil },
 		WallClock: time.Now,
 		Logf:      func(f string, a ...any) { w.logs = append(w.logs, f) },
 	}
@@ -182,11 +189,34 @@ func TestAdmittedPassIssuesTheLeaseThenTheCanaryMakesItReady(t *testing.T) {
 	w.canary = CanaryResult{Status: 204, Nonce: l.Nonce}
 	w.p.CanaryStep(context.Background())
 	w.expect("ok", true)
-	// The lease expires by itself V after the last round: a dead probe contains the gateway.
+	// The next round renews the lease: the guard's cache may show the previous nonce for a moment, never for long.
+	w.now += uint64(Period)
+	w.round()
+	w.p.CanaryStep(context.Background())
+	w.expect("ok", true)
+	w.now += uint64(PreviousNonceGrace) + 1
+	w.p.CanaryStep(context.Background())
+	w.expect("guard-missing", false)
+}
+
+func TestALeaseExpiresByItselfAndARestartAfterThatNeedsTwoPasses(t *testing.T) {
+	dir := t.TempDir()
+	w := newWorld(t, dir)
+	w.admit(nil)
+	w.round()
+	w.canary = CanaryResult{Status: 204, Nonce: w.p.State.Nonce}
+	w.p.CanaryStep(context.Background())
+	w.expect("ok", true)
+	// The probe is stopped longer than V: the gateway is contained without it.
 	w.now += uint64(lease.Validity)
 	if w.leaseValid() == nil {
 		t.Fatal("lease outlived V without a round")
 	}
+	w.p = w.probe(dir, w.p.InstanceKey)
+	w.round()
+	w.expect("no-proof", false)
+	w.round()
+	w.expect("verifying", true)
 }
 
 func TestViolationIsWrittenAtOnceAndOnlyAReleaseEndsIt(t *testing.T) {
@@ -219,11 +249,17 @@ func TestInconclusiveIsToleratedFiveMinutesThenNoProofNeedsTwoPasses(t *testing.
 	w := newWorld(t, t.TempDir())
 	w.admit(nil)
 	w.round()
+	w.canary = CanaryResult{Status: 204, Nonce: w.p.State.Nonce}
+	w.p.CanaryStep(context.Background())
+	w.expect("ok", true)
 	w.net.dns = false
-	w.now += uint64(time.Minute)
-	w.round()
-	w.expect("inconclusive", true)
-	w.now += uint64(InconclusiveLimit)
+	began := w.now
+	for w.now-began < uint64(InconclusiveLimit)-uint64(Period) {
+		w.now += uint64(Period)
+		w.round()
+		w.expect("inconclusive", true)
+	}
+	w.now += 2 * uint64(Period)
 	w.round()
 	w.expect("no-proof", false)
 	w.net.dns = true
@@ -285,5 +321,114 @@ func TestConfigMustCoverEveryCapability(t *testing.T) {
 	cfg.Checks = cfg.Checks[1:]
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "CAP-1") {
 		t.Fatalf("a configuration without CAP-1 accepted: %v", err)
+	}
+}
+
+func TestAForbiddenNameThatDoesNotResolveProvesNothing(t *testing.T) {
+	w := newWorld(t, t.TempDir())
+	w.admit(nil)
+	w.net.unresolved["forbidden-CAP-3:80"] = true
+	w.round()
+	w.expect("awaiting-admission", false)
+	if !strings.Contains(strings.Join(w.p.State.Failures, ";"), "no such host") {
+		t.Fatalf("failures %v", w.p.State.Failures)
+	}
+}
+
+func TestTheViolationLatchSurvivesACrashBeforeTheState(t *testing.T) {
+	dir := t.TempDir()
+	w := newWorld(t, dir)
+	w.admit(nil)
+	w.round()
+	w.net.set("forbidden-CAP-1:80", true)
+	w.round()
+	// A crash right after the latch: the state still says ok, or is unreadable.
+	_ = os.WriteFile(filepath.Join(w.p.Dir, "probe-state.json"), []byte("{corrupt"), 0o644)
+	w.net.set("forbidden-CAP-1:80", false)
+	w.p = w.probe(dir, w.p.InstanceKey)
+	w.round()
+	w.expect("violation", false)
+}
+
+func TestACorruptStateNeedsTwoPassesEvenWithAFreshAdmission(t *testing.T) {
+	dir := t.TempDir()
+	w := newWorld(t, dir)
+	w.admit(nil)
+	w.round()
+	_ = os.WriteFile(filepath.Join(w.p.Dir, "probe-state.json"), []byte("{corrupt"), 0o644)
+	w.p = w.probe(dir, w.p.InstanceKey)
+	w.round()
+	if w.leaseValid() == nil {
+		t.Fatal("one pass after a corrupt state issued a lease")
+	}
+	w.round()
+	w.expect("verifying", true)
+}
+
+func TestALostKeyDropsTheAdmission(t *testing.T) {
+	dir := t.TempDir()
+	w := newWorld(t, dir)
+	w.admit(nil)
+	w.round()
+	_ = os.Remove(filepath.Join(w.p.Dir, "probe.key"))
+	w.p = w.probe(dir, w.p.InstanceKey)
+	w.round()
+	w.expect("awaiting-admission", false)
+	w.admit(nil) // signed for the new key
+	w.round()
+	w.expect("verifying", true)
+}
+
+func TestTheCanaryIsCheckedWhileInconclusiveAndTheBackoffHolds(t *testing.T) {
+	w := newWorld(t, t.TempDir())
+	w.admit(nil)
+	w.round()
+	w.net.dns = false
+	w.now += uint64(Period)
+	w.round()
+	w.expect("verifying", true)
+	w.canary = CanaryResult{Status: 503}
+	w.p.CanaryStep(context.Background())
+	w.expect("guard-missing", false)
+	retry := w.p.State.RetryAtNs
+	// Inconclusive rounds keep guard-missing; passes before the backoff ends issue nothing.
+	w.round()
+	w.expect("guard-missing", false)
+	w.net.dns = true
+	w.round()
+	w.round()
+	w.expect("guard-missing", false)
+	w.now = retry
+	w.round()
+	w.expect("verifying", true)
+}
+
+func TestAdmissionPayloadIsStrict(t *testing.T) {
+	w := newWorld(t, t.TempDir())
+	sign := func(payload string) []byte {
+		protected := b64.EncodeToString([]byte(`{"alg":"EdDSA"}`))
+		body := b64.EncodeToString([]byte(payload))
+		sig := ed25519.Sign(w.instKey, []byte(protected+"."+body))
+		return []byte(`{"protected":"` + protected + `","payload":"` + body + `","signature":"` + b64.EncodeToString(sig) + `"}`)
+	}
+	self := Identity{ClusterID: cluster, PodUID: pod, BootID: boot1, PublicKey: w.p.key.Public().(ed25519.PublicKey)}
+	good := `{"clusterId":"` + cluster + `","podUid":"` + pod + `","nodeName":"n1","bootId":"` + boot1 + `","admissionId":"6a1f3c2e-0b7d-4c1a-9f10-0000000000ad","probePublicKey":"` + w.p.PublicKey() + `","startDeadline":"2026-10-26T12:00:00Z"}`
+	if _, err := CheckAdmission(sign(good), w.p.InstanceKey, self); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{
+		strings.Replace(good, `"nodeName":"n1",`, ``, 1),
+		strings.Replace(good, `"nodeName":"n1"`, `"nodeName":"n1","nodeName":"n2"`, 1),
+		strings.Replace(good, `"startDeadline":"2026-10-26T12:00:00Z"`, `"startDeadline":"tomorrow"`, 1),
+		good + "{}",
+		strings.Replace(good, `"nodeName":"n1"`, `"nodeName":"n1","extra":"x"`, 1),
+	} {
+		if _, err := CheckAdmission(sign(bad), w.p.InstanceKey, self); err == nil {
+			t.Errorf("accepted %s", bad)
+		}
+	}
+	raw := sign(good)
+	if _, err := CheckAdmission(append(raw, []byte(" {}")...), w.p.InstanceKey, self); err == nil {
+		t.Error("accepted a JWS with trailing data")
 	}
 }

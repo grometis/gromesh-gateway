@@ -33,14 +33,19 @@ const member = {
   },
 };
 
-// Every capability has a forbidden target; "forbidden-cap2" is the one that becomes reachable. The cluster DNS stands
-// for the positive control. The blind probe has no target for it (CAP-2 is covered by another, closed, address).
+// Every capability has a forbidden target on a real host whose port is closed (refused, not unresolved: a name that
+// does not resolve proves nothing). "forbidden-cap2" resolves from the start and begins listening on cue. The echo
+// backend is the positive control (DNS and an allowed connection). The blind probe has no target for that address.
 function probeConfig() {
-  const checks = ["CAP-1", "CAP-3", "CAP-4", "CAP-5", "CAP-6", "CAP-7"].map((capability) => ({ capability, kind: "tcp", name: capability, address: `closed-${capability.toLowerCase()}.invalid:80` }));
-  checks.push({ capability: "CAP-2", kind: "tcp", name: "resident node", address: blind ? "closed-cap2.invalid:80" : "forbidden-cap2:80" });
+  const checks = ["CAP-1", "CAP-3", "CAP-4", "CAP-5", "CAP-6", "CAP-7"].map((capability, i) => ({ capability, kind: "tcp", name: capability, address: `echo:${81 + i}` }));
+  checks.push({ capability: "CAP-2", kind: "tcp", name: "resident node", address: blind ? "echo:87" : "forbidden-cap2:80" });
   checks.push({ capability: "CAP-4", kind: "dns", name: "cluster dns", host: "echo" });
+  checks.push({ capability: "CAP-1", kind: "tcp-open", name: "allowed backend", address: "echo:80" });
   return { checks };
 }
+
+// A server that resolves at once and listens on :80 only after /tmp/open exists.
+const TARGET = "const fs=require('fs'),net=require('net');let s=null;setInterval(()=>{if(!s&&fs.existsSync('/tmp/open')){s=net.createServer(c=>c.end()).listen(80)}},100)";
 
 const b64 = (data) => Buffer.from(data).toString("base64url");
 function jws(privateKey, claims) {
@@ -80,6 +85,8 @@ async function main() {
     const handoff = join(harness.dir, "handoff");
     const { publicKey, privateKey } = generateKeyPairSync("ed25519");
     const instancePublicKey = publicKey.export({ format: "jwk" }).x;
+    const target = (await docker("run", "-d", "--rm", "--network", harness.network, "--network-alias", "forbidden-cap2", NODE_IMAGE, "node", "-e", TARGET)).stdout.trim();
+    harness.containers.push(target);
     const { id: kong, proxy } = await harness.gateway(composeWorkspaces([member]), { supervised: true });
     let probe = await harness.probe(kong, { config: probeConfig(), instancePublicKey, clusterId: CLUSTER, handoff });
 
@@ -99,21 +106,26 @@ async function main() {
     check((await until(() => status(proxy), (s) => s === 200, 40_000)) !== null, "the admitted pod must serve");
     check((await until(() => ready(probe), Boolean, 10_000)) !== null, "the guard canary must make the probe Ready");
 
-    // A forbidden target becomes reachable.
-    await sleep(2000);
-    const target = (await docker("run", "-d", "--rm", "--network", harness.network, "--network-alias", "forbidden-cap2", ECHO_IMAGE)).stdout.trim();
-    harness.containers.push(target);
-    await until(async () => (await docker("exec", kong, "bash", "-c", "(exec 3<>/dev/tcp/forbidden-cap2/80) 2>/dev/null && echo up || echo down")).stdout.trim(), (v) => v === "up", 10_000).catch(() => null);
-    const reachable = Date.now();
-    const refused = await until(() => status(proxy), (s) => s !== 200, 30_000);
+    // A forbidden target becomes reachable; t = 0 is the first time the gateway's own namespace reaches it.
+    await docker("exec", target, "touch", "/tmp/open");
+    const reachable = await until(async () => (await docker("exec", kong, "bash", "-c", "(exec 3<>/dev/tcp/forbidden-cap2/80) 2>/dev/null && echo up || echo down")).stdout.trim(), (v) => v === "up", 10_000);
+    check(reachable !== null, "the forbidden target must become reachable from the gateway's network namespace");
+    const detected = await until(async () => JSON.parse((await docker("exec", probe, "cat", "/gromesh/isolation/probe-state.json")).stdout).state, (s) => s === "violation", 30_000);
+    let first;
+    const refused = await until(async () => (first = await status(proxy)), (s) => s !== 200, 30_000);
     const stopped = await until(() => nginx(kong), (n) => n === 0, 30_000);
+    const notReady = await until(() => ready(probe), (r) => r === false, 30_000);
     const after = (t) => (t === null ? Infinity : Math.round(t - reachable));
-    expectContained(after(refused) <= 19_000, `requests still served ${after(refused)} ms after a forbidden target became reachable (budget 19 s)`);
-    expectContained(after(stopped) <= 20_000, `Kong still running ${after(stopped)} ms after a forbidden target became reachable (budget 20 s)`);
-    console.log(`violation: 503 after ${after(refused)} ms, Kong stopped after ${after(stopped)} ms`);
+    // The budgets of B §3.5.3 from the loss, plus only the measurement's own latency (polling and docker exec).
+    const SLACK = 300;
+    expectContained(after(detected) <= 18_000 + SLACK, `violation detected ${after(detected)} ms after a forbidden target became reachable (budget 18 s)`);
+    expectContained(refused !== null && (first === 503 || first === "down") && after(refused) <= 19_000 + SLACK, `requests still served ${after(refused)} ms after a forbidden target became reachable, then ${first} (budget 19 s)`);
+    expectContained(after(stopped) <= 20_000 + SLACK, `Kong still running ${after(stopped)} ms after a forbidden target became reachable (budget 20 s)`);
+    expectContained(after(notReady) <= 20_000 + SLACK, `the pod still Ready ${after(notReady)} ms after a forbidden target became reachable (budget 20 s)`);
+    console.log(`violation: detected after ${after(detected)} ms, refused (${first}) after ${after(refused)} ms, Kong stopped after ${after(stopped)} ms, NotReady after ${after(notReady)} ms`);
 
     // The violation stays after the target leaves and after the probe restarts (its state is on its volume).
-    await docker("rm", "-f", target);
+    await docker("exec", target, "sh", "-c", "rm /tmp/open; kill 1");
     await docker("restart", probe);
     await sleep(20_000);
     const state = await probeState(harness).catch(() => ({}));
@@ -127,19 +139,23 @@ async function main() {
       const second = new Harness();
       try {
         await second.setup();
+        second.containers.push((await docker("run", "-d", "--rm", "--network", second.network, "--network-alias", "forbidden-cap2", NODE_IMAGE, "node", "-e", TARGET)).stdout.trim());
         const handoff2 = join(second.dir, "handoff");
         const { id: kong2, proxy: proxy2 } = await second.gateway(unguarded, { supervised: true });
         const probe2 = await second.probe(kong2, { config: probeConfig(), instancePublicKey, clusterId: CLUSTER, handoff: handoff2 });
         await second.waitFor("probe key", async () => readFileSync(join(handoff2, "probe.pub"), "utf8").length > 0);
         const key2 = readFileSync(join(handoff2, "probe.pub"), "utf8").trim();
         await docker("run", "--rm", "-v", `${handoff2}:/h`, NODE_IMAGE, "sh", "-c", `printf '%s' '${jws(privateKey, { ...claims, podUid: second.podUid, probePublicKey: key2 })}' > /h/admission.jws`);
-        const served = await until(() => status(proxy2), (s) => s === 200, 40_000);
-        const missing = await until(async () => (await probeState(second)).state, (s) => s === "guard-missing", 30_000);
+        // The canary runs every second from the start: the unguarded configuration is caught before it serves.
+        // t = 0 when Kong first answers with this configuration (a path without a route: Kong's own 404).
+        const started = await until(async () => (await fetch(`${proxy2}/nothing-here`, { signal: AbortSignal.timeout(500) })).status === 404, Boolean, 40_000);
+        const missing = await until(async () => JSON.parse((await docker("exec", probe2, "cat", "/gromesh/isolation/probe-state.json")).stdout).state, (s) => s === "guard-missing", 30_000);
         const down = await until(() => nginx(kong2), (n) => n === 0, 10_000);
-        check(served !== null, "the unguarded configuration starts once (the canary is checked after the start)");
-        check(missing !== null && down !== null && down - missing <= 2500, `guard-missing must stop Kong within 2 s (${missing}, ${down})`);
+        check(started !== null, "the admitted pod starts Kong and Kong answers (the canary is checked after the start)");
+        check(missing !== null && missing - started <= 2000 + 300, `the missing guard must be found within 1 s of the start (${missing === null ? "never" : missing - started} ms)`);
+        check(down !== null && down - missing <= 2000 + 300, `guard-missing must stop Kong within 2 s (${down === null ? "never" : down - missing} ms)`);
         check(!(await ready(probe2)), "a guard-missing pod is never Ready");
-        console.log(`guard-missing: Kong stopped ${down - missing} ms after the probe withdrew the lease`);
+        console.log(`guard-missing: found ${missing - started} ms after the start, Kong stopped ${down - missing} ms later`);
       } finally {
         await second.teardown();
       }

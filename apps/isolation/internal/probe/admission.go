@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"time"
 )
 
 // JWS is the flattened JSON serialization with an attached payload (agent-protocol-v2, Jws), alg EdDSA.
@@ -38,39 +40,74 @@ type Identity struct {
 
 var b64 = base64.RawURLEncoding
 
-// Verify checks the signature over the received bytes and returns the decoded payload.
-func Verify(raw []byte, key ed25519.PublicKey, into any) error {
-	var jws JWS
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&jws); err != nil {
-		return fmt.Errorf("jws malformed: %w", err)
+// strictObject decodes one JSON object until EOF with unique keys, exactly the names given, each a string.
+func strictObject(data []byte, names ...string) (map[string]string, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return nil, errors.New("not an object")
 	}
-	header, err := b64.DecodeString(jws.Protected)
+	allowed := map[string]bool{}
+	for _, n := range names {
+		allowed[n] = true
+	}
+	out := map[string]string{}
+	for dec.More() {
+		tok, err := dec.Token()
+		key, ok := tok.(string)
+		if err != nil || !ok || !allowed[key] {
+			return nil, fmt.Errorf("unexpected field %v", tok)
+		}
+		if _, dup := out[key]; dup {
+			return nil, fmt.Errorf("duplicate field %q", key)
+		}
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			return nil, err
+		}
+		var value string
+		if len(raw) == 0 || raw[0] != '"' || json.Unmarshal(raw, &value) != nil {
+			return nil, fmt.Errorf("field %q must be a string", key)
+		}
+		out[key] = value
+	}
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('}') {
+		return nil, errors.New("unterminated object")
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, errors.New("trailing data")
+	}
+	if len(out) != len(names) {
+		return nil, errors.New("missing field")
+	}
+	return out, nil
+}
+
+// Verify checks the signature over the received bytes and returns the payload's fields (all strings here).
+func Verify(raw []byte, key ed25519.PublicKey, names ...string) (map[string]string, error) {
+	jws, err := strictObject(raw, "protected", "payload", "signature")
 	if err != nil {
-		return errors.New("jws protected header malformed")
+		return nil, fmt.Errorf("jws malformed: %w", err)
 	}
-	var h struct {
-		Alg  string   `json:"alg"`
-		Crit []string `json:"crit"`
-	}
-	if err := json.Unmarshal(header, &h); err != nil || h.Alg != "EdDSA" || len(h.Crit) > 0 {
-		return errors.New("jws must be alg EdDSA without critical extensions")
-	}
-	signature, err := b64.DecodeString(jws.Signature)
-	if err != nil || len(key) != ed25519.PublicKeySize || !ed25519.Verify(key, []byte(jws.Protected+"."+jws.Payload), signature) {
-		return errors.New("jws signature invalid")
-	}
-	payload, err := b64.DecodeString(jws.Payload)
+	header, err := b64.DecodeString(jws["protected"])
 	if err != nil {
-		return errors.New("jws payload malformed")
+		return nil, errors.New("jws protected header malformed")
 	}
-	pd := json.NewDecoder(bytes.NewReader(payload))
-	pd.DisallowUnknownFields()
-	if err := pd.Decode(into); err != nil {
-		return fmt.Errorf("jws payload: %w", err)
+	if h, err := strictObject(header, "alg"); err != nil || h["alg"] != "EdDSA" {
+		return nil, errors.New(`jws protected header must be exactly {"alg":"EdDSA"}`)
 	}
-	return nil
+	signature, err := b64.DecodeString(jws["signature"])
+	if err != nil || len(key) != ed25519.PublicKeySize || !ed25519.Verify(key, []byte(jws["protected"]+"."+jws["payload"]), signature) {
+		return nil, errors.New("jws signature invalid")
+	}
+	payload, err := b64.DecodeString(jws["payload"])
+	if err != nil {
+		return nil, errors.New("jws payload malformed")
+	}
+	fields, err := strictObject(payload, names...)
+	if err != nil {
+		return nil, fmt.Errorf("jws payload: %w", err)
+	}
+	return fields, nil
 }
 
 // Sign is the counterpart, used by the control plane's tests and by the probe's own reports.
@@ -87,9 +124,14 @@ func Sign(key ed25519.PrivateKey, payload any) ([]byte, error) {
 
 // CheckAdmission verifies an admission and that it is this probe's: its cluster, pod, boot and key.
 func CheckAdmission(raw []byte, instanceKey ed25519.PublicKey, self Identity) (AdmissionClaims, error) {
-	var c AdmissionClaims
-	if err := Verify(raw, instanceKey, &c); err != nil {
-		return c, err
+	f, err := Verify(raw, instanceKey, "clusterId", "podUid", "nodeName", "bootId", "admissionId", "probePublicKey", "startDeadline")
+	if err != nil {
+		return AdmissionClaims{}, err
+	}
+	c := AdmissionClaims{ClusterID: f["clusterId"], PodUID: f["podUid"], NodeName: f["nodeName"], BootID: f["bootId"],
+		AdmissionID: f["admissionId"], ProbePublicKey: f["probePublicKey"], StartDeadline: f["startDeadline"]}
+	if _, err := time.Parse(time.RFC3339, c.StartDeadline); err != nil || len(c.NodeName) == 0 || len(c.NodeName) > 253 {
+		return c, errors.New("admission claims malformed")
 	}
 	switch {
 	case c.ClusterID != self.ClusterID:

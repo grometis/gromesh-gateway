@@ -4,6 +4,7 @@
 -- the compiler already emits every path of a Workspace route under its prefix.
 
 local lease = require "kong.plugins.gromesh-route-guard.lease"
+local declarative = require "kong.db.declarative"
 
 local NOT_FOUND = "no Route matched with those values"
 
@@ -27,7 +28,11 @@ function RouteGuardHandler:access(conf)
   end
   if conf.canary then
     -- Only a running guard holding the current lease can answer with its nonce (isolation-probe, verifying).
-    return kong.response.exit(204, nil, { ["X-Gromesh-Lease-Nonce"] = current.nonce })
+    -- With the hash of the configuration this guard belongs to (the applied revision is N3's deployment).
+    return kong.response.exit(204, nil, {
+      ["X-Gromesh-Lease-Nonce"] = current.nonce,
+      ["X-Gromesh-Config-Hash"] = declarative.get_current_hash() or "",
+    })
   end
 
   local prefix = present(conf.prefix)

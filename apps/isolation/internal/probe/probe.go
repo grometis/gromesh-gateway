@@ -23,6 +23,8 @@ const (
 	CanaryNotFound    = 60 * time.Second
 	BackoffFirst      = 30 * time.Second
 	BackoffMax        = 5 * time.Minute
+	// The guard caches the lease for 1 s: right after a renewal the canary may still show the previous nonce.
+	PreviousNonceGrace = 3 * time.Second
 )
 
 // Canary results of GET /.gromesh/guard/current.
@@ -31,6 +33,8 @@ type CanaryResult struct {
 	Unreachable bool
 	Status      int
 	Nonce       string
+	// Kong's declarative config hash: which configuration's guard answered.
+	ConfigHash string
 }
 
 // Probe keeps its state, key and lease in Dir (its own volume: read-only for kong, not mounted by the agent) and
@@ -58,6 +62,14 @@ type Persisted struct {
 	State       string `json:"state"`
 	BootID      string `json:"bootId"`
 	AdmissionID string `json:"admissionId,omitempty"`
+	// The signed admission itself, revalidated against the current cluster, pod, boot and key on every round.
+	AdmissionJWS string `json:"admissionJws,omitempty"`
+	// Corrupt: the state could not be read; recovery needs two conclusive passes, never a fresh admission's one.
+	Corrupt bool `json:"corrupt,omitempty"`
+	// GuardVerified: the canary answered with the current nonce since the last start of verification.
+	GuardVerified   bool   `json:"guardVerified"`
+	PreviousSinceNs uint64 `json:"previousSinceNs"`
+	ConfigHash      string `json:"configHash,omitempty"`
 	// FreshAdmission: the first conclusive pass of a newly admitted pod is enough.
 	FreshAdmission bool     `json:"freshAdmission"`
 	Violated       []string `json:"violated,omitempty"`
@@ -73,13 +85,25 @@ type Persisted struct {
 	Failures         []string `json:"failures,omitempty"`
 }
 
-func (p *Probe) leaseFile() string { return filepath.Join(p.Dir, "lease.json") }
-func (p *Probe) stateFile() string { return filepath.Join(p.Dir, "probe-state.json") }
+func (p *Probe) leaseFile() string     { return filepath.Join(p.Dir, "lease.json") }
+func (p *Probe) stateFile() string     { return filepath.Join(p.Dir, "probe-state.json") }
+func (p *Probe) violationFile() string { return filepath.Join(p.Dir, "violation.json") }
 
-// Open loads the persisted state and the probe key (created once, never leaving Dir) and publishes the public key.
+// Open loads the persisted state, the violation latch and the probe key (created once, never leaving Dir) and
+// publishes the public key.
 func (p *Probe) Open() error {
 	if err := os.MkdirAll(p.Dir, 0o755); err != nil {
 		return err
+	}
+	stateData, stateErr := os.ReadFile(p.stateFile())
+	if stateErr != nil && !errors.Is(stateErr, os.ErrNotExist) {
+		return stateErr
+	}
+	if stateErr == nil {
+		if err := json.Unmarshal(stateData, &p.State); err != nil {
+			// A corrupt state is never read as clean.
+			p.State = Persisted{State: "no-proof", Corrupt: true}
+		}
 	}
 	keyFile := filepath.Join(p.Dir, "probe.key")
 	seed, err := os.ReadFile(keyFile)
@@ -91,6 +115,14 @@ func (p *Probe) Open() error {
 		if err := writeSynced(keyFile, seed, 0o600); err != nil {
 			return err
 		}
+		if p.State.AdmissionID != "" {
+			// An admission names the key it was granted to; a new key needs a new admission.
+			p.Logf("probe key regenerated: admission %s dropped", p.State.AdmissionID)
+			p.State.AdmissionID, p.State.AdmissionJWS, p.State.FreshAdmission = "", "", false
+			if p.State.State != "violation" {
+				p.State.State = "no-proof"
+			}
+		}
 	} else if err != nil {
 		return err
 	}
@@ -98,11 +130,14 @@ func (p *Probe) Open() error {
 		return errors.New("probe key corrupt")
 	}
 	p.key = ed25519.NewKeyFromSeed(seed)
-	if data, err := os.ReadFile(p.stateFile()); err == nil {
-		if err := json.Unmarshal(data, &p.State); err != nil {
-			// A corrupt state is never read as clean: no lease until a new conclusive start.
-			p.State = Persisted{State: "no-proof"}
+	// The latch is the first thing a violation writes: a crash after it cannot lose the violation.
+	if data, err := os.ReadFile(p.violationFile()); err == nil {
+		var latched []string
+		if json.Unmarshal(data, &latched) != nil || len(latched) == 0 {
+			latched = []string{"unknown"}
 		}
+		p.State.Violated = mergeUnique(p.State.Violated, latched)
+		p.State.State = "violation"
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -112,7 +147,9 @@ func (p *Probe) Open() error {
 	return writeSynced(filepath.Join(p.Handoff, "probe.pub"), []byte(p.PublicKey()), 0o644)
 }
 
-func (p *Probe) PublicKey() string { return base64.RawURLEncoding.EncodeToString(p.key.Public().(ed25519.PublicKey)) }
+func (p *Probe) PublicKey() string {
+	return base64.RawURLEncoding.EncodeToString(p.key.Public().(ed25519.PublicKey))
+}
 
 // Round is one period: identity, admission, capabilities, then the lease.
 func (p *Probe) Round(ctx context.Context) {
@@ -124,41 +161,58 @@ func (p *Probe) Round(ctx context.Context) {
 	}
 	boot := p.BootID()
 	if p.State.BootID != boot {
-		// A new boot: every lease and admission of the previous one is void; a violation is not.
+		// A new boot: every lease and admission of the previous one is void; a violation or a corrupt state is not.
 		p.Logf("boot %s (was %q): a new admission is needed", boot, p.State.BootID)
-		p.State = Persisted{State: "awaiting-admission", BootID: boot, Violated: p.State.Violated}
+		state := "awaiting-admission"
+		if p.State.Corrupt {
+			state = "no-proof"
+		}
+		if len(p.State.Violated) > 0 {
+			state = "violation"
+		}
+		p.State = Persisted{State: state, BootID: boot, Violated: p.State.Violated, Corrupt: p.State.Corrupt}
 	}
-	p.readAdmission(boot)
+	p.refreshAdmission(boot)
 	if p.State.AdmissionID == "" {
-		p.State.State = "awaiting-admission"
+		if p.State.State != "violation" && !p.State.Corrupt {
+			p.State.State = "awaiting-admission"
+		}
 		p.removeLease()
 		p.save()
 		return
 	}
+	// A state that serves continues only while its own lease is still valid (after a stop longer than V it is not).
+	if serving(p.State.State) && !p.leaseValid(now) {
+		p.Logf("lease expired while in %s: no-proof", p.State.State)
+		p.State.State, p.State.Passes, p.State.FreshAdmission = "no-proof", 0, false
+	}
 
 	verdict := Round(ctx, p.Config, p.Network, RoundBudget, func(capability string) {
 		// Written as soon as a forbidden target answers, before the round ends.
-		p.violate([]string{capability}, now)
+		p.violate([]string{capability})
 	})
 	p.State.Proven, p.State.Failures = verdict.Proven, verdict.Failures
 	if len(verdict.Violated) > 0 {
-		p.violate(verdict.Violated, now)
+		p.violate(verdict.Violated)
 		return
 	}
 	if len(p.State.Violated) > 0 {
 		// Only a signed release (task N2-D3) ends a violation; a pass changes nothing.
-		p.violate(nil, now)
+		p.violate(nil)
 		return
 	}
 	if len(verdict.Inconclusive) > 0 {
 		p.State.Passes = 0
-		switch p.State.State {
-		case "ok", "verifying", "kong-unavailable", "inconclusive":
-			if p.State.LastConclusiveNs != 0 && now-p.State.LastConclusiveNs < uint64(InconclusiveLimit) {
+		if p.State.State == "guard-missing" {
+			p.withdraw("guard-missing")
+			return
+		}
+		if serving(p.State.State) && p.State.LastConclusiveNs != 0 && now-p.State.LastConclusiveNs < uint64(InconclusiveLimit) {
+			if p.State.State == "ok" {
 				p.State.State = "inconclusive"
-				p.issue("inconclusive", now)
-				return
 			}
+			p.issue("inconclusive", now)
+			return
 		}
 		if p.State.State != "awaiting-admission" {
 			p.State.State = "no-proof"
@@ -169,33 +223,49 @@ func (p *Probe) Round(ctx context.Context) {
 
 	p.State.Passes++
 	p.State.LastConclusiveNs = now
+	if now < p.State.RetryAtNs {
+		// The guard-missing backoff holds whatever the rounds say.
+		p.withdraw(p.State.State)
+		return
+	}
 	switch p.State.State {
-	case "awaiting-admission":
-		p.State.State = "verifying"
+	case "awaiting-admission", "guard-missing":
+		p.verify()
 	case "no-proof":
-		if p.State.Passes < 2 && !p.State.FreshAdmission {
+		if p.State.Passes < 2 && !(p.State.FreshAdmission && !p.State.Corrupt) {
 			p.withdraw("no-proof")
 			return
 		}
-		p.State.State = "verifying"
-	case "guard-missing":
-		if now < p.State.RetryAtNs {
-			p.withdraw("guard-missing")
-			return
-		}
-		p.State.State = "verifying"
+		p.State.Corrupt = false
+		p.verify()
 	case "inconclusive":
-		p.State.State = "ok"
+		if p.State.GuardVerified {
+			p.State.State = "ok"
+		} else {
+			p.verify()
+		}
 	}
 	p.State.FreshAdmission = false
 	p.issue("ok", now)
 }
 
-// CanaryStep checks the guard: every second while verifying, and once per round otherwise.
+// verify starts a verification: NotReady until the canary answers with the lease about to be issued.
+func (p *Probe) verify() {
+	p.State.State, p.State.GuardVerified, p.State.PreviousSinceNs = "verifying", false, 0
+}
+
+func serving(state string) bool {
+	return state == "ok" || state == "verifying" || state == "kong-unavailable" || state == "inconclusive"
+}
+
+func (p *Probe) leaseValid(now uint64) bool {
+	l, err := lease.Read(p.leaseFile())
+	return err == nil && lease.Check(l, lease.Node{PodUID: p.PodUID, BootID: p.State.BootID, Now: now, TimeNamespaceZero: true}) == nil && l.Nonce == p.State.Nonce
+}
+
+// CanaryStep checks the guard every second while a lease is out: a configuration without it is caught within 1 s.
 func (p *Probe) CanaryStep(ctx context.Context) {
-	switch p.State.State {
-	case "verifying", "ok", "kong-unavailable":
-	default:
+	if !serving(p.State.State) {
 		return
 	}
 	now, err := p.Boottime()
@@ -209,8 +279,23 @@ func (p *Probe) CanaryStep(ctx context.Context) {
 		if p.State.State == "ok" || p.State.State == "verifying" {
 			p.State.State = "kong-unavailable"
 		}
-	case r.Status == 204 && r.Nonce != "" && (r.Nonce == p.State.Nonce || r.Nonce == p.State.PreviousNonce):
-		p.State.State, p.State.NotFoundSinceNs, p.State.BackoffNs = "ok", 0, 0
+	case r.Status == 204 && r.Nonce != "" && r.Nonce == p.State.Nonce:
+		if r.ConfigHash != p.State.ConfigHash {
+			p.Logf("guard verified on configuration %s", r.ConfigHash)
+		}
+		p.State.GuardVerified, p.State.ConfigHash, p.State.NotFoundSinceNs, p.State.PreviousSinceNs, p.State.BackoffNs = true, r.ConfigHash, 0, 0, 0
+		if p.State.State == "verifying" || p.State.State == "kong-unavailable" {
+			p.State.State = "ok"
+		}
+	case r.Status == 204 && r.Nonce != "" && r.Nonce == p.State.PreviousNonce:
+		// Not a proof of the current lease; tolerated only while the guard's cache can explain it.
+		if p.State.PreviousSinceNs == 0 {
+			p.State.PreviousSinceNs = now
+		}
+		if now-p.State.PreviousSinceNs > uint64(PreviousNonceGrace) {
+			p.guardMissing(now, "canary kept the previous lease's nonce")
+			return
+		}
 	case r.Status == 404:
 		if p.State.NotFoundSinceNs == 0 {
 			p.State.NotFoundSinceNs = now
@@ -220,7 +305,7 @@ func (p *Probe) CanaryStep(ctx context.Context) {
 			return
 		}
 		if p.State.State == "kong-unavailable" {
-			p.State.State = "verifying"
+			p.verify()
 		}
 	default:
 		// Kong answers, but not the guard holding the current lease.
@@ -239,34 +324,56 @@ func (p *Probe) guardMissing(now uint64, why string) {
 		backoff = uint64(BackoffMax)
 	}
 	p.Logf("guard-missing (%s): lease withdrawn, new attempt in %s", why, time.Duration(backoff))
-	p.State.State, p.State.BackoffNs, p.State.RetryAtNs, p.State.NotFoundSinceNs = "guard-missing", backoff, now+backoff, 0
+	p.State.State, p.State.BackoffNs, p.State.RetryAtNs, p.State.NotFoundSinceNs, p.State.GuardVerified = "guard-missing", backoff, now+backoff, 0, false
 	p.withdraw("guard-missing")
 }
 
-func (p *Probe) violate(capabilities []string, now uint64) {
-	seen := map[string]bool{}
-	for _, c := range p.State.Violated {
-		seen[c] = true
+func (p *Probe) violate(capabilities []string) {
+	p.State.Violated = mergeUnique(p.State.Violated, capabilities)
+	if len(p.State.Violated) == 0 {
+		p.State.Violated = []string{"unknown"}
 	}
-	for _, c := range capabilities {
-		if !seen[c] {
-			p.State.Violated = append(p.State.Violated, c)
-			seen[c] = true
-		}
+	// The latch first: a crash between the writes below can never lose the violation.
+	data, _ := json.Marshal(p.State.Violated)
+	if err := writeSynced(p.violationFile(), data, 0o644); err != nil {
+		p.Logf("violation latch not written: %v", err)
 	}
 	if p.State.State != "violation" {
 		p.Logf("violation of %v: containment", p.State.Violated)
 	}
-	p.State.State, p.State.Passes = "violation", 0
+	p.State.State, p.State.Passes, p.State.GuardVerified = "violation", 0, false
 	p.withdraw("violation")
 }
 
-func (p *Probe) readAdmission(boot string) {
+func mergeUnique(a, b []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, c := range append(append([]string{}, a...), b...) {
+		if !seen[c] {
+			seen[c] = true
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// refreshAdmission adopts a valid new admission from the handoff and revalidates the stored one: an admission is
+// used only while it is this cluster's, pod's, boot's and key's, whatever the state file says.
+func (p *Probe) refreshAdmission(boot string) {
+	self := Identity{ClusterID: p.ClusterID, PodUID: p.PodUID, BootID: boot, PublicKey: p.key.Public().(ed25519.PublicKey)}
+	if p.State.AdmissionJWS != "" {
+		if claims, err := CheckAdmission([]byte(p.State.AdmissionJWS), p.InstanceKey, self); err != nil || claims.AdmissionID != p.State.AdmissionID {
+			p.Logf("stored admission no longer valid: dropped")
+			p.State.AdmissionID, p.State.AdmissionJWS, p.State.FreshAdmission = "", "", false
+		}
+	} else if p.State.AdmissionID != "" {
+		p.State.AdmissionID, p.State.FreshAdmission = "", false
+	}
 	raw, err := os.ReadFile(filepath.Join(p.Handoff, "admission.jws"))
 	if err != nil {
 		return
 	}
-	claims, err := CheckAdmission(raw, p.InstanceKey, Identity{ClusterID: p.ClusterID, PodUID: p.PodUID, BootID: boot, PublicKey: p.key.Public().(ed25519.PublicKey)})
+	claims, err := CheckAdmission(raw, p.InstanceKey, self)
 	if err != nil {
 		// Another pod's, another boot's, another key's or a forged admission is ignored.
 		if p.State.AdmissionID == "" {
@@ -276,7 +383,7 @@ func (p *Probe) readAdmission(boot string) {
 	}
 	if claims.AdmissionID != p.State.AdmissionID {
 		p.Logf("admitted: %s", claims.AdmissionID)
-		p.State.AdmissionID, p.State.FreshAdmission, p.State.Passes = claims.AdmissionID, true, 0
+		p.State.AdmissionID, p.State.AdmissionJWS, p.State.FreshAdmission, p.State.Passes = claims.AdmissionID, string(raw), true, 0
 	}
 }
 

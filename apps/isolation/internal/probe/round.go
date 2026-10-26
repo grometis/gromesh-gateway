@@ -11,9 +11,11 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -54,7 +56,7 @@ func LoadConfig(path string) (Config, error) {
 }
 
 func (c Config) Validate() error {
-	covered := map[string]bool{}
+	covered, controls := map[string]bool{}, map[string]bool{}
 	for i, ch := range c.Checks {
 		known := false
 		for _, cap := range Capabilities {
@@ -65,12 +67,13 @@ func (c Config) Validate() error {
 		}
 		switch ch.Kind {
 		case "tcp", "tcp-open":
-			if ch.Address == "" {
-				return fmt.Errorf("probe config: check %q needs an address", ch.Name)
+			if host, port, err := net.SplitHostPort(ch.Address); err != nil || host == "" || port == "" {
+				return fmt.Errorf("probe config: check %q needs an address host:port", ch.Name)
 			}
 		case "http":
-			if ch.URL == "" || ch.ExpectStatus < 100 {
-				return fmt.Errorf("probe config: check %q needs a url and expectStatus", ch.Name)
+			u, err := url.Parse(ch.URL)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || ch.ExpectStatus < 100 || ch.ExpectStatus > 599 {
+				return fmt.Errorf("probe config: check %q needs an http(s) url and expectStatus", ch.Name)
 			}
 		case "dns":
 			if ch.Host == "" {
@@ -82,11 +85,16 @@ func (c Config) Validate() error {
 		if ch.Kind == "tcp" || ch.Kind == "http" {
 			covered[ch.Capability] = true
 		}
+		controls[ch.Kind] = true
 	}
 	for _, cap := range Capabilities {
 		if !covered[cap] {
 			return fmt.Errorf("probe config: %s has no forbidden target", cap)
 		}
+	}
+	// Without positive controls an unreachable target proves nothing: the network itself could be down.
+	if !controls["dns"] || !controls["tcp-open"] {
+		return errors.New("probe config: needs a dns and a tcp-open positive control")
 	}
 	return nil
 }
@@ -197,19 +205,46 @@ func Round(ctx context.Context, cfg Config, network Network, budget time.Duratio
 	return v
 }
 
+// Unreachable is proven only by the network refusing or dropping the connection. A name that does not resolve, a TLS
+// or protocol error, or any other failure proves nothing about the destination: inconclusive.
+func unreachable(err error) bool {
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return false
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Op == "dial" {
+		return true
+	}
+	return errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.EHOSTUNREACH) || errors.Is(err, syscall.ENETUNREACH) || errors.Is(err, os.ErrDeadlineExceeded)
+}
+
 func evaluate(ctx context.Context, network Network, ch Check) (string, string) {
 	switch ch.Kind {
 	case "tcp":
-		if err := network.Dial(ctx, ch.Address); err == nil {
+		err := network.Dial(ctx, ch.Address)
+		if err == nil {
 			return "violation", "reachable " + ch.Address
 		}
-		return "pass", ""
-	case "http":
-		status, err := network.Get(ctx, ch.URL)
-		if err != nil || status == ch.ExpectStatus {
+		if unreachable(err) {
 			return "pass", ""
 		}
-		return "violation", fmt.Sprintf("%s answered %d", ch.URL, status)
+		return "inconclusive", ch.Address + ": " + err.Error()
+	case "http":
+		status, err := network.Get(ctx, ch.URL)
+		if err == nil && status == ch.ExpectStatus {
+			return "pass", ""
+		}
+		if err == nil {
+			return "violation", fmt.Sprintf("%s answered %d", ch.URL, status)
+		}
+		// Connected but without the expected answer (TLS, protocol, no response) is reachable, not refused.
+		if dialErr := network.Dial(ctx, hostPort(ch.URL)); dialErr == nil {
+			return "violation", ch.URL + " reachable without the expected answer: " + err.Error()
+		} else if unreachable(dialErr) {
+			return "pass", ""
+		}
+		return "inconclusive", ch.URL + ": " + err.Error()
 	case "tcp-open":
 		if err := network.Dial(ctx, ch.Address); err != nil {
 			return "inconclusive", "positive control unreachable: " + err.Error()
@@ -222,4 +257,18 @@ func evaluate(ctx context.Context, network Network, ch Check) (string, string) {
 		return "pass", ""
 	}
 	return "inconclusive", "unknown kind"
+}
+
+func hostPort(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	if u.Port() != "" {
+		return u.Host
+	}
+	if u.Scheme == "https" {
+		return net.JoinHostPort(u.Hostname(), "443")
+	}
+	return net.JoinHostPort(u.Hostname(), "80")
 }
