@@ -222,11 +222,16 @@ async function main() {
     const nobody = `Basic ${Buffer.from("nobody:nothing").toString("base64")}`;
     const twoForeign = await call("/assine/basic-hide", { "proxy-authorization": basicOf("a"), authorization: basicOf("a") });
     const twoUnknown = await call("/assine/basic-hide", { "proxy-authorization": nobody, authorization: nobody });
-    const forwarded = (r) => JSON.stringify({ status: r.status, authorization: r.upstream.authorization ?? null, proxy: r.upstream["proxy-authorization"] ?? null, consumer: r.upstream["x-consumer-id"] ?? null });
+    const forwarded = (r) => JSON.stringify({
+      status: r.status, authorization: r.upstream.authorization ?? null, proxy: r.upstream["proxy-authorization"] ?? null,
+      ...Object.fromEntries(["x-consumer-id", "x-consumer-username", "x-consumer-custom-id", "x-anonymous-consumer", "x-credential-identifier"].map((h) => [h, r.upstream[h] ?? null])),
+    });
     const malformed = `Basic ${Buffer.from("nocolon").toString("base64")}`;
     const malformedForeign = await call("/assine/basic-hide", { "proxy-authorization": basicOf("a"), authorization: malformed });
     const malformedUnknown = await call("/assine/basic-hide", { "proxy-authorization": nobody, authorization: malformed });
-    expectIsolated(forwarded(malformedForeign) === forwarded(malformedUnknown), `basic-auth hide_credentials with a malformed Authorization: ${forwarded(malformedForeign)} vs ${forwarded(malformedUnknown)}`);
+    for (const [name, r] of [["foreign", malformedForeign], ["unknown", malformedUnknown]]) {
+      expectIsolated(forwarded(r) === forwarded(twoUnknown), `basic-auth hide_credentials with a malformed Authorization (${name}): ${forwarded(r)} vs ${forwarded(twoUnknown)}`);
+    }
     check(twoUnknown.status === 200 && !twoUnknown.upstream.authorization && !twoUnknown.upstream["proxy-authorization"], `two unknown basic credentials: ${forwarded(twoUnknown)}`);
     expectIsolated(forwarded(twoForeign) === forwarded(twoUnknown), `basic-auth hide_credentials: another Workspace's credentials reached the upstream differently: ${forwarded(twoForeign)} vs ${forwarded(twoUnknown)}`);
 
@@ -245,10 +250,10 @@ async function main() {
     const escaped = await call("/escape-tvro", credentials("a", "key-auth"));
     expectIsolated(escaped.status === 404 && escaped.message === "no Route matched with those values", `a path outside the Workspace prefix was served (${escaped.status})`);
     const unguarded = await call("/tvro/open");
-    expectIsolated(unguarded.status === 404, `a route without its guard was served (${unguarded.status})`);
+    expectIsolated(unguarded.status === 503, `a route without its guard was served (${unguarded.status})`);
 
     if (failures.length > 0) throw new Error(`Workspace isolation failed:\n- ${failures.join("\n- ")}`);
-    console.log(`Workspace isolation holds on the real gateway: ${checks + 17} checks, ${MECHANISMS.length} mechanisms × 2 Workspaces, with and without anonymous`);
+    console.log(`Workspace isolation holds on the real gateway: ${checks + 18} checks, ${MECHANISMS.length} mechanisms × 2 Workspaces, with and without anonymous`);
   } finally {
     for (const id of containers.reverse()) await docker("rm", "-f", id).catch(() => {});
     await docker("network", "rm", network).catch(() => {});

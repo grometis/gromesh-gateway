@@ -4,7 +4,6 @@
 -- or its anonymous consumer when it has one. The route prefix is never taken as isolation.
 
 local WORKSPACE_TAG = "gromesh-ws:"
-local NOT_FOUND = "no Route matched with those values"
 
 local HEADERS_CONSUMER_ID = "X-Consumer-ID"
 local HEADERS_CONSUMER_CUSTOM_ID = "X-Consumer-Custom-ID"
@@ -86,7 +85,9 @@ end
 function WorkspaceHandler:access()
   local guard = kong.ctx.shared.gromesh_guard
   if not guard then
-    return kong.response.error(404, NOT_FOUND)
+    -- A route without its guard has no proof of isolation: contained like an invalid lease (and the probe's canary
+    -- tells it apart at once from a missing route, which is a 404).
+    return kong.response.error(503)
   end
 
   local consumer = kong.client.get_consumer()
