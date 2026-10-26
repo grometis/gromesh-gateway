@@ -13,9 +13,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gromesh/gateway/apps/isolation/internal/lease"
 	"io"
 	"syscall"
+
+	"github.com/gromesh/gateway/apps/isolation/internal/lease"
 )
 
 // Timing of agent-protocol-v2 (B §3.5.3): period P, round T, inconclusive tolerance I, guard-missing backoff.
@@ -43,25 +44,29 @@ type CanaryResult struct {
 // Probe keeps its state, key and lease in Dir (its own volume: read-only for kong, not mounted by the agent) and
 // exchanges the admission and its public key with the agent through Handoff.
 type Probe struct {
-	Dir         string
-	Handoff     string
-	ClusterID   string
-	PodUID      string
-	InstanceKey ed25519.PublicKey
-	Config      Config
-	Network     Network
-	Canary      func(ctx context.Context) CanaryResult
-	BootID      func() string
-	Boottime    func() (uint64, error)
-	WallClock   func() time.Time
-	Logf        func(format string, args ...any)
+	Dir       string
+	Handoff   string
+	ClusterID string
+	PodUID    string
+	// TrustSet is read again every round: an admission whose kid leaves the set stops counting at the next one.
+	TrustSet  func() (TrustSet, error)
+	Config    Config
+	Network   Network
+	Canary    func(ctx context.Context) CanaryResult
+	BootID    func() string
+	Boottime  func() (uint64, error)
+	WallClock func() time.Time
+	Logf      func(format string, args ...any)
 
 	key ed25519.PrivateKey
 	// mu guards State: the canary runs every second beside a round, which holds it only outside its network phase.
 	mu sync.Mutex
 	// gen changes with every lease written or withdrawn: a canary answer about an older lease is discarded.
 	gen   uint64
-	State Persisted
+	trust TrustSet
+	// trustErr is logged once per change, not every round.
+	trustErr string
+	State    Persisted
 }
 
 // Persisted survives container and node restarts (the volume is on disk), violation included.
@@ -186,6 +191,20 @@ func (p *Probe) prepare() bool {
 		p.withdraw("no-proof")
 		return false
 	}
+	trust, err := p.TrustSet()
+	if err != nil {
+		// No admission counts without a valid set: nothing is proven to the guard, whatever the state was.
+		if err.Error() != p.trustErr {
+			p.Logf("%v: no lease will be issued", err)
+		}
+		p.trustErr = err.Error()
+		if serving(p.State.State) {
+			p.State.State, p.State.Passes, p.State.FreshAdmission = "no-proof", 0, false
+		}
+		p.withdraw(p.State.State)
+		return false
+	}
+	p.trust, p.trustErr = trust, ""
 	boot := p.BootID()
 	if p.State.BootID != boot {
 		// A new boot: every lease and admission of the previous one is void; a violation or a corrupt state is not.
@@ -409,8 +428,8 @@ func mergeUnique(a, b []string) []string {
 func (p *Probe) refreshAdmission(boot string) {
 	self := Identity{ClusterID: p.ClusterID, PodUID: p.PodUID, BootID: boot, PublicKey: p.key.Public().(ed25519.PublicKey)}
 	if p.State.AdmissionJWS != "" {
-		if claims, err := CheckAdmission([]byte(p.State.AdmissionJWS), p.InstanceKey, self); err != nil || claims.AdmissionID != p.State.AdmissionID {
-			p.Logf("stored admission no longer valid: dropped")
+		if claims, _, err := CheckAdmission([]byte(p.State.AdmissionJWS), p.trust, self); err != nil || claims.AdmissionID != p.State.AdmissionID {
+			p.Logf("stored admission no longer valid (%v): dropped", err)
 			p.State.AdmissionID, p.State.AdmissionJWS, p.State.FreshAdmission = "", "", false
 		}
 	} else if p.State.AdmissionID != "" {
@@ -420,7 +439,7 @@ func (p *Probe) refreshAdmission(boot string) {
 	if err != nil {
 		return
 	}
-	claims, err := CheckAdmission(raw, p.InstanceKey, self)
+	claims, kid, err := CheckAdmission(raw, p.trust, self)
 	if err != nil {
 		// Another pod's, another boot's, another key's or a forged admission is ignored.
 		if p.State.AdmissionID == "" {
@@ -429,7 +448,7 @@ func (p *Probe) refreshAdmission(boot string) {
 		return
 	}
 	if claims.AdmissionID != p.State.AdmissionID {
-		p.Logf("admitted: %s", claims.AdmissionID)
+		p.Logf("admitted: %s (instance key %s)", claims.AdmissionID, kid)
 		p.State.AdmissionID, p.State.AdmissionJWS, p.State.FreshAdmission, p.State.Passes = claims.AdmissionID, string(raw), true, 0
 	}
 }

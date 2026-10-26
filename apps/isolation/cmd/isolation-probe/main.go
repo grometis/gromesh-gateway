@@ -2,16 +2,15 @@
 // isolation-probe        run (rounds every 15 s; the guard canary every second while a lease is out)
 // isolation-probe ready  exec readiness: the pod is Ready only in state ok with a valid lease (the probe never listens)
 // isolation-probe check-config <file>  validates a configuration with the probe's own rules (chart CI)
+// isolation-probe check-trust-set <file>  validates an InstanceTrustSet with the probe's own rules (chart CI)
 // isolation-probe install <dir>  copies kong-supervisor and kong-liveness, shipped beside it, into dir (init
 // container: the kong image does not carry them)
-// Environment: GROMESH_POD_UID, GROMESH_CLUSTER_ID, GROMESH_INSTANCE_PUBLIC_KEY (Ed25519, base64url),
+// Environment: GROMESH_POD_UID, GROMESH_CLUSTER_ID, GROMESH_INSTANCE_KEYS (the InstanceTrustSet file),
 // GROMESH_PROBE_DIR, GROMESH_HANDOFF_DIR, GROMESH_PROBE_CONFIG, GROMESH_CANARY_URL.
 package main
 
 import (
 	"context"
-	"crypto/ed25519"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -42,6 +41,14 @@ func main() {
 		fmt.Println("probe config ok")
 		return
 	}
+	if len(os.Args) == 3 && os.Args[1] == "check-trust-set" {
+		if _, err := probe.LoadTrustSet(os.Args[2]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Println("instance trust set ok")
+		return
+	}
 	if len(os.Args) == 3 && os.Args[1] == "install" {
 		if err := install(os.Args[2]); err != nil {
 			fmt.Fprintln(os.Stderr, "isolation-probe install:", err)
@@ -50,11 +57,7 @@ func main() {
 		return
 	}
 	logf := func(format string, args ...any) { fmt.Fprintf(os.Stderr, "isolation-probe: "+format+"\n", args...) }
-	key, err := base64.RawURLEncoding.DecodeString(os.Getenv("GROMESH_INSTANCE_PUBLIC_KEY"))
-	if err != nil || len(key) != ed25519.PublicKeySize {
-		logf("GROMESH_INSTANCE_PUBLIC_KEY must be an Ed25519 public key in base64url: no lease will be issued")
-		select {}
-	}
+	trustFile := env("GROMESH_INSTANCE_KEYS", "/etc/gromesh/instance-keys.json")
 	cfg, err := probe.LoadConfig(env("GROMESH_PROBE_CONFIG", "/etc/gromesh/probe.json"))
 	if err != nil {
 		// Without a complete configuration nothing can be proven: no lease, ever.
@@ -65,8 +68,8 @@ func main() {
 	client := &http.Client{Timeout: time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	p := &probe.Probe{
 		Dir: dir, Handoff: env("GROMESH_HANDOFF_DIR", "/gromesh/handoff"),
-		ClusterID: os.Getenv("GROMESH_CLUSTER_ID"), PodUID: os.Getenv("GROMESH_POD_UID"), InstanceKey: key,
-		Config: cfg, Network: probe.RealNetwork(),
+		ClusterID: os.Getenv("GROMESH_CLUSTER_ID"), PodUID: os.Getenv("GROMESH_POD_UID"), Config: cfg, Network: probe.RealNetwork(),
+		TrustSet: func() (probe.TrustSet, error) { return probe.LoadTrustSet(trustFile) },
 		Canary: func(ctx context.Context) probe.CanaryResult {
 			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, canaryURL, nil)
 			res, err := client.Do(req)

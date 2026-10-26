@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"net"
 	"os"
@@ -98,19 +99,40 @@ type world struct {
 	boot    string
 	canary  CanaryResult
 	instKey ed25519.PrivateKey
+	kid     string
+	trust   TrustSet
 	logs    []string
 }
 
 func newWorld(t *testing.T, dir string) *world {
-	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
-	w := &world{t: t, net: &fakeNet{open: map[string]bool{"backend:80": true}, slow: map[string]bool{}, unresolved: map[string]bool{}, connectedNoAnswer: map[string]bool{}, local: map[string]bool{}, dns: true}, now: 1_000 * uint64(time.Second), boot: boot1, instKey: priv}
-	w.p = w.probe(dir, pub)
+	w := &world{t: t, net: &fakeNet{open: map[string]bool{"backend:80": true}, slow: map[string]bool{}, unresolved: map[string]bool{}, connectedNoAnswer: map[string]bool{}, local: map[string]bool{}, dns: true}, now: 1_000 * uint64(time.Second), boot: boot1}
+	w.instKey, w.kid = instanceKey()
+	w.trust = TrustSet{w.kid: w.instKey.Public().(ed25519.PublicKey)}
+	w.p = w.probe(dir)
 	return w
 }
 
-func (w *world) probe(dir string, pub ed25519.PublicKey) *Probe {
+// instanceKey is a fresh instance key and its kid (the RFC 7638 thumbprint).
+func instanceKey() (ed25519.PrivateKey, string) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	return priv, Thumbprint(b64.EncodeToString(pub))
+}
+
+// signInstance is what the control plane signs: {alg, kid, typ} in that order.
+func signInstance(key ed25519.PrivateKey, kid, typ string, claims any) []byte {
+	payload, _ := json.Marshal(claims)
+	return sign(key, []byte(`{"alg":"EdDSA","kid":"`+kid+`","typ":"`+typ+`"}`), payload)
+}
+
+func (w *world) probe(dir string) *Probe {
 	p := &Probe{
-		Dir: filepath.Join(dir, "probe"), Handoff: filepath.Join(dir, "handoff"), ClusterID: cluster, PodUID: pod, InstanceKey: pub,
+		Dir: filepath.Join(dir, "probe"), Handoff: filepath.Join(dir, "handoff"), ClusterID: cluster, PodUID: pod,
+		TrustSet: func() (TrustSet, error) {
+			if w.trust == nil {
+				return nil, errors.New("instance trust set invalid: test")
+			}
+			return w.trust, nil
+		},
 		Config: config(), Network: w.net,
 		Canary:    func(context.Context) CanaryResult { return w.canary },
 		BootID:    func() string { return w.boot },
@@ -131,10 +153,7 @@ func (w *world) admit(mutate func(*AdmissionClaims)) {
 	if mutate != nil {
 		mutate(&c)
 	}
-	raw, err := Sign(w.instKey, c)
-	if err != nil {
-		w.t.Fatal(err)
-	}
+	raw := signInstance(w.instKey, w.kid, TypAdmission, c)
 	if err := os.WriteFile(filepath.Join(w.p.Handoff, "admission.jws"), raw, 0o644); err != nil {
 		w.t.Fatal(err)
 	}
@@ -225,7 +244,7 @@ func TestALeaseExpiresByItselfAndARestartAfterThatNeedsTwoPasses(t *testing.T) {
 	if w.leaseValid() == nil {
 		t.Fatal("lease outlived V without a round")
 	}
-	w.p = w.probe(dir, w.p.InstanceKey)
+	w.p = w.probe(dir)
 	w.round()
 	w.expect("no-proof", false)
 	w.round()
@@ -248,8 +267,7 @@ func TestViolationIsWrittenAtOnceAndOnlyAReleaseEndsIt(t *testing.T) {
 	w.round()
 	w.expect("violation", false)
 	// It survives a restart of the probe, and of the node.
-	pub := w.p.InstanceKey
-	w.p = w.probe(dir, pub)
+	w.p = w.probe(dir)
 	w.round()
 	w.expect("violation", false)
 	w.boot = boot2
@@ -358,7 +376,7 @@ func TestTheViolationLatchSurvivesACrashBeforeTheState(t *testing.T) {
 	// A crash right after the latch: the state still says ok, or is unreadable.
 	_ = os.WriteFile(filepath.Join(w.p.Dir, "probe-state.json"), []byte("{corrupt"), 0o644)
 	w.net.set("forbidden-CAP-1:80", false)
-	w.p = w.probe(dir, w.p.InstanceKey)
+	w.p = w.probe(dir)
 	w.round()
 	w.expect("violation", false)
 }
@@ -369,7 +387,7 @@ func TestACorruptStateNeedsTwoPassesEvenWithAFreshAdmission(t *testing.T) {
 	w.admit(nil)
 	w.round()
 	_ = os.WriteFile(filepath.Join(w.p.Dir, "probe-state.json"), []byte("{corrupt"), 0o644)
-	w.p = w.probe(dir, w.p.InstanceKey)
+	w.p = w.probe(dir)
 	w.round()
 	if w.leaseValid() == nil {
 		t.Fatal("one pass after a corrupt state issued a lease")
@@ -384,7 +402,7 @@ func TestALostKeyDropsTheAdmission(t *testing.T) {
 	w.admit(nil)
 	w.round()
 	_ = os.Remove(filepath.Join(w.p.Dir, "probe.key"))
-	w.p = w.probe(dir, w.p.InstanceKey)
+	w.p = w.probe(dir)
 	w.round()
 	w.expect("awaiting-admission", false)
 	w.admit(nil) // signed for the new key
@@ -419,14 +437,11 @@ func TestTheCanaryIsCheckedWhileInconclusiveAndTheBackoffHolds(t *testing.T) {
 func TestAdmissionPayloadIsStrict(t *testing.T) {
 	w := newWorld(t, t.TempDir())
 	sign := func(payload string) []byte {
-		protected := b64.EncodeToString([]byte(`{"alg":"EdDSA"}`))
-		body := b64.EncodeToString([]byte(payload))
-		sig := ed25519.Sign(w.instKey, []byte(protected+"."+body))
-		return []byte(`{"protected":"` + protected + `","payload":"` + body + `","signature":"` + b64.EncodeToString(sig) + `"}`)
+		return sign(w.instKey, []byte(`{"alg":"EdDSA","kid":"`+w.kid+`","typ":"`+TypAdmission+`"}`), []byte(payload))
 	}
 	self := Identity{ClusterID: cluster, PodUID: pod, BootID: boot1, PublicKey: w.p.key.Public().(ed25519.PublicKey)}
 	good := `{"clusterId":"` + cluster + `","podUid":"` + pod + `","nodeName":"n1","bootId":"` + boot1 + `","admissionId":"6a1f3c2e-0b7d-4c1a-9f10-0000000000ad","probePublicKey":"` + w.p.PublicKey() + `","startDeadline":"2026-10-26T12:00:00Z"}`
-	if _, err := CheckAdmission(sign(good), w.p.InstanceKey, self); err != nil {
+	if _, _, err := CheckAdmission(sign(good), w.trust, self); err != nil {
 		t.Fatal(err)
 	}
 	for _, bad := range []string{
@@ -436,12 +451,12 @@ func TestAdmissionPayloadIsStrict(t *testing.T) {
 		good + "{}",
 		strings.Replace(good, `"nodeName":"n1"`, `"nodeName":"n1","extra":"x"`, 1),
 	} {
-		if _, err := CheckAdmission(sign(bad), w.p.InstanceKey, self); err == nil {
+		if _, _, err := CheckAdmission(sign(bad), w.trust, self); err == nil {
 			t.Errorf("accepted %s", bad)
 		}
 	}
 	raw := sign(good)
-	if _, err := CheckAdmission(append(raw, []byte(" {}")...), w.p.InstanceKey, self); err == nil {
+	if _, _, err := CheckAdmission(append(raw, []byte(" {}")...), w.trust, self); err == nil {
 		t.Error("accepted a JWS with trailing data")
 	}
 }
@@ -502,9 +517,9 @@ func TestPortsAndJWSAlphabetAreStrict(t *testing.T) {
 	}
 	w := newWorld(t, t.TempDir())
 	c := AdmissionClaims{ClusterID: cluster, PodUID: pod, NodeName: "n1", BootID: boot1, AdmissionID: "6a1f3c2e-0b7d-4c1a-9f10-0000000000ad", ProbePublicKey: w.p.PublicKey(), StartDeadline: "2026-10-26T12:00:00Z"}
-	raw, _ := Sign(w.instKey, c)
+	raw := signInstance(w.instKey, w.kid, TypAdmission, c)
 	broken := strings.Replace(string(raw), `"signature":"`, `"signature":"\n`, 1)
-	if _, err := CheckAdmission([]byte(broken), w.p.InstanceKey, Identity{ClusterID: cluster, PodUID: pod, BootID: boot1, PublicKey: w.p.key.Public().(ed25519.PublicKey)}); err == nil {
+	if _, _, err := CheckAdmission([]byte(broken), w.trust, Identity{ClusterID: cluster, PodUID: pod, BootID: boot1, PublicKey: w.p.key.Public().(ed25519.PublicKey)}); err == nil {
 		t.Fatal("a signature with a JSON newline was accepted")
 	}
 }
@@ -522,7 +537,7 @@ func TestAHostileHandoffCannotReachThePrivateKey(t *testing.T) {
 	if err := syscall.Mkfifo(filepath.Join(w.p.Handoff, "admission.jws"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	w.p = w.probe(dir, w.p.InstanceKey)
+	w.p = w.probe(dir)
 	done := make(chan struct{})
 	go func() { w.round(); close(done) }()
 	select {
