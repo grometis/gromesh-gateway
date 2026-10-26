@@ -61,6 +61,8 @@ export interface AppConfig {
   workspaceSlugPollMs: number;
   /** Conflicting writes on an instance-unique value (credential, SNI) per actor before a 429 for `loginLockoutMs`. */
   uniqueConflictMax: number;
+  /** How often each replica writes the v1 calls of sessions it counted (token calls are written at once). */
+  apiV1UsageFlushMs: number;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -112,6 +114,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     autoPublishPollMs: Number(env.AUTO_PUBLISH_POLL_MS ?? 1000),
     workspaceSlugPollMs: Number(env.WORKSPACE_SLUG_POLL_MS ?? 30_000),
     uniqueConflictMax: Number(env.UNIQUE_CONFLICT_MAX ?? 20),
+    apiV1UsageFlushMs: Number(env.API_V1_USAGE_FLUSH_MS ?? 5000),
   };
 }
 

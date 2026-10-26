@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import {
   boolean,
   check,
+  date,
   foreignKey,
   index,
   integer,
@@ -556,6 +557,32 @@ export const clusterNodes = pgTable("cluster_nodes", {
 
 export type ClusterRow = typeof clusters.$inferSelect;
 export type ClusterNodeRow = typeof clusterNodes.$inferSelect;
+
+/**
+ * Calls to the v1 operations the controlled migration will cut (decision H-9), per UTC day and API token (null: the
+ * sessions, i.e. the UI). Kept 30 days; the cut needs no token call in that window. The token's name and owner are
+ * copied, not referenced: deleting the token or its owner must not erase a call from the window.
+ */
+export const apiV1Usage = pgTable(
+  "api_v1_usage",
+  {
+    day: date("day").notNull(),
+    tokenId: uuid("token_id"),
+    tokenName: text("token_name"),
+    ownerId: uuid("owner_id"),
+    calls: integer("calls").notNull(),
+  },
+  (t) => [unique("api_v1_usage_day_token_uq").on(t.day, t.tokenId).nullsNotDistinct()],
+);
+
+// Each control-plane replica counting the v1 calls: from its start, confirmed up to seen_at (its counts written up
+// to then); closed once stopped cleanly.
+export const apiV1UsageReplicas = pgTable("api_v1_usage_replicas", {
+  replicaId: uuid("replica_id").primaryKey(),
+  startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
+  seenAt: timestamp("seen_at", { withTimezone: true }).notNull(),
+  closed: boolean("closed").notNull().default(false),
+});
 
 export type UpstreamRow = typeof upstreams.$inferSelect;
 export type TargetRow = typeof targets.$inferSelect;

@@ -37,6 +37,26 @@ export interface BearerResolver {
   resolve(bearer: string, ip: string | null): Promise<ResolvedBearer | null>;
 }
 
+/** Counts the calls to the v1 operations the controlled migration will cut (decision H-9; src/instance). */
+export const API_V1_USAGE = Symbol("API_V1_USAGE");
+export interface ApiV1UsageRecorder {
+  /** A token call it counts, from before its authentication until `end`: no confirmation passes it. */
+  begin(): symbol;
+  end(call: symbol): void;
+  /** In memory, never the database: the call goes on whatever happens to its count. null: a session (the UI). */
+  record(token: { id: string; name: string; ownerId: string } | null): void;
+}
+
+/**
+ * The v1 operations the cut reaches: those under /environments/{envId} and /clusters/{clusterId} (their route has the
+ * parameter), and GET and POST /environments.
+ */
+function cutByMigration(req: Request): boolean {
+  if (typeof req.params.envId === "string" || typeof req.params.clusterId === "string") return true;
+  const route = (req as Request & { route?: { path?: unknown } }).route?.path;
+  return route === "/api/v1/environments" && (req.method === "GET" || req.method === "POST");
+}
+
 export type { Role } from "./environment-access.js";
 
 export interface RequestContext {
@@ -95,6 +115,7 @@ export class AuthGuard implements CanActivate {
     private readonly sessions: SessionService,
     @Inject(BEARER_RESOLVER) private readonly tokens: BearerResolver,
     @Inject(DB) private readonly db: Db,
+    @Inject(API_V1_USAGE) private readonly usage: ApiV1UsageRecorder,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -107,7 +128,18 @@ export class AuthGuard implements CanActivate {
       throw new ProblemException(HttpStatus.FORBIDDEN, "Endpoint has no role requirement");
     }
     const req = context.switchToHttp().getRequest<AuthenticatedRequest>();
-    const caller = await this.authenticate(context, req, meta<boolean>(SESSION_ONLY_KEY) === true);
+    // Counted once the caller is known, whatever the decision (a call refused, even for a token on a session-only
+    // operation, still depends on v1).
+    const counted = !v2 && cutByMigration(req);
+    // A token call the cut depends on is tracked from before its authentication: the counting never confirms past it.
+    const call = counted && req.header("authorization") !== undefined ? this.usage.begin() : undefined;
+    let caller: Awaited<ReturnType<AuthGuard["authenticate"]>>;
+    try {
+      caller = await this.authenticate(context, req, meta<boolean>(SESSION_ONLY_KEY) === true, counted);
+      if (counted) this.usage.record(caller.token ? { id: caller.token.id, name: caller.token.name, ownerId: caller.user.id } : null);
+    } finally {
+      if (call) this.usage.end(call);
+    }
     const decision = v2 ? await this.decideV2(caller, v2, req.params) : await this.decideV1(caller, required as Role, meta<Held[]>(V1_PERMISSION_KEY), req.params);
     req.user = caller.user;
     req.auth = caller.token ? { via: "token", tokenId: caller.token.id, tokenName: caller.token.name, tokenRole: caller.token.role, ...decision } : { via: "session", ...decision };
@@ -116,14 +148,19 @@ export class AuthGuard implements CanActivate {
   }
 
   /** A bearer token (alone, no CSRF) or the session cookie with its CSRF token on mutations. */
-  private async authenticate(context: ExecutionContext, req: AuthenticatedRequest, sessionOnly: boolean) {
+  private async authenticate(context: ExecutionContext, req: AuthenticatedRequest, sessionOnly: boolean, counted: boolean) {
     const authorization = req.header("authorization");
     if (authorization !== undefined) {
-      if (sessionOnly) throw new ProblemException(HttpStatus.UNAUTHORIZED, "This operation requires a session, not an API token");
+      if (sessionOnly && !counted) throw new ProblemException(HttpStatus.UNAUTHORIZED, "This operation requires a session, not an API token");
       const bearer = /^Bearer\s+(\S+)$/i.exec(authorization)?.[1] ?? "";
       // An unparsable value is resolved as any other invalid token: same answer, same failure counter.
       const resolved = await this.tokens.resolve(TOKEN_PATTERN.test(bearer) ? bearer : "ggt_invalid", clientAddress(req));
       if (!resolved) throw new ProblemException(HttpStatus.UNAUTHORIZED, "Invalid or expired API token");
+      if (sessionOnly) {
+        // The token is known now: its call counts before the refusal.
+        this.usage.record({ id: resolved.token.id, name: resolved.token.name, ownerId: resolved.user.id });
+        throw new ProblemException(HttpStatus.UNAUTHORIZED, "This operation requires a session, not an API token");
+      }
       return { user: resolved.user, token: resolved.token, session: null };
     }
     const id = sessionCookie(req.headers.cookie);

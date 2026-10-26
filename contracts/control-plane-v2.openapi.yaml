@@ -293,7 +293,6 @@ paths:
       x-scope: instance
       x-gromesh-requirements: [ GW-WS-02, GW-WS-10, GW-WS-14, GW-RBAC-05 ]
       x-required-permission: platform.admin
-      x-gromesh-planned: true
       description: |
         What the N1 migration (each environment becomes the workspace with the same id) did and what still needs a
         person: slugs derived from environment names that were adjusted (collision, reserved, invalid) and must be
@@ -323,7 +322,6 @@ paths:
       x-scope: instance
       x-gromesh-requirements: [ GW-RBAC-05 ]
       x-required-permission: platform.admin
-      x-gromesh-planned: true
       description: |
         Calls to the administrative operations of v1 that the controlled migration (decision H-9) will cut (those
         under /environments/{envId} and /clusters/{clusterId}, and GET and POST /environments) in the last 30 days,
