@@ -332,9 +332,10 @@ paths:
         nothing about a time nobody was counting. Every control-plane replica confirms its counting at least every
         few seconds, one confirmation at a time and never past a token call still in flight. The counting never
         decides a request: a v1 token call whose count cannot be written is served as usual, and its day is not
-        complete (it goes with the next confirmation). A replica that went silent without stopping cleanly may still
-        be taking calls it cannot count, so no day from its last confirmation on is complete while its record is kept
-        (until that confirmation leaves the window). A
+        complete (it goes with the next confirmation). A replica closes its record only on a clean stop, once its HTTP
+        server takes no more calls and none is in flight. A replica that went silent without that may still be taking
+        calls it cannot count: no day from its last confirmation on is complete, its record is never pruned, and it is
+        listed in `silentReplicas` until the cut's own procedure (a later task) resolves it. A
         release that does not count (a rollback) is seen only while no counting replica runs: running both at once
         is outside what this report can see. Counted by day; never carries a token value, a path parameter or a body.
       responses:
@@ -3762,7 +3763,7 @@ components:
     ApiV1Usage:
       type: object
       additionalProperties: false
-      required: [ windowDays, since, completeThrough, sessionCalls, tokens ]
+      required: [ windowDays, since, completeThrough, silentReplicas, sessionCalls, tokens ]
       properties:
         windowDays: { const: 30 }
         since:
@@ -3780,6 +3781,17 @@ components:
           type: string
           format: date-time
           description: The moment up to which `since` is confirmed (two minutes ago); a later call is not claimed.
+        silentReplicas:
+          type: array
+          description: Replicas silent for over two minutes without a clean stop; while any is listed, `since` is tomorrow.
+          items:
+            type: object
+            additionalProperties: false
+            required: [ replicaId, startedAt, lastConfirmedAt ]
+            properties:
+              replicaId: { type: string, format: uuid }
+              startedAt: { type: string, format: date-time }
+              lastConfirmedAt: { type: string, format: date-time }
         sessionCalls: { type: integer, minimum: 0 }
         tokens:
           type: array
