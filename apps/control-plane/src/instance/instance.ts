@@ -1,10 +1,11 @@
-import { Controller, Get, Inject, Injectable, Logger, Module, type OnApplicationBootstrap, type OnModuleDestroy } from "@nestjs/common";
+import { Controller, Get, HttpStatus, Inject, Injectable, Logger, Module, type OnApplicationBootstrap, type OnModuleDestroy } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, gte, isNotNull, isNull, lt, sql } from "drizzle-orm";
 import { API_V1_USAGE, type ApiV1UsageRecorder, RequiredPermission } from "../auth/auth.js";
 import { APP_CONFIG, type AppConfig } from "../config.js";
 import { ENCRYPTOR, type Encryptor } from "../crypto/crypto.js";
 import { DB, type Db } from "../db/db.js";
+import { ProblemException } from "../common/problem.js";
 import { apiV1Usage, apiV1UsageReplicas } from "../db/schema.js";
 import { migrationReport } from "../workspaces/migration-report.js";
 
@@ -15,6 +16,8 @@ const WINDOW_DAYS = 30;
  * claims completeness only up to this long ago.
  */
 export const CONFIRM_MS = 120_000;
+/** After its last confirmation, how long a silent replica may still have taken a token call: twice CONFIRM_MS. */
+const LOSS_SPAN = sql.raw(`interval '${(2 * CONFIRM_MS) / 1000} seconds'`);
 const today = sql`(now() at time zone 'utc')::date`;
 /** The UTC day of a call, taken when it is made (a session call written after midnight keeps its day). */
 const utcDay = () => new Date().toISOString().slice(0, 10);
@@ -25,9 +28,11 @@ const utcDay = () => new Date().toISOString().slice(0, 10);
  * written every few seconds, so concurrent requests do not queue on that row.
  *
  * No call counted proves nothing about a time nobody was counting: each replica keeps a row from its start, confirmed
- * by every flush up to then (never past a token call still being written) and closed when it stops cleanly with
- * nothing in flight. A token call that could not be written is refused and its day goes with the next confirmation;
- * a replica that stops confirming without closing may have lost one at any time since, as far as anyone can tell.
+ * by every flush up to then (never past a token call still being written, one confirmation at a time) and closed
+ * when it stops cleanly with nothing in flight. A token call that could not be written is refused and its day goes
+ * with the next confirmation. A replica unconfirmed for CONFIRM_MS refuses the token calls it would count before
+ * authenticating them (counting()), so one that went silent without closing can only have lost a call within that
+ * long of its last confirmation.
  */
 @Injectable()
 export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBootstrap, OnModuleDestroy {
@@ -40,7 +45,11 @@ export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBoots
   private failedOn = new Set<string>();
   /** When each token call still being written started. */
   private readonly inFlight = new Map<symbol, number>();
-  private closed = false;
+  /** Up to when this replica's counting is confirmed (written). */
+  private confirmedThrough = 0;
+  /** The confirmations, one at a time: a later one must not pass a failure an earlier one is still writing. */
+  private confirming: Promise<void> = Promise.resolve();
+  private stopping = false;
   private timer: NodeJS.Timeout | null = null;
 
   constructor(
@@ -58,14 +67,18 @@ export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBoots
   async onModuleDestroy(): Promise<void> {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    // From here on, a call that fails to be written confirms its failure itself (the row may be closed meanwhile).
+    this.stopping = true;
     // The calls being written finish first (a few seconds at most): their failures go with the last confirmation.
     for (let i = 0; i < 100 && this.inFlight.size > 0; i++) await new Promise((r) => setTimeout(r, 50));
     await this.flush();
     // Only a clean stop with nothing in flight closes the row: otherwise its silence counts as a possible loss.
-    if (this.inFlight.size === 0 && this.failedOn.size === 0) {
-      await this.db.update(apiV1UsageReplicas).set({ seenAt: new Date(), closed: true }).where(eq(apiV1UsageReplicas.replicaId, this.replicaId));
-      this.closed = true;
-    }
+    if (this.inFlight.size === 0 && this.failedOn.size === 0) await this.confirm(true);
+  }
+
+  /** Whether this replica's counting is confirmed recently enough to take the v1 token calls it counts. */
+  counting(): boolean {
+    return Date.now() - this.confirmedThrough <= CONFIRM_MS;
   }
 
   async record(token: { id: string; name: string; ownerId: string } | null): Promise<void> {
@@ -77,39 +90,53 @@ export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBoots
     const call = Symbol();
     this.inFlight.set(call, Date.now());
     try {
+      if (!this.counting()) throw new ProblemException(HttpStatus.SERVICE_UNAVAILABLE, "The v1 usage counting is not confirmed: retry");
       await this.add(day, token, 1);
     } catch (error) {
       this.failedOn.add(day);
-      // Past the last confirmation (a call that came in while stopping): the row opens again with it.
-      if (this.closed) await this.confirm().catch(() => undefined);
+      // While stopping there may be no next confirmation: this one carries the failure.
+      if (this.stopping) await this.confirm().catch(() => undefined);
       throw error;
     } finally {
       this.inFlight.delete(call);
     }
   }
 
-  /** Confirms the counting up to now, with the days of the calls not written meanwhile (kept if this fails too). */
-  private async confirm(): Promise<void> {
-    const failed = this.failedOn;
-    this.failedOn = new Set();
-    // Up to now, or to the start of the oldest token call still being written (it may still fail).
-    const seenAt = new Date(Math.min(Date.now(), ...this.inFlight.values()));
-    try {
-      await this.db
-        .insert(apiV1UsageReplicas)
-        .values({ replicaId: this.replicaId, startedAt: this.startedAt, seenAt, failedOn: [...failed] })
-        .onConflictDoUpdate({
-          target: apiV1UsageReplicas.replicaId,
-          set: {
-            seenAt: sql`greatest(${apiV1UsageReplicas.seenAt}, excluded.seen_at)`,
-            failedOn: sql`array(select distinct unnest(${apiV1UsageReplicas.failedOn} || excluded.failed_on) order by 1)`,
-            closed: sql`${apiV1UsageReplicas.closed} and cardinality(excluded.failed_on) = 0`,
-          },
-        });
-    } catch (error) {
-      for (const d of failed) this.failedOn.add(d);
-      throw error;
-    }
+  /**
+   * Confirms the counting up to now, with the days of the calls not written meanwhile (kept if this fails too), after
+   * any confirmation still being written; `close` marks a clean stop.
+   */
+  private confirm(close = false): Promise<void> {
+    const run = this.confirming.then(async () => {
+      const failed = this.failedOn;
+      this.failedOn = new Set();
+      // Up to now, or to the start of the oldest token call still being written (it may still fail).
+      const seenAt = new Date(Math.min(Date.now(), ...this.inFlight.values()));
+      try {
+        await this.persist(seenAt, [...failed], close);
+      } catch (error) {
+        for (const d of failed) this.failedOn.add(d);
+        throw error;
+      }
+      this.confirmedThrough = Math.max(this.confirmedThrough, seenAt.getTime());
+    });
+    this.confirming = run.catch(() => undefined);
+    return run;
+  }
+
+  private async persist(seenAt: Date, failedOn: string[], close: boolean): Promise<void> {
+    await this.db
+      .insert(apiV1UsageReplicas)
+      .values({ replicaId: this.replicaId, startedAt: this.startedAt, seenAt, failedOn, closed: close })
+      .onConflictDoUpdate({
+        target: apiV1UsageReplicas.replicaId,
+        set: {
+          seenAt: sql`greatest(${apiV1UsageReplicas.seenAt}, excluded.seen_at)`,
+          failedOn: sql`array(select distinct unnest(${apiV1UsageReplicas.failedOn} || excluded.failed_on) order by 1)`,
+          // A failure written after the clean stop opens the row again.
+          closed: sql`(${apiV1UsageReplicas.closed} or excluded.closed) and cardinality(excluded.failed_on) = 0`,
+        },
+      });
   }
 
   /**
@@ -130,7 +157,9 @@ export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBoots
       }
     }
     await this.db.delete(apiV1Usage).where(lt(apiV1Usage.day, sql`${today} - ${WINDOW_DAYS - 1}::int`));
-    await this.db.delete(apiV1UsageReplicas).where(lt(apiV1UsageReplicas.seenAt, sql`(${today} - ${WINDOW_DAYS}::int)::timestamp at time zone 'utc'`));
+    // A row matters while what it covers, or the time it may have lost a call in, reaches into the window.
+    const windowStart = sql`(${today} - ${WINDOW_DAYS - 1}::int)::timestamp at time zone 'utc'`;
+    await this.db.delete(apiV1UsageReplicas).where(lt(sql`${apiV1UsageReplicas.seenAt} + ${LOSS_SPAN}`, windowStart));
   }
 
   private async add(day: string, token: { id: string; name: string; ownerId: string } | null, calls: number): Promise<void> {
@@ -147,15 +176,15 @@ export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBoots
     const margin = sql`make_interval(secs => ${CONFIRM_MS / 1000})`;
     // A day is complete when the replicas' rows, each extended by the margin past its last confirmation, cover it from
     // its start (to now less the margin, for today), no call failed on it and no replica that went silent without
-    // closing could have lost one on it (from its last confirmation on, while its row is kept). The report's since is
-    // the day after the last incomplete one in the window.
+    // closing could have lost one on it (within LOSS_SPAN of its last confirmation). The report's since is the day
+    // after the last incomplete one in the window.
     const [window] = await this.db
       .execute<{ since: string; completeThrough: string }>(sql`
         with cover as (
           select range_agg(tstzrange(started_at, seen_at + ${margin}, '[]')) as m from ${apiV1UsageReplicas}
         ), lost as (
           select unnest(failed_on) as day from ${apiV1UsageReplicas}
-          union select generate_series((seen_at at time zone 'utc')::date, ${today}, interval '1 day')::date
+          union select generate_series((seen_at at time zone 'utc')::date, ((seen_at + ${LOSS_SPAN}) at time zone 'utc')::date, interval '1 day')::date
           from ${apiV1UsageReplicas} where not closed and seen_at < now() - ${margin}
         ), days as (
           select g::date as day, g::date::timestamp at time zone 'utc' as starts,

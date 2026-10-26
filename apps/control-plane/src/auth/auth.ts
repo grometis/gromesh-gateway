@@ -42,6 +42,8 @@ export const API_V1_USAGE = Symbol("API_V1_USAGE");
 export interface ApiV1UsageRecorder {
   /** null: a session (the UI). */
   record(token: { id: string; name: string; ownerId: string } | null): Promise<void>;
+  /** False while this replica's counting is not confirmed: the token calls it would count are refused (503). */
+  counting(): boolean;
 }
 
 /**
@@ -142,6 +144,8 @@ export class AuthGuard implements CanActivate {
     const authorization = req.header("authorization");
     if (authorization !== undefined) {
       if (sessionOnly && !counted) throw new ProblemException(HttpStatus.UNAUTHORIZED, "This operation requires a session, not an API token");
+      // Before authenticating: a replica whose counting is unconfirmed takes no token call the cut depends on.
+      if (counted && !this.usage.counting()) throw new ProblemException(HttpStatus.SERVICE_UNAVAILABLE, "The v1 usage counting is not confirmed: retry");
       const bearer = /^Bearer\s+(\S+)$/i.exec(authorization)?.[1] ?? "";
       // An unparsable value is resolved as any other invalid token: same answer, same failure counter.
       const resolved = await this.tokens.resolve(TOKEN_PATTERN.test(bearer) ? bearer : "ggt_invalid", clientAddress(req));

@@ -157,17 +157,77 @@ describe("the v1 calls the cut will remove, the migration report and one authori
     await h.sql.query(`update api_v1_usage_replicas set started_at = ${at(29)} where replica_id = $1`, [mine()]);
   });
 
-  it("keeps the 30 days from completing while a replica that went silent without stopping cleanly is on record", async () => {
-    // Last confirmed one second before midnight: it may have lost a call on any day since, today included.
+  it("restarts the 30 days after a replica that went silent without stopping cleanly: it may have lost a call", async () => {
+    // Last confirmed one second before midnight: it may still have taken a call within four minutes, on the next day.
     await h.sql.query(`insert into api_v1_usage_replicas (replica_id, started_at, seen_at) values (gen_random_uuid(), ${at(29)}, ${at(10)} - interval '1 second')`);
-    expect((await read()).since).toBe(await day(-1));
+    expect((await read()).since).toBe(await day(9));
     await h.sql.query(`delete from api_v1_usage_replicas where seen_at = ${at(10)} - interval '1 second'`);
     expect((await read()).since).toBe(await day(29));
-    // Kept while it can matter: pruned only once its last confirmation leaves the window.
-    await h.sql.query(`insert into api_v1_usage_replicas (replica_id, started_at, seen_at) values (gen_random_uuid(), ${at(40)}, ${at(30, 12)}), (gen_random_uuid(), ${at(40)}, ${at(31, 12)})`);
-    await usage.flush();
+    // Kept while the time it may have lost a call in reaches into the window, then pruned.
+    await h.sql.query(`insert into api_v1_usage_replicas (replica_id, started_at, seen_at) values (gen_random_uuid(), ${at(40)}, ${at(29)} - interval '1 minute'), (gen_random_uuid(), ${at(40)}, ${at(29)} - interval '5 minutes')`);
+    expect((await read()).since).toBe(await day(28));
     expect((await h.sql.query(`select count(*)::int as n from api_v1_usage_replicas where started_at = ${at(40)}`)).rows[0].n).toBe(1);
     await h.sql.query(`delete from api_v1_usage_replicas where started_at = ${at(40)}`);
+  });
+
+  it("refuses the token calls it would count, before authenticating them, while its own counting is not confirmed", async () => {
+    const created = await h.api("POST", "/users/me/tokens", { name: uniq("stale"), role: "viewer", expiresInDays: 1 });
+    const call = () => bearer(created.body.token as string)("GET", `/environments/${env}/services`);
+    const through = usage["confirmedThrough" as keyof ApiV1UsageService] as unknown as number;
+    (usage as unknown as { confirmedThrough: number }).confirmedThrough = Date.now() - 3 * 60_000;
+    try {
+      expect((await call()).status).toBe(503);
+      // Not what the cut depends on: the user's own data, and v2.
+      expect((await bearer(created.body.token as string)("GET", "/me")).status).toBe(200);
+      expect((await v2(bearer(created.body.token as string), "GET", `/workspaces/${env}/services`)).status).toBe(200);
+    } finally {
+      (usage as unknown as { confirmedThrough: number }).confirmedThrough = through;
+    }
+    expect((await call()).status).toBe(200);
+    expect((await read()).tokens.find((t) => t.tokenId === created.body.id)).toMatchObject({ calls: 1 });
+  });
+
+  it("confirms one at a time: a later confirmation waits for the failure an earlier one is still writing", async () => {
+    const order: string[] = [];
+    let release!: () => void;
+    const persist = (usage as unknown as { persist: (...a: unknown[]) => Promise<void> }).persist.bind(usage);
+    const spy = vi.spyOn(usage as unknown as { persist: (...a: unknown[]) => Promise<void> }, "persist")
+      .mockImplementationOnce(async (...a) => { order.push("first:start"); await new Promise<void>((r) => (release = r)); await persist(...a); order.push("first:end"); })
+      .mockImplementationOnce(async (...a) => { order.push("second:start"); await persist(...a); order.push("second:end"); });
+    try {
+      const first = usage.flush();
+      for (let i = 0; i < 100 && !release; i++) await new Promise((r) => setTimeout(r, 10));
+      const second = usage.flush();
+      await new Promise((r) => setTimeout(r, 100));
+      expect(order).toEqual(["first:start"]);
+      release();
+      await Promise.all([first, second]);
+      expect(order).toEqual(["first:start", "first:end", "second:start", "second:end"]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("writes a failure that comes after the clean stop, opening the row again", async () => {
+    const created = await h.api("POST", "/users/me/tokens", { name: uniq("late"), role: "viewer", expiresInDays: 1 });
+    const other = await startHarness({ databaseUrl: dbUrl, apiV1UsageFlushMs: 0 });
+    const theirs = other.app.get(ApiV1UsageService);
+    const id = theirs["replicaId" as keyof ApiV1UsageService] as unknown as string;
+    try {
+      await h.sql.query(`update api_v1_usage_replicas set started_at = ${at(29)}`);
+      // The stop has closed the row; the server still takes a call, whose count fails.
+      await theirs.onModuleDestroy();
+      expect((await h.sql.query(`select closed from api_v1_usage_replicas where replica_id = $1`, [id])).rows[0].closed).toBe(true);
+      vi.spyOn(theirs as unknown as { add: () => Promise<void> }, "add").mockRejectedValueOnce(new Error("write failed"));
+      expect((await other.anonymous("GET", `/environments/${env}/services`, undefined, { authorization: `Bearer ${created.body.token as string}` })).status).toBe(500);
+      const row = (await h.sql.query(`select closed, failed_on::text[] as failed from api_v1_usage_replicas where replica_id = $1`, [id])).rows[0];
+      expect(row).toEqual({ closed: false, failed: [await day(0)] });
+    } finally {
+      await other.close();
+    }
+    expect((await read()).since).toBe(await day(-1));
+    await h.sql.query(`update api_v1_usage_replicas set failed_on = '{}'`);
+    expect((await read()).since).toBe(await day(29));
   });
 
   it("never confirms past a token call still being written, and a stop waits for it before closing", async () => {
