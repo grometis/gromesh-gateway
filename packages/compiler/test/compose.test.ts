@@ -3,8 +3,8 @@ import {
   CompileError,
   composeWorkspaces,
   diffConfigs,
+  composedPrivilegedFingerprint,
   hashConfig,
-  privilegedFingerprint,
   regexIssue,
   type GatewayState,
   type KongDeclarativeConfig,
@@ -250,12 +250,26 @@ describe("composeWorkspaces", () => {
     // Never approved, approved for another configuration, or changed after the approval: refused at its path.
     const s = withPlugins([lua, logLua, lambda]);
     expect(refused([{ id: WS_A, slug: "tvro", state: s }])).toEqual(["workspaces[0].plugins[1].name", "workspaces[0].plugins[2].config.custom_fields_by_lua", "workspaces[0].plugins[3].config.aws_key"]);
-    expect(refused([{ id: WS_A, slug: "tvro", state: s, approvedPrivileged: privilegedFingerprint(withPlugins([lua])) }])).toHaveLength(3);
+    expect(refused([{ id: WS_A, slug: "tvro", state: s, approvedPrivileged: composedPrivilegedFingerprint(withPlugins([lua])) }])).toHaveLength(3);
     const changed = withPlugins([{ ...lua, config: { access: ["ngx.log(ngx.ERR, 'b')"] } }, logLua, lambda]);
-    expect(refused([{ id: WS_A, slug: "tvro", state: changed, approvedPrivileged: privilegedFingerprint(s) }])).toHaveLength(3);
+    expect(refused([{ id: WS_A, slug: "tvro", state: changed, approvedPrivileged: composedPrivilegedFingerprint(s) }])).toHaveLength(3);
     // Exactly the approved configuration composes, and a Workspace without privileged uses needs no approval.
-    const config = composeWorkspaces([{ id: WS_A, slug: "tvro", state: s, approvedPrivileged: privilegedFingerprint(s) }, { id: WS_B, slug: "assine", state: state("b") }]);
+    const config = composeWorkspaces([{ id: WS_A, slug: "tvro", state: s, approvedPrivileged: composedPrivilegedFingerprint(s) }, { id: WS_B, slug: "assine", state: state("b") }]);
     expect(config.plugins?.some((p) => p.name === "pre-function")).toBe(true);
+    // The approval covers where Kong runs it: a Workspace-wide aws-lambda without keys, approved while every route's
+    // own aws-lambda (with keys) shadows it, needs a new approval once a shadow is removed or a route is added.
+    const wide: Plugin = { id: id("a", 23), name: "aws-lambda", config: { function_name: "f", aws_region: "us-east-1" } };
+    const shadow: Plugin = { ...lambda, id: id("a", 24), config: { ...lambda.config, aws_key: "k", aws_secret: "s" } };
+    const shadowed = withPlugins([wide, shadow]);
+    const approved = composedPrivilegedFingerprint(shadowed);
+    expect(refused([{ id: WS_A, slug: "tvro", state: shadowed, approvedPrivileged: approved }])).toEqual([]);
+    expect(refused([{ id: WS_A, slug: "tvro", state: withPlugins([wide]), approvedPrivileged: approved }])).toEqual(["workspaces[0].plugins[1].config.aws_key"]);
+    const moreRoutes = { ...shadowed, routes: [...shadowed.routes, { id: id("a", 25), name: "boleto", serviceId: id("a", 1), paths: ["/boleto"] }] };
+    expect(refused([{ id: WS_A, slug: "tvro", state: moreRoutes, approvedPrivileged: approved }])).toEqual(["workspaces[0].plugins[1].config.aws_key"]);
+    expect(refused([{ id: WS_A, slug: "tvro", state: moreRoutes, approvedPrivileged: composedPrivilegedFingerprint(moreRoutes) }])).toEqual([]);
+    // A route-scoped one approved on its route also needs a new approval when it moves to the service.
+    const onService = withPlugins([{ ...lua, scope: { serviceId: id("a", 1) } }]);
+    expect(refused([{ id: WS_A, slug: "tvro", state: onService, approvedPrivileged: composedPrivilegedFingerprint(withPlugins([lua])) }])).toEqual(["workspaces[0].plugins[1].name"]);
     // Its own aws keys make aws-lambda unprivileged.
     expect(refused([{ id: WS_A, slug: "tvro", state: withPlugins([{ ...lambda, config: { ...lambda.config, aws_key: "k", aws_secret: "s" } }]) }])).toEqual([]);
   });
