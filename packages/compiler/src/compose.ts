@@ -1,12 +1,19 @@
 import { declarativeConfig, derivedId, validate } from "./compile.js";
 import { CompileError, type CompileIssue } from "./errors.js";
 import type { CompileOptions, GatewayState, KongDeclarativeConfig, Plugin, Route } from "./model.js";
+import { privilegedFingerprint, privilegedUses } from "./privileged.js";
 
 /** One Workspace of an instance: its id, its immutable slug and the state of its active release. */
 export interface WorkspaceMember {
   id: string;
   slug: string;
   state: GatewayState;
+  /**
+   * The privilegedFingerprint a platform admin approved for this release (F-1), recorded by the control plane. The
+   * composed config runs every Workspace in the same workers, so a privileged capability it carries is composed only
+   * if it is exactly the approved one.
+   */
+  approvedPrivileged?: string;
 }
 
 export const WORKSPACE_TAG_PREFIX = "gromesh-ws:";
@@ -66,6 +73,12 @@ export function composeWorkspaces(members: WorkspaceMember[], options: CompileOp
   });
 
   members.forEach((m, i) => issues.push(...memberIssues(m.state, platform).map((issue) => ({ ...issue, path: `workspaces[${i}].${issue.path}` }))));
+  members.forEach((m, i) => {
+    const uses = m.state.plugins.flatMap((p, j) => privilegedUses(p).map((u) => ({ ...u, path: `workspaces[${i}].plugins[${j}].${u.path}` })));
+    if (uses.length > 0 && m.approvedPrivileged !== privilegedFingerprint(m.state)) {
+      for (const u of uses) add(u.path, `${u.message}: not the privileged configuration approved for this release`);
+    }
+  });
   issues.push(...instanceUniquenessIssues(members));
   if (issues.length > 0) throw new CompileError(issues);
 

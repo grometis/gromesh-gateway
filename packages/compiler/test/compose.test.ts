@@ -4,6 +4,7 @@ import {
   composeWorkspaces,
   diffConfigs,
   hashConfig,
+  privilegedFingerprint,
   regexIssue,
   type GatewayState,
   type KongDeclarativeConfig,
@@ -230,6 +231,33 @@ describe("composeWorkspaces", () => {
     for (const name of ["rate-limiting", "response-ratelimiting", "proxy-cache"]) {
       expect(issues(() => composeWorkspaces(members({ plugins: [{ id: id("a", 13), name, config: {} }] })))).toContainEqual({ path: "workspaces[0].plugins[0].scope", message: "cannot be Workspace-wide: its counter or cache would become one per route" });
     }
+  });
+
+  it("composes a privileged capability only as the platform admin approved it for that release (F-1)", () => {
+    const lua: Plugin = { id: id("a", 20), name: "pre-function", scope: { routeId: id("a", 2) }, config: { access: ["ngx.log(ngx.ERR, 'a')"] } };
+    const logLua: Plugin = { id: id("a", 21), name: "http-log", scope: { routeId: id("a", 2) }, config: { http_endpoint: "http://logs.example:9000", custom_fields_by_lua: { x: "return 1" } } };
+    const lambda: Plugin = { id: id("a", 22), name: "aws-lambda", scope: { routeId: id("a", 2) }, config: { function_name: "f", aws_region: "us-east-1" } };
+    const withPlugins = (extra: Plugin[]) => state("a", { plugins: [...state("a").plugins, ...extra] });
+    const refused = (m: WorkspaceMember[]) => {
+      try {
+        composeWorkspaces(m);
+        return [];
+      } catch {
+        return issues(() => composeWorkspaces(m)).map((i) => i.path);
+      }
+    };
+
+    // Never approved, approved for another configuration, or changed after the approval: refused at its path.
+    const s = withPlugins([lua, logLua, lambda]);
+    expect(refused([{ id: WS_A, slug: "tvro", state: s }])).toEqual(["workspaces[0].plugins[1].name", "workspaces[0].plugins[2].config.custom_fields_by_lua", "workspaces[0].plugins[3].config.aws_key"]);
+    expect(refused([{ id: WS_A, slug: "tvro", state: s, approvedPrivileged: privilegedFingerprint(withPlugins([lua])) }])).toHaveLength(3);
+    const changed = withPlugins([{ ...lua, config: { access: ["ngx.log(ngx.ERR, 'b')"] } }, logLua, lambda]);
+    expect(refused([{ id: WS_A, slug: "tvro", state: changed, approvedPrivileged: privilegedFingerprint(s) }])).toHaveLength(3);
+    // Exactly the approved configuration composes, and a Workspace without privileged uses needs no approval.
+    const config = composeWorkspaces([{ id: WS_A, slug: "tvro", state: s, approvedPrivileged: privilegedFingerprint(s) }, { id: WS_B, slug: "assine", state: state("b") }]);
+    expect(config.plugins?.some((p) => p.name === "pre-function")).toBe(true);
+    // Its own aws keys make aws-lambda unprivileged.
+    expect(refused([{ id: WS_A, slug: "tvro", state: withPlugins([{ ...lambda, config: { ...lambda.config, aws_key: "k", aws_secret: "s" } }]) }])).toEqual([]);
   });
 
   it("finds instance-wide conflicts before composing, without naming the other Workspace", () => {
