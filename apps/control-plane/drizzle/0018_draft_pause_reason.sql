@@ -1,0 +1,1 @@
+ALTER TABLE "environments" ADD COLUMN "draft_pause_reason" text;

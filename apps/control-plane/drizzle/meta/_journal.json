@@ -127,6 +127,13 @@
       "when": 1792982789680,
       "tag": "0017_credential_pending_reprovision",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1793013129502,
+      "tag": "0018_draft_pause_reason",
+      "breakpoints": true
     }
   ]
 }
