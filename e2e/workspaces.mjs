@@ -223,6 +223,10 @@ async function main() {
     const twoForeign = await call("/assine/basic-hide", { "proxy-authorization": basicOf("a"), authorization: basicOf("a") });
     const twoUnknown = await call("/assine/basic-hide", { "proxy-authorization": nobody, authorization: nobody });
     const forwarded = (r) => JSON.stringify({ status: r.status, authorization: r.upstream.authorization ?? null, proxy: r.upstream["proxy-authorization"] ?? null, consumer: r.upstream["x-consumer-id"] ?? null });
+    const malformed = `Basic ${Buffer.from("nocolon").toString("base64")}`;
+    const malformedForeign = await call("/assine/basic-hide", { "proxy-authorization": basicOf("a"), authorization: malformed });
+    const malformedUnknown = await call("/assine/basic-hide", { "proxy-authorization": nobody, authorization: malformed });
+    expectIsolated(forwarded(malformedForeign) === forwarded(malformedUnknown), `basic-auth hide_credentials with a malformed Authorization: ${forwarded(malformedForeign)} vs ${forwarded(malformedUnknown)}`);
     check(twoUnknown.status === 200 && !twoUnknown.upstream.authorization && !twoUnknown.upstream["proxy-authorization"], `two unknown basic credentials: ${forwarded(twoUnknown)}`);
     expectIsolated(forwarded(twoForeign) === forwarded(twoUnknown), `basic-auth hide_credentials: another Workspace's credentials reached the upstream differently: ${forwarded(twoForeign)} vs ${forwarded(twoUnknown)}`);
 
@@ -244,7 +248,7 @@ async function main() {
     expectIsolated(unguarded.status === 404, `a route without its guard was served (${unguarded.status})`);
 
     if (failures.length > 0) throw new Error(`Workspace isolation failed:\n- ${failures.join("\n- ")}`);
-    console.log(`Workspace isolation holds on the real gateway: ${checks + 16} checks, ${MECHANISMS.length} mechanisms × 2 Workspaces, with and without anonymous`);
+    console.log(`Workspace isolation holds on the real gateway: ${checks + 17} checks, ${MECHANISMS.length} mechanisms × 2 Workspaces, with and without anonymous`);
   } finally {
     for (const id of containers.reverse()) await docker("rm", "-f", id).catch(() => {});
     await docker("network", "rm", network).catch(() => {});

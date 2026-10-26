@@ -43,6 +43,16 @@ local function logical(value, slug)
   return value
 end
 
+-- basic-auth stops at the first header holding a credential it knows, and returns before hiding a malformed one; with
+-- hide_credentials every anonymous outcome removes both headers, so another Workspace's credential and an unknown or
+-- malformed one reach the upstream the same way.
+local function hide_basic(auth)
+  if auth and auth.plugin == "basic-auth" and auth.hide_credentials then
+    kong.service.request.clear_header("Authorization")
+    kong.service.request.clear_header("Proxy-Authorization")
+  end
+end
+
 local function send_logical(consumer, slug)
   if consumer.username then
     kong.service.request.set_header(HEADERS_CONSUMER_USERNAME, logical(consumer.username, slug))
@@ -87,6 +97,9 @@ function WorkspaceHandler:access()
   local route_workspace = workspace_of(kong.router.get_route())
   local slug = guard.prefix and guard.prefix:sub(2) or nil
   if consumer and route_workspace and workspace_of(consumer) == route_workspace then
+    if not kong.client.get_credential() then
+      hide_basic(guard.auth)
+    end
     return send_logical(consumer, slug)
   end
 
@@ -94,12 +107,7 @@ function WorkspaceHandler:access()
   -- on a platform route.
   local auth = guard.auth
   if auth and auth.anonymous and route_workspace then
-    -- basic-auth stops at the first header holding a credential it knows; an unknown one makes it read, and with
-    -- hide_credentials remove, both. Anonymous must look the same.
-    if auth.plugin == "basic-auth" and auth.hide_credentials then
-      kong.service.request.clear_header("Authorization")
-      kong.service.request.clear_header("Proxy-Authorization")
-    end
+    hide_basic(auth)
     local anonymous = authenticate_anonymous(auth.anonymous)
     if anonymous and workspace_of(anonymous) == route_workspace then
       return send_logical(anonymous, slug)
