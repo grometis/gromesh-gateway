@@ -301,6 +301,7 @@ func TestOnlyAReleaseCoveringTheViolationsReportEndsIt(t *testing.T) {
 	for name, r := range map[string]ReleaseClaims{
 		"another pod's admission": covering("6a1f3c2e-0b7d-4c1a-9f10-0000000000e8", "6a1f3c2e-0b7d-4c1a-9f10-0000000000af", 40),
 		"before this violation":   covering("6a1f3c2e-0b7d-4c1a-9f10-0000000000e9", admissionID, 1),
+		"unconfirmed-isolation":   {ClusterID: cluster, PendencyID: "6a1f3c2e-0b7d-4c1a-9f10-0000000000ee", Kind: "unconfirmed-isolation", ExpiresAt: "2026-10-26T12:15:00Z", Admissions: []ReleasedAdmission{{admissionID, 40}}},
 		"covering no admission":   {ClusterID: cluster, PendencyID: "6a1f3c2e-0b7d-4c1a-9f10-0000000000ea", Kind: "confirmed-violation", ExpiresAt: "2026-10-26T12:15:00Z", Admissions: []ReleasedAdmission{}},
 	} {
 		w.releases(r)
@@ -312,7 +313,7 @@ func TestOnlyAReleaseCoveringTheViolationsReportEndsIt(t *testing.T) {
 	// Reports that only carry the latch do not move the seq a release must cover; a restart does not either.
 	w.p = w.probe(dir)
 	w.round()
-	if w.p.State.Chain.ViolationSeq != 2 || w.p.State.Chain.Seq != 6 {
+	if w.p.State.Chain.ViolationSeq != 2 || w.p.State.Chain.Seq != 7 {
 		t.Fatalf("violation seq %d at seq %d", w.p.State.Chain.ViolationSeq, w.p.State.Chain.Seq)
 	}
 	w.releases(covering("6a1f3c2e-0b7d-4c1a-9f10-0000000000eb", admissionID, 2))
@@ -322,13 +323,13 @@ func TestOnlyAReleaseCoveringTheViolationsReportEndsIt(t *testing.T) {
 	w.net.set("forbidden-CAP-2:80", true)
 	w.round()
 	w.net.set("forbidden-CAP-2:80", false)
-	if w.p.State.Chain.ViolationSeq != 8 {
+	if w.p.State.Chain.ViolationSeq != 9 {
 		t.Fatalf("violation seq %d after the second violation's report", w.p.State.Chain.ViolationSeq)
 	}
-	w.releases(covering("6a1f3c2e-0b7d-4c1a-9f10-0000000000ec", admissionID, 7))
+	w.releases(covering("6a1f3c2e-0b7d-4c1a-9f10-0000000000ec", admissionID, 8))
 	w.round()
 	w.expect("violation", false)
-	w.releases(covering("6a1f3c2e-0b7d-4c1a-9f10-0000000000ed", admissionID, 8))
+	w.releases(covering("6a1f3c2e-0b7d-4c1a-9f10-0000000000ed", admissionID, 9))
 	w.round()
 	w.expect("verifying", true)
 }

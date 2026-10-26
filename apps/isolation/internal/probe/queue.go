@@ -35,8 +35,9 @@ type Chain struct {
 	LastDigest string `json:"lastDigest,omitempty"`
 	// Closed after a final report: nothing more is reported or served on the admission.
 	Closed bool `json:"closed,omitempty"`
-	// ViolationSeq is the last report of the chain with new evidence of a violation: a release ends the violation
-	// only through it (IsolationReleaseClaims.admissions).
+	// ViolationSeq is the report of the chain's last round that detected a failure (or its first violation report, for
+	// a violation carried from an earlier admission): a release ends the violation only through it
+	// (IsolationReleaseClaims).
 	ViolationSeq uint64 `json:"violationSeq,omitempty"`
 }
 
@@ -105,7 +106,7 @@ func (p *Probe) loadQueue() error {
 	saved := p.State.Chain
 	defer func() {
 		// What the queue holds is also durable: an admission whose final report is queued has ended, and a violation
-		// report the state never counted moves the chain's ViolationSeq (it may carry new evidence).
+		// report the state never counted moves the chain's ViolationSeq (it may be a detection's).
 		for _, r := range reports {
 			if r.Final && !slices.Contains(p.State.ClosedAdmissions, r.AdmissionID) {
 				p.State.ClosedAdmissions = keepLast(append(p.State.ClosedAdmissions, r.AdmissionID), 64)

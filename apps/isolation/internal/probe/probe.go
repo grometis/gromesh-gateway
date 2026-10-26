@@ -120,8 +120,8 @@ type Persisted struct {
 	// one. Neither ends a violation: a release counts only once, and only if it arrived after the violation.
 	StaleReleases []string `json:"staleReleases,omitempty"`
 	UsedReleases  []string `json:"usedReleases,omitempty"`
-	// ViolationEvidence: the violation has evidence the chain has not reported yet (a forbidden target answered, the
-	// violation began, or it was read back from the latch); the next violation report raises Chain.ViolationSeq.
+	// ViolationEvidence: a detection the chain has not reported yet (a forbidden target answered this round, or the
+	// latch holds one the state never saved); the next violation report moves Chain.ViolationSeq.
 	ViolationEvidence bool `json:"violationEvidence,omitempty"`
 }
 
@@ -400,13 +400,15 @@ func (p *Probe) loadReleases() {
 	}
 }
 
-// release returns a release that may end the current violation: valid, arrived after it, never used before, and
-// covering it: it names the current admission through a seq at least the chain's last report with new evidence of
-// the violation. A release kept by the agent from another pendency never names that report.
+// release returns a release that may end the current violation: valid, confirmed-violation (loadReleases keeps no
+// other kind), arrived after it, never used before, and covering it: it names the current admission through a seq at
+// least the report of the chain's last detecting round. A release kept by the agent from another pendency, or from
+// before a later detection, does not.
 func (p *Probe) release() string {
 	c := p.State.Chain
 	if c.AdmissionID == "" || c.AdmissionID != p.State.AdmissionID || c.ViolationSeq == 0 || p.State.ViolationEvidence {
-		// The chain has not reported this violation (or not all of its evidence) yet: no release can cover it.
+		// The chain has not reported this violation (a detection, or a violation carried from an earlier admission) yet:
+		// no release can cover it.
 		return ""
 	}
 	for _, r := range p.releases {
@@ -626,7 +628,8 @@ func (p *Probe) violate(capabilities []string) {
 	if p.State.State != "violation" {
 		p.Logf("violation of %v: containment", p.State.Violated)
 	}
-	if len(capabilities) > 0 || p.State.State != "violation" {
+	if len(capabilities) > 0 {
+		// A round that detected a failure: its report moves Chain.ViolationSeq, the latched rounds after it do not.
 		p.State.ViolationEvidence = true
 	}
 	p.State.State, p.State.Passes, p.State.GuardVerified = "violation", 0, false
