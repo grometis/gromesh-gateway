@@ -23,10 +23,17 @@ type vector struct {
 	ReleaseClaims   ReleaseClaims   `json:"releaseClaims"`
 	Report          json.RawMessage `json:"report"`
 	ReportClaims    json.RawMessage `json:"reportClaims"`
-	MustRefuse      []struct {
+	ExpectedContext struct {
+		ClusterID, PodUID, BootID, ProbePublicKey string
+	} `json:"expectedContext"`
+	MustRefuse []struct {
 		Reason string          `json:"reason"`
 		JWS    json.RawMessage `json:"jws"`
 	} `json:"mustRefuse"`
+	InvalidTrustSets []struct {
+		Reason string          `json:"reason"`
+		Set    json.RawMessage `json:"set"`
+	} `json:"invalidTrustSets"`
 }
 
 func loadVector(t *testing.T) vector {
@@ -51,9 +58,15 @@ func seedKey(t *testing.T, seedHex string) ed25519.PrivateKey {
 	return ed25519.NewKeyFromSeed(seed)
 }
 
+// self is the probe's expected context: its own cluster, pod, node boot and persisted key (from the vector's seed).
 func (v vector) self(t *testing.T) Identity {
-	c := v.AdmissionClaims
-	return Identity{ClusterID: c.ClusterID, PodUID: c.PodUID, BootID: c.BootID, PublicKey: seedKey(t, v.Seeds.Probe).Public().(ed25519.PublicKey)}
+	t.Helper()
+	c := v.ExpectedContext
+	key := seedKey(t, v.Seeds.Probe).Public().(ed25519.PublicKey)
+	if b64.EncodeToString(key) != c.ProbePublicKey {
+		t.Fatal("the vector's expected probe key is not the one derived from its seed")
+	}
+	return Identity{ClusterID: c.ClusterID, PodUID: c.PodUID, BootID: c.BootID, PublicKey: key}
 }
 
 func TestTheContractVectorIsAcceptedExactly(t *testing.T) {
@@ -131,6 +144,10 @@ func TestEveryMustRefuseCaseOfTheVectorIsRefusedForItsReason(t *testing.T) {
 		"alg other than EdDSA":                   `alg "none"`,
 		"payload member outside AdmissionClaims": "unexpected member extra",
 		"duplicated header member":               `duplicated member "typ"`,
+		"admission of another cluster (valid signature)":    "admission of another cluster",
+		"admission of another pod (valid signature)":        "admission of another pod",
+		"admission of another boot (valid signature)":       "admission of another boot",
+		"admission of another probe key (valid signature)":  "admission of another probe key",
 		"payload changed after signing (signature invalid)": "signature invalid",
 	}
 	if len(v.MustRefuse) != len(why) {
@@ -146,6 +163,36 @@ func TestEveryMustRefuseCaseOfTheVectorIsRefusedForItsReason(t *testing.T) {
 			t.Errorf("%s: refused for another reason: %v", c.Reason, err)
 		}
 	}
+}
+
+func TestEveryInvalidTrustSetOfTheVectorIsRefusedWhole(t *testing.T) {
+	v := loadVector(t)
+	if len(v.InvalidTrustSets) != 6 {
+		t.Fatalf("the vector has %d invalid trust sets, this test expects 6", len(v.InvalidTrustSets))
+	}
+	for _, c := range v.InvalidTrustSets {
+		if set, err := ParseTrustSet(c.Set); err == nil || set != nil {
+			t.Errorf("%s: accepted (%d keys)", c.Reason, len(set))
+		}
+	}
+}
+
+// The probe adopts only an admission of its own persisted key: one the agent obtained for another key never serves.
+func TestAnAdmissionOfAnotherProbeKeyNeverYieldsALease(t *testing.T) {
+	w := newWorld(t, t.TempDir())
+	other, _ := instanceKey()
+	w.admit(func(c *AdmissionClaims) { c.ProbePublicKey = b64.EncodeToString(other.Public().(ed25519.PublicKey)) })
+	for range 3 {
+		w.round()
+		w.expect("awaiting-admission", false)
+	}
+	if len(w.outbox()) != 0 {
+		t.Fatal("reports were signed for an admission of another key")
+	}
+	// Control: the same admission for the probe's own key is adopted at once.
+	w.admit(nil)
+	w.round()
+	w.expect("verifying", true)
 }
 
 func TestTheTrustSetIsRefusedWholeOnAnyDeviation(t *testing.T) {
