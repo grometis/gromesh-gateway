@@ -329,12 +329,13 @@ paths:
         under /environments/{envId} and /clusters/{clusterId}, and GET and POST /environments) in the last 30 days,
         per API token, plus the calls made by sessions (the current UI). The cut requires zero token calls in the
         window, `since` on the window's first day and `completeThrough` at the time of the cut: no call counted proves
-        nothing about a time nobody was counting. Every control-plane replica confirms its counting at least every
-        few seconds, one confirmation at a time and never past a token call still in flight. The counting never
-        decides a request: a v1 token call whose count cannot be written is served as usual, and its day is not
-        complete (it goes with the next confirmation). A replica closes its record only on a clean stop, once its HTTP
-        server takes no more calls and none is in flight. A replica that went silent without that may still be taking
-        calls it cannot count: no day from its last confirmation on is complete, its record is never pruned, and it is
+        nothing about a time nobody was counting. The counting never touches a request: each control-plane replica
+        adds its calls up in memory and writes them every few seconds together with the confirmation of its counting,
+        in one transaction, never confirming past a token call still being authenticated. Counts that cannot be
+        written stay with the replica and its confirmation does not move. A replica closes its record only on a clean
+        stop, once its HTTP server takes no more calls and every count is written. A replica that went silent without
+        that may hold calls nobody knows of: no day from its last confirmation on is complete, its record is never
+        pruned, and it is
         listed in `silentReplicas` until the cut's own procedure (a later task) resolves it. A
         release that does not count (a rollback) is seen only while no counting replica runs: running both at once
         is outside what this report can see. Counted by day; never carries a token value, a path parameter or a body.
@@ -3772,10 +3773,10 @@ components:
           description: |
             The first UTC day from which the counting is complete through `completeThrough`: every moment from that
             day's start on was counted by a replica (up to two minutes after a replica's last confirmation, a
-            restart, is not a gap), no token call failed to be written and no replica went silent without stopping
-            cleanly. A day before the
+            restart, is not a gap) and no replica went silent without stopping cleanly (its counts may be
+            unwritten). A day before the
             counting started (the release that delivers this operation), with a gap (a rollback to a release that
-            does not count) or with a loss is not complete: `since` is then the day after it (tomorrow when it is
+            does not count) or with a possible loss is not complete: `since` is then the day after it (tomorrow when it is
             today). The window's first day (today − 29) at most.
         completeThrough:
           type: string
