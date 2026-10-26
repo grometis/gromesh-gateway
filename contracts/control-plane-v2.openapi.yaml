@@ -328,7 +328,9 @@ paths:
         Calls to the administrative operations of v1 that the controlled migration (decision H-9) will cut (those
         under /environments/{envId} and /clusters/{clusterId}, and GET and POST /environments) in the last 30 days,
         per API token, plus the calls made by sessions (the current UI). The cut requires zero token calls in the
-        window. Counted by day; never carries a token value, a path parameter or a body.
+        window and `since` on the window's first day: no call counted proves nothing about a day nobody was counting.
+        A v1 token call whose count cannot be written is refused (500) and marks its day as failed. Counted by day;
+        never carries a token value, a path parameter or a body.
       responses:
         "200": { description: Usage, content: { application/json: { schema: { $ref: "#/components/schemas/ApiV1Usage" } } } }
         "401": { $ref: "#/components/responses/Unauthorized" }
@@ -3757,7 +3759,15 @@ components:
       required: [ windowDays, since, sessionCalls, tokens ]
       properties:
         windowDays: { const: 30 }
-        since: { type: string, format: date }
+        since:
+          type: string
+          format: date
+          description: |
+            The first UTC day from which the counting is complete through today: every day from it on had a replica
+            counting and no token call it failed to write. Days before the counting started (the release that
+            delivers this operation) or without a replica counting (a rollback to an older release) are not complete,
+            nor is a day with a failed write (`since` is then the day after it, tomorrow when it is today). The
+            window's first day (today − 29) at most.
         sessionCalls: { type: integer, minimum: 0 }
         tokens:
           type: array
