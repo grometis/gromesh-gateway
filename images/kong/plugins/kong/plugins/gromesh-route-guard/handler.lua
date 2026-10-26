@@ -25,6 +25,10 @@ function RouteGuardHandler:access(conf)
     kong.log.warn("containment: ", err)
     return kong.response.error(503)
   end
+  if conf.canary then
+    -- Only a running guard holding the current lease can answer with its nonce (isolation-probe, verifying).
+    return kong.response.exit(204, nil, { ["X-Gromesh-Lease-Nonce"] = current.nonce })
+  end
 
   local prefix = present(conf.prefix)
   local auth = present(conf.auth)

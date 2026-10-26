@@ -648,7 +648,7 @@ publicação até a N3 (deployments por instância): nada desta fase muda o data
 | N2-X1 Plugins `gromesh-workspace` e `gromesh-route-guard` | N2-C1 | `images/kong/plugins`, `e2e` | e2e com o Kong 3.9.4 real: matriz A×B para key-auth, basic-auth e jwt, com e sem `anonymous` (401 igual à credencial inválida / 200 como anônimo), valores lógicos no upstream, path completo, regex, guard 404; controle negativo sem os plugins |
 | N2-C2 Capacidades privilegiadas na composição | N2-C1, F-1 (#132/#133) | `packages/compiler` | a classificação `privilegedUses` da F-1 recusada em Workspace na composição |
 | N2-D1 Concessão local, guard 503 e supervisor | N2-X1 | `apps/isolation`, `images/kong/plugins`, `e2e` | concessão `CLOCK_BOOTTIME`/`bootId` lida pelo guard, pelo supervisor e pela liveness; inválida → 503 e Kong parado; controles negativos |
-| N2-D2 Sonda de isolamento | N2-D1 | sidecar `isolation-probe` | CAP-1…CAP-7 com alvos de teste, canário do guard, estados de `PodIsolationState` |
+| N2-D2 Sonda de isolamento | N2-D1 | `apps/isolation`, `images/kong/plugins`, `packages/compiler` (canário), `e2e` | CAP-1…CAP-7 com alvos de teste, canário do guard, estados de `PodIsolationState` |
 | N2-D3 Admissão e relatórios | N2-D2 | `apps/control-plane`, `apps/agent`, contrato v2 (só remoção de `x-gromesh-planned`) | admissão com desafio, relatórios assinados e contínuos, pendências e liberação |
 | N2-D4 Chart com sidecars nativos | N2-D2 | `deploy/helm/data-plane` | ordem de partida e de encerramento, sondas, volumes sem escrita do `kong` |
 | N2-E1 Suíte a–s em Kubernetes | todas | `e2e/kind` e ambiente de referência (decisão humana) | itens a–s de B §3.5 com orçamentos medidos e controle negativo |
