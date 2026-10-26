@@ -2,25 +2,17 @@
 // N2-X1 against the real Kong 3.9.4 image with the product plugins (images/kong/plugins): two Workspaces composed by
 // the compiler in one config, the same logical names in both. A credential of one Workspace never authenticates on a
 // route of the other, and gets exactly what an unknown credential gets (key-auth, basic-auth, jwt; with and without
-// anonymous). Self-contained: its own network, upstream and gateway. WORKSPACE_PLUGINS=off is the negative control:
+// anonymous). Self-contained (isolation-harness): its own network, upstream, lease and gateway. WORKSPACE_PLUGINS=off is the negative control:
 // the same config without gromesh-workspace and gromesh-route-guard must fail the isolation checks.
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import { promisify } from "node:util";
-import { pullImages } from "./docker-images.mjs";
+import { pathToFileURL } from "node:url";
+import { docker, Harness, root } from "./isolation-harness.mjs";
 
-const exec = promisify(execFile);
-const root = fileURLToPath(new URL("../", import.meta.url));
-const docker = (...args) => exec("docker", args, { cwd: root, timeout: 120_000, maxBuffer: 8 * 1024 * 1024 });
 const { composeWorkspaces, basicAuthPasswordHash } = await import(pathToFileURL(join(root, "packages/compiler/dist/index.js")).href);
 const withPlugins = process.env.WORKSPACE_PLUGINS !== "off";
-const ECHO_IMAGE = "traefik/whoami:v1.10.3";
 
 // Isolation failures are collected, not thrown, so the negative control sees all of them.
 const failures = [];
@@ -79,10 +71,6 @@ function hs256(iss, secret) {
 }
 
 async function main() {
-  await pullImages([ECHO_IMAGE]);
-  const { stdout: refs } = await exec(process.execPath, [join(root, "scripts/kong-image-ref.mjs")]);
-  const kongImage = refs.trim().split(" ")[0];
-  await pullImages([kongImage]);
 
   const a = member("a");
   const b = member("b");
@@ -109,22 +97,12 @@ async function main() {
   guardFor("assine~foreign-anon").config.auth.anonymous = foreignGuest;
   if (!withPlugins) config.plugins = config.plugins.filter((p) => !p.name.startsWith("gromesh-"));
 
-  const dir = mkdtempSync(join(tmpdir(), "gromesh-ws-e2e-"));
-  const run = randomUUID().slice(0, 8);
-  const network = `gromesh-ws-e2e-${run}`;
-  const containers = [];
+  const harness = new Harness();
   try {
-    writeFileSync(join(dir, "kong.json"), JSON.stringify(config), { mode: 0o644 });
-    await docker("network", "create", network);
-    containers.push((await docker("run", "-d", "--rm", "--network", network, "--network-alias", "echo", ECHO_IMAGE)).stdout.trim());
-    const kong = (await docker("run", "-d", "--rm", "--network", network, "-p", "127.0.0.1::8000",
-      "-v", `${join(root, "images/kong/plugins")}:/opt/gromesh/plugins:ro`, "-v", `${dir}:/kong:ro`,
-      "-e", "KONG_DECLARATIVE_CONFIG=/kong/kong.json", "-e", `KONG_PLUGINS=${withPlugins ? "bundled,gromesh-workspace,gromesh-route-guard" : "bundled"}`,
-      "-e", "KONG_PROXY_LISTEN=0.0.0.0:8000", "-e", "KONG_ADMIN_LISTEN=off", "-e", "KONG_STATUS_LISTEN=off",
-      "-e", "KONG_NGINX_WORKER_PROCESSES=1", kongImage)).stdout.trim();
-    containers.push(kong);
-    const port = (await docker("port", kong, "8000/tcp")).stdout.trim().split("\n")[0].split(":").pop();
-    const proxy = `http://127.0.0.1:${port}`;
+    await harness.setup();
+    // A valid lease from the isolation-probe's stand-in: without it every Workspace route answers 503 (e2e/containment).
+    harness.mode("ok");
+    const { id: kong, proxy } = await harness.gateway(config, { plugins: withPlugins ? undefined : "bundled" });
 
     const call = async (path, headers = {}) => {
       const res = await fetch(`${proxy}${path}`, { headers, signal: AbortSignal.timeout(5000) });
@@ -255,9 +233,7 @@ async function main() {
     if (failures.length > 0) throw new Error(`Workspace isolation failed:\n- ${failures.join("\n- ")}`);
     console.log(`Workspace isolation holds on the real gateway: ${checks + 18} checks, ${MECHANISMS.length} mechanisms × 2 Workspaces, with and without anonymous`);
   } finally {
-    for (const id of containers.reverse()) await docker("rm", "-f", id).catch(() => {});
-    await docker("network", "rm", network).catch(() => {});
-    rmSync(dir, { recursive: true, force: true });
+    await harness.teardown();
   }
 }
 
