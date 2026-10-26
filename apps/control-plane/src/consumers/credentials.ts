@@ -156,6 +156,10 @@ export class CredentialsService {
 
   async removeJwt(ctx: RequestContext, envId: string, consumerId: string, credentialId: string) {
     await this.db.transaction(async (tx) => {
+      // The order of every writer of these tables (rollback, import): the tables, then the environment's row, before
+      // any row is deleted.
+      await lockTablesForWrite(tx, ["jwt-key"]);
+      await requireEnvironment(tx, envId, true);
       await requireConsumer(tx, envId, consumerId);
       const [row] = await tx.select().from(jwtCredentials).where(and(eq(jwtCredentials.id, credentialId), eq(jwtCredentials.consumerId, consumerId)));
       if (!row) throw notFound("Credential");
@@ -197,6 +201,10 @@ export class CredentialsService {
 
   async removeBasicAuth(ctx: RequestContext, envId: string, consumerId: string, credentialId: string) {
     await this.db.transaction(async (tx) => {
+      // The order of every writer of these tables (rollback, import): the tables, then the environment's row, before
+      // any row is deleted.
+      await lockTablesForWrite(tx, ["basic-auth-username"]);
+      await requireEnvironment(tx, envId, true);
       await requireConsumer(tx, envId, consumerId);
       const [row] = await tx
         .select()

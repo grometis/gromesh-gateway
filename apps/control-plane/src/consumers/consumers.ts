@@ -121,6 +121,10 @@ export class ConsumersService {
   /** Credentials (key-auth, JWT, basic-auth) and consumer-scoped plugins go with it (FK cascade). */
   async remove(ctx: RequestContext, envId: string, consumerId: string) {
     await this.db.transaction(async (tx) => {
+      // The order of every writer of these tables (rollback, import): the tables, then the environment's row, before
+      // any row is deleted.
+      await lockTablesForWrite(tx, ["key-auth-key", "jwt-key", "basic-auth-username"]);
+      await requireEnvironment(tx, envId, true);
       const before = toConsumer(await requireConsumer(tx, envId, consumerId));
       if (await usedAsAnonymous(tx, envId, { id: consumerId, username: before.username })) throw conflict("The consumer is used as anonymous by a plugin");
       await tx.delete(consumers).where(eq(consumers.id, consumerId));
@@ -165,6 +169,10 @@ export class ConsumersService {
 
   async removeKeyAuth(ctx: RequestContext, envId: string, consumerId: string, credentialId: string) {
     await this.db.transaction(async (tx) => {
+      // The order of every writer of these tables (rollback, import): the tables, then the environment's row, before
+      // any row is deleted.
+      await lockTablesForWrite(tx, ["key-auth-key"]);
+      await requireEnvironment(tx, envId, true);
       await requireConsumer(tx, envId, consumerId);
       const [row] = await tx
         .select()

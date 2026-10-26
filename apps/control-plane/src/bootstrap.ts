@@ -37,6 +37,15 @@ export async function createApp(config: AppConfig, opts: { logger?: false | LogL
   await app.get<Db>(DB).transaction((tx) => backfillWorkspaces(tx));
   // Rows written before the encryption migration (or with an older key, after a rotation) are sealed here.
   await app.get(AtRestService).encryptExisting();
+  // Another replica may be completing migration 0005 (it holds the at-rest lock, so this one skipped): until it is
+  // done, key-auth uniqueness is not enforced, so this replica waits for it (30 s at most) and does not serve.
+  await app
+    .get(AtRestService)
+    .assertKeyHashMigrated(config.keyHashWaitMs)
+    .catch(async (error: unknown) => {
+      await app.close();
+      throw error;
+    });
   // Only now are all key-auth fingerprints filled in (encryptExisting completes an interrupted 0005): the instance
   // unique index of every kind no two drafts repeat (decision H-5); a repeated one stays a blocker of the report.
   await enforceInstanceUniquenessSoon(app.get<Db>(DB));
