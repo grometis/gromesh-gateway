@@ -157,34 +157,18 @@ describe("the v1 calls the cut will remove, the migration report and one authori
     await h.sql.query(`update api_v1_usage_replicas set started_at = ${at(29)} where replica_id = $1`, [mine()]);
   });
 
-  it("restarts the 30 days after a replica that went silent without stopping cleanly: it may have lost a call", async () => {
-    // Last confirmed one second before midnight: it may still have taken a call within four minutes, on the next day.
+  it("keeps the 30 days from completing while a replica that went silent without stopping cleanly is on record", async () => {
+    // Silent: it may be up, taking calls it cannot count, so no day from its last confirmation on is complete.
     await h.sql.query(`insert into api_v1_usage_replicas (replica_id, started_at, seen_at) values (gen_random_uuid(), ${at(29)}, ${at(10)} - interval '1 second')`);
-    expect((await read()).since).toBe(await day(9));
+    expect((await read()).since).toBe(await day(-1));
     await h.sql.query(`delete from api_v1_usage_replicas where seen_at = ${at(10)} - interval '1 second'`);
     expect((await read()).since).toBe(await day(29));
-    // Kept while the time it may have lost a call in reaches into the window, then pruned.
-    await h.sql.query(`insert into api_v1_usage_replicas (replica_id, started_at, seen_at) values (gen_random_uuid(), ${at(40)}, ${at(29)} - interval '1 minute'), (gen_random_uuid(), ${at(40)}, ${at(29)} - interval '5 minutes')`);
-    expect((await read()).since).toBe(await day(28));
+    // Pruned once its last confirmation leaves the window, and not before.
+    await h.sql.query(`insert into api_v1_usage_replicas (replica_id, started_at, seen_at) values (gen_random_uuid(), ${at(40)}, ${at(29)} + interval '1 minute'), (gen_random_uuid(), ${at(40)}, ${at(29)} - interval '1 minute')`);
+    expect((await read()).since).toBe(await day(-1));
     expect((await h.sql.query(`select count(*)::int as n from api_v1_usage_replicas where started_at = ${at(40)}`)).rows[0].n).toBe(1);
     await h.sql.query(`delete from api_v1_usage_replicas where started_at = ${at(40)}`);
-  });
-
-  it("refuses the token calls it would count, before authenticating them, while its own counting is not confirmed", async () => {
-    const created = await h.api("POST", "/users/me/tokens", { name: uniq("stale"), role: "viewer", expiresInDays: 1 });
-    const call = () => bearer(created.body.token as string)("GET", `/environments/${env}/services`);
-    const through = (usage as unknown as { confirmedThrough: number }).confirmedThrough;
-    (usage as unknown as { confirmedThrough: number }).confirmedThrough = Date.now() - 3 * 60_000;
-    try {
-      expect((await call()).status).toBe(503);
-      // Not what the cut depends on: the user's own data, and v2.
-      expect((await bearer(created.body.token as string)("GET", "/me")).status).toBe(200);
-      expect((await v2(bearer(created.body.token as string), "GET", `/workspaces/${env}/services`)).status).toBe(200);
-    } finally {
-      (usage as unknown as { confirmedThrough: number }).confirmedThrough = through;
-    }
-    expect((await call()).status).toBe(200);
-    expect((await read()).tokens.find((t) => t.tokenId === created.body.id)).toMatchObject({ calls: 1 });
+    expect((await read()).since).toBe(await day(29));
   });
 
   it("confirms one at a time: a later confirmation waits for the failure an earlier one is still writing", async () => {
@@ -208,25 +192,22 @@ describe("the v1 calls the cut will remove, the migration report and one authori
     }
   });
 
-  it("admits no token call once stopping, and discards an identity authenticated too long after its admission", async () => {
+  it("still serves and counts the token calls after the clean stop closed the row", async () => {
     const created = await h.api("POST", "/users/me/tokens", { name: uniq("late"), role: "viewer", expiresInDays: 1 });
     const other = await startHarness({ databaseUrl: dbUrl, apiV1UsageFlushMs: 0 });
     const theirs = other.app.get(ApiV1UsageService);
     const id = theirs["replicaId" as keyof ApiV1UsageService] as unknown as string;
     const call = () => other.anonymous("GET", `/environments/${env}/services`, undefined, { authorization: `Bearer ${created.body.token as string}` });
     try {
-      vi.spyOn(theirs, "late").mockReturnValueOnce(true);
-      expect((await call()).status).toBe(503);
       expect((await call()).status).toBe(200);
-      // The stop closes the row; from then on the server, still up, refuses the calls it would count.
       await theirs.onModuleDestroy();
-      expect((await call()).status).toBe(503);
+      expect((await call()).status).toBe(200);
       const row = (await h.sql.query(`select closed, failed_on::text[] as failed from api_v1_usage_replicas where replica_id = $1`, [id])).rows[0];
       expect(row).toEqual({ closed: true, failed: [] });
     } finally {
       await other.close();
     }
-    expect((await read()).tokens.find((t) => t.tokenId === created.body.id)).toMatchObject({ calls: 1 });
+    expect((await read()).tokens.find((t) => t.tokenId === created.body.id)).toMatchObject({ calls: 2 });
   });
 
   it("never confirms past a token call still being written, and a stop waits for it before closing", async () => {
@@ -247,7 +228,8 @@ describe("the v1 calls the cut will remove, the migration report and one authori
     const stopping = other.close();
     await new Promise((r) => setTimeout(r, 100));
     fail();
-    expect((await call).status).toBe(500);
+    // The call goes on: only its count failed.
+    expect((await call).status).toBe(200);
     await stopping;
     const row = (await h.sql.query(`select closed, failed_on::text[] as failed from api_v1_usage_replicas where replica_id = $1`, [id])).rows[0];
     expect(row).toEqual({ closed: true, failed: [await day(0)] });
@@ -256,15 +238,16 @@ describe("the v1 calls the cut will remove, the migration report and one authori
     expect((await read()).since).toBe(await day(29));
   });
 
-  it("refuses a token call it cannot count; once that replica confirms, every replica's report restarts the 30 days", async () => {
+  it("serves a token call it cannot count, even with the database refusing every usage write; the 30 days cannot complete", async () => {
     const created = await h.api("POST", "/users/me/tokens", { name: uniq("lost"), role: "viewer", expiresInDays: 1 });
     const other = await startHarness({ databaseUrl: dbUrl, apiV1UsageFlushMs: 0 });
     try {
       const theirs = other.app.get(ApiV1UsageService);
       await h.sql.query(`update api_v1_usage_replicas set started_at = ${at(29)}`);
+      // Neither the count nor the confirmation can be written, on that replica.
       vi.spyOn(theirs as unknown as { add: () => Promise<void> }, "add").mockRejectedValueOnce(new Error("write failed"));
       const failedAt = Date.now();
-      expect((await other.anonymous("GET", `/environments/${env}/services`, undefined, { authorization: `Bearer ${created.body.token as string}` })).status).toBe(500);
+      expect((await other.anonymous("GET", `/environments/${env}/services`, undefined, { authorization: `Bearer ${created.body.token as string}` })).status).toBe(200);
       // Not confirmed yet: this replica's report does not claim the time of the failure.
       const before = await read();
       expect(before.since).toBe(await day(29));

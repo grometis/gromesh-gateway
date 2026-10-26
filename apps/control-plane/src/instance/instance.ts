@@ -15,8 +15,6 @@ const WINDOW_DAYS = 30;
  * claims completeness only up to this long ago.
  */
 export const CONFIRM_MS = 120_000;
-/** After its last confirmation, how long a silent replica may still have taken a token call: twice CONFIRM_MS. */
-const LOSS_SPAN = sql.raw(`interval '${(2 * CONFIRM_MS) / 1000} seconds'`);
 const today = sql`(now() at time zone 'utc')::date`;
 /** The UTC day of a call, taken when it is made (a session call written after midnight keeps its day). */
 const utcDay = () => new Date().toISOString().slice(0, 10);
@@ -26,12 +24,12 @@ const utcDay = () => new Date().toISOString().slice(0, 10);
  * a call lost to a crash could let the cut through. Session calls (the UI, one row a day) are added up here and
  * written every few seconds, so concurrent requests do not queue on that row.
  *
- * No call counted proves nothing about a time nobody was counting: each replica keeps a row from its start, confirmed
- * by every flush up to then (never past a token call still being written, one confirmation at a time) and closed
- * when it stops cleanly with nothing in flight. A token call that could not be written is refused and its day goes
- * with the next confirmation. A replica unconfirmed for CONFIRM_MS refuses the token calls it would count before
- * authenticating them (counting()), so one that went silent without closing can only have lost a call within that
- * long of its last confirmation.
+ * The counting never decides a request: a call whose count cannot be written goes on, and its day is marked as not
+ * complete. No call counted proves nothing about a time nobody was counting: each replica keeps a row from its
+ * start, confirmed by every flush up to then (never past a token call still in flight, one confirmation at a time)
+ * and closed when it stops cleanly with nothing in flight. A failure goes with the next confirmation; a replica that
+ * went silent without closing may still be taking calls it cannot count, so no day from its last confirmation on is
+ * complete while its row is kept (until that confirmation leaves the window).
  */
 @Injectable()
 export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBootstrap, OnModuleDestroy {
@@ -44,8 +42,6 @@ export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBoots
   private failedOn = new Set<string>();
   /** When each admitted token call (being authenticated or written) was admitted. */
   private readonly inFlight = new Map<symbol, number>();
-  /** Up to when this replica's counting is confirmed (written). */
-  private confirmedThrough = 0;
   /** The confirmations, one at a time: a later one must not pass a failure an earlier one is still writing. */
   private confirming: Promise<void> = Promise.resolve();
   private stopping = false;
@@ -66,8 +62,7 @@ export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBoots
   async onModuleDestroy(): Promise<void> {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
-    // From here on no token call is admitted, and one admitted before that fails to be written confirms its failure
-    // itself (the row may be closed meanwhile).
+    // From here on a token call that fails to be written confirms its failure itself (the row may be closed meanwhile).
     this.stopping = true;
     // The admitted calls finish first (a few seconds at most): their failures go with the last confirmation.
     for (let i = 0; i < 100 && this.inFlight.size > 0; i++) await new Promise((r) => setTimeout(r, 50));
@@ -76,21 +71,10 @@ export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBoots
     if (this.inFlight.size === 0 && this.failedOn.size === 0) await this.confirm(true);
   }
 
-  /** Whether this replica's counting is confirmed recently enough to take the v1 token calls it counts. */
-  private counting(): boolean {
-    return !this.stopping && Date.now() - this.confirmedThrough <= CONFIRM_MS;
-  }
-
-  begin(): symbol | null {
-    if (!this.counting()) return null;
+  begin(): symbol {
     const call = Symbol();
     this.inFlight.set(call, Date.now());
     return call;
-  }
-
-  /** Admitted within CONFIRM_MS of a confirmation and authenticated within CONFIRM_MS of that: within LOSS_SPAN. */
-  late(call: symbol): boolean {
-    return Date.now() - (this.inFlight.get(call) ?? 0) > CONFIRM_MS;
   }
 
   end(call: symbol): void {
@@ -107,10 +91,11 @@ export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBoots
     try {
       await this.add(day, token, 1);
     } catch (error) {
+      // The call goes on; its day is not complete. While stopping there may be no next confirmation: this one
+      // carries the failure.
       this.failedOn.add(day);
-      // While stopping there may be no next confirmation: this one carries the failure.
+      this.logger.error(`v1 usage not written, ${day} marked as not complete: ${error instanceof Error ? error.message : String(error)}`);
       if (this.stopping) await this.confirm().catch(() => undefined);
-      throw error;
     }
   }
 
@@ -130,7 +115,6 @@ export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBoots
         for (const d of failed) this.failedOn.add(d);
         throw error;
       }
-      this.confirmedThrough = Math.max(this.confirmedThrough, seenAt.getTime());
     });
     this.confirming = run.catch(() => undefined);
     return run;
@@ -171,7 +155,7 @@ export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBoots
     await this.db.delete(apiV1Usage).where(lt(apiV1Usage.day, sql`${today} - ${WINDOW_DAYS - 1}::int`));
     // A row matters while what it covers, or the time it may have lost a call in, reaches into the window.
     const windowStart = sql`(${today} - ${WINDOW_DAYS - 1}::int)::timestamp at time zone 'utc'`;
-    await this.db.delete(apiV1UsageReplicas).where(lt(sql`${apiV1UsageReplicas.seenAt} + ${LOSS_SPAN}`, windowStart));
+    await this.db.delete(apiV1UsageReplicas).where(lt(apiV1UsageReplicas.seenAt, windowStart));
   }
 
   private async add(day: string, token: { id: string; name: string; ownerId: string } | null, calls: number): Promise<void> {
@@ -188,7 +172,7 @@ export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBoots
     const margin = sql`make_interval(secs => ${CONFIRM_MS / 1000})`;
     // A day is complete when the replicas' rows, each extended by the margin past its last confirmation, cover it from
     // its start (to now less the margin, for today), no call failed on it and no replica that went silent without
-    // closing could have lost one on it (within LOSS_SPAN of its last confirmation). The report's since is the day
+    // closing could have lost one on it (from its last confirmation through today). The report's since is the day
     // after the last incomplete one in the window.
     const [window] = await this.db
       .execute<{ since: string; completeThrough: string }>(sql`
@@ -196,7 +180,7 @@ export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBoots
           select range_agg(tstzrange(started_at, seen_at + ${margin}, '[]')) as m from ${apiV1UsageReplicas}
         ), lost as (
           select unnest(failed_on) as day from ${apiV1UsageReplicas}
-          union select generate_series((seen_at at time zone 'utc')::date, ((seen_at + ${LOSS_SPAN}) at time zone 'utc')::date, interval '1 day')::date
+          union select generate_series((seen_at at time zone 'utc')::date, ${today}, interval '1 day')::date
           from ${apiV1UsageReplicas} where not closed and seen_at < now() - ${margin}
         ), days as (
           select g::date as day, g::date::timestamp at time zone 'utc' as starts,
