@@ -209,4 +209,13 @@ test('decision H-14: a credential pending reprovisioning exports without a hint 
   validate('KeyAuthCredential', { id: ref.credentialId, consumerId: ref.credentialId, keyHint: null, status: 'pending-reprovision', createdAt: '2026-10-25T00:00:00Z' });
   validate('JwtCredential', { id: ref.credentialId, consumerId: ref.credentialId, key: 'iss', algorithm: 'HS256', status: 'pending-reprovision', createdAt: '2026-10-25T00:00:00Z' });
   validate('JwtCredential', { id: ref.credentialId, consumerId: ref.credentialId, key: 'iss', algorithm: 'HS256', status: 'revoked', createdAt: '2026-10-25T00:00:00Z' }, false);
+  // Only an HS256 credential is ever pending.
+  validate('JwtCredential', { id: ref.credentialId, consumerId: ref.credentialId, key: 'iss', algorithm: 'RS256', rsaPublicKey: 'synthetic-public-key', status: 'pending-reprovision', createdAt: '2026-10-25T00:00:00Z' }, false);
+  const rsPending = structuredClone(pending);
+  Object.assign(rsPending.consumers[0].jwtCredentials[0], { algorithm: 'RS256', rsaPublicKey: 'synthetic-public-key' });
+  validate('GromeshConfigV1Export', rsPending, false);
+  // A report with errors, or a failed import, lists nothing as pending.
+  validate('EnvironmentImportReport', { ...report, errors: [{ path: 'document', message: 'x' }] }, false);
+  validate('EnvironmentImportFailure', { type: 'about:blank', title: 'Unprocessable Content', status: 422, added: [], modified: [], removed: [], errors: [{ path: 'document', message: 'x' }], pendingCredentials: [ref] }, false);
+  validate('EnvironmentImportFailure', { type: 'about:blank', title: 'Unprocessable Content', status: 422, added: [], modified: [], removed: [], errors: [{ path: 'document', message: 'x' }] });
 });

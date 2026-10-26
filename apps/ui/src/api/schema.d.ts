@@ -352,7 +352,10 @@ export interface paths {
          *     algorithm) as `status: pending-reprovision`: it is left out of every published configuration, so it
          *     authenticates nothing, until an editor rotates it (rotateKeyAuthCredential, rotateJwtCredential), which
          *     generates the value, shows it once and makes it active. The report lists each one in `pendingCredentials`.
-         *     RS256/ES256 JWT credentials carry only a public key and import as active.
+         *     RS256/ES256 JWT credentials carry only a public key and import as active. A JWT credential matched by its
+         *     `key` whose algorithm the document changes: to RS256/ES256 it becomes active with the document's public key;
+         *     from RS256/ES256 to HS256 it has no stored secret, so it is pending reprovisioning and listed. Only an HS256
+         *     credential is ever pending.
          *     A secret slot without a stored value is new even on a matched plugin or credential.
          *     RS256/ES256 JWT credentials require a valid public key and must not supply a secret. Existing certificate
          *     keys must still match the leaf; all current entity write validations, including certificate expiry on
@@ -627,8 +630,9 @@ export interface paths {
         /**
          * @description Replaces the key with a new one the server generates (as on creation), returned only in this response, and
          *     makes a credential pending reprovisioning active (decision H-14). Same id; the previous key stops
-         *     authenticating once the draft is published. No request body. 404 for a credential of another consumer or
-         *     environment. Audited as `keyauth.rotate` with the hints before and after, never a key.
+         *     authenticating once the draft is published. No request body: a supplied one (a `key`, say) answers 422, as
+         *     on creation. 404 for a credential of another consumer or environment. Audited as `keyauth.rotate` with the
+         *     hints before and after, never a key.
          */
         post: operations["rotateKeyAuthCredential"];
         delete?: never;
@@ -702,7 +706,8 @@ export interface paths {
         /**
          * @description HS256 only: replaces the secret with a new one the server generates (as on creation), returned only in this
          *     response, and makes a credential pending reprovisioning active (decision H-14). Same id and `key`; the
-         *     previous secret stops verifying once the draft is published. No request body. 409 for an RS256/ES256
+         *     previous secret stops verifying once the draft is published. No request body: a supplied one (a `secret`,
+         *     say) answers 422, as on creation. 409 for an RS256/ES256
          *     credential (its public key belongs to the client: delete and create it again). 404 for a credential of
          *     another consumer or environment. Audited as `jwt.rotate`, never with a secret.
          */
@@ -1932,6 +1937,8 @@ export interface components {
             modified: unknown[];
             removed: unknown[];
             errors: components["schemas"]["FieldError"][];
+            pendingCredentials?: unknown[];
+            regeneratedCredentials?: unknown[];
         };
         /**
          * @description Diff against the current draft. Each array contains EntityChange items whose change value matches the
@@ -3911,7 +3918,10 @@ export interface operations {
                     };
                 };
             };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
         };
     };
     listJwtCredentials: {
@@ -4021,8 +4031,11 @@ export interface operations {
                     };
                 };
             };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
         };
     };
     listBasicAuthCredentials: {

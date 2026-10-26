@@ -2234,7 +2234,7 @@ paths:
       description: |
         As rotateKeyAuthCredential of v1 (decision H-14): a new key the server generates, returned only in this response; a
         credential pending reprovisioning becomes active. Same id. 404 for a credential of another consumer or
-        workspace. Audited without the value.
+        workspace. No request body (a supplied one answers 422). Audited without the value.
       responses:
         "200":
           description: Rotated
@@ -2254,6 +2254,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "422":
+          $ref: "#/components/responses/ValidationError"
       x-required-permission: gateway.write
       x-scope: workspace
       x-gromesh-requirements:
@@ -2396,7 +2398,8 @@ paths:
       description: |
         As rotateJwtCredential of v1 (decision H-14): a new HS256 secret the server generates, returned only in this response; a
         credential pending reprovisioning becomes active. Same id. 404 for a credential of another consumer or
-        workspace. 409 for an RS256/ES256 credential. Audited without the value.
+        workspace. 409 for an RS256/ES256 credential. No request body (a supplied one answers 422). Audited without
+        the value.
       responses:
         "200":
           description: Rotated
@@ -2418,6 +2421,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "422":
+          $ref: "#/components/responses/ValidationError"
       x-required-permission: gateway.write
       x-scope: workspace
       x-gromesh-requirements:
