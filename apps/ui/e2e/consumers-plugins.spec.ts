@@ -41,6 +41,8 @@ test("a new consumer's key is shown once and is gone after closing", async ({ pa
   await expect(page.getByRole("heading", { name: /^Consumer / })).toBeVisible();
 
   await page.getByRole("button", { name: "Gerar chave" }).click();
+  // Only the server generates a key (decision H-14): there is nothing to type one into.
+  await expect(page.getByRole("dialog", { name: "Gerar chave" }).getByRole("textbox")).toHaveCount(0);
   await page.getByRole("dialog", { name: "Gerar chave" }).getByRole("button", { name: "Gerar" }).click();
   const shown = page.getByRole("dialog", { name: "Chave criada" });
   await expect(shown.getByLabel("Chave")).toHaveText(key);

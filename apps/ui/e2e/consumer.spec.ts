@@ -81,3 +81,45 @@ test("credential cards show only hints; a new secret is shown once with Copiar a
   await tabs.getByRole("tab", { name: "Plugins" }).click();
   await expect(page.getByRole("heading", { name: "Plugins do consumer" })).toBeVisible();
 });
+
+test("decision H-14: no field takes a key or an HS256 secret; a pending credential is reprovisioned and shown once", async ({ page }) => {
+  const rotatedKey = "cm90YXRlZC1rZXktc2hvd24tb25jZS1vbmx5LTEyMzQ1Ng";
+  await openConsumer(page);
+  // A credential an import brought without its key, and the rotation that gives it one.
+  await page.route(`**/api/v1/environments/*/consumers/${consumerId}/key-auth`, (route) =>
+    route.fulfill({ json: { items: [{ id: id(7), consumerId, keyHint: null, status: "pending-reprovision", tags: [], createdAt: created }] } }),
+  );
+  await page.route(`**/api/v1/environments/*/consumers/${consumerId}/key-auth/${id(7)}/rotate`, (route) =>
+    route.fulfill({ json: { id: id(7), consumerId, keyHint: "…3456", status: "active", tags: [], createdAt: created, key: rotatedKey } }),
+  );
+  await page.reload();
+  const panel = page.getByRole("tabpanel", { name: "Credenciais" });
+  const keys = panel.getByRole("list", { name: "Chaves" });
+  await expect(keys.getByRole("listitem")).toHaveText([/Pendente de reprovisionamento/]);
+
+  // Creation forms: nothing to type a key or an HS256 secret into.
+  await panel.getByRole("button", { name: "Gerar chave" }).click();
+  const newKey = page.getByRole("dialog", { name: "Gerar chave" });
+  await expect(newKey.getByRole("textbox")).toHaveCount(0);
+  await expect(newKey).toContainText("O servidor gera uma chave");
+  await newKey.getByRole("button", { name: "Cancelar" }).click();
+  await panel.getByRole("button", { name: "Nova credencial JWT" }).click();
+  const newJwt = page.getByRole("dialog", { name: "Nova credencial JWT" });
+  await expect(newJwt.getByLabel("Segredo")).toHaveCount(0);
+  await expect(newJwt).toContainText("O segredo é gerado pelo servidor");
+  await newJwt.getByRole("button", { name: "Cancelar" }).click();
+
+  // Reprovisioning: confirmed, shown once, gone after closing.
+  await panel.getByRole("button", { name: "Mais ações para a chave pendente" }).click();
+  await page.getByRole("menuitem", { name: "Gerar nova chave" }).click();
+  const confirm = page.getByRole("dialog", { name: "Gerar nova chave" });
+  await expect(confirm).toContainText("importada sem o valor");
+  await confirm.getByRole("button", { name: "Gerar" }).click();
+  const shown = page.getByRole("dialog", { name: "Gerar nova chave" });
+  await expect(shown.getByLabel("Chave")).toHaveText(rotatedKey);
+  await expect(shown.getByRole("note")).toContainText("não será mostrada de novo");
+  await shown.getByRole("button", { name: "Já copiei" }).click();
+  await expect(page.getByText(rotatedKey)).toHaveCount(0);
+  const stored = await page.evaluate(() => JSON.stringify({ ...sessionStorage }) + JSON.stringify({ ...localStorage }));
+  expect(stored).not.toContain(rotatedKey);
+});
