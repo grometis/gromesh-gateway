@@ -279,6 +279,59 @@ describe("isolation admissions and reports (N2-D3a)", () => {
     expect((await c.poll(b.requestId)).outcome).toBe("granted");
   });
 
+  it("orders the cluster's challenges as recorded under its lock, never by when a transaction began", async () => {
+    const c = await cluster();
+    const pa = new Probe();
+    const a = await admit(c, pa);
+    const y = await c.ask(new Probe());
+    const x = await c.ask(new Probe());
+    // X recorded after Y, but its transaction began first (its timestamp is earlier): X's challenge is still current.
+    await h.sql.query("update isolation_admissions set requested_at = (select requested_at from isolation_admissions where id = $2) - interval '1 second' where id = $1", [x.requestId, y.requestId]);
+    expect((await c.call("GET", "/challenge")).body).toEqual({ challenge: x.challenge });
+    await c.send(pa.next(c.id, a.admissionId, { challenge: y.challenge }));
+    expect((await c.poll(y.requestId)).outcome).toBe("pending");
+    // Control: the answer to the current one admits X.
+    await c.send(pa.next(c.id, a.admissionId, { challenge: x.challenge }));
+    expect((await c.poll(x.requestId)).outcome).toBe("granted");
+    const seqs = (await h.sql.query("select challenge_seq from isolation_admissions where cluster_id = $1 order by challenge_seq", [c.id])).rows.map((r) => r.challenge_seq);
+    expect(seqs).toEqual([1, 2, 3]);
+  });
+
+  it("assigns one challenge order per cluster even when replicas record requests at once", async () => {
+    const c = await cluster();
+    const asked = await Promise.all(Array.from({ length: 6 }, (_, i) => c.call("POST", "/admission-requests", new Probe().request(), i % 2 ? replicaBase : base)));
+    expect(asked.map((r) => r.status)).toEqual([202, 202, 202, 202, 202, 202]);
+    const { rows } = await h.sql.query("select challenge from isolation_admissions where cluster_id = $1 order by challenge_seq desc limit 1", [c.id]);
+    expect((await c.call("GET", "/challenge")).body).toEqual({ challenge: rows[0].challenge });
+    expect((await h.sql.query("select array_agg(challenge_seq order by challenge_seq) as s from isolation_admissions where cluster_id = $1", [c.id])).rows[0].s).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
+  it("decides each violation after a release by its own seq: one after a pass, above a gap, opens a pendency", async () => {
+    const c = await cluster();
+    const pa = new Probe();
+    const a = await admit(c, pa);
+    await c.send(pa.next(c.id, a.admissionId, { state: "violation", failedCapabilities: ["CAP-3"] }));
+    const [first] = (await c.isolation()).pendencies;
+    expect((await v2(h.api, "POST", `/clusters/${c.id}/isolation-releases`, { pendencyId: first!.id, justification })).status).toBe(201);
+    // seq 2 passes (the probe took the release), seq 3 is missing, seq 4 is a new violation.
+    const pass = pa.next(c.id, a.admissionId, { state: "verifying" });
+    pa.next(c.id, a.admissionId);
+    const fresh = pa.next(c.id, a.admissionId, { state: "violation", failedCapabilities: ["CAP-4"] });
+    expect(await c.send(pass, fresh)).toEqual({ acks: [{ admissionId: a.admissionId, ackedSeq: 2 }], rejected: [] });
+    expect((await c.isolation()).pendencies).toEqual([expect.objectContaining({ kind: "confirmed-violation", capability: "CAP-4" })]);
+    // Control: sticky violations right after a release, in order, stay covered (also above a gap of violations).
+    const c2 = await cluster();
+    const pq = new Probe();
+    const q = await admit(c2, pq);
+    await c2.send(pq.next(c2.id, q.admissionId, { state: "violation", failedCapabilities: ["CAP-3"] }));
+    const [p2] = (await c2.isolation()).pendencies;
+    expect((await v2(h.api, "POST", `/clusters/${c2.id}/isolation-releases`, { pendencyId: p2!.id, justification })).status).toBe(201);
+    const sticky = pq.next(c2.id, q.admissionId, { state: "violation", failedCapabilities: ["CAP-3"] });
+    const stickyAgain = pq.next(c2.id, q.admissionId, { state: "violation", failedCapabilities: ["CAP-3"] });
+    expect(await c2.send(sticky, stickyAgain)).toEqual({ acks: [{ admissionId: q.admissionId, ackedSeq: 3 }], rejected: [] });
+    expect((await c2.isolation()).pendencies).toEqual([]);
+  });
+
   it("counts an authenticated violation when it arrives, even above a gap, and never an answer with reports waiting there", async () => {
     const c = await cluster();
     const pa = new Probe();
@@ -419,8 +472,8 @@ describe("isolation admissions and reports (N2-D3a)", () => {
     await h.sql.query("insert into clusters (id, environment_id, name, registration_token_hash) values ($1, $2, 'vector', $3)", [claims.clusterId, env, createHash("sha256").update("unused-registration").digest("hex")]);
     await h.sql.query("insert into cluster_nodes (cluster_id, node_id, token_hash, hostname, kong_version, agent_version) values ($1, 'node-v', $2, 'h', '3.9.4', '0.2.0')", [claims.clusterId, createHash("sha256").update(token).digest("hex")]);
     await h.sql.query(
-      `insert into isolation_admissions (cluster_id, node_id, pod_uid, pod_name, node_name, boot_id, probe_public_key, challenge, outcome, decided_at, admission_id, state, admission, kid)
-       values ($1, 'node-v', $2, 'kong-v', $3, $4, $5, $6, 'granted', now(), $7, 'open', $8, $9)`,
+      `insert into isolation_admissions (cluster_id, node_id, pod_uid, pod_name, node_name, boot_id, probe_public_key, challenge, challenge_seq, outcome, decided_at, admission_id, state, admission, kid)
+       values ($1, 'node-v', $2, 'kong-v', $3, $4, $5, $6, 1, 'granted', now(), $7, 'open', $8, $9)`,
       [claims.clusterId, claims.podUid, claims.nodeName, claims.bootId, claims.probePublicKey, vector.reportClaims.challenge, claims.admissionId, JSON.stringify(vector.admission), vector.trustSet.keys[0].kid],
     );
     const send = (reports: Jws[]) => agent(token, "POST", "/reports", { reports });

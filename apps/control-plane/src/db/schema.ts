@@ -636,6 +636,8 @@ export const isolationAdmissions = pgTable(
     bootId: uuid("boot_id").notNull(),
     probePublicKey: text("probe_public_key").notNull(),
     challenge: text("challenge").notNull(),
+    // Order of the cluster's challenges, assigned under its lock: the current one is the latest pending by this order.
+    challengeSeq: integer("challenge_seq").notNull(),
     requestedAt: timestamp("requested_at", { withTimezone: true }).notNull().defaultNow(),
     outcome: text("outcome", { enum: ["pending", "granted", "refused"] }).notNull().default("pending"),
     reason: text("reason", { enum: ["pendency-open", "chain-not-answered", "timeout", "no-signing-key"] }),
@@ -660,6 +662,7 @@ export const isolationAdmissions = pgTable(
   },
   (t) => [
     uniqueIndex("isolation_admissions_challenge_uq").on(t.challenge),
+    uniqueIndex("isolation_admissions_challenge_seq_uq").on(t.clusterId, t.challengeSeq),
     uniqueIndex("isolation_admissions_pod_boot_uq").on(t.clusterId, t.podUid, t.bootId).where(sql`${t.outcome} <> 'refused'`),
     index("isolation_admissions_cluster_idx").on(t.clusterId, t.outcome),
     check("isolation_admissions_granted_ck", sql`(${t.outcome} = 'granted') = (${t.admissionId} is not null and ${t.state} is not null)`),

@@ -8,6 +8,7 @@ CREATE TABLE "isolation_admissions" (
 	"boot_id" uuid NOT NULL,
 	"probe_public_key" text NOT NULL,
 	"challenge" text NOT NULL,
+	"challenge_seq" integer NOT NULL,
 	"requested_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"outcome" text DEFAULT 'pending' NOT NULL,
 	"reason" text,
@@ -86,6 +87,7 @@ ALTER TABLE "isolation_releases" ADD CONSTRAINT "isolation_releases_cluster_id_c
 ALTER TABLE "isolation_releases" ADD CONSTRAINT "isolation_releases_pendency_id_isolation_pendencies_id_fk" FOREIGN KEY ("pendency_id") REFERENCES "public"."isolation_pendencies"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "isolation_reports" ADD CONSTRAINT "isolation_reports_admission_id_isolation_admissions_admission_id_fk" FOREIGN KEY ("admission_id") REFERENCES "public"."isolation_admissions"("admission_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE UNIQUE INDEX "isolation_admissions_challenge_uq" ON "isolation_admissions" USING btree ("challenge");--> statement-breakpoint
+CREATE UNIQUE INDEX "isolation_admissions_challenge_seq_uq" ON "isolation_admissions" USING btree ("cluster_id","challenge_seq");--> statement-breakpoint
 CREATE UNIQUE INDEX "isolation_admissions_pod_boot_uq" ON "isolation_admissions" USING btree ("cluster_id","pod_uid","boot_id") WHERE "isolation_admissions"."outcome" <> 'refused';--> statement-breakpoint
 CREATE INDEX "isolation_admissions_cluster_idx" ON "isolation_admissions" USING btree ("cluster_id","outcome");--> statement-breakpoint
 CREATE INDEX "isolation_pendencies_cluster_idx" ON "isolation_pendencies" USING btree ("cluster_id","lifecycle");--> statement-breakpoint

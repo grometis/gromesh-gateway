@@ -215,7 +215,19 @@ export class IsolationService {
       if (taken) throw conflict("An admission for this podUid and bootId already exists");
       const [created] = await tx
         .insert(isolationAdmissions)
-        .values({ clusterId: cluster.id, nodeId, podUid: body.podUid, podName: body.podName, nodeName: body.nodeName, bootId: body.bootId, probePublicKey: body.probePublicKey, challenge: randomBytes(32).toString("base64url") })
+        .values({
+          clusterId: cluster.id,
+          nodeId,
+          podUid: body.podUid,
+          podName: body.podName,
+          nodeName: body.nodeName,
+          bootId: body.bootId,
+          probePublicKey: body.probePublicKey,
+          challenge: randomBytes(32).toString("base64url"),
+          // Both under the cluster's lock: which challenge is current never depends on when a transaction began.
+          challengeSeq: sql`(select coalesce(max(${isolationAdmissions.challengeSeq}), 0) + 1 from ${isolationAdmissions} where ${isolationAdmissions.clusterId} = ${cluster.id})`,
+          requestedAt: sql`clock_timestamp()`,
+        })
         .returning();
       await audit(tx, ctx, { action: "isolation.admission.request", entityType: "isolation-admission-request", entityId: created!.id, environmentId: cluster.environmentId, after: { clusterId: cluster.id, podUid: body.podUid, podName: body.podName, nodeName: body.nodeName, bootId: body.bootId, probePublicKey: body.probePublicKey } });
       return created!;
@@ -309,7 +321,7 @@ export class IsolationService {
       .select({ id: isolationAdmissions.id, challenge: isolationAdmissions.challenge })
       .from(isolationAdmissions)
       .where(and(eq(isolationAdmissions.clusterId, clusterId), eq(isolationAdmissions.outcome, "pending"), gt(isolationAdmissions.requestedAt, sql`clock_timestamp() - make_interval(secs => ${DECISION_SECONDS})`)))
-      .orderBy(desc(isolationAdmissions.requestedAt), desc(isolationAdmissions.id))
+      .orderBy(desc(isolationAdmissions.challengeSeq))
       .limit(1);
     return latest;
   }
@@ -420,9 +432,24 @@ export class IsolationService {
     });
     // Authenticated and bound to its admission: a violation counts when it arrives, even above a gap (the ack still
     // stops at the contiguous prefix). Only the in-order chain can show it is the sticky state a release covers.
-    if (report.state === "violation" && !a.violationReleased) await this.violationReceived(tx, cluster, ctx, a, report);
+    if (report.state === "violation" && !(await this.coveredByRelease(tx, a.admissionId!, report.seq))) await this.violationReceived(tx, cluster, ctx, a, report);
     accepted(a.admissionId!, report.seq, true);
     return null;
+  }
+
+  /**
+   * A released violation covers the probe's sticky violation reports only while they follow it without a break: this
+   * one is covered only when every seq between the contiguous chain (still in violation since the release) and it is
+   * known and a violation too. A missing seq could be the pass after which this violation is new.
+   */
+  private async coveredByRelease(tx: Executor, admissionId: string, seq: number): Promise<boolean> {
+    const [a] = await tx.select({ released: isolationAdmissions.violationReleased, acked: isolationAdmissions.ackedSeq }).from(isolationAdmissions).where(eq(isolationAdmissions.admissionId, admissionId));
+    if (!a?.released || seq <= a.acked) return false;
+    const [between] = await tx
+      .select({ n: sql<number>`count(*)::int` })
+      .from(isolationReports)
+      .where(and(eq(isolationReports.admissionId, admissionId), gt(isolationReports.seq, a.acked), sql`${isolationReports.seq} < ${seq}`, eq(isolationReports.state, "violation")));
+    return (between?.n ?? 0) === seq - 1 - a.acked;
   }
 
   private async violationReceived(tx: Executor, cluster: ClusterRow, ctx: RequestContext, a: IsolationAdmissionRow, report: ProbeReport) {

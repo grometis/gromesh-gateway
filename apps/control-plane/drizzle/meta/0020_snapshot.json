@@ -1,5 +1,5 @@
 {
-  "id": "7fdebd72-5607-46a8-94ac-310181802595",
+  "id": "70c00240-5c4a-4ddd-aed0-94c3c5344312",
   "prevId": "1c163c8e-60de-49b3-bfb7-e9a5429c5fde",
   "version": "7",
   "dialect": "postgresql",
@@ -1422,6 +1422,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "challenge_seq": {
+          "name": "challenge_seq",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
         "requested_at": {
           "name": "requested_at",
           "type": "timestamp with time zone",
@@ -1554,6 +1560,27 @@
           "columns": [
             {
               "expression": "challenge",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "isolation_admissions_challenge_seq_uq": {
+          "name": "isolation_admissions_challenge_seq_uq",
+          "columns": [
+            {
+              "expression": "cluster_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "challenge_seq",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
