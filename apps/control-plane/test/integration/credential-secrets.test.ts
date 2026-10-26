@@ -140,6 +140,34 @@ describe("rotation", () => {
   });
 });
 
+describe("rotation lock order", () => {
+  it("takes the table before the environment's row, as an import does (no lock-order deadlock)", async () => {
+    const { envId, base } = await workspace();
+    const j = (await h.api("POST", `${base}/jwt`, {})).body;
+    const holder = await h.sql.connect();
+    try {
+      await holder.query("begin");
+      await holder.query("select id from environments where id = $1 for update", [envId]);
+      const pid = (await holder.query("select pg_backend_pid() as pid")).rows[0].pid;
+      const rotating = h.api("POST", `${base}/jwt/${j.id}/rotate`);
+      let waiter: number | undefined;
+      for (let i = 0; i < 200 && waiter === undefined; i++) {
+        await new Promise((r) => setTimeout(r, 25));
+        waiter = (await h.sql.query(`select pid from pg_stat_activity where wait_event_type = 'Lock' and $1 = any(pg_blocking_pids(pid))`, [pid])).rows[0]?.pid;
+      }
+      expect(waiter).toBeDefined();
+      // Waiting for the environment, it already holds the table: an import (table first) waits for it, not the reverse.
+      const held = (await h.sql.query(`select count(*)::int as n from pg_locks where pid = $1 and relation = 'jwt_credentials'::regclass and mode = 'RowExclusiveLock' and granted`, [waiter])).rows[0].n;
+      expect(held).toBe(1);
+      await holder.query("commit");
+      expect((await rotating).status).toBe(200);
+    } finally {
+      await holder.query("rollback").catch(() => undefined);
+      holder.release();
+    }
+  });
+});
+
 describe("import without a usable secret", () => {
   const document = (key: string, secret: string, iss: string) => ({
     apiVersion: "gromesh/v1",

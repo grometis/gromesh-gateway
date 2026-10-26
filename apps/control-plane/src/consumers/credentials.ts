@@ -168,6 +168,8 @@ export class CredentialsService {
    */
   async rotateJwt(ctx: RequestContext, envId: string, consumerId: string, credentialId: string) {
     return this.db.transaction(async (tx) => {
+      // The order of every writer of these tables (import, rollback): the table, then the environment's row.
+      await lockTablesForWrite(tx, ["jwt-key"]);
       await requireEnvironment(tx, envId, true);
       await requireConsumer(tx, envId, consumerId);
       const [row] = await tx

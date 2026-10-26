@@ -123,3 +123,24 @@ test("decision H-14: no field takes a key or an HS256 secret; a pending credenti
   const stored = await page.evaluate(() => JSON.stringify({ ...sessionStorage }) + JSON.stringify({ ...localStorage }));
   expect(stored).not.toContain(rotatedKey);
 });
+
+test("rotating an HS256 secret shows the new secret, not the credential's issuer", async ({ page }) => {
+  const rotatedSecret = "bmV3LWhzMjU2LXNlY3JldC1zaG93bi1vbmNlLTEyMzQ1Ng";
+  await openConsumer(page);
+  await page.route(`**/api/v1/environments/*/consumers/${consumerId}/jwt`, (route) =>
+    route.fulfill({ json: { items: [{ id: id(8), consumerId, key: "acme-hs-issuer", algorithm: "HS256", status: "pending-reprovision", tags: [], createdAt: created }] } }),
+  );
+  await page.route(`**/api/v1/environments/*/consumers/${consumerId}/jwt/${id(8)}/rotate`, (route) =>
+    route.fulfill({ json: { id: id(8), consumerId, key: "acme-hs-issuer", algorithm: "HS256", status: "active", tags: [], createdAt: created, secret: rotatedSecret } }),
+  );
+  await page.reload();
+  const panel = page.getByRole("tabpanel", { name: "Credenciais" });
+  await expect(panel.getByRole("list", { name: "Credenciais JWT" })).toContainText("Pendente de reprovisionamento");
+  await panel.getByRole("button", { name: "Mais ações para a credencial JWT acme-hs-issuer" }).click();
+  await page.getByRole("menuitem", { name: "Gerar novo segredo" }).click();
+  await page.getByRole("dialog", { name: "Gerar novo segredo" }).getByRole("button", { name: "Gerar" }).click();
+  const shown = page.getByRole("dialog", { name: "Gerar novo segredo" });
+  await expect(shown.getByLabel("Segredo")).toHaveText(rotatedSecret);
+  await shown.getByRole("button", { name: "Já copiei" }).click();
+  await expect(page.getByText(rotatedSecret)).toHaveCount(0);
+});

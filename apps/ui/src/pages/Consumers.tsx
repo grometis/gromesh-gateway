@@ -323,6 +323,7 @@ function KeyAuthCredentials({ envId, consumer, canEdit }: { envId: string; consu
           what={rotating.status === "pending-reprovision" ? <>a chave desta credencial</> : <>uma nova chave no lugar de <span className="mono">{rotating.keyHint}</span></>}
           pending={rotating.status === "pending-reprovision"}
           label="Chave"
+          field="key"
           rotate={() => unwrap(api.POST("/environments/{envId}/consumers/{consumerId}/key-auth/{credentialId}/rotate", { params: { path: { ...path, credentialId: rotating.id } } }))}
           note="Copie a chave agora. Ela não será mostrada de novo: depois só aparecem os últimos caracteres. A nova chave vale depois de publicar."
           onRotated={() => invalidate("keyauth")}

@@ -78,6 +78,7 @@ export function JwtCredentials({ envId, consumer, canEdit }: { envId: string; co
           what={<>o segredo da credencial JWT <span className="mono">{rotating.key}</span></>}
           pending={rotating.status === "pending-reprovision"}
           label="Segredo"
+          field="secret"
           rotate={() => unwrap(api.POST("/environments/{envId}/consumers/{consumerId}/jwt/{credentialId}/rotate", { params: { path: { ...path, credentialId: rotating.id } } }))}
           note={
             <>
@@ -390,6 +391,8 @@ export function RotateCredential(props: {
   what: ReactNode;
   pending: boolean;
   label: string;
+  /** Which field of the response is the new value: a JWT response carries its (public) key too. */
+  field: "key" | "secret";
   rotate: () => Promise<{ key?: string; secret?: string }>;
   note: ReactNode;
   onRotated: () => void;
@@ -401,7 +404,7 @@ export function RotateCredential(props: {
     mutationFn: props.rotate,
     onSuccess: () => props.onRotated(),
   });
-  const value = rotate.data?.key ?? rotate.data?.secret;
+  const value = rotate.data?.[props.field];
   const close = () => {
     rotate.reset();
     props.onClose();
