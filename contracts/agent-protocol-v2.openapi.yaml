@@ -25,6 +25,23 @@ info:
         blocking pendency is open in scope and every other open admission of the cluster has answered that
         challenge with a contiguous chain without violation. No timeout grants: after 45 s the request is refused
         and the agent asks again. The probe ignores an admission for another pod, boot or cluster.
+      - Signatures (B §4.5; the N4 subset anticipated for N2). Every JWS here is the flattened serialization with an
+        attached payload whose protected header has exactly these members, each once: instance-signed documents
+        {alg: EdDSA, kid, typ} with typ gromesh-admission+json (AdmissionClaims) or gromesh-isolation-release+json
+        (IsolationReleaseClaims) and kid the signing key's (InstanceSigningKey, control-plane-v2); probe reports
+        {alg: EdDSA, typ: gromesh-probe-report+json}, verified with the probe key bound to their admission. A
+        verifier checks the signature over the received bytes with a key from its own trust, before parsing the
+        payload, and refuses any other header member (jwk, jku, x5u, x5c, crit, ...), a duplicated key, an unknown
+        kid, another typ, or a payload member outside the schema; a key never comes from the document. The probe
+        trusts exactly the instance keys of its InstanceTrustSet, a configuration of the pod (the chart), never a key
+        handed by the agent or fetched from the control plane; an admission whose kid leaves the set stops counting
+        at the next round. The probe checks no wall-clock validity of keys: the control plane signs only with an
+        active key whose validity covers the signing time and refuses with no-signing-key when none does. Revoking a
+        key reaches the pods only through a rollout of the chart without it. Byte-level vector:
+        contracts/examples/isolation-signatures.example.json.
+      - Handoff (IsolationHandoff): the pod-local directory shared by the agent and the probe; nothing in it is
+        trusted beyond its signature, so the agent can withhold or delay documents (which fails closed) but cannot
+        forge an admission, a release or a report.
       - Reports: one per probe round, signed by the probe key bound to the admission, numbered without gaps, carrying
         the latest challenge the probe received. The agent only transports them in order; the control plane acks the
         highest contiguous seq after commit. A gap is kept until filled; the same seq with different content opens a
@@ -238,7 +255,7 @@ components:
     Digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
     Jws:
       type: object
-      description: JWS JSON flattened serialization with attached payload (alg EdDSA). Verified over the received bytes.
+      description: JWS JSON flattened serialization with attached payload (alg EdDSA, typed protected header as in the description above). Verified over the received bytes.
       additionalProperties: false
       required: [protected, payload, signature]
       properties:
@@ -307,7 +324,7 @@ components:
         outcome: { $ref: "#/components/schemas/AdmissionOutcome" }
         challenge: { type: string, pattern: "^[A-Za-z0-9_-]{22,64}$" }
         admission: { $ref: "#/components/schemas/Jws", description: "Present only when granted; payload is AdmissionClaims" }
-        reason: { enum: [pendency-open, chain-not-answered, timeout], description: "Present only when refused" }
+        reason: { enum: [pendency-open, chain-not-answered, timeout, no-signing-key], description: "Present only when refused; no-signing-key: no active instance key covers now" }
       allOf:
         - if: { properties: { outcome: { const: granted } } }
           then: { required: [admission], not: { required: [reason] } }
@@ -322,7 +339,7 @@ components:
         terminal: [granted, refused]
         transitions:
           - [pending, granted, "no blocking pendency in scope and every other open admission answered the challenge without violation"]
-          - [pending, refused, "pendency open, or condition not met in 45 s (never granted by a timeout)"]
+          - [pending, refused, "pendency open, no active instance key covering now, or condition not met in 45 s (never granted by a timeout)"]
     AdmissionClaims:
       type: object
       description: Payload of the admission JWS, signed with the instance key. Recorded before signing.
@@ -414,3 +431,40 @@ components:
         nonce: { type: string, pattern: "^[A-Za-z0-9_-]{22,64}$" }
         capabilities: { type: array, uniqueItems: true, items: { enum: [CAP-1, CAP-2, CAP-3, CAP-4, CAP-5, CAP-6, CAP-7] } }
         issuedAt: { type: string, format: date-time }
+    InstanceTrustSet:
+      type: object
+      description: |
+        File /etc/gromesh/instance-keys.json of the isolation-probe, from the chart (workspaces.instanceSigningKeys):
+        the only instance keys it trusts. Not an HTTP body. Each kid must equal the RFC 7638 thumbprint of its
+        publicKey; any deviation (unknown member, duplicated kid or key, malformed key, wrong thumbprint) makes the
+        whole set invalid and the probe issues no lease. Up to three keys: the two active of a rotation and a retired
+        one whose admissions are still open.
+      additionalProperties: false
+      required: [keys]
+      properties:
+        keys:
+          type: array
+          minItems: 1
+          maxItems: 3
+          items:
+            type: object
+            additionalProperties: false
+            required: [kid, publicKey]
+            properties:
+              kid: { type: string, pattern: "^[A-Za-z0-9_-]{43}$" }
+              publicKey: { type: string, pattern: "^[A-Za-z0-9_-]{43}$", description: "base64url Ed25519 public key (32 bytes)" }
+    IsolationHandoff:
+      description: |
+        Directory /gromesh/handoff shared by the agent and the isolation-probe of one pod. Not an HTTP body. Every file
+        is written atomically (temporary file, fsync, rename) by its only writer and read only as a regular file,
+        never through a symlink and never blocking:
+          probe.pub (probe): its Ed25519 public key, base64url, the probePublicKey of the admission request;
+          admission.jws (agent): the granted admission as received (AdmissionRequestStatus.admission);
+          challenge (agent): the latest challenge of getIsolationChallenge, absent when null;
+          releases.json (agent): {"items": [...]} as received from listIsolationReleases;
+          outbox/<seq, 20 digits>.jws (probe): each report of its queue not acknowledged yet, in order (the queue
+            itself lives in the probe's own volume);
+          acks.json (agent): {"admissionId", "ackedSeq"} as acknowledged by the control plane for the current
+            admission; the probe drops from its queue only that admission's reports up to ackedSeq. A false ack can
+            only lose reports, which the control plane sees as a gap (admissions held).
+      type: object

@@ -342,6 +342,121 @@ paths:
         "200": { description: Usage, content: { application/json: { schema: { $ref: "#/components/schemas/ApiV1Usage" } } } }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+  /instance/signing-keys:
+    get:
+      tags: [ instance ]
+      operationId: listInstanceSigningKeys
+      x-scope: instance
+      x-gromesh-requirements: [ GW-ENV-01, GW-WS-16a ]
+      x-required-permission: platform.admin
+      x-gromesh-planned: true
+      description: |
+        The instance's own signing keys (B §4.5; the N4 subset the N2 isolation admissions need), newest first. Only
+        public data: the private part never leaves the instance and is never in a response, a log, an audit event or
+        an error. The active and retired public keys, with their kid, are what the data plane chart lists as the
+        isolation-probe's trust set (workspaces.instanceSigningKeys; agent protocol v2, InstanceTrustSet); a peer
+        instance registers the same entries in its trust store (setPeerKeys).
+      responses:
+        "200":
+          description: Keys
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: false, required: [ items ], properties: { items: { type: array, items: { $ref: "#/components/schemas/InstanceSigningKey" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [ instance ]
+      operationId: createInstanceSigningKey
+      x-scope: instance
+      x-gromesh-requirements: [ GW-ENV-01, GW-WS-16a ]
+      x-required-permission: platform.admin
+      x-gromesh-planned: true
+      security: [ { cookieAuth: [], csrfToken: [] } ]
+      description: |
+        Generates a new Ed25519 key pair in the instance (CSPRNG) and records it active from now until validUntil.
+        The private part is sealed with the instance's encryption key (enc:v2, bound to the context
+        instance_signing_keys.private_key + kid) and is never exported, not even by this operation. kid is the RFC 7638
+        JWK thumbprint of the public key (SHA-256 of {"crv":"Ed25519","kty":"OKP","x":<publicKey>}, base64url), so
+        any holder of the public key can check it. At most two keys are active at a time (rotation with overlap): a
+        third answers 409. Every instance-signed document (isolation admissions and releases, and in N4 packages,
+        attestations and M2M assertions) is signed with the active key with the latest validFrom whose validity
+        covers the signing time, and records its kid. Session + CSRF only; audited (kid, validFrom, validUntil).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [ validUntil ]
+              properties:
+                validUntil: { type: string, format: date-time, description: "More than 1 day and at most 730 days from now (422 otherwise)" }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/InstanceSigningKey" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /instance/signing-keys/{kid}/retire:
+    parameters: [ { $ref: "#/components/parameters/SigningKeyId" } ]
+    post:
+      tags: [ instance ]
+      operationId: retireInstanceSigningKey
+      x-scope: instance
+      x-gromesh-requirements: [ GW-ENV-01, GW-WS-16a ]
+      x-required-permission: platform.admin
+      x-gromesh-planned: true
+      security: [ { cookieAuth: [], csrfToken: [] } ]
+      description: |
+        End of a rotation: the key signs nothing from now on (retiredAt = now) and stays only to verify what it signed
+        while active (keyTrust use=historical). 409 when the key is not active, or when no other active key covers now
+        (the instance would be left unable to sign without anyone deciding it; revoking is the way to stop at once).
+        Pods already admitted with it keep their admission while the key stays in their trust set. Session + CSRF;
+        justification required; audited.
+      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: false, required: [ justification ], properties: { justification: { type: string, minLength: 10 } } } } } }
+      responses:
+        "200": { description: Retired, content: { application/json: { schema: { $ref: "#/components/schemas/InstanceSigningKey" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /instance/signing-keys/{kid}/revoke:
+    parameters: [ { $ref: "#/components/parameters/SigningKeyId" } ]
+    post:
+      tags: [ instance ]
+      operationId: revokeInstanceSigningKey
+      x-scope: instance
+      x-gromesh-requirements: [ GW-ENV-01, GW-WS-16a ]
+      x-required-permission: platform.admin
+      x-gromesh-planned: true
+      security: [ { cookieAuth: [], csrfToken: [] } ]
+      description: |
+        The key may have signed something false: from the same transaction on the instance signs nothing with it and
+        trusts nothing it signed (keyTrust: revoked for every use), and an admission request that finds no other
+        active key covering now is refused with no-signing-key. Allowed for the last active key too. Pods trust an
+        instance key only through their trust set: revocation reaches them when the chart is rolled out without the
+        key (the probes then drop every admission it signed at the next round); until then the response's
+        openAdmissions counts the open admissions it signed. Session + CSRF; justification required; audited with an
+        alert. 409 when already revoked.
+      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: false, required: [ justification ], properties: { justification: { type: string, minLength: 10 } } } } } }
+      responses:
+        "200":
+          description: Revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ key, openAdmissions ]
+                properties:
+                  key: { $ref: "#/components/schemas/InstanceSigningKey" }
+                  openAdmissions: { type: integer, minimum: 0, description: "Open isolation admissions signed with this key, on every cluster of the instance" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /workspaces:
     get:
       tags: [ workspaces ]
@@ -3617,6 +3732,7 @@ components:
     PromotionId: { name: promotionId, in: path, required: true, schema: { type: string, format: uuid } }
     Version: { name: version, in: path, required: true, schema: { type: integer, minimum: 1 } }
     ClusterId: { name: clusterId, in: path, required: true, schema: { type: string, format: uuid } }
+    SigningKeyId: { name: kid, in: path, required: true, schema: { type: string, pattern: "^[A-Za-z0-9_-]{43}$" } }
     Cursor: { name: cursor, in: query, schema: { type: string } }
     Limit: { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
   responses:
@@ -4860,6 +4976,29 @@ components:
       type: object
       required: [ id, stage, role, transport ]
       properties: { id: { type: string, format: uuid }, stage: { $ref: "#/components/schemas/Stage" }, role: { enum: [ source, target ] }, transport: { enum: [ push, pull, file ] }, baseUrl: { type: [ string, "null" ] } }
+    InstanceSigningKey:
+      type: object
+      description: One of this instance's own signing keys; public data only (the private part never leaves the instance).
+      additionalProperties: false
+      required: [ kid, publicKey, status, validFrom, validUntil, retiredAt, revokedAt, createdAt ]
+      properties:
+        kid: { type: string, pattern: "^[A-Za-z0-9_-]{43}$", description: "RFC 7638 JWK thumbprint of publicKey (base64url SHA-256)" }
+        publicKey: { type: string, pattern: "^[A-Za-z0-9_-]{43}$", description: "base64url Ed25519 public key (32 bytes)" }
+        status: { $ref: "#/components/schemas/InstanceSigningKeyStatus" }
+        validFrom: { type: string, format: date-time }
+        validUntil: { type: string, format: date-time }
+        retiredAt: { type: [ string, "null" ], format: date-time }
+        revokedAt: { type: [ string, "null" ], format: date-time }
+        createdAt: { type: string, format: date-time }
+    InstanceSigningKeyStatus:
+      enum: [ active, retired, revoked ]
+      x-gromesh-transitions:
+        initial: [ active ]
+        terminal: [ revoked ]
+        transitions:
+          - [ active, retired, "retireInstanceSigningKey, with another active key covering now" ]
+          - [ active, revoked, "revokeInstanceSigningKey" ]
+          - [ retired, revoked, "revokeInstanceSigningKey" ]
     PeerKey:
       type: object
       required: [ kid, publicKey, status, validFrom, validUntil, retiredAt, revokedAt ]

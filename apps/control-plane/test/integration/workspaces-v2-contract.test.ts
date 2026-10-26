@@ -350,7 +350,7 @@ describe("state machines in the contracts", () => {
 
   it("finds the machines of the approved design", () => {
     expect(machines.map(([n]) => n.split("#")[1]).sort()).toEqual(
-      ["AdmissionOutcome", "AdmissionState", "ApprovalState", "DeploymentState", "EmergencyPostReviewStatus", "IsolationPendencyLifecycle", "PodIsolationState", "PromotionStatus", "WorkspaceRequestStatus"].sort(),
+      ["AdmissionOutcome", "AdmissionState", "ApprovalState", "DeploymentState", "EmergencyPostReviewStatus", "InstanceSigningKeyStatus", "IsolationPendencyLifecycle", "PodIsolationState", "PromotionStatus", "WorkspaceRequestStatus"].sort(),
     );
   });
 
@@ -777,5 +777,54 @@ describe("signed package vector (C-21)", () => {
     expect(check({ ...vector.signedPackage, payload: tampered })).toBe(false);
     const pretty = Buffer.from(JSON.stringify(vector.payload, null, 1), "utf8").toString("base64url");
     expect(check({ ...vector.signedPackage, payload: pretty })).toBe(false);
+  });
+});
+
+describe("isolation signatures vector (N4-D3)", () => {
+  const vector = JSON.parse(read("examples/isolation-signatures.example.json"));
+  type Jws = { protected: string; payload: string; signature: string };
+  const text = (b64: string) => Buffer.from(b64, "base64url").toString("utf8");
+  const thumbprint = (x: string) => createHash("sha256").update(`{"crv":"Ed25519","kty":"OKP","x":"${x}"}`).digest("base64url");
+  // The reference reading of "Signatures": a flat header with exactly the members of its kind, each once, the key from
+  // the verifier's own trust, the signature over the received bytes before the payload is parsed.
+  const exactly = (json: string, names: string[]) => {
+    const seen = [...json.matchAll(/"((?:[^"\\]|\\.)*)"\s*:/g)].map((m) => m[1]);
+    const value = JSON.parse(json);
+    return new Set(seen).size === seen.length && seen.length === names.length && names.every((n) => typeof value[n] === "string") ? value : null;
+  };
+  const accept = (jws: Jws, typ: string, keyOf: (header: Record<string, string>) => string | undefined, claims: string) => {
+    const header = exactly(text(jws.protected), typ === "gromesh-probe-report+json" ? ["alg", "typ"] : ["alg", "kid", "typ"]);
+    if (!header || header.alg !== "EdDSA" || header.typ !== typ) return false;
+    const x = keyOf(header);
+    if (!x) return false;
+    const key = createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x }, format: "jwk" });
+    if (!verify(null, Buffer.from(`${jws.protected}.${jws.payload}`, "ascii"), key, Buffer.from(jws.signature, "base64url"))) return false;
+    return validAgent(claims, JSON.parse(text(jws.payload))) === true;
+  };
+  const trusted = (header: Record<string, string>) => vector.trustSet.keys.find((k: { kid: string }) => k.kid === header.kid)?.publicKey;
+
+  it("derives every kid of the trust set from its public key (RFC 7638)", () => {
+    expect(validAgent("InstanceTrustSet", vector.trustSet)).toBe(true);
+    for (const k of vector.trustSet.keys) expect(k.kid).toBe(thumbprint(k.publicKey));
+    expect(vector.kidIsThumbprintOf).toBe(`{"crv":"Ed25519","kty":"OKP","x":"${vector.trustSet.keys[0].publicKey}"}`);
+    expect(valid("InstanceSigningKey", { ...vector.trustSet.keys[0], status: "active", validFrom: "2026-10-26T00:00:00Z", validUntil: "2027-10-26T00:00:00Z", retiredAt: null, revokedAt: null, createdAt: "2026-10-26T00:00:00Z" })).toBe(true);
+  });
+
+  it("accepts the admission and the release with the instance key, the report with the probe key of the admission", () => {
+    expect(accept(vector.admission, "gromesh-admission+json", trusted, "AdmissionClaims")).toBe(true);
+    expect(JSON.parse(text(vector.admission.payload))).toEqual(vector.admissionClaims);
+    expect(accept(vector.release, "gromesh-isolation-release+json", trusted, "IsolationReleaseClaims")).toBe(true);
+    expect(accept(vector.report, "gromesh-probe-report+json", () => vector.admissionClaims.probePublicKey, "ProbeReport")).toBe(true);
+    // The report key is the admission's, never an instance key, and an instance-signed document is not a report.
+    expect(accept(vector.report, "gromesh-probe-report+json", () => vector.trustSet.keys[0].publicKey, "ProbeReport")).toBe(false);
+    expect(accept(vector.admission, "gromesh-probe-report+json", () => vector.admissionClaims.probePublicKey, "ProbeReport")).toBe(false);
+  });
+
+  it("refuses every case of mustRefuse", () => {
+    expect(vector.mustRefuse.length).toBeGreaterThanOrEqual(11);
+    for (const { reason, jws } of vector.mustRefuse) {
+      expect(validAgent("Jws", jws), reason).toBe(true);
+      expect(accept(jws, "gromesh-admission+json", trusted, "AdmissionClaims"), reason).toBe(false);
+    }
   });
 });
