@@ -1,10 +1,10 @@
 import { Controller, Get, Inject, Injectable, Logger, Module, type OnApplicationBootstrap, type OnModuleDestroy } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, gte, isNotNull, isNull, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNotNull, isNull, lt, sql } from "drizzle-orm";
 import { API_V1_USAGE, type ApiV1UsageRecorder, RequiredPermission } from "../auth/auth.js";
 import { APP_CONFIG, type AppConfig } from "../config.js";
 import { ENCRYPTOR, type Encryptor } from "../crypto/crypto.js";
-import { DB, type Db } from "../db/db.js";
+import { BEFORE_POOL_END, DB, type Db } from "../db/db.js";
 import { apiV1Usage, apiV1UsageReplicas } from "../db/schema.js";
 import { migrationReport } from "../workspaces/migration-report.js";
 
@@ -27,9 +27,9 @@ const utcDay = () => new Date().toISOString().slice(0, 10);
  * The counting never decides a request: a call whose count cannot be written goes on, and its day is marked as not
  * complete. No call counted proves nothing about a time nobody was counting: each replica keeps a row from its
  * start, confirmed by every flush up to then (never past a token call still in flight, one confirmation at a time)
- * and closed when it stops cleanly with nothing in flight. A failure goes with the next confirmation; a replica that
- * went silent without closing may still be taking calls it cannot count, so no day from its last confirmation on is
- * complete while its row is kept (until that confirmation leaves the window).
+ * and closed when it stops cleanly with nothing in flight, once the HTTP server no longer takes calls. A failure goes
+ * with the next confirmation. A replica that went silent without closing may still be taking calls it cannot count:
+ * no day from its last confirmation on is complete, its row is never pruned, and the report lists it.
  */
 @Injectable()
 export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBootstrap, OnModuleDestroy {
@@ -50,7 +50,10 @@ export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBoots
   constructor(
     @Inject(DB) private readonly db: Db,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
-  ) {}
+    @Inject(BEFORE_POOL_END) beforePoolEnd: (() => Promise<void>)[],
+  ) {
+    beforePoolEnd.push(() => this.close());
+  }
 
   async onApplicationBootstrap(): Promise<void> {
     await this.confirm();
@@ -62,13 +65,23 @@ export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBoots
   async onModuleDestroy(): Promise<void> {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
-    // From here on a token call that fails to be written confirms its failure itself (the row may be closed meanwhile).
+    // From here on a token call that fails to be written confirms its failure itself.
     this.stopping = true;
-    // The admitted calls finish first (a few seconds at most): their failures go with the last confirmation.
+  }
+
+  /**
+   * After the HTTP server stopped (no call is admitted any more), before the pool ends: the admitted calls finish
+   * first (a few seconds at most), then only a clean stop with nothing in flight or unwritten closes the row;
+   * otherwise its silence counts as a possible loss.
+   */
+  async close(): Promise<void> {
     for (let i = 0; i < 100 && this.inFlight.size > 0; i++) await new Promise((r) => setTimeout(r, 50));
-    await this.flush();
-    // Only a clean stop with nothing in flight closes the row: otherwise its silence counts as a possible loss.
-    if (this.inFlight.size === 0 && this.failedOn.size === 0) await this.confirm(true);
+    try {
+      await this.flush();
+      if (this.inFlight.size === 0 && this.failedOn.size === 0) await this.confirm(true);
+    } catch (error) {
+      this.logger.error(`v1 usage row left open (silent): ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   begin(): symbol {
@@ -155,7 +168,8 @@ export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBoots
     await this.db.delete(apiV1Usage).where(lt(apiV1Usage.day, sql`${today} - ${WINDOW_DAYS - 1}::int`));
     // A row matters while what it covers, or the time it may have lost a call in, reaches into the window.
     const windowStart = sql`(${today} - ${WINDOW_DAYS - 1}::int)::timestamp at time zone 'utc'`;
-    await this.db.delete(apiV1UsageReplicas).where(lt(apiV1UsageReplicas.seenAt, windowStart));
+    // An open row that went silent is never pruned: nothing proves that replica stopped taking calls.
+    await this.db.delete(apiV1UsageReplicas).where(and(lt(apiV1UsageReplicas.seenAt, windowStart), eq(apiV1UsageReplicas.closed, true)));
   }
 
   private async add(day: string, token: { id: string; name: string; ownerId: string } | null, calls: number): Promise<void> {
@@ -211,7 +225,17 @@ export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBoots
       .where(and(isNotNull(apiV1Usage.tokenId), gte(apiV1Usage.day, since)))
       .groupBy(apiV1Usage.tokenId)
       .orderBy(desc(sql`max(${apiV1Usage.day})`), apiV1Usage.tokenId);
-    return { windowDays: WINDOW_DAYS as 30, since: window!.since, completeThrough: window!.completeThrough, sessionCalls: session!.calls, tokens: rows };
+    // What keeps the window from completing until someone proves those replicas stopped: listed, by identity only.
+    const silent = await this.db
+      .select({
+        replicaId: apiV1UsageReplicas.replicaId,
+        startedAt: sql<string>`to_char(${apiV1UsageReplicas.startedAt} at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`,
+        lastConfirmedAt: sql<string>`to_char(${apiV1UsageReplicas.seenAt} at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`,
+      })
+      .from(apiV1UsageReplicas)
+      .where(and(eq(apiV1UsageReplicas.closed, false), lt(apiV1UsageReplicas.seenAt, sql`now() - ${margin}`)))
+      .orderBy(asc(apiV1UsageReplicas.seenAt));
+    return { windowDays: WINDOW_DAYS as 30, since: window!.since, completeThrough: window!.completeThrough, silentReplicas: silent, sessionCalls: session!.calls, tokens: rows };
   }
 }
 

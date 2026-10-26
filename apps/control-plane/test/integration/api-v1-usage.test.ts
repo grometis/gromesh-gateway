@@ -22,7 +22,7 @@ describe("the v1 calls the cut will remove, the migration report and one authori
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     const validate = contractsV2.validator("ApiV1Usage");
     expect(validate(structuredClone(res.body)), JSON.stringify(validate.errors)).toBe(true);
-    return res.body as { windowDays: number; since: string; completeThrough: string; sessionCalls: number; tokens: { tokenId: string; tokenName: string; ownerId: string; calls: number; lastCalledOn: string }[] };
+    return res.body as { windowDays: number; since: string; completeThrough: string; silentReplicas: { replicaId: string }[]; sessionCalls: number; tokens: { tokenId: string; tokenName: string; ownerId: string; calls: number; lastCalledOn: string }[] };
   };
   const bearer = (token: string): ApiClient => (method, path, body) => h.anonymous(method, path, body, { authorization: `Bearer ${token}` });
 
@@ -163,11 +163,14 @@ describe("the v1 calls the cut will remove, the migration report and one authori
     expect((await read()).since).toBe(await day(-1));
     await h.sql.query(`delete from api_v1_usage_replicas where seen_at = ${at(10)} - interval '1 second'`);
     expect((await read()).since).toBe(await day(29));
-    // Pruned once its last confirmation leaves the window, and not before.
-    await h.sql.query(`insert into api_v1_usage_replicas (replica_id, started_at, seen_at) values (gen_random_uuid(), ${at(40)}, ${at(29)} + interval '1 minute'), (gen_random_uuid(), ${at(40)}, ${at(29)} - interval '1 minute')`);
-    expect((await read()).since).toBe(await day(-1));
-    expect((await h.sql.query(`select count(*)::int as n from api_v1_usage_replicas where started_at = ${at(40)}`)).rows[0].n).toBe(1);
-    await h.sql.query(`delete from api_v1_usage_replicas where started_at = ${at(40)}`);
+    // Never pruned, however old, and listed: nothing proves it stopped taking calls. A closed one leaves with the window.
+    await h.sql.query(`insert into api_v1_usage_replicas (replica_id, started_at, seen_at) values ('00000000-0000-4000-8000-0000000000c1', ${at(60)}, ${at(45)})`);
+    await h.sql.query(`insert into api_v1_usage_replicas (replica_id, started_at, seen_at, closed) values (gen_random_uuid(), ${at(60)}, ${at(44)}, true)`);
+    const r = await read();
+    expect(r.since).toBe(await day(-1));
+    expect(r.silentReplicas).toEqual([expect.objectContaining({ replicaId: "00000000-0000-4000-8000-0000000000c1" })]);
+    expect((await h.sql.query(`select closed from api_v1_usage_replicas where started_at = ${at(60)}`)).rows).toEqual([{ closed: false }]);
+    await h.sql.query(`delete from api_v1_usage_replicas where started_at = ${at(60)}`);
     expect((await read()).since).toBe(await day(29));
   });
 
@@ -192,7 +195,7 @@ describe("the v1 calls the cut will remove, the migration report and one authori
     }
   });
 
-  it("still serves and counts the token calls after the clean stop closed the row", async () => {
+  it("closes the row only once the HTTP server takes no more calls, and counts every call it took", async () => {
     const created = await h.api("POST", "/users/me/tokens", { name: uniq("late"), role: "viewer", expiresInDays: 1 });
     const other = await startHarness({ databaseUrl: dbUrl, apiV1UsageFlushMs: 0 });
     const theirs = other.app.get(ApiV1UsageService);
@@ -200,13 +203,15 @@ describe("the v1 calls the cut will remove, the migration report and one authori
     const call = () => other.anonymous("GET", `/environments/${env}/services`, undefined, { authorization: `Bearer ${created.body.token as string}` });
     try {
       expect((await call()).status).toBe(200);
+      // Module teardown: the server still takes calls, so the row stays open.
       await theirs.onModuleDestroy();
       expect((await call()).status).toBe(200);
-      const row = (await h.sql.query(`select closed, failed_on::text[] as failed from api_v1_usage_replicas where replica_id = $1`, [id])).rows[0];
-      expect(row).toEqual({ closed: true, failed: [] });
+      expect((await h.sql.query(`select closed from api_v1_usage_replicas where replica_id = $1`, [id])).rows[0].closed).toBe(false);
     } finally {
       await other.close();
     }
+    const row = (await h.sql.query(`select closed, failed_on::text[] as failed from api_v1_usage_replicas where replica_id = $1`, [id])).rows[0];
+    expect(row).toEqual({ closed: true, failed: [] });
     expect((await read()).tokens.find((t) => t.tokenId === created.body.id)).toMatchObject({ calls: 2 });
   });
 

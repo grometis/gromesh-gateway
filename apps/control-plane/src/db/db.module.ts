@@ -1,7 +1,7 @@
 import { Global, Inject, Module, type OnApplicationShutdown } from "@nestjs/common";
 import type pg from "pg";
 import { APP_CONFIG, type AppConfig } from "../config.js";
-import { createDb, DB, PG_POOL } from "./db.js";
+import { BEFORE_POOL_END, createDb, DB, PG_POOL } from "./db.js";
 
 @Global()
 @Module({
@@ -16,13 +16,18 @@ import { createDb, DB, PG_POOL } from "./db.js";
       inject: [PG_POOL],
       useFactory: (created: ReturnType<typeof createDb>) => created.db,
     },
+    { provide: BEFORE_POOL_END, useValue: [] },
   ],
-  exports: [DB, PG_POOL],
+  exports: [DB, PG_POOL, BEFORE_POOL_END],
 })
 export class DbModule implements OnApplicationShutdown {
-  constructor(@Inject(PG_POOL) private readonly created: { pool: pg.Pool }) {}
+  constructor(
+    @Inject(PG_POOL) private readonly created: { pool: pg.Pool },
+    @Inject(BEFORE_POOL_END) private readonly before: (() => Promise<void>)[],
+  ) {}
 
   async onApplicationShutdown(): Promise<void> {
+    for (const work of this.before) await work();
     await this.created.pool.end();
   }
 }
