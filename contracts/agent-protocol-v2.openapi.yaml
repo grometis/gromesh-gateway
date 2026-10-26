@@ -411,8 +411,11 @@ components:
       type: object
       description: |
         Payload of a release JWS, signed with the instance key; it never replaces a pod's own proof. A probe leaves
-        violation only with a release that names its own admission with a throughSeq at least the seq of every report
-        it signed in violation: a release kept by the agent and shown after a later violation does not cover it.
+        violation only with a release of kind confirmed-violation that names its own admission with a throughSeq at
+        least the seq of the last report of a round in which it detected a failure (the probe persists that seq; the
+        reports of later rounds that only keep the latched violation do not move it). A release kept by the agent and
+        shown after a later detection does not cover it; an unconfirmed-isolation release never clears a violation (it
+        only closes the orphan admission in the control plane).
       additionalProperties: false
       required: [clusterId, pendencyId, kind, expiresAt, admissions]
       properties:
