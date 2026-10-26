@@ -47,10 +47,26 @@ refuse_ws 'no forbidden target for CAP-3' --kube-version 1.33.0 --set 'workspace
 refuse_ws 'must differ from kong.runAsUser' --kube-version 1.33.0 --set workspaces.probe.runAsUser=1001
 refuse_ws 'workspaces.clusterId' --kube-version 1.33.0 --set-string workspaces.clusterId=nope
 refuse_ws 'positive control' --kube-version 1.33.0 --set 'workspaces.probe.checks[5].kind=tcp'
-# The probe's own rules accept the rendered configuration (it would never issue a lease otherwise).
-docker run --rm -i mikefarah/yq:4.44.3 ea 'select(.kind == "ConfigMap" and (.metadata.name | test("-isolation-probe$"))) | .data["probe.json"]' < "$work/workspaces.yaml" > "$work/probe.json"
-docker run --rm -v "$PWD/apps/isolation:/src:ro" -v "$work/probe.json:/probe.json:ro" -w /src -e GOTOOLCHAIN=local -e GOCACHE=/tmp/go-cache \
-  golang:1.27.2-alpine go run ./cmd/isolation-probe check-config /probe.json
+refuse_ws 'must list 1 to 3 instance signing keys' --kube-version 1.33.0 --set-json 'workspaces.instanceSigningKeys=[]'
+refuse_ws 'instanceSigningKeys' --kube-version 1.33.0 --set-json 'workspaces.instanceSigningKeys=[{"kid":"a","publicKey":"b"}]'
+refuse_ws 'duplicated kid or publicKey' --kube-version 1.33.0 --set-json \
+  'workspaces.instanceSigningKeys=[{"kid":"LduU6YNgsIRbClfLYYXfg5VEWL3S5q8TsrvV01NRaic","publicKey":"vIeB87e8hCwQ5rBCgRDOAdhiVQhLPBJSuNoepr249V4"},{"kid":"LduU6YNgsIRbClfLYYXfg5VEWL3S5q8TsrvV01NRaic","publicKey":"eJruDCDhWRkOIQ6emzNVbcRU3eSRGM7oJ90NR5dQACU"}]'
+# A kid that is not its key's RFC 7638 thumbprint renders (helm cannot hash to base64url), and the probe refuses it below.
+helm template dp "$chart" -f "$chart/ci/values-workspaces.yaml" --kube-version 1.33.0 --set-json \
+  'workspaces.instanceSigningKeys=[{"kid":"LduU6YNgsIRbClfLYYXfg5VEWL3S5q8TsrvV01NRaiX","publicKey":"vIeB87e8hCwQ5rBCgRDOAdhiVQhLPBJSuNoepr249V4"}]' > "$work/wrong-kid.yaml"
+# The probe's own rules accept the rendered configuration and trust set (it would never issue a lease otherwise) and
+# refuse the wrong kid.
+probe_file() { docker run --rm -i mikefarah/yq:4.44.3 ea "select(.kind == \"ConfigMap\" and (.metadata.name | test(\"-isolation-probe\$\"))) | .data[\"$1\"]" < "$2"; }
+probe_file probe.json "$work/workspaces.yaml" > "$work/probe.json"
+probe_file instance-keys.json "$work/workspaces.yaml" > "$work/instance-keys.json"
+probe_file instance-keys.json "$work/wrong-kid.yaml" > "$work/wrong-kid.json"
+docker run --rm -v "$PWD/apps/isolation:/src:ro" -v "$work:/work:ro" -w /src -e GOTOOLCHAIN=local -e GOCACHE=/tmp/go-cache \
+  golang:1.27.2-alpine sh -ec '
+    go build -o /tmp/isolation-probe ./cmd/isolation-probe
+    /tmp/isolation-probe check-config /work/probe.json
+    /tmp/isolation-probe check-trust-set /work/instance-keys.json
+    if /tmp/isolation-probe check-trust-set /work/wrong-kid.json 2> /tmp/wrong.log; then echo "probe accepted a kid that is not the thumbprint" >&2; exit 1; fi
+    grep -Fq "is not the RFC 7638 thumbprint of its publicKey" /tmp/wrong.log'
 pnpm --filter @gromesh/control-plane exec node --input-type=module - "$work/workspaces.yaml" <<'JS'
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -78,13 +94,31 @@ assert.equal(mount(agent, 'isolation'), undefined);
 assert.equal(mount(probe, 'kong-admin'), undefined);
 assert.equal(mount(probe, 'agent-state'), undefined);
 assert.notEqual(probe.securityContext.runAsUser, kong.securityContext.runAsUser);
+// The trust set comes only from the chart, read-only; the old single key is gone; kong's stop record is read-only.
+const env = (c, name) => c.env.find(e => e.name === name);
+assert.equal(env(probe, 'GROMESH_INSTANCE_PUBLIC_KEY'), undefined);
+assert.equal(env(probe, 'GROMESH_INSTANCE_KEYS').value, '/etc/gromesh/instance-keys.json');
+assert.equal(env(probe, 'GROMESH_PROBE_CONFIG').value, '/etc/gromesh/probe.json');
+assert.deepEqual(mount(probe, 'isolation-probe-config'), { name: 'isolation-probe-config', mountPath: '/etc/gromesh', readOnly: true });
+assert.deepEqual(mount(probe, 'kong-state'), { name: 'kong-state', mountPath: '/gromesh/kong-state', readOnly: true });
+assert.equal(mount(agent, 'isolation-probe-config'), undefined, 'the agent never sees the trust set it could swap');
+assert.equal(mount(agent, 'kong-state'), undefined);
+assert.equal(env(agent, 'GROMESH_HANDOFF_DIR').value, '/gromesh/handoff');
+assert.equal(env(agent, 'GROMESH_POD_UID').valueFrom.fieldRef.fieldPath, 'metadata.uid');
+assert.equal(env(agent, 'GROMESH_NODE_NAME').valueFrom.fieldRef.fieldPath, 'spec.nodeName');
+const volume = name => pod.volumes.find(v => v.name === name);
+assert.equal(volume('isolation').emptyDir.sizeLimit, '80Mi');
+assert.equal(volume('isolation-handoff').emptyDir.sizeLimit, '80Mi');
 assert.equal(probe.ports, undefined, 'the probe never listens');
 assert.deepEqual(probe.readinessProbe, { exec: { command: ['/gromesh/isolation-bin/isolation-probe', 'ready'] }, periodSeconds: 1, timeoutSeconds: 1, failureThreshold: 1 });
 assert.equal(pod.terminationGracePeriodSeconds, 30);
 assert.equal(pod.shareProcessNamespace, undefined);
-const config = JSON.parse(docs.find(r => r.kind === 'ConfigMap' && r.metadata.name.endsWith('-isolation-probe')).data['probe.json']);
+const probeConfigMap = docs.find(r => r.kind === 'ConfigMap' && r.metadata.name.endsWith('-isolation-probe'));
+assert.equal(volume('isolation-probe-config').configMap.name, probeConfigMap.metadata.name);
+assert.deepEqual(JSON.parse(probeConfigMap.data['instance-keys.json']), { keys: [{ kid: 'LduU6YNgsIRbClfLYYXfg5VEWL3S5q8TsrvV01NRaic', publicKey: 'vIeB87e8hCwQ5rBCgRDOAdhiVQhLPBJSuNoepr249V4' }] });
+const config = JSON.parse(probeConfigMap.data['probe.json']);
 assert.equal(new Set(config.checks.filter(c => ['tcp', 'http'].includes(c.kind)).map(c => c.capability)).size, 7);
-console.log('Workspaces mode render passed: native sidecars before kong, supervisor and liveness, lease read-only in kong and absent from the agent');
+console.log('Workspaces mode render passed: native sidecars before kong, supervisor and liveness, lease read-only in kong and absent from the agent, trust set from the chart only');
 JS
 pnpm --filter @gromesh/control-plane exec node --input-type=module - "$work/default.yaml" "$work/full.yaml" <<'JS'
 import assert from 'node:assert/strict';

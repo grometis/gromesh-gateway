@@ -87,10 +87,12 @@ spec:
                   fieldPath: metadata.uid
             - name: GROMESH_CLUSTER_ID
               value: {{ .Values.workspaces.clusterId | quote }}
-            - name: GROMESH_INSTANCE_PUBLIC_KEY
-              value: {{ .Values.workspaces.instancePublicKey | quote }}
+            - name: GROMESH_INSTANCE_KEYS
+              value: /etc/gromesh/instance-keys.json
             - name: GROMESH_PROBE_CONFIG
-              value: /etc/gromesh/probe/probe.json
+              value: /etc/gromesh/probe.json
+            - name: GROMESH_KONG_STATE_FILE
+              value: /gromesh/kong-state/kong-state.json
           # The probe never listens: Ready only in state ok with a valid lease.
           readinessProbe:
             exec:
@@ -106,7 +108,11 @@ spec:
             - name: isolation-handoff
               mountPath: /gromesh/handoff
             - name: isolation-probe-config
-              mountPath: /etc/gromesh/probe
+              mountPath: /etc/gromesh
+              readOnly: true
+            # kong-supervisor's record of the stop, for the final report's kongStopConfirmed.
+            - name: kong-state
+              mountPath: /gromesh/kong-state
               readOnly: true
         {{- end }}
       containers:
@@ -275,18 +281,21 @@ spec:
             name: {{ include "data-plane.fullname" . }}-kong-listeners
         {{- if .Values.workspaces.enabled }}
         # Written only by the probe (its own UID); read-only in kong; never mounted by the agent.
+        # The report queue alone may reach 64Mi (then the probe stops renewing): the volume holds it with room to spare,
+        # so the probe stops serving before the kubelet would evict the pod.
         - name: isolation
           emptyDir:
-            sizeLimit: 64Mi
+            sizeLimit: 80Mi
         - name: kong-state
           emptyDir:
             sizeLimit: 1Mi
         - name: isolation-bin
           emptyDir:
             sizeLimit: 64Mi
+        # The outbox mirrors the probe's queue (up to 64Mi) beside the agent's documents.
         - name: isolation-handoff
           emptyDir:
-            sizeLimit: 64Mi
+            sizeLimit: 80Mi
         - name: isolation-probe-config
           configMap:
             name: {{ include "data-plane.fullname" . }}-isolation-probe

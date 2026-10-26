@@ -7,4 +7,6 @@ metadata:
     {{- include "data-plane.labels" . | nindent 4 }}
 data:
   probe.json: {{ dict "checks" .Values.workspaces.probe.checks | toJson | quote }}
+  # InstanceTrustSet: the probe reads it again every round, so a key removed here stops counting without a restart.
+  instance-keys.json: {{ dict "keys" .Values.workspaces.instanceSigningKeys | toJson | quote }}
 {{- end }}

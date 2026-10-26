@@ -302,9 +302,27 @@
         "clusterId": {
           "type": "string"
         },
-        "instancePublicKey": {
-          "type": "string",
-          "pattern": "^$|^[A-Za-z0-9_-]{43}$"
+        "instanceSigningKeys": {
+          "type": "array",
+          "maxItems": 3,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kid",
+              "publicKey"
+            ],
+            "properties": {
+              "kid": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{43}$"
+              },
+              "publicKey": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{43}$"
+              }
+            }
+          }
         },
         "probe": {
           "type": "object",
