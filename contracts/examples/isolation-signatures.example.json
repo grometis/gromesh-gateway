@@ -1,5 +1,5 @@
 {
-  "description": "N4-D3 byte-level vector for instance-signed isolation documents and probe reports (agent-protocol-v2: Signatures, InstanceTrustSet). TEST-ONLY keys derived from published seeds; never trust them. Every entry of mustRefuse has a valid Ed25519 signature unless its reason says otherwise and must still be refused by the probe with trustSet.",
+  "description": "N4-D3 byte-level vector for instance-signed isolation documents and probe reports (agent-protocol-v2: Signatures, InstanceTrustSet). TEST-ONLY keys derived from published seeds; never trust them. Every entry of mustRefuse has a valid Ed25519 signature unless its reason says otherwise and must still be refused by the probe with trustSet and expectedContext (its own cluster, pod, node boot and persisted key). Every entry of invalidTrustSets makes the whole set invalid.",
   "testOnlySeedsHex": {
     "instance": "67726f6d6573682d6e342d64332d696e7374616e63652d6b65792d7465737431",
     "unknownInstance": "67726f6d6573682d6e342d64332d756e6b6e6f776e2d6b65792d2d7465737431",
@@ -13,6 +13,92 @@
       }
     ]
   },
+  "expectedContext": {
+    "clusterId": "00000000-0000-4000-8000-00000000c001",
+    "podUid": "00000000-0000-4000-8000-00000000d001",
+    "bootId": "00000000-0000-4000-8000-00000000b001",
+    "probePublicKey": "eJruDCDhWRkOIQ6emzNVbcRU3eSRGM7oJ90NR5dQACU"
+  },
+  "invalidTrustSets": [
+    {
+      "reason": "kid is not the thumbprint of publicKey",
+      "set": {
+        "keys": [
+          {
+            "kid": "laEnwiEkuxU55yB746Ua5-5-Sv4b83D-rE5ONvr_ACg",
+            "publicKey": "vIeB87e8hCwQ5rBCgRDOAdhiVQhLPBJSuNoepr249V4"
+          }
+        ]
+      }
+    },
+    {
+      "reason": "duplicated kid",
+      "set": {
+        "keys": [
+          {
+            "kid": "LduU6YNgsIRbClfLYYXfg5VEWL3S5q8TsrvV01NRaic",
+            "publicKey": "vIeB87e8hCwQ5rBCgRDOAdhiVQhLPBJSuNoepr249V4"
+          },
+          {
+            "kid": "LduU6YNgsIRbClfLYYXfg5VEWL3S5q8TsrvV01NRaic",
+            "publicKey": "vIeB87e8hCwQ5rBCgRDOAdhiVQhLPBJSuNoepr249V4"
+          }
+        ]
+      }
+    },
+    {
+      "reason": "more than three keys",
+      "set": {
+        "keys": [
+          {
+            "kid": "LduU6YNgsIRbClfLYYXfg5VEWL3S5q8TsrvV01NRaic",
+            "publicKey": "vIeB87e8hCwQ5rBCgRDOAdhiVQhLPBJSuNoepr249V4"
+          },
+          {
+            "kid": "laEnwiEkuxU55yB746Ua5-5-Sv4b83D-rE5ONvr_ACg",
+            "publicKey": "1B54hvCPYNXQ8Q24Ct8ashzomlNCaDak6g-TffVEh38"
+          },
+          {
+            "kid": "CZoW-kgiroM2Zh_LMVjvC2gZWuWkUxyel0KW5fkwQ24",
+            "publicKey": "eJruDCDhWRkOIQ6emzNVbcRU3eSRGM7oJ90NR5dQACU"
+          },
+          {
+            "kid": "3m1N4iZKD14sJu6qoGe6KToPO3WvCfDfPvqlqWI8eu4",
+            "publicKey": "yOWQo_QttJ3LfQ6yBVIeThnOUurBPke1fTyxCng6Kc8"
+          }
+        ]
+      }
+    },
+    {
+      "reason": "member outside the schema",
+      "set": {
+        "keys": [
+          {
+            "kid": "LduU6YNgsIRbClfLYYXfg5VEWL3S5q8TsrvV01NRaic",
+            "publicKey": "vIeB87e8hCwQ5rBCgRDOAdhiVQhLPBJSuNoepr249V4",
+            "status": "active"
+          }
+        ]
+      }
+    },
+    {
+      "reason": "empty",
+      "set": {
+        "keys": []
+      }
+    },
+    {
+      "reason": "public key of 31 bytes",
+      "set": {
+        "keys": [
+          {
+            "kid": "Ojgo-AJO3gC-Q5PT-IRPynhv7S8176fUTfqX2bmpmz0",
+            "publicKey": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ"
+          }
+        ]
+      }
+    }
+  ],
   "kidIsThumbprintOf": "{\"crv\":\"Ed25519\",\"kty\":\"OKP\",\"x\":\"vIeB87e8hCwQ5rBCgRDOAdhiVQhLPBJSuNoepr249V4\"}",
   "admission": {
     "protected": "eyJhbGciOiJFZERTQSIsImtpZCI6IkxkdVU2WU5nc0lSYkNsZkxZWVhmZzVWRVdMM1M1cThUc3J2VjAxTlJhaWMiLCJ0eXAiOiJncm9tZXNoLWFkbWlzc2lvbitqc29uIn0",
@@ -136,6 +222,38 @@
         "protected": "eyJhbGciOiJFZERTQSIsImtpZCI6IkxkdVU2WU5nc0lSYkNsZkxZWVhmZzVWRVdMM1M1cThUc3J2VjAxTlJhaWMiLCJ0eXAiOiJncm9tZXNoLWFkbWlzc2lvbitqc29uIiwidHlwIjoiZ3JvbWVzaC1hZG1pc3Npb24ranNvbiJ9",
         "payload": "eyJjbHVzdGVySWQiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMGMwMDEiLCJwb2RVaWQiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMGQwMDEiLCJub2RlTmFtZSI6Indvcmtlci0xIiwiYm9vdElkIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDBiMDAxIiwiYWRtaXNzaW9uSWQiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMGEwMDEiLCJwcm9iZVB1YmxpY0tleSI6ImVKcnVEQ0RoV1JrT0lRNmVtek5WYmNSVTNlU1JHTTdvSjkwTlI1ZFFBQ1UiLCJzdGFydERlYWRsaW5lIjoiMjAyNi0xMC0yNlQxMjowNTowMFoifQ",
         "signature": "L7X_emL1fBSb_KiCHljpKodBey8yd-4l6DtYbG32omcUTJZa5q5ejXVzRfvXv_V39QhAW5k64R0qXXNkIFSDDw"
+      }
+    },
+    {
+      "reason": "admission of another cluster (valid signature)",
+      "jws": {
+        "protected": "eyJhbGciOiJFZERTQSIsImtpZCI6IkxkdVU2WU5nc0lSYkNsZkxZWVhmZzVWRVdMM1M1cThUc3J2VjAxTlJhaWMiLCJ0eXAiOiJncm9tZXNoLWFkbWlzc2lvbitqc29uIn0",
+        "payload": "eyJjbHVzdGVySWQiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMGMwMDIiLCJwb2RVaWQiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMGQwMDEiLCJub2RlTmFtZSI6Indvcmtlci0xIiwiYm9vdElkIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDBiMDAxIiwiYWRtaXNzaW9uSWQiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMGEwMDEiLCJwcm9iZVB1YmxpY0tleSI6ImVKcnVEQ0RoV1JrT0lRNmVtek5WYmNSVTNlU1JHTTdvSjkwTlI1ZFFBQ1UiLCJzdGFydERlYWRsaW5lIjoiMjAyNi0xMC0yNlQxMjowNTowMFoifQ",
+        "signature": "U3KClk9ZDV3mMUyR-WS_5HQwqlPNmBGUiycqKLrAp9AJArXcmRhYCy0c-l2miAGLuBH5w6e0MID-IDvesr4JAw"
+      }
+    },
+    {
+      "reason": "admission of another pod (valid signature)",
+      "jws": {
+        "protected": "eyJhbGciOiJFZERTQSIsImtpZCI6IkxkdVU2WU5nc0lSYkNsZkxZWVhmZzVWRVdMM1M1cThUc3J2VjAxTlJhaWMiLCJ0eXAiOiJncm9tZXNoLWFkbWlzc2lvbitqc29uIn0",
+        "payload": "eyJjbHVzdGVySWQiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMGMwMDEiLCJwb2RVaWQiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMGQwMDIiLCJub2RlTmFtZSI6Indvcmtlci0xIiwiYm9vdElkIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDBiMDAxIiwiYWRtaXNzaW9uSWQiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMGEwMDEiLCJwcm9iZVB1YmxpY0tleSI6ImVKcnVEQ0RoV1JrT0lRNmVtek5WYmNSVTNlU1JHTTdvSjkwTlI1ZFFBQ1UiLCJzdGFydERlYWRsaW5lIjoiMjAyNi0xMC0yNlQxMjowNTowMFoifQ",
+        "signature": "pvHwbpnXN7VZVG0oeIEaBZT2cWacpb7LI1JkkdnKkQfZ5YB6VOg1wlK_-km6hmZCiq4RypoxKU4X9FEwbX13Cg"
+      }
+    },
+    {
+      "reason": "admission of another boot (valid signature)",
+      "jws": {
+        "protected": "eyJhbGciOiJFZERTQSIsImtpZCI6IkxkdVU2WU5nc0lSYkNsZkxZWVhmZzVWRVdMM1M1cThUc3J2VjAxTlJhaWMiLCJ0eXAiOiJncm9tZXNoLWFkbWlzc2lvbitqc29uIn0",
+        "payload": "eyJjbHVzdGVySWQiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMGMwMDEiLCJwb2RVaWQiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMGQwMDEiLCJub2RlTmFtZSI6Indvcmtlci0xIiwiYm9vdElkIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDBiMDAyIiwiYWRtaXNzaW9uSWQiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMGEwMDEiLCJwcm9iZVB1YmxpY0tleSI6ImVKcnVEQ0RoV1JrT0lRNmVtek5WYmNSVTNlU1JHTTdvSjkwTlI1ZFFBQ1UiLCJzdGFydERlYWRsaW5lIjoiMjAyNi0xMC0yNlQxMjowNTowMFoifQ",
+        "signature": "o4z6UK-oQdPE1dZcW6AXkMjvrrca5UFYVvmhXQdB3yvhtV0SYJT8qeSCDFVj3e7QLPUOouiqCXQzZfKdnJSoAg"
+      }
+    },
+    {
+      "reason": "admission of another probe key (valid signature)",
+      "jws": {
+        "protected": "eyJhbGciOiJFZERTQSIsImtpZCI6IkxkdVU2WU5nc0lSYkNsZkxZWVhmZzVWRVdMM1M1cThUc3J2VjAxTlJhaWMiLCJ0eXAiOiJncm9tZXNoLWFkbWlzc2lvbitqc29uIn0",
+        "payload": "eyJjbHVzdGVySWQiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMGMwMDEiLCJwb2RVaWQiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMGQwMDEiLCJub2RlTmFtZSI6Indvcmtlci0xIiwiYm9vdElkIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDBiMDAxIiwiYWRtaXNzaW9uSWQiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMGEwMDEiLCJwcm9iZVB1YmxpY0tleSI6IjFCNTRodkNQWU5YUThRMjRDdDhhc2h6b21sTkNhRGFrNmctVGZmVkVoMzgiLCJzdGFydERlYWRsaW5lIjoiMjAyNi0xMC0yNlQxMjowNTowMFoifQ",
+        "signature": "hE2Aw1ClEDkGsi3ZixDo66IhJQdUuIK-8CJtAiTLNy9Ze78eI1BN3vPVgxCk5GxkZZkoEsA9uGgyTMMibcN4AA"
       }
     },
     {

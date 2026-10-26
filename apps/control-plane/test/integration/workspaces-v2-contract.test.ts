@@ -744,7 +744,7 @@ describe("signed package vector (C-21)", () => {
     expect(valid("SignedPackage", vector.signedPackage)).toBe(true);
     expect(jcs(vector.payload)).toBe(vector.canonicalPayload);
     expect(Buffer.from(vector.signedPackage.payload, "base64url").toString("utf8")).toBe(vector.canonicalPayload);
-    expect(JSON.parse(Buffer.from(vector.signedPackage.protected, "base64url").toString("utf8"))).toEqual({ alg: "EdDSA", kid: "dev-2026-10", typ: "gromesh-package+json", pkgVersion: 1 });
+    expect(JSON.parse(Buffer.from(vector.signedPackage.protected, "base64url").toString("utf8"))).toEqual({ alg: "EdDSA", kid: createHash("sha256").update(`{"crv":"Ed25519","kty":"OKP","x":"${vector.publicKeyJwk.x}"}`).digest("base64url"), typ: "gromesh-package+json", pkgVersion: 1 });
     expect(valid("PackagePayload", JSON.parse(vector.canonicalPayload))).toBe(true);
     expect(check(vector.signedPackage)).toBe(true);
   });
@@ -792,15 +792,21 @@ describe("isolation signatures vector (N4-D3)", () => {
     const value = JSON.parse(json);
     return new Set(seen).size === seen.length && seen.length === names.length && names.every((n) => typeof value[n] === "string") ? value : null;
   };
-  const accept = (jws: Jws, typ: string, keyOf: (header: Record<string, string>) => string | undefined, claims: string) => {
+  const trustSetValid = (set: { keys: { kid: string; publicKey: string }[] }) =>
+    validAgent("InstanceTrustSet", set) === true &&
+    set.keys.every((k) => Buffer.from(k.publicKey, "base64url").length === 32 && k.kid === thumbprint(k.publicKey)) &&
+    new Set(set.keys.map((k) => k.kid)).size === set.keys.length;
+  const accept = (jws: Jws, typ: string, keyOf: (header: Record<string, string>) => string | undefined, claims: string, context?: Record<string, string>) => {
     const header = exactly(text(jws.protected), typ === "gromesh-probe-report+json" ? ["alg", "typ"] : ["alg", "kid", "typ"]);
     if (!header || header.alg !== "EdDSA" || header.typ !== typ) return false;
     const x = keyOf(header);
     if (!x) return false;
     const key = createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x }, format: "jwk" });
     if (!verify(null, Buffer.from(`${jws.protected}.${jws.payload}`, "ascii"), key, Buffer.from(jws.signature, "base64url"))) return false;
-    return validAgent(claims, JSON.parse(text(jws.payload))) === true;
+    const payload = JSON.parse(text(jws.payload));
+    return validAgent(claims, payload) === true && Object.entries(context ?? {}).every(([k, v]) => payload[k] === v);
   };
+  const admitted = (jws: Jws) => trustSetValid(vector.trustSet) && accept(jws, "gromesh-admission+json", trusted, "AdmissionClaims", vector.expectedContext);
   const trusted = (header: Record<string, string>) => vector.trustSet.keys.find((k: { kid: string }) => k.kid === header.kid)?.publicKey;
 
   it("derives every kid of the trust set from its public key (RFC 7638)", () => {
@@ -811,7 +817,7 @@ describe("isolation signatures vector (N4-D3)", () => {
   });
 
   it("accepts the admission and the release with the instance key, the report with the probe key of the admission", () => {
-    expect(accept(vector.admission, "gromesh-admission+json", trusted, "AdmissionClaims")).toBe(true);
+    expect(admitted(vector.admission)).toBe(true);
     expect(JSON.parse(text(vector.admission.payload))).toEqual(vector.admissionClaims);
     expect(accept(vector.release, "gromesh-isolation-release+json", trusted, "IsolationReleaseClaims")).toBe(true);
     expect(accept(vector.report, "gromesh-probe-report+json", () => vector.admissionClaims.probePublicKey, "ProbeReport")).toBe(true);
@@ -820,11 +826,20 @@ describe("isolation signatures vector (N4-D3)", () => {
     expect(accept(vector.admission, "gromesh-probe-report+json", () => vector.admissionClaims.probePublicKey, "ProbeReport")).toBe(false);
   });
 
-  it("refuses every case of mustRefuse", () => {
-    expect(vector.mustRefuse.length).toBeGreaterThanOrEqual(11);
+  it("refuses every case of mustRefuse, the identity replays among them with a valid instance signature", () => {
+    expect(vector.mustRefuse.length).toBeGreaterThanOrEqual(15);
     for (const { reason, jws } of vector.mustRefuse) {
       expect(validAgent("Jws", jws), reason).toBe(true);
-      expect(accept(jws, "gromesh-admission+json", trusted, "AdmissionClaims"), reason).toBe(false);
+      expect(admitted(jws), reason).toBe(false);
     }
+    // The replays carry a valid signature: only the comparison with the probe's own context refuses them.
+    const replays = vector.mustRefuse.filter((c: { reason: string }) => c.reason.endsWith("(valid signature)"));
+    expect(replays).toHaveLength(4);
+    for (const { reason, jws } of replays) expect(accept(jws, "gromesh-admission+json", trusted, "AdmissionClaims"), reason).toBe(true);
+  });
+
+  it("refuses every trust set of invalidTrustSets as a whole", () => {
+    expect(trustSetValid(vector.trustSet)).toBe(true);
+    for (const { reason, set } of vector.invalidTrustSets) expect(trustSetValid(set), reason).toBe(false);
   });
 });

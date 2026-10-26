@@ -377,8 +377,8 @@ paths:
         The private part is sealed with the instance's encryption key (enc:v2, bound to the context
         instance_signing_keys.private_key + kid) and is never exported, not even by this operation. kid is the RFC 7638
         JWK thumbprint of the public key (SHA-256 of {"crv":"Ed25519","kty":"OKP","x":<publicKey>}, base64url), so
-        any holder of the public key can check it. At most two keys are active at a time (rotation with overlap): a
-        third answers 409. Every instance-signed document (isolation admissions and releases, and in N4 packages,
+        any holder of the public key can check it. At most two active keys whose validUntil is still ahead (rotation
+        with overlap): a third answers 409; an active key past its validUntil no longer counts. Every instance-signed document (isolation admissions and releases, and in N4 packages,
         attestations and M2M assertions) is signed with the active key with the latest validFrom whose validity
         covers the signing time, and records its kid. Session + CSRF only; audited (kid, validFrom, validUntil).
       requestBody:
@@ -409,8 +409,9 @@ paths:
       security: [ { cookieAuth: [], csrfToken: [] } ]
       description: |
         End of a rotation: the key signs nothing from now on (retiredAt = now) and stays only to verify what it signed
-        while active (keyTrust use=historical). 409 when the key is not active, or when no other active key covers now
-        (the instance would be left unable to sign without anyone deciding it; revoking is the way to stop at once).
+        while active (keyTrust use=historical). 409 when the key is not active, or when it still covers now and no other
+        active key does (the instance would be left unable to sign without anyone deciding it; revoking is the way to
+        stop at once). A key past its validUntil can always be retired.
         Pods already admitted with it keep their admission while the key stays in their trust set. Session + CSRF;
         justification required; audited.
       requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: false, required: [ justification ], properties: { justification: { type: string, minLength: 10 } } } } } }
@@ -4996,7 +4997,7 @@ components:
         initial: [ active ]
         terminal: [ revoked ]
         transitions:
-          - [ active, retired, "retireInstanceSigningKey, with another active key covering now" ]
+          - [ active, retired, "retireInstanceSigningKey, with another active key covering now or the key already past validUntil" ]
           - [ active, revoked, "revokeInstanceSigningKey" ]
           - [ retired, revoked, "revokeInstanceSigningKey" ]
     PeerKey:

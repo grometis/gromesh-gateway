@@ -40,8 +40,14 @@ info:
         key reaches the pods only through a rollout of the chart without it. Byte-level vector:
         contracts/examples/isolation-signatures.example.json.
       - Handoff (IsolationHandoff): the pod-local directory shared by the agent and the probe; nothing in it is
-        trusted beyond its signature, so the agent can withhold or delay documents (which fails closed) but cannot
-        forge an admission, a release or a report.
+        trusted beyond its signature. The agent can withhold or delay documents (which fails closed) but cannot forge
+        an admission, a release, or a report of an admission bound to the probe's key. What the binding proves: the
+        control plane certifies the probePublicKey the agent presented, nothing more (the probe does not authenticate
+        itself to the control plane). The probe adopts an admission only when its probePublicKey is the probe's own
+        persisted key, so an agent that presents another key gets an admission that never yields a lease: that pod
+        never serves, and the reports of such an admission, which the agent can sign, prove nothing about any pod
+        that serves. Declared residual: they still count as that admission's answers and closing for the admission
+        rule.
       - Reports: one per probe round, signed by the probe key bound to the admission, numbered without gaps, carrying
         the latest challenge the probe received. The agent only transports them in order; the control plane acks the
         highest contiguous seq after commit. A gap is kept until filled; the same seq with different content opens a
