@@ -43,3 +43,29 @@ func TestMetricsOverLoopbackAreRefusedOnARealListener(t *testing.T) {
 		t.Fatalf("loopback scrape: %d", res.StatusCode)
 	}
 }
+
+// A client in the pod binds its source to a non-loopback address of the pod and connects through loopback.
+func TestMetricsRefuseThePodsOwnAddressThroughLoopback(t *testing.T) {
+	var own net.IP
+	addrs, _ := net.InterfaceAddrs()
+	for _, a := range addrs {
+		if n, ok := a.(*net.IPNet); ok && n.IP.To4() != nil && !n.IP.IsLoopback() && !n.IP.IsLinkLocalUnicast() {
+			own = n.IP
+			break
+		}
+	}
+	if own == nil {
+		t.Skip("no non-loopback IPv4 interface")
+	}
+	server := httptest.NewServer((&Agent{}).MetricsHandler())
+	defer server.Close()
+	client := &http.Client{Transport: &http.Transport{DialContext: (&net.Dialer{LocalAddr: &net.TCPAddr{IP: own}}).DialContext}}
+	res, err := client.Get(server.URL + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("source %s through loopback: %d", own, res.StatusCode)
+	}
+}

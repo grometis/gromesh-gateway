@@ -340,6 +340,8 @@ func (a *Agent) MetricsHandler() http.Handler {
 	})
 }
 
+// fromOwnPod: loopback, unspecified, unparsable, or any address of this pod's own interfaces (a client in the pod can
+// bind its source to the pod IP and still connect through loopback).
 func fromOwnPod(r *http.Request) bool {
 	remote, _, err := net.SplitHostPort(r.RemoteAddr)
 	ip := net.ParseIP(remote)
@@ -354,6 +356,15 @@ func fromOwnPod(r *http.Request) bool {
 			if own := net.ParseIP(host); own != nil && own.Equal(ip) {
 				return true
 			}
+		}
+	}
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return true
+	}
+	for _, a := range addrs {
+		if n, ok := a.(*net.IPNet); ok && n.IP.Equal(ip) {
+			return true
 		}
 	}
 	return false
