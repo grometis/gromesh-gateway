@@ -176,7 +176,6 @@ async function clusterFixtures(topo) {
   ips.probe = split(await podIps(DP, "probe"));
   ips.outsideSvc = split((await json(["-n", FX, "get", "service", "outside-other"])).spec.clusterIPs);
   ips.dnsSvc = split((await json(["-n", FX, "get", "service", "dns"])).spec.clusterIPs);
-  ips.kubernetesSvc = split((await json(["-n", "default", "get", "service", "kubernetes"])).spec.clusterIPs);
   const ciliumNode = await json(["get", "ciliumnode", topo.resident.name]);
   ips.residentCiliumHost = split(ciliumNode.spec.addresses.filter((a) => a.type === "CiliumInternalIP").map((a) => a.ip));
   for (const [key, value] of Object.entries(ips)) assert.ok(value.v4 && value.v6, `${key} must be dual-stack: ${JSON.stringify(value)}`);
@@ -233,8 +232,9 @@ function targets(topo, ips) {
   for (const family of [4, 6]) {
     t.push({ id: `cap3.imds.by-name.v${family}`, cap: "CAP-3", group: "imds", name: `imds.${ZONE}`, family, port: 80,
       expectAddresses: family === 4 ? IMDS.v4 : IMDS.v6, server: "ext:imds" });
-    t.push({ id: `cap4.dns.kubernetes.v${family}`, cap: "CAP-4", group: "dns", kind: "dns", name: "kubernetes.default.svc.cluster.local", family,
-      expectAddresses: [family === 4 ? ips.kubernetesSvc.v4 : ips.kubernetesSvc.v6] });
+    // The kubernetes Service stays single-stack in a dual-stack kind cluster; a dual-stack lab Service proves both families.
+    t.push({ id: `cap4.dns.cluster-service.v${family}`, cap: "CAP-4", group: "dns", kind: "dns", name: `outside-other.${FX}.svc.cluster.local`, family,
+      expectAddresses: [family === 4 ? ips.outsideSvc.v4 : ips.outsideSvc.v6] });
     t.push({ id: `cap4.dns.lab-zone.v${family}`, cap: "CAP-4", group: "dns", kind: "dns", name: `backend.${ZONE}`, family,
       expectAddresses: [family === 4 ? topo.net.backend.v4 : topo.net.backend.v6] });
   }
@@ -244,7 +244,9 @@ function targets(topo, ips) {
 // Self-checks of the probe's classification: a failed lookup and a local error are never counted as a block.
 const selfChecks = () => [
   { id: "self.dns-failure-is-not-a-block", cap: "self", group: "self", name: `nx.${ZONE}`, family: 4, port: 8080, expect: "blocked" },
-  { id: "self.local-error-is-not-a-block", cap: "self", group: "self", ip: "fe80::1", port: 8080, expect: "blocked" },
+  // TCP to the limited broadcast fails in the pod's own stack (ENETUNREACH); fe80::1 without a scope just times out
+  // under Cilium, which would not exercise the classifier.
+  { id: "self.local-error-is-not-a-block", cap: "self", group: "self", ip: "255.255.255.255", port: 8080, expect: "blocked" },
 ];
 
 function zoneRecords(topo, rebind) {
@@ -311,7 +313,9 @@ async function setPolicies(topo, ips, set) {
 // --- probing ------------------------------------------------------------------------------------------------------
 async function probe(list) {
   const { stdout } = await kubectl(["-n", DP, "exec", "-i", "probe", "--", "node", "/lab/fixtures.mjs", "probe"], { input: JSON.stringify(list), timeout: 60_000 });
-  return JSON.parse(stdout);
+  // The probe pod answers per target id; the scenario's view of a target (its group) stays on this side.
+  const byId = new Map(list.map((t) => [t.id, t]));
+  return JSON.parse(stdout).map((r) => ({ ...r, group: r.group ?? byId.get(r.id)?.group }));
 }
 
 const reached = (r) => r.results?.some((x) => ["reach", "handshake", "connected-no-reply", "connected-bad-reply", "reset-after-connect"].includes(x.outcome))
@@ -378,13 +382,16 @@ const SCENARIOS = [
     policies: ["chartNp", "labNp", "additiveNp"], measure: true },
 ];
 
+// A target the probe could not even attempt carries its outcome (and the reason) on the target itself.
+const outcomes = (r) => r.results?.map((x) => x.outcome).join(",") ?? `${r.outcome ?? r.verdict}${r.error ? ` (${r.error})` : ""}`;
+
 function scenarioMatcher(scenario) {
   const open = new Set(scenario.open);
   return (results) => results.filter((r) => r.cap !== "self" && !MEASURED.has(r.group) && r.group !== "dns").flatMap((r) => {
     if (scenario.names === "dns-error" && r.id.includes("by-name")) {
       return r.results[0].outcome === "dns-error" ? [] : [`${r.id}: expected a DNS failure, got ${r.results[0].outcome}`];
     }
-    return reached(r) === open.has(r.group) ? [] : [`${r.id}: ${open.has(r.group) ? "expected reachable" : "expected blocked"}, got ${r.results.map((x) => x.outcome).join(",")}`];
+    return reached(r) === open.has(r.group) ? [] : [`${r.id}: ${open.has(r.group) ? "expected reachable" : "expected blocked"}, got ${outcomes(r)}`];
   });
 }
 
@@ -477,7 +484,7 @@ for (const scenario of SCENARIOS) {
     entry.mismatches = result.mismatches;
     entry.caps = capVerdicts(result.results);
     entry.results = result.results;
-    entry.measuredIpblock = result.results.filter((r) => MEASURED.has(r.group)).map((r) => `${r.id}=${reached(r) ? "reach" : r.results.map((x) => x.outcome).join(",")}`);
+    entry.measuredIpblock = result.results.filter((r) => MEASURED.has(r.group)).map((r) => `${r.id}=${reached(r) ? "reach" : outcomes(r)}`);
     if (!result.ok) report.failures.push(`${scenario.id}: did not converge: ${result.mismatches.join("; ")}`);
     for (const [cap, expected] of Object.entries(scenario.caps)) {
       if (entry.caps[cap] !== expected) report.failures.push(`${scenario.id}: ${cap} verdict ${entry.caps[cap]}, expected ${expected}`);
@@ -493,12 +500,16 @@ for (const scenario of SCENARIOS) {
     }
   }
   report.scenarios.push(entry);
-  console.log(`${scenario.id}: ${entry.measure ? "measured" : entry.converged ? `ok in ${entry.rounds} rounds/${entry.ms} ms` : "MISMATCH"} ${JSON.stringify(entry.caps ?? entry.measured)}`);
+  console.log(`${scenario.id}: ${scenario.measure ? "measured" : entry.converged ? `ok in ${entry.rounds} rounds/${entry.ms} ms` : "MISMATCH"} ${JSON.stringify(entry.caps ?? entry.measured)}`);
+  for (const m of entry.mismatches ?? []) console.log(`  ${m}`);
+  // Written after every scenario: a later failure keeps the evidence gathered so far.
+  writeFileSync(join(out, "results.json"), JSON.stringify(report, null, 2));
 }
 
 // ENV-7 on the protected state: the chart NetworkPolicy (CAP-1) and the IMDS deny with the additive allow on (CAP-3).
-await setPolicies(topo, ips, ["chartNp", "labNp", "denyHost", "denyImds", "denyCidrs"]);
-await converge(base, scenarioMatcher(SCENARIOS[1]));
+// Only the chart NetworkPolicy selects the pod here: with the lab's own NP also selecting it, deleting the chart's
+// would leave the pod isolated and nothing would open.
+await setPolicies(topo, ips, ["chartNp", "denyHost", "denyImds", "denyCidrs"]);
 const np = (await chartPolicy(topo, ips)).yaml;
 report.latency = [await effectLatency({ ip: ips["outside-other"].v4, port: 8080, what: "delete/apply chart NetworkPolicy, pod outside the list" },
   () => kubectl(["-n", DP, "delete", "networkpolicy", "dp-data-plane"]), () => kubectl(["-n", DP, "apply", "-f", "-"], { input: np }))];
