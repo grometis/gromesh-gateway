@@ -1,6 +1,8 @@
 // isolation-probe is the native sidecar that proves the kong pod's isolation and issues its lease.
 // isolation-probe        run (rounds every 15 s; the guard canary every second while a lease is out)
 // isolation-probe ready  exec readiness: the pod is Ready only in state ok with a valid lease (the probe never listens)
+// isolation-probe install <dir>  copies kong-supervisor and kong-liveness, shipped beside it, into dir (init
+// container: the kong image does not carry them)
 // Environment: GROMESH_POD_UID, GROMESH_CLUSTER_ID, GROMESH_INSTANCE_PUBLIC_KEY (Ed25519, base64url),
 // GROMESH_PROBE_DIR, GROMESH_HANDOFF_DIR, GROMESH_PROBE_CONFIG, GROMESH_CANARY_URL.
 package main
@@ -29,6 +31,13 @@ func main() {
 	dir := env("GROMESH_PROBE_DIR", "/gromesh/isolation")
 	if len(os.Args) > 1 && os.Args[1] == "ready" {
 		os.Exit(ready(dir))
+	}
+	if len(os.Args) == 3 && os.Args[1] == "install" {
+		if err := install(os.Args[2]); err != nil {
+			fmt.Fprintln(os.Stderr, "isolation-probe install:", err)
+			os.Exit(1)
+		}
+		return
 	}
 	logf := func(format string, args ...any) { fmt.Fprintf(os.Stderr, "isolation-probe: "+format+"\n", args...) }
 	key, err := base64.RawURLEncoding.DecodeString(os.Getenv("GROMESH_INSTANCE_PUBLIC_KEY"))
@@ -91,6 +100,27 @@ func main() {
 		case <-tick.C:
 		}
 	}
+}
+
+func install(dest string) error {
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	for _, name := range []string{"kong-supervisor", "kong-liveness"} {
+		data, err := os.ReadFile(filepath.Join(filepath.Dir(self), name))
+		if err != nil {
+			return err
+		}
+		tmp := filepath.Join(dest, "."+name)
+		if err := os.WriteFile(tmp, data, 0o555); err != nil {
+			return err
+		}
+		if err := os.Rename(tmp, filepath.Join(dest, name)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func ready(dir string) int {

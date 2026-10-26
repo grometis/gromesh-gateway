@@ -186,3 +186,22 @@ networkPolicy:
       podSelector:
         matchLabels:
           k8s-app: kube-dns
+
+# Workspaces mode (N2, B §3.5.3): kong-supervisor is PID 1 of kong, isolation-probe and agent are native sidecars
+# (Kubernetes >= 1.33), the lease volume is read-only for kong and never mounted by the agent. Off until every N2 gate
+# has evidence: when on, Kong serves only with an admission (task N2-D3) and a conclusive round of every capability,
+# and the kong image must carry the product plugins (gromesh-workspace, gromesh-route-guard).
+workspaces:
+  enabled: false
+  # This cluster's id in the control plane and the instance's Ed25519 public key (base64url), for the admission.
+  clusterId: ""
+  instancePublicKey: ""
+  probe:
+    # UID of the probe alone: only it writes the lease volume.
+    runAsUser: 1002
+    resources:
+      requests: { cpu: 20m, memory: 32Mi }
+      limits: { cpu: 200m, memory: 64Mi }
+    # The capability targets of this installation (CAP-1 to CAP-7, each with at least one forbidden target), as the
+    # probe's configuration (apps/isolation/internal/probe): {capability, kind: tcp|http|dns|tcp-open, name, ...}.
+    checks: []

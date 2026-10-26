@@ -63,6 +63,30 @@ http://gromesh-collector:8080/kong
 {{- end -}}
 
 {{- define "data-plane.validate" -}}
+{{- if .Values.workspaces.enabled -}}
+{{- /* Native sidecars (restartPolicy Always in initContainers) are GA from 1.33; their stop order is part of the containment. */ -}}
+{{- if not (semverCompare ">=1.33.0-0" .Capabilities.KubeVersion.Version) -}}
+{{- fail (printf "workspaces.enabled requires Kubernetes >= 1.33 (native sidecars); this cluster is %s" .Capabilities.KubeVersion.Version) -}}
+{{- end -}}
+{{- if not (regexMatch "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" .Values.workspaces.clusterId) -}}
+{{- fail "workspaces.clusterId must be the lowercase UUID of this cluster when workspaces.enabled is true" -}}
+{{- end -}}
+{{- if not (regexMatch "^[A-Za-z0-9_-]{43}$" .Values.workspaces.instancePublicKey) -}}
+{{- fail "workspaces.instancePublicKey must be the instance's Ed25519 public key (base64url) when workspaces.enabled is true" -}}
+{{- end -}}
+{{- $covered := dict -}}
+{{- range .Values.workspaces.probe.checks -}}
+{{- if has .kind (list "tcp" "http") -}}{{- $_ := set $covered .capability true -}}{{- end -}}
+{{- end -}}
+{{- range list "CAP-1" "CAP-2" "CAP-3" "CAP-4" "CAP-5" "CAP-6" "CAP-7" -}}
+{{- if not (hasKey $covered .) -}}
+{{- fail (printf "workspaces.probe.checks has no forbidden target for %s: it could never be proven" .) -}}
+{{- end -}}
+{{- end -}}
+{{- if eq (int $.Values.workspaces.probe.runAsUser) (int $.Values.kong.runAsUser) -}}
+{{- fail "workspaces.probe.runAsUser must differ from kong.runAsUser: only the probe writes the lease" -}}
+{{- end -}}
+{{- end -}}
 {{- if .Values.collector.enabled -}}
 {{- if not (regexMatch "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" .Values.collector.clusterId) -}}
 {{- fail "collector.clusterId must be the UUID of this cluster when collector.enabled is true" -}}
