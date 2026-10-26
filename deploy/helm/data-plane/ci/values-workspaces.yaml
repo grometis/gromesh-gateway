@@ -13,6 +13,7 @@ workspaces:
       - { capability: CAP-3, kind: tcp, name: imds, address: "169.254.169.254:80" }
       - { capability: CAP-4, kind: tcp, name: rebinding name, address: "rebind.gromesh-test.svc:80" }
       - { capability: CAP-4, kind: dns, name: cluster dns, host: kubernetes.default.svc }
+      - { capability: CAP-1, kind: tcp-open, name: allowed backend, address: "echo.gromesh-test.svc:80" }
       - { capability: CAP-5, kind: http, name: validator, url: "http://kong-validator.gromesh.svc:8001/", expectStatus: 401 }
       - { capability: CAP-6, kind: http, name: agent metrics, url: "http://127.0.0.1:9100/metrics", expectStatus: 403 }
       - { capability: CAP-7, kind: http, name: collector, url: "http://127.0.0.1:9880/", expectStatus: 401 }

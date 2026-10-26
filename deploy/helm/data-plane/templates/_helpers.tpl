@@ -76,7 +76,10 @@ http://gromesh-collector:8080/kong
 {{- end -}}
 {{- $covered := dict -}}
 {{- range .Values.workspaces.probe.checks -}}
-{{- if has .kind (list "tcp" "http") -}}{{- $_ := set $covered .capability true -}}{{- end -}}
+{{- if has .kind (list "tcp" "http") -}}{{- $_ := set $covered .capability true -}}{{- else -}}{{- $_ := set $covered .kind true -}}{{- end -}}
+{{- end -}}
+{{- if not (and (hasKey $covered "dns") (hasKey $covered "tcp-open")) -}}
+{{- fail "workspaces.probe.checks needs a dns and a tcp-open positive control: without them an unreachable target proves nothing" -}}
 {{- end -}}
 {{- range list "CAP-1" "CAP-2" "CAP-3" "CAP-4" "CAP-5" "CAP-6" "CAP-7" -}}
 {{- if not (hasKey $covered .) -}}

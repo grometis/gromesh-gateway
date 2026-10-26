@@ -46,6 +46,11 @@ refuse_ws 'requires Kubernetes >= 1.33' --kube-version 1.32.9
 refuse_ws 'no forbidden target for CAP-3' --kube-version 1.33.0 --set 'workspaces.probe.checks[2].kind=tcp-open'
 refuse_ws 'must differ from kong.runAsUser' --kube-version 1.33.0 --set workspaces.probe.runAsUser=1001
 refuse_ws 'workspaces.clusterId' --kube-version 1.33.0 --set-string workspaces.clusterId=nope
+refuse_ws 'positive control' --kube-version 1.33.0 --set 'workspaces.probe.checks[5].kind=tcp'
+# The probe's own rules accept the rendered configuration (it would never issue a lease otherwise).
+docker run --rm -i mikefarah/yq:4.44.3 ea 'select(.kind == "ConfigMap" and (.metadata.name | test("-isolation-probe$"))) | .data["probe.json"]' < "$work/workspaces.yaml" > "$work/probe.json"
+docker run --rm -v "$PWD/apps/isolation:/src:ro" -v "$work/probe.json:/probe.json:ro" -w /src -e GOTOOLCHAIN=local -e GOCACHE=/tmp/go-cache \
+  golang:1.27.2-alpine go run ./cmd/isolation-probe check-config /probe.json
 pnpm --filter @gromesh/control-plane exec node --input-type=module - "$work/workspaces.yaml" <<'JS'
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
