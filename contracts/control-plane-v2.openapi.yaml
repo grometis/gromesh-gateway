@@ -330,10 +330,11 @@ paths:
         per API token, plus the calls made by sessions (the current UI). The cut requires zero token calls in the
         window, `since` on the window's first day and `completeThrough` at the time of the cut: no call counted proves
         nothing about a time nobody was counting. Every control-plane replica confirms its counting at least every
-        few seconds, never past a token call still being written; a v1 token call whose count cannot be written is
-        refused (500) and its day goes with the next confirmation; a replica silent for longer than two minutes
-        without stopping cleanly may have lost one on any day since, so no day from its last confirmation on is
-        complete while it is on record (its row is kept until that confirmation leaves the window). A
+        few seconds, one confirmation at a time and never past a token call still being written; a v1 token call
+        whose count cannot be written is refused (500) and its day goes with the next confirmation. A replica whose
+        counting is unconfirmed for two minutes answers 503 to the v1 token calls it would count, before
+        authenticating them, so one that went silent without stopping cleanly can only have lost a call within four
+        minutes of its last confirmation: the days of that span are not complete. A
         release that does not count (a rollback) is seen only while no counting replica runs: running both at once
         is outside what this report can see. Counted by day; never carries a token value, a path parameter or a body.
       responses:
