@@ -1,0 +1,2 @@
+ALTER TABLE "jwt_credentials" ADD COLUMN "pending_reprovision" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+ALTER TABLE "keyauth_credentials" ADD COLUMN "pending_reprovision" boolean DEFAULT false NOT NULL;

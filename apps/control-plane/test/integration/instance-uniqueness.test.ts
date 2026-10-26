@@ -38,18 +38,19 @@ describe("uniqueness in the workspace and in the instance", () => {
   it("refuses a credential or server name another workspace holds with the same generic 409, audited without the value", async () => {
     const [a, b] = [await env(), await env()];
     const [ca, cb] = [await consumer(a), await consumer(b)];
-    const key = uniq("key-auth-value-0123456789");
     const iss = uniq("issuer");
     const user = uniq("login");
     const name = `${uniq("site")}.example.test`;
     const cert = selfSigned(name);
     const writes = (envId: string, consumerId: string) => [
-      ["key-auth-key", () => h.api("POST", `/environments/${envId}/consumers/${consumerId}/key-auth`, { key })],
       ["jwt-key", () => h.api("POST", `/environments/${envId}/consumers/${consumerId}/jwt`, { key: iss })],
       ["basic-auth-username", () => h.api("POST", `/environments/${envId}/consumers/${consumerId}/basic-auth`, { username: user, password: "a-long-password" })],
       ["sni", () => h.api("POST", `/environments/${envId}/certificates`, { cert: cert.cert, key: cert.key, snis: [name] })],
     ] as const;
     for (const [kind, write] of writes(a, ca)) expect((await write()).status, kind).toBe(201);
+    // A key-auth key is never chosen (decision H-14): another workspace's key answers 422, never a 409 oracle.
+    const key = (await h.api("POST", `/environments/${a}/consumers/${ca}/key-auth`, {})).body.key as string;
+    expect((await h.api("POST", `/environments/${b}/consumers/${cb}/key-auth`, { key })).status).toBe(422);
     for (const [kind, write] of writes(b, cb)) {
       const res = await write();
       expect(res.status, kind).toBe(409);
@@ -57,7 +58,7 @@ describe("uniqueness in the workspace and in the instance", () => {
       expect(JSON.stringify(res.body), kind).not.toContain(a);
     }
     const events = (await h.sql.query(`select entity_type, after from audit_events where action = 'uniqueness.conflict' and at > now() - interval '1 minute' order by at`)).rows;
-    expect(events.map((e) => e.entity_type)).toEqual(expect.arrayContaining(["key-auth-key", "jwt-key", "basic-auth-username", "sni"]));
+    expect(events.map((e) => e.entity_type)).toEqual(expect.arrayContaining(["jwt-key", "basic-auth-username", "sni"]));
     for (const e of events) for (const secret of [key, iss, user, name]) expect(JSON.stringify(e)).not.toContain(secret);
     // Nothing was written in b.
     for (const table of ["keyauth_credentials", "jwt_credentials", "basicauth_credentials", "certificates"]) {

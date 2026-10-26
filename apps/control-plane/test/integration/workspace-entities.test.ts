@@ -102,21 +102,31 @@ describe("workspace entities through /api/v2", () => {
   it("keeps credentials unique in the instance, with a conflict that never names the other workspace", async () => {
     const ca = (await call(h.api, "createConsumer", { workspaceId: a }, { username: uniq("cred") })).body.id as string;
     const cb = (await call(h.api, "createConsumer", { workspaceId: b }, { username: uniq("cred") })).body.id as string;
-    const key = `key-${uniq("k")}-0123456789`;
-    const keyAuth = await call(h.api, "createKeyAuthCredential", { workspaceId: a, consumerId: ca }, { key });
+    // The server generates every key (decision H-14): one sent, another workspace's included, is 422 at key.
+    const keyAuth = await call(h.api, "createKeyAuthCredential", { workspaceId: a, consumerId: ca }, {});
     expect(keyAuth.status, JSON.stringify(keyAuth.body)).toBe(201);
-    expect(keyAuth.body.key).toBe(key);
+    const key = keyAuth.body.key as string;
     const taken = await call(h.api, "createKeyAuthCredential", { workspaceId: b, consumerId: cb }, { key });
-    expect(taken.status).toBe(409);
-    expect(conflictOf(taken)).not.toContain(a);
-    expect((await call(h.api, "createKeyAuthCredential", { workspaceId: a, consumerId: ca }, { key: `${key}-2`, extra: 1 })).status).toBe(422);
+    expect(taken.status).toBe(422);
+    expect(taken.body.errors).toEqual([expect.objectContaining({ path: "key" })]);
+    expect(JSON.stringify(taken.body)).not.toContain(a);
+    expect((await call(h.api, "createKeyAuthCredential", { workspaceId: a, consumerId: ca }, { extra: 1 })).status).toBe(422);
+    // Rotated: a new key, shown once; another workspace's path does not reach it.
+    expect((await call(h.api, "rotateKeyAuthCredential", { workspaceId: b, consumerId: ca, credentialId: keyAuth.body.id })).status).toBe(404);
+    const rotated = await call(h.api, "rotateKeyAuthCredential", { workspaceId: a, consumerId: ca, credentialId: keyAuth.body.id });
+    expect(rotated.status, JSON.stringify(rotated.body)).toBe(200);
+    expect(rotated.body.key).not.toBe(key);
     const listed = await call(h.api, "listKeyAuthCredentials", { workspaceId: a, consumerId: ca });
     expect(JSON.stringify(listed.body)).not.toContain(key);
+    expect(JSON.stringify(listed.body)).not.toContain(rotated.body.key);
     expect((await call(h.api, "deleteKeyAuthCredential", { workspaceId: a, consumerId: ca, credentialId: keyAuth.body.id })).status).toBe(204);
 
     const iss = uniq("iss");
     const jwt = await call(h.api, "createJwtCredential", { workspaceId: a, consumerId: ca }, { key: iss });
     expect(jwt.status, JSON.stringify(jwt.body)).toBe(201);
+    const rotatedJwt = await call(h.api, "rotateJwtCredential", { workspaceId: a, consumerId: ca, credentialId: jwt.body.id });
+    expect(rotatedJwt.status, JSON.stringify(rotatedJwt.body)).toBe(200);
+    expect(rotatedJwt.body.secret).not.toBe(jwt.body.secret);
     const jwtTaken = await call(h.api, "createJwtCredential", { workspaceId: b, consumerId: cb }, { key: iss });
     expect(jwtTaken.status).toBe(409);
     expect(conflictOf(jwtTaken)).not.toContain(a);
@@ -292,7 +302,7 @@ describe("workspace entities through /api/v2", () => {
     const implemented = [...OPS.values()]
       .filter(({ path, op }) => !op["x-gromesh-planned"] && /^\/workspaces(\/\{workspaceId\})?(\/(services|routes|consumers|upstreams|certificates|plugins|export)(?!.*path-compatibility)|$)/.test(path))
       .map(({ op }) => op.operationId as string);
-    expect(implemented.length).toBe(42);
+    expect(implemented.length).toBe(44);
     expect(implemented.filter((id) => !called.has(id))).toEqual([]);
   });
 });

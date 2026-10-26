@@ -60,7 +60,7 @@ describe("JWT credentials", () => {
     expect(secret.length).toBeGreaterThanOrEqual(43);
     expect(key).toMatch(/^[0-9a-f]{32}$/);
     const listed = await h.api("GET", `/environments/${envId}/consumers/${consumerId}/jwt`);
-    expect(listed.body.items).toEqual([{ id: created.body.id, consumerId, key, algorithm: "HS256", tags: [], createdAt: created.body.createdAt }]);
+    expect(listed.body.items).toEqual([{ id: created.body.id, consumerId, key, algorithm: "HS256", status: "active", tags: [], createdAt: created.body.createdAt }]);
 
     const { rows } = await h.sql.query("select secret from jwt_credentials where id = $1", [created.body.id]);
     expect(rows[0].secret).toMatch(/^enc:v2:/);

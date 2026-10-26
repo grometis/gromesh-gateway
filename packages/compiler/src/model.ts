@@ -51,6 +51,11 @@ export interface KeyAuthCredential {
   consumerId: string;
   key: string;
   tags?: string[];
+  /**
+   * Decision H-14: imported without its key (an import never sets one), so `key` is a value nobody knows and the
+   * credential is left out of the compiled config until it is rotated.
+   */
+  pendingReprovision?: boolean;
 }
 
 export type JwtAlgorithm = "HS256" | "RS256" | "ES256";
@@ -65,6 +70,8 @@ export interface JwtCredential {
   secret?: string | null;
   rsaPublicKey?: string | null;
   tags?: string[];
+  /** HS256 imported without its secret (decision H-14): left out of the compiled config until it is rotated. */
+  pendingReprovision?: boolean;
 }
 
 export interface BasicAuthCredential {

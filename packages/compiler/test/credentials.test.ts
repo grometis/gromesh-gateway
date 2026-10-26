@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 import { describe, expect, it } from "vitest";
-import { basicAuthPasswordHash, buildSnapshot, compile, CompileError, diffConfigs, hashConfig, type GatewayState } from "../src/index.js";
+import { basicAuthPasswordHash, buildSnapshot, compile, CompileError, diffConfigs, diffGatewayStates, exportConfig, hashConfig, type GatewayState } from "../src/index.js";
 
 const read = (rel: string) => JSON.parse(readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8"));
 const base = (): GatewayState => read("./fixtures/basic.state.json");
@@ -156,5 +156,61 @@ describe("_transform: false", () => {
     const config = compile(state);
     expect(config._transform).toBe(false);
     expect(Object.keys(config).filter((k) => !META.includes(k) && !SAFE_WITHOUT_TRANSFORM.includes(k))).toEqual([]);
+  });
+});
+
+describe("credentials pending reprovisioning (decision H-14)", () => {
+  const state = (): GatewayState => {
+    const s = base();
+    const consumerId = s.consumers[0]!.id;
+    s.keyAuthCredentials = [
+      { id: id(901), consumerId, key: "active-key-0123456789", tags: [] },
+      { id: id(902), consumerId, key: "a-value-nobody-knows-0123", tags: [], pendingReprovision: true },
+    ];
+    s.jwtCredentials = [
+      { id: id(903), consumerId, key: "hs-active", algorithm: "HS256", secret: "s".repeat(43), tags: [] },
+      { id: id(904), consumerId, key: "hs-pending", algorithm: "HS256", secret: null, tags: [], pendingReprovision: true },
+      { id: id(905), consumerId, key: "rs-active", algorithm: "RS256", rsaPublicKey: PUBLIC_KEY, tags: [] },
+    ];
+    return s;
+  };
+
+  it("leaves them out of the compiled config: they authenticate nothing", () => {
+    const config = compile(state());
+    expect(config.keyauth_credentials.map((k) => k.id)).toEqual([id(901)]);
+    expect((config.jwt_secrets ?? []).map((j) => j.id).sort()).toEqual([id(903), id(905)]);
+    expect(JSON.stringify(config)).not.toContain("a-value-nobody-knows-0123");
+  });
+
+  it("counts an import of one as a change, though the config is the same", () => {
+    const before = state();
+    before.keyAuthCredentials = before.keyAuthCredentials.filter((k) => !k.pendingReprovision);
+    const changes = diffGatewayStates(before, state());
+    expect(changes.map((c) => [c.kind, c.id, c.change])).toEqual([["keyauth_credentials", id(902), "added"]]);
+    expect(JSON.stringify(changes)).not.toContain("a-value-nobody-knows-0123");
+    expect(hashConfig(compile(before))).toBe(hashConfig(compile(state())));
+  });
+
+  it("exports them with their status and without a hint or a secret", () => {
+    const doc = exportConfig(state(), (_n, c) => c);
+    const consumer = doc.consumers[0]!;
+    expect(consumer.keyAuthCredentials).toEqual([
+      { id: id(901), keyHint: "…6789", tags: [] },
+      { id: id(902), status: "pending-reprovision", tags: [] },
+    ]);
+    expect(consumer.jwtCredentials.find((j) => j.id === id(904))).toEqual({ id: id(904), key: "hs-pending", algorithm: "HS256", tags: [], status: "pending-reprovision" });
+    expect(consumer.jwtCredentials.find((j) => j.id === id(903))).toMatchObject({ secret: "REDACTED" });
+  });
+});
+
+describe("what a credential pending reprovisioning may be", () => {
+  it("is HS256 without a secret only", () => {
+    const s = base();
+    const consumerId = s.consumers[0]!.id;
+    s.jwtCredentials = [
+      { id: id(911), consumerId, key: "rs-pending", algorithm: "RS256", rsaPublicKey: PUBLIC_KEY, tags: [], pendingReprovision: true },
+      { id: id(912), consumerId, key: "hs-pending-with-secret", algorithm: "HS256", secret: "s".repeat(43), tags: [], pendingReprovision: true },
+    ];
+    expect(() => compile(s)).toThrow(/only an HS256 credential can be pending reprovisioning[\s\S]*has no secret|has no secret[\s\S]*only an HS256/);
   });
 });

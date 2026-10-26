@@ -2230,7 +2230,6 @@ paths:
         - cookieAuth: []
           csrfToken: []
         - bearerApiToken: []
-      x-gromesh-planned: true
       description: |
         As rotateKeyAuthCredential of v1 (decision H-14): a new key the server generates, returned only in this response; a
         credential pending reprovisioning becomes active. Same id. 404 for a credential of another consumer or
@@ -2394,7 +2393,6 @@ paths:
         - cookieAuth: []
           csrfToken: []
         - bearerApiToken: []
-      x-gromesh-planned: true
       description: |
         As rotateJwtCredential of v1 (decision H-14): a new HS256 secret the server generates, returned only in this response; a
         credential pending reprovisioning becomes active. Same id. 404 for a credential of another consumer or

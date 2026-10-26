@@ -41,7 +41,8 @@ test("exports the draft and imports into an empty environment, with no implicit 
 const RUN = uniq("ei");
 const ISSUER_HS = `issuer-hs-${RUN}`, ISSUER_RS = `issuer-rs-${RUN}`, LOGIN = `login-${RUN}`;
 const SNI = `import-${RUN}.example.test`, ALIAS = `alias-${RUN}.example.test`, OTHER_SNI = `other-${RUN}.example.test`;
-const secrets = { key: `fixture-key-auth-secret-12345-${RUN}`, jwt: "fixture-jwt-secret-".repeat(3), password: "fixture-basic-password", plugin: "fixture-plugin-password" };
+// The key-auth key and the HS256 secret are the server's (decision H-14): each fixture keeps the ones it was given.
+const secrets = { key: "", jwt: "", password: "fixture-basic-password", plugin: "fixture-plugin-password" };
 const issuedCert = selfSigned("import.example.test");
 // Omit the redundant public point: its base64 lines also occur in the public certificate.
 const cert = { ...issuedCert, key: execFileSync("openssl", ["ec", "-no_public"], { input: issuedCert.key, encoding: "utf8", stdio: ["pipe", "pipe", "ignore"] }) };
@@ -62,8 +63,8 @@ async function fixture() {
   const service = await post("/services", { name: "backend", protocol: "http", host: "pool.test", port: 80, path: "/", retries: 2, connectTimeoutMs: 1000, tags: ["team:test"] });
   const route = await post("/routes", { name: "public", serviceId: service.id, paths: ["/public"], methods: ["GET"] });
   const consumer = await post("/consumers", { username: "partner", customId: "partner-custom" });
-  await post(`/consumers/${consumer.id}/key-auth`, { key: secrets.key });
-  await post(`/consumers/${consumer.id}/jwt`, { key: ISSUER_HS, algorithm: "HS256", secret: secrets.jwt });
+  secrets.key = (await post(`/consumers/${consumer.id}/key-auth`, {})).key;
+  secrets.jwt = (await post(`/consumers/${consumer.id}/jwt`, { key: ISSUER_HS, algorithm: "HS256" })).secret;
   await post(`/consumers/${consumer.id}/jwt`, { key: ISSUER_RS, algorithm: "RS256", rsaPublicKey: rsa });
   await post(`/consumers/${consumer.id}/basic-auth`, { username: LOGIN, password: secrets.password });
   expect((await h.api("PUT", `${base}/consumers/${consumer.id}/acl-groups`, { groups: ["partners", "readers"] })).status).toBe(200);
@@ -143,6 +144,15 @@ test("(a,e) redacted YAML/JSON export, new environment import and explicit publi
   const imported = await importDocument(target, stringify(document));
   expect(imported.status, JSON.stringify(imported.body)).toBe(200);
   expect(imported.body.errors).toEqual([]);
+  // The key and the HS256 secret the document carries are ignored (decision H-14): both credentials come in
+  // pending, listed without a value, out of the config until they are rotated.
+  expect(imported.body.pendingCredentials.map((p: { path: string; credentialType: string }) => [p.path, p.credentialType])).toEqual([
+    ["document.consumers.0.keyAuthCredentials.0", "key-auth"],
+    ["document.consumers.0.jwtCredentials.0", "jwt"],
+  ]);
+  expect(JSON.stringify(imported.body)).not.toContain(secrets.key);
+  expect((await openedSecrets(target)).key).not.toContain(secrets.key);
+  expect((await openedSecrets(target)).jwt).toEqual([]);
   await h.app.get(AutoPublisher).tick();
   expect(await h.app.get(SnapshotsService).autoPublish(target.split("/").at(-1)!, 0)).toBe(true);
   expect((await stateOf(target)).counts.snapshots).toBe(0);
@@ -151,8 +161,18 @@ test("(a,e) redacted YAML/JSON export, new environment import and explicit publi
   expect((await h.api("PUT", `${target}/services/${targetService.id}`, document.services[0])).status).toBe(200);
   await h.app.get(SnapshotsService).autoPublish(target.split("/").at(-1)!, 0);
   expect((await stateOf(target)).counts.snapshots).toBe(0);
+  const pendingCopy = await published(target);
+  expect(pendingCopy.keyauth_credentials).toEqual([]);
+  expect(pendingCopy.jwt_secrets?.map(j => j.algorithm)).toEqual(["RS256"]);
+  // Reprovisioned, they are what the source had, but for the new values.
+  for (const p of imported.body.pendingCredentials as { credentialType: string; credentialId: string }[]) {
+    const consumerId = (await h.api("GET", `${target}/consumers`)).body.items[0].id;
+    const rotated = await h.api("POST", `${target}/consumers/${consumerId}/${p.credentialType}/${p.credentialId}/rotate`);
+    expect(rotated.status, JSON.stringify(rotated.body)).toBe(200);
+  }
   const copy = await published(target);
-  const normalizedOriginal = normalizedConfig(original, secrets.password), normalizedCopy = normalizedConfig(copy, secrets.password);
+  const values = (c: KongDeclarativeConfig) => ({ ...c, keyauth_credentials: c.keyauth_credentials.map(k => ({ ...k, key: "[generated]" })), jwt_secrets: c.jwt_secrets?.map(j => (j.algorithm === "HS256" ? { ...j, secret: "[generated]" } : j)) });
+  const normalizedOriginal = normalizedConfig(values(original), secrets.password), normalizedCopy = normalizedConfig(values(copy), secrets.password);
   expect(normalizedCopy).toEqual(normalizedOriginal);
   expect(normalizedHash(normalizedCopy)).toEqual(normalizedHash(normalizedOriginal));
   const sourceIds = new Set(original.services.map(s => s.id));
@@ -170,7 +190,9 @@ test("(b) imports the official Kong example entity by entity and reports origina
   const document = await exportDocument(base);
   expect(document.services[0]).toMatchObject({ name: "echo", host: "echo", protocol: "http", port: 80 });
   expect(document.routes[0]).toMatchObject({ name: "echo-public", service: "echo", methods: ["GET", "POST"], paths: ["/echo"], stripPath: true });
-  expect(document.consumers[0]).toMatchObject({ username: "demo-app", keyAuthCredentials: [{ keyHint: "…-123" }] });
+  // The example's key is ignored (decision H-14): the credential is pending reprovisioning.
+  expect(document.consumers[0]).toMatchObject({ username: "demo-app", keyAuthCredentials: [{ status: "pending-reprovision" }] });
+  expect(imported.body.pendingCredentials).toEqual([expect.objectContaining({ path: "document.keyauth_credentials.0", credentialType: "key-auth" })]);
   expect(document.plugins).toEqual(expect.arrayContaining([expect.objectContaining({ name: "key-auth", scope: { route: "echo-public" }, config: { key_names: ["apikey"] } }), expect.objectContaining({ name: "rate-limiting", scope: { service: "echo" }, config: { minute: 60, policy: "local" } })]));
   config.vaults = [];
   config.services[0].client_certificate = null;
@@ -200,7 +222,7 @@ test("(c,d) any error writes nothing; REDACTED or omitted secrets preserve every
   expect(response.body.errors.map((e: { path: string }) => e.path)).toEqual(expect.arrayContaining(["document.routes.0.service", "document.certificates.0.key"]));
   expect(await stateOf(base)).toEqual(before);
   const dry = await importDocument(base, document, { dryRun: true });
-  expect(dry.body).toEqual({ added: [], modified: [], removed: [], errors: [] });
+  expect(dry.body).toEqual({ added: [], modified: [], removed: [], errors: [], pendingCredentials: [] });
   expect(await stateOf(base)).toEqual(before);
   document.consumers[0]!.keyAuthCredentials[0]!.key = "REDACTED";
   document.consumers[0]!.basicAuthCredentials[0]!.password = "REDACTED";
@@ -277,10 +299,10 @@ test("merge retains omitted nested memberships; replace deletes them and referen
   expect(normalized.retries).toBeUndefined();
 });
 
-test("natural-key/id conflicts and hint-only new credentials are 422, without any writes", async () => {
+test("natural-key/id conflicts are 422, without any writes", async () => {
   const base = await fixture();
   const second = await h.api("POST", `${base}/consumers`, { username: "other", customId: "other-custom" });
-  await h.api("POST", `${base}/consumers/${second.body.id}/key-auth`, { key: "second-key-auth-123456" });
+  await h.api("POST", `${base}/consumers/${second.body.id}/key-auth`, {});
   await h.api("POST", `${base}/certificates`, { cert: cert.cert, key: cert.key, snis: [OTHER_SNI] });
   const document = await exportDocument(base);
   const before = await stateOf(base);
@@ -291,7 +313,6 @@ test("natural-key/id conflicts and hint-only new credentials are 422, without an
   const cases: [string, (d: ConfigDocument) => void][] = [
     ["document.consumers.0", d => { d.consumers = [{ ...partner, customId: "other-custom" }]; }],
     ["document.consumers.0.keyAuthCredentials.0", d => { d.consumers = [{ ...partner, keyAuthCredentials: [{ id: other.keyAuthCredentials[0]!.id, key: secrets.key }] }]; }],
-    ["document.consumers.0.keyAuthCredentials.0.key", d => { d.consumers = [{ ...partner, keyAuthCredentials: [{ keyHint: partner.keyAuthCredentials[0]!.keyHint }] }]; }],
     ["document.certificates.0", d => { d.certificates = [{ ...originalCertificate, id: otherCertificate.id }]; }],
     ["document.certificates.0.snis.0", d => { d.certificates = [{ ...originalCertificate, snis: [OTHER_SNI, ALIAS] }]; }],
   ];
@@ -346,7 +367,9 @@ test("Kong merge resolves existing natural references, supports nested additions
   const doc = await exportDocument(base);
   expect(JSON.stringify(doc)).not.toContain(key);
   expect(doc.consumers[0]!.keyAuthCredentials).toHaveLength(2);
-  expect(doc.consumers[0]!.keyAuthCredentials.some(k => k.keyHint === `…${key.slice(-4)}`)).toBe(true);
+  // The Kong document's key is ignored: the new credential waits for an editor to rotate it (decision H-14).
+  expect(doc.consumers[0]!.keyAuthCredentials.filter(k => k.status === "pending-reprovision")).toHaveLength(1);
+  expect(imported.body.pendingCredentials).toEqual([expect.objectContaining({ path: "document.keyauth_credentials.0", credentialType: "key-auth" })]);
   expect(doc.upstreams[0]!.targets).toHaveLength(2);
   expect(doc.routes).toHaveLength(2);
   const baseAfter = await stateOf(base);
@@ -446,7 +469,7 @@ test("unchanged real imports audit without changing the draft or blocking later 
     expect(before.env.draft_requires_publish).toBe(false);
     const imported = await importDocument(base, document, { mode });
     expect(imported.status, JSON.stringify(imported.body)).toBe(200);
-    expect(imported.body).toEqual({ added: [], modified: [], removed: [], errors: [] });
+    expect(imported.body).toEqual({ added: [], modified: [], removed: [], errors: [], pendingCredentials: [] });
     const after = await stateOf(base);
     expect(after.env).toEqual(before.env);
     expect(after.counts).toEqual({ ...before.counts, audit_events: before.counts.audit_events! + 1 });

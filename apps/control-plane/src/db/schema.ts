@@ -395,6 +395,9 @@ export const keyAuthCredentials = pgTable(
     // sha256 of the clear key: uniqueness per environment without decrypting.
     keyHash: text("key_hash").notNull(),
     tags: text("tags").array().notNull().default(sql`'{}'::text[]`),
+    // Decision H-14: imported without its key (the stored one is a value nobody knows), out of the compiled config
+    // until rotated.
+    pendingReprovision: boolean("pending_reprovision").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -419,6 +422,8 @@ export const jwtCredentials = pgTable(
     secret: text("secret"),
     rsaPublicKey: text("rsa_public_key"),
     tags: text("tags").array().notNull().default(sql`'{}'::text[]`),
+    // Decision H-14: HS256 imported without its secret (null), out of the compiled config until rotated.
+    pendingReprovision: boolean("pending_reprovision").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

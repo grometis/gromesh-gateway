@@ -4,7 +4,7 @@ import { type FieldError, ProblemException } from "../common/problem.js";
 import { destinationIssues, type DestinationPolicy } from "../common/destinations.js";
 import { checkCertificate } from "../certificates/certificates.js";
 import { checkJwt } from "../consumers/credentials.js";
-import { consumerValues } from "../consumers/consumers.js";
+import { consumerValues, generateKey } from "../consumers/consumers.js";
 import { routeErrors, routeValues, serviceValues } from "../gateway/gateway.js";
 import { upstreamValues, targetValues } from "../upstreams/upstreams.js";
 import type { PluginCatalog } from "../plugin-catalog/catalog.js";
@@ -19,6 +19,8 @@ export type InstanceTaken = (kind: UniqueKind, values: string[]) => Promise<Set<
 export async function planImport(document: ConfigDocument, current: GatewayState, mode: "merge" | "replace", catalog: PluginCatalog, plugins: PluginsService, destinations: DestinationPolicy, preservation?: { identity: ImportIdentity; consumerIdExists: (id: string) => Promise<boolean> }, workspaceDefaultRoutes: ReadonlySet<string> = new Set(), instanceTaken?: InstanceTaken) {
   const errors: FieldError[] = [];
   const paths = new Map<string, string>();
+  /** The new key-auth and HS256 credentials, imported pending reprovisioning (decision H-14). */
+  const pending: { path: string; credentialType: "key-auth" | "jwt"; credentialId: string }[] = [];
   const add = (path: string, message: string) => errors.push({ path, message });
   const capture = async (path: string, work: () => unknown) => {
     try { return await work(); } catch (error) {
@@ -108,17 +110,35 @@ export async function planImport(document: ConfigDocument, current: GatewayState
       if (byId && byKey && byId.id !== byKey.id) add(`${p}.id`, "credential id disagrees with its natural key");
       return (byId?.consumerId === value.id ? byId : undefined) ?? (byKey?.consumerId === value.id ? byKey : undefined);
     }
+    // Decision H-14: an import never sets, generates or returns a key-auth key or an HS256 secret; a supplied one is
+    // ignored. A matched credential keeps its own value and status; a new one comes in with its metadata only,
+    // pending reprovisioning (out of the compiled config) until an editor rotates it. Key-auth matches by id only.
     for (const [j, k] of c.keyAuthCredentials.entries()) {
       const p = `${path}.keyAuthCredentials.${j}`;
-      const old = credentialMatch(current.keyAuthCredentials, k.id, v => k.key !== undefined && k.key !== "REDACTED" && v.key === k.key, p);
-      upsert(result.keyAuthCredentials, { id: old?.id ?? randomUUID(), consumerId: value.id, key: secret(k.key, old?.key, `${p}.key`), tags: k.tags ?? [] }, p);
+      const old = credentialMatch(current.keyAuthCredentials, k.id, () => false, p);
+      if (old) upsert(result.keyAuthCredentials, { ...old, consumerId: value.id, tags: k.tags ?? [] }, p);
+      else {
+        // The stored key of a pending credential is one nobody knows: it is never shown, compiled or exported.
+        const credential = { id: randomUUID(), consumerId: value.id, key: generateKey(), tags: k.tags ?? [], pendingReprovision: true };
+        upsert(result.keyAuthCredentials, credential, p);
+        pending.push({ path: p, credentialType: "key-auth", credentialId: credential.id });
+      }
     }
     for (const [j, k] of c.jwtCredentials.entries()) {
       const p = `${path}.jwtCredentials.${j}`;
       const old = credentialMatch(current.jwtCredentials ?? [], k.id, v => v.key === k.key, p);
-      const body = { ...k, ...(k.algorithm === "HS256" ? { secret: secret(k.secret, old?.secret, `${p}.secret`) } : {}) };
-      await capture(p, () => checkJwt(body));
-      upsert(result.jwtCredentials!, { ...body, id: old?.id ?? randomUUID(), consumerId: value.id, tags: k.tags ?? [] }, p);
+      const { status: _status, ...attributes } = k;
+      if (k.algorithm === "HS256") {
+        const { secret: _ignored, ...body } = attributes;
+        await capture(p, () => checkJwt(body));
+        const kept = old?.algorithm === "HS256" ? { secret: old.secret ?? null, ...(old.pendingReprovision ? { pendingReprovision: true } : {}) } : null;
+        const id = old?.id ?? randomUUID();
+        upsert(result.jwtCredentials!, { ...body, id, consumerId: value.id, tags: k.tags ?? [], ...(kept ?? { secret: null, pendingReprovision: true }) }, p);
+        if (!kept) pending.push({ path: p, credentialType: "jwt", credentialId: id });
+        continue;
+      }
+      await capture(p, () => checkJwt(attributes));
+      upsert(result.jwtCredentials!, { ...attributes, id: old?.id ?? randomUUID(), consumerId: value.id, tags: k.tags ?? [] }, p);
     }
     for (const [j, k] of c.basicAuthCredentials.entries()) {
       const p = `${path}.basicAuthCredentials.${j}`;
@@ -132,7 +152,7 @@ export async function planImport(document: ConfigDocument, current: GatewayState
   retain(result.keyAuthCredentials, current.keyAuthCredentials);
   retain(result.jwtCredentials!, current.jwtCredentials ?? []);
   retain(result.basicAuthCredentials!, current.basicAuthCredentials ?? []);
-  if (preservationConflict) return { state: result, errors, instanceConflict: false };
+  if (preservationConflict) return { state: result, errors, instanceConflict: false, pending };
   for (const [i, u] of document.upstreams.entries()) {
     const path = `document.upstreams.${i}`;
     const { targets, ...body } = u;
@@ -223,5 +243,5 @@ export async function planImport(document: ConfigDocument, current: GatewayState
     const base = entity && paths.get(entity.id);
     add(base ? `${base}${rest.length ? `.${rest.join(".")}` : ""}` : "document", issue.message.replace(/"[^"]*"/g, '"[value]"'));
   }
-  return { state: result, errors, instanceConflict };
+  return { state: result, errors, instanceConflict, pending };
 }

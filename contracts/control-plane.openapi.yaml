@@ -1040,7 +1040,6 @@ paths:
       operationId: rotateKeyAuthCredential
       security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
-      x-gromesh-planned: true
       description: |
         Replaces the key with a new one the server generates (as on creation), returned only in this response, and
         makes a credential pending reprovisioning active (decision H-14). Same id; the previous key stops
@@ -1144,7 +1143,6 @@ paths:
       operationId: rotateJwtCredential
       security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
-      x-gromesh-planned: true
       description: |
         HS256 only: replaces the secret with a new one the server generates (as on creation), returned only in this
         response, and makes a credential pending reprovisioning active (decision H-14). Same id and `key`; the
