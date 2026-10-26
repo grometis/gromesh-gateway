@@ -219,6 +219,16 @@ export class AtRestService {
   private async finishKeyHashMigration(): Promise<void> {
     const [row] = await this.db.select({ pending: sql<number>`count(*)::int` }).from(keyAuthCredentials).where(isNull(keyAuthCredentials.keyHash));
     if ((row?.pending ?? 0) > 0) throw new Error(`${row?.pending} credentials still without a fingerprint`);
+    // Read from the catalog first: once done, a start must not queue an ACCESS EXCLUSIVE lock behind another
+    // replica's open write (every reader of the table would then wait behind it).
+    const [state] = await this.db
+      .execute<{ done: boolean }>(
+        sql`select exists (select 1 from information_schema.columns where table_schema = current_schema() and table_name = 'keyauth_credentials' and column_name = 'key_hash' and is_nullable = 'NO')
+          and exists (select 1 from pg_indexes where schemaname = current_schema() and indexname = 'keyauth_env_key_hash_uq')
+          and not exists (select 1 from pg_indexes where schemaname = current_schema() and indexname = 'keyauth_env_key_uq') as done`,
+      )
+      .then((r) => r.rows);
+    if (state?.done) return;
     await this.db.execute(sql`alter table keyauth_credentials alter column key_hash set not null`);
     await this.db.execute(sql`create unique index if not exists keyauth_env_key_hash_uq on keyauth_credentials (environment_id, key_hash)`);
     await this.db.execute(sql`drop index if exists keyauth_env_key_uq`);
