@@ -191,7 +191,14 @@ describe("the v1 calls the cut will remove, the migration report and one authori
   });
 
   it("decides each operation the same through v1 and v2, for every global role, environment role and token", async () => {
+    const cons = (await h.api("POST", `/environments/${env}/consumers`, { username: uniq("matrix") })).body.id as string;
     const operations: { name: string; v1: (c: ApiClient) => Promise<ApiResponse>; v2: (c: ApiClient) => Promise<ApiResponse> }[] = [
+      { name: "list services", v1: (c) => c("GET", `/environments/${env}/services`), v2: (c) => v2(c, "GET", `/workspaces/${env}/services`) },
+      { name: "list routes", v1: (c) => c("GET", `/environments/${env}/routes`), v2: (c) => v2(c, "GET", `/workspaces/${env}/routes`) },
+      { name: "list plugins", v1: (c) => c("GET", `/environments/${env}/plugins`), v2: (c) => v2(c, "GET", `/workspaces/${env}/plugins`) },
+      { name: "export", v1: (c) => c("GET", `/environments/${env}/export`), v2: (c) => v2(c, "GET", `/workspaces/${env}/export`) },
+      { name: "create key-auth", v1: (c) => c("POST", `/environments/${env}/consumers/${cons}/key-auth`, {}), v2: (c) => v2(c, "POST", `/workspaces/${env}/consumers/${cons}/key-auth`, {}) },
+      { name: "create basic-auth", v1: (c) => c("POST", `/environments/${env}/consumers/${cons}/basic-auth`, { username: uniq("b"), password: "password-123" }), v2: (c) => v2(c, "POST", `/workspaces/${env}/consumers/${cons}/basic-auth`, { username: uniq("b"), password: "password-123" }) },
       { name: "list consumers", v1: (c) => c("GET", `/environments/${env}/consumers`), v2: (c) => v2(c, "GET", `/workspaces/${env}/consumers`) },
       { name: "create consumer", v1: (c) => c("POST", `/environments/${env}/consumers`, { username: uniq("u") }), v2: (c) => v2(c, "POST", `/workspaces/${env}/consumers`, { username: uniq("u") }) },
       { name: "list upstreams", v1: (c) => c("GET", `/environments/${env}/upstreams`), v2: (c) => v2(c, "GET", `/workspaces/${env}/upstreams`) },
