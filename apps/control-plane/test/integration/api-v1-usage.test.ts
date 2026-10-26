@@ -128,6 +128,8 @@ describe("the v1 calls the cut will remove, the migration report and one authori
     } finally {
       await other.close();
     }
+    // Stopping that replica closes its row only, never this one's.
+    expect((await h.sql.query(`select closed from api_v1_usage_replicas where replica_id = $1`, [usage["replicaId" as keyof ApiV1UsageService] as unknown as string])).rows[0].closed).toBe(false);
     expect((await read()).tokens.find((t) => t.tokenId === created.body.id)).toMatchObject({ calls: 40 });
   });
 

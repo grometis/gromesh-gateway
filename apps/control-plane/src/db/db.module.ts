@@ -16,7 +16,8 @@ import { BEFORE_POOL_END, createDb, DB, PG_POOL } from "./db.js";
       inject: [PG_POOL],
       useFactory: (created: ReturnType<typeof createDb>) => created.db,
     },
-    { provide: BEFORE_POOL_END, useValue: [] },
+    // One list per application: two in one process (the tests' replicas) must not close each other's work.
+    { provide: BEFORE_POOL_END, useFactory: () => [] },
   ],
   exports: [DB, PG_POOL, BEFORE_POOL_END],
 })
