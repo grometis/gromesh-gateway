@@ -539,3 +539,36 @@ func TestAHostileHandoffCannotReachThePrivateKey(t *testing.T) {
 	w.round()
 	w.expect("awaiting-admission", false)
 }
+
+func TestASlowCanaryNeverDelaysAViolation(t *testing.T) {
+	w := newWorld(t, t.TempDir())
+	w.admit(nil)
+	w.round()
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	w.p.Canary = func(context.Context) CanaryResult {
+		close(entered)
+		<-release
+		// An answer about the lease that existed when the call started: discarded after the violation.
+		return CanaryResult{Status: 204, Nonce: w.p.State.PreviousNonce}
+	}
+	go w.p.CanaryStep(context.Background())
+	<-entered
+	w.net.set("forbidden-CAP-3:80", true)
+	done := make(chan struct{})
+	go func() { w.round(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(RoundBudget + time.Second):
+		t.Fatal("the round waited for the canary")
+	}
+	w.expect("violation", false)
+	close(release)
+	time.Sleep(50 * time.Millisecond)
+	w.p.mu.Lock()
+	state := w.p.State.State
+	w.p.mu.Unlock()
+	if state != "violation" {
+		t.Fatalf("a stale canary answer changed the state to %s", state)
+	}
+}

@@ -58,7 +58,9 @@ type Probe struct {
 
 	key ed25519.PrivateKey
 	// mu guards State: the canary runs every second beside a round, which holds it only outside its network phase.
-	mu    sync.Mutex
+	mu sync.Mutex
+	// gen changes with every lease written or withdrawn: a canary answer about an older lease is discarded.
+	gen   uint64
 	State Persisted
 }
 
@@ -296,16 +298,23 @@ func (p *Probe) leaseValid(now uint64) bool {
 
 // CanaryStep checks the guard every second while a lease is out: a configuration without it is caught within 1 s.
 func (p *Probe) CanaryStep(ctx context.Context) {
+	// The HTTP call runs without the lock: a slow canary never delays a violation or a round.
+	p.mu.Lock()
+	gen, active := p.gen, serving(p.State.State)
+	p.mu.Unlock()
+	if !active {
+		return
+	}
+	r := p.Canary(ctx)
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if !serving(p.State.State) {
+	if p.gen != gen || !serving(p.State.State) {
 		return
 	}
 	now, err := p.Boottime()
 	if err != nil {
 		return
 	}
-	r := p.Canary(ctx)
 	switch {
 	case r.Unreachable:
 		p.State.NotFoundSinceNs = 0
@@ -455,6 +464,7 @@ func (p *Probe) withdraw(state string) {
 }
 
 func (p *Probe) writeLease(l lease.Lease) {
+	p.gen++
 	data, _ := json.Marshal(l)
 	if err := writeSynced(p.leaseFile(), data, 0o644); err != nil {
 		// The previous lease then expires by itself within V.
@@ -463,6 +473,7 @@ func (p *Probe) writeLease(l lease.Lease) {
 }
 
 func (p *Probe) removeLease() {
+	p.gen++
 	if err := os.Remove(p.leaseFile()); err != nil && !errors.Is(err, os.ErrNotExist) {
 		p.Logf("lease not removed: %v", err)
 	}
