@@ -2,9 +2,9 @@ import { Inject, Injectable, Logger } from "@nestjs/common";
 import { and, eq, isNull, or, sql } from "drizzle-orm";
 import type pg from "pg";
 import { DB, PG_POOL, type Db } from "../db/db.js";
-import { basicAuthCredentials, certificates, jwtCredentials, keyAuthCredentials, plugins, snapshots } from "../db/schema.js";
+import { basicAuthCredentials, certificates, instanceSigningKeys, jwtCredentials, keyAuthCredentials, plugins, snapshots } from "../db/schema.js";
 import { PluginCatalog } from "../plugin-catalog/catalog.js";
-import { basicAuthHashContext, certificateKeyContext, credentialContext, ENCRYPTOR, Encryptor, isLegacySealed, isSealed, isSealedJson, jwtSecretContext, pluginSecretContext, snapshotContext } from "./crypto.js";
+import { basicAuthHashContext, certificateKeyContext, credentialContext, ENCRYPTOR, Encryptor, instanceSigningKeyContext, isLegacySealed, isSealed, isSealedJson, jwtSecretContext, pluginSecretContext, snapshotContext } from "./crypto.js";
 
 export interface AtRestReport {
   credentials: number;
@@ -13,13 +13,14 @@ export interface AtRestReport {
   certificates: number;
   jwtSecrets: number;
   basicAuthHashes: number;
+  signingKeys: number;
   /** Another replica held the lock: nothing was done here. */
   skipped: boolean;
 }
 
 /** Test hook: runs before each row is written back, so a concurrent edit can be interposed deterministically. */
 export interface AtRestHooks {
-  beforeWrite?: (table: "credentials" | "plugins" | "snapshots" | "certificates" | "jwtSecrets" | "basicAuthHashes", id: string) => Promise<void>;
+  beforeWrite?: (table: "credentials" | "plugins" | "snapshots" | "certificates" | "jwtSecrets" | "basicAuthHashes" | "signingKeys", id: string) => Promise<void>;
 }
 
 /** One replica re-seals at a time: the others skip. */
@@ -68,7 +69,7 @@ export class AtRestService {
     const client = await this.created.pool.connect();
     try {
       const { rows } = await client.query<{ locked: boolean }>("select pg_try_advisory_lock($1) as locked", [LOCK_KEY]);
-      if (!rows[0]?.locked) return { credentials: 0, plugins: 0, snapshots: 0, certificates: 0, jwtSecrets: 0, basicAuthHashes: 0, skipped: true };
+      if (!rows[0]?.locked) return { credentials: 0, plugins: 0, snapshots: 0, certificates: 0, jwtSecrets: 0, basicAuthHashes: 0, signingKeys: 0, skipped: true };
       try {
         return { ...(await work()), skipped: false };
       } finally {
@@ -80,7 +81,7 @@ export class AtRestService {
   }
 
   private async reseal(needsText: (stored: string) => boolean, needsDoc: (doc: unknown) => boolean, hooks: AtRestHooks): Promise<Omit<AtRestReport, "skipped">> {
-    const report = { credentials: 0, plugins: 0, snapshots: 0, certificates: 0, jwtSecrets: 0, basicAuthHashes: 0 };
+    const report = { credentials: 0, plugins: 0, snapshots: 0, certificates: 0, jwtSecrets: 0, basicAuthHashes: 0, signingKeys: 0 };
 
     for (const { id } of await this.db.select({ id: keyAuthCredentials.id }).from(keyAuthCredentials).where(or(isNull(keyAuthCredentials.keyHash), sql`true`))) {
       await this.retry("credentials", id, async () => {
@@ -201,9 +202,26 @@ export class AtRestService {
       });
     }
 
+    for (const { kid } of await this.db.select({ kid: instanceSigningKeys.kid }).from(instanceSigningKeys)) {
+      await this.retry("signingKeys", kid, async () => {
+        const [row] = await this.db.select({ privateKey: instanceSigningKeys.privateKey }).from(instanceSigningKeys).where(eq(instanceSigningKeys.kid, kid));
+        if (!row || !needsText(row.privateKey)) return true;
+        const ctx = instanceSigningKeyContext(kid);
+        await hooks.beforeWrite?.("signingKeys", kid);
+        const written = await this.db
+          .update(instanceSigningKeys)
+          .set({ privateKey: this.enc.seal(this.enc.open(row.privateKey, ctx), ctx) })
+          .where(and(eq(instanceSigningKeys.kid, kid), eq(instanceSigningKeys.privateKey, row.privateKey)))
+          .returning({ kid: instanceSigningKeys.kid });
+        if (written.length === 0) return false;
+        report.signingKeys++;
+        return true;
+      });
+    }
+
     if (Object.values(report).some((n) => n > 0)) {
       this.logger.log(
-        `Sealed ${report.credentials} credentials, ${report.plugins} plugin configs, ${report.snapshots} snapshots, ${report.certificates} certificate keys, ${report.jwtSecrets} JWT secrets, ${report.basicAuthHashes} basic-auth hashes`,
+        `Sealed ${report.credentials} credentials, ${report.plugins} plugin configs, ${report.snapshots} snapshots, ${report.certificates} certificate keys, ${report.jwtSecrets} JWT secrets, ${report.basicAuthHashes} basic-auth hashes, ${report.signingKeys} instance signing keys`,
       );
     }
     return report;

@@ -594,3 +594,27 @@ export const apiV1UsageReplicas = pgTable("api_v1_usage_replicas", {
 export type UpstreamRow = typeof upstreams.$inferSelect;
 export type TargetRow = typeof targets.$inferSelect;
 export type CertificateRow = typeof certificates.$inferSelect;
+
+/**
+ * The instance's own Ed25519 signing keys (B §4.5). kid is the RFC 7638 thumbprint of public_key; private_key holds
+ * only the sealed seed (enc:v2, bound to this row). Status follows from the timestamps: revoked, else retired, else active.
+ */
+export const instanceSigningKeys = pgTable(
+  "instance_signing_keys",
+  {
+    kid: text("kid").primaryKey(),
+    publicKey: text("public_key").notNull(),
+    privateKey: text("private_key").notNull(),
+    validFrom: timestamp("valid_from", { withTimezone: true }).notNull(),
+    validUntil: timestamp("valid_until", { withTimezone: true }).notNull(),
+    retiredAt: timestamp("retired_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("instance_signing_keys_public_key_uq").on(t.publicKey),
+    check("instance_signing_keys_sealed_ck", sql`${t.privateKey} like 'enc:v2:%'`),
+    check("instance_signing_keys_validity_ck", sql`${t.validUntil} > ${t.validFrom}`),
+  ],
+);
+export type InstanceSigningKeyRow = typeof instanceSigningKeys.$inferSelect;

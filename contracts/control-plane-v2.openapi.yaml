@@ -349,7 +349,6 @@ paths:
       x-scope: instance
       x-gromesh-requirements: [ GW-ENV-01, GW-WS-16a ]
       x-required-permission: platform.admin
-      x-gromesh-planned: true
       description: |
         The instance's own signing keys (B §4.5; the N4 subset the N2 isolation admissions need), newest first. Only
         public data: the private part never leaves the instance and is never in a response, a log, an audit event or
@@ -370,7 +369,6 @@ paths:
       x-scope: instance
       x-gromesh-requirements: [ GW-ENV-01, GW-WS-16a ]
       x-required-permission: platform.admin
-      x-gromesh-planned: true
       security: [ { cookieAuth: [], csrfToken: [] } ]
       description: |
         Generates a new Ed25519 key pair in the instance (CSPRNG) and records it active from now until validUntil.
@@ -405,7 +403,6 @@ paths:
       x-scope: instance
       x-gromesh-requirements: [ GW-ENV-01, GW-WS-16a ]
       x-required-permission: platform.admin
-      x-gromesh-planned: true
       security: [ { cookieAuth: [], csrfToken: [] } ]
       description: |
         End of a rotation: the key signs nothing from now on (retiredAt = now) and stays only to verify what it signed
@@ -430,7 +427,6 @@ paths:
       x-scope: instance
       x-gromesh-requirements: [ GW-ENV-01, GW-WS-16a ]
       x-required-permission: platform.admin
-      x-gromesh-planned: true
       security: [ { cookieAuth: [], csrfToken: [] } ]
       description: |
         The key may have signed something false: from the same transaction on the instance signs nothing with it and
