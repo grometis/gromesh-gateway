@@ -330,8 +330,10 @@ paths:
         per API token, plus the calls made by sessions (the current UI). The cut requires zero token calls in the
         window, `since` on the window's first day and `completeThrough` at the time of the cut: no call counted proves
         nothing about a time nobody was counting. Every control-plane replica confirms its counting at least every
-        few seconds; a v1 token call whose count cannot be written is refused (500) and its day goes with the next
-        confirmation; a replica silent for longer than two minutes without stopping cleanly may have lost one. A
+        few seconds, never past a token call still being written; a v1 token call whose count cannot be written is
+        refused (500) and its day goes with the next confirmation; a replica silent for longer than two minutes
+        without stopping cleanly may have lost one on any day since, so no day from its last confirmation on is
+        complete while it is on record (its row is kept until that confirmation leaves the window). A
         release that does not count (a rollback) is seen only while no counting replica runs: running both at once
         is outside what this report can see. Counted by day; never carries a token value, a path parameter or a body.
       responses:
@@ -3767,8 +3769,9 @@ components:
           format: date
           description: |
             The first UTC day from which the counting is complete through `completeThrough`: every moment from that
-            day's start on was counted by a replica (a gap shorter than two minutes, a restart, is not a gap), no
-            token call failed to be written and no replica went silent without stopping cleanly. A day before the
+            day's start on was counted by a replica (up to two minutes after a replica's last confirmation, a
+            restart, is not a gap), no token call failed to be written and no replica went silent without stopping
+            cleanly. A day before the
             counting started (the release that delivers this operation), with a gap (a rollback to a release that
             does not count) or with a loss is not complete: `since` is then the day after it (tomorrow when it is
             today). The window's first day (today − 29) at most.
