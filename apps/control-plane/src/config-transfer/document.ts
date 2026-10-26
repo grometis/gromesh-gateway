@@ -8,8 +8,9 @@ import { contracts, toFieldErrors } from "../common/contract.js";
 import type { FieldError } from "../common/problem.js";
 
 export interface ImportRequest { document: ConfigDocument | Record<string, unknown>; sourceFormat?: "gromesh/v1" | "kong-declarative-3.0"; mode: "merge" | "replace"; dryRun: boolean }
-export const emptyReport = (errors: FieldError[]) => ({ added: [] as EntityChange[], modified: [] as EntityChange[], removed: [] as EntityChange[], errors });
-export const importFailure = (errors: FieldError[]) => new HttpException({ type: "https://gromesh.dev/problems/422", title: "Unprocessable Content", status: 422, detail: "The import was not applied", ...emptyReport(errors) }, 422);
+export type PendingCredential = { path: string; credentialType: "key-auth" | "jwt"; credentialId: string };
+export const emptyReport = (errors: FieldError[]) => ({ added: [] as EntityChange[], modified: [] as EntityChange[], removed: [] as EntityChange[], errors, pendingCredentials: [] as PendingCredential[] });
+export const importFailure = (errors: FieldError[]) => new HttpException({ type: "https://gromesh.dev/problems/422", title: "Unprocessable Content", status: 422, detail: "The import was not applied", added: [], modified: [], removed: [], errors }, 422);
 const LIMIT = 5_242_880;
 export const schemaErrors = (errors: ErrorObject[] | null | undefined, prefix = "document"): FieldError[] => (errors ?? []).filter(e => !["if", "oneOf", "anyOf"].includes(e.keyword)).map(e => {
   const field = toFieldErrors([e])[0]!;

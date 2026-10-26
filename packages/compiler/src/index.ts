@@ -5,5 +5,5 @@ export { CompileError, type CompileIssue } from "./errors.js";
 export { canonicalJson, hashConfig } from "./hash.js";
 export { buildSnapshot, type SnapshotMeta } from "./snapshot.js";
 export { diffConfigs, ENTITY_KINDS, type EntityChange, type EntityKind } from "./diff.js";
-export { exportConfig, credentialKeyHint, type ConfigDocument, type ConfigConsumer, type ConfigPlugin, type ConsumerRef } from "./document.js";
+export { exportConfig, credentialKeyHint, type ConfigDocument, type ConfigConsumer, type ConfigPlugin, type ConsumerRef, type CredentialStatus } from "./document.js";
 export { convertKongConfig, type ImportIdentity } from "./import.js";

@@ -64,16 +64,16 @@ async function rowsOf(server: Harness, envId: string): Promise<string> {
   return [...keys.rows.map((r) => r.key), ...configs.rows.map((r) => r.v), ...snaps.rows.flatMap((r) => [r.c, r.s]), ...jwts.rows.map((r) => r.v), ...basics.rows.map((r) => r.v)].join("\n");
 }
 
-/** A consumer with a chosen key and a rate-limiting plugin with a redis password, published. */
+/** A consumer with a generated key and a rate-limiting plugin with a redis password, published. */
 async function secrets(server: Harness) {
   const env = await server.api("POST", "/environments", { name: uniq("enc") });
   const envId = env.body.id as string;
   const svc = await server.api("POST", `/environments/${envId}/services`, { name: uniq("svc"), protocol: "http", host: "echo", port: 80 });
   await server.api("POST", `/environments/${envId}/routes`, { name: uniq("route"), serviceId: svc.body.id, paths: ["/echo"] });
   const consumer = await server.api("POST", `/environments/${envId}/consumers`, { username: uniq("alice") });
-  const key = `chosen-${uniq("key")}-${"x".repeat(20)}`;
-  const credential = await server.api("POST", `/environments/${envId}/consumers/${consumer.body.id}/key-auth`, { key });
+  const credential = await server.api("POST", `/environments/${envId}/consumers/${consumer.body.id}/key-auth`, {});
   expect(credential.status).toBe(201);
+  const key = credential.body.key as string;
   const password = `redis-${uniq("pw")}`;
   const plugin = await server.api("POST", `/environments/${envId}/plugins`, { name: "rate-limiting", scope: { serviceId: svc.body.id }, config: { minute: 5, policy: "redis", redis: { host: "redis.internal", password } } });
   expect(plugin.status, JSON.stringify(plugin.body)).toBe(201);
@@ -121,7 +121,9 @@ describe("secrets at rest", () => {
 
   it("keeps keys unique per environment through a keyed fingerprint, never a plain hash", async () => {
     const { envId, consumerId, key } = await secrets(h);
-    expect((await h.api("POST", `/environments/${envId}/consumers/${consumerId}/key-auth`, { key })).status).toBe(409);
+    // A key cannot be chosen any more (decision H-14); the index still refuses the same fingerprint twice.
+    expect((await h.api("POST", `/environments/${envId}/consumers/${consumerId}/key-auth`, { key })).status).toBe(422);
+    await expect(h.sql.query(`insert into keyauth_credentials (environment_id, consumer_id, key, key_hash) select environment_id, consumer_id, key, key_hash from keyauth_credentials where consumer_id = $1`, [consumerId])).rejects.toThrow(/keyauth_env_key_hash_uq|duplicate key/);
     const { rows } = await h.sql.query("select key_hash from keyauth_credentials where consumer_id = $1", [consumerId]);
     expect(rows[0].key_hash).toMatch(/^[0-9a-f]{64}$/);
     expect(rows[0].key_hash).not.toBe(createHash("sha256").update(key).digest("hex"));

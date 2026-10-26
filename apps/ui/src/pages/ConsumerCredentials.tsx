@@ -3,7 +3,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { api, unwrap, type BasicAuthCredential, type Consumer, type JwtCredential } from "../api/client";
 import { statusMessage, toFormErrors, type FormErrors } from "../api/errors";
 import { Field, FormErrorList } from "../components/Field";
-import { createdAt, CredentialCard, SecretOnce } from "../components/Credentials";
+import { createdAt, CredentialCard, PendingBadge, SecretOnce } from "../components/Credentials";
 import { ConfirmDialog, Modal } from "../components/Modal";
 import { splitList, useInvalidateDraft } from "./Services";
 
@@ -21,6 +21,7 @@ export function JwtCredentials({ envId, consumer, canEdit }: { envId: string; co
   });
   const [creating, setCreating] = useState(false);
   const [deleting, setDeleting] = useState<JwtCredential | null>(null);
+  const [rotating, setRotating] = useState<JwtCredential | null>(null);
   const items = credentials.data?.items ?? [];
 
   return (
@@ -44,11 +45,19 @@ export function JwtCredentials({ envId, consumer, canEdit }: { envId: string; co
               hint={
                 <>
                   <span className="mono">{j.key}</span> <span className="badge no-nodes">{j.algorithm}</span>
+                  {j.status === "pending-reprovision" && (
+                    <>
+                      {" "}
+                      <PendingBadge />
+                    </>
+                  )}
                 </>
               }
               meta={createdAt(j.createdAt)}
               deleteLabel={`Mais ações para a credencial JWT ${j.key}`}
               onDelete={canEdit ? () => setDeleting(j) : undefined}
+              rotateLabel="Gerar novo segredo"
+              onRotate={canEdit && j.algorithm === "HS256" ? () => setRotating(j) : undefined}
             />
           ))}
         </ul>
@@ -61,6 +70,23 @@ export function JwtCredentials({ envId, consumer, canEdit }: { envId: string; co
             invalidate("jwt");
             setCreating(false);
           }}
+        />
+      )}
+      {rotating && (
+        <RotateCredential
+          title="Gerar novo segredo"
+          what={<>o segredo da credencial JWT <span className="mono">{rotating.key}</span></>}
+          pending={rotating.status === "pending-reprovision"}
+          label="Segredo"
+          field="secret"
+          rotate={() => unwrap(api.POST("/environments/{envId}/consumers/{consumerId}/jwt/{credentialId}/rotate", { params: { path: { ...path, credentialId: rotating.id } } }))}
+          note={
+            <>
+              Copie o segredo agora. Ele não será mostrado de novo. Os tokens devem ter <span className="mono">iss</span> = <span className="mono">{rotating.key}</span>; o novo segredo vale depois de publicar.
+            </>
+          }
+          onRotated={() => invalidate("jwt")}
+          onClose={() => setRotating(null)}
         />
       )}
       {deleting && (
@@ -80,10 +106,11 @@ export function JwtCredentials({ envId, consumer, canEdit }: { envId: string; co
 
 /**
  * Like the key-auth key, an HS256 secret exists only in this component's state: shown once after the 201, dropped
- * when the dialog closes (never in the query or mutation cache, nor in storage).
+ * when the dialog closes (never in the query or mutation cache, nor in storage). Only the server generates it
+ * (decision H-14): the form has no field for it.
  */
 function NewJwt({ envId, consumerId, onDone }: { envId: string; consumerId: string; onDone: () => void }) {
-  const [form, setForm] = useState({ key: "", algorithm: "HS256" as JwtCredential["algorithm"], secret: "", rsaPublicKey: "" });
+  const [form, setForm] = useState({ key: "", algorithm: "HS256" as JwtCredential["algorithm"], rsaPublicKey: "" });
   const [errors, setErrors] = useState<FormErrors>(noErrors);
   const hs = form.algorithm === "HS256";
   const create = useMutation({
@@ -96,12 +123,11 @@ function NewJwt({ envId, consumerId, onDone }: { envId: string; consumerId: stri
           body: {
             algorithm: form.algorithm,
             ...(form.key.trim() ? { key: form.key.trim() } : {}),
-            ...(hs ? (form.secret ? { secret: form.secret } : {}) : { rsaPublicKey: form.rsaPublicKey.trim() + "\n" }),
+            ...(hs ? {} : { rsaPublicKey: form.rsaPublicKey.trim() + "\n" }),
           },
         }),
       ),
     onSuccess: (created) => {
-      setForm((f) => ({ ...f, secret: "" }));
       if (!created.secret) close();
     },
     onError: (err) => setErrors(toFormErrors(err, ["key", "algorithm", "secret", "rsaPublicKey"])),
@@ -113,7 +139,6 @@ function NewJwt({ envId, consumerId, onDone }: { envId: string; consumerId: stri
   const submit = (e: FormEvent) => {
     e.preventDefault();
     const fields: Record<string, string[]> = {};
-    if (hs && form.secret && form.secret.length < 32) fields.secret = ["Use pelo menos 32 caracteres."];
     if (!hs && !form.rsaPublicKey.includes("PUBLIC KEY")) fields.rsaPublicKey = ["Cole a chave pública em PEM."];
     setErrors({ fields, form: [] });
     if (Object.keys(fields).length === 0) create.mutate();
@@ -151,9 +176,7 @@ function NewJwt({ envId, consumerId, onDone }: { envId: string; consumerId: stri
           )}
         </Field>
         {hs ? (
-          <Field label="Segredo" errors={errors.fields.secret} hint="Opcional. Vazio = um segredo forte é gerado e mostrado uma única vez.">
-            {(id, invalid) => <input id={id} type="password" autoComplete="off" aria-invalid={invalid} value={form.secret} onChange={(e) => setForm((f) => ({ ...f, secret: e.target.value }))} />}
-          </Field>
+          <p className="muted">O segredo é gerado pelo servidor e mostrado uma única vez, logo depois de criar.</p>
         ) : (
           <Field label="Chave pública (PEM)" errors={errors.fields.rsaPublicKey}>
             {(id, invalid) => (
@@ -358,6 +381,53 @@ export function AclGroupsPanel({ envId, consumer, canEdit }: { envId: string; co
 }
 
 /* ---------------- shared ---------------- */
+
+/**
+ * Decision H-14: a new key or HS256 secret the server generates, for a credential pending reprovisioning or to
+ * replace the current one. Shown once, like on creation, and gone when the dialog closes.
+ */
+export function RotateCredential(props: {
+  title: string;
+  what: ReactNode;
+  pending: boolean;
+  label: string;
+  /** Which field of the response is the new value: a JWT response carries its (public) key too. */
+  field: "key" | "secret";
+  rotate: () => Promise<{ key?: string; secret?: string }>;
+  note: ReactNode;
+  onRotated: () => void;
+  onClose: () => void;
+}) {
+  const rotate = useMutation({
+    // The response carries the value: evict it from the mutation cache as soon as the dialog lets go of it.
+    gcTime: 0,
+    mutationFn: props.rotate,
+    onSuccess: () => props.onRotated(),
+  });
+  const value = rotate.data?.[props.field];
+  const close = () => {
+    rotate.reset();
+    props.onClose();
+  };
+  if (value) return <SecretOnce title={props.title} label={props.label} secret={value} note={props.note} onClose={close} />;
+  return (
+    <ConfirmDialog
+      title={props.title}
+      message={
+        props.pending ? (
+          <>Gerar {props.what}? A credencial foi importada sem o valor e não autentica até ele ser gerado e o rascunho publicado.</>
+        ) : (
+          <>Gerar {props.what}? O valor atual deixa de funcionar depois de publicar; quem o usa precisa receber o novo.</>
+        )
+      }
+      confirmLabel="Gerar"
+      busy={rotate.isPending}
+      error={rotate.isError ? statusMessage(rotate.error) : null}
+      onConfirm={() => rotate.mutate()}
+      onClose={close}
+    />
+  );
+}
 
 function DeleteCredential(props: { title: string; what: ReactNode; remove: () => Promise<unknown>; onClose: () => void; onDeleted: () => void }) {
   const remove = useMutation({

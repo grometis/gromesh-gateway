@@ -10,12 +10,12 @@ import { ConfirmDialog, Modal } from "../components/Modal";
 import { Tabs } from "../components/Tabs";
 import { Button } from "../components/Button";
 import { RowMenu } from "../components/RowMenu";
-import { createdAt, CredentialCard, SecretOnce } from "../components/Credentials";
+import { createdAt, CredentialCard, PendingBadge, SecretOnce } from "../components/Credentials";
 import { Table } from "../components/Table";
 import { PageHeader } from "../components/PageHeader";
 import { EmptyState } from "../components/EmptyState";
 import { useEnvId } from "../components/Shell";
-import { AclGroupsPanel, BasicAuthCredentials, JwtCredentials } from "./ConsumerCredentials";
+import { AclGroupsPanel, BasicAuthCredentials, JwtCredentials, RotateCredential } from "./ConsumerCredentials";
 import { ScopedPlugins } from "./Plugins";
 import { splitList, useInvalidateDraft } from "./Services";
 
@@ -275,7 +275,9 @@ function KeyAuthCredentials({ envId, consumer, canEdit }: { envId: string; consu
   });
   const [creating, setCreating] = useState(false);
   const [deleting, setDeleting] = useState<KeyAuthCredential | null>(null);
+  const [rotating, setRotating] = useState<KeyAuthCredential | null>(null);
   const items = credentials.data?.items ?? [];
+  const label = (k: KeyAuthCredential) => k.keyHint ?? "pendente";
 
   return (
     <section aria-label="Credenciais key-auth" className="cred-section">
@@ -295,10 +297,12 @@ function KeyAuthCredentials({ envId, consumer, canEdit }: { envId: string; consu
           {items.map((k) => (
             <CredentialCard
               key={k.id}
-              hint={<span className="mono">{k.keyHint}</span>}
+              hint={k.status === "pending-reprovision" ? <PendingBadge /> : <span className="mono">{k.keyHint}</span>}
               meta={createdAt(k.createdAt)}
-              deleteLabel={`Mais ações para a chave ${k.keyHint}`}
+              deleteLabel={`Mais ações para a chave ${label(k)}`}
               onDelete={canEdit ? () => setDeleting(k) : undefined}
+              rotateLabel="Gerar nova chave"
+              onRotate={canEdit ? () => setRotating(k) : undefined}
             />
           ))}
         </ul>
@@ -311,6 +315,19 @@ function KeyAuthCredentials({ envId, consumer, canEdit }: { envId: string; consu
             invalidate("keyauth");
             setCreating(false);
           }}
+        />
+      )}
+      {rotating && (
+        <RotateCredential
+          title="Gerar nova chave"
+          what={rotating.status === "pending-reprovision" ? <>a chave desta credencial</> : <>uma nova chave no lugar de <span className="mono">{rotating.keyHint}</span></>}
+          pending={rotating.status === "pending-reprovision"}
+          label="Chave"
+          field="key"
+          rotate={() => unwrap(api.POST("/environments/{envId}/consumers/{consumerId}/key-auth/{credentialId}/rotate", { params: { path: { ...path, credentialId: rotating.id } } }))}
+          note="Copie a chave agora. Ela não será mostrada de novo: depois só aparecem os últimos caracteres. A nova chave vale depois de publicar."
+          onRotated={() => invalidate("keyauth")}
+          onClose={() => setRotating(null)}
         />
       )}
       {deleting && (
@@ -329,22 +346,13 @@ function KeyAuthCredentials({ envId, consumer, canEdit }: { envId: string; consu
 /**
  * The full key exists only in this component's state: it is shown once after the 201, and closing the dialog
  * drops it (nothing stays in the query or mutation cache, nor in storage). From then on only `keyHint` is visible.
+ * Only the server generates it (decision H-14): there is no field for a key of one's own.
  */
 function NewKey({ envId, consumerId, onDone }: { envId: string; consumerId: string; onDone: () => void }) {
-  const [custom, setCustom] = useState("");
-  const [errors, setErrors] = useState<FormErrors>({ fields: {}, form: [] });
   const create = useMutation({
     // The response carries the secret: evict it from the mutation cache as soon as the dialog lets go of it.
     gcTime: 0,
-    mutationFn: () =>
-      unwrap(
-        api.POST("/environments/{envId}/consumers/{consumerId}/key-auth", {
-          params: { path: { envId, consumerId } },
-          body: custom.trim() ? { key: custom.trim() } : {},
-        }),
-      ),
-    onSuccess: () => setCustom(""),
-    onError: (err) => setErrors(toFormErrors(err, ["key"])),
+    mutationFn: () => unwrap(api.POST("/environments/{envId}/consumers/{consumerId}/key-auth", { params: { path: { envId, consumerId } }, body: {} })),
   });
   const close = () => {
     create.reset();
@@ -370,18 +378,11 @@ function NewKey({ envId, consumerId, onDone }: { envId: string; consumerId: stri
         noValidate
         onSubmit={(e) => {
           e.preventDefault();
-          if (custom.trim() && custom.trim().length < 16) {
-            setErrors({ fields: { key: ["Use pelo menos 16 caracteres."] }, form: [] });
-            return;
-          }
-          setErrors({ fields: {}, form: [] });
           create.mutate();
         }}
       >
-        <Field label="Chave personalizada" errors={errors.fields.key} hint="Opcional. Vazio = uma chave aleatória forte é gerada.">
-          {(id, invalid) => <input id={id} type="password" autoComplete="off" aria-invalid={invalid} value={custom} onChange={(e) => setCustom(e.target.value)} />}
-        </Field>
-        <FormErrorList messages={errors.form} />
+        <p className="muted">O servidor gera uma chave aleatória forte e a mostra uma única vez.</p>
+        <FormErrorList messages={create.isError ? [statusMessage(create.error)] : []} />
         <div className="form-actions">
           <button type="button" onClick={close}>
             Cancelar
@@ -410,7 +411,7 @@ function DeleteKey(props: { envId: string; consumerId: string; credential: KeyAu
       title="Excluir chave"
       message={
         <>
-          Excluir a chave <span className="mono">{credential.keyHint}</span>? Quem a usa deixa de ter acesso depois de publicar.
+          Excluir a chave <span className="mono">{credential.keyHint ?? "pendente"}</span>? Quem a usa deixa de ter acesso depois de publicar.
         </>
       }
       confirmLabel="Excluir"

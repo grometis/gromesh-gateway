@@ -92,7 +92,7 @@ describe("key-auth credentials", () => {
     expect(created.keyHint).toBe(`…${created.key.slice(-4)}`);
 
     const list = await h.api("GET", `/environments/${envId}/consumers/${consumer.id}/key-auth`);
-    expect(list.body.items).toEqual([{ id: created.id, consumerId: consumer.id, keyHint: created.keyHint, tags: [], createdAt: created.createdAt }]);
+    expect(list.body.items).toEqual([{ id: created.id, consumerId: consumer.id, keyHint: created.keyHint, status: "active", tags: [], createdAt: created.createdAt }]);
 
     const { rows } = await h.sql.query("select action, before, after from audit_events where environment_id = $1", [envId]);
     expect(rows.map((r) => r.action)).toContain("keyauth.create");
@@ -103,16 +103,15 @@ describe("key-auth credentials", () => {
     expect(preview.body.changes).toContainEqual(expect.objectContaining({ kind: "keyauth_credentials", change: "added", after: expect.objectContaining({ key: "REDACTED" }) }));
   });
 
-  it("accepts a chosen key, refuses short and duplicate ones", async () => {
+  it("refuses a chosen key, short or not, at key (decision H-14), and writes nothing", async () => {
     const { envId, consumer } = await fixture();
     const path = `/environments/${envId}/consumers/${consumer.id}/key-auth`;
-    const short = await h.api("POST", path, { key: "too-short" });
-    expect(short.status).toBe(422);
-    expect(short.body.errors).toEqual([expect.objectContaining({ path: "key" })]);
-
-    const key = `chosen-${uniq("key")}`;
-    expect((await create(path, { key })).key).toBe(key);
-    expect((await h.api("POST", path, { key })).status).toBe(409);
+    for (const key of ["too-short", `chosen-${uniq("key")}`]) {
+      const res = await h.api("POST", path, { key });
+      expect(res.status).toBe(422);
+      expect(res.body.errors).toEqual([expect.objectContaining({ path: "key" })]);
+    }
+    expect((await h.api("GET", path)).body.items).toEqual([]);
   });
 
   it("deletes a credential, and all of them with their consumer", async () => {

@@ -135,7 +135,7 @@ export async function loadGatewayState(tx: Executor, envId: string, enc: Encrypt
       return route;
     }),
     consumers: consumerRows.map((c) => ({ id: c.id, username: c.username, customId: c.customId, aclGroups: c.aclGroups, tags: c.tags })),
-    keyAuthCredentials: keyRows.map((k) => ({ id: k.id, consumerId: k.consumerId, key: enc.open(k.key, credentialContext(k.id)), tags: k.tags })),
+    keyAuthCredentials: keyRows.map((k) => ({ id: k.id, consumerId: k.consumerId, key: enc.open(k.key, credentialContext(k.id)), tags: k.tags, ...(k.pendingReprovision ? { pendingReprovision: true } : {}) })),
     jwtCredentials: jwtRows.map((j) => jwtState(j, enc)),
     basicAuthCredentials: basicRows.map((b) => basicAuthState(b, enc)),
     plugins: pluginRows.map((p) => ({

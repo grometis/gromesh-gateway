@@ -1,10 +1,12 @@
 import type { BasicAuthCredential, Certificate, Consumer, GatewayState, JwtCredential, KeyAuthCredential, Plugin, Route, Service, Target, Upstream } from "./model.js";
 
 export type ConsumerRef = Pick<Consumer, "username" | "customId">;
+/** Decision H-14: exported only for a credential pending reprovisioning; an import ignores it. */
+export type CredentialStatus = "active" | "pending-reprovision";
 export interface ConfigConsumer extends Omit<Consumer, "id"> {
   aclGroups: string[];
-  keyAuthCredentials: (Omit<KeyAuthCredential, "id" | "consumerId" | "key"> & { id?: string; key?: string; keyHint?: string })[];
-  jwtCredentials: (Omit<JwtCredential, "id" | "consumerId" | "secret" | "rsaPublicKey"> & { id?: string; secret?: string; rsaPublicKey?: string })[];
+  keyAuthCredentials: (Omit<KeyAuthCredential, "id" | "consumerId" | "key" | "pendingReprovision"> & { id?: string; key?: string; keyHint?: string; status?: CredentialStatus })[];
+  jwtCredentials: (Omit<JwtCredential, "id" | "consumerId" | "secret" | "rsaPublicKey" | "pendingReprovision"> & { id?: string; secret?: string; rsaPublicKey?: string; status?: CredentialStatus })[];
   basicAuthCredentials: (Omit<BasicAuthCredential, "id" | "consumerId" | "passwordHash"> & { id?: string; password?: string })[];
 }
 export interface ConfigPlugin extends Omit<Plugin, "id" | "scope" | "config"> {
@@ -36,10 +38,13 @@ export function exportConfig(state: GatewayState, redact: (name: string, config:
     routes: state.routes.map(({ id: _id, serviceId, ...r }) => ({ ...r, service: state.services.find(s => s.id === serviceId)!.name })),
     consumers: state.consumers.map(c => ({
       ...consumerRef(c.id), tags: c.tags ?? [], aclGroups: c.aclGroups ?? [],
-      keyAuthCredentials: state.keyAuthCredentials.filter(k => k.consumerId === c.id).map(k => ({ id: k.id, keyHint: credentialKeyHint(k.key), tags: k.tags ?? [] })),
+      // Pending reprovisioning: no hint or secret, there is none (decision H-14).
+      keyAuthCredentials: state.keyAuthCredentials.filter(k => k.consumerId === c.id).map(k => k.pendingReprovision
+        ? { id: k.id, status: "pending-reprovision" as const, tags: k.tags ?? [] }
+        : { id: k.id, keyHint: credentialKeyHint(k.key), tags: k.tags ?? [] }),
       jwtCredentials: (state.jwtCredentials ?? []).filter(j => j.consumerId === c.id).map(j => ({
         id: j.id, key: j.key, algorithm: j.algorithm, tags: j.tags ?? [],
-        ...(j.algorithm === "HS256" ? { secret: "REDACTED" } : { rsaPublicKey: j.rsaPublicKey! }),
+        ...(j.pendingReprovision ? { status: "pending-reprovision" as const } : j.algorithm === "HS256" ? { secret: "REDACTED" } : { rsaPublicKey: j.rsaPublicKey! }),
       })),
       basicAuthCredentials: (state.basicAuthCredentials ?? []).filter(b => b.consumerId === c.id).map(b => ({ id: b.id, username: b.username, tags: b.tags ?? [] })),
     })),

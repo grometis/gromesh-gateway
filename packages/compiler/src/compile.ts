@@ -64,11 +64,20 @@ export function compile(state: GatewayState, options: CompileOptions = {}): Kong
 export function diffGatewayStates(before: GatewayState, after: GatewayState) {
   // Retention is domain metadata transported by a platform plugin, absent from Kong's route schema.
   // Include it only in this comparison so a retention-only import is persisted and audited.
+  // So are credentials pending reprovisioning (decision H-14), absent from the config: importing one is a change.
   const compared = (state: GatewayState, config: KongDeclarativeConfig) => ({
     ...config,
     routes: config.routes.map((route) => ({
       ...route, analyticsRetentionDays: state.routes.find((r) => r.id === route.id)?.analyticsRetentionDays ?? null,
     })),
+    keyauth_credentials: [
+      ...config.keyauth_credentials,
+      ...state.keyAuthCredentials.filter((k) => k.pendingReprovision).map((k): KongKeyAuthCredential => ({ id: k.id, consumer: k.consumerId, key: "", tags: [...(k.tags ?? []), "pending-reprovision"] })),
+    ],
+    jwt_secrets: [
+      ...(config.jwt_secrets ?? []),
+      ...(state.jwtCredentials ?? []).filter((j) => j.pendingReprovision).map((j): KongJwtSecret => ({ id: j.id, consumer: j.consumerId, key: j.key, algorithm: j.algorithm, tags: [...(j.tags ?? []), "pending-reprovision"] })),
+    ],
   });
   return diffConfigs(compared(before, declarativeConfig(before, {})), compared(after, compile(after)));
 }
@@ -126,14 +135,15 @@ function declarativeConfig(state: GatewayState, options: CompileOptions): KongDe
     }),
   );
 
-  const keyauth_credentials: KongKeyAuthCredential[] = byId(state.keyAuthCredentials).map((k) => ({
+  // A credential pending reprovisioning authenticates nothing: it is not in the config at all (decision H-14).
+  const keyauth_credentials: KongKeyAuthCredential[] = byId(state.keyAuthCredentials.filter((k) => !k.pendingReprovision)).map((k) => ({
     id: k.id,
     consumer: k.consumerId,
     key: k.key,
     tags: tags(k.tags),
   }));
 
-  const jwt_secrets: KongJwtSecret[] = byId(state.jwtCredentials ?? []).map((j) =>
+  const jwt_secrets: KongJwtSecret[] = byId((state.jwtCredentials ?? []).filter((j) => !j.pendingReprovision)).map((j) =>
     clean({
       id: j.id,
       consumer: j.consumerId,
@@ -356,7 +366,11 @@ export function validate(state: GatewayState): CompileIssue[] {
     else if (jwtKeys.has(j.key)) add(`${p}.key`, `duplicate key "${j.key}"`);
     jwtKeys.add(j.key);
     if (!JWT_ALGORITHMS.has(j.algorithm)) add(`${p}.algorithm`, `unsupported algorithm "${j.algorithm}"`);
-    else if (j.algorithm === "HS256") {
+    else if (j.pendingReprovision) {
+      // Decision H-14: an HS256 credential imported without its secret, until it is rotated.
+      if (j.algorithm !== "HS256") add(`${p}.algorithm`, "only an HS256 credential can be pending reprovisioning");
+      if (j.secret) add(`${p}.secret`, "a credential pending reprovisioning has no secret");
+    } else if (j.algorithm === "HS256") {
       if (!j.secret) add(`${p}.secret`, "is required for HS256");
       if (j.rsaPublicKey) add(`${p}.rsaPublicKey`, "only applies to RS256 and ES256");
     } else {

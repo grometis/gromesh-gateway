@@ -114,7 +114,9 @@ export class ConfigTransferService {
             return { failure: redacted };
           }
           const changes = redactChanges(diffGatewayStates(current, plan!.state), (name, config) => this.catalog.redactConfig(name, config));
-          const report = { added: changes.filter(c => c.change === "added"), modified: changes.filter(c => c.change === "modified"), removed: changes.filter(c => c.change === "removed"), errors: [] };
+          // Each by its path in the source document (a Kong document's, once converted), never with a value.
+          const pendingCredentials = plan!.pending.map(p => ({ ...p, path: converted?.sourcePath(p.path) ?? p.path }));
+          const report = { added: changes.filter(c => c.change === "added"), modified: changes.filter(c => c.change === "modified"), removed: changes.filter(c => c.change === "removed"), errors: [], pendingCredentials };
           if (!request.dryRun) {
             if (changes.length > 0) {
               await restoreGatewayState(tx, envId, plan!.state, this.enc, this.catalog);
