@@ -99,6 +99,16 @@ collector:
   # UUID of this cluster in the control plane (POST /environments/{envId}/clusters). Required when enabled:
   # the collector refuses to start without it, and every row it writes carries it.
   clusterId: ""
+  # UUID of the environment this cluster belongs to. Required when enabled: the collector drops every event tagged
+  # with another environment, so a leaked token cannot write another environment's analytics (hotfix F-1).
+  environmentId: ""
+  auth:
+    # Secret with this cluster's collector token (at least 32 characters), read by the gateway through the env vault
+    # and by the collector; never by the control plane. Empty: the chart creates <release>-data-plane-collector-token
+    # once and keeps it across upgrades (and after uninstall). With an external collector (enabled: false), set it to
+    # the Secret that collector expects. Rotation: put the old value under `previous-token` while the gateways restart.
+    existingSecret: ""
+    existingSecretKey: token
   image:
     repository: timberio/vector
     tag: "0.57.0-alpine"

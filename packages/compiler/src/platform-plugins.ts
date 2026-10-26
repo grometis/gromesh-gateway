@@ -99,6 +99,9 @@ export function platformPlugins(options: PlatformPluginOptions): Plugin[] {
         method: "POST",
         content_type: "application/json",
         timeout: 5000,
+        // Each gateway resolves the token from its own environment (env vault): the snapshot carries only the
+        // reference, so the control plane never holds the collector credential (contract: Platform analytics).
+        headers: { "X-Gromesh-Collector-Token": "{vault://env/gromesh-collector-token}" },
         queue,
         custom_fields_by_lua: {
           environment_id: `return "${options.environmentId.toLowerCase()}"`,

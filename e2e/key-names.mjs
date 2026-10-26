@@ -18,6 +18,8 @@ const proxy = process.env.KONG_PROXY_URL ?? "http://127.0.0.1:8000";
 const clickhouse = process.env.CLICKHOUSE_URL ?? "http://127.0.0.1:8123";
 const request = (url, options = {}) => fetch(url, { ...options, signal: AbortSignal.timeout(5000) });
 const check = (ok, message) => assert.ok(ok, message);
+// The compose collector's token (hotfix F-1): the sanitizer cases below post straight to it, like the gateway does.
+const collectorToken = process.env.GROMESH_COLLECTOR_TOKEN ?? "gromesh-dev-collector-token-not-a-secret";
 
 // Execute inside Kong's network namespace (the collector is on the compose network). Never print responses/configs.
 async function insideGateway(endpoint, method, body) {
@@ -27,12 +29,12 @@ async function insideGateway(endpoint, method, body) {
       import { readFileSync } from 'node:fs';
       const body = readFileSync(0, 'utf8');
       const response = await fetch(process.argv[1], {
-        method: process.argv[2], headers: {'content-type': 'application/json'},
+        method: process.argv[2], headers: {'content-type': 'application/json', 'x-gromesh-collector-token': process.argv[3]},
         ...(body ? {body} : {}), signal: AbortSignal.timeout(10000)
       });
       if (!response.ok) throw new Error('Gateway helper HTTP ' + response.status);
       console.log(JSON.stringify(process.argv[2] === 'GET' ? await response.json() : {status: response.status}));
-    `, endpoint, method], { cwd: root, env, timeout: 30_000, maxBuffer: 16 * 1024 * 1024 });
+    `, endpoint, method, collectorToken], { cwd: root, env, timeout: 30_000, maxBuffer: 16 * 1024 * 1024 });
   child.stdin.end(body === undefined ? "" : JSON.stringify(body));
   return new Promise((resolve, reject) => {
     let output = "";
@@ -102,11 +104,17 @@ async function main() {
   // An extra legacy name proves the env var still participates when event names are present.
   for (const directory of ["deploy/observability/vector", "deploy/helm/data-plane/files/vector"]) {
     await run(["run", "--rm", "-e", "CLICKHOUSE_PASSWORD=unit-test",
-      "-e", "GROMESH_CLUSTER_ID=00000000-0000-4000-8000-00000000c0c0", "-e", 'GROMESH_KEY_NAMES=["legacy-key"]',
+      "-e", "GROMESH_CLUSTER_ID=00000000-0000-4000-8000-00000000c0c0", "-e", "GROMESH_ENVIRONMENT_ID=any", "-e", 'GROMESH_KEY_NAMES=["legacy-key"]',
       "-v", `${root}${directory}:/etc/vector:ro`,
       "-v", `${root}deploy/observability/vector:/tests:ro`, VECTOR_IMAGE,
       "test", "--dangerously-allow-env-var-interpolation", "/etc/vector/vector.yaml",
       "/tests/key-names.tests.yaml", "/tests/path-masking.tests.yaml", "/tests/retention.tests.yaml"]);
+    // Hotfix F-1: with GROMESH_ENVIRONMENT_ID set, an event of another environment never reaches the sink.
+    await run(["run", "--rm", "-e", "CLICKHOUSE_PASSWORD=unit-test",
+      "-e", "GROMESH_CLUSTER_ID=00000000-0000-4000-8000-00000000c0c0", "-e", "GROMESH_ENVIRONMENT_ID=00000000-0000-4000-8000-000000000001",
+      "-v", `${root}${directory}:/etc/vector:ro`,
+      "-v", `${root}deploy/observability/vector:/tests:ro`, VECTOR_IMAGE,
+      "test", "--dangerously-allow-env-var-interpolation", "/etc/vector/vector.yaml", "/tests/environment-pin.tests.yaml"]);
   }
   await exec("pnpm", ["--filter", "@gromesh/compiler", "build"], { cwd: root, env, timeout: 60_000 });
   const { compile, platformPlugins } = await import("../packages/compiler/dist/index.js");

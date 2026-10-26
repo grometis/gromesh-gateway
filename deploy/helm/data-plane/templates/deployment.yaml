@@ -91,6 +91,17 @@ spec:
               value: /etc/gromesh/kong/listeners.conf
             - name: KONG_PROXY_LISTEN
               value: "0.0.0.0:8000, 0.0.0.0:8443 ssl"
+            {{- if or .Values.collector.enabled .Values.collector.auth.existingSecret }}
+            # The platform http-log sends {vault://env/gromesh-collector-token}; nginx workers only see variables
+            # declared with `env` (contract: Platform analytics).
+            - name: GROMESH_COLLECTOR_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "data-plane.collectorTokenSecret" . }}
+                  key: {{ .Values.collector.auth.existingSecretKey }}
+            - name: KONG_NGINX_MAIN_ENV
+              value: GROMESH_COLLECTOR_TOKEN
+            {{- end }}
             # Not /usr/local/kong: an emptyDir there would hide the image's own lib/ (libada.so, ...).
             - name: KONG_PREFIX
               value: /kong_prefix
