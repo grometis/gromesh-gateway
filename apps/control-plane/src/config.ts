@@ -51,6 +51,8 @@ export interface AppConfig {
   clickhouse: { url: string; user: string; password: string; database: string } | null;
   contractsDir: string;
   migrateOnStart: boolean;
+  /** How long a start waits for another replica to complete migration 0005 before failing. */
+  keyHashWaitMs: number;
   /** Auto-publish environments fire this long after their last draft edit (debounce). */
   autoPublishDelayMs: number;
   /** How often each replica looks for due auto-publish environments; 0 disables the poller. */
@@ -105,6 +107,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       : null,
     contractsDir: env.CONTRACTS_DIR ?? resolve(PACKAGE_ROOT, "../../contracts"),
     migrateOnStart: env.MIGRATE_ON_START === "true",
+    keyHashWaitMs: Number(env.KEY_HASH_WAIT_MS ?? 30_000),
     autoPublishDelayMs: Number(env.AUTO_PUBLISH_DELAY_MS ?? 3000),
     autoPublishPollMs: Number(env.AUTO_PUBLISH_POLL_MS ?? 1000),
     workspaceSlugPollMs: Number(env.WORKSPACE_SLUG_POLL_MS ?? 30_000),

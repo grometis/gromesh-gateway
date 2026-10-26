@@ -215,10 +215,28 @@ export class AtRestService {
     throw new Error(`Could not re-seal ${table} ${id}: the row kept changing`);
   }
 
-  /** Fails while a key-auth credential has no fingerprint yet (migration 0005 still running on another replica). */
-  async assertFingerprinted(): Promise<void> {
-    const [row] = await this.db.select({ pending: sql<number>`count(*)::int` }).from(keyAuthCredentials).where(isNull(keyAuthCredentials.keyHash));
-    if ((row?.pending ?? 0) > 0) throw new Error(`${row?.pending} key-auth credentials still without a fingerprint (another replica is filling them in): start again later`);
+  /**
+   * Fails while migration 0005 is unfinished (another replica is completing it): a key without a fingerprint is
+   * invisible to the uniqueness check, and before keyauth_env_key_hash_uq nothing stops a repetition in a workspace.
+   */
+  async assertKeyHashMigrated(waitMs = 30_000): Promise<void> {
+    for (const deadline = Date.now() + waitMs; ; await new Promise((r) => setTimeout(r, 200))) {
+      const [row] = await this.db.select({ pending: sql<number>`count(*)::int` }).from(keyAuthCredentials).where(isNull(keyAuthCredentials.keyHash));
+      if ((row?.pending ?? 0) === 0 && (await this.keyHashMigrated())) return;
+      if (Date.now() > deadline) throw new Error("key-auth fingerprints not in force yet (another replica is completing migration 0005): start again later");
+    }
+  }
+
+  /** Read from the catalog: NOT NULL, the fingerprint index per environment, and the old index gone. */
+  private async keyHashMigrated(): Promise<boolean> {
+    const [state] = await this.db
+      .execute<{ done: boolean }>(
+        sql`select exists (select 1 from information_schema.columns where table_schema = current_schema() and table_name = 'keyauth_credentials' and column_name = 'key_hash' and is_nullable = 'NO')
+          and exists (select 1 from pg_indexes where schemaname = current_schema() and indexname = 'keyauth_env_key_hash_uq')
+          and not exists (select 1 from pg_indexes where schemaname = current_schema() and indexname = 'keyauth_env_key_uq') as done`,
+      )
+      .then((r) => r.rows);
+    return state?.done === true;
   }
 
   /** The part of migration 0005 that needs the fingerprint key: run after every credential has a key_hash. */
@@ -227,14 +245,7 @@ export class AtRestService {
     if ((row?.pending ?? 0) > 0) throw new Error(`${row?.pending} credentials still without a fingerprint`);
     // Read from the catalog first: once done, a start must not queue an ACCESS EXCLUSIVE lock behind another
     // replica's open write (every reader of the table would then wait behind it).
-    const [state] = await this.db
-      .execute<{ done: boolean }>(
-        sql`select exists (select 1 from information_schema.columns where table_schema = current_schema() and table_name = 'keyauth_credentials' and column_name = 'key_hash' and is_nullable = 'NO')
-          and exists (select 1 from pg_indexes where schemaname = current_schema() and indexname = 'keyauth_env_key_hash_uq')
-          and not exists (select 1 from pg_indexes where schemaname = current_schema() and indexname = 'keyauth_env_key_uq') as done`,
-      )
-      .then((r) => r.rows);
-    if (state?.done) return;
+    if (await this.keyHashMigrated()) return;
     // Bounded: behind another replica's open write the start fails (and is retried) instead of queueing every reader.
     await this.db.transaction(async (tx) => {
       await tx.execute(sql`set local lock_timeout = '2s'`);

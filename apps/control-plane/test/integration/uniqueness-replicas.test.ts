@@ -205,13 +205,16 @@ describe("a replica starting while another fills in the key-auth fingerprints (a
     await admin.end();
   });
 
-  it("does not serve while a key has no fingerprint (invisible to the check), and starts once it has", async () => {
+  it("does not serve while another replica completes 0005 (fingerprints, then the index per workspace), and starts after", async () => {
     // The other replica holds the at-rest lock: this start skips the work and must not serve.
     const other = new pg.Client({ connectionString: url });
     await other.connect();
     try {
       await other.query(`select pg_advisory_lock($1)`, [LOCK_KEY]);
-      await expect(startHarness({ databaseUrl: url })).rejects.toThrow(/without a fingerprint/);
+      await expect(startHarness({ databaseUrl: url, keyHashWaitMs: 500 })).rejects.toThrow(/not in force yet/);
+      // Every fingerprint filled in, the rest of 0005 (NOT NULL, the index per workspace) not yet: still no.
+      await other.query(`update keyauth_credentials set key_hash = 'filled-in-by-the-other-replica'`);
+      await expect(startHarness({ databaseUrl: url, keyHashWaitMs: 500 })).rejects.toThrow(/not in force yet/);
     } finally {
       await other.end();
     }
