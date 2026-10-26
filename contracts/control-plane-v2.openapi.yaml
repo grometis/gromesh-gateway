@@ -150,9 +150,10 @@ info:
         becomes `<name>.<slug>.gromesh.internal` (a service refers to its upstream only by upstreamId; the suffix
         `.gromesh.internal` is refused as a free host of a service, target or plugin URL). Entity ids are UUIDs
         generated on dev and preserved on hml and prd; nothing is created directly on hml or prd.
-      - Credential secrets (decision H-14): the server generates every key-auth key and HS256 JWT secret, in both
-        APIs and in an import (a supplied value answers 422 at its field; an imported credential gets a generated one,
-        listed without its value). Delivered by task N1-X6.
+      - Credential secrets (decision H-14, task N1-X6): only the server generates a key-auth key or an HS256 JWT
+        secret (a CSPRNG, 32 bytes), on creation or rotation, shown once (a supplied value answers 422 at its field).
+        An import never sets, generates or returns one: a new such credential is imported with its metadata only,
+        pending reprovisioning (left out of every published configuration) until an editor rotates it.
       - Consumer identity (decision H-5): username and customId are unique in the WORKSPACE. Two workspaces may each
         have a consumer app-sky; they are independent consumers. On the node the compiler emits username
         `<slug>~<username>` and custom_id `<slug>~<customId>` (unique in the instance because the slug is); the API,
@@ -1516,11 +1517,10 @@ paths:
         A supplied `REDACTED`, or an omitted secret on a matched entity, keeps the current secret in either mode,
         as with certificate PUT. For a NEW credential/certificate/plugin secret, `REDACTED` or a missing value
         is 422 at that secret path; import never auto-generates credentials. This applies to basic-auth passwords,
-        certificate keys and plugin fields marked `encrypted` that the selected plugin configuration requires (and,
-        until N1-X6, to key-auth keys and HS256 JWT secrets). Decision H-14, delivered by N1-X6: the server generates
-        every key-auth key and HS256 JWT secret, so a document never sets one; a new key-auth or HS256 JWT credential
-        gets a generated value, whether the document supplies one (a Gromesh or a Kong document) or not, and the
-        report lists it in `regeneratedCredentials`, without any value; a matched credential keeps its stored value. Optional inactive plugin secret fields may remain absent.
+        certificate keys and plugin fields marked `encrypted` that the selected plugin configuration requires.
+        Optional inactive plugin secret fields may remain absent. Key-auth keys and HS256 JWT secrets follow the v1
+        import (decision H-14): a supplied value is ignored, a matched credential keeps its own, a new one is
+        imported pending reprovisioning and listed in `pendingCredentials`.
         A secret slot without a stored value is new even on a matched plugin or credential.
         RS256/ES256 JWT credentials require a valid public key and must not supply a secret. Existing certificate
         keys must still match the leaf; all current entity write validations, including certificate expiry on
@@ -2140,8 +2140,9 @@ paths:
           csrfToken: []
         - bearerApiToken: []
       description: |
-        The server generates every key (random, 32 bytes), returned only in this response; a supplied `key` answers
-        422 at `key` (decision H-14, delivered by task N1-X6: until then a supplied value is still accepted).
+        As createKeyAuthCredential of v1: the server generates every key (32 bytes from a CSPRNG), returned only in
+        this response; a supplied `key` answers 422 at `key` (decision H-14). Audited as `keyauth.create`, without
+        the key.
       requestBody:
         required: false
         content:
@@ -2151,8 +2152,7 @@ paths:
               properties:
                 key:
                   type: string
-                  minLength: 16
-                  description: "Refused (422) once N1-X6 delivers decision H-14: the server generates the key"
+                  description: "Refused (422 at key, decision H-14): the server generates the key"
                 tags:
                   $ref: ./control-plane.openapi.yaml#/components/schemas/Tags
               additionalProperties: false
@@ -2220,6 +2220,55 @@ paths:
         schema:
           type: string
           format: uuid
+  /workspaces/{workspaceId}/consumers/{consumerId}/key-auth/{credentialId}/rotate:
+    post:
+      tags:
+        - consumers
+      operationId: rotateKeyAuthCredential
+      security:
+        - cookieAuth: []
+          csrfToken: []
+        - bearerApiToken: []
+      x-gromesh-planned: true
+      description: |
+        As rotateKeyAuthCredential of v1 (decision H-14): a new key the server generates, returned only in this response; a
+        credential pending reprovisioning becomes active. Same id. 404 for a credential of another consumer or
+        workspace. Audited without the value.
+      responses:
+        "200":
+          description: Rotated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: ./control-plane.openapi.yaml#/components/schemas/KeyAuthCredential
+                  - type: object
+                    required:
+                      - key
+                    properties:
+                      key:
+                        type: string
+                        description: Shown once
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+      x-required-permission: gateway.write
+      x-scope: workspace
+      x-gromesh-requirements:
+        - GW-WS-02
+        - GW-WS-07
+        - GW-WS-08
+        - GW-WS-09
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+      - $ref: ./control-plane.openapi.yaml#/components/parameters/ConsumerId
+      - name: credentialId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
   /workspaces/{workspaceId}/consumers/{consumerId}/jwt:
     get:
       tags:
@@ -2259,8 +2308,8 @@ paths:
           csrfToken: []
         - bearerApiToken: []
       description: |
-        HS256 signs with a shared secret the server generates (random, 32 bytes), returned only in this response; a
-        supplied `secret` answers 422 at `secret` (decision H-14, delivered by task N1-X6: until then a supplied value is still accepted). RS256 and ES256 verify with `rsaPublicKey` (an RSA or EC P-256 public key, despite Kong's field
+        HS256 signs with a shared secret the server generates (32 bytes from a CSPRNG), returned only in this response;
+        a supplied `secret` answers 422 at `secret` (decision H-14). RS256 and ES256 verify with `rsaPublicKey` (an RSA or EC P-256 public key, despite Kong's field
         name). If `key` is omitted a random one is generated. 409 when `key` is already used by a JWT credential in the
         instance (any workspace; generic conflict). 422 with `path`: `secret` given with RS256/ES256; `rsaPublicKey` missing with RS256/ES256, given
         with HS256, not a PEM public key, or of the wrong type for the algorithm (RSA for RS256, EC P-256 for ES256).
@@ -2315,6 +2364,57 @@ paths:
           description: Deleted
         "404":
           $ref: "#/components/responses/NotFound"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+      x-required-permission: gateway.write
+      x-scope: workspace
+      x-gromesh-requirements:
+        - GW-WS-02
+        - GW-WS-07
+        - GW-WS-08
+        - GW-WS-09
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+      - $ref: ./control-plane.openapi.yaml#/components/parameters/ConsumerId
+      - name: credentialId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+  /workspaces/{workspaceId}/consumers/{consumerId}/jwt/{credentialId}/rotate:
+    post:
+      tags:
+        - consumers
+      operationId: rotateJwtCredential
+      security:
+        - cookieAuth: []
+          csrfToken: []
+        - bearerApiToken: []
+      x-gromesh-planned: true
+      description: |
+        As rotateJwtCredential of v1 (decision H-14): a new HS256 secret the server generates, returned only in this response; a
+        credential pending reprovisioning becomes active. Same id. 404 for a credential of another consumer or
+        workspace. 409 for an RS256/ES256 credential. Audited without the value.
+      responses:
+        "200":
+          description: Rotated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: ./control-plane.openapi.yaml#/components/schemas/JwtCredential
+                  - type: object
+                    required:
+                      - secret
+                    properties:
+                      secret:
+                        type: string
+                        description: Shown once
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
       x-required-permission: gateway.write

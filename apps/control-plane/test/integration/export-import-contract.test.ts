@@ -178,3 +178,35 @@ test('a real import is all or nothing: any error is a 422 with the same report a
   validate('EnvironmentImportFailure', { ...problem, errors }, false);
   assert.match(contract.paths['/environments/{envId}/import'].post.description, /ALL OR NOTHING/);
 });
+
+test('decision H-14: a credential pending reprovisioning exports without a hint or secret, and imports report it', () => {
+  const pending = changed((d) => {
+    d.consumers[0].keyAuthCredentials[0] = { id: d.consumers[0].keyAuthCredentials[0].id, status: 'pending-reprovision', tags: [] };
+    const jwt = d.consumers[0].jwtCredentials[0];
+    delete jwt.secret;
+    jwt.status = 'pending-reprovision';
+  });
+  validate('GromeshConfigV1Export', pending);
+  for (const mutate of <((d: Doc) => void)[]>[
+    (d) => { d.consumers[0].keyAuthCredentials[0].keyHint = '…k123'; },
+    (d) => { d.consumers[0].jwtCredentials[0].secret = 'REDACTED'; },
+    (d) => { d.consumers[0].keyAuthCredentials[0].status = 'disabled'; },
+  ]) {
+    const doc = structuredClone(pending);
+    mutate(doc);
+    validate('GromeshConfigV1Export', doc, false);
+  }
+  // Active: the hint and the redacted secret stay required.
+  validate('GromeshConfigV1Export', changed((d) => { d.consumers[0].keyAuthCredentials[0].status = 'active'; delete d.consumers[0].keyAuthCredentials[0].keyHint; }), false);
+  validate('GromeshConfigV1Export', changed((d) => { d.consumers[0].jwtCredentials[0].status = 'active'; delete d.consumers[0].jwtCredentials[0].secret; }), false);
+  // The listed credentials never carry a value; nothing is ever regenerated.
+  const ref = { path: 'document.consumers.0.keyAuthCredentials.0', credentialType: 'key-auth', credentialId: '00000000-0000-4000-8000-000000000005' };
+  const report = { added: [], modified: [], removed: [], errors: [], pendingCredentials: [ref] };
+  validate('EnvironmentImportReport', report);
+  validate('EnvironmentImportReport', { ...report, pendingCredentials: [{ ...ref, key: 'synthetic-key' }] }, false);
+  validate('EnvironmentImportReport', { ...report, regeneratedCredentials: [ref] }, false);
+  validate('EnvironmentImportReport', { ...report, regeneratedCredentials: [] });
+  validate('KeyAuthCredential', { id: ref.credentialId, consumerId: ref.credentialId, keyHint: null, status: 'pending-reprovision', createdAt: '2026-10-25T00:00:00Z' });
+  validate('JwtCredential', { id: ref.credentialId, consumerId: ref.credentialId, key: 'iss', algorithm: 'HS256', status: 'pending-reprovision', createdAt: '2026-10-25T00:00:00Z' });
+  validate('JwtCredential', { id: ref.credentialId, consumerId: ref.credentialId, key: 'iss', algorithm: 'HS256', status: 'revoked', createdAt: '2026-10-25T00:00:00Z' }, false);
+});
