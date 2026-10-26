@@ -575,13 +575,12 @@ export const apiV1Usage = pgTable(
   (t) => [unique("api_v1_usage_day_token_uq").on(t.day, t.tokenId).nullsNotDistinct()],
 );
 
-// Each control-plane replica counting the v1 calls: from its start, confirmed up to seen_at (its last write), with
-// the UTC days of the token calls it could not write; closed once stopped cleanly.
+// Each control-plane replica counting the v1 calls: from its start, confirmed up to seen_at (its counts written up
+// to then); closed once stopped cleanly.
 export const apiV1UsageReplicas = pgTable("api_v1_usage_replicas", {
   replicaId: uuid("replica_id").primaryKey(),
   startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
   seenAt: timestamp("seen_at", { withTimezone: true }).notNull(),
-  failedOn: date("failed_on").array().notNull().default(sql`'{}'::date[]`),
   closed: boolean("closed").notNull().default(false),
 });
 

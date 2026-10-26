@@ -15,38 +15,32 @@ const WINDOW_DAYS = 30;
  * claims completeness only up to this long ago.
  */
 export const CONFIRM_MS = 120_000;
-/** How long a request waits, at most, for its count to be written. */
-const WRITE_MS = 2_000;
 const today = sql`(now() at time zone 'utc')::date`;
 /** The UTC day of a call, taken when it is made (a session call written after midnight keeps its day). */
 const utcDay = () => new Date().toISOString().slice(0, 10);
 
 /**
- * The calls to the v1 operations the controlled migration will cut (decision H-9). A token's call is written at once:
- * a call lost to a crash could let the cut through. Session calls (the UI, one row a day) are added up here and
- * written every few seconds, so concurrent requests do not queue on that row.
- *
- * The counting never decides a request: a call whose count cannot be written goes on, and its day is marked as not
- * complete. No call counted proves nothing about a time nobody was counting: each replica keeps a row from its
- * start, confirmed by every flush up to then (never past a token call still in flight, one confirmation at a time)
- * and closed when it stops cleanly with nothing in flight, once the HTTP server no longer takes calls. A failure goes
- * with the next confirmation. A replica that went silent without closing may still be taking calls it cannot count:
- * no day from its last confirmation on is complete, its row is never pruned, and the report lists it.
+ * The calls to the v1 operations the controlled migration will cut (decision H-9). The counting never touches a
+ * request: a call is added up here, in memory, and written every few seconds with the confirmation of this replica's
+ * counting, in one transaction. No call counted proves nothing about a time nobody was counting: each replica keeps
+ * a row from its start, confirmed up to the moment its counts were taken (never past a token call still being
+ * authenticated) and closed only when it stops cleanly, once its HTTP server takes no more calls and every count is
+ * written. Counts that cannot be written stay here and the confirmation does not move: a replica that went silent
+ * without closing may hold calls nobody knows of, so no day from its last confirmation on is complete, its row is
+ * never pruned, and the report lists it.
  */
 @Injectable()
 export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBootstrap, OnModuleDestroy {
   private readonly logger = new Logger("ApiV1Usage");
   private readonly replicaId = randomUUID();
   private readonly startedAt = new Date();
-  /** Session calls not written yet, by the UTC day they were made. */
-  private sessionCalls = new Map<string, number>();
-  /** The UTC days of the token calls not written since the last confirmation. */
-  private failedOn = new Set<string>();
-  /** When each admitted token call (being authenticated or written) was admitted. */
+  /** Calls not written yet, by UTC day and token (token null: sessions, the UI). */
+  private pending = new Map<string, { day: string; token: { id: string; name: string; ownerId: string } | null; calls: number }>();
+  /** When each admitted token call (being authenticated) was admitted. */
   private readonly inFlight = new Map<symbol, number>();
-  /** The confirmations, one at a time: a later one must not pass a failure an earlier one is still writing. */
+  /** The confirmations, one at a time. */
   private confirming: Promise<void> = Promise.resolve();
-  private stopping = false;
+  private busy = false;
   private timer: NodeJS.Timeout | null = null;
 
   constructor(
@@ -60,27 +54,31 @@ export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBoots
   async onApplicationBootstrap(): Promise<void> {
     await this.confirm();
     if (this.config.apiV1UsageFlushMs <= 0) return;
-    this.timer = setInterval(() => void this.flush().catch((err: unknown) => this.logger.error(err instanceof Error ? err.stack : String(err))), this.config.apiV1UsageFlushMs);
+    this.timer = setInterval(() => {
+      // A flush still waiting for the database is not queued behind by another.
+      if (this.busy) return;
+      this.busy = true;
+      void this.flush()
+        .catch((err: unknown) => this.logger.error(`v1 usage not written (the counting stays unconfirmed): ${err instanceof Error ? err.message : String(err)}`))
+        .finally(() => (this.busy = false));
+    }, this.config.apiV1UsageFlushMs);
     this.timer.unref();
   }
 
-  async onModuleDestroy(): Promise<void> {
+  onModuleDestroy(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
-    // From here on a token call that fails to be written confirms its failure itself.
-    this.stopping = true;
   }
 
   /**
    * After the HTTP server stopped (no call is admitted any more), before the pool ends: the admitted calls finish
-   * first (a few seconds at most), then only a clean stop with nothing in flight or unwritten closes the row;
-   * otherwise its silence counts as a possible loss.
+   * first (a few seconds at most), then everything counted is written and the row closed, in one transaction; if
+   * that fails the row stays open and its silence counts as a possible loss.
    */
   async close(): Promise<void> {
     for (let i = 0; i < 100 && this.inFlight.size > 0; i++) await new Promise((r) => setTimeout(r, 50));
     try {
-      await this.flush();
-      if (this.inFlight.size === 0 && this.failedOn.size === 0) await this.confirm(true);
+      await this.confirm(this.inFlight.size === 0);
     } catch (error) {
       this.logger.error(`v1 usage row left open (silent): ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -96,38 +94,41 @@ export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBoots
     this.inFlight.delete(call);
   }
 
-  async record(token: { id: string; name: string; ownerId: string } | null): Promise<void> {
+  /** In memory only: a request never waits for the database here. */
+  record(token: { id: string; name: string; ownerId: string } | null): void {
     const day = utcDay();
-    if (token === null) {
-      this.sessionCalls.set(day, (this.sessionCalls.get(day) ?? 0) + 1);
-      return;
-    }
-    // Admitted by begin() (the guard): its admission bounds every confirmation until end().
-    try {
-      await this.write(day, token);
-    } catch (error) {
-      // The call goes on; its day is not complete. While stopping there may be no next confirmation: this one
-      // carries the failure.
-      this.failedOn.add(day);
-      this.logger.error(`v1 usage not written, ${day} marked as not complete: ${error instanceof Error ? error.message : String(error)}`);
-      if (this.stopping) await this.confirm().catch(() => undefined);
-    }
+    const key = `${day}|${token?.id ?? ""}`;
+    const entry = this.pending.get(key);
+    if (entry) {
+      entry.calls++;
+      entry.token = token;
+    } else this.pending.set(key, { day, token, calls: 1 });
   }
 
   /**
-   * Confirms the counting up to now, with the days of the calls not written meanwhile (kept if this fails too), after
-   * any confirmation still being written; `close` marks a clean stop.
+   * Writes the calls counted so far and confirms the counting up to when they were taken (never past an admitted
+   * call), in one transaction, after any confirmation still being written; `close` marks a clean stop. On failure the
+   * counts are kept for the next one and the confirmation does not move.
    */
   private confirm(close = false): Promise<void> {
     const run = this.confirming.then(async () => {
-      const failed = this.failedOn;
-      this.failedOn = new Set();
-      // Up to now, or to the start of the oldest token call still being written (it may still fail).
+      // The moment first, then the counts: a call admitted before it is either in them or still admitted.
       const seenAt = new Date(Math.min(Date.now(), ...this.inFlight.values()));
+      const taken = this.pending;
+      this.pending = new Map();
       try {
-        await this.persist(seenAt, [...failed], close);
+        await this.db.transaction(async (tx) => {
+          for (const { day, token, calls } of taken.values()) await this.add(day, token, calls, tx);
+          await tx
+            .insert(apiV1UsageReplicas)
+            .values({ replicaId: this.replicaId, startedAt: this.startedAt, seenAt, closed: close })
+            .onConflictDoUpdate({ target: apiV1UsageReplicas.replicaId, set: { seenAt: sql`greatest(${apiV1UsageReplicas.seenAt}, excluded.seen_at)`, closed: sql`excluded.closed` } });
+        });
       } catch (error) {
-        for (const d of failed) this.failedOn.add(d);
+        for (const [key, entry] of taken) {
+          const later = this.pending.get(key);
+          this.pending.set(key, later ? { ...later, calls: later.calls + entry.calls } : entry);
+        }
         throw error;
       }
     });
@@ -135,64 +136,16 @@ export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBoots
     return run;
   }
 
-  private async persist(seenAt: Date, failedOn: string[], close: boolean): Promise<void> {
-    await this.db
-      .insert(apiV1UsageReplicas)
-      .values({ replicaId: this.replicaId, startedAt: this.startedAt, seenAt, failedOn, closed: close })
-      .onConflictDoUpdate({
-        target: apiV1UsageReplicas.replicaId,
-        set: {
-          seenAt: sql`greatest(${apiV1UsageReplicas.seenAt}, excluded.seen_at)`,
-          failedOn: sql`array(select distinct unnest(${apiV1UsageReplicas.failedOn} || excluded.failed_on) order by 1)`,
-          // A failure written after the clean stop opens the row again.
-          closed: sql`(${apiV1UsageReplicas.closed} or excluded.closed) and cardinality(excluded.failed_on) = 0`,
-        },
-      });
-  }
-
-  /**
-   * Confirms the counting, writes the session calls counted so far, each on its own day, and drops what is out of
-   * the window.
-   */
+  /** Writes and confirms, and drops what is out of the window. */
   async flush(): Promise<void> {
     await this.confirm();
-    const pending = [...this.sessionCalls];
-    this.sessionCalls = new Map();
-    for (const [i, [day, n]] of pending.entries()) {
-      try {
-        await this.add(day, null, n);
-      } catch (error) {
-        // Kept for the next flush, on their own days.
-        for (const [d, m] of pending.slice(i)) this.sessionCalls.set(d, (this.sessionCalls.get(d) ?? 0) + m);
-        throw error;
-      }
-    }
     await this.db.delete(apiV1Usage).where(lt(apiV1Usage.day, sql`${today} - ${WINDOW_DAYS - 1}::int`));
-    // A row matters while what it covers, or the time it may have lost a call in, reaches into the window.
-    const windowStart = sql`(${today} - ${WINDOW_DAYS - 1}::int)::timestamp at time zone 'utc'`;
     // An open row that went silent is never pruned: nothing proves that replica stopped taking calls.
+    const windowStart = sql`(${today} - ${WINDOW_DAYS - 1}::int)::timestamp at time zone 'utc'`;
     await this.db.delete(apiV1UsageReplicas).where(and(lt(apiV1UsageReplicas.seenAt, windowStart), eq(apiV1UsageReplicas.closed, true)));
   }
 
-  /**
-   * A token call's count, bounded: the request never waits more than WRITE_MS for it. Past that the day is not
-   * complete (the write may still land, which only counts the call too), and the statement is cancelled by the
-   * database, so a blocked row does not hold connections of the pool either.
-   */
-  private async write(day: string, token: { id: string; name: string; ownerId: string }): Promise<void> {
-    let timer: NodeJS.Timeout | undefined;
-    const timeout = new Promise<never>((_resolve, reject) => (timer = setTimeout(() => reject(new Error(`not written within ${WRITE_MS} ms`)), WRITE_MS)));
-    try {
-      await Promise.race([this.db.transaction(async (tx) => {
-        await tx.execute(sql.raw(`set local statement_timeout = ${WRITE_MS}`));
-        await this.add(day, token, 1, tx);
-      }), timeout]);
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  private async add(day: string, token: { id: string; name: string; ownerId: string } | null, calls: number, db: Executor = this.db): Promise<void> {
+  private async add(day: string, token: { id: string; name: string; ownerId: string } | null, calls: number, db: Executor): Promise<void> {
     await db
       .insert(apiV1Usage)
       .values({ day, tokenId: token?.id ?? null, tokenName: token?.name ?? null, ownerId: token?.ownerId ?? null, calls })
@@ -213,8 +166,7 @@ export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBoots
         with cover as (
           select range_agg(tstzrange(started_at, seen_at + ${margin}, '[]')) as m from ${apiV1UsageReplicas}
         ), lost as (
-          select unnest(failed_on) as day from ${apiV1UsageReplicas}
-          union select generate_series((seen_at at time zone 'utc')::date, ${today}, interval '1 day')::date
+          select generate_series((seen_at at time zone 'utc')::date, ${today}, interval '1 day')::date
           from ${apiV1UsageReplicas} where not closed and seen_at < now() - ${margin}
         ), days as (
           select g::date as day, g::date::timestamp at time zone 'utc' as starts,

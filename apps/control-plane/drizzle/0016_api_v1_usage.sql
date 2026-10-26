@@ -11,6 +11,5 @@ CREATE TABLE "api_v1_usage_replicas" (
 	"replica_id" uuid PRIMARY KEY NOT NULL,
 	"started_at" timestamp with time zone NOT NULL,
 	"seen_at" timestamp with time zone NOT NULL,
-	"failed_on" date[] DEFAULT '{}'::date[] NOT NULL,
 	"closed" boolean DEFAULT false NOT NULL
 );

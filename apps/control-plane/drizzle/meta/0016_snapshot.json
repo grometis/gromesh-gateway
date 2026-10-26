@@ -1,5 +1,5 @@
 {
-  "id": "970ee1b5-60be-4ec2-b776-b5688ee0c0a4",
+  "id": "8ea62d14-be40-4c9c-8663-15ccca0659f3",
   "prevId": "36471869-ae67-44c6-a3e2-4eb66016c09b",
   "version": "7",
   "dialect": "postgresql",
@@ -197,13 +197,6 @@
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true
-        },
-        "failed_on": {
-          "name": "failed_on",
-          "type": "date[]",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'{}'::date[]"
         },
         "closed": {
           "name": "closed",

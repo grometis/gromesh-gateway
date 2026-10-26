@@ -43,9 +43,8 @@ export interface ApiV1UsageRecorder {
   /** A token call it counts, from before its authentication until `end`: no confirmation passes it. */
   begin(): symbol;
   end(call: symbol): void;
-  /** Never throws: a count that cannot be written marks its day as not complete, and the call goes on. */
-  /** null: a session (the UI). */
-  record(token: { id: string; name: string; ownerId: string } | null): Promise<void>;
+  /** In memory, never the database: the call goes on whatever happens to its count. null: a session (the UI). */
+  record(token: { id: string; name: string; ownerId: string } | null): void;
 }
 
 /**
@@ -137,7 +136,7 @@ export class AuthGuard implements CanActivate {
     let caller: Awaited<ReturnType<AuthGuard["authenticate"]>>;
     try {
       caller = await this.authenticate(context, req, meta<boolean>(SESSION_ONLY_KEY) === true, counted);
-      if (counted) await this.usage.record(caller.token ? { id: caller.token.id, name: caller.token.name, ownerId: caller.user.id } : null);
+      if (counted) this.usage.record(caller.token ? { id: caller.token.id, name: caller.token.name, ownerId: caller.user.id } : null);
     } finally {
       if (call) this.usage.end(call);
     }
@@ -159,7 +158,7 @@ export class AuthGuard implements CanActivate {
       if (!resolved) throw new ProblemException(HttpStatus.UNAUTHORIZED, "Invalid or expired API token");
       if (sessionOnly) {
         // The token is known now: its call counts before the refusal.
-        await this.usage.record({ id: resolved.token.id, name: resolved.token.name, ownerId: resolved.user.id });
+        this.usage.record({ id: resolved.token.id, name: resolved.token.name, ownerId: resolved.user.id });
         throw new ProblemException(HttpStatus.UNAUTHORIZED, "This operation requires a session, not an API token");
       }
       return { user: resolved.user, token: resolved.token, session: null };
