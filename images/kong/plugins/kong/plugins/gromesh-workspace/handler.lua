@@ -94,13 +94,25 @@ function WorkspaceHandler:access()
   -- on a platform route.
   local auth = guard.auth
   if auth and auth.anonymous and route_workspace then
+    -- basic-auth stops at the first header holding a credential it knows; an unknown one makes it read, and with
+    -- hide_credentials remove, both. Anonymous must look the same.
+    if auth.plugin == "basic-auth" and auth.hide_credentials then
+      kong.service.request.clear_header("Authorization")
+      kong.service.request.clear_header("Proxy-Authorization")
+    end
     local anonymous = authenticate_anonymous(auth.anonymous)
     if anonymous and workspace_of(anonymous) == route_workspace then
       return send_logical(anonymous, slug)
     end
   end
   if auth then
-    return kong.response.error(401, auth.message, { ["WWW-Authenticate"] = auth.www_authenticate })
+    local headers = { ["WWW-Authenticate"] = auth.www_authenticate }
+    -- Each plugin's own call: jwt always answers JSON (response.exit), key-auth and basic-auth negotiate the
+    -- format with the client (response.error).
+    if auth.plugin == "jwt" then
+      return kong.response.exit(401, { message = auth.message }, headers)
+    end
+    return kong.response.error(401, auth.message, headers)
   end
   return kong.response.error(401, "Unauthorized")
 end

@@ -51,6 +51,7 @@ function member(ws) {
     add(`${route(m)}-anon`, [`/${route(m)}-anon`], { name: m, config: { anonymous: "guest" } });
   }
   add("open", ["/open"]);
+  add("basic-hide", ["/basic-hide"], { name: "basic-auth", config: { anonymous: "guest", hide_credentials: true } });
   add("foreign-anon", ["/foreign-anon"], { name: "key-auth", config: { anonymous: "guest" } });
   add("re", ["~/re/[0-9]+$"], { name: "key-auth" });
   add("strip", ["/strip"], { name: "key-auth" }, { stripPath: true });
@@ -141,7 +142,9 @@ async function main() {
       }
       let message = null;
       try { message = JSON.parse(text).message ?? null; } catch { /* upstream body */ }
-      return { status: res.status, message, www: res.headers.get("www-authenticate"), upstream, upstreamPath };
+      // What a client can compare between two refusals: everything but the per-request id.
+      const look = JSON.stringify({ status: res.status, type: res.headers.get("content-type"), www: res.headers.get("www-authenticate"), body: res.status === 200 ? null : text.replace(/[0-9a-f]{32}/g, "<request-id>") });
+      return { status: res.status, message, www: res.headers.get("www-authenticate"), upstream, upstreamPath, look };
     };
     for (let attempt = 0; ; attempt++) {
       const ready = await call("/").then((r) => r.status === 404, () => false);
@@ -182,8 +185,11 @@ async function main() {
         const invalid = await call(path, unknown(m));
         check(invalid.status === 401, `${m}: an unknown credential on ${path} → ${invalid.status}`);
         expectIsolated(cross.status === 401, `${m}: a credential of ${WS[other(owner)].slug} accepted on another Workspace's route ${path} (${cross.status})`);
-        expectIsolated(cross.message === invalid.message && cross.www === invalid.www,
-          `${m}: another Workspace's credential must look like an unknown one on ${path}: ${JSON.stringify([cross.message, cross.www])} vs ${JSON.stringify([invalid.message, invalid.www])}`);
+        expectIsolated(cross.look === invalid.look, `${m}: another Workspace's credential must look like an unknown one on ${path}: ${cross.look} vs ${invalid.look}`);
+        const html = { accept: "text/html" };
+        const crossHtml = await call(path, { ...credentials(other(owner), m), ...html });
+        const invalidHtml = await call(path, { ...unknown(m), ...html });
+        expectIsolated(crossHtml.look === invalidHtml.look, `${m}: with Accept text/html another Workspace's credential must look like an unknown one on ${path}: ${crossHtml.look} vs ${invalidHtml.look}`);
 
         const anonPath = `/${slug}/${route(m)}-anon`;
         const ownAnon = await call(anonPath, credentials(owner, m));
@@ -197,7 +203,7 @@ async function main() {
           `${m}: a credential of ${WS[other(owner)].slug} accepted on another Workspace's route ${anonPath} (consumer ${crossAnon.upstream["x-consumer-id"]})`);
         expectIsolated(JSON.stringify(consumerHeaders(crossAnon)) === JSON.stringify(consumerHeaders(invalidAnon)) && invalidAnon.upstream["x-consumer-username"] === "guest",
           `${m}: another Workspace's credential must look like an unknown one on ${anonPath}: ${JSON.stringify(consumerHeaders(crossAnon))} vs ${JSON.stringify(consumerHeaders(invalidAnon))}`);
-        checks += 7;
+        checks += 8;
       }
     }
 
@@ -209,6 +215,16 @@ async function main() {
     }
     const foreign = await call("/assine/foreign-anon", unknown("key-auth"));
     expectIsolated(foreign.status === 401, `an anonymous consumer of tvro was accepted on /assine/foreign-anon (${foreign.status} ${foreign.upstream["x-consumer-id"] ?? ""})`);
+
+    // basic-auth with hide_credentials: another Workspace's credential in Proxy-Authorization and one more in
+    // Authorization reach the upstream exactly as two unknown ones do (both removed, anonymous consumer).
+    const basicOf = (ws) => `Basic ${Buffer.from(`user-${ws}:pw-${ws}`).toString("base64")}`;
+    const nobody = `Basic ${Buffer.from("nobody:nothing").toString("base64")}`;
+    const twoForeign = await call("/assine/basic-hide", { "proxy-authorization": basicOf("a"), authorization: basicOf("a") });
+    const twoUnknown = await call("/assine/basic-hide", { "proxy-authorization": nobody, authorization: nobody });
+    const forwarded = (r) => JSON.stringify({ status: r.status, authorization: r.upstream.authorization ?? null, proxy: r.upstream["proxy-authorization"] ?? null, consumer: r.upstream["x-consumer-id"] ?? null });
+    check(twoUnknown.status === 200 && !twoUnknown.upstream.authorization && !twoUnknown.upstream["proxy-authorization"], `two unknown basic credentials: ${forwarded(twoUnknown)}`);
+    expectIsolated(forwarded(twoForeign) === forwarded(twoUnknown), `basic-auth hide_credentials: another Workspace's credentials reached the upstream differently: ${forwarded(twoForeign)} vs ${forwarded(twoUnknown)}`);
 
     // A route without authentication consumes no credential: nobody's consumer reaches the upstream.
     const open = await call("/assine/open", credentials("a", "key-auth"));
@@ -228,7 +244,7 @@ async function main() {
     expectIsolated(unguarded.status === 404, `a route without its guard was served (${unguarded.status})`);
 
     if (failures.length > 0) throw new Error(`Workspace isolation failed:\n- ${failures.join("\n- ")}`);
-    console.log(`Workspace isolation holds on the real gateway: ${checks + 14} checks, ${MECHANISMS.length} mechanisms × 2 Workspaces, with and without anonymous`);
+    console.log(`Workspace isolation holds on the real gateway: ${checks + 16} checks, ${MECHANISMS.length} mechanisms × 2 Workspaces, with and without anonymous`);
   } finally {
     for (const id of containers.reverse()) await docker("rm", "-f", id).catch(() => {});
     await docker("network", "rm", network).catch(() => {});

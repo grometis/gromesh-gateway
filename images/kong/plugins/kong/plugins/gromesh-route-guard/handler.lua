@@ -25,6 +25,7 @@ function RouteGuardHandler:access(conf)
     auth = auth and {
       plugin = auth.plugin,
       anonymous = present(auth.anonymous),
+      hide_credentials = auth.hide_credentials == true,
       message = auth.message,
       www_authenticate = auth.www_authenticate,
     } or nil,

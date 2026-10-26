@@ -20,6 +20,7 @@ return {
               fields = {
                 { plugin = { type = "string", required = true, one_of = { "key-auth", "basic-auth", "jwt" } } },
                 { anonymous = { type = "string", required = false, uuid = true } },
+                { hide_credentials = { type = "boolean", required = true, default = false } },
                 { message = { type = "string", required = true } },
                 { www_authenticate = { type = "string", required = true } },
               },
