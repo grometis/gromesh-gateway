@@ -1759,7 +1759,7 @@ export interface components {
             /** @description Display-only hint; not a secret or a matching key */
             keyHint?: string;
             /** @description Import only, and ignored (decision H-14): never stored, compared or echoed; a new credential is pending reprovisioning */
-            key?: string;
+            key?: string & ("REDACTED" | unknown);
             /** @description Export only; ignored on import, which decides it */
             status?: components["schemas"]["CredentialStatus"];
             tags?: components["schemas"]["Tags"];
@@ -1775,7 +1775,7 @@ export interface components {
             key: components["schemas"]["JwtCredentialCreate"]["key"];
             algorithm: components["schemas"]["JwtAlgorithm"];
             /** @description Import ignores it (decision H-14) */
-            secret?: string;
+            secret?: string & ("REDACTED" | unknown);
             rsaPublicKey?: components["schemas"]["JwtCredentialCreate"]["rsaPublicKey"];
             /** @description Export only; ignored on import, which decides it */
             status?: components["schemas"]["CredentialStatus"];

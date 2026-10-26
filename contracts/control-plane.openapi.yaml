@@ -991,7 +991,7 @@ paths:
             schema:
               type: object
               properties:
-                key: { type: string, description: "Refused (422 at key, decision H-14): the server generates the key" }
+                key: { type: string, minLength: 16, description: "Refused (422 at key, decision H-14): the server generates the key" }
                 tags: { $ref: "#/components/schemas/Tags" }
       responses:
         "201":
@@ -2432,7 +2432,7 @@ components:
       properties:
         key: { type: string, minLength: 1, maxLength: 256, description: "Matched against the token's `iss` claim; unique in the instance" }
         algorithm: { allOf: [{ $ref: "#/components/schemas/JwtAlgorithm" }], default: HS256 }
-        secret: { type: string, description: "Refused (422 at secret, decision H-14): the server generates the HS256 secret" }
+        secret: { type: string, minLength: 32, maxLength: 512, description: "Refused (422 at secret, decision H-14): the server generates the HS256 secret" }
         rsaPublicKey: { type: string, minLength: 1, maxLength: 16384, description: "RS256/ES256 only: PEM public key, at most 16 KiB" }
         tags: { $ref: "#/components/schemas/Tags" }
     JwtCredential:
@@ -2704,6 +2704,9 @@ components:
         key:
           type: string
           writeOnly: true
+          oneOf:
+            - { const: REDACTED }
+            - { minLength: 16, not: { const: REDACTED } }
           description: "Import only, and ignored (decision H-14): never stored, compared or echoed; a new credential is pending reprovisioning"
         status: { $ref: "#/components/schemas/CredentialStatus", description: "Export only; ignored on import, which decides it" }
         tags: { $ref: "#/components/schemas/Tags" }
@@ -2722,6 +2725,9 @@ components:
         secret:
           type: string
           writeOnly: true
+          oneOf:
+            - { const: REDACTED }
+            - { minLength: 32, maxLength: 512, not: { const: REDACTED } }
           description: Import ignores it (decision H-14)
         rsaPublicKey: { $ref: "#/components/schemas/JwtCredentialCreate/properties/rsaPublicKey" }
         status: { $ref: "#/components/schemas/CredentialStatus", description: "Export only; ignored on import, which decides it" }

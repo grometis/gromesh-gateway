@@ -2152,6 +2152,7 @@ paths:
               properties:
                 key:
                   type: string
+                  minLength: 16
                   description: "Refused (422 at key, decision H-14): the server generates the key"
                 tags:
                   $ref: ./control-plane.openapi.yaml#/components/schemas/Tags
