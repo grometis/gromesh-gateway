@@ -328,7 +328,17 @@ paths:
         Calls to the administrative operations of v1 that the controlled migration (decision H-9) will cut (those
         under /environments/{envId} and /clusters/{clusterId}, and GET and POST /environments) in the last 30 days,
         per API token, plus the calls made by sessions (the current UI). The cut requires zero token calls in the
-        window. Counted by day; never carries a token value, a path parameter or a body.
+        window, `since` on the window's first day and `completeThrough` at the time of the cut: no call counted proves
+        nothing about a time nobody was counting. The counting never touches a request: each control-plane replica
+        adds its calls up in memory and writes them every few seconds together with the confirmation of its counting,
+        in one transaction, never confirming past a token call still being authenticated. Counts that cannot be
+        written stay with the replica and its confirmation does not move. A replica closes its record only on a clean
+        stop, once its HTTP server takes no more calls and every count is written. A replica that went silent without
+        that may hold calls nobody knows of: no day from its last confirmation on is complete, its record is never
+        pruned, and it is
+        listed in `silentReplicas` until the cut's own procedure (a later task) resolves it. A
+        release that does not count (a rollback) is seen only while no counting replica runs: running both at once
+        is outside what this report can see. Counted by day; never carries a token value, a path parameter or a body.
       responses:
         "200": { description: Usage, content: { application/json: { schema: { $ref: "#/components/schemas/ApiV1Usage" } } } }
         "401": { $ref: "#/components/responses/Unauthorized" }
@@ -3754,10 +3764,35 @@ components:
     ApiV1Usage:
       type: object
       additionalProperties: false
-      required: [ windowDays, since, sessionCalls, tokens ]
+      required: [ windowDays, since, completeThrough, silentReplicas, sessionCalls, tokens ]
       properties:
         windowDays: { const: 30 }
-        since: { type: string, format: date }
+        since:
+          type: string
+          format: date
+          description: |
+            The first UTC day from which the counting is complete through `completeThrough`: every moment from that
+            day's start on was counted by a replica (up to two minutes after a replica's last confirmation, a
+            restart, is not a gap) and no replica went silent without stopping cleanly (its counts may be
+            unwritten). A day before the
+            counting started (the release that delivers this operation), with a gap (a rollback to a release that
+            does not count) or with a possible loss is not complete: `since` is then the day after it (tomorrow when it is
+            today). The window's first day (today − 29) at most.
+        completeThrough:
+          type: string
+          format: date-time
+          description: The moment up to which `since` is confirmed (two minutes ago); a later call is not claimed.
+        silentReplicas:
+          type: array
+          description: Replicas silent for over two minutes without a clean stop; while any is listed, `since` is tomorrow.
+          items:
+            type: object
+            additionalProperties: false
+            required: [ replicaId, startedAt, lastConfirmedAt ]
+            properties:
+              replicaId: { type: string, format: uuid }
+              startedAt: { type: string, format: date-time }
+              lastConfirmedAt: { type: string, format: date-time }
         sessionCalls: { type: integer, minimum: 0 }
         tokens:
           type: array
