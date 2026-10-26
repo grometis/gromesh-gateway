@@ -552,7 +552,8 @@ func TestASlowCanaryNeverDelaysAViolation(t *testing.T) {
 		// An answer about the lease that existed when the call started: discarded after the violation.
 		return CanaryResult{Status: 204, Nonce: w.p.State.PreviousNonce}
 	}
-	go w.p.CanaryStep(context.Background())
+	finished := make(chan struct{})
+	go func() { w.p.CanaryStep(context.Background()); close(finished) }()
 	<-entered
 	w.net.set("forbidden-CAP-3:80", true)
 	done := make(chan struct{})
@@ -564,11 +565,35 @@ func TestASlowCanaryNeverDelaysAViolation(t *testing.T) {
 	}
 	w.expect("violation", false)
 	close(release)
-	time.Sleep(50 * time.Millisecond)
+	<-finished
 	w.p.mu.Lock()
 	state := w.p.State.State
 	w.p.mu.Unlock()
 	if state != "violation" {
 		t.Fatalf("a stale canary answer changed the state to %s", state)
+	}
+}
+
+// Passes only with the generation check: the stale answer arrives while the state still serves.
+func TestAStaleCanaryAnswerNeverWithdrawsARenewedLease(t *testing.T) {
+	w := newWorld(t, t.TempDir())
+	w.admit(nil)
+	w.round()
+	release, entered, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	w.p.Canary = func(context.Context) CanaryResult {
+		close(entered)
+		<-release
+		return CanaryResult{Status: 503}
+	}
+	go func() { w.p.CanaryStep(context.Background()); close(finished) }()
+	<-entered
+	w.now += uint64(Period)
+	w.round()
+	renewed := w.p.State.Nonce
+	close(release)
+	<-finished
+	w.expect("verifying", true)
+	if w.p.State.Nonce != renewed {
+		t.Fatal("the renewed lease was replaced")
 	}
 }
