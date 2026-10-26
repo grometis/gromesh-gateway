@@ -1,11 +1,10 @@
-import { Controller, Get, HttpStatus, Inject, Injectable, Logger, Module, type OnApplicationBootstrap, type OnModuleDestroy } from "@nestjs/common";
+import { Controller, Get, Inject, Injectable, Logger, Module, type OnApplicationBootstrap, type OnModuleDestroy } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, gte, isNotNull, isNull, lt, sql } from "drizzle-orm";
 import { API_V1_USAGE, type ApiV1UsageRecorder, RequiredPermission } from "../auth/auth.js";
 import { APP_CONFIG, type AppConfig } from "../config.js";
 import { ENCRYPTOR, type Encryptor } from "../crypto/crypto.js";
 import { DB, type Db } from "../db/db.js";
-import { ProblemException } from "../common/problem.js";
 import { apiV1Usage, apiV1UsageReplicas } from "../db/schema.js";
 import { migrationReport } from "../workspaces/migration-report.js";
 
@@ -43,7 +42,7 @@ export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBoots
   private sessionCalls = new Map<string, number>();
   /** The UTC days of the token calls not written since the last confirmation. */
   private failedOn = new Set<string>();
-  /** When each token call still being written started. */
+  /** When each admitted token call (being authenticated or written) was admitted. */
   private readonly inFlight = new Map<symbol, number>();
   /** Up to when this replica's counting is confirmed (written). */
   private confirmedThrough = 0;
@@ -67,9 +66,10 @@ export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBoots
   async onModuleDestroy(): Promise<void> {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
-    // From here on, a call that fails to be written confirms its failure itself (the row may be closed meanwhile).
+    // From here on no token call is admitted, and one admitted before that fails to be written confirms its failure
+    // itself (the row may be closed meanwhile).
     this.stopping = true;
-    // The calls being written finish first (a few seconds at most): their failures go with the last confirmation.
+    // The admitted calls finish first (a few seconds at most): their failures go with the last confirmation.
     for (let i = 0; i < 100 && this.inFlight.size > 0; i++) await new Promise((r) => setTimeout(r, 50));
     await this.flush();
     // Only a clean stop with nothing in flight closes the row: otherwise its silence counts as a possible loss.
@@ -77,8 +77,24 @@ export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBoots
   }
 
   /** Whether this replica's counting is confirmed recently enough to take the v1 token calls it counts. */
-  counting(): boolean {
-    return Date.now() - this.confirmedThrough <= CONFIRM_MS;
+  private counting(): boolean {
+    return !this.stopping && Date.now() - this.confirmedThrough <= CONFIRM_MS;
+  }
+
+  begin(): symbol | null {
+    if (!this.counting()) return null;
+    const call = Symbol();
+    this.inFlight.set(call, Date.now());
+    return call;
+  }
+
+  /** Admitted within CONFIRM_MS of a confirmation and authenticated within CONFIRM_MS of that: within LOSS_SPAN. */
+  late(call: symbol): boolean {
+    return Date.now() - (this.inFlight.get(call) ?? 0) > CONFIRM_MS;
+  }
+
+  end(call: symbol): void {
+    this.inFlight.delete(call);
   }
 
   async record(token: { id: string; name: string; ownerId: string } | null): Promise<void> {
@@ -87,18 +103,14 @@ export class ApiV1UsageService implements ApiV1UsageRecorder, OnApplicationBoots
       this.sessionCalls.set(day, (this.sessionCalls.get(day) ?? 0) + 1);
       return;
     }
-    const call = Symbol();
-    this.inFlight.set(call, Date.now());
+    // Admitted by begin() (the guard): its admission bounds every confirmation until end().
     try {
-      if (!this.counting()) throw new ProblemException(HttpStatus.SERVICE_UNAVAILABLE, "The v1 usage counting is not confirmed: retry");
       await this.add(day, token, 1);
     } catch (error) {
       this.failedOn.add(day);
       // While stopping there may be no next confirmation: this one carries the failure.
       if (this.stopping) await this.confirm().catch(() => undefined);
       throw error;
-    } finally {
-      this.inFlight.delete(call);
     }
   }
 

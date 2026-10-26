@@ -40,10 +40,16 @@ export interface BearerResolver {
 /** Counts the calls to the v1 operations the controlled migration will cut (decision H-9; src/instance). */
 export const API_V1_USAGE = Symbol("API_V1_USAGE");
 export interface ApiV1UsageRecorder {
+  /**
+   * Admits a token call it counts, before its authentication: null while this replica's counting is not confirmed
+   * (or it is stopping), and the call is refused (503). `end` once the call is counted or refused.
+   */
+  begin(): symbol | null;
+  /** Whether an admitted call took too long to be authenticated: its identity is discarded (503). */
+  late(call: symbol): boolean;
+  end(call: symbol): void;
   /** null: a session (the UI). */
   record(token: { id: string; name: string; ownerId: string } | null): Promise<void>;
-  /** False while this replica's counting is not confirmed: the token calls it would count are refused (503). */
-  counting(): boolean;
 }
 
 /**
@@ -130,8 +136,17 @@ export class AuthGuard implements CanActivate {
     // Counted once the caller is known, whatever the decision (a call refused, even for a token on a session-only
     // operation, still depends on v1).
     const counted = !v2 && cutByMigration(req);
-    const caller = await this.authenticate(context, req, meta<boolean>(SESSION_ONLY_KEY) === true, counted);
-    if (counted) await this.usage.record(caller.token ? { id: caller.token.id, name: caller.token.name, ownerId: caller.user.id } : null);
+    // A token call the cut depends on is admitted before its authentication, and only while this replica's counting
+    // is confirmed: so a replica that went silent can only have taken one shortly after its last confirmation.
+    const call = counted && req.header("authorization") !== undefined ? this.usage.begin() : undefined;
+    if (call === null) throw new ProblemException(HttpStatus.SERVICE_UNAVAILABLE, "The v1 usage counting is not confirmed: retry");
+    let caller: Awaited<ReturnType<AuthGuard["authenticate"]>>;
+    try {
+      caller = await this.authenticate(context, req, meta<boolean>(SESSION_ONLY_KEY) === true, counted, call);
+      if (counted) await this.usage.record(caller.token ? { id: caller.token.id, name: caller.token.name, ownerId: caller.user.id } : null);
+    } finally {
+      if (call) this.usage.end(call);
+    }
     const decision = v2 ? await this.decideV2(caller, v2, req.params) : await this.decideV1(caller, required as Role, meta<Held[]>(V1_PERMISSION_KEY), req.params);
     req.user = caller.user;
     req.auth = caller.token ? { via: "token", tokenId: caller.token.id, tokenName: caller.token.name, tokenRole: caller.token.role, ...decision } : { via: "session", ...decision };
@@ -140,16 +155,16 @@ export class AuthGuard implements CanActivate {
   }
 
   /** A bearer token (alone, no CSRF) or the session cookie with its CSRF token on mutations. */
-  private async authenticate(context: ExecutionContext, req: AuthenticatedRequest, sessionOnly: boolean, counted: boolean) {
+  private async authenticate(context: ExecutionContext, req: AuthenticatedRequest, sessionOnly: boolean, counted: boolean, call?: symbol) {
     const authorization = req.header("authorization");
     if (authorization !== undefined) {
       if (sessionOnly && !counted) throw new ProblemException(HttpStatus.UNAUTHORIZED, "This operation requires a session, not an API token");
-      // Before authenticating: a replica whose counting is unconfirmed takes no token call the cut depends on.
-      if (counted && !this.usage.counting()) throw new ProblemException(HttpStatus.SERVICE_UNAVAILABLE, "The v1 usage counting is not confirmed: retry");
       const bearer = /^Bearer\s+(\S+)$/i.exec(authorization)?.[1] ?? "";
       // An unparsable value is resolved as any other invalid token: same answer, same failure counter.
       const resolved = await this.tokens.resolve(TOKEN_PATTERN.test(bearer) ? bearer : "ggt_invalid", clientAddress(req));
       if (!resolved) throw new ProblemException(HttpStatus.UNAUTHORIZED, "Invalid or expired API token");
+      // Authenticated too late after its admission: the identity is not accepted, so the call is no one's.
+      if (call && this.usage.late(call)) throw new ProblemException(HttpStatus.SERVICE_UNAVAILABLE, "The v1 usage counting is not confirmed: retry");
       if (sessionOnly) {
         // The token is known now: its call counts before the refusal.
         await this.usage.record({ id: resolved.token.id, name: resolved.token.name, ownerId: resolved.user.id });

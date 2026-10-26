@@ -173,7 +173,7 @@ describe("the v1 calls the cut will remove, the migration report and one authori
   it("refuses the token calls it would count, before authenticating them, while its own counting is not confirmed", async () => {
     const created = await h.api("POST", "/users/me/tokens", { name: uniq("stale"), role: "viewer", expiresInDays: 1 });
     const call = () => bearer(created.body.token as string)("GET", `/environments/${env}/services`);
-    const through = usage["confirmedThrough" as keyof ApiV1UsageService] as unknown as number;
+    const through = (usage as unknown as { confirmedThrough: number }).confirmedThrough;
     (usage as unknown as { confirmedThrough: number }).confirmedThrough = Date.now() - 3 * 60_000;
     try {
       expect((await call()).status).toBe(503);
@@ -208,26 +208,25 @@ describe("the v1 calls the cut will remove, the migration report and one authori
     }
   });
 
-  it("writes a failure that comes after the clean stop, opening the row again", async () => {
+  it("admits no token call once stopping, and discards an identity authenticated too long after its admission", async () => {
     const created = await h.api("POST", "/users/me/tokens", { name: uniq("late"), role: "viewer", expiresInDays: 1 });
     const other = await startHarness({ databaseUrl: dbUrl, apiV1UsageFlushMs: 0 });
     const theirs = other.app.get(ApiV1UsageService);
     const id = theirs["replicaId" as keyof ApiV1UsageService] as unknown as string;
+    const call = () => other.anonymous("GET", `/environments/${env}/services`, undefined, { authorization: `Bearer ${created.body.token as string}` });
     try {
-      await h.sql.query(`update api_v1_usage_replicas set started_at = ${at(29)}`);
-      // The stop has closed the row; the server still takes a call, whose count fails.
+      vi.spyOn(theirs, "late").mockReturnValueOnce(true);
+      expect((await call()).status).toBe(503);
+      expect((await call()).status).toBe(200);
+      // The stop closes the row; from then on the server, still up, refuses the calls it would count.
       await theirs.onModuleDestroy();
-      expect((await h.sql.query(`select closed from api_v1_usage_replicas where replica_id = $1`, [id])).rows[0].closed).toBe(true);
-      vi.spyOn(theirs as unknown as { add: () => Promise<void> }, "add").mockRejectedValueOnce(new Error("write failed"));
-      expect((await other.anonymous("GET", `/environments/${env}/services`, undefined, { authorization: `Bearer ${created.body.token as string}` })).status).toBe(500);
+      expect((await call()).status).toBe(503);
       const row = (await h.sql.query(`select closed, failed_on::text[] as failed from api_v1_usage_replicas where replica_id = $1`, [id])).rows[0];
-      expect(row).toEqual({ closed: false, failed: [await day(0)] });
+      expect(row).toEqual({ closed: true, failed: [] });
     } finally {
       await other.close();
     }
-    expect((await read()).since).toBe(await day(-1));
-    await h.sql.query(`update api_v1_usage_replicas set failed_on = '{}'`);
-    expect((await read()).since).toBe(await day(29));
+    expect((await read()).tokens.find((t) => t.tokenId === created.body.id)).toMatchObject({ calls: 1 });
   });
 
   it("never confirms past a token call still being written, and a stop waits for it before closing", async () => {
