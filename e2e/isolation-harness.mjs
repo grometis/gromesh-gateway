@@ -103,6 +103,8 @@ export class Harness {
     for (const id of this.containers.reverse()) await docker("rm", "-f", id).catch(() => {});
     for (const v of this.volumes) await docker("volume", "rm", "-f", v).catch(() => {});
     await docker("network", "rm", this.network).catch(() => {});
+    // On Linux the containers leave root-owned files in the bind-mounted directory: removed from a container first.
+    await docker("run", "--rm", "-v", `${this.dir}:/d`, NODE_IMAGE, "sh", "-c", "rm -rf /d/* /d/.[!.]*").catch(() => {});
     rmSync(this.dir, { recursive: true, force: true });
   }
 }
