@@ -890,7 +890,6 @@ paths:
       x-gromesh-requirements: [ GW-WS-16a ]
       x-required-permission: instance.read
       x-scope: instance
-      x-gromesh-planned: true
       description: |
         Isolation state per pod as reported by its isolation-probe through the agent, the reporting continuity of each
         admission and the open pendencies that refuse admissions (B §3.5.3, decision P1). Containment itself is
@@ -908,7 +907,6 @@ paths:
       x-gromesh-requirements: [ GW-WS-16a ]
       x-required-permission: platform.admin
       x-scope: instance
-      x-gromesh-planned: true
       description: |
         Closes a confirmed-violation or unconfirmed-isolation pendency with a release signed with the instance key
         (cluster, pendencyId, expires in 15 min) that the agents hand to the isolation-probes of the affected pods;

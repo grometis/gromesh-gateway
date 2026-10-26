@@ -19,6 +19,7 @@ import { WorkspacePluginsController } from "../../src/plugins/plugins.js";
 import { WorkspaceConfigTransferController } from "../../src/config-transfer/config-transfer.js";
 import { InstanceController } from "../../src/instance/instance.js";
 import { SigningKeysController } from "../../src/instance/signing-keys.js";
+import { ClusterIsolationController } from "../../src/isolation/isolation.js";
 import { startHarness, type Harness } from "./harness.js";
 
 // N0: the Workspaces contracts (v2) are planned; nothing here is implemented yet. These tests keep them coherent until
@@ -77,7 +78,6 @@ describe("planned operations", () => {
   it("has a handler for every implemented v2 operation and none for a planned one", () => {
     expect(v2Ops.length).toBeGreaterThan(80);
     expect(agentOps.length).toBe(7);
-    for (const { op } of agentOps) expect(op["x-gromesh-planned"], op.operationId).toBe(true);
     const express = h.app.getHttpAdapter().getInstance() as { router: { stack: { route?: { path: string; methods: Record<string, boolean> } }[] } };
     const routes = new Set(express.router.stack.flatMap((layer) => (layer.route ? Object.keys(layer.route.methods).map((m) => `${m.toUpperCase()} ${layer.route!.path}`) : [])));
     expect(routes.size).toBeGreaterThan(40);
@@ -86,7 +86,12 @@ describe("planned operations", () => {
       const has = routes.has(`${method.toUpperCase()} ${nest(path)}`);
       expect(has, `${op.operationId} ${op["x-gromesh-planned"] ? "is planned but has a handler" : "has no handler"}`).toBe(!op["x-gromesh-planned"]);
     }
-    expect([...routes].filter((r) => r.includes(" /agent/v2"))).toEqual([]);
+    // The agent protocol v2 is served under its own paths (node token), with no /api prefix.
+    for (const { path, method, op } of agentOps) {
+      const has = routes.has(`${method.toUpperCase()} ${path.replace(/\{([a-zA-Z]+)\}/g, ":$1")}`);
+      expect(has, `${op.operationId} ${op["x-gromesh-planned"] ? "is planned but has a handler" : "has no handler"}`).toBe(!op["x-gromesh-planned"]);
+    }
+    expect([...routes].filter((r) => r.includes(" /agent/v2")).length).toBe(agentOps.filter(({ op }) => !op["x-gromesh-planned"]).length);
   });
 
   it("declares on every v2 handler the contract's permission, scope and session rule", () => {
@@ -106,6 +111,7 @@ describe("planned operations", () => {
       WorkspaceConfigTransferController,
       InstanceController,
       SigningKeysController,
+      ClusterIsolationController,
     ]) {
       const base = (Reflect.getMetadata("path", controller) as string).replace(/^\/?/, "/");
       for (const name of Object.getOwnPropertyNames(controller.prototype)) {

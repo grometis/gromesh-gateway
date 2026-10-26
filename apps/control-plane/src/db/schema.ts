@@ -618,3 +618,115 @@ export const instanceSigningKeys = pgTable(
   ],
 );
 export type InstanceSigningKeyRow = typeof instanceSigningKeys.$inferSelect;
+
+/**
+ * One isolation admission request of a pod in a boot (agent protocol v2), recorded with a new cluster challenge
+ * before any decision; granted ones are the admissions (admission_id, state, the signed document and its kid). The
+ * acked chain is the probe's reports 1..acked_seq, contiguous and linked by digest; last_* describe its newest report.
+ */
+export const isolationAdmissions = pgTable(
+  "isolation_admissions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    clusterId: uuid("cluster_id").notNull().references(() => clusters.id, { onDelete: "cascade" }),
+    nodeId: text("node_id").notNull(),
+    podUid: uuid("pod_uid").notNull(),
+    podName: text("pod_name").notNull(),
+    nodeName: text("node_name").notNull(),
+    bootId: uuid("boot_id").notNull(),
+    probePublicKey: text("probe_public_key").notNull(),
+    challenge: text("challenge").notNull(),
+    requestedAt: timestamp("requested_at", { withTimezone: true }).notNull().defaultNow(),
+    outcome: text("outcome", { enum: ["pending", "granted", "refused"] }).notNull().default("pending"),
+    reason: text("reason", { enum: ["pendency-open", "chain-not-answered", "timeout", "no-signing-key"] }),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+    admissionId: uuid("admission_id").unique("isolation_admissions_admission_uq"),
+    admission: jsonb("admission").$type<{ protected: string; payload: string; signature: string }>(),
+    kid: text("kid"),
+    startDeadline: timestamp("start_deadline", { withTimezone: true }),
+    state: text("state", { enum: ["open", "closed", "closed-without-proof"] }),
+    closedAt: timestamp("closed_at", { withTimezone: true }),
+    closeReason: text("close_reason"),
+    ackedSeq: integer("acked_seq").notNull().default(0),
+    lastDigest: text("last_digest"),
+    lastReportAt: timestamp("last_report_at", { withTimezone: true }),
+    lastState: text("last_state"),
+    lastFailed: jsonb("last_failed").$type<string[]>().notNull().default([]),
+    leaseRemainingMs: integer("lease_remaining_ms"),
+    lastConclusiveAt: timestamp("last_conclusive_at", { withTimezone: true }),
+    kongStopConfirmed: boolean("kong_stop_confirmed"),
+    // A released confirmed-violation covers the probe's sticky violation reports until it reports anything else.
+    violationReleased: boolean("violation_released").notNull().default(false),
+  },
+  (t) => [
+    uniqueIndex("isolation_admissions_challenge_uq").on(t.challenge),
+    uniqueIndex("isolation_admissions_pod_boot_uq").on(t.clusterId, t.podUid, t.bootId).where(sql`${t.outcome} <> 'refused'`),
+    index("isolation_admissions_cluster_idx").on(t.clusterId, t.outcome),
+    check("isolation_admissions_granted_ck", sql`(${t.outcome} = 'granted') = (${t.admissionId} is not null and ${t.state} is not null)`),
+    check("isolation_admissions_refused_ck", sql`(${t.outcome} = 'refused') = (${t.reason} is not null)`),
+  ],
+);
+
+/** Every probe report received for an admission, as signed; the chain is checked when it becomes contiguous. */
+export const isolationReports = pgTable(
+  "isolation_reports",
+  {
+    admissionId: uuid("admission_id").notNull().references(() => isolationAdmissions.admissionId, { onDelete: "cascade" }),
+    seq: integer("seq").notNull(),
+    protected: text("protected").notNull(),
+    payload: text("payload").notNull(),
+    signature: text("signature").notNull(),
+    digest: text("digest").notNull(),
+    prevDigest: text("prev_digest"),
+    state: text("state").notNull(),
+    failedCapabilities: jsonb("failed_capabilities").$type<string[]>().notNull(),
+    challenge: text("challenge"),
+    leaseRemainingMs: integer("lease_remaining_ms"),
+    final: boolean("final").notNull(),
+    finalReason: text("final_reason"),
+    kongStopConfirmed: boolean("kong_stop_confirmed"),
+    receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.admissionId, t.seq] }), index("isolation_reports_challenge_idx").on(t.admissionId, t.challenge)],
+);
+
+/** IsolationPendencyLifecycle: lifecycle is the contract's state; kind the last kind it had while open. */
+export const isolationPendencies = pgTable(
+  "isolation_pendencies",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    clusterId: uuid("cluster_id").notNull().references(() => clusters.id, { onDelete: "cascade" }),
+    lifecycle: text("lifecycle", { enum: ["communication-failure", "confirmed-violation", "unconfirmed-isolation", "closed", "released"] }).notNull(),
+    kind: text("kind", { enum: ["communication-failure", "confirmed-violation", "unconfirmed-isolation"] }).notNull(),
+    scope: text("scope", { enum: ["cluster", "node"] }).notNull(),
+    nodeName: text("node_name"),
+    podUid: uuid("pod_uid"),
+    admissionId: uuid("admission_id"),
+    capability: text("capability"),
+    openedAt: timestamp("opened_at", { withTimezone: true }).notNull().defaultNow(),
+    closedAt: timestamp("closed_at", { withTimezone: true }),
+    closeReason: text("close_reason", { enum: ["chain-resumed", "released"] }),
+    releasedBy: jsonb("released_by").$type<Actor>(),
+    justification: text("justification"),
+  },
+  (t) => [index("isolation_pendencies_cluster_idx").on(t.clusterId, t.lifecycle), index("isolation_pendencies_admission_idx").on(t.admissionId)],
+);
+
+/** Signed releases (gromesh-isolation-release+json), served to the cluster's agents until they expire. */
+export const isolationReleases = pgTable(
+  "isolation_releases",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    clusterId: uuid("cluster_id").notNull().references(() => clusters.id, { onDelete: "cascade" }),
+    pendencyId: uuid("pendency_id").notNull().references(() => isolationPendencies.id, { onDelete: "cascade" }),
+    kind: text("kind", { enum: ["confirmed-violation", "unconfirmed-isolation"] }).notNull(),
+    release: jsonb("release").$type<{ protected: string; payload: string; signature: string }>().notNull(),
+    kid: text("kid").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("isolation_releases_pendency_uq").on(t.pendencyId), index("isolation_releases_cluster_idx").on(t.clusterId, t.expiresAt)],
+);
+
+export type IsolationAdmissionRow = typeof isolationAdmissions.$inferSelect;
+export type IsolationPendencyRow = typeof isolationPendencies.$inferSelect;

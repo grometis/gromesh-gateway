@@ -34,13 +34,13 @@ import { redactAgentError } from "./redact-error.js";
 const REGISTRATION = "gromesh:registration-bearer";
 const unauthorized = () => new ProblemException(401, "Missing, invalid or revoked agent token");
 
-function bearer(req: Request): string {
+export function bearer(req: Request): string {
   const match = /^Bearer ([A-Za-z0-9_-]{43})$/i.exec(req.headers.authorization ?? "");
   if (!match) throw unauthorized();
   return match[1]!;
 }
 
-function agentContext(req: Request, nodeId: string): RequestContext {
+export function agentContext(req: Request, nodeId: string): RequestContext {
   return {
     actor: { type: "agent", id: nodeId },
     ip: clientAddress(req),
@@ -348,5 +348,6 @@ export class AgentGatewayController {
   imports: [PluginCatalogModule],
   controllers: [AgentGatewayController],
   providers: [AgentGatewayService, AgentBearerGuard, AgentEvents],
+  exports: [AgentGatewayService, AgentBearerGuard],
 })
 export class AgentGatewayModule {}
