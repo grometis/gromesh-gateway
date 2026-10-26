@@ -6,7 +6,8 @@
 // isolation-probe install <dir>  copies kong-supervisor and kong-liveness, shipped beside it, into dir (init
 // container: the kong image does not carry them)
 // Environment: GROMESH_POD_UID, GROMESH_CLUSTER_ID, GROMESH_INSTANCE_KEYS (the InstanceTrustSet file),
-// GROMESH_PROBE_DIR, GROMESH_HANDOFF_DIR, GROMESH_PROBE_CONFIG, GROMESH_CANARY_URL.
+// GROMESH_PROBE_DIR, GROMESH_HANDOFF_DIR, GROMESH_PROBE_CONFIG, GROMESH_CANARY_URL, GROMESH_KONG_STATE_FILE
+// (kong-supervisor's state, read-only, for the final report).
 package main
 
 import (
@@ -14,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -65,6 +67,11 @@ func main() {
 		select {}
 	}
 	canaryURL := env("GROMESH_CANARY_URL", "http://127.0.0.1:8000/.gromesh/guard/current")
+	kongState := env("GROMESH_KONG_STATE_FILE", "/gromesh/kong-state/kong-state.json")
+	proxy := "127.0.0.1:8000"
+	if u, err := url.Parse(canaryURL); err == nil && u.Host != "" {
+		proxy = u.Host
+	}
 	client := &http.Client{Timeout: time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	p := &probe.Probe{
 		Dir: dir, Handoff: env("GROMESH_HANDOFF_DIR", "/gromesh/handoff"),
@@ -108,7 +115,8 @@ func main() {
 		p.CanaryStep(ctx)
 		select {
 		case <-ctx.Done():
-			// The final report (kongStopConfirmed) is task N2-D3.
+			// The pod's stop: the final report, with what could be confirmed about Kong (probe.KongStopConfirmed).
+			p.Terminate(probe.KongStopConfirmed(kongState, proxy))
 			return
 		case <-tick.C:
 		}

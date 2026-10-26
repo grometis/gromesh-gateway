@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
@@ -66,7 +67,18 @@ type Probe struct {
 	trust TrustSet
 	// trustErr is logged once per change, not every round.
 	trustErr string
-	State    Persisted
+	// releases are the pendencies of the valid confirmed-violation releases the agent handed over this round.
+	releases []string
+	// inconclusive are the capabilities the last round could not prove.
+	inconclusive []string
+	queue        []queued
+	queueBytes   int64
+	nextOrder    uint64
+	// exposed maps each outbox name to the queued report written there (names are seqs, reused across admissions).
+	exposed map[string]uint64
+	// terminated: the final report is out; no round may report or serve after it.
+	terminated bool
+	State      Persisted
 }
 
 // Persisted survives container and node restarts (the volume is on disk), violation included.
@@ -97,6 +109,15 @@ type Persisted struct {
 	NotFoundSinceNs  uint64   `json:"notFoundSinceNs"`
 	Proven           []string `json:"proven,omitempty"`
 	Failures         []string `json:"failures,omitempty"`
+	// LeaseExpiresNs is when the last lease that readers accept expires (0: none out).
+	LeaseExpiresNs uint64 `json:"leaseExpiresNs"`
+	Chain          Chain  `json:"chain"`
+	// ClosedAdmissions ended with a final report: never adopted or served again.
+	ClosedAdmissions []string `json:"closedAdmissions,omitempty"`
+	// StaleReleases were already handed over before the current violation (or are another pod's); UsedReleases ended
+	// one. Neither ends a violation: a release counts only once, and only if it arrived after the violation.
+	StaleReleases []string `json:"staleReleases,omitempty"`
+	UsedReleases  []string `json:"usedReleases,omitempty"`
 }
 
 func (p *Probe) leaseFile() string     { return filepath.Join(p.Dir, "lease.json") }
@@ -144,6 +165,9 @@ func (p *Probe) Open() error {
 		return errors.New("probe key corrupt")
 	}
 	p.key = ed25519.NewKeyFromSeed(seed)
+	if err := p.loadQueue(); err != nil {
+		return err
+	}
 	// The latch is the first thing a violation writes: a crash after it cannot lose the violation.
 	if data, err := os.ReadFile(p.violationFile()); err == nil {
 		var latched []string
@@ -161,11 +185,11 @@ func (p *Probe) Open() error {
 	return writeSynced(filepath.Join(p.Handoff, "probe.pub"), []byte(p.PublicKey()), 0o644)
 }
 
-func (p *Probe) PublicKey() string {
-	return base64.RawURLEncoding.EncodeToString(p.key.Public().(ed25519.PublicKey))
-}
+func (p *Probe) PublicKey() string { return b64.EncodeToString(p.publicKey()) }
 
-// Round is one period: identity, admission, capabilities, then the lease.
+func (p *Probe) publicKey() ed25519.PublicKey { return p.key.Public().(ed25519.PublicKey) }
+
+// Round is one period: identity, admission, capabilities, then the lease and the round's report.
 func (p *Probe) Round(ctx context.Context) {
 	if !p.prepare() {
 		return
@@ -174,17 +198,40 @@ func (p *Probe) Round(ctx context.Context) {
 		// Written as soon as a forbidden target answers, before the round ends.
 		p.mu.Lock()
 		defer p.mu.Unlock()
-		p.violate([]string{capability})
+		if !p.terminated {
+			p.violate([]string{capability})
+		}
 	})
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.terminated {
+		return
+	}
 	p.conclude(verdict)
+	if p.State.AdmissionID == "" || p.State.Chain.AdmissionID != p.State.AdmissionID {
+		return
+	}
+	now, err := p.Boottime()
+	if err != nil {
+		return
+	}
+	if err := p.emit(p.roundReport(now)); err != nil {
+		p.Logf("round report: %v", err)
+	}
 }
 
-// prepare checks identity, admission and the current lease; false when no round is due (no admission).
+// prepare relays acks, closes a previous boot's chain, checks identity, admission and the current lease; false when
+// no round is due (no admission).
 func (p *Probe) prepare() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.terminated {
+		return false
+	}
+	p.drainAcks()
+	boot := p.BootID()
+	p.closePreviousBoot(boot)
+	p.syncOutbox()
 	now, err := p.Boottime()
 	if err != nil {
 		p.Logf("CLOCK_BOOTTIME unreadable: %v", err)
@@ -205,9 +252,9 @@ func (p *Probe) prepare() bool {
 		return false
 	}
 	p.trust, p.trustErr = trust, ""
-	boot := p.BootID()
 	if p.State.BootID != boot {
-		// A new boot: every lease and admission of the previous one is void; a violation or a corrupt state is not.
+		// A new boot: every lease and admission of the previous one is void; a violation or a corrupt state is not, nor
+		// the report chain and what ended or released before.
 		p.Logf("boot %s (was %q): a new admission is needed", boot, p.State.BootID)
 		state := "awaiting-admission"
 		if p.State.Corrupt {
@@ -216,8 +263,11 @@ func (p *Probe) prepare() bool {
 		if len(p.State.Violated) > 0 {
 			state = "violation"
 		}
-		p.State = Persisted{State: state, BootID: boot, Violated: p.State.Violated, Corrupt: p.State.Corrupt}
+		old := p.State
+		p.State = Persisted{State: state, BootID: boot, Violated: old.Violated, Corrupt: old.Corrupt, Chain: old.Chain,
+			ClosedAdmissions: old.ClosedAdmissions, StaleReleases: old.StaleReleases, UsedReleases: old.UsedReleases}
 	}
+	p.loadReleases()
 	p.refreshAdmission(boot)
 	if p.State.AdmissionID == "" {
 		if p.State.State != "violation" && !p.State.Corrupt {
@@ -235,6 +285,101 @@ func (p *Probe) prepare() bool {
 	return true
 }
 
+// closePreviousBoot sends the node-reboot report of an admission of an earlier boot whose chain is still open. A new
+// boot id proves that every process of that boot, Kong included, has ended.
+func (p *Probe) closePreviousBoot(boot string) {
+	c := p.State.Chain
+	if !uuid(boot) || c.AdmissionID == "" || c.Closed || c.BootID == boot {
+		return
+	}
+	confirmed := true
+	r := Report{State: p.State.State, FailedCapabilities: p.failedCapabilities(), Challenge: p.challenge(), Final: true, FinalReason: "node-reboot", KongStopConfirmed: &confirmed}
+	if p.State.BootID != c.BootID {
+		// The state already moved on to another boot: what the admission ended in is not known.
+		r.State, r.FailedCapabilities = "no-proof", nil
+		if len(p.State.Violated) > 0 {
+			r.State, r.FailedCapabilities = "violation", p.failedCapabilities()
+		}
+	}
+	if err := p.emit(r); err != nil {
+		// Retried every round: until it is out, no admission of the new boot is adopted.
+		p.Logf("node-reboot report of %s: %v", c.AdmissionID, err)
+		return
+	}
+	p.State.ClosedAdmissions = keepLast(append(p.State.ClosedAdmissions, c.AdmissionID), 64)
+	p.Logf("node-reboot report of admission %s (boot %s) queued", c.AdmissionID, c.BootID)
+	p.save()
+}
+
+// Terminate is the pod's stop signal: the final pod-terminated report of the current admission, which then never
+// serves again. kongStopped is what the probe could confirm about Kong (see KongStopConfirmed).
+func (p *Probe) Terminate(kongStopped bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.terminated {
+		return
+	}
+	p.terminated = true
+	c := p.State.Chain
+	if c.AdmissionID != "" && !c.Closed && c.BootID == p.State.BootID {
+		now, err := p.Boottime()
+		r := p.roundReport(now)
+		if err != nil {
+			r.LeaseRemainingMs = nil
+		}
+		r.Final, r.FinalReason, r.KongStopConfirmed = true, "pod-terminated", &kongStopped
+		if err := p.emit(r); err != nil {
+			p.Logf("final report: %v", err)
+		} else {
+			p.State.ClosedAdmissions = keepLast(append(p.State.ClosedAdmissions, c.AdmissionID), 64)
+			p.Logf("final report of admission %s queued (kongStopConfirmed %v)", c.AdmissionID, kongStopped)
+		}
+	}
+	p.State.AdmissionID, p.State.AdmissionJWS, p.State.FreshAdmission = "", "", false
+	p.removeLease()
+	p.save()
+}
+
+// loadReleases reads the releases the agent handed over: only valid confirmed-violation releases of this cluster count.
+// Every release seen while there is no violation is stale for the next one.
+func (p *Probe) loadReleases() {
+	p.releases = nil
+	raw, err := readHandoff(filepath.Join(p.Handoff, "releases.json"), 1<<20)
+	if err == nil {
+		var doc struct {
+			Items []json.RawMessage `json:"items"`
+		}
+		fields, ferr := strictRaw(raw, []string{"items"}, nil)
+		if ferr == nil && json.Unmarshal(fields["items"], &doc.Items) == nil {
+			for _, item := range doc.Items {
+				if c, err := CheckRelease(item, p.trust, p.ClusterID); err == nil && c.Kind == "confirmed-violation" {
+					p.releases = append(p.releases, c.PendencyID)
+				}
+			}
+		}
+	}
+	if len(p.State.Violated) == 0 {
+		p.State.StaleReleases = keepLast(mergeUnique(p.State.StaleReleases, p.releases), 256)
+	}
+}
+
+// release returns a release that may end the current violation: valid, arrived after it, never used before.
+func (p *Probe) release() string {
+	for _, id := range p.releases {
+		if !slices.Contains(p.State.StaleReleases, id) && !slices.Contains(p.State.UsedReleases, id) {
+			return id
+		}
+	}
+	return ""
+}
+
+func keepLast(s []string, n int) []string {
+	if len(s) > n {
+		return append([]string{}, s[len(s)-n:]...)
+	}
+	return s
+}
+
 // conclude turns a round's verdict into the state and the lease.
 func (p *Probe) conclude(verdict Verdict) {
 	now, err := p.Boottime()
@@ -242,15 +387,41 @@ func (p *Probe) conclude(verdict Verdict) {
 		p.withdraw("no-proof")
 		return
 	}
-	p.State.Proven, p.State.Failures = verdict.Proven, verdict.Failures
+	p.State.Proven, p.State.Failures, p.inconclusive = verdict.Proven, verdict.Failures, verdict.Inconclusive
 	p.State.LastRoundConclusive = len(verdict.Violated) == 0 && len(verdict.Inconclusive) == 0
 	if len(verdict.Violated) > 0 {
 		p.violate(verdict.Violated)
 		return
 	}
 	if len(p.State.Violated) > 0 {
-		// Only a signed release (task N2-D3) ends a violation; a pass changes nothing.
-		p.violate(nil)
+		// Only a valid signed release that arrived after the violation, with a conclusive pass, ends it.
+		id := p.release()
+		if id == "" || !p.State.LastRoundConclusive || p.queueFull() {
+			p.violate(nil)
+			return
+		}
+		// The latch goes first: a crash before the state is saved finds the violation still in the state, and the
+		// release still unused.
+		if err := os.Remove(p.violationFile()); err != nil && !errors.Is(err, os.ErrNotExist) {
+			p.Logf("violation latch not removed (%v): still contained", err)
+			p.violate(nil)
+			return
+		}
+		p.Logf("violation of %v released by pendency %s: verifying", p.State.Violated, id)
+		p.State.UsedReleases = keepLast(append(p.State.UsedReleases, id), 256)
+		p.State.Violated, p.State.Passes, p.State.LastConclusiveNs, p.State.FreshAdmission = nil, 1, now, false
+		p.verify()
+		p.issue("ok", now)
+		return
+	}
+	if p.queueFull() {
+		// The reports cannot be kept any more: nothing is proven to the control plane, so nothing is served.
+		p.Logf("report queue full: no-proof")
+		if p.State.State != "awaiting-admission" {
+			p.State.State = "no-proof"
+		}
+		p.State.Passes = 0
+		p.withdraw(p.State.State)
 		return
 	}
 	if len(verdict.Inconclusive) > 0 {
@@ -435,13 +606,22 @@ func (p *Probe) refreshAdmission(boot string) {
 	} else if p.State.AdmissionID != "" {
 		p.State.AdmissionID, p.State.FreshAdmission = "", false
 	}
-	raw, err := readHandoff(filepath.Join(p.Handoff, "admission.jws"))
+	if slices.Contains(p.State.ClosedAdmissions, p.State.AdmissionID) {
+		p.State.AdmissionID, p.State.AdmissionJWS, p.State.FreshAdmission = "", "", false
+	}
+	raw, err := readHandoff(filepath.Join(p.Handoff, "admission.jws"), 64<<10)
 	if err != nil {
 		return
 	}
 	claims, kid, err := CheckAdmission(raw, p.trust, self)
+	if err == nil && slices.Contains(p.State.ClosedAdmissions, claims.AdmissionID) {
+		err = errors.New("admission already ended by a final report")
+	}
+	if c := p.State.Chain; err == nil && c.AdmissionID != claims.AdmissionID && c.AdmissionID != "" && !c.Closed && c.BootID != boot {
+		err = errors.New("the previous boot's admission is not closed yet")
+	}
 	if err != nil {
-		// Another pod's, another boot's, another key's or a forged admission is ignored.
+		// Another pod's, another boot's, another key's, a forged or an ended admission is ignored.
 		if p.State.AdmissionID == "" {
 			p.Logf("admission ignored: %v", err)
 		}
@@ -450,6 +630,10 @@ func (p *Probe) refreshAdmission(boot string) {
 	if claims.AdmissionID != p.State.AdmissionID {
 		p.Logf("admitted: %s (instance key %s)", claims.AdmissionID, kid)
 		p.State.AdmissionID, p.State.AdmissionJWS, p.State.FreshAdmission, p.State.Passes = claims.AdmissionID, string(raw), true, 0
+	}
+	if p.State.Chain.AdmissionID != claims.AdmissionID {
+		// The admission's own chain, from seq 1; an admission adopted again (its kid back in the set) continues its own.
+		p.State.Chain = Chain{AdmissionID: claims.AdmissionID, BootID: boot, ProbeKey: p.PublicKey()}
 	}
 }
 
@@ -464,11 +648,13 @@ func (p *Probe) issue(state string, now uint64) {
 		IssuedBoottimeNs: now, ExpiresBoottimeNs: now + uint64(lease.Validity), Nonce: p.State.Nonce,
 		Capabilities: p.State.Proven, IssuedAt: p.WallClock().UTC().Format(time.RFC3339),
 	})
+	p.State.LeaseExpiresNs = now + uint64(lease.Validity)
 	p.save()
 }
 
 // withdraw replaces the lease by one that no reader accepts (its state), keeping the evidence visible.
 func (p *Probe) withdraw(state string) {
+	p.State.LeaseExpiresNs = 0
 	if p.State.AdmissionID == "" {
 		p.removeLease()
 	} else {
@@ -493,6 +679,7 @@ func (p *Probe) writeLease(l lease.Lease) {
 
 func (p *Probe) removeLease() {
 	p.gen++
+	p.State.LeaseExpiresNs = 0
 	if err := os.Remove(p.leaseFile()); err != nil && !errors.Is(err, os.ErrNotExist) {
 		p.Logf("lease not removed: %v", err)
 	}
@@ -541,15 +728,15 @@ func writeSynced(path string, data []byte, mode os.FileMode) error {
 }
 
 // readHandoff reads a file the agent wrote: only a regular file, never through a symlink, never blocking on a FIFO.
-func readHandoff(path string) ([]byte, error) {
+func readHandoff(path string, limit int64) ([]byte, error) {
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
 	info, err := f.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Size() > 64<<10 {
-		return nil, errors.New("not a regular file of at most 64 KiB")
+	if err != nil || !info.Mode().IsRegular() || info.Size() > limit {
+		return nil, fmt.Errorf("not a regular file of at most %d bytes", limit)
 	}
-	return io.ReadAll(io.LimitReader(f, 64<<10))
+	return io.ReadAll(io.LimitReader(f, limit))
 }
