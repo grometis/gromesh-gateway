@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/gromesh/gateway/apps/isolation/internal/lease"
@@ -53,7 +54,9 @@ type Probe struct {
 	WallClock   func() time.Time
 	Logf        func(format string, args ...any)
 
-	key   ed25519.PrivateKey
+	key ed25519.PrivateKey
+	// mu guards State: the canary runs every second beside a round, which holds it only outside its network phase.
+	mu    sync.Mutex
 	State Persisted
 }
 
@@ -67,9 +70,11 @@ type Persisted struct {
 	// Corrupt: the state could not be read; recovery needs two conclusive passes, never a fresh admission's one.
 	Corrupt bool `json:"corrupt,omitempty"`
 	// GuardVerified: the canary answered with the current nonce since the last start of verification.
-	GuardVerified   bool   `json:"guardVerified"`
-	PreviousSinceNs uint64 `json:"previousSinceNs"`
-	ConfigHash      string `json:"configHash,omitempty"`
+	GuardVerified bool `json:"guardVerified"`
+	// LastRoundConclusive: a passing canary makes the pod ok (Ready) only after a conclusive round.
+	LastRoundConclusive bool   `json:"lastRoundConclusive"`
+	PreviousSinceNs     uint64 `json:"previousSinceNs"`
+	ConfigHash          string `json:"configHash,omitempty"`
 	// FreshAdmission: the first conclusive pass of a newly admitted pod is enough.
 	FreshAdmission bool     `json:"freshAdmission"`
 	Violated       []string `json:"violated,omitempty"`
@@ -153,11 +158,29 @@ func (p *Probe) PublicKey() string {
 
 // Round is one period: identity, admission, capabilities, then the lease.
 func (p *Probe) Round(ctx context.Context) {
+	if !p.prepare() {
+		return
+	}
+	verdict := Round(ctx, p.Config, p.Network, RoundBudget, func(capability string) {
+		// Written as soon as a forbidden target answers, before the round ends.
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		p.violate([]string{capability})
+	})
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.conclude(verdict)
+}
+
+// prepare checks identity, admission and the current lease; false when no round is due (no admission).
+func (p *Probe) prepare() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	now, err := p.Boottime()
 	if err != nil {
 		p.Logf("CLOCK_BOOTTIME unreadable: %v", err)
 		p.withdraw("no-proof")
-		return
+		return false
 	}
 	boot := p.BootID()
 	if p.State.BootID != boot {
@@ -179,19 +202,25 @@ func (p *Probe) Round(ctx context.Context) {
 		}
 		p.removeLease()
 		p.save()
-		return
+		return false
 	}
 	// A state that serves continues only while its own lease is still valid (after a stop longer than V it is not).
 	if serving(p.State.State) && !p.leaseValid(now) {
 		p.Logf("lease expired while in %s: no-proof", p.State.State)
 		p.State.State, p.State.Passes, p.State.FreshAdmission = "no-proof", 0, false
 	}
+	return true
+}
 
-	verdict := Round(ctx, p.Config, p.Network, RoundBudget, func(capability string) {
-		// Written as soon as a forbidden target answers, before the round ends.
-		p.violate([]string{capability})
-	})
+// conclude turns a round's verdict into the state and the lease.
+func (p *Probe) conclude(verdict Verdict) {
+	now, err := p.Boottime()
+	if err != nil {
+		p.withdraw("no-proof")
+		return
+	}
 	p.State.Proven, p.State.Failures = verdict.Proven, verdict.Failures
+	p.State.LastRoundConclusive = len(verdict.Violated) == 0 && len(verdict.Inconclusive) == 0
 	if len(verdict.Violated) > 0 {
 		p.violate(verdict.Violated)
 		return
@@ -265,6 +294,8 @@ func (p *Probe) leaseValid(now uint64) bool {
 
 // CanaryStep checks the guard every second while a lease is out: a configuration without it is caught within 1 s.
 func (p *Probe) CanaryStep(ctx context.Context) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if !serving(p.State.State) {
 		return
 	}
@@ -285,7 +316,12 @@ func (p *Probe) CanaryStep(ctx context.Context) {
 		}
 		p.State.GuardVerified, p.State.ConfigHash, p.State.NotFoundSinceNs, p.State.PreviousSinceNs, p.State.BackoffNs = true, r.ConfigHash, 0, 0, 0
 		if p.State.State == "verifying" || p.State.State == "kong-unavailable" {
-			p.State.State = "ok"
+			// The guard is there; the pod is ok only if the last round proved the capabilities too.
+			if p.State.LastRoundConclusive {
+				p.State.State = "ok"
+			} else {
+				p.State.State = "inconclusive"
+			}
 		}
 	case r.Status == 204 && r.Nonce != "" && r.Nonce == p.State.PreviousNonce:
 		// Not a proof of the current lease; tolerated only while the guard's cache can explain it.
@@ -391,7 +427,8 @@ func (p *Probe) refreshAdmission(boot string) {
 func (p *Probe) issue(state string, now uint64) {
 	nonce := make([]byte, 24)
 	_, _ = rand.Read(nonce)
-	p.State.PreviousNonce, p.State.Nonce = p.State.Nonce, base64.RawURLEncoding.EncodeToString(nonce)
+	// A new nonce: the tolerance of the guard's cache starts again for this renewal.
+	p.State.PreviousNonce, p.State.Nonce, p.State.PreviousSinceNs = p.State.Nonce, base64.RawURLEncoding.EncodeToString(nonce), 0
 	p.writeLease(lease.Lease{
 		State: state, PodUID: p.PodUID, BootID: p.State.BootID, AdmissionID: p.State.AdmissionID,
 		IssuedBoottimeNs: now, ExpiresBoottimeNs: now + uint64(lease.Validity), Nonce: p.State.Nonce,

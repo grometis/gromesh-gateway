@@ -14,7 +14,9 @@ import (
 	"net/url"
 	"os"
 	"sort"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -67,12 +69,12 @@ func (c Config) Validate() error {
 		}
 		switch ch.Kind {
 		case "tcp", "tcp-open":
-			if host, port, err := net.SplitHostPort(ch.Address); err != nil || host == "" || port == "" {
-				return fmt.Errorf("probe config: check %q needs an address host:port", ch.Name)
+			if host, port, err := net.SplitHostPort(ch.Address); err != nil || host == "" || !validPort(port) {
+				return fmt.Errorf("probe config: check %q needs an address host:port with a port 1-65535", ch.Name)
 			}
 		case "http":
 			u, err := url.Parse(ch.URL)
-			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || ch.ExpectStatus < 100 || ch.ExpectStatus > 599 {
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || (u.Port() != "" && !validPort(u.Port())) || ch.ExpectStatus < 100 || ch.ExpectStatus > 599 {
 				return fmt.Errorf("probe config: check %q needs an http(s) url and expectStatus", ch.Name)
 			}
 		case "dns":
@@ -111,7 +113,8 @@ type Verdict struct {
 // Network is what a round uses; tests replace it.
 type Network interface {
 	Dial(ctx context.Context, address string) error
-	Get(ctx context.Context, url string) (int, error)
+	// Get reports whether the TCP connection was established, whatever happened after it.
+	Get(ctx context.Context, url string) (status int, connected bool, err error)
 	Resolve(ctx context.Context, host string) error
 }
 
@@ -125,18 +128,31 @@ func (n realNetwork) Dial(ctx context.Context, address string) error {
 	return err
 }
 
-func (n realNetwork) Get(ctx context.Context, url string) (int, error) {
+func (n realNetwork) Get(ctx context.Context, url string) (int, bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
-	client := &http.Client{Timeout: n.timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	var connected atomic.Bool
+	dialer := &net.Dialer{Timeout: n.timeout}
+	transport := &http.Transport{
+		DisableKeepAlives: true,
+		Proxy:             nil,
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			conn, err := dialer.DialContext(ctx, network, address)
+			if err == nil {
+				connected.Store(true)
+			}
+			return conn, err
+		},
+	}
+	client := &http.Client{Timeout: n.timeout, Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	res, err := client.Do(req)
 	if err != nil {
-		return 0, err
+		return 0, connected.Load(), err
 	}
 	_ = res.Body.Close()
-	return res.StatusCode, nil
+	return res.StatusCode, true, nil
 }
 
 func (n realNetwork) Resolve(ctx context.Context, host string) error {
@@ -205,18 +221,19 @@ func Round(ctx context.Context, cfg Config, network Network, budget time.Duratio
 	return v
 }
 
-// Unreachable is proven only by the network refusing or dropping the connection. A name that does not resolve, a TLS
-// or protocol error, or any other failure proves nothing about the destination: inconclusive.
+// Unreachable is proven only by the network refusing, dropping or timing out the connection attempt. A name that does
+// not resolve, a local or configuration error, or anything else proves nothing about the destination: inconclusive.
 func unreachable(err error) bool {
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) {
 		return false
 	}
-	var opErr *net.OpError
-	if errors.As(err, &opErr) && opErr.Op == "dial" {
+	if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.EHOSTUNREACH) || errors.Is(err, syscall.ENETUNREACH) ||
+		errors.Is(err, syscall.ETIMEDOUT) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, os.ErrDeadlineExceeded) {
 		return true
 	}
-	return errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.EHOSTUNREACH) || errors.Is(err, syscall.ENETUNREACH) || errors.Is(err, os.ErrDeadlineExceeded)
+	var opErr *net.OpError
+	return errors.As(err, &opErr) && opErr.Op == "dial" && opErr.Timeout()
 }
 
 func evaluate(ctx context.Context, network Network, ch Check) (string, string) {
@@ -231,17 +248,16 @@ func evaluate(ctx context.Context, network Network, ch Check) (string, string) {
 		}
 		return "inconclusive", ch.Address + ": " + err.Error()
 	case "http":
-		status, err := network.Get(ctx, ch.URL)
-		if err == nil && status == ch.ExpectStatus {
+		status, connected, err := network.Get(ctx, ch.URL)
+		switch {
+		case err == nil && status == ch.ExpectStatus:
 			return "pass", ""
-		}
-		if err == nil {
+		case err == nil:
 			return "violation", fmt.Sprintf("%s answered %d", ch.URL, status)
-		}
-		// Connected but without the expected answer (TLS, protocol, no response) is reachable, not refused.
-		if dialErr := network.Dial(ctx, hostPort(ch.URL)); dialErr == nil {
+		case connected:
+			// Connected but without the expected answer (TLS, protocol, no response): reachable, not refused.
 			return "violation", ch.URL + " reachable without the expected answer: " + err.Error()
-		} else if unreachable(dialErr) {
+		case unreachable(err):
 			return "pass", ""
 		}
 		return "inconclusive", ch.URL + ": " + err.Error()
@@ -259,16 +275,7 @@ func evaluate(ctx context.Context, network Network, ch Check) (string, string) {
 	return "inconclusive", "unknown kind"
 }
 
-func hostPort(raw string) string {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return ""
-	}
-	if u.Port() != "" {
-		return u.Host
-	}
-	if u.Scheme == "https" {
-		return net.JoinHostPort(u.Hostname(), "443")
-	}
-	return net.JoinHostPort(u.Hostname(), "80")
+func validPort(p string) bool {
+	n, err := strconv.Atoi(p)
+	return err == nil && n >= 1 && n <= 65535 && strconv.Itoa(n) == p
 }

@@ -106,23 +106,28 @@ async function main() {
     check((await until(() => status(proxy), (s) => s === 200, 40_000)) !== null, "the admitted pod must serve");
     check((await until(() => ready(probe), Boolean, 10_000)) !== null, "the guard canary must make the probe Ready");
 
-    // A forbidden target becomes reachable; t = 0 is the first time the gateway's own namespace reaches it.
+    // A forbidden target becomes reachable; t = 0 is the first time the gateway's own namespace reaches it. The
+    // supervisor is frozen from the daemon first, so the guard alone must answer 503 (the supervisor's stop is measured
+    // when it resumes); HTTP is sampled from t = 0, in parallel with the other milestones.
+    await docker("kill", "--signal", "STOP", kong);
     await docker("exec", target, "touch", "/tmp/open");
     const reachable = await until(async () => (await docker("exec", kong, "bash", "-c", "(exec 3<>/dev/tcp/forbidden-cap2/80) 2>/dev/null && echo up || echo down")).stdout.trim(), (v) => v === "up", 10_000);
     check(reachable !== null, "the forbidden target must become reachable from the gateway's network namespace");
-    const detected = await until(async () => JSON.parse((await docker("exec", probe, "cat", "/gromesh/isolation/probe-state.json")).stdout).state, (s) => s === "violation", 30_000);
-    let first;
-    const refused = await until(async () => (first = await status(proxy)), (s) => s !== 200, 30_000);
-    const stopped = await until(() => nginx(kong), (n) => n === 0, 30_000);
-    const notReady = await until(() => ready(probe), (r) => r === false, 30_000);
+    const refusedP = until(() => status(proxy), (s) => s === 503, 30_000);
+    const detectedP = until(async () => JSON.parse((await docker("exec", probe, "cat", "/gromesh/isolation/probe-state.json")).stdout).state, (s) => s === "violation", 30_000);
+    const notReadyP = until(() => ready(probe), (r) => r === false, 30_000);
+    const [refused, detected, notReady] = await Promise.all([refusedP, detectedP, notReadyP]);
     const after = (t) => (t === null ? Infinity : Math.round(t - reachable));
     // The budgets of B §3.5.3 from the loss, plus only the measurement's own latency (polling and docker exec).
     const SLACK = 300;
     expectContained(after(detected) <= 18_000 + SLACK, `violation detected ${after(detected)} ms after a forbidden target became reachable (budget 18 s)`);
-    expectContained(refused !== null && (first === 503 || first === "down") && after(refused) <= 19_000 + SLACK, `requests still served ${after(refused)} ms after a forbidden target became reachable, then ${first} (budget 19 s)`);
-    expectContained(after(stopped) <= 20_000 + SLACK, `Kong still running ${after(stopped)} ms after a forbidden target became reachable (budget 20 s)`);
+    expectContained(after(refused) <= 19_000 + SLACK, `no 503 from the guard ${after(refused)} ms after a forbidden target became reachable (budget 19 s)`);
     expectContained(after(notReady) <= 20_000 + SLACK, `the pod still Ready ${after(notReady)} ms after a forbidden target became reachable (budget 20 s)`);
-    console.log(`violation: detected after ${after(detected)} ms, refused (${first}) after ${after(refused)} ms, Kong stopped after ${after(stopped)} ms, NotReady after ${after(notReady)} ms`);
+    const resumed = Date.now();
+    await docker("kill", "--signal", "CONT", kong);
+    const stopped = await until(() => nginx(kong), (n) => n === 0, 10_000);
+    expectContained(stopped !== null && stopped - resumed <= 2000 + SLACK, `the resumed supervisor left Kong running ${stopped === null ? "∞" : stopped - resumed} ms (budget S + F = 2 s)`);
+    console.log(`violation: detected after ${after(detected)} ms, 503 after ${after(refused)} ms, NotReady after ${after(notReady)} ms; Kong stopped ${stopped === null ? "∞" : stopped - resumed} ms after the supervisor resumed`);
 
     // The violation stays after the target leaves and after the probe restarts (its state is on its volume).
     await docker("exec", target, "sh", "-c", "rm /tmp/open; kill 1");

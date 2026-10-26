@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"time"
 )
 
@@ -38,7 +39,10 @@ type Identity struct {
 	PublicKey ed25519.PublicKey
 }
 
-var b64 = base64.RawURLEncoding
+var (
+	b64    = base64.RawURLEncoding
+	b64url = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+)
 
 // strictObject decodes one JSON object until EOF with unique keys, exactly the names given, each a string.
 func strictObject(data []byte, names ...string) (map[string]string, error) {
@@ -87,6 +91,11 @@ func Verify(raw []byte, key ed25519.PublicKey, names ...string) (map[string]stri
 	jws, err := strictObject(raw, "protected", "payload", "signature")
 	if err != nil {
 		return nil, fmt.Errorf("jws malformed: %w", err)
+	}
+	for _, field := range []string{"protected", "payload", "signature"} {
+		if !b64url.MatchString(jws[field]) {
+			return nil, fmt.Errorf("jws %s must match ^[A-Za-z0-9_-]+$", field)
+		}
 	}
 	header, err := b64.DecodeString(jws["protected"])
 	if err != nil {

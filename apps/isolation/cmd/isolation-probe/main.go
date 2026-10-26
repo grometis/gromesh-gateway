@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -70,12 +71,17 @@ func main() {
 	defer stop()
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
+	// Rounds run beside the canary, which keeps checking every second even while a round waits on its targets: a
+	// configuration without the guard is caught within 1 s.
 	var last time.Time
+	var rounding atomic.Bool
 	for {
-		// The canary every second while a lease is out: a configuration without the guard is caught within 1 s.
-		if time.Since(last) >= probe.Period {
+		if time.Since(last) >= probe.Period && rounding.CompareAndSwap(false, true) {
 			last = time.Now()
-			p.Round(ctx)
+			go func() {
+				defer rounding.Store(false)
+				p.Round(ctx)
+			}()
 		}
 		p.CanaryStep(ctx)
 		select {

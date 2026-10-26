@@ -23,6 +23,6 @@ test("negative control: a probe blind to the reachable target never contains it"
   const run = exec(process.execPath, [script], { timeout: 890_000, env: { ...process.env, PROBE: "blind" } });
   const failure = await run.then(() => null, (error: { stderr?: string }) => error.stderr ?? "");
   expect(failure, "the blind probe must fail the containment checks").not.toBeNull();
-  expect(failure).toContain("requests still served Infinity ms after a forbidden target became reachable");
+  expect(failure).toContain("no 503 from the guard Infinity ms after a forbidden target became reachable");
   expect(failure).toContain("a violation must outlive its target and a probe restart");
 });

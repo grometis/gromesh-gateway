@@ -30,7 +30,11 @@ type fakeNet struct {
 	open       map[string]bool
 	slow       map[string]bool
 	unresolved map[string]bool
-	dns        bool
+	// connectedNoAnswer: the TCP connection is accepted and the request then fails (TLS, protocol, no response).
+	connectedNoAnswer map[string]bool
+	// local: the attempt fails on this side (no route chosen, no socket), not at the destination.
+	local map[string]bool
+	dns   bool
 }
 
 func (n *fakeNet) Dial(ctx context.Context, address string) error {
@@ -44,16 +48,25 @@ func (n *fakeNet) Dial(ctx context.Context, address string) error {
 	if open {
 		return nil
 	}
+	if n.local[address] {
+		return &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("socket", syscall.EMFILE)}
+	}
 	if n.unresolved[address] {
 		return &net.OpError{Op: "dial", Err: &net.DNSError{Err: "no such host", Name: address, IsNotFound: true}}
 	}
 	return &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}
 }
-func (n *fakeNet) Get(ctx context.Context, url string) (int, error) {
-	if err := n.Dial(ctx, url); err != nil {
-		return 0, err
+func (n *fakeNet) Get(ctx context.Context, url string) (int, bool, error) {
+	n.mu.Lock()
+	hung := n.connectedNoAnswer[url]
+	n.mu.Unlock()
+	if hung {
+		return 0, true, errors.New("tls: handshake failure")
 	}
-	return 200, nil
+	if err := n.Dial(ctx, url); err != nil {
+		return 0, false, err
+	}
+	return 200, true, nil
 }
 func (n *fakeNet) Resolve(context.Context, string) error {
 	if n.dns {
@@ -90,7 +103,7 @@ type world struct {
 
 func newWorld(t *testing.T, dir string) *world {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
-	w := &world{t: t, net: &fakeNet{open: map[string]bool{"backend:80": true}, slow: map[string]bool{}, unresolved: map[string]bool{}, dns: true}, now: 1_000 * uint64(time.Second), boot: boot1, instKey: priv}
+	w := &world{t: t, net: &fakeNet{open: map[string]bool{"backend:80": true}, slow: map[string]bool{}, unresolved: map[string]bool{}, connectedNoAnswer: map[string]bool{}, local: map[string]bool{}, dns: true}, now: 1_000 * uint64(time.Second), boot: boot1, instKey: priv}
 	w.p = w.probe(dir, pub)
 	return w
 }
@@ -430,5 +443,68 @@ func TestAdmissionPayloadIsStrict(t *testing.T) {
 	raw := sign(good)
 	if _, err := CheckAdmission(append(raw, []byte(" {}")...), w.p.InstanceKey, self); err == nil {
 		t.Error("accepted a JWS with trailing data")
+	}
+}
+
+func TestReachedWithoutTheExpectedAnswerIsAViolationAndALocalFailureProvesNothing(t *testing.T) {
+	w := newWorld(t, t.TempDir())
+	w.p.Config.Checks = append(w.p.Config.Checks, Check{Capability: "CAP-5", Kind: "http", Name: "validator", URL: "http://validator:8001/", ExpectStatus: 401})
+	w.admit(nil)
+	w.net.local["forbidden-CAP-6:80"] = true
+	w.round()
+	w.expect("awaiting-admission", false)
+	w.net.local["forbidden-CAP-6:80"] = false
+	w.net.connectedNoAnswer["http://validator:8001/"] = true
+	w.round()
+	w.expect("violation", false)
+}
+
+func TestACanaryAfterAnInconclusiveRoundIsNotReady(t *testing.T) {
+	w := newWorld(t, t.TempDir())
+	w.admit(nil)
+	w.round()
+	w.net.dns = false
+	w.now += uint64(Period)
+	w.round()
+	w.canary = CanaryResult{Status: 204, Nonce: w.p.State.Nonce}
+	w.p.CanaryStep(context.Background())
+	w.expect("inconclusive", true)
+}
+
+func TestThePreviousNonceToleranceStartsAgainAtEachRenewal(t *testing.T) {
+	w := newWorld(t, t.TempDir())
+	w.admit(nil)
+	w.round()
+	w.canary = CanaryResult{Status: 204, Nonce: w.p.State.Nonce}
+	w.p.CanaryStep(context.Background())
+	w.now += uint64(Period)
+	w.round()
+	w.canary = CanaryResult{Status: 204, Nonce: w.p.State.PreviousNonce}
+	w.p.CanaryStep(context.Background())
+	w.canary = CanaryResult{Unreachable: true}
+	w.now += uint64(time.Second)
+	w.p.CanaryStep(context.Background())
+	// A renewal later the cached nonce is the one just replaced: tolerated again, not guard-missing at once.
+	w.now += uint64(Period)
+	w.round()
+	w.canary = CanaryResult{Status: 204, Nonce: w.p.State.PreviousNonce}
+	w.p.CanaryStep(context.Background())
+	if w.p.State.State == "guard-missing" {
+		t.Fatal("the tolerance of a previous renewal carried over")
+	}
+}
+
+func TestPortsAndJWSAlphabetAreStrict(t *testing.T) {
+	cfg := config()
+	cfg.Checks[0].Address = "host:99999"
+	if cfg.Validate() == nil {
+		t.Fatal("port 99999 accepted")
+	}
+	w := newWorld(t, t.TempDir())
+	c := AdmissionClaims{ClusterID: cluster, PodUID: pod, NodeName: "n1", BootID: boot1, AdmissionID: "6a1f3c2e-0b7d-4c1a-9f10-0000000000ad", ProbePublicKey: w.p.PublicKey(), StartDeadline: "2026-10-26T12:00:00Z"}
+	raw, _ := Sign(w.instKey, c)
+	broken := strings.Replace(string(raw), `"signature":"`, `"signature":"\n`, 1)
+	if _, err := CheckAdmission([]byte(broken), w.p.InstanceKey, Identity{ClusterID: cluster, PodUID: pod, BootID: boot1, PublicKey: w.p.key.Public().(ed25519.PublicKey)}); err == nil {
+		t.Fatal("a signature with a JSON newline was accepted")
 	}
 }
