@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -84,7 +85,7 @@ func TestTheContractVectorIsAcceptedExactly(t *testing.T) {
 		t.Fatalf("admission: %v %+v %s", err, claims, kid)
 	}
 	release, err := CheckRelease(v.Release, trust, v.AdmissionClaims.ClusterID)
-	if err != nil || release != v.ReleaseClaims {
+	if err != nil || !reflect.DeepEqual(release, v.ReleaseClaims) {
 		t.Fatalf("release: %v %+v", err, release)
 	}
 	if _, err := CheckRelease(v.Release, trust, "00000000-0000-4000-8000-00000000c002"); err == nil {
@@ -274,15 +275,39 @@ func TestAnInvalidTrustSetIssuesNoLease(t *testing.T) {
 
 func TestReleasesAndReportsAreTypedToo(t *testing.T) {
 	w := newWorld(t, t.TempDir())
-	release := ReleaseClaims{ClusterID: cluster, PendencyID: "6a1f3c2e-0b7d-4c1a-9f10-0000000000e1", Kind: "confirmed-violation", ExpiresAt: "2026-10-26T12:15:00Z"}
+	release := ReleaseClaims{ClusterID: cluster, PendencyID: "6a1f3c2e-0b7d-4c1a-9f10-0000000000e1", Kind: "confirmed-violation", ExpiresAt: "2026-10-26T12:15:00Z", Admissions: []ReleasedAdmission{{admissionID, 3}}}
 	if _, err := CheckRelease(signInstance(w.instKey, w.kid, TypRelease, release), w.trust, cluster); err != nil {
 		t.Fatal(err)
 	}
 	for name, raw := range map[string][]byte{
 		"admission typ":       signInstance(w.instKey, w.kid, TypAdmission, release),
 		"unknown kid":         signInstance(w.instKey, "x"+w.kid[1:], TypRelease, release),
-		"unknown kind":        signInstance(w.instKey, w.kid, TypRelease, ReleaseClaims{ClusterID: cluster, PendencyID: release.PendencyID, Kind: "everything", ExpiresAt: release.ExpiresAt}),
+		"unknown kind":        signInstance(w.instKey, w.kid, TypRelease, ReleaseClaims{ClusterID: cluster, PendencyID: release.PendencyID, Kind: "everything", ExpiresAt: release.ExpiresAt, Admissions: release.Admissions}),
 		"report-style header": sign(w.instKey, []byte(`{"alg":"EdDSA","typ":"`+TypRelease+`"}`), []byte(`{}`)),
+	} {
+		if _, err := CheckRelease(raw, w.trust, cluster); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	// The admissions it covers are part of the release, decoded as strictly as the rest.
+	claims := func(admissions string) []byte {
+		return sign(w.instKey, []byte(`{"alg":"EdDSA","kid":"`+w.kid+`","typ":"`+TypRelease+`"}`),
+			[]byte(`{"clusterId":"`+cluster+`","pendencyId":"`+release.PendencyID+`","kind":"confirmed-violation","expiresAt":"2026-10-26T12:15:00Z"`+admissions+`}`))
+	}
+	if c, err := CheckRelease(claims(`,"admissions":[]`), w.trust, cluster); err != nil || len(c.Admissions) != 0 {
+		t.Fatalf("a release covering no admission: %v", err)
+	}
+	for name, raw := range map[string][]byte{
+		"no admissions":         claims(``),
+		"admissions null":       claims(`,"admissions":null`),
+		"admissions an object":  claims(`,"admissions":{}`),
+		"throughSeq a string":   claims(`,"admissions":[{"admissionId":"` + admissionID + `","throughSeq":"3"}]`),
+		"throughSeq negative":   claims(`,"admissions":[{"admissionId":"` + admissionID + `","throughSeq":-1}]`),
+		"throughSeq fractional": claims(`,"admissions":[{"admissionId":"` + admissionID + `","throughSeq":3.5}]`),
+		"no throughSeq":         claims(`,"admissions":[{"admissionId":"` + admissionID + `"}]`),
+		"another member":        claims(`,"admissions":[{"admissionId":"` + admissionID + `","throughSeq":3,"x":1}]`),
+		"admissionId malformed": claims(`,"admissions":[{"admissionId":"not-a-uuid","throughSeq":3}]`),
+		"admission named twice": claims(`,"admissions":[{"admissionId":"` + admissionID + `","throughSeq":3},{"admissionId":"` + admissionID + `","throughSeq":9}]`),
 	} {
 		if _, err := CheckRelease(raw, w.trust, cluster); err == nil {
 			t.Errorf("%s: accepted", name)

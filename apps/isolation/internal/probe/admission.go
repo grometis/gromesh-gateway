@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"slices"
 	"time"
 )
 
@@ -48,6 +49,15 @@ type ReleaseClaims struct {
 	// Checked by the control plane's clock only: the probe uses a release only while the agent hands it over from
 	// listIsolationReleases, which lists releases not expired.
 	ExpiresAt string `json:"expiresAt"`
+	// Admissions are what the release covers: each admission with the highest seq of its chain acknowledged when it
+	// was issued.
+	Admissions []ReleasedAdmission `json:"admissions"`
+}
+
+// ReleasedAdmission is one admission a release covers, through which seq of its chain.
+type ReleasedAdmission struct {
+	AdmissionID string `json:"admissionId"`
+	ThroughSeq  uint64 `json:"throughSeq"`
 }
 
 // Identity is what the probe knows about itself; an admission for anything else is ignored.
@@ -300,18 +310,59 @@ func CheckRelease(raw []byte, trust TrustSet, clusterID string) (ReleaseClaims, 
 	if err != nil {
 		return ReleaseClaims{}, err
 	}
-	f, err := strictObject(payload, "clusterId", "pendencyId", "kind", "expiresAt")
+	fields, err := strictRaw(payload, []string{"clusterId", "pendencyId", "kind", "expiresAt", "admissions"}, nil)
 	if err != nil {
 		return ReleaseClaims{}, fmt.Errorf("release claims: %w", err)
+	}
+	f := map[string]string{}
+	for _, name := range []string{"clusterId", "pendencyId", "kind", "expiresAt"} {
+		var s string
+		if v := fields[name]; len(v) == 0 || v[0] != '"' || json.Unmarshal(v, &s) != nil {
+			return ReleaseClaims{}, fmt.Errorf("release claims: member %q must be a string", name)
+		}
+		f[name] = s
 	}
 	c := ReleaseClaims{ClusterID: f["clusterId"], PendencyID: f["pendencyId"], Kind: f["kind"], ExpiresAt: f["expiresAt"]}
 	if _, err := time.Parse(time.RFC3339, c.ExpiresAt); err != nil || !uuid(c.PendencyID) || (c.Kind != "confirmed-violation" && c.Kind != "unconfirmed-isolation") {
 		return c, errors.New("release claims malformed")
 	}
+	if c.Admissions, err = releasedAdmissions(fields["admissions"]); err != nil {
+		return c, fmt.Errorf("release claims: %w", err)
+	}
 	if c.ClusterID != clusterID {
 		return c, errors.New("release of another cluster")
 	}
 	return c, nil
+}
+
+// releasedAdmissions decodes the admissions of a release strictly: an array of {admissionId, throughSeq}, each
+// admission named once (two entries for one admission would leave its seq ambiguous).
+func releasedAdmissions(data json.RawMessage) ([]ReleasedAdmission, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('[') {
+		return nil, errors.New("admissions must be an array")
+	}
+	out := []ReleasedAdmission{}
+	for dec.More() {
+		var item json.RawMessage
+		if err := dec.Decode(&item); err != nil {
+			return nil, errors.New("admissions malformed")
+		}
+		f, err := strictRaw(item, []string{"admissionId", "throughSeq"}, nil)
+		var a ReleasedAdmission
+		if err != nil || len(f["admissionId"]) == 0 || f["admissionId"][0] != '"' || json.Unmarshal(f["admissionId"], &a.AdmissionID) != nil ||
+			!uuid(a.AdmissionID) || !digits.Match(f["throughSeq"]) || json.Unmarshal(f["throughSeq"], &a.ThroughSeq) != nil {
+			return nil, errors.New("admissions item malformed")
+		}
+		if slices.ContainsFunc(out, func(o ReleasedAdmission) bool { return o.AdmissionID == a.AdmissionID }) {
+			return nil, errors.New("admission " + a.AdmissionID + " named twice")
+		}
+		out = append(out, a)
+	}
+	if _, err := dec.Token(); err != nil {
+		return nil, errors.New("admissions malformed")
+	}
+	return out, nil
 }
 
 func uuid(s string) bool {

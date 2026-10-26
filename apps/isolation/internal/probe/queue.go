@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"syscall"
 	"time"
@@ -34,6 +35,9 @@ type Chain struct {
 	LastDigest string `json:"lastDigest,omitempty"`
 	// Closed after a final report: nothing more is reported or served on the admission.
 	Closed bool `json:"closed,omitempty"`
+	// ViolationSeq is the last report of the chain with new evidence of a violation: a release ends the violation
+	// only through it (IsolationReleaseClaims.admissions).
+	ViolationSeq uint64 `json:"violationSeq,omitempty"`
 }
 
 // queued is one report of the queue: Dir/queue/<order>.jws, kept until the control plane acks it.
@@ -63,6 +67,7 @@ func (p *Probe) loadQueue() error {
 	p.queue, p.queueBytes, p.nextOrder = nil, 0, 1
 	var last *Report
 	var lastPayload, lastRaw []byte
+	var reports []Report
 	// ReadDir sorts by name, and names are the zero-padded order: the last one read is the newest report.
 	for _, e := range entries {
 		path := filepath.Join(p.queueDir(), e.Name())
@@ -92,10 +97,24 @@ func (p *Probe) loadQueue() error {
 		p.queueBytes += int64(len(data))
 		p.nextOrder = max(p.nextOrder, order+1)
 		last, lastPayload, lastRaw = &r, payload, data
+		reports = append(reports, r)
 	}
 	if last == nil {
 		return nil
 	}
+	saved := p.State.Chain
+	defer func() {
+		// What the queue holds is also durable: an admission whose final report is queued has ended, and a violation
+		// report the state never counted moves the chain's ViolationSeq (it may carry new evidence).
+		for _, r := range reports {
+			if r.Final && !slices.Contains(p.State.ClosedAdmissions, r.AdmissionID) {
+				p.State.ClosedAdmissions = keepLast(append(p.State.ClosedAdmissions, r.AdmissionID), 64)
+			}
+			if r.State == "violation" && r.AdmissionID == p.State.Chain.AdmissionID && (saved.AdmissionID != r.AdmissionID || r.Seq > saved.Seq) {
+				p.State.Chain.ViolationSeq = max(p.State.Chain.ViolationSeq, r.Seq)
+			}
+		}
+	}()
 	c := &p.State.Chain
 	switch {
 	case c.AdmissionID == "":
@@ -158,7 +177,13 @@ func (p *Probe) emit(r Report) error {
 	if r.Final {
 		c.Closed = true
 	}
-	p.save()
+	if r.State == "violation" && (p.State.ViolationEvidence || c.ViolationSeq == 0) {
+		c.ViolationSeq, p.State.ViolationEvidence = r.Seq, false
+	}
+	if err := p.save(); err != nil {
+		// Not exposed until the seq is saved: an ack could otherwise remove the only durable copy of the advance.
+		return fmt.Errorf("report %d queued, its seq not saved: %w", r.Seq, err)
+	}
 	p.syncOutbox()
 	return nil
 }
@@ -218,6 +243,9 @@ func (p *Probe) challenge() *string {
 // drainAcks drops from the queue the reports the control plane acknowledged, as the agent relays it in acks.json:
 // only that admission's, only up to ackedSeq. A false ack can only lose reports (a gap the control plane holds on).
 func (p *Probe) drainAcks() {
+	if !p.saved() {
+		return
+	}
 	raw, err := readHandoff(filepath.Join(p.Handoff, "acks.json"), 1<<10)
 	if err != nil {
 		return
@@ -254,6 +282,10 @@ func (p *Probe) drainAcks() {
 // time, so the seq names of two admissions never meet and the agent sends each chain in order. It works below the
 // handoff through an os.Root, never following a symlink out of it, and removes only names of its own pattern.
 func (p *Probe) syncOutbox() {
+	if !p.saved() {
+		p.Logf("outbox: the state is not saved: reports withheld")
+		return
+	}
 	root, err := os.OpenRoot(p.Handoff)
 	if err != nil {
 		p.Logf("outbox: %v", err)

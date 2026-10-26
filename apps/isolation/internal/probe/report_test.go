@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/gromesh/gateway/apps/isolation/internal/lease"
 )
 
 type outboxed struct {
@@ -276,12 +278,65 @@ func (w *world) releases(claims ...any) {
 	w.handoff("releases.json", string(data))
 }
 
+// covering is a confirmed-violation release of this cluster naming one admission through seq.
+func covering(pendency, admission string, through uint64) ReleaseClaims {
+	return ReleaseClaims{ClusterID: cluster, PendencyID: pendency, Kind: "confirmed-violation", ExpiresAt: "2026-10-26T12:15:00Z",
+		Admissions: []ReleasedAdmission{{admission, through}}}
+}
+
+// The agent keeps valid releases of the same cluster it never handed over (another pod's pendency, or an earlier one
+// of this pod) and shows them after a violation: only a release naming this admission through the violation's
+// report ends it.
+func TestOnlyAReleaseCoveringTheViolationsReportEndsIt(t *testing.T) {
+	dir := t.TempDir()
+	w := newWorld(t, dir)
+	w.admit(nil)
+	w.round()
+	w.net.set("forbidden-CAP-2:80", true)
+	w.round()
+	w.net.set("forbidden-CAP-2:80", false)
+	if w.p.State.Chain.ViolationSeq != 2 {
+		t.Fatalf("violation seq %d after the violation's report", w.p.State.Chain.ViolationSeq)
+	}
+	for name, r := range map[string]ReleaseClaims{
+		"another pod's admission": covering("6a1f3c2e-0b7d-4c1a-9f10-0000000000e8", "6a1f3c2e-0b7d-4c1a-9f10-0000000000af", 40),
+		"before this violation":   covering("6a1f3c2e-0b7d-4c1a-9f10-0000000000e9", admissionID, 1),
+		"covering no admission":   {ClusterID: cluster, PendencyID: "6a1f3c2e-0b7d-4c1a-9f10-0000000000ea", Kind: "confirmed-violation", ExpiresAt: "2026-10-26T12:15:00Z", Admissions: []ReleasedAdmission{}},
+	} {
+		w.releases(r)
+		w.round()
+		if w.p.State.State != "violation" || w.leaseValid() == nil {
+			t.Fatalf("%s: the violation ended", name)
+		}
+	}
+	// Reports that only carry the latch do not move the seq a release must cover; a restart does not either.
+	w.p = w.probe(dir)
+	w.round()
+	if w.p.State.Chain.ViolationSeq != 2 || w.p.State.Chain.Seq != 6 {
+		t.Fatalf("violation seq %d at seq %d", w.p.State.Chain.ViolationSeq, w.p.State.Chain.Seq)
+	}
+	w.releases(covering("6a1f3c2e-0b7d-4c1a-9f10-0000000000eb", admissionID, 2))
+	w.round()
+	w.expect("verifying", true)
+	// A new violation is new evidence: the release that covered seq 2 never covers it, used or not.
+	w.net.set("forbidden-CAP-2:80", true)
+	w.round()
+	w.net.set("forbidden-CAP-2:80", false)
+	if w.p.State.Chain.ViolationSeq != 8 {
+		t.Fatalf("violation seq %d after the second violation's report", w.p.State.Chain.ViolationSeq)
+	}
+	w.releases(covering("6a1f3c2e-0b7d-4c1a-9f10-0000000000ec", admissionID, 7))
+	w.round()
+	w.expect("violation", false)
+	w.releases(covering("6a1f3c2e-0b7d-4c1a-9f10-0000000000ed", admissionID, 8))
+	w.round()
+	w.expect("verifying", true)
+}
+
 func TestAReleaseEndsAViolationOnlyIfItArrivedAfterItAndOnlyOnce(t *testing.T) {
 	dir := t.TempDir()
 	w := newWorld(t, dir)
-	release := func(id string) ReleaseClaims {
-		return ReleaseClaims{ClusterID: cluster, PendencyID: id, Kind: "confirmed-violation", ExpiresAt: "2026-10-26T12:15:00Z"}
-	}
+	release := func(id string) ReleaseClaims { return covering(id, admissionID, 5) }
 	early := release("6a1f3c2e-0b7d-4c1a-9f10-0000000000e1")
 	w.releases(early)
 	w.admit(nil)
@@ -294,9 +349,9 @@ func TestAReleaseEndsAViolationOnlyIfItArrivedAfterItAndOnlyOnce(t *testing.T) {
 	// Not of this cluster, not typed as a release, another kind, signed outside the trust set: none counts.
 	other, otherKid := instanceKey()
 	w.releases(early,
-		ReleaseClaims{ClusterID: "6a1f3c2e-0b7d-4c1a-9f10-0000000000c2", PendencyID: "6a1f3c2e-0b7d-4c1a-9f10-0000000000e2", Kind: "confirmed-violation", ExpiresAt: "2026-10-26T12:15:00Z"},
+		ReleaseClaims{ClusterID: "6a1f3c2e-0b7d-4c1a-9f10-0000000000c2", PendencyID: "6a1f3c2e-0b7d-4c1a-9f10-0000000000e2", Kind: "confirmed-violation", ExpiresAt: "2026-10-26T12:15:00Z", Admissions: []ReleasedAdmission{{admissionID, 5}}},
 		signInstance(w.instKey, w.kid, TypAdmission, release("6a1f3c2e-0b7d-4c1a-9f10-0000000000e3")),
-		ReleaseClaims{ClusterID: cluster, PendencyID: "6a1f3c2e-0b7d-4c1a-9f10-0000000000e4", Kind: "unconfirmed-isolation", ExpiresAt: "2026-10-26T12:15:00Z"},
+		ReleaseClaims{ClusterID: cluster, PendencyID: "6a1f3c2e-0b7d-4c1a-9f10-0000000000e4", Kind: "unconfirmed-isolation", ExpiresAt: "2026-10-26T12:15:00Z", Admissions: []ReleasedAdmission{{admissionID, 5}}},
 		signInstance(other, otherKid, TypRelease, release("6a1f3c2e-0b7d-4c1a-9f10-0000000000e5")))
 	w.round()
 	w.expect("violation", false)
@@ -342,7 +397,7 @@ func TestAUsedReleaseNeverEndsAnotherViolation(t *testing.T) {
 	w.net.set("forbidden-CAP-3:80", true)
 	w.round()
 	w.net.set("forbidden-CAP-3:80", false)
-	w.releases(ReleaseClaims{ClusterID: cluster, PendencyID: "6a1f3c2e-0b7d-4c1a-9f10-0000000000e7", Kind: "confirmed-violation", ExpiresAt: "2026-10-26T12:15:00Z"})
+	w.releases(covering("6a1f3c2e-0b7d-4c1a-9f10-0000000000e7", admissionID, 2))
 	data, _ := os.ReadFile(filepath.Join(w.p.Handoff, "releases.json"))
 	w.round()
 	w.expect("verifying", true)
@@ -416,5 +471,127 @@ func TestKongStopIsConfirmedOnlyWhenRecordedAndNothingListens(t *testing.T) {
 	_ = os.Symlink(state, link)
 	if KongStopConfirmed(link, address) || KongStopConfirmed(filepath.Join(dir, "missing"), address) {
 		t.Fatal("confirmed through a symlink or without the state")
+	}
+}
+
+// readOnly makes dir unwritable (a full or failing volume) until the returned function, or the test's end, restores it.
+func readOnly(t *testing.T, dir string) func() {
+	t.Helper()
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	restore := func() { _ = os.Chmod(dir, 0o755) }
+	t.Cleanup(restore)
+	return restore
+}
+
+// A report that cannot be queued is a round that proves nothing: the lease is not renewed without it.
+func TestNoLeaseIsRenewedWithoutItsRoundsDurableReport(t *testing.T) {
+	w := newWorld(t, t.TempDir())
+	w.admit(nil)
+	w.round()
+	w.canary = CanaryResult{Status: 204, Nonce: w.p.State.Nonce}
+	w.p.CanaryStep(context.Background())
+	w.expect("ok", true)
+	restore := readOnly(t, w.p.queueDir())
+	for range 3 {
+		w.now += uint64(Period)
+		w.round()
+		w.expect("no-proof", false)
+	}
+	if n := len(w.outbox()); n != 1 {
+		t.Fatalf("%d reports", n)
+	}
+	restore()
+	w.round()
+	w.expect("no-proof", false)
+	w.round()
+	w.expect("verifying", true)
+	chained(t, w.outbox(), 1, nil)
+	// Every lease out was counted by a report queued before it, which said the lease it reports.
+	for _, o := range w.outbox()[1:] {
+		if o.report.State == "verifying" && (o.report.LeaseRemainingMs == nil || *o.report.LeaseRemainingMs != 33_000) {
+			t.Fatalf("report %d: lease remaining %v", o.report.Seq, o.report.LeaseRemainingMs)
+		}
+	}
+}
+
+// The probe crashes after the final report was saved and before the admission was recorded as ended, and restarts on
+// the same boot with the admission still in the handoff: it never serves on it again.
+func TestACrashAfterTheFinalReportNeverServesTheAdmissionAgain(t *testing.T) {
+	dir := t.TempDir()
+	w := newWorld(t, dir)
+	w.admit(nil)
+	w.round()
+	// Terminate's first half: the final report, queued and saved with the chain closed.
+	r := w.p.roundReport(w.now)
+	confirmed := true
+	r.Final, r.FinalReason, r.KongStopConfirmed = true, "pod-terminated", &confirmed
+	if err := w.p.emit(r); err != nil {
+		t.Fatal(err)
+	}
+	w.p = w.probe(dir)
+	for range 2 {
+		w.round()
+		w.expect("awaiting-admission", false)
+	}
+	if !slices.Contains(w.p.State.ClosedAdmissions, admissionID) {
+		t.Fatal("the closed chain was not recorded as an ended admission")
+	}
+	// The state lost too: the queued final report still ends it.
+	_ = os.WriteFile(filepath.Join(w.p.Dir, "probe-state.json"), []byte("{corrupt"), 0o644)
+	w.p = w.probe(dir)
+	for range 3 {
+		w.round()
+		if w.leaseValid() == nil {
+			t.Fatal("served on an ended admission after the state was lost")
+		}
+	}
+	if n := len(w.outbox()); n != 2 {
+		t.Fatalf("%d reports after the final", n)
+	}
+}
+
+// The state cannot be saved after a report was queued: the report is not exposed, an ack cannot remove the queue's
+// copy of the advance, and after a crash the seq is never reused with other content.
+func TestAReportIsExposedOnlyOnceItsSeqIsSaved(t *testing.T) {
+	dir := t.TempDir()
+	w := newWorld(t, dir)
+	w.admit(nil)
+	w.round()
+	seen := map[uint64][]byte{}
+	look := func() {
+		for _, o := range w.outbox() {
+			if prev, ok := seen[o.report.Seq]; ok && string(prev) != string(o.payload) {
+				t.Fatalf("seq %d exposed twice with different content", o.report.Seq)
+			}
+			seen[o.report.Seq] = o.payload
+		}
+	}
+	look()
+	before, _ := lease.Read(filepath.Join(w.p.Dir, "lease.json"))
+	restore := readOnly(t, w.p.Dir)
+	w.now += uint64(Period)
+	w.round()
+	look()
+	if _, ok := seen[2]; ok {
+		t.Fatal("a report was exposed while its seq was not saved")
+	}
+	// The volume refuses every write: the lease out is not renewed and expires by itself.
+	if l, _ := lease.Read(filepath.Join(w.p.Dir, "lease.json")); serving(w.p.State.State) || l.Nonce != before.Nonce {
+		t.Fatalf("state %s, lease renewed with an unsaved report", w.p.State.State)
+	}
+	// The agent acks seq 2 anyway, and the probe crashes right after relaying acks.
+	w.ack(admissionID, 2)
+	w.p.mu.Lock()
+	w.p.drainAcks()
+	w.p.mu.Unlock()
+	restore()
+	w.p = w.probe(dir)
+	w.round()
+	w.round()
+	look()
+	if w.p.State.Chain.Seq != 4 {
+		t.Fatalf("chain at seq %d", w.p.State.Chain.Seq)
 	}
 }

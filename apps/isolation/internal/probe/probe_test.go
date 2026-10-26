@@ -405,7 +405,12 @@ func TestALostKeyDropsTheAdmission(t *testing.T) {
 	w.p = w.probe(dir)
 	w.round()
 	w.expect("awaiting-admission", false)
-	w.admit(nil) // signed for the new key
+	// The same admission signed again for the new key: its chain is the old key's and cannot be continued, so no
+	// report would count the lease.
+	w.admit(nil)
+	w.round()
+	w.expect("no-proof", false)
+	w.admit(func(c *AdmissionClaims) { c.AdmissionID = "6a1f3c2e-0b7d-4c1a-9f10-0000000000ae" }) // a new one, for the new key
 	w.round()
 	w.expect("verifying", true)
 }
