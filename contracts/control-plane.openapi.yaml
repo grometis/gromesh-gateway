@@ -490,7 +490,8 @@ paths:
         Both representations conform to GromeshConfigV1Export. No state is changed.
         Plugin fields marked `encrypted` by the plugin schema, certificate private keys and HS256 JWT secrets
         are always the literal `REDACTED`, for every role. Key-auth credentials contain only identity, tags
-        and `keyHint`, never `key`. Basic-auth credentials never contain a password or its hash.
+        and `keyHint`, never `key`. Basic-auth credentials never contain a password or its hash. A key-auth or
+        HS256 JWT credential pending reprovisioning carries `status: pending-reprovision` and no hint or secret.
         Reimporting an export into the same environment preserves matched secrets; importing it into another
         environment requires supplying real secrets for new entities. The output has no document size limit;
         a document larger than the import limit must be split before import.
@@ -538,7 +539,7 @@ paths:
         in the resulting draft is a uniqueness conflict.
         Plugins match by (name, resolved service, route, consumer scope), targets by (upstream, target), JWT
         credentials by issuer key and basic-auth credentials by username (both unique in the instance, across environments).
-        Key-auth matches by existing id within the resolved consumer (until N1-X6, also by the supplied full key);
+        Key-auth matches by existing id within the resolved consumer only (decision H-14: a supplied key is ignored);
         `keyHint` is display-only and MUST NOT be used to match a credential. A credential belonging to another consumer,
         or an id disagreeing with a natural-key match, is a conflict. Credential ids only match within the resolved
         consumer; unmatched ids are source identities, not requested ids for creation. New ids are generated
@@ -559,11 +560,21 @@ paths:
         A supplied `REDACTED`, or an omitted secret on a matched entity, keeps the current secret in either mode,
         as with certificate PUT. For a NEW credential/certificate/plugin secret, `REDACTED` or a missing value
         is 422 at that secret path; import never auto-generates credentials. This applies to basic-auth passwords,
-        certificate keys and plugin fields marked `encrypted` that the selected plugin configuration requires (and,
-        until N1-X6, to key-auth keys and HS256 JWT secrets). Decision H-14, delivered by N1-X6: the server generates
-        every key-auth key and HS256 JWT secret, so a document never sets one; a new key-auth or HS256 JWT credential
-        gets a generated value, whether the document supplies one (a Gromesh or a Kong document) or not, and the
-        report lists it in `regeneratedCredentials`, without any value; a matched credential keeps its stored value. Optional inactive plugin secret fields may remain absent.
+        certificate keys and plugin fields marked `encrypted` that the selected plugin configuration requires.
+        Optional inactive plugin secret fields may remain absent.
+
+        Decision H-14 (N1-X6): only the server generates a key-auth key or an HS256 JWT secret, and only through
+        createKeyAuthCredential, createJwtCredential or their rotation, which show it once; an import never sets,
+        generates or returns one. A key or secret a document supplies (a Gromesh or a Kong document) is ignored:
+        never stored, compared, logged or echoed. A matched credential keeps its stored value and its status, unless the document changes its algorithm (below). A new
+        key-auth or HS256 JWT credential is imported with its metadata only (id, consumer, tags; the JWT `key` and
+        algorithm) as `status: pending-reprovision`: it is left out of every published configuration, so it
+        authenticates nothing, until an editor rotates it (rotateKeyAuthCredential, rotateJwtCredential), which
+        generates the value, shows it once and makes it active. The report lists each one in `pendingCredentials`.
+        RS256/ES256 JWT credentials carry only a public key and import as active. A JWT credential matched by its
+        `key` whose algorithm the document changes: to RS256/ES256 it becomes active with the document's public key;
+        from RS256/ES256 to HS256 it has no stored secret, so it is pending reprovisioning and listed. Only an HS256
+        credential is ever pending.
         A secret slot without a stored value is new even on a matched plugin or credential.
         RS256/ES256 JWT credentials require a valid public key and must not supply a secret. Existing certificate
         keys must still match the leaf; all current entity write validations, including certificate expiry on
@@ -664,13 +675,21 @@ paths:
               schema: { $ref: "#/components/schemas/EnvironmentImportReport" }
               examples:
                 unchanged:
-                  value: { added: [], modified: [], removed: [], errors: [] }
+                  value: { added: [], modified: [], removed: [], errors: [], pendingCredentials: [] }
+                pendingReprovision:
+                  value:
+                    added: [{ kind: keyauth_credentials, id: 7d1f2a3b-4c5d-4e6f-8a9b-0c1d2e3f4a5b, label: "…", change: added }]
+                    modified: []
+                    removed: []
+                    errors: []
+                    pendingCredentials: [{ path: document.consumers.0.keyAuthCredentials.0, credentialType: key-auth, credentialId: 7d1f2a3b-4c5d-4e6f-8a9b-0c1d2e3f4a5b }]
                 invalidDryRun:
                   value:
                     added: []
                     modified: []
                     removed: []
-                    errors: [{ path: document.consumers.0.jwtCredentials.0.secret, message: A new HS256 credential requires a secret }]
+                    errors: [{ path: document.consumers.0.basicAuthCredentials.0.password, message: a real secret is required for a new secret slot }]
+                    pendingCredentials: []
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -963,9 +982,11 @@ paths:
       security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
       description: |
-        The server generates every key: a random 32-byte key, returned only in this response. A supplied `key` answers
-        422 at `key` (decision H-14, delivered by task N1-X6: until then a supplied value is still accepted, and 409 when it is already used by a key-auth credential in the instance, any
-        environment; the message never names it).
+        The server generates every key: a random 32-byte key (a CSPRNG, base64url), returned only in this response
+        and never again (list, audit, export and diff carry only `keyHint`). A supplied `key` answers 422 at `key`
+        (decision H-14), so a key is never chosen and a 409 cannot reveal another workspace's key. The new key is
+        checked against every key-auth key of the instance (Kong looks keys up across the node) and drawn again on
+        the improbable collision. Audited as `keyauth.create`, without the key.
       requestBody:
         required: false
         content:
@@ -973,7 +994,7 @@ paths:
             schema:
               type: object
               properties:
-                key: { type: string, minLength: 16, description: "Refused (422) once N1-X6 delivers decision H-14: the server generates the key" }
+                key: { type: string, minLength: 16, description: "Refused (422 at key, decision H-14): the server generates the key" }
                 tags: { $ref: "#/components/schemas/Tags" }
       responses:
         "201":
@@ -1002,9 +1023,46 @@ paths:
       operationId: deleteKeyAuthCredential
       security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
+      description: Revokes the credential; the key stops authenticating once the draft is published. Audited as `keyauth.delete`.
       responses:
         "204": { description: Deleted }
         "404": { $ref: "#/components/responses/NotFound" }
+  /environments/{envId}/consumers/{consumerId}/key-auth/{credentialId}/rotate:
+    parameters:
+      - { $ref: "#/components/parameters/EnvId" }
+      - { $ref: "#/components/parameters/ConsumerId" }
+      - name: credentialId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [consumers]
+      operationId: rotateKeyAuthCredential
+      security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
+      x-required-role: editor
+      x-gromesh-planned: true
+      description: |
+        Replaces the key with a new one the server generates (as on creation), returned only in this response, and
+        makes a credential pending reprovisioning active (decision H-14). Same id; the previous key stops
+        authenticating once the draft is published. No request body: a supplied one (a `key`, say) answers 422, as
+        on creation. 404 for a credential of another consumer or environment. Audited as `keyauth.rotate` with the
+        hints before and after, never a key.
+      responses:
+        "200":
+          description: Rotated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: "#/components/schemas/KeyAuthCredential" }
+                  - type: object
+                    required: [key]
+                    properties:
+                      key: { type: string, description: "Full key, shown once" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /environments/{envId}/consumers/{consumerId}/jwt:
     parameters: [{ $ref: "#/components/parameters/EnvId" }, { $ref: "#/components/parameters/ConsumerId" }]
     get:
@@ -1030,11 +1088,13 @@ paths:
       security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
       description: |
-        HS256 signs with a shared secret the server generates (random, 32 bytes), returned only in this response; a
-        supplied `secret` answers 422 at `secret` (decision H-14, delivered by task N1-X6: until then a supplied value is still accepted). RS256 and ES256 verify with `rsaPublicKey` (an RSA or EC P-256 public key, despite Kong's field
+        HS256 signs with a shared secret the server generates (32 bytes from a CSPRNG, base64url), returned only in this
+        response and never again; a supplied `secret` answers 422 at `secret` (decision H-14). RS256 and ES256 verify
+        with `rsaPublicKey` (an RSA or EC P-256 public key, despite Kong's field
         name). If `key` is omitted a random one is generated. 409 when `key` is already used by a JWT credential in the
         instance (any environment; the message never names it). 422 with `path`: `secret` given with RS256/ES256; `rsaPublicKey` missing with RS256/ES256, given
         with HS256, not a PEM public key, or of the wrong type for the algorithm (RSA for RS256, EC P-256 for ES256).
+        Audited as `jwt.create`, without the secret.
       requestBody:
         required: false
         content:
@@ -1067,9 +1127,48 @@ paths:
       operationId: deleteJwtCredential
       security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
       x-required-role: editor
+      description: Revokes the credential once the draft is published. Audited as `jwt.delete`.
       responses:
         "204": { description: Deleted }
         "404": { $ref: "#/components/responses/NotFound" }
+  /environments/{envId}/consumers/{consumerId}/jwt/{credentialId}/rotate:
+    parameters:
+      - { $ref: "#/components/parameters/EnvId" }
+      - { $ref: "#/components/parameters/ConsumerId" }
+      - name: credentialId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [consumers]
+      operationId: rotateJwtCredential
+      security: [{ cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] }]
+      x-required-role: editor
+      x-gromesh-planned: true
+      description: |
+        HS256 only: replaces the secret with a new one the server generates (as on creation), returned only in this
+        response, and makes a credential pending reprovisioning active (decision H-14). Same id and `key`; the
+        previous secret stops verifying once the draft is published. No request body: a supplied one (a `secret`,
+        say) answers 422, as on creation. 409 for an RS256/ES256
+        credential (its public key belongs to the client: delete and create it again). 404 for a credential of
+        another consumer or environment. Audited as `jwt.rotate`, never with a secret.
+      responses:
+        "200":
+          description: Rotated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: "#/components/schemas/JwtCredential" }
+                  - type: object
+                    required: [secret]
+                    properties:
+                      secret: { type: string, description: "The full secret, shown once" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /environments/{envId}/consumers/{consumerId}/basic-auth:
     parameters: [{ $ref: "#/components/parameters/EnvId" }, { $ref: "#/components/parameters/ConsumerId" }]
     get:
@@ -2324,9 +2423,18 @@ components:
       properties:
         id: { type: string, format: uuid }
         consumerId: { type: string, format: uuid }
-        keyHint: { type: string, description: Last 4 characters, example: "…k123" }
+        keyHint: { type: [string, "null"], description: "Last 4 characters; null while pending reprovisioning", example: "…k123" }
+        status: { $ref: "#/components/schemas/CredentialStatus" }
         tags: { $ref: "#/components/schemas/Tags" }
         createdAt: { type: string, format: date-time }
+    CredentialStatus:
+      type: string
+      enum: [active, pending-reprovision]
+      description: |
+        Decision H-14. `pending-reprovision`: imported without its key or HS256 secret (an import never sets one), so
+        it is left out of every published configuration and authenticates nothing until it is rotated, which makes it
+        `active`. Every credential created through the API, and every one that existed before N1-X6, is active. Always
+        present in a response once N1-X6 is delivered (absent before it: every credential was active).
     JwtAlgorithm:
       type: string
       enum: [HS256, RS256, ES256]
@@ -2335,7 +2443,7 @@ components:
       properties:
         key: { type: string, minLength: 1, maxLength: 256, description: "Matched against the token's `iss` claim; unique in the instance" }
         algorithm: { allOf: [{ $ref: "#/components/schemas/JwtAlgorithm" }], default: HS256 }
-        secret: { type: string, minLength: 32, maxLength: 512, description: "HS256 only, write-only; refused (422) once N1-X6 delivers decision H-14: the server generates it" }
+        secret: { type: string, minLength: 32, maxLength: 512, description: "Refused (422 at secret, decision H-14): the server generates the HS256 secret" }
         rsaPublicKey: { type: string, minLength: 1, maxLength: 16384, description: "RS256/ES256 only: PEM public key, at most 16 KiB" }
         tags: { $ref: "#/components/schemas/Tags" }
     JwtCredential:
@@ -2346,9 +2454,12 @@ components:
         consumerId: { type: string, format: uuid }
         key: { type: string }
         algorithm: { $ref: "#/components/schemas/JwtAlgorithm" }
+        status: { $ref: "#/components/schemas/CredentialStatus", description: "Only an HS256 credential can be pending reprovisioning" }
         rsaPublicKey: { type: string, description: "RS256/ES256 only; public, so it is returned" }
         tags: { $ref: "#/components/schemas/Tags" }
         createdAt: { type: string, format: date-time }
+      if: { required: [status], properties: { status: { const: pending-reprovision } } }
+      then: { properties: { algorithm: { const: HS256 } } }
     BasicAuthCredentialCreate:
       type: object
       required: [username, password]
@@ -2599,7 +2710,7 @@ components:
     GromeshConfigKeyAuthCredential:
       type: object
       additionalProperties: false
-      description: Import matches by id or a supplied full key, never by keyHint. Export omits key entirely.
+      description: Import matches by id only, never by a key or keyHint (decision H-14). Export omits key entirely.
       properties:
         id: { type: string, format: uuid }
         keyHint: { type: string, description: Display-only hint; not a secret or a matching key }
@@ -2609,23 +2720,30 @@ components:
           oneOf:
             - { const: REDACTED }
             - { minLength: 16, not: { const: REDACTED } }
-          description: Import only; required for a new credential, omitted or REDACTED preserves a matched key
+          description: "Import only, and ignored (decision H-14): never stored, compared or echoed; a new credential is pending reprovisioning"
+        status: { $ref: "#/components/schemas/CredentialStatus", description: "Export only; ignored on import, which decides it" }
         tags: { $ref: "#/components/schemas/Tags" }
     GromeshConfigJwtCredential:
       type: object
       additionalProperties: false
       required: [key, algorithm]
-      description: HS256 exports secret as REDACTED; RS256/ES256 export only their public key and no secret.
+      description: |
+        HS256 exports secret as REDACTED (absent while pending reprovisioning); RS256/ES256 export only their public key
+        and no secret. On import an HS256 secret is ignored (decision H-14): a new HS256 credential is pending
+        reprovisioning, a matched one keeps its secret.
       properties:
         id: { type: string, format: uuid }
         key: { $ref: "#/components/schemas/JwtCredentialCreate/properties/key" }
         algorithm: { $ref: "#/components/schemas/JwtAlgorithm" }
         secret:
           type: string
+          writeOnly: true
           oneOf:
             - { const: REDACTED }
             - { minLength: 32, maxLength: 512, not: { const: REDACTED } }
+          description: Import ignores it (decision H-14)
         rsaPublicKey: { $ref: "#/components/schemas/JwtCredentialCreate/properties/rsaPublicKey" }
+        status: { $ref: "#/components/schemas/CredentialStatus", description: "Export only; ignored on import, which decides it" }
         tags: { $ref: "#/components/schemas/Tags" }
       allOf:
         - if: { properties: { algorithm: { const: HS256 } } }
@@ -2725,12 +2843,15 @@ components:
                     type: array
                     items:
                       type: object
-                      required: [id, keyHint]
+                      required: [id]
                       additionalProperties: true
                       properties:
                         id: { type: string, format: uuid }
                         keyHint: { type: string }
                       not: { required: [key] }
+                      if: { required: [status], properties: { status: { const: pending-reprovision } } }
+                      then: { not: { required: [keyHint] } }
+                      else: { required: [keyHint] }
                   jwtCredentials:
                     type: array
                     items:
@@ -2740,8 +2861,11 @@ components:
                       properties:
                         id: { type: string, format: uuid }
                         secret: { type: string, const: REDACTED }
-                      if: { properties: { algorithm: { const: HS256 } } }
-                      then: { required: [secret] }
+                      if: { required: [status], properties: { status: { const: pending-reprovision } } }
+                      then: { properties: { algorithm: { const: HS256 } }, not: { required: [secret] } }
+                      else:
+                        if: { properties: { algorithm: { const: HS256 } } }
+                        then: { required: [secret] }
                   basicAuthCredentials:
                     type: array
                     items:
@@ -2840,6 +2964,8 @@ components:
             modified: { type: array, maxItems: 0 }
             removed: { type: array, maxItems: 0 }
             errors: { type: array, minItems: 1, items: { $ref: "#/components/schemas/FieldError" } }
+            pendingCredentials: { type: array, maxItems: 0 }
+            regeneratedCredentials: { type: array, maxItems: 0 }
     EnvironmentImportReport:
       type: object
       additionalProperties: false
@@ -2860,6 +2986,7 @@ components:
               added: { maxItems: 0 }
               modified: { maxItems: 0 }
               removed: { maxItems: 0 }
+              pendingCredentials: { maxItems: 0 }
               errors: { type: array, items: { $ref: "#/components/schemas/FieldError" } }
       properties:
         added:
@@ -2889,20 +3016,30 @@ components:
         errors:
           type: array
           items: { $ref: "#/components/schemas/FieldError" }
-        regeneratedCredentials:
+        pendingCredentials:
           type: array
           description: |
-            Decision H-14 (delivered by N1-X6, always present from then on): every key-auth or HS256 JWT credential the
-            import creates gets a key or secret the server generates, whatever the document supplied; each one is
-            listed here by its document path and id, never with a value. Empty when there is an error.
-          items:
-            type: object
-            additionalProperties: false
-            required: [path, credentialType, credentialId]
-            properties:
-              path: { type: string, description: "The credential's document path, e.g. document.consumers.0.keyAuthCredentials.1" }
-              credentialType: { enum: [key-auth, jwt] }
-              credentialId: { type: string, format: uuid, description: Provisional in a dry run }
+            Decision H-14: every key-auth or HS256 JWT credential the import leaves without a key or secret, as
+            `status: pending-reprovision` (it authenticates nothing until rotated): each one it creates, and a matched
+            JWT credential it changes from RS256/ES256 to HS256. By document path and id, never with a value. Empty
+            when there is an error. Any other matched credential is not listed: it keeps its stored value and status.
+            Always present once N1-X6 is delivered.
+          items: { $ref: "#/components/schemas/ImportedCredentialRef" }
+        regeneratedCredentials:
+          type: array
+          maxItems: 0
+          description: |
+            Kept for compatibility, always empty: an import never generates a key or a secret (decision H-14, see
+            pendingCredentials).
+          items: { $ref: "#/components/schemas/ImportedCredentialRef" }
+    ImportedCredentialRef:
+      type: object
+      additionalProperties: false
+      required: [path, credentialType, credentialId]
+      properties:
+        path: { type: string, description: "The credential's document path, e.g. document.consumers.0.keyAuthCredentials.1" }
+        credentialType: { enum: [key-auth, jwt] }
+        credentialId: { type: string, format: uuid, description: Provisional in a dry run }
     EntityChange:
       type: object
       required: [kind, id, label, change]

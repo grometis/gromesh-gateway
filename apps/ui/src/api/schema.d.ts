@@ -278,7 +278,8 @@ export interface paths {
          *     Both representations conform to GromeshConfigV1Export. No state is changed.
          *     Plugin fields marked `encrypted` by the plugin schema, certificate private keys and HS256 JWT secrets
          *     are always the literal `REDACTED`, for every role. Key-auth credentials contain only identity, tags
-         *     and `keyHint`, never `key`. Basic-auth credentials never contain a password or its hash.
+         *     and `keyHint`, never `key`. Basic-auth credentials never contain a password or its hash. A key-auth or
+         *     HS256 JWT credential pending reprovisioning carries `status: pending-reprovision` and no hint or secret.
          *     Reimporting an export into the same environment preserves matched secrets; importing it into another
          *     environment requires supplying real secrets for new entities. The output has no document size limit;
          *     a document larger than the import limit must be split before import.
@@ -319,7 +320,7 @@ export interface paths {
          *     in the resulting draft is a uniqueness conflict.
          *     Plugins match by (name, resolved service, route, consumer scope), targets by (upstream, target), JWT
          *     credentials by issuer key and basic-auth credentials by username (both unique in the instance, across environments).
-         *     Key-auth matches by existing id within the resolved consumer (until N1-X6, also by the supplied full key);
+         *     Key-auth matches by existing id within the resolved consumer only (decision H-14: a supplied key is ignored);
          *     `keyHint` is display-only and MUST NOT be used to match a credential. A credential belonging to another consumer,
          *     or an id disagreeing with a natural-key match, is a conflict. Credential ids only match within the resolved
          *     consumer; unmatched ids are source identities, not requested ids for creation. New ids are generated
@@ -340,11 +341,21 @@ export interface paths {
          *     A supplied `REDACTED`, or an omitted secret on a matched entity, keeps the current secret in either mode,
          *     as with certificate PUT. For a NEW credential/certificate/plugin secret, `REDACTED` or a missing value
          *     is 422 at that secret path; import never auto-generates credentials. This applies to basic-auth passwords,
-         *     certificate keys and plugin fields marked `encrypted` that the selected plugin configuration requires (and,
-         *     until N1-X6, to key-auth keys and HS256 JWT secrets). Decision H-14, delivered by N1-X6: the server generates
-         *     every key-auth key and HS256 JWT secret, so a document never sets one; a new key-auth or HS256 JWT credential
-         *     gets a generated value, whether the document supplies one (a Gromesh or a Kong document) or not, and the
-         *     report lists it in `regeneratedCredentials`, without any value; a matched credential keeps its stored value. Optional inactive plugin secret fields may remain absent.
+         *     certificate keys and plugin fields marked `encrypted` that the selected plugin configuration requires.
+         *     Optional inactive plugin secret fields may remain absent.
+         *
+         *     Decision H-14 (N1-X6): only the server generates a key-auth key or an HS256 JWT secret, and only through
+         *     createKeyAuthCredential, createJwtCredential or their rotation, which show it once; an import never sets,
+         *     generates or returns one. A key or secret a document supplies (a Gromesh or a Kong document) is ignored:
+         *     never stored, compared, logged or echoed. A matched credential keeps its stored value and its status, unless the document changes its algorithm (below). A new
+         *     key-auth or HS256 JWT credential is imported with its metadata only (id, consumer, tags; the JWT `key` and
+         *     algorithm) as `status: pending-reprovision`: it is left out of every published configuration, so it
+         *     authenticates nothing, until an editor rotates it (rotateKeyAuthCredential, rotateJwtCredential), which
+         *     generates the value, shows it once and makes it active. The report lists each one in `pendingCredentials`.
+         *     RS256/ES256 JWT credentials carry only a public key and import as active. A JWT credential matched by its
+         *     `key` whose algorithm the document changes: to RS256/ES256 it becomes active with the document's public key;
+         *     from RS256/ES256 to HS256 it has no stored secret, so it is pending reprovisioning and listed. Only an HS256
+         *     credential is ever pending.
          *     A secret slot without a stored value is new even on a matched plugin or credential.
          *     RS256/ES256 JWT credentials require a valid public key and must not supply a secret. Existing certificate
          *     keys must still match the leaf; all current entity write validations, including certificate expiry on
@@ -569,9 +580,11 @@ export interface paths {
         get: operations["listKeyAuthCredentials"];
         put?: never;
         /**
-         * @description The server generates every key: a random 32-byte key, returned only in this response. A supplied `key` answers
-         *     422 at `key` (decision H-14, delivered by task N1-X6: until then a supplied value is still accepted, and 409 when it is already used by a key-auth credential in the instance, any
-         *     environment; the message never names it).
+         * @description The server generates every key: a random 32-byte key (a CSPRNG, base64url), returned only in this response
+         *     and never again (list, audit, export and diff carry only `keyHint`). A supplied `key` answers 422 at `key`
+         *     (decision H-14), so a key is never chosen and a 409 cannot reveal another workspace's key. The new key is
+         *     checked against every key-auth key of the instance (Kong looks keys up across the node) and drawn again on
+         *     the improbable collision. Audited as `keyauth.create`, without the key.
          */
         post: operations["createKeyAuthCredential"];
         delete?: never;
@@ -594,7 +607,35 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
+        /** @description Revokes the credential; the key stops authenticating once the draft is published. Audited as `keyauth.delete`. */
         delete: operations["deleteKeyAuthCredential"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/environments/{envId}/consumers/{consumerId}/key-auth/{credentialId}/rotate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+                consumerId: components["parameters"]["ConsumerId"];
+                credentialId: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * @description Replaces the key with a new one the server generates (as on creation), returned only in this response, and
+         *     makes a credential pending reprovisioning active (decision H-14). Same id; the previous key stops
+         *     authenticating once the draft is published. No request body: a supplied one (a `key`, say) answers 422, as
+         *     on creation. 404 for a credential of another consumer or environment. Audited as `keyauth.rotate` with the
+         *     hints before and after, never a key.
+         */
+        post: operations["rotateKeyAuthCredential"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -613,11 +654,13 @@ export interface paths {
         get: operations["listJwtCredentials"];
         put?: never;
         /**
-         * @description HS256 signs with a shared secret the server generates (random, 32 bytes), returned only in this response; a
-         *     supplied `secret` answers 422 at `secret` (decision H-14, delivered by task N1-X6: until then a supplied value is still accepted). RS256 and ES256 verify with `rsaPublicKey` (an RSA or EC P-256 public key, despite Kong's field
+         * @description HS256 signs with a shared secret the server generates (32 bytes from a CSPRNG, base64url), returned only in this
+         *     response and never again; a supplied `secret` answers 422 at `secret` (decision H-14). RS256 and ES256 verify
+         *     with `rsaPublicKey` (an RSA or EC P-256 public key, despite Kong's field
          *     name). If `key` is omitted a random one is generated. 409 when `key` is already used by a JWT credential in the
          *     instance (any environment; the message never names it). 422 with `path`: `secret` given with RS256/ES256; `rsaPublicKey` missing with RS256/ES256, given
          *     with HS256, not a PEM public key, or of the wrong type for the algorithm (RSA for RS256, EC P-256 for ES256).
+         *     Audited as `jwt.create`, without the secret.
          */
         post: operations["createJwtCredential"];
         delete?: never;
@@ -640,7 +683,36 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
+        /** @description Revokes the credential once the draft is published. Audited as `jwt.delete`. */
         delete: operations["deleteJwtCredential"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/environments/{envId}/consumers/{consumerId}/jwt/{credentialId}/rotate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+                consumerId: components["parameters"]["ConsumerId"];
+                credentialId: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * @description HS256 only: replaces the secret with a new one the server generates (as on creation), returned only in this
+         *     response, and makes a credential pending reprovisioning active (decision H-14). Same id and `key`; the
+         *     previous secret stops verifying once the draft is published. No request body: a supplied one (a `secret`,
+         *     say) answers 422, as on creation. 409 for an RS256/ES256
+         *     credential (its public key belongs to the client: delete and create it again). 404 for a credential of
+         *     another consumer or environment. Audited as `jwt.rotate`, never with a secret.
+         */
+        post: operations["rotateJwtCredential"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -1410,14 +1482,23 @@ export interface components {
             /** Format: uuid */
             consumerId: string;
             /**
-             * @description Last 4 characters
+             * @description Last 4 characters; null while pending reprovisioning
              * @example …k123
              */
-            keyHint: string;
+            keyHint: string | null;
+            status?: components["schemas"]["CredentialStatus"];
             tags?: components["schemas"]["Tags"];
             /** Format: date-time */
             createdAt: string;
         };
+        /**
+         * @description Decision H-14. `pending-reprovision`: imported without its key or HS256 secret (an import never sets one), so
+         *     it is left out of every published configuration and authenticates nothing until it is rotated, which makes it
+         *     `active`. Every credential created through the API, and every one that existed before N1-X6, is active. Always
+         *     present in a response once N1-X6 is delivered (absent before it: every credential was active).
+         * @enum {string}
+         */
+        CredentialStatus: "active" | "pending-reprovision";
         /** @enum {string} */
         JwtAlgorithm: "HS256" | "RS256" | "ES256";
         JwtCredentialCreate: {
@@ -1425,7 +1506,7 @@ export interface components {
             key?: string;
             /** @default HS256 */
             algorithm: components["schemas"]["JwtAlgorithm"];
-            /** @description HS256 only, write-only; refused (422) once N1-X6 delivers decision H-14: the server generates it */
+            /** @description Refused (422 at secret, decision H-14): the server generates the HS256 secret */
             secret?: string;
             /** @description RS256/ES256 only: PEM public key, at most 16 KiB */
             rsaPublicKey?: string;
@@ -1438,6 +1519,8 @@ export interface components {
             consumerId: string;
             key: string;
             algorithm: components["schemas"]["JwtAlgorithm"];
+            /** @description Only an HS256 credential can be pending reprovisioning */
+            status?: components["schemas"]["CredentialStatus"];
             /** @description RS256/ES256 only; public, so it is returned */
             rsaPublicKey?: string;
             tags?: components["schemas"]["Tags"];
@@ -1674,24 +1757,33 @@ export interface components {
         } | {
             customId: string;
         });
-        /** @description Import matches by id or a supplied full key, never by keyHint. Export omits key entirely. */
+        /** @description Import matches by id only, never by a key or keyHint (decision H-14). Export omits key entirely. */
         GromeshConfigKeyAuthCredential: {
             /** Format: uuid */
             id?: string;
             /** @description Display-only hint; not a secret or a matching key */
             keyHint?: string;
-            /** @description Import only; required for a new credential, omitted or REDACTED preserves a matched key */
+            /** @description Import only, and ignored (decision H-14): never stored, compared or echoed; a new credential is pending reprovisioning */
             key?: string & ("REDACTED" | unknown);
+            /** @description Export only; ignored on import, which decides it */
+            status?: components["schemas"]["CredentialStatus"];
             tags?: components["schemas"]["Tags"];
         };
-        /** @description HS256 exports secret as REDACTED; RS256/ES256 export only their public key and no secret. */
+        /**
+         * @description HS256 exports secret as REDACTED (absent while pending reprovisioning); RS256/ES256 export only their public key
+         *     and no secret. On import an HS256 secret is ignored (decision H-14): a new HS256 credential is pending
+         *     reprovisioning, a matched one keeps its secret.
+         */
         GromeshConfigJwtCredential: {
             /** Format: uuid */
             id?: string;
             key: components["schemas"]["JwtCredentialCreate"]["key"];
             algorithm: components["schemas"]["JwtAlgorithm"];
+            /** @description Import ignores it (decision H-14) */
             secret?: string & ("REDACTED" | unknown);
             rsaPublicKey?: components["schemas"]["JwtCredentialCreate"]["rsaPublicKey"];
+            /** @description Export only; ignored on import, which decides it */
+            status?: components["schemas"]["CredentialStatus"];
             tags?: components["schemas"]["Tags"];
         } & unknown;
         /** @description Export omits password entirely. Hashes are neither exported nor accepted. */
@@ -1751,7 +1843,7 @@ export interface components {
                 keyAuthCredentials?: ({
                     /** Format: uuid */
                     id: string;
-                    keyHint: string;
+                    keyHint?: string;
                 } & {
                     [key: string]: unknown;
                 })[];
@@ -1845,6 +1937,8 @@ export interface components {
             modified: unknown[];
             removed: unknown[];
             errors: components["schemas"]["FieldError"][];
+            pendingCredentials?: unknown[];
+            regeneratedCredentials?: unknown[];
         };
         /**
          * @description Diff against the current draft. Each array contains EntityChange items whose change value matches the
@@ -1869,22 +1963,30 @@ export interface components {
             })[];
             errors: components["schemas"]["FieldError"][];
             /**
-             * @description Decision H-14 (delivered by N1-X6, always present from then on): every key-auth or HS256 JWT credential the
-             *     import creates gets a key or secret the server generates, whatever the document supplied; each one is
-             *     listed here by its document path and id, never with a value. Empty when there is an error.
+             * @description Decision H-14: every key-auth or HS256 JWT credential the import leaves without a key or secret, as
+             *     `status: pending-reprovision` (it authenticates nothing until rotated): each one it creates, and a matched
+             *     JWT credential it changes from RS256/ES256 to HS256. By document path and id, never with a value. Empty
+             *     when there is an error. Any other matched credential is not listed: it keeps its stored value and status.
+             *     Always present once N1-X6 is delivered.
              */
-            regeneratedCredentials?: {
-                /** @description The credential's document path, e.g. document.consumers.0.keyAuthCredentials.1 */
-                path: string;
-                /** @enum {unknown} */
-                credentialType: "key-auth" | "jwt";
-                /**
-                 * Format: uuid
-                 * @description Provisional in a dry run
-                 */
-                credentialId: string;
-            }[];
+            pendingCredentials?: components["schemas"]["ImportedCredentialRef"][];
+            /**
+             * @description Kept for compatibility, always empty: an import never generates a key or a secret (decision H-14, see
+             *     pendingCredentials).
+             */
+            regeneratedCredentials?: components["schemas"]["ImportedCredentialRef"][];
         } & unknown;
+        ImportedCredentialRef: {
+            /** @description The credential's document path, e.g. document.consumers.0.keyAuthCredentials.1 */
+            path: string;
+            /** @enum {unknown} */
+            credentialType: "key-auth" | "jwt";
+            /**
+             * Format: uuid
+             * @description Provisional in a dry run
+             */
+            credentialId: string;
+        };
         EntityChange: {
             /** @enum {string} */
             kind: "services" | "routes" | "consumers" | "keyauth_credentials" | "jwt_secrets" | "basicauth_credentials" | "acls" | "plugins" | "upstreams" | "targets" | "certificates";
@@ -3746,7 +3848,7 @@ export interface operations {
         requestBody?: {
             content: {
                 "application/json": {
-                    /** @description Refused (422) once N1-X6 delivers decision H-14: the server generates the key */
+                    /** @description Refused (422 at key, decision H-14): the server generates the key */
                     key?: string;
                     tags?: components["schemas"]["Tags"];
                 };
@@ -3790,6 +3892,37 @@ export interface operations {
                 content?: never;
             };
             404: components["responses"]["NotFound"];
+        };
+    };
+    rotateKeyAuthCredential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+                consumerId: components["parameters"]["ConsumerId"];
+                credentialId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Rotated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KeyAuthCredential"] & {
+                        /** @description Full key, shown once */
+                        key: string;
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
         };
     };
     listJwtCredentials: {
@@ -3872,6 +4005,38 @@ export interface operations {
                 content?: never;
             };
             404: components["responses"]["NotFound"];
+        };
+    };
+    rotateJwtCredential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                envId: components["parameters"]["EnvId"];
+                consumerId: components["parameters"]["ConsumerId"];
+                credentialId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Rotated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JwtCredential"] & {
+                        /** @description The full secret, shown once */
+                        secret: string;
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
         };
     };
     listBasicAuthCredentials: {
