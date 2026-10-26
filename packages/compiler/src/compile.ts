@@ -82,8 +82,8 @@ export function diffGatewayStates(before: GatewayState, after: GatewayState) {
   return diffConfigs(compared(before, declarativeConfig(before, {})), compared(after, compile(after)));
 }
 
-/** Projection is private: every config that can be published goes through compile's validation. */
-function declarativeConfig(state: GatewayState, options: CompileOptions): KongDeclarativeConfig {
+/** Not exported by the package: every config that can be published goes through compile or composeWorkspaces. */
+export function declarativeConfig(state: GatewayState, options: CompileOptions): KongDeclarativeConfig {
   const managedTag = options.managedTag ?? DEFAULT_MANAGED_TAG;
   const plugins = [...state.plugins, ...resolvePlatformRetention(resolvePlatformKeyNames(options.platformPlugins ?? [], state.plugins), state.routes)];
 
@@ -256,7 +256,7 @@ function kongHealthchecks(h: UpstreamHealthchecks | undefined): Record<string, u
 }
 
 /** A UUID derived from a name (version 5 layout over SHA-1), stable across compilations. */
-function derivedId(name: string): string {
+export function derivedId(name: string): string {
   const h = createHash("sha1").update(`gromesh:${name}`).digest();
   h[6] = (h[6]! & 0x0f) | 0x50;
   h[8] = (h[8]! & 0x3f) | 0x80;
