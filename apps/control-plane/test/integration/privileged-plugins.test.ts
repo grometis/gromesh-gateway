@@ -64,6 +64,22 @@ describe("privileged plugin capabilities", () => {
     expect((await h.api("DELETE", `/environments/${envId}/plugins/${created.body.id}`)).status).toBe(204);
   });
 
+  it("follow the N1 permissions: platform.admin from an instance grant may, a workspace-admin grant may not", async () => {
+    const envId = await env();
+    const v2 = (path: string) => `/../v2${path}`;
+    const platform = await h.as("viewer");
+    const workspaceAdmin = await h.as("viewer");
+    expect((await h.api("POST", v2("/role-bindings"), { subjectType: "user", subjectId: platform.id, role: "platform-admin" })).status).toBe(201);
+    expect((await h.api("POST", v2(`/workspaces/${envId}/role-bindings`), { subjectType: "user", subjectId: workspaceAdmin.id, role: "workspace-admin" })).status).toBe(201);
+    const refused = await workspaceAdmin.api("POST", `/environments/${envId}/plugins`, preFunction);
+    expect(refused.status).toBe(403);
+    expect(paths(refused.body)).toEqual(["name"]);
+    const created = await platform.api("POST", `/environments/${envId}/plugins`, preFunction);
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    expect((await workspaceAdmin.api("DELETE", `/environments/${envId}/plugins/${created.body.id}`)).status).toBe(403);
+    expect((await platform.api("POST", `/environments/${envId}/snapshots`, {})).status).toBe(201);
+  });
+
   it("let only the platform admin publish or roll back a change to privileged plugins, rows written before the rule included", async () => {
     const envId = await env();
     const editor = (await others(envId))[0]![1];
