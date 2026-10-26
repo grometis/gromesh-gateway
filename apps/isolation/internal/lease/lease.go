@@ -59,6 +59,10 @@ func Read(path string) (Lease, error) {
 // Parse decodes a lease strictly, as the guard does: one top-level object, every field exactly once, no other field,
 // the declared types, unsigned integers written only with digits, and nothing after the object.
 func Parse(data []byte) (Lease, error) {
+	// The probe writes no escapes; both readers refuse any, in names as in values, so they never disagree on a document.
+	if bytes.IndexByte(data, '\\') >= 0 {
+		return Lease{}, errors.New("lease malformed: escape")
+	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
 	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {

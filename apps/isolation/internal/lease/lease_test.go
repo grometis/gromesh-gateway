@@ -86,6 +86,7 @@ func TestParseIsStrict(t *testing.T) {
 		strings.Replace(good, `["CAP-1"]`, `"CAP-1"`, 1),
 		strings.Replace(good, `"issuedBoottimeNs":18446744073709551615`, `"issuedBoottimeNs":18446744073709551616`, 1),
 		strings.Replace(good, `"state":"ok"`, `"state":"o\u006b"`, 1),
+		strings.Replace(good, `"state":"ok"`, `"\u0073tate":"ok"`, 1),
 		strings.Replace(good, `["CAP-1"]`, `[null]`, 1),
 		strings.Replace(good, `["CAP-1"]`, `["CAP-1","CAP-1"]`, 1),
 		strings.Replace(good, `["CAP-1"]`, `["CAP-8"]`, 1),

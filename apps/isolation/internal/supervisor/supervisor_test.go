@@ -151,7 +151,7 @@ func TestNoNginxWithoutALease(t *testing.T) {
 
 func TestInvalidLeaseKillsTheWholeGroupWithinF(t *testing.T) {
 	h := start(t, "stuck", true)
-	eventually(t, time.Second, "nginx running", func() bool { return alive(h.pid("worker")) })
+	eventually(t, time.Second, "nginx running", func() bool { return alive(h.pid("worker")) && alive(h.pid("master")) })
 	master, worker := h.pid("master"), h.pid("worker")
 	h.valid.Store(false)
 	// S (100 ms here) to notice, KillAfter for SIGTERM, then SIGKILL: the stuck master ignores TERM.
@@ -170,7 +170,7 @@ func TestInvalidLeaseKillsTheWholeGroupWithinF(t *testing.T) {
 
 func TestRestartsAKilledNginxOnlyWithALease(t *testing.T) {
 	h := start(t, "plain", true)
-	eventually(t, time.Second, "nginx running", func() bool { return alive(h.pid("master")) })
+	eventually(t, time.Second, "nginx running", func() bool { return alive(h.pid("worker")) && alive(h.pid("master")) })
 	first := h.pid("master")
 	_ = syscall.Kill(-first, syscall.SIGKILL)
 	eventually(t, 2*time.Second, "nginx restarted", func() bool { p := h.pid("master"); return p != first && alive(p) })
@@ -178,7 +178,7 @@ func TestRestartsAKilledNginxOnlyWithALease(t *testing.T) {
 
 func TestStopDrainsThenExits(t *testing.T) {
 	h := start(t, "drain", true)
-	eventually(t, time.Second, "nginx running", func() bool { return alive(h.pid("master")) })
+	eventually(t, time.Second, "nginx running", func() bool { return alive(h.pid("worker")) && alive(h.pid("master")) })
 	worker := h.pid("worker")
 	h.stop <- syscall.SIGQUIT
 	select {
@@ -198,7 +198,7 @@ func TestStopDrainsThenExits(t *testing.T) {
 
 func TestDrainIsBoundedByDk(t *testing.T) {
 	h := start(t, "stuck", true)
-	eventually(t, time.Second, "nginx running", func() bool { return alive(h.pid("master")) })
+	eventually(t, time.Second, "nginx running", func() bool { return alive(h.pid("worker")) && alive(h.pid("master")) })
 	began := time.Now()
 	h.stop <- syscall.SIGQUIT
 	select {
@@ -213,7 +213,7 @@ func TestDrainIsBoundedByDk(t *testing.T) {
 
 func TestInvalidLeaseDuringDrainKillsAtOnce(t *testing.T) {
 	h := start(t, "stuck", true)
-	eventually(t, time.Second, "nginx running", func() bool { return alive(h.pid("master")) })
+	eventually(t, time.Second, "nginx running", func() bool { return alive(h.pid("worker")) && alive(h.pid("master")) })
 	h.stop <- syscall.SIGQUIT
 	time.Sleep(150 * time.Millisecond)
 	began := time.Now()
@@ -230,7 +230,7 @@ func TestInvalidLeaseDuringDrainKillsAtOnce(t *testing.T) {
 
 func TestAMasterLeavingItsWorkerBehindIsNotRestartedBesideIt(t *testing.T) {
 	h := start(t, "orphan", true)
-	eventually(t, time.Second, "nginx running", func() bool { return alive(h.pid("worker")) })
+	eventually(t, time.Second, "nginx running", func() bool { return alive(h.pid("worker")) && alive(h.pid("master")) })
 	first, worker := h.pid("master"), h.pid("worker")
 	eventually(t, 3*time.Second, "restarted after the exit", func() bool { p := h.pid("master"); return p != first && alive(p) })
 	if alive(worker) {
@@ -240,7 +240,7 @@ func TestAMasterLeavingItsWorkerBehindIsNotRestartedBesideIt(t *testing.T) {
 
 func TestDrainDeadlineDoesNotWaitForThePeriod(t *testing.T) {
 	h := startWith(t, "stuck", true, 2*time.Second)
-	eventually(t, 3*time.Second, "nginx running", func() bool { return alive(h.pid("master")) })
+	eventually(t, 3*time.Second, "nginx running", func() bool { return alive(h.pid("worker")) && alive(h.pid("master")) })
 	began := time.Now()
 	h.stop <- syscall.SIGQUIT
 	select {
