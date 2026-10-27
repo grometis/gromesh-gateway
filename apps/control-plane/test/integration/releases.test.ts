@@ -262,6 +262,17 @@ describe("releases and deployments in a laboratory on dev", () => {
     expect((await h.sql.query(`select count(*)::int as n from releases where workspace_id = $1`, [ws])).rows[0].n).toBe(0);
 
     await h.sql.query(`update deployment_lease set deadline_at = now() - interval '1 second'`);
+    // Publishing never fails the expired lease's deployment (D4: a release writes no deployment transition), neither
+    // here nor on a replica with the Workspaces mode off.
+    expect((await v2api(h.api, "POST", `/workspaces/${ws}/releases`, {})).status).toBe(201);
+    const off = await startHarness({ databaseUrl: url, instanceStage: "dev" });
+    try {
+      expect((await v2api(off.api, "POST", `/workspaces/${await workspace(off)}/releases`, {})).status).toBe(201);
+    } finally {
+      await off.close();
+    }
+    expect(await states(h, held)).toEqual(["composed", "active", "converging"]);
+    expect((await h.sql.query(`select revision from deployment_lease`)).rows[0].revision).toBe(held);
     expect((await deploy(h.api, held)).status).toBe(201);
     expect(await states(h, held)).toEqual(["composed", "active", "converging", "degraded", "failed", "superseded"]);
     expect((await h.sql.query(`select revision from deployment_lease`)).rows[0].revision).toBeNull();

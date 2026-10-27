@@ -144,16 +144,18 @@ export class ReleasesService {
 
   /**
    * The single lease row: every release and deployment of the instance, from any replica, goes through it one at a
-   * time. A lease past its deadline is expired here; a live one refuses with 409. Dev only (403).
+   * time. A live lease refuses with 409. Dev only (403). Only a deployment (`expire`) fails a lease past its deadline:
+   * publishing a release treats it as free and writes no deployment transition (D4), so it stays inert with the
+   * Workspaces mode off.
    */
-  private async lease(tx: Tx, stage: Stage | null) {
+  private async lease(tx: Tx, stage: Stage | null, expire: boolean) {
     const [lease] = await tx.select().from(deploymentLease).for("update");
     const self = await this.instance(tx, stage);
     if (self.stage !== "dev") throw forbidden(`Local publishing and deployment exist only on dev; this instance is ${self.stage}`);
     const now = await clock(tx);
     if (lease!.revision !== null) {
       if (lease!.deadlineAt && lease!.deadlineAt > now) throw conflict(`Deployment revision ${lease!.revision} holds the deployment lease`);
-      await this.expire(tx, lease!.revision);
+      if (expire) await this.expire(tx, lease!.revision);
     }
     return { self, now };
   }
@@ -166,7 +168,7 @@ export class ReleasesService {
   async publish(ctx: RequestContext, workspaceId: string, body: PublishBody) {
     const stage = this.config.workspacesDeployments?.stage ?? this.config.instanceStage ?? null;
     return this.db.transaction(async (tx) => {
-      const { self } = await this.lease(tx, stage);
+      const { self } = await this.lease(tx, stage, false);
 
       // Every edit and import of the draft updates this row in its own transaction (markDraftChanged): holding it, the
       // draft read below is one committed state, never half of an edit in flight (as v1 publish). Environment before
@@ -244,7 +246,7 @@ export class ReleasesService {
   async deploy(ctx: RequestContext, body: { expectedRevision: number | null; reason: string }) {
     const settings = this.settings();
     return this.db.transaction(async (tx) => {
-      const { self, now } = await this.lease(tx, settings.stage);
+      const { self, now } = await this.lease(tx, settings.stage, true);
       const latest = await this.currentRevision(tx);
       if (body.expectedRevision !== (latest ?? null)) throw conflict(`Current revision is ${latest ?? "none"}, expected ${body.expectedRevision ?? "none"}`);
       const deployment = await this.compose(tx, ctx, self, settings, now);
