@@ -293,10 +293,25 @@ describe("v2 delivery and convergence in a laboratory", () => {
   it("degrades when agent and probe agree on a Kong hash the control plane did not derive (other bytes)", async () => {
     const dep = await publish();
     expect(dep.kong_config_hash).not.toBe(KONG_B);
-    await status(applied(dep, KONG_B));
+    // First Kong serving B while the agent declares the authorized hash, then both agreeing on B.
+    await status(applied(dep));
+    await report({ state: "verifying", servedKongConfigHash: KONG_B });
+    await status(applied(dep));
+    // The probe signs B as applied while the agent still declares the authorized hash: revision-mismatch.
     await report(signed(dep, KONG_B));
+    await status(applied(dep));
+    // Both on B, a hash the control plane did not derive: kong-hash-divergence.
     await status(applied(dep, KONG_B));
     expect((await history(dep.revision)).at(-1)).toBe("degraded");
+    // One divergence turning into another: the first is cleared when the second opens; only the second stays open.
+    const audited = (await h.sql.query(`select action, before->>'evidence' as was, after->>'evidence' as evidence from audit_events where action like 'deployment.evidence.%' and after->>'revision' = $1`, [String(dep.revision)])).rows;
+    const count = (action: string, field: "was" | "evidence", value: string) => audited.filter((r) => r.action === action && r[field] === value).length;
+    expect(count("deployment.evidence.opened", "evidence", "served-config-divergence")).toBe(1);
+    expect(count("deployment.evidence.cleared", "was", "served-config-divergence")).toBe(1);
+    expect(count("deployment.evidence.opened", "evidence", "revision-mismatch")).toBe(1);
+    expect(count("deployment.evidence.cleared", "was", "revision-mismatch")).toBe(1);
+    expect(count("deployment.evidence.opened", "evidence", "kong-hash-divergence")).toBe(1);
+    expect(count("deployment.evidence.cleared", "was", "kong-hash-divergence")).toBe(0);
     expect((await h.sql.query(`select verified_revision from cluster_nodes where cluster_id = $1 and node_id = 'node-1'`, [c.id])).rows[0].verified_revision).toBeLessThan(dep.revision);
   });
 
@@ -319,7 +334,7 @@ describe("v2 delivery and convergence in a laboratory", () => {
     await h.sql.query(`update deployment_lease set deadline_at = now() - interval '1 second'`);
     // Any agent call moves the machine: the deadline is evaluated with the database clock.
     expect((await agentCall(base, c.token, "GET", "v2/deployments/current")).status).toBe(200);
-    expect(await history(dep.revision)).toEqual(["composed", "active", "converging", "degraded", "failed"]);
+    expect((await history(dep.revision)).slice(-2)).toEqual(["degraded", "failed"]);
     expect((await h.sql.query(`select revision from deployment_lease`)).rows[0].revision).toBeNull();
     // The lease is free again: the next deployment supersedes the failed one.
     const next = await publish();

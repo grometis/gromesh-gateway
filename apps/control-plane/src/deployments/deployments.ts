@@ -97,6 +97,10 @@ export async function v2ExpectedNodes(tx: Executor): Promise<{ clusterId: string
 /** The isolation module's per-cluster lock (its admissions, reports and pendencies are decided under it). */
 const ISOLATION_LOCK_CLASS = 0x6772_6973; // "gris"
 
+async function isolationLock(tx: Executor, clusterId: string) {
+  await tx.execute(sql`select pg_advisory_xact_lock(${ISOLATION_LOCK_CLASS}, hashtext(${clusterId}))`);
+}
+
 /**
  * Every delivery transaction takes the instance's single lease row first, then cluster and node rows: one order for
  * publishes, deployments, status reports, served deployments and protocol switches, so replicas never deadlock.
@@ -185,6 +189,10 @@ export class DeliveryService {
   async report(req: Request, body: StatusReportV2) {
     const refusal = await this.db.transaction(async (tx) => {
       await leaseFirst(tx);
+      // Lease, then the isolation lock of the node's cluster, then its rows: the isolation module takes its lock before
+      // any row of the cluster (an admission's foreign key), so the activation gate below never inverts it.
+      const { cluster: unlocked } = await this.gateway.node(tx, bearer(req));
+      await isolationLock(tx, unlocked.id);
       const { cluster, node } = await this.gateway.node(tx, bearer(req), true);
       if (body.nodeId !== node.nodeId) throw unprocessable("Node identity does not match token", [{ path: "nodeId", message: "must match the registered node" }]);
       await this.deliverable(tx, cluster);
@@ -377,14 +385,11 @@ export class DeliveryService {
     await tx.update(clusterNodes).set({ evidence }).where(and(eq(clusterNodes.clusterId, node.clusterId), eq(clusterNodes.nodeId, node.nodeId)));
     if (!was && !is) return;
     const [cluster] = await tx.select({ environmentId: clusters.environmentId }).from(clusters).where(eq(clusters.id, node.clusterId));
-    await audit(tx, SYSTEM, {
-      action: is ? "deployment.evidence.opened" : "deployment.evidence.cleared",
-      entityType: "node",
-      entityId: node.nodeId,
-      environmentId: cluster!.environmentId,
-      before: { evidence: node.evidence },
-      after: { clusterId: node.clusterId, epoch: dep.epoch, revision: dep.revision, evidence },
-    });
+    const event = (action: string, from: string | null, to: string) =>
+      audit(tx, SYSTEM, { action, entityType: "node", entityId: node.nodeId, environmentId: cluster!.environmentId, before: { evidence: from }, after: { clusterId: node.clusterId, epoch: dep.epoch, revision: dep.revision, evidence: to } });
+    // One divergence turning into another closes the first and opens the second.
+    if (was) await event("deployment.evidence.cleared", node.evidence, evidence);
+    if (is) await event("deployment.evidence.opened", node.evidence, evidence);
   }
 
   /**
@@ -393,7 +398,7 @@ export class DeliveryService {
    */
   private async activateCluster(tx: Tx, clusterId: string): Promise<boolean> {
     // One consistent view of admissions, reports and pendencies: the isolation module's cluster lock, then the row.
-    await tx.execute(sql`select pg_advisory_xact_lock(${ISOLATION_LOCK_CLASS}, hashtext(${clusterId}))`);
+    await isolationLock(tx, clusterId);
     const [cluster] = await tx.select().from(clusters).where(eq(clusters.id, clusterId)).for("update");
     if (cluster!.deliveryProtocol === "v2") return true;
     if (cluster!.deliveryProtocol !== "v2-pending") return false;
@@ -436,7 +441,7 @@ export class DeliveryService {
   async setProtocol(ctx: RequestContext, clusterId: string, body: { protocol: "v1" | "v2"; reason: string }) {
     return this.db.transaction(async (tx) => {
       await leaseFirst(tx);
-      await tx.execute(sql`select pg_advisory_xact_lock(${ISOLATION_LOCK_CLASS}, hashtext(${clusterId}))`);
+      await isolationLock(tx, clusterId);
       const [cluster] = await tx.select().from(clusters).where(eq(clusters.id, clusterId)).for("update");
       if (!cluster) throw notFound("Cluster");
       const from = cluster.deliveryProtocol;
