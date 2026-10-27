@@ -665,6 +665,23 @@ bindings valem só para a N1; o relatório da migração (`accessChanges`) lista
 variáveis (N1-X4b) ficam para a N2, como a escrita v2 de service, route e plugin e o import v2 (estes também
 dependem da trilha F-1).
 
+### N3 — recorte mínimo para os aceites da N2 (preparação autorizada em 2026-10-27; sem merge sem o Fabrício)
+Só o que os contratos v2 aprovados já especificam e que os aceites n, o, p e CAP-5…CAP-7 com pod servindo exigem.
+Fora: rollback, reconcile, revogação, promoções. Com o modo Workspaces desabilitado, nada muda (v1 byte a byte).
+
+| Tarefa | Depende de | Escopo | Aceite |
+| --- | --- | --- | --- |
+| N3-C1 Envelope do snapshot v2 | N2-C1 | `packages/compiler` | unidade: valida contra `snapshot-v2.schema.json`; canário e guard em toda route de Workspace; alterar A não muda o `contentDigest` de B; mesmos membros → mesmo hash, qualquer revisão |
+| N3-X1 Agente v2 em modo Workspaces | N2-X3 (#172) | `apps/agent` | `go test` com cpmock v2: 304 com revisão nova confirmada; época antiga recusada; época nova aceita; 400/413 marca a revisão; partida a frio com o CP fora aplica o volume; testes v1 inalterados sem `GROMESH_HANDOFF_DIR` |
+| N3-C2 Persistência de releases e deployments | N1 | `apps/control-plane/src/db`, `apps/control-plane/drizzle` | integração: migração aditiva (colunas v1 intactas); UPDATE/DELETE recusados em `releases`, `deployments`, `content_activations`, `content_revocations`; lease de linha única |
+
+**Dependem de decisão do PO (proposta, não implementação):** D1 tabela `instance` antecipada da N4; D2 quais
+clusters recebem o deployment da instância enquanto a v1 coexiste (`Registration.environmentId` anulável: contrato);
+D3 ligação canário ↔ revisão aplicada (`applied.json` no handoff, `ProbeReport.appliedRevision`: contrato); D4 gate
+de ativação do `publishRelease`; D5 coexistência com a publicação v1. Bloqueadas até lá: N3-C3 instância e clusters,
+N3-C4 `publishRelease`/`listReleases`/`getCurrentDeployment`, N3-C5 endpoints do agente e convergência, N3-X2
+ligação com a revisão, e o complemento da N2-E2 (n, o, p com pod servindo).
+
 ## Backlog (pós-MVP, em ordem de prioridade)
 
 1. **Observabilidade resiliente:** feito (B1, PR #5). `dns_not_found_ttl`/`dns_error_ttl` = 1 s no compose e no chart (NXDOMAIN frio do coletor: 80,6 s → 10,3 s nas duas imagens), fila do http-log cobrindo 60 s, alerta `CollectorWithoutEvents` no Prometheus (compose e chart) e aceite automatizado em `e2e/observability.spec.ts` (reinício do coletor e NXDOMAIN frio perdem 0 s de eventos).
