@@ -382,9 +382,10 @@ func TestWorkspacesModeRegistersBeforeKongExistsAndGetsTheAdmission(t *testing.T
 	w.cp.decide = func(int, int) string { return "granted" }
 	cp.SetIsolation(w.cp)
 	a := newTestAgent(t, cp, k, filepath.Join(t.TempDir(), "kong.json"))
-	// No Kong yet: its Admin API is a socket nobody listens on.
-	a.config.KongAdminURL = "unix://" + filepath.Join(t.TempDir(), "admin.sock")
-	a.client.config.KongAdminURL = a.config.KongAdminURL
+	// No Kong yet: its Admin API and status endpoint are sockets nobody listens on.
+	none := t.TempDir()
+	a.config.KongAdminURL, a.config.KongStatusURL = "unix://"+filepath.Join(none, "admin.sock"), "unix://"+filepath.Join(none, "status.sock")
+	a.client.config.KongAdminURL, a.client.config.KongStatusURL = a.config.KongAdminURL, a.config.KongStatusURL
 	a.config.HandoffDir, a.config.PodUID, a.config.PodName, a.config.NodeName, a.config.BootIDFile = w.handoff, testPod, "dp-0", "worker-1", w.boot
 	a.config.KongVersion = "3.9.4"
 	a.client.config.HandoffDir, a.client.config.KongVersion = a.config.HandoffDir, a.config.KongVersion
