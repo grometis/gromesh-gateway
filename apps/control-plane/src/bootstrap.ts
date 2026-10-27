@@ -26,7 +26,7 @@ export async function createApp(config: AppConfig, opts: { logger?: false | LogL
   configureImportParser(app);
   // control-plane-v2 (Workspaces) is served under /api/v2: its controllers carry the full path.
   app.setGlobalPrefix("api/v1", {
-    exclude: ["healthz", { path: "agent/v1/{*splat}", method: RequestMethod.ALL }, { path: "api/v2/{*splat}", method: RequestMethod.ALL }],
+    exclude: ["healthz", { path: "agent/v1/{*splat}", method: RequestMethod.ALL }, { path: "agent/v2/{*splat}", method: RequestMethod.ALL }, { path: "api/v2/{*splat}", method: RequestMethod.ALL }],
   });
   app.enableShutdownHooks();
   if (config.trustProxy !== false) (app.getHttpAdapter().getInstance() as import("express").Express).set("trust proxy", config.trustProxy);

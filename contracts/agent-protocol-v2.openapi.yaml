@@ -141,7 +141,6 @@ paths:
     post:
       tags: [agent]
       operationId: requestIsolationAdmission
-      x-gromesh-planned: true
       x-gromesh-requirements: [GW-WS-16a]
       summary: Ask for the admission of this pod in this boot
       description: |
@@ -165,7 +164,6 @@ paths:
     get:
       tags: [agent]
       operationId: getIsolationAdmissionRequest
-      x-gromesh-planned: true
       x-gromesh-requirements: [GW-WS-16a]
       parameters:
         - { name: requestId, in: path, required: true, schema: { type: string, format: uuid } }
@@ -181,7 +179,6 @@ paths:
     get:
       tags: [agent]
       operationId: getIsolationChallenge
-      x-gromesh-planned: true
       x-gromesh-requirements: [GW-WS-16a]
       summary: Latest admission challenge of the node's cluster, to hand to the probe
       responses:
@@ -200,7 +197,6 @@ paths:
     post:
       tags: [agent]
       operationId: submitIsolationReports
-      x-gromesh-planned: true
       x-gromesh-requirements: [GW-WS-16a]
       summary: Signed probe reports, in order; the control plane acks the highest contiguous seq after commit
       requestBody:
@@ -225,7 +221,6 @@ paths:
     get:
       tags: [agent]
       operationId: listIsolationReleases
-      x-gromesh-planned: true
       x-gromesh-requirements: [GW-WS-16a]
       summary: Signed releases for pendencies that affect this cluster, to hand to the probes
       responses:

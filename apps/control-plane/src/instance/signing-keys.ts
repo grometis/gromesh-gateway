@@ -7,7 +7,7 @@ import { contractBodyV2, inlineBody } from "../common/contract.js";
 import { conflict, notFound, unprocessable } from "../common/problem.js";
 import { ENCRYPTOR, type Encryptor, instanceSigningKeyContext } from "../crypto/crypto.js";
 import { DB, type Db, type Executor } from "../db/db.js";
-import { instanceSigningKeys, type InstanceSigningKeyRow } from "../db/schema.js";
+import { instanceSigningKeys, type InstanceSigningKeyRow, isolationAdmissions } from "../db/schema.js";
 
 /** Serializes creating, retiring and revoking keys across replicas: the count of active keys is decided under it. */
 export const SIGNING_KEYS_LOCK_KEY = 0x6772_736b; // "grsk"
@@ -165,9 +165,10 @@ export class SigningKeysService {
     return result;
   }
 
-  /** Isolation admissions are N2-D3: none exists yet. */
-  private async openAdmissions(_tx: Executor, _kid: string): Promise<number> {
-    return 0;
+  /** Open isolation admissions it signed, on every cluster: the pods keep them until the chart drops the key. */
+  private async openAdmissions(tx: Executor, kid: string): Promise<number> {
+    const [row] = await tx.select({ n: sql<number>`count(*)::int` }).from(isolationAdmissions).where(and(eq(isolationAdmissions.kid, kid), eq(isolationAdmissions.state, "open")));
+    return row?.n ?? 0;
   }
 
   private async locked(tx: Executor, kid: string): Promise<InstanceSigningKeyRow> {

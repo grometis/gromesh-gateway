@@ -94,6 +94,14 @@ export const contractsV2 = new ContractRegistry("control-plane-v2.openapi.yaml",
   "snapshot-v2.schema.json",
 ], deriveCoreProfile);
 
+/** agent-protocol-v2 (Workspaces mode), with the contracts it refers to. */
+export const agentContractsV2 = new ContractRegistry("agent-protocol-v2.openapi.yaml", [
+  "agent-protocol-v2.openapi.yaml",
+  "agent-protocol.openapi.yaml",
+  "snapshot.schema.json",
+  "snapshot-v2.schema.json",
+]);
+
 export function toFieldErrors(errors: ErrorObject[] | null | undefined): { path: string; message: string }[] {
   return (errors ?? []).map((e) => {
     const base = e.instancePath.replace(/^\//, "").replace(/\//g, ".");
@@ -122,6 +130,8 @@ export class ContractBodyPipe implements PipeTransform {
 export const contractBody = (schemaName: string) => new ContractBodyPipe(schemaName);
 /** The same against control-plane-v2. */
 export const contractBodyV2 = (schemaName: string) => new ContractBodyPipe(schemaName, contractsV2);
+/** The same against agent-protocol-v2. */
+export const agentBodyV2 = (schemaName: string) => new ContractBodyPipe(schemaName, agentContractsV2);
 
 /** JSON pointer to an operation's inline JSON request body schema, e.g. inlineBody("/environments/{envId}/…", "post"). */
 export const inlineBody = (path: string, method: string) =>

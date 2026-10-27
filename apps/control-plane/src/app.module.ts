@@ -30,6 +30,7 @@ import { WorkspacesModule } from "./workspaces/workspaces.js";
 import { WorkspacesApiModule } from "./workspaces/workspaces-api.js";
 import { InstanceModule } from "./instance/instance.js";
 import { SigningKeysModule } from "./instance/signing-keys.js";
+import { IsolationModule } from "./isolation/isolation.js";
 
 @Module({})
 export class AppModule {
@@ -64,6 +65,7 @@ export class AppModule {
         WorkspacesApiModule,
         InstanceModule,
         SigningKeysModule,
+        IsolationModule,
       ],
       providers: [
         { provide: APP_CONFIG, useValue: config },
