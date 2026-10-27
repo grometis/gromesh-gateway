@@ -473,7 +473,9 @@ describe("a deployment recorded before its cluster turns v2 (D-1, laboratory ord
       expect(await history(2)).toEqual(["composed", "active", "converging"]);
       expect((await h.sql.query(`select revision from deployment_lease`)).rows[0].revision).toBe(2);
 
-      // Its only cluster returns to v1 before proving anything: degraded (never converged) and the lease is free.
+      // Its only cluster returns to v1 before proving anything: degraded (never converged) whoever holds the lease;
+      // here the lease is already free (as after a deadline elsewhere), so the degradation cannot hinge on holding it.
+      await h.sql.query(`update deployment_lease set revision = null, operation = null, owner = null, started_at = null, deadline_at = null`);
       await h.api("POST", `/environments/${c.env}/services`, { name: uniq("svc"), protocol: "http", host: "echo", port: 80 });
       expect((await h.api("POST", `/environments/${c.env}/snapshots`, {})).status).toBe(201);
       expect((await v2(h.api, "PUT", `/clusters/${c.id}/delivery-protocol`, { protocol: "v1", reason: "controlled return drill" })).status).toBe(200);
