@@ -9,19 +9,83 @@ source "$here/versions.env"
 : "${LAB_KUBECONFIG:?set LAB_KUBECONFIG to the lab kubeconfig file (never ~/.kube/config)}"
 WORKERS="${WORKERS:-2}"
 context="kind-$CLUSTER_NAME"
-if [[ "$(cd "$(dirname "$LAB_KUBECONFIG")" 2>/dev/null && pwd)/$(basename "$LAB_KUBECONFIG")" == "$HOME/.kube/config" ]]; then
+# One explicit file, never a list, never a link, never the user's kubeconfig (-ef also catches a hard link).
+[[ "$LAB_KUBECONFIG" != *:* ]] || { echo "LAB_KUBECONFIG must be a single file, not a list" >&2; exit 1; }
+[[ ! -L "$LAB_KUBECONFIG" ]] || { echo "LAB_KUBECONFIG must not be a symlink" >&2; exit 1; }
+if [[ "$LAB_KUBECONFIG" -ef "$HOME/.kube/config" || "$(cd -P "$(dirname "$LAB_KUBECONFIG")" 2>/dev/null && pwd -P)/$(basename "$LAB_KUBECONFIG")" == "$(cd -P "$HOME/.kube" 2>/dev/null && pwd -P)/config" ]]; then
   echo "LAB_KUBECONFIG must not be ~/.kube/config" >&2
   exit 1
 fi
-k() { KUBECONFIG="$LAB_KUBECONFIG" kubectl --context "$context" "$@"; }
-h() { KUBECONFIG="$LAB_KUBECONFIG" helm --kube-context "$context" "$@"; }
+# kind, kubectl and helm see only the lab file, whatever the caller's environment says.
+export KUBECONFIG="$LAB_KUBECONFIG"
+k() { kubectl --kubeconfig "$LAB_KUBECONFIG" --context "$context" "$@"; }
+h() { helm --kubeconfig "$LAB_KUBECONFIG" --kube-context "$context" "$@"; }
 
-# Refuses any mutation unless the lab context points at a kind API server on loopback.
+# Refuses any mutation unless the lab context is the named kind cluster: same API endpoint and same CA as the
+# kubeconfig kind itself exports for it (a loopback address alone could be a tunnel to any cluster).
+identity() { kubectl --kubeconfig "$1" config view --raw --minify --flatten ${2:+--context "$2"} \
+  -o jsonpath='{.clusters[0].cluster.server} {.clusters[0].cluster.certificate-authority-data}'; }
 assert_lab() {
-  local server
-  server="$(KUBECONFIG="$LAB_KUBECONFIG" kubectl config view --minify --context "$context" -o jsonpath='{.clusters[0].cluster.server}')"
-  [[ "$server" =~ ^https://127\.0\.0\.1:[0-9]+$ ]] || { echo "context $context points at '$server', not a local kind cluster" >&2; exit 1; }
+  local exported lab want got
   kind get clusters | grep -qx "$CLUSTER_NAME" || { echo "kind cluster $CLUSTER_NAME not found" >&2; exit 1; }
+  exported="$(mktemp)"
+  kind get kubeconfig --name "$CLUSTER_NAME" >"$exported"
+  want="$(identity "$exported")"
+  rm -f "$exported"
+  got="$(identity "$LAB_KUBECONFIG" "$context" 2>/dev/null || true)"
+  [[ "$want" =~ ^https://127\.0\.0\.1:[0-9]+\ [A-Za-z0-9+/=]{100,}$ ]] || { echo "kind exported no usable kubeconfig for $CLUSTER_NAME" >&2; exit 1; }
+  [[ "$got" == "$want" ]] || { echo "context $context (${got%% *}) is not kind cluster $CLUSTER_NAME (${want%% *}): endpoint or CA differ" >&2; exit 1; }
+}
+
+# A reused cluster or release must be the pinned one: Kubernetes, node and Cilium images, and Cilium's effective config.
+die() { echo "pin mismatch: $*" >&2; exit 1; }
+# The node containers, before anything is installed: pinned node image (by digest), node count, API server version.
+assert_nodes() {
+  local node want_nodes="${1:-}" image server nodes
+  server="$(k version -o json | awk -F'"' '/"serverVersion"/ {s = 1} s && /gitVersion/ {print $4; exit}')"
+  [[ "$server" == "$KUBERNETES_VERSION" ]] || die "Kubernetes server $server, pinned $KUBERNETES_VERSION"
+  nodes="$(kind get nodes --name "$CLUSTER_NAME" | sort)"
+  [[ -z "$want_nodes" || "$(wc -l <<<"$nodes" | tr -d ' ')" == "$want_nodes" ]] || die "$(wc -l <<<"$nodes" | tr -d ' ') nodes, expected $want_nodes"
+  for node in $nodes; do
+    [[ "$(docker inspect -f '{{.Config.Image}}' "$node")" == "$NODE_IMAGE" ]] || die "node $node runs $(docker inspect -f '{{.Config.Image}}' "$node")"
+    image="$(docker inspect -f '{{.Image}}' "$node")"
+    docker image inspect -f '{{join .RepoDigests "\n"}}' "$image" | grep -qx "kindest/node@${NODE_IMAGE#*@}" || die "node $node image $image is not ${NODE_IMAGE#*@}"
+  done
+}
+
+# The Cilium release as installed: chart version, image digests in the spec.
+assert_cilium_release() {
+  local release
+  release="$(h list -n kube-system --filter '^cilium$' -o json)"
+  [[ "$release" == *'"chart":"cilium-'"$CILIUM_VERSION"'"'* && "$release" == *'"status":"deployed"'* ]] || die "Cilium release $release, pinned cilium-$CILIUM_VERSION"
+  [[ "$(k -n kube-system get daemonset cilium -o jsonpath='{.spec.template.spec.containers[?(@.name=="cilium-agent")].image}')" == *"@$CILIUM_IMAGE_DIGEST" ]] || die "cilium-agent image is not $CILIUM_IMAGE_DIGEST"
+  [[ "$(k -n kube-system get deployment cilium-operator -o jsonpath='{.spec.template.spec.containers[0].image}')" == *"@$CILIUM_OPERATOR_GENERIC_DIGEST" ]] || die "cilium-operator image is not $CILIUM_OPERATOR_GENERIC_DIGEST"
+}
+
+# Everything, once Ready: registered nodes, the kind config this script writes, running Cilium images and config.
+assert_pins() {
+  local kubelets id pair key value actual
+  assert_nodes "${1:-}"
+  kubelets="$(k get nodes -o jsonpath='{range .items[*]}{.status.nodeInfo.kubeletVersion}{"\n"}{end}' | sort -u)"
+  [[ "$kubelets" == "$KUBERNETES_VERSION" ]] || die "kubelets $kubelets, pinned $KUBERNETES_VERSION"
+  [[ "$(k get nodes -o name | wc -l | tr -d ' ')" == "$(kind get nodes --name "$CLUSTER_NAME" | wc -l | tr -d ' ')" ]] || die "not every node is registered"
+  ! k -n kube-system get daemonset kindnet >/dev/null 2>&1 || die "kindnet is installed"
+  k -n kube-system get daemonset kube-proxy >/dev/null || die "kube-proxy is missing"
+  [[ -z "$(k get nodes -o jsonpath='{range .items[*]}{.spec.podCIDRs}{"\n"}{end}' | grep -v ':' || true)" ]] || die "a node has no IPv6 pod CIDR"
+  assert_cilium_release
+  for id in $(k -n kube-system get pods -l k8s-app=cilium -o jsonpath='{range .items[*]}{.status.containerStatuses[?(@.name=="cilium-agent")].imageID}{"\n"}{end}'); do
+    [[ "$id" == *"@$CILIUM_IMAGE_DIGEST" ]] || die "a cilium-agent pod runs $id"
+  done
+  for id in $(k -n kube-system get pods -l name=cilium-operator -o jsonpath='{range .items[*]}{.status.containerStatuses[0].imageID}{"\n"}{end}'); do
+    [[ "$id" == *"@$CILIUM_OPERATOR_GENERIC_DIGEST" ]] || die "a cilium-operator pod runs $id"
+  done
+  # The agent's effective configuration for every choice cilium-values.yaml makes.
+  for pair in ipam=kubernetes enable-ipv4=true enable-ipv6=true kube-proxy-replacement=false routing-mode=tunnel \
+    tunnel-protocol=vxlan enable-l7-proxy=false external-envoy-proxy=false; do
+    key="${pair%%=*}"; value="${pair#*=}"
+    actual="$(k -n kube-system get configmap cilium-config -o jsonpath="{.data.$key}")"
+    [[ "$actual" == "$value" ]] || die "cilium-config $key=$actual, expected $value"
+  done
 }
 
 check_kind() {
@@ -46,7 +110,7 @@ up() {
     image: $NODE_IMAGE
 "; done
   t0=$(date +%s)
-  # Resumable: an existing lab cluster is kept (only Cilium is installed if missing).
+  # Resumable: an existing lab cluster is kept (only Cilium is installed if missing), if it is the pinned one.
   kind get clusters | grep -qx "$CLUSTER_NAME" || kind create cluster --name "$CLUSTER_NAME" --kubeconfig "$LAB_KUBECONFIG" --wait 0s --config - <<EOF
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
@@ -60,6 +124,7 @@ $workers
 EOF
   t1=$(date +%s)
   assert_lab
+  assert_nodes $((WORKERS + 1))
   local chart_dir digest
   chart_dir="$(mktemp -d)"
   trap 'rm -rf "$chart_dir"' RETURN
@@ -74,8 +139,10 @@ EOF
     sleep $((i * 5))
   done; fi
   [[ "$digest" == "$CILIUM_CHART_DIGEST" ]] || { echo "Cilium chart digest '$digest' != $CILIUM_CHART_DIGEST" >&2; exit 1; }
-  h status cilium -n kube-system >/dev/null 2>&1 || h install cilium "$chart_dir/cilium-$CILIUM_VERSION.tgz" --namespace kube-system -f "$here/cilium-values.yaml" \
+  if h status cilium -n kube-system >/dev/null 2>&1; then assert_cilium_release
+  else h install cilium "$chart_dir/cilium-$CILIUM_VERSION.tgz" --namespace kube-system -f "$here/cilium-values.yaml" \
     --set image.digest="$CILIUM_IMAGE_DIGEST" --set operator.image.genericDigest="$CILIUM_OPERATOR_GENERIC_DIGEST"
+  fi
   k -n kube-system rollout status daemonset/cilium --timeout=600s
   k -n kube-system rollout status deployment/cilium-operator --timeout=300s
   k wait --for=condition=Ready nodes --all --timeout=300s
@@ -90,11 +157,14 @@ EOF
   done
   t2=$(date +%s)
   echo "timing: kind create $((t1 - t0))s, cilium ready $((t2 - t1))s"
+  assert_pins $((WORKERS + 1))
   status
 }
 
 status() {
   assert_lab
+  assert_pins
+  echo "pins: Kubernetes $KUBERNETES_VERSION, node ${NODE_IMAGE#*@}, Cilium $CILIUM_VERSION agent $CILIUM_IMAGE_DIGEST operator $CILIUM_OPERATOR_GENERIC_DIGEST, cilium-config as cilium-values.yaml"
   k version -o json | awk -F'"' '/gitVersion/ {print "server " $4; exit}'
   k get nodes -o custom-columns='NAME:.metadata.name,READY:.status.conditions[?(@.type=="Ready")].status,ARCH:.status.nodeInfo.architecture,KERNEL:.status.nodeInfo.kernelVersion,IPS:.status.addresses[?(@.type=="InternalIP")].address,PODCIDRS:.spec.podCIDRs'
   k -n kube-system get pods -o custom-columns='POD:.metadata.name,NODE:.spec.nodeName,IMAGE:.status.containerStatuses[0].imageID' | grep -E 'cilium|NAME|POD'

@@ -3,7 +3,9 @@
 //   serve <id> <port>...     TCP server: answers each line with "<id> <line>" (the client's random token).
 //   dns <zone.json> <port>   authoritative UDP DNS for the lab zone, TTL 0, zone re-read on every query.
 //   probe                    reads targets (JSON) on stdin, prints one result per target (JSON) on stdout.
-//   watch <ip> <port> <reach|blocked> <deadline ms>   prints the Date.now() of the first attempt in that state.
+//   watch <ip> <port> <reach|blocked> <deadline ms> [server]   once the opposite state is confirmed prints "ready",
+//                            then the Date.now() of the first attempt in that state (reach = the server's answer).
+// run.mjs imports BLOCKING and verdict: the commands only run when this file is the entry point.
 import { createSocket } from "node:dgram";
 import { promises as dns } from "node:dns";
 import { readFileSync } from "node:fs";
@@ -70,7 +72,7 @@ function dnsServer(zoneFile, port) {
 
 // Only refusal, timeout and an ICMP host-unreachable prove a block. ENETUNREACH is usually a missing local route
 // (e.g. no IPv6 in the pod) and DNS failures prove nothing about the destination: both are inconclusive.
-const BLOCKING = new Set(["refused", "timeout", "unreachable"]);
+export const BLOCKING = new Set(["refused", "timeout", "unreachable"]);
 function classify(error) {
   switch (error?.code) {
     case "ECONNREFUSED": return "refused";
@@ -116,7 +118,7 @@ async function attempt(target, ip) {
   return result;
 }
 
-function verdict(target, results) {
+export function verdict(target, results) {
   const outcomes = results.map((r) => r.outcome);
   if (target.expect === "blocked") {
     if (outcomes.every((o) => BLOCKING.has(o))) return "pass";
@@ -169,20 +171,33 @@ async function probe() {
   process.stdout.write(`${JSON.stringify(results)}\n`);
 }
 
-async function watch(ip, port, state, deadlineMs) {
+// Only conclusive attempts count: reach is the expected server's echo, blocked is one of BLOCKING. Anything else
+// (a connection without the echo, a local error) is neither state and the watch keeps going.
+async function watch(ip, port, state, deadlineMs, server) {
   const end = Date.now() + Number(deadlineMs);
+  const stateOf = ({ outcome, server: answered }) => outcome === "reach" && (!server || answered === server) ? "reach"
+    : BLOCKING.has(outcome) ? "blocked" : `inconclusive:${outcome}`;
+  const opposite = state === "reach" ? "blocked" : "reach";
+  // The change is only measured from a confirmed opposite state: two consecutive attempts, within 30 s.
+  let streak = 0;
+  let last;
+  for (const start = Date.now(); streak < 2; await sleep(100)) {
+    last = stateOf(await tcp(ip, Number(port), 300));
+    streak = last === opposite ? streak + 1 : 0;
+    if (streak < 2 && Date.now() - start > 30_000) { process.stdout.write(`initial-state ${last}\n`); process.exitCode = 1; return; }
+  }
   process.stdout.write("ready\n");
   while (Date.now() < end) {
     const at = Date.now();
-    const { outcome } = await tcp(ip, Number(port), 300);
-    if ((state === "reach") === (outcome === "reach")) { process.stdout.write(`${at}\n`); return; }
+    if (stateOf(await tcp(ip, Number(port), 300)) === state) { process.stdout.write(`${at}\n`); return; }
     await sleep(Math.max(0, 100 - (Date.now() - at)));
   }
   process.stdout.write("deadline\n");
   process.exitCode = 1;
 }
 
-if (command === "serve") serve(args[0], args.slice(1));
+if (!import.meta.main) { /* imported by run.mjs */ }
+else if (command === "serve") serve(args[0], args.slice(1));
 else if (command === "dns") dnsServer(args[0], args[1] ?? "53");
 else if (command === "probe") await probe();
 else if (command === "watch") await watch(...args);

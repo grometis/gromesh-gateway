@@ -5,19 +5,19 @@
 // Requires the cluster from cluster.sh. Only the lab context of LAB_KUBECONFIG is ever used.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { assertLabKubeconfig, conclusive, selects } from "./checks.mjs";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const versions = Object.fromEntries(readFileSync(join(here, "versions.env"), "utf8").split("\n")
   .filter((line) => /^[A-Z0-9_]+=/.test(line)).map((line) => line.split(/=(.*)/s).slice(0, 2)));
 const kubeconfig = process.env.LAB_KUBECONFIG;
-assert.ok(kubeconfig, "set LAB_KUBECONFIG to the lab kubeconfig file");
-assert.notEqual(realpathSync(kubeconfig), join(homedir(), ".kube/config"), "LAB_KUBECONFIG must not be ~/.kube/config");
+assertLabKubeconfig(kubeconfig, homedir());
 const cluster = versions.CLUSTER_NAME;
 const context = `kind-${cluster}`;
 const chart = process.env.DATA_PLANE_CHART ?? join(root, "deploy/helm/data-plane");
@@ -27,9 +27,9 @@ const FX = "gromesh-n2-fixtures";
 const ZONE = "lab.gromesh.test";
 const env = { ...process.env, KUBECONFIG: kubeconfig };
 
-function run(command, args, { input, timeout = 180_000, allowFail = false } = {}) {
+function run(command, args, { input, timeout = 180_000, allowFail = false, env: extra = {} } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { env, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(command, args, { env: { ...env, ...extra }, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     const timer = setTimeout(() => child.kill("SIGKILL"), timeout);
@@ -48,10 +48,12 @@ const docker = (args, options) => run("docker", args, options);
 const json = async (args) => JSON.parse((await kubectl([...args, "-o", "json"])).stdout);
 const apply = (objects) => kubectl(["apply", "-f", "-"], { input: JSON.stringify({ apiVersion: "v1", kind: "List", items: objects }) });
 
+// cluster.sh status proves, read-only, that the context is the named kind cluster (endpoint and CA as kind exports
+// them) and that it runs the pins (Kubernetes, node and Cilium digests, Cilium's effective config); it aborts otherwise.
 async function assertLab() {
-  const server = (await kubectl(["config", "view", "--minify", "-o", "jsonpath={.clusters[0].cluster.server}"])).stdout;
-  assert.match(server, /^https:\/\/127\.0\.0\.1:\d+$/, `context ${context} is not a local kind cluster: ${server}`);
-  assert.ok((await run("kind", ["get", "clusters"])).stdout.split("\n").includes(cluster), `kind cluster ${cluster} not found`);
+  const { code, stdout, stderr } = await run("bash", [join(here, "cluster.sh"), "status"], { allowFail: true, env: { LAB_KUBECONFIG: kubeconfig } });
+  assert.equal(code, 0, `the lab is not the pinned kind cluster: ${stderr.trim()}`);
+  return stdout;
 }
 
 // --- topology -----------------------------------------------------------------------------------------------------
@@ -385,13 +387,14 @@ const SCENARIOS = [
 // A target the probe could not even attempt carries its outcome (and the reason) on the target itself.
 const outcomes = (r) => r.results?.map((x) => x.outcome).join(",") ?? `${r.outcome ?? r.verdict}${r.error ? ` (${r.error})` : ""}`;
 
-function scenarioMatcher(scenario) {
+function scenarioMatcher(scenario, list) {
   const open = new Set(scenario.open);
+  const byId = new Map(list.map((t) => [t.id, t]));
   return (results) => results.filter((r) => r.cap !== "self" && !MEASURED.has(r.group) && r.group !== "dns").flatMap((r) => {
     if (scenario.names === "dns-error" && r.id.includes("by-name")) {
       return r.results[0].outcome === "dns-error" ? [] : [`${r.id}: expected a DNS failure, got ${r.results[0].outcome}`];
     }
-    return reached(r) === open.has(r.group) ? [] : [`${r.id}: ${open.has(r.group) ? "expected reachable" : "expected blocked"}, got ${outcomes(r)}`];
+    return conclusive(byId.get(r.id), r, open.has(r.group)) ? [] : [`${r.id}: ${open.has(r.group) ? "expected reachable" : "expected blocked"}, got ${outcomes(r)}`];
   });
 }
 
@@ -409,10 +412,12 @@ async function rebinding(topo, ips, scenario) {
     const list = [4, 6].map((family) => ({ id: `cap4.rebind-to-${phase.group}.v${family}`, cap: phase.group === "backendExt" ? "CAP-1" : "CAP-4", group: phase.group,
       name: `rebind.${ZONE}`, family, port: phase.group === "imds" ? 80 : 8080, expectAddresses: [family === 4 ? phase.pair.v4 : phase.pair.v6],
       server: phase.server, expect: ALLOWED.has(phase.group) ? "reach" : "blocked" }));
-    // dns-unexpected only while the previous answer is still served; open/blocked must then match the group.
+    // Every round must resolve to the new answer (a stale one is a mismatch) and then be conclusive for the group:
+    // a DNS failure or a local error never stands in for a block, in a protected scenario or a negative control.
     const result = await converge(list, (rs) => rs.flatMap((r) => r.results[0].outcome === "dns-unexpected" ? [`${r.id}: stale answer`]
-      : reached(r) === open.has(phase.group) ? [] : [`${r.id}: got ${r.results.map((x) => x.outcome).join(",")}`]));
-    report.push({ phase: phase.group, ok: result.ok, rounds: result.rounds, ms: result.ms, results: result.results, mismatches: result.mismatches });
+      : conclusive(list.find((t) => t.id === r.id), r, open.has(phase.group)) ? [] : [`${r.id}: ${open.has(phase.group) ? "expected reachable" : "expected blocked"}, got ${outcomes(r)}`]));
+    const verdicts = Object.fromEntries(result.results.map((r) => [r.id, r.verdict]));
+    report.push({ phase: phase.group, open: open.has(phase.group), ok: result.ok, rounds: result.rounds, ms: result.ms, verdicts, results: result.results, mismatches: result.mismatches });
   }
   await setZone(zoneRecords(topo, topo.net.backend));
   return report;
@@ -421,11 +426,13 @@ async function rebinding(topo, ips, scenario) {
 // ENV-7: time from the policy change (client clock, before kubectl) to the first probe attempt in the new state.
 async function effectLatency(target, removePolicy, restorePolicy, repetitions = 5) {
   const watch = async (state, action) => {
-    const child = spawn("kubectl", ["--kubeconfig", kubeconfig, "--context", context, "-n", DP, "exec", "probe", "--", "node", "/lab/fixtures.mjs", "watch", target.ip, String(target.port), state, "60000"], { env });
+    const child = spawn("kubectl", ["--kubeconfig", kubeconfig, "--context", context, "-n", DP, "exec", "probe", "--", "node", "/lab/fixtures.mjs", "watch", target.ip, String(target.port), state, "60000", ...(target.server ? [target.server] : [])], { env });
     let text = "";
-    const ready = new Promise((resolve) => child.stdout.on("data", (d) => { text += d; if (text.includes("ready\n")) resolve(); }));
     const done = new Promise((resolve) => child.on("close", resolve));
-    await ready;
+    const ready = new Promise((resolve) => child.stdout.on("data", (d) => { text += d; if (text.includes("ready\n")) resolve(); }));
+    // The watch only says ready once the opposite state is confirmed; otherwise it exits saying what it saw.
+    await Promise.race([ready, done]);
+    assert.ok(text.includes("ready\n"), `watch ${state} on ${target.ip}:${target.port}: the initial state is not the opposite one: ${text.trim()}`);
     const t0 = Date.now();
     await action();
     const t1 = Date.now();
@@ -445,7 +452,7 @@ async function effectLatency(target, removePolicy, restorePolicy, repetitions = 
 }
 
 // --- main ---------------------------------------------------------------------------------------------------------
-await assertLab();
+const environment = await assertLab();
 const startedAt = new Date().toISOString();
 const topo = await topology();
 const bootIds = {};
@@ -454,7 +461,8 @@ await externalFixtures(topo);
 const ips = await clusterFixtures(topo);
 await setZone(zoneRecords(topo, topo.net.backend));
 const base = targets(topo, ips).map((t) => ({ ...t, expect: ALLOWED.has(t.group) ? "reach" : "blocked" }));
-const report = { startedAt, versions, topology: topo, ips, bootIds, scenarios: [], failures: [] };
+// versions are the pins; environment is what cluster.sh status observed after checking the cluster against them.
+const report = { startedAt, versions, environment, topology: topo, ips, bootIds, scenarios: [], failures: [] };
 
 // Every forbidden target must be live from a pod without any policy: an "unreachable" must never be mere absence.
 await setPolicies(topo, ips, []);
@@ -477,7 +485,7 @@ for (const scenario of SCENARIOS) {
     entry.measured = Object.fromEntries(groupsOf(base).map((g) => [g, results.filter((r) => r.group === g).map((r) => `${r.id}=${reached(r) ? "reach" : r.results?.map((x) => x.outcome).join(",") ?? r.outcome}`)]));
     entry.results = results;
   } else {
-    const result = await converge(list, scenarioMatcher(scenario));
+    const result = await converge(list, scenarioMatcher(scenario, list));
     entry.converged = result.ok;
     entry.rounds = result.rounds;
     entry.ms = result.ms;
@@ -510,13 +518,25 @@ for (const scenario of SCENARIOS) {
 // Only the chart NetworkPolicy selects the pod here: with the lab's own NP also selecting it, deleting the chart's
 // would leave the pod isolated and nothing would open.
 await setPolicies(topo, ips, ["chartNp", "denyHost", "denyImds", "denyCidrs"]);
+// What opens on delete must be the chart policy's doing: it is the only NetworkPolicy here, it is an Egress policy,
+// and its selector, as applied, selects the probe pod (same namespace, labels as the API returns them).
+{
+  const probePod = await json(["-n", DP, "get", "pod", "probe"]);
+  const applied = (await json(["-n", DP, "get", "networkpolicy"])).items;
+  assert.deepEqual(applied.map((p) => p.metadata.name), ["dp-data-plane"], "ENV-7 needs the chart NetworkPolicy alone");
+  const [chartNp] = applied;
+  assert.ok(chartNp.spec.policyTypes.includes("Egress"), "the chart NetworkPolicy is not an Egress policy");
+  assert.ok(selects(chartNp.spec.podSelector, probePod.metadata.labels),
+    `the chart NetworkPolicy selector ${JSON.stringify(chartNp.spec.podSelector)} does not select the probe ${JSON.stringify(probePod.metadata.labels)}`);
+  report.chartSelector = { podSelector: chartNp.spec.podSelector, probeLabels: probePod.metadata.labels, selects: true };
+}
 const np = (await chartPolicy(topo, ips)).yaml;
-report.latency = [await effectLatency({ ip: ips["outside-other"].v4, port: 8080, what: "delete/apply chart NetworkPolicy, pod outside the list" },
+report.latency = [await effectLatency({ ip: ips["outside-other"].v4, port: 8080, server: "outside-other", what: "delete/apply chart NetworkPolicy, pod outside the list" },
   () => kubectl(["-n", DP, "delete", "networkpolicy", "dp-data-plane"]), () => kubectl(["-n", DP, "apply", "-f", "-"], { input: np }))];
 await setPolicies(topo, ips, ["chartNp", "labNp", "denyHost", "denyImds", "denyCidrs", "additiveCnp", "additiveNp"]);
-await converge(base, scenarioMatcher(SCENARIOS[2]));
+assert.ok((await converge(base, scenarioMatcher(SCENARIOS[2], base))).ok, "S2 state did not converge before ENV-7");
 const imdsDeny = policies(topo).denyImds;
-report.latency.push(await effectLatency({ ip: IMDS.v4[0], port: 80, what: "delete/apply the IMDS deny with an additive allow-all present" },
+report.latency.push(await effectLatency({ ip: IMDS.v4[0], port: 80, server: "ext:imds", what: "delete/apply the IMDS deny with an additive allow-all present" },
   () => kubectl(["delete", "ciliumclusterwidenetworkpolicy", "n2-deny-imds"]), () => apply([imdsDeny])));
 
 // Leave the lab in the protected state, the zone pointing at the allowed backend.
