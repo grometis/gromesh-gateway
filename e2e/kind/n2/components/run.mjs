@@ -406,7 +406,10 @@ async function coldStart() {
     });
     expect(it, granted.kid === ctx.k1.kid, `granted with kid ${granted.kid}, expected ${ctx.k1.kid}`);
     expect(it, granted.decided - granted.requested <= DECISION, "grant later than the decision window");
-    expect(it, before.length >= 3, `only ${before.length} samples of the kong container before the grant: nothing measured`);
+    // The kong container may start less than a sampling interval before the grant (it did, 0.7 s, once registration
+    // stopped waiting for Kong): then the supervisor's and the probe's own log order below is the evidence, and the
+    // samples only add to it. Without either, nothing was measured.
+    expect(it, before.length >= 3 || (nginxStart && admitted), `only ${before.length} samples of the kong container before the grant and no supervisor/probe log order: nothing measured`);
     expect(it, startedBefore.length === 0, `nginx seen before the grant in ${startedBefore.length} samples`);
     expect(it, nginxStart && nginxStart.at >= granted.decided, `kong-supervisor started nginx at ${nginxStart?.at} before the grant at ${granted.decided}`);
     expect(it, admitted && nginxStart && admitted.at <= nginxStart.at, "nginx started before the probe adopted the admission");
@@ -588,13 +591,18 @@ async function agentStopped() {
 
 /** Items 5 and 7: a pod killed before its final report; held, communication-failure, unconfirmed-isolation; CP restart keeps it; release. */
 async function killedPod() {
-  const it5 = item("5", "Pod SIGKILLed (--grace-period=0 --force) before its final report: admissions held, communication-failure, unconfirmed-isolation after 10 min, release by platform admin only", {
+  const it5 = item("5", "Pod deleted with its final report lost (agent frozen, then --grace-period=0 --force): admissions held, communication-failure, unconfirmed-isolation after 10 min, release by platform admin only", {
     communication: `${COMMUNICATION / 1000} s after the last report`, unconfirmed: `${UNCONFIRMED / 60_000} min after the last report`, release: "session + CSRF + justification, platform admin only" });
   const victim = ctx.p2;
   const known = new Set((await live()).map((p) => p.uid));
+  // A force deletion alone still lets the native sidecars stop in order and deliver the final report (seen in this
+  // lab: the admission closed with kongStopConfirmed 1 s later). A pod whose final report is lost is one whose agent
+  // cannot carry it: freeze the agent first, then delete with no grace.
+  const frozen = await containerPid(victim.name, "agent", "gromesh-agent");
+  await docker(["exec", frozen.node, "kill", "-STOP", String(frozen.pid)]);
   const t0 = Date.now();
   await kubectl(["-n", NS.dp, "delete", "pod", victim.name, "--grace-period=0", "--force"], { allowFail: true });
-  mark("force delete", { pod: victim.name });
+  mark("agent frozen, then force delete", { pod: victim.name, agentPid: frozen.pid });
   const pod = await newPod(known);
   ctx.p5 = pod;
   await sleep(10_000);
@@ -667,7 +675,9 @@ async function killedPod() {
   Object.assign(it5.measures, { releaseToGrantMs: granted.decided - releasedAt, orphan: { state: orphan.state, closeReason: orphan.close_reason }, pendency: { lifecycle: p.lifecycle, justification: Boolean(p.justification), releasedBy: p.released_by?.type }, release: rel });
   expect(it5, orphan.state === "closed-without-proof", `orphan admission ${orphan.state}`);
   expect(it5, p.lifecycle === "released", `pendency ${p.lifecycle}`);
-  expect(it5, rel?.kind === "unconfirmed-isolation" && rel.kid === ctx.k1.kid && Number(rel.ttl) === 15 * 60_000, `release row ${JSON.stringify(rel)}`);
+  // created_at is the transaction's start and expiresAt is taken with clock_timestamp() when signing (a few ms later):
+  // 15 min from the signature, within a second of the row.
+  expect(it5, rel?.kind === "unconfirmed-isolation" && rel.kid === ctx.k1.kid && Math.abs(Number(rel.ttl) - 15 * 60_000) <= 1_000, `release row ${JSON.stringify(rel)}`);
   ctx.a5 = granted;
   done(it5);
 }
@@ -683,7 +693,9 @@ async function revocation() {
   const revokedAt = Date.now();
   mark("key revoked", { kid: ctx.k1.kid, openAdmissions: revoked.openAdmissions });
   it.measures.openAdmissionsAtRevocation = revoked.openAdmissions;
-  const victim = (await live()).find((p) => p.uid === ctx.p4.uid);
+  // Any serving-or-not admitted pod of the data plane: its replacement asks for an admission after the revocation.
+  const pods = await live();
+  const victim = pods.find((p) => p.uid === (ctx.p4 ?? ctx.p5)?.uid) ?? pods[0];
   await kubectl(["-n", NS.dp, "delete", "pod", victim.name, "--wait=false"]);
   const pod = await newPod(known);
   const refused = await waitFor("a request refused no-signing-key", async () => (await admissionOf(ctx.clusterId, pod.uid)).find((a) => a.reason === "no-signing-key"), { timeoutMs: 90_000, intervalMs: 1000 });
@@ -694,7 +706,10 @@ async function revocation() {
   // The rollout without the key: a new key K2 (the set needs 1 to 3 keys); the existing pod's admission is K1's.
   const k2 = await ctx.api.ok("POST", "/api/v2/instance/signing-keys", { session: ctx.admin, body: { validUntil: new Date(Date.now() + 30 * 86_400_000).toISOString() } });
   ctx.k2 = { kid: k2.kid, publicKey: k2.publicKey };
-  const holder = (await live()).find((p) => p.uid === ctx.p5.uid);
+  // A pod still admitted with the revoked key (the replacement of item 5's pod, or any other admitted one).
+  const holder = (await live()).find((p) => p.uid === ctx.p5?.uid) ?? (await live()).find((p) => p.uid !== pod.uid);
+  ctx.p5 = holder;
+  ctx.a5 ??= await grantedOf(ctx.clusterId, holder.uid);
   const follower = new Follower(holder.name, "isolation-probe");
   followers.push(follower);
   await sleep(1000);
@@ -733,8 +748,15 @@ const ITEM_OF = { reportsInOrder: "3", secondPod: "4", gracefulDeletion: "6", ag
 
 async function main() {
   const steps = [setup, coldStart, reportsInOrder, secondPod, gracefulDeletion, agentStopped, killedPod, revocation];
+  // LAB_SKIP=<step,...> leaves a step out (recorded as skipped), e.g. one whose finding is awaiting a decision.
+  const skip = new Set((process.env.LAB_SKIP ?? "").split(",").filter(Boolean));
   try {
     for (const step of steps) {
+      if (skip.has(step.name)) {
+        report.items.push({ id: ITEM_OF[step.name] ?? step.name, title: step.name, result: "skipped", failures: [], notes: ["LAB_SKIP"] });
+        log(`step ${step.name}: SKIPPED (LAB_SKIP)`);
+        continue;
+      }
       if (ctx.blocked) {
         report.items.push({ id: ITEM_OF[step.name] ?? step.name, title: step.name, result: "blocked", failures: [], notes: [ctx.blocked] });
         log(`step ${step.name}: BLOCKED (${ctx.blocked})`);
