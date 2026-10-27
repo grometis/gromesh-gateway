@@ -58,6 +58,7 @@ func TestEvaluateTellsAViolationFromAMissingProof(t *testing.T) {
 		{"http answers 401 where 403 is expected", agent, scripted{status: 401, connected: true}, "violation"},
 		{"http frozen agent: connected, no answer", agent, scripted{connected: true, getErr: noAnswer}, "inconclusive"},
 		{"http connected then reset", agent, scripted{connected: true, getErr: reset}, "inconclusive"},
+		{"http connected then protocol error", agent, scripted{connected: true, getErr: &url.Error{Op: "Get", URL: agentMetrics, Err: errors.New(`net/http: HTTP/1.x transport connection broken: malformed HTTP response "SSH-2.0-x"`)}}, "inconclusive"},
 		{"http connected then TLS failure", validator, scripted{connected: true, getErr: errors.New("tls: handshake failure")}, "inconclusive"},
 		{"http refused", agent, scripted{getErr: refused}, "pass"},
 		{"http dial timeout", agent, scripted{getErr: dialTimeout}, "pass"},
@@ -80,6 +81,22 @@ func TestRealNetworkAFrozenServerIsInconclusiveAndAnAnswerDecides(t *testing.T) 
 		t.Fatal(err)
 	}
 	defer frozen.Close()
+	// A server that is not HTTP: it accepts, writes a banner and closes.
+	garbled, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer garbled.Close()
+	go func() {
+		for {
+			conn, err := garbled.Accept()
+			if err != nil {
+				return
+			}
+			_, _ = conn.Write([]byte("SSH-2.0-x\r\n"))
+			_ = conn.Close()
+		}
+	}()
 	closed, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -100,6 +117,8 @@ func TestRealNetworkAFrozenServerIsInconclusiveAndAnAnswerDecides(t *testing.T) 
 	for _, c := range []struct{ kind, target, want string }{
 		{"http", frozen.Addr().String(), "inconclusive"},
 		{"tcp", frozen.Addr().String(), "violation"},
+		{"http", garbled.Addr().String(), "inconclusive"},
+		{"tcp", garbled.Addr().String(), "violation"},
 		{"http", closedAddr, "pass"},
 		{"tcp", closedAddr, "pass"},
 		{"http", serverAddr, "pass"},
@@ -164,7 +183,8 @@ func TestAFrozenAgentIsInconclusiveAndRecoversWithoutARelease(t *testing.T) {
 	w.noViolation()
 }
 
-// Inconclusive is never access: past the tolerance the lease is withdrawn, and two conclusive passes bring it back.
+// Inconclusive never grants access nor ends a containment; it only keeps an access already proven for up to I (5 min).
+// At exactly I without a conclusive pass the lease is withdrawn, and two conclusive passes bring it back.
 func TestAFrozenAgentPastTheToleranceIsNoProof(t *testing.T) {
 	w := agentWorld(t)
 	w.freezeAgent(true)
@@ -174,7 +194,10 @@ func TestAFrozenAgentPastTheToleranceIsNoProof(t *testing.T) {
 		w.round()
 		w.expect("inconclusive", true)
 	}
-	w.now += 2 * uint64(Period)
+	w.now += uint64(Period)
+	if w.now-began != uint64(InconclusiveLimit) {
+		t.Fatalf("round at %d s, want exactly %s", (w.now-began)/uint64(time.Second), InconclusiveLimit)
+	}
 	w.round()
 	w.expect("no-proof", false)
 	w.now += uint64(Period)
