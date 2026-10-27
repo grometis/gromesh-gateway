@@ -207,7 +207,11 @@ describe("v2 delivery and convergence in a laboratory", () => {
     });
     expect(v1node.status).toBe(200);
     expect((await agentCall(base, c.token, "GET", "v2/deployments/current")).body!.code).toBe("delivery-protocol-switching");
+    // Offline is not enough: every registered node is expected. Nodes are never deregistered yet; the row is removed
+    // here as a deregistration would.
     await h.sql.query(`update cluster_nodes set last_seen_at = now() - interval '2 minutes' where node_id = 'node-v1'`);
+    expect((await agentCall(base, c.token, "GET", "v2/deployments/current")).body!.code).toBe("delivery-protocol-switching");
+    await h.sql.query(`delete from cluster_nodes where node_id = 'node-v1'`);
     const none = await agentCall(base, c.token, "GET", "v2/deployments/current");
     expect(none.status, none.raw).toBe(404);
     expect((await h.sql.query(`select delivery_protocol from clusters where id = $1`, [c.id])).rows[0].delivery_protocol).toBe("v2");
@@ -252,8 +256,12 @@ describe("v2 delivery and convergence in a laboratory", () => {
     expect((await h.sql.query(`select count(*)::int as n from content_activations`)).rows[0].n).toBe(0);
 
     await report(signed(dep));
+    // Kong reported unhealthy: degraded, never converged, even with every evidence in place.
+    await status({ ...applied(dep), kongHealthy: false });
+    expect((await history(dep.revision)).at(-1)).toBe("degraded");
+    expect((await h.sql.query(`select count(*)::int as n from content_activations`)).rows[0].n).toBe(0);
     await status(applied(dep));
-    expect(await history(dep.revision)).toEqual(["composed", "active", "converging", "converged"]);
+    expect(await history(dep.revision)).toEqual(["composed", "active", "converging", "degraded", "converging", "converged"]);
     expect((await h.sql.query(`select revision from deployment_lease`)).rows[0].revision).toBeNull();
     const activations = (await h.sql.query(`select workspace_id, deployment_revision from content_activations`)).rows;
     expect(activations).toEqual([{ workspace_id: ws, deployment_revision: dep.revision }]);
@@ -274,6 +282,12 @@ describe("v2 delivery and convergence in a laboratory", () => {
     await report(signed(dep));
     await status(applied(dep));
     expect((await history(dep.revision)).slice(-2)).toEqual(["converging", "converged"]);
+    // The divergence was audited once when it opened and once when it cleared.
+    const audited = (await h.sql.query(`select action, after->>'evidence' as evidence from audit_events where action like 'deployment.evidence.%' and after->>'revision' = $1 order by at`, [String(dep.revision)])).rows;
+    expect(audited).toEqual([
+      { action: "deployment.evidence.opened", evidence: "served-config-divergence" },
+      { action: "deployment.evidence.cleared", evidence: "verified" },
+    ]);
   });
 
   it("degrades when agent and probe agree on a Kong hash the control plane did not derive (other bytes)", async () => {
@@ -318,9 +332,16 @@ describe("v2 delivery and convergence in a laboratory", () => {
     expect(refused.body.code).toBe("no-v1-snapshot");
     await h.api("POST", `/environments/${c.env}/services`, { name: uniq("svc"), protocol: "http", host: "echo", port: 80 });
     expect((await h.api("POST", `/environments/${c.env}/snapshots`, {})).status).toBe(201);
+    // The revision of the case before still waits for this cluster's node and holds the lease.
+    const waiting = await latest();
+    expect((await h.sql.query(`select revision from deployment_lease`)).rows[0].revision).toBe(waiting.revision);
     const back = await v2(h.api, "PUT", `/clusters/${c.id}/delivery-protocol`, { protocol: "v1", reason: "controlled return drill" });
     expect(back.status, JSON.stringify(back.body)).toBe(200);
     expect(back.body.deliveryProtocol).toBe("v1");
+    // No expected node left: the revision stops waiting (nothing activated) and the lease is free.
+    expect((await history(waiting.revision)).at(-1)).toBe("converged");
+    expect((await h.sql.query(`select revision from deployment_lease`)).rows[0].revision).toBeNull();
+    expect((await h.sql.query(`select count(*)::int as n from content_activations where deployment_revision = $1`, [waiting.revision])).rows[0].n).toBe(0);
     expect((await agentCall(base, c.token, "GET", "v1/snapshots/current")).status).toBe(200);
     expect((await agentCall(base, c.token, "GET", "v2/deployments/current")).body!.code).toBe("delivery-protocol-v1");
     expect((await status({})).body!.code).toBe("delivery-protocol-v1");
@@ -338,6 +359,9 @@ describe("v2 delivery and convergence in a laboratory", () => {
     );
     await h.sql.query(`insert into deployment_states (epoch, revision, seq, state, reason) values (2, 1, 1, 'composed', 't'), (2, 1, 2, 'active', 't')`);
     expect((await status({ epoch: 1 })).body!.code).toBe("epoch-outdated");
+    // The verified revision belongs to its epoch: revision 1 of epoch 2 is no regression of epoch 1's.
+    await h.sql.query(`update cluster_nodes set failure_reason = null where node_id = 'node-1'`);
+    expect((await status({ epoch: 2, ...applied({ revision: 1, config_hash: last.config_hash, kong_config_hash: last.kong_config_hash }) })).status).toBe(204);
 
     const rows = (await h.sql.query(`select epoch, revision, state from deployment_states order by epoch, revision, seq`)).rows as { epoch: number; revision: number; state: string }[];
     const histories = new Map<string, string[]>();

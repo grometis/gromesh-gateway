@@ -1,7 +1,7 @@
 import { Body, Controller, Get, HttpCode, Inject, Injectable, Module, Param, Post, Put, Req, Res, UseGuards } from "@nestjs/common";
 import { jcs, type KongDeclarativeConfig } from "@gromesh/compiler";
 import type { Request, Response } from "express";
-import { and, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { AgentBearerGuard, AgentGatewayModule, AgentGatewayService, agentContext, bearer } from "../agent-gateway/agent-gateway.js";
 import { audit } from "../audit/audit.js";
 import { Ctx, Public, RequiredPermission, type RequestContext, SessionOnly } from "../auth/auth.js";
@@ -61,6 +61,8 @@ interface NodeView {
   node: ClusterNodeRow | undefined;
   nodeId: string;
   online: boolean;
+  /** Kong reported unhealthy in the node's latest status: degraded, never converged. */
+  healthy: boolean;
   failed: boolean;
   evidence: Evidence;
 }
@@ -78,15 +80,30 @@ export async function latestDeployment(tx: Executor): Promise<DeploymentRow | un
   return row;
 }
 
-/** The nodes of the v2 clusters seen in the last 45 s: a new deployment's expected nodes (D2; C-16). */
+/**
+ * A new deployment's expected nodes (D2; C-16): every registered node of the v2 clusters, online or not (an offline
+ * one keeps the revision degraded, never converged; nodes are never deregistered yet).
+ */
 export async function v2ExpectedNodes(tx: Executor): Promise<{ clusterId: string; nodeId: string }[]> {
   const rows = await tx
     .select({ clusterId: clusterNodes.clusterId, nodeId: clusterNodes.nodeId })
     .from(clusterNodes)
     .innerJoin(clusters, eq(clusters.id, clusterNodes.clusterId))
-    .where(and(eq(clusters.deliveryProtocol, "v2"), gt(clusterNodes.lastSeenAt, sql`clock_timestamp() - ${OFFLINE_SECONDS} * interval '1 second'`)))
+    .where(eq(clusters.deliveryProtocol, "v2"))
     .orderBy(clusterNodes.clusterId, clusterNodes.nodeId);
   return rows;
+}
+
+/** The isolation module's per-cluster lock (its admissions, reports and pendencies are decided under it). */
+const ISOLATION_LOCK_CLASS = 0x6772_6973; // "gris"
+
+/**
+ * Every delivery transaction takes the instance's single lease row first, then cluster and node rows: one order for
+ * publishes, deployments, status reports, served deployments and protocol switches, so replicas never deadlock.
+ */
+async function leaseFirst(tx: Executor) {
+  const [lease] = await tx.select().from(deploymentLease).for("update");
+  return lease!;
 }
 
 /** A refusal the transaction must not undo (the node's marker is committed first, then the 409 leaves). */
@@ -114,7 +131,7 @@ export class DeliveryService {
   private async deliverable(tx: Tx, cluster: ClusterRow): Promise<void> {
     if (!this.enabled) throw deliveryRefused("workspaces-mode-disabled", "Workspaces mode is disabled on this instance");
     if (cluster.deliveryProtocol === "v1") throw deliveryRefused("delivery-protocol-v1", "This cluster receives v1 snapshots");
-    if (cluster.deliveryProtocol === "v2-pending" && !(await this.activate(tx, cluster.id))) {
+    if (cluster.deliveryProtocol === "v2-pending" && !(await this.activateCluster(tx, cluster.id))) {
       throw deliveryRefused("delivery-protocol-switching", "This cluster is switching to v2: the activation gate does not hold yet");
     }
   }
@@ -125,6 +142,7 @@ export class DeliveryService {
    */
   async current(req: Request, res: Response) {
     const served = await this.db.transaction(async (tx) => {
+      await leaseFirst(tx);
       const { cluster } = await this.gateway.node(tx, bearer(req));
       await this.deliverable(tx, cluster);
       const row = await latestDeployment(tx);
@@ -166,6 +184,7 @@ export class DeliveryService {
   /** POST /agent/v2/status: records what the agent declares; only evaluate() decides whether it counts. */
   async report(req: Request, body: StatusReportV2) {
     const refusal = await this.db.transaction(async (tx) => {
+      await leaseFirst(tx);
       const { cluster, node } = await this.gateway.node(tx, bearer(req), true);
       if (body.nodeId !== node.nodeId) throw unprocessable("Node identity does not match token", [{ path: "nodeId", message: "must match the registered node" }]);
       await this.deliverable(tx, cluster);
@@ -181,7 +200,7 @@ export class DeliveryService {
         return new Refusal("unknown-deployment", "No deployment of this instance has that epoch, revision and hash");
       }
       const where = and(eq(clusterNodes.clusterId, cluster.id), eq(clusterNodes.nodeId, node.nodeId));
-      if (body.appliedRevision !== null && node.epoch === body.epoch && node.verifiedRevision !== null && body.appliedRevision < node.verifiedRevision) {
+      if (body.appliedRevision !== null && node.verifiedEpoch === body.epoch && node.verifiedRevision !== null && body.appliedRevision < node.verifiedRevision) {
         // Not recorded: the node keeps its last report and shows revision-regression until it reports the current one.
         await tx.update(clusterNodes).set({ failureReason: "revision-regression", lastSeenAt: sql`now()` }).where(where);
         await audit(tx, agentContext(req, node.nodeId), { action: "agent.status.refused", entityType: "node", entityId: node.nodeId, environmentId: cluster.environmentId, after: { clusterId: cluster.id, code: "revision-regression", appliedRevision: body.appliedRevision, verifiedRevision: node.verifiedRevision } });
@@ -224,42 +243,52 @@ export class DeliveryService {
    * the lease row, so publishes and evaluations from every replica move the machine one at a time.
    */
   async evaluate(tx: Tx): Promise<NodeView[]> {
-    const [lease] = await tx.select().from(deploymentLease).for("update");
+    const lease = await leaseFirst(tx);
     const dep = await latestDeployment(tx);
     if (!dep) return [];
     const now = await clock(tx);
     const views = await this.nodeViews(tx, dep, now);
     const current = (await deploymentState(tx, dep.epoch, dep.revision))?.state;
-    if (!current || ["rejected", "superseded", "failed", "converged"].includes(current)) return views;
-    const holdsLease = lease!.revision === dep.revision;
-    if (holdsLease && lease!.deadlineAt && lease!.deadlineAt <= now) {
+    if (!current || ["rejected", "superseded", "failed"].includes(current)) return views;
+    const verified = views.length > 0 && views.every((v) => v.online && v.healthy && v.evidence === "verified");
+    if (current === "converged") {
+      // The history stays converged; a cluster that joined later and proved it still records the first activation.
+      if (verified) await this.activate(tx, dep, now);
+      return views;
+    }
+    const holdsLease = lease.revision === dep.revision;
+    if (holdsLease && lease.deadlineAt && lease.deadlineAt <= now) {
       const path: Record<string, string[]> = { active: ["converging", "degraded", "failed"], converging: ["degraded", "failed"], degraded: ["failed"] };
       await transition(tx, dep.epoch, dep.revision, (path[current] ?? []).map((s) => [s as "failed", "convergence deadline"]));
       await this.freeLease(tx);
       return views;
     }
-    if (views.length === 0) return views;
-    const degraded = views.some((v) => !v.online || v.failed || DEGRADING.includes(v.evidence));
-    const converged = views.every((v) => v.online && v.evidence === "verified");
+    // Every expected cluster left (returned to v1): nothing to wait for, nothing activated.
+    const converged = views.length === 0 || verified;
+    const degraded = views.some((v) => !v.online || !v.healthy || v.failed || DEGRADING.includes(v.evidence));
     const steps: ["converging" | "degraded" | "converged", string][] = [];
     if (converged) {
       if (current === "degraded") steps.push(["converging", "nodes back"]);
-      steps.push(["converged", "every expected node applied with revision and hash"]);
+      steps.push(["converged", views.length === 0 ? "no expected node left" : "every expected node applied with revision and hash"]);
     } else if (degraded) {
       if (current === "active") steps.push(["converging", "some node has not applied yet"]);
-      if (current !== "degraded") steps.push(["degraded", "node failed, offline or evidence diverges"]);
+      if (current !== "degraded") steps.push(["degraded", "node failed, offline, Kong unhealthy or evidence diverges"]);
     } else if (current === "active" || current === "degraded") {
       steps.push(["converging", current === "active" ? "some node has not applied yet" : "nodes back"]);
     }
     if (steps.length > 0) await transition(tx, dep.epoch, dep.revision, steps);
     if (converged) {
-      // The first convergence of each member's content here (G-2): insert once, never moved.
-      for (const m of dep.members as DeploymentMember[]) {
-        await tx.insert(contentActivations).values({ workspaceId: m.workspaceId, contentDigest: m.contentDigest, firstActivatedAt: now, deploymentRevision: dep.revision }).onConflictDoNothing();
-      }
+      if (verified) await this.activate(tx, dep, now);
       if (holdsLease) await this.freeLease(tx);
     }
     return views;
+  }
+
+  /** The first convergence of each member's content here (G-2): insert once, never moved. */
+  private async activate(tx: Executor, dep: DeploymentRow, now: Date) {
+    for (const m of dep.members as DeploymentMember[]) {
+      await tx.insert(contentActivations).values({ workspaceId: m.workspaceId, contentDigest: m.contentDigest, firstActivatedAt: now, deploymentRevision: dep.revision }).onConflictDoNothing();
+    }
   }
 
   private async freeLease(tx: Executor) {
@@ -275,25 +304,26 @@ export class DeliveryService {
     const v2Ids = new Set(v2.map((c) => c.id));
     const expected = new Map<string, { clusterId: string; nodeId: string }>();
     for (const e of dep.expectedNodes as { clusterId: string; nodeId: string }[]) if (v2Ids.has(e.clusterId)) expected.set(`${e.clusterId}/${e.nodeId}`, e);
+    // A cluster that became v2 after the revision was recorded joins with every registered node.
     const joined = v2.filter((c) => c.deliveryProtocolChangedAt && c.deliveryProtocolChangedAt > dep.createdAt);
     if (joined.length > 0) {
-      const rows = await tx.select({ clusterId: clusterNodes.clusterId, nodeId: clusterNodes.nodeId, lastSeenAt: clusterNodes.lastSeenAt }).from(clusterNodes).where(inArray(clusterNodes.clusterId, joined.map((c) => c.id)));
-      for (const r of rows) {
-        const since = joined.find((c) => c.id === r.clusterId)!.deliveryProtocolChangedAt!;
-        if (r.lastSeenAt >= since) expected.set(`${r.clusterId}/${r.nodeId}`, r);
-      }
+      const rows = await tx.select({ clusterId: clusterNodes.clusterId, nodeId: clusterNodes.nodeId }).from(clusterNodes).where(inArray(clusterNodes.clusterId, joined.map((c) => c.id)));
+      for (const r of rows) expected.set(`${r.clusterId}/${r.nodeId}`, r);
     }
     const views: NodeView[] = [];
     for (const e of expected.values()) {
       const [node] = await tx.select().from(clusterNodes).where(and(eq(clusterNodes.clusterId, e.clusterId), eq(clusterNodes.nodeId, e.nodeId)));
       const online = !!node && now.getTime() - node.lastSeenAt.getTime() <= OFFLINE_SECONDS * 1000;
       const failed = !!node && node.epoch === dep.epoch && node.failedRevision === dep.revision && node.failedDeploymentHash === dep.configHash;
-      views.push({ ...e, node, online, failed, evidence: node ? await this.evidence(tx, dep, node, now) : "awaiting-status" });
+      const evidence = node ? await this.evidence(tx, dep, node, now) : "awaiting-status";
+      if (node) await this.auditEvidence(tx, dep, node, evidence);
+      // Not reported yet is not unhealthy: kong_healthy only means something once a v2 status set it.
+      views.push({ ...e, node, online, healthy: !node || node.epoch === null || node.kongHealthy, failed, evidence });
     }
     return views;
   }
 
-  /** Rules (1) to (3): status, the probe's signed report of the open admission, and the instance's recorded Kong hash. */
+  /** The node's evidence by evidenceOf: its status, the newest acknowledged report of its open admission and when it arrived. */
   private async evidence(tx: Executor, dep: DeploymentRow, node: ClusterNodeRow, now: Date): Promise<Evidence> {
     // A refused regression is not recorded: the node shows it until it reports the current revision.
     if (node.failureReason === "revision-regression") return "revision-regression";
@@ -325,7 +355,7 @@ export class DeliveryService {
         revision: dep.revision,
         configHash: dep.configHash,
         kongConfigHash: dep.kongConfigHash!,
-        lastVerifiedRevision: node.epoch === dep.epoch ? node.verifiedRevision ?? 0 : 0,
+        lastVerifiedRevision: node.verifiedEpoch === dep.epoch ? node.verifiedRevision ?? 0 : 0,
         revisionRecordedAt: dep.createdAt,
         now,
       },
@@ -333,24 +363,43 @@ export class DeliveryService {
       probe,
       receivedAt,
     );
-    if (evidence === "verified" && (node.verifiedRevision === null || node.verifiedRevision < dep.revision)) {
-      await tx.update(clusterNodes).set({ verifiedRevision: dep.revision }).where(and(eq(clusterNodes.clusterId, node.clusterId), eq(clusterNodes.nodeId, node.nodeId)));
+    if (evidence === "verified" && (node.verifiedEpoch !== dep.epoch || node.verifiedRevision === null || node.verifiedRevision < dep.revision)) {
+      await tx.update(clusterNodes).set({ verifiedEpoch: dep.epoch, verifiedRevision: dep.revision }).where(and(eq(clusterNodes.clusterId, node.clusterId), eq(clusterNodes.nodeId, node.nodeId)));
     }
     return evidence;
+  }
+
+  /** A divergence of evidence is audited once when it opens and once when it clears (agent protocol v2). */
+  private async auditEvidence(tx: Executor, dep: DeploymentRow, node: ClusterNodeRow, evidence: Evidence) {
+    if (node.evidence === evidence) return;
+    const was = DEGRADING.includes(node.evidence as Evidence);
+    const is = DEGRADING.includes(evidence);
+    await tx.update(clusterNodes).set({ evidence }).where(and(eq(clusterNodes.clusterId, node.clusterId), eq(clusterNodes.nodeId, node.nodeId)));
+    if (!was && !is) return;
+    const [cluster] = await tx.select({ environmentId: clusters.environmentId }).from(clusters).where(eq(clusters.id, node.clusterId));
+    await audit(tx, SYSTEM, {
+      action: is ? "deployment.evidence.opened" : "deployment.evidence.cleared",
+      entityType: "node",
+      entityId: node.nodeId,
+      environmentId: cluster!.environmentId,
+      before: { evidence: node.evidence },
+      after: { clusterId: node.clusterId, epoch: dep.epoch, revision: dep.revision, evidence },
+    });
   }
 
   /**
    * The activation gate (v2-pending -> v2): every node of the cluster seen in the last 45 s has an open admission
    * whose latest acknowledged round was conclusive and passed, and no pendency of the cluster is open.
    */
-  private async activate(tx: Tx, clusterId: string): Promise<boolean> {
+  private async activateCluster(tx: Tx, clusterId: string): Promise<boolean> {
+    // One consistent view of admissions, reports and pendencies: the isolation module's cluster lock, then the row.
+    await tx.execute(sql`select pg_advisory_xact_lock(${ISOLATION_LOCK_CLASS}, hashtext(${clusterId}))`);
     const [cluster] = await tx.select().from(clusters).where(eq(clusters.id, clusterId)).for("update");
     if (cluster!.deliveryProtocol === "v2") return true;
     if (cluster!.deliveryProtocol !== "v2-pending") return false;
-    const nodes = await tx
-      .select({ nodeId: clusterNodes.nodeId })
-      .from(clusterNodes)
-      .where(and(eq(clusterNodes.clusterId, clusterId), gt(clusterNodes.lastSeenAt, sql`clock_timestamp() - ${OFFLINE_SECONDS} * interval '1 second'`)));
+    // Every registered node is expected (none is deregistered yet), and a node without an open admission (a v1-mode
+    // agent) holds the gate: one writer per Kong.
+    const nodes = await tx.select({ nodeId: clusterNodes.nodeId }).from(clusterNodes).where(eq(clusterNodes.clusterId, clusterId));
     if (nodes.length === 0) return false;
     const [pendency] = await tx.select({ id: isolationPendencies.id }).from(isolationPendencies).where(and(eq(isolationPendencies.clusterId, clusterId), inArray(isolationPendencies.lifecycle, [...OPEN_PENDENCIES]))).limit(1);
     if (pendency) return false;
@@ -386,6 +435,8 @@ export class DeliveryService {
   /** setClusterDeliveryProtocol: the only explicit change of a cluster's flow (D2, D5); session, audited. */
   async setProtocol(ctx: RequestContext, clusterId: string, body: { protocol: "v1" | "v2"; reason: string }) {
     return this.db.transaction(async (tx) => {
+      await leaseFirst(tx);
+      await tx.execute(sql`select pg_advisory_xact_lock(${ISOLATION_LOCK_CLASS}, hashtext(${clusterId}))`);
       const [cluster] = await tx.select().from(clusters).where(eq(clusters.id, clusterId)).for("update");
       if (!cluster) throw notFound("Cluster");
       const from = cluster.deliveryProtocol;

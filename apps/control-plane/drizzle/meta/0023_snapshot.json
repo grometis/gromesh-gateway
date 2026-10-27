@@ -1,5 +1,5 @@
 {
-  "id": "0ecb1d38-bf5a-4173-8c98-c9c50db779b8",
+  "id": "fe8686e4-00c5-4d1e-9cc3-98fd4d86067c",
   "prevId": "4f55090e-47e5-4387-bdfc-456efcdbf8fb",
   "version": "7",
   "dialect": "postgresql",
@@ -770,9 +770,21 @@
           "primaryKey": false,
           "notNull": false
         },
+        "verified_epoch": {
+          "name": "verified_epoch",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
         "verified_revision": {
           "name": "verified_revision",
           "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "evidence": {
+          "name": "evidence",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         },

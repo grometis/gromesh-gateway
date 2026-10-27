@@ -575,7 +575,10 @@ export const clusterNodes = pgTable("cluster_nodes", {
   kongConfigHash: text("kong_config_hash"),
   failedDeploymentHash: text("failed_deployment_hash"),
   failureReason: text("failure_reason"),
+  verifiedEpoch: integer("verified_epoch"),
   verifiedRevision: integer("verified_revision"),
+  // The node's last ConvergenceEvidence, so a divergence is audited once when it opens and once when it clears.
+  evidence: text("evidence"),
   error: text("error"),
   kongHealthy: boolean("kong_healthy").notNull().default(false),
   reportedAt: timestamp("reported_at", { withTimezone: true }),
