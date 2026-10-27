@@ -172,6 +172,12 @@ func parseApplied(raw map[string]json.RawMessage, r *Report) error {
 		*into = &n
 		return true
 	}
+	// dependentRequired counts the members present, null or not.
+	present := func(name string) bool { _, ok := raw[name]; return ok }
+	if present("appliedEpoch") && !(present("appliedRevision") && present("appliedHash") && present("appliedKongConfigHash") && present("servedKongConfigHash")) ||
+		(present("appliedRevision") || present("appliedHash") || present("appliedKongConfigHash")) && !present("appliedEpoch") {
+		return errors.New("report applied members present without the ones they depend on")
+	}
 	if !hash("servedKongConfigHash", kongHashRE, &r.ServedKongConfigHash) || !counter("appliedEpoch", &r.AppliedEpoch) ||
 		!counter("appliedRevision", &r.AppliedRevision) || !hash("appliedHash", digestRE, &r.AppliedHash) ||
 		!hash("appliedKongConfigHash", kongHashRE, &r.AppliedKongConfigHash) {

@@ -194,6 +194,9 @@ func TestReportAppliedEvidenceIsStrict(t *testing.T) {
 		"partial applied":         {`,"servedKongConfigHash":"` + hashA + `","appliedEpoch":1`, false},
 		"applied epoch 0":         {`,"servedKongConfigHash":"` + hashA + `"` + strings.Replace(applied, `"appliedEpoch":1`, `"appliedEpoch":0`, 1), false},
 		"malformed served":        {`,"servedKongConfigHash":"AAAA"`, false},
+		"epoch null alone":        {`,"appliedEpoch":null`, false},
+		"epoch null, no served":   {`,"appliedEpoch":null,"appliedRevision":null,"appliedHash":null,"appliedKongConfigHash":null`, false},
+		"revision null alone":     {`,"appliedRevision":null`, false},
 		"malformed applied hash":  {`,"servedKongConfigHash":"` + hashA + `"` + strings.Replace(applied, deployTag, "sha256:1", 1), false},
 	} {
 		_, err := ParseReport([]byte(base + tc.extra + `}`))
