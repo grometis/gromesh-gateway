@@ -827,19 +827,25 @@ paths:
     post:
       tags: [ releases ]
       operationId: publishRelease
+      x-gromesh-workspaces-mode-disabled: allowed
       x-scope: workspace
       x-gromesh-requirements: [ GW-PUB-01, GW-PUB-03, GW-PUB-06, GW-ENV-07 ]
       security: [ { cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] } ]
       x-required-permission: release.publish
       x-gromesh-planned: true
       description: |
-        Freezes the workspace draft into an immutable release, which becomes the workspace's active release (the
-        content a later deployment composes). Creating a release deploys nothing (decision D4): only createDeployment
-        composes a deployment revision, and a revision reaches only clusters whose deliveryProtocol is v2. While the
-        server's Workspaces mode is disabled (the default; N2 enables it only in disposable labs) it answers 409
-        workspaces-mode-disabled and records nothing. It never changes the v1 publication state of the workspace's
-        environment (draft flags, snapshots). Only on dev: in hml and prd local publishing does not exist (403);
-        content arrives only through promotions. Needs the deployment lease (409 otherwise).
+        Freezes the workspace draft into an immutable, validated release (the draft must compose on its own; 422
+        with the paths otherwise), which becomes the workspace's active release (the content a later deployment
+        composes). Flow (decision D4): Draft -> Publish Release -> Create Deployment -> Apply -> Verify Convergence.
+        Creating a release deploys nothing and grants nothing: no deployment revision, nothing served to any data
+        plane, no permission or activation beyond release.publish on this workspace; only createDeployment composes a
+        revision, and a revision reaches only clusters whose deliveryProtocol is v2. It is allowed while the server's
+        Workspaces mode is disabled (the default; N2 enables it only in disposable labs), for an existing workspace
+        only: it never creates a workspace and never bypasses the creation or authorization rules. The operational
+        refusal (409 workspaces-mode-disabled) is at deployment and activation (createDeployment,
+        setClusterDeliveryProtocol to v2, the activation gate), never here. It never changes the v1 publication state
+        of the workspace's environment (draft flags, snapshots). Only on dev: in hml and prd local publishing does not
+        exist (403); content arrives only through promotions. Needs the deployment lease (409 otherwise).
       requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { message: { type: string }, expectedActiveVersion: { type: [ integer, "null" ] } }, additionalProperties: false } } } }
       responses:
         "201": { description: Published, content: { application/json: { schema: { $ref: "#/components/schemas/Release" } } } }
@@ -891,6 +897,7 @@ paths:
     put:
       tags: [ deployments ]
       operationId: setClusterDeliveryProtocol
+      x-gromesh-workspaces-mode-disabled: refused-to-v2
       x-gromesh-requirements: [ GW-ENV-01, GW-DEP-02, GW-DEP-08 ]
       x-required-permission: platform.admin
       x-scope: instance
@@ -900,7 +907,7 @@ paths:
         moves a v1 cluster to v2-pending: from then on the v1 endpoints answer 409 delivery-protocol-switching to its
         nodes (the v1 snapshots of its environment stay recorded and untouched) and the control plane moves it to v2
         by itself once the activation gate holds: every expected node of the cluster has an open admission with a
-        conclusive passing round, no node without an open admission (a v1-mode agent) is registered and online, and
+        conclusive passing round (every required capability proven, failedCapabilities empty), no node without an open admission (a v1-mode agent) is registered and online, and
         no pendency is open in its scope (recorded and audited as a system transition; agent protocol v2, "One
         writer per Kong").
         protocol v1 cancels a v2-pending cluster, or returns a v2 cluster to v1 (controlled return): the cluster leaves
@@ -988,6 +995,7 @@ paths:
     post:
       tags: [ deployments ]
       operationId: createDeployment
+      x-gromesh-workspaces-mode-disabled: refused
       x-scope: instance
       x-gromesh-requirements: [ GW-DEP-01, GW-DEP-02, GW-DEP-04 ]
       security: [ { cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] } ]
@@ -4294,6 +4302,7 @@ components:
       enum: [ verified, awaiting-status, awaiting-probe-report, revision-mismatch, served-config-divergence, kong-hash-divergence, revision-regression ]
     DeploymentState:
       enum: [ composed, rejected, active, converging, converged, degraded, failed, superseded ]
+      x-gromesh-empty-revision: { neverReaches: [ converged ], holdsLease: false, exits: [ converging, superseded ] }
       x-gromesh-transitions:
         initial: [ composed ]
         terminal: [ rejected, superseded ]
@@ -4301,8 +4310,9 @@ components:
           - [ composed, rejected, "composition or validator failed (nothing applied; lease released)" ]
           - [ composed, active, "recorded, expected nodes fixed, agents notified" ]
           - [ active, converging, "some node has not applied yet" ]
-          - [ active, converged, "every expected node already confirmed the revision" ]
-          - [ converging, converged, "every expected node applied with revision and hash" ]
+          - [ active, superseded, "a new deployment replaces a revision that has no expected node (it never held the deployment lease)" ]
+          - [ active, converged, "every expected node (at least one) already confirmed the revision with evidence verified; a revision with no expected node stays active" ]
+          - [ converging, converged, "every expected node (at least one) applied with revision and hash, evidence verified" ]
           - [ converging, degraded, "node failed (400/413), offline > 45 s or Kong unhealthy" ]
           - [ degraded, converging, "agent retry or node back" ]
           - [ degraded, failed, "convergence deadline (lease released)" ]
@@ -4316,12 +4326,13 @@ components:
         snapshots; v2: the instance's deployments; v2-pending: neither flow delivers anything new (each node keeps
         what it applied) until the activation gate holds.
       enum: [ v1, v2-pending, v2 ]
+      x-gromesh-activation-gate: [ workspaces-mode-enabled, every-expected-node-open-admission, conclusive-passing-round, failed-capabilities-empty, no-v1-node-online, no-open-pendency ]
       x-gromesh-transitions:
         initial: [ v1, v2-pending ]
         terminal: []
         transitions:
           - [ v1, v2-pending, "setClusterDeliveryProtocol protocol v2 with Workspaces mode enabled (audited)" ]
-          - [ v2-pending, v2, "activation gate: every expected node has an open admission with a conclusive passing round, no node without an open admission is registered and online, and no pendency is open in scope (system transition, audited)" ]
+          - [ v2-pending, v2, "activation gate: every expected node has an open admission with a conclusive passing round (failedCapabilities empty), no node without an open admission is registered and online, and no pendency is open in scope (system transition, audited)" ]
           - [ v2-pending, v1, "setClusterDeliveryProtocol protocol v1: switch cancelled (audited)" ]
           - [ v2, v1, "setClusterDeliveryProtocol protocol v1: controlled return to the environment's current v1 snapshot (audited)" ]
     DeliveryProblem:
@@ -4338,7 +4349,9 @@ components:
       description: |
         Expected nodes of a revision: the registered, not deregistered nodes of the clusters whose deliveryProtocol is
         v2 when the revision is recorded (a cluster that turns v2 later joins at its activation; one that returns to
-        v1 leaves). A node is applied only with the evidence of agent protocol v2 ("Applied revision and convergence
+        v1 leaves). A revision with no expected node never converges: it stays active, without holding the deployment
+        lease, until a cluster joins it (it then takes the free lease and its deadline starts) or a new deployment
+        supersedes it (an empty set never counts as every node applied; x-gromesh-empty-revision). A node is applied only with the evidence of agent protocol v2 ("Applied revision and convergence
         evidence"): its StatusReport and its probe's fresh signed report agree on epoch, revision, configHash and the
         kongConfigHash derived by the control plane; evidence tells what is missing otherwise. state is the
         history of the revision (a converged revision stays converged); convergence and the clusters' status are the

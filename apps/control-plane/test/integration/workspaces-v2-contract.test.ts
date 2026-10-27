@@ -796,6 +796,43 @@ describe("delivery protocol and convergence evidence (N3-K1)", () => {
     expect(vector.cases.filter((c: Doc) => c.evidence === "verified").every((c: Doc) => c.probe && c.status)).toBe(true);
   });
 
+  it("publishes a release without deploying it, also with Workspaces mode disabled (D4)", () => {
+    // Structured: where the disabled mode refuses, and that only operations reaching a data plane do.
+    const mode = Object.fromEntries(v2Ops.filter(({ op }) => op["x-gromesh-workspaces-mode-disabled"]).map(({ op }) => [op.operationId, op["x-gromesh-workspaces-mode-disabled"]]));
+    expect(mode).toEqual({ publishRelease: "allowed", createDeployment: "refused", setClusterDeliveryProtocol: "refused-to-v2" });
+    const publish = v2Ops.find(({ op }) => op.operationId === "publishRelease")!.op;
+    // publishRelease never answers the delivery refusal: its 409 is the generic conflict (lease, expectedActiveVersion).
+    expect(publish.responses["409"]).toEqual({ $ref: "#/components/responses/Conflict" });
+    expect(publish.requestBody.content["application/json"].schema.properties).not.toHaveProperty("deploy");
+    const deploy409 = ajv.compile({ $ref: `${BASE}control-plane-v2.openapi.yaml#/paths/~1deployments/post/responses/409/content/application~1problem+json/schema` });
+    expect(deploy409({ type: "https://gromesh.dev/problems/workspaces-mode-disabled", title: "Conflict", status: 409, code: "workspaces-mode-disabled" })).toBe(true);
+    const states = v2.components.schemas.DeliveryProtocolState;
+    expect(states["x-gromesh-activation-gate"]).toEqual(["workspaces-mode-enabled", "every-expected-node-open-admission", "conclusive-passing-round", "failed-capabilities-empty", "no-v1-node-online", "no-open-pendency"]);
+    const t = states["x-gromesh-transitions"].transitions as [string, string, string][];
+    // Positive and negative transition vectors: only the gate reaches v2; nothing reaches v2 from v1 directly.
+    const allowed = new Set(t.map(([from, to]) => `${from}>${to}`));
+    for (const ok of ["v1>v2-pending", "v2-pending>v2", "v2-pending>v1", "v2>v1"]) expect(allowed.has(ok), ok).toBe(true);
+    for (const no of ["v1>v2", "v2>v2-pending"]) expect(allowed.has(no), no).toBe(false);
+    const gate = t.find(([from, to]) => from === "v2-pending" && to === "v2")![2];
+    for (const phrase of ["open admission", "conclusive passing round", "failedCapabilities empty", "no node without an open admission", "no pendency is open"]) expect(gate, phrase).toContain(phrase);
+  });
+
+  it("never converges an empty set of expected nodes and keeps md5 out of integrity decisions", () => {
+    const machine = v2.components.schemas.DeploymentState;
+    const t = machine["x-gromesh-transitions"].transitions as [string, string, string][];
+    const empty = machine["x-gromesh-empty-revision"] as { neverReaches: string[]; holdsLease: boolean; exits: string[] };
+    expect(empty).toEqual({ neverReaches: ["converged"], holdsLease: false, exits: ["converging", "superseded"] });
+    // An empty revision recorded as active can only leave by its declared exits, each one a real transition.
+    const fromActive = t.filter(([from]) => from === "active").map(([, to]) => to);
+    for (const exit of empty.exits) expect(fromActive, exit).toContain(exit);
+    expect(t.find(([from, to]) => from === "active" && to === "superseded")![2]).toContain("no expected node");
+    for (const [from, , why] of t.filter(([, to]) => empty.neverReaches.includes(to))) expect(why, from).toContain("(at least one)");
+    expect(v2.components.schemas.Deployment.description).toContain("without holding the deployment");
+    const info = agentV2.info.description.replace(/\s+/g, " ");
+    expect(info).toContain("never replaces the SHA-256 identities");
+    expect(info).toContain("no decision of integrity, provenance or authorization reads it");
+  });
+
   it("refuses with a typed code and switches the protocol only explicitly", () => {
     const refusal = (code: string) => ({ type: `https://gromesh.dev/problems/${code}`, title: "Conflict", status: 409, code });
     const deploy = v2Ops.find(({ op }) => op.operationId === "createDeployment")!.op;
