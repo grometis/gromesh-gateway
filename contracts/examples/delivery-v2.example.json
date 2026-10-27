@@ -1,0 +1,829 @@
+{
+  "description": "Normative vector of agent protocol v2 'Applied revision and convergence evidence' (N3-K1, decision D3). evidenceOf(expected, case) is the reference reading; probe is the newest acknowledged report of the admission the control plane recorded for the node, receivedAt the control plane's clock at receipt.",
+  "kongConfigHashOf": {
+    "config": {
+      "_format_version": "3.0",
+      "_transform": false,
+      "routes": [],
+      "services": []
+    },
+    "jcs": "{\"_format_version\":\"3.0\",\"_transform\":false,\"routes\":[],\"services\":[]}",
+    "kongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+    "postBody": "{\"config\":\"{\\\"_format_version\\\":\\\"3.0\\\",\\\"_transform\\\":false,\\\"routes\\\":[],\\\"services\\\":[]}\"}"
+  },
+  "applied": {
+    "instanceId": "7b0c9a52-3c1e-4f8e-9d2a-1c5b8e2f4a10",
+    "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+    "nodeId": "kong-7d9f-0",
+    "podUid": "2f1e0d9c-8b7a-4695-a483-72615f4e3d2c",
+    "epoch": 1,
+    "revision": 4,
+    "hash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+    "kongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+    "result": "applied",
+    "appliedAt": "2026-10-27T12:00:00Z"
+  },
+  "invalidApplied": [
+    {
+      "reason": "unknown member",
+      "value": {
+        "instanceId": "7b0c9a52-3c1e-4f8e-9d2a-1c5b8e2f4a10",
+        "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+        "nodeId": "kong-7d9f-0",
+        "podUid": "2f1e0d9c-8b7a-4695-a483-72615f4e3d2c",
+        "epoch": 1,
+        "revision": 4,
+        "hash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+        "kongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+        "result": "applied",
+        "appliedAt": "2026-10-27T12:00:00Z",
+        "revisionClaimedBy": "agent"
+      }
+    },
+    {
+      "reason": "result other than applied",
+      "value": {
+        "instanceId": "7b0c9a52-3c1e-4f8e-9d2a-1c5b8e2f4a10",
+        "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+        "nodeId": "kong-7d9f-0",
+        "podUid": "2f1e0d9c-8b7a-4695-a483-72615f4e3d2c",
+        "epoch": 1,
+        "revision": 4,
+        "hash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+        "kongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+        "result": "failed",
+        "appliedAt": "2026-10-27T12:00:00Z"
+      }
+    },
+    {
+      "reason": "Kong hash not 32 hex",
+      "value": {
+        "instanceId": "7b0c9a52-3c1e-4f8e-9d2a-1c5b8e2f4a10",
+        "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+        "nodeId": "kong-7d9f-0",
+        "podUid": "2f1e0d9c-8b7a-4695-a483-72615f4e3d2c",
+        "epoch": 1,
+        "revision": 4,
+        "hash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+        "kongConfigHash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "result": "applied",
+        "appliedAt": "2026-10-27T12:00:00Z"
+      }
+    },
+    {
+      "reason": "no podUid",
+      "value": {
+        "instanceId": "7b0c9a52-3c1e-4f8e-9d2a-1c5b8e2f4a10",
+        "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+        "nodeId": "kong-7d9f-0",
+        "epoch": 1,
+        "revision": 4,
+        "hash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+        "kongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+        "result": "applied",
+        "appliedAt": "2026-10-27T12:00:00Z"
+      }
+    },
+    {
+      "reason": "no kongConfigHash",
+      "value": {
+        "instanceId": "7b0c9a52-3c1e-4f8e-9d2a-1c5b8e2f4a10",
+        "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+        "nodeId": "kong-7d9f-0",
+        "podUid": "2f1e0d9c-8b7a-4695-a483-72615f4e3d2c",
+        "epoch": 1,
+        "revision": 4,
+        "hash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+        "result": "applied",
+        "appliedAt": "2026-10-27T12:00:00Z"
+      }
+    },
+    {
+      "reason": "revision 0",
+      "value": {
+        "instanceId": "7b0c9a52-3c1e-4f8e-9d2a-1c5b8e2f4a10",
+        "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+        "nodeId": "kong-7d9f-0",
+        "podUid": "2f1e0d9c-8b7a-4695-a483-72615f4e3d2c",
+        "epoch": 1,
+        "revision": 0,
+        "hash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+        "kongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+        "result": "applied",
+        "appliedAt": "2026-10-27T12:00:00Z"
+      }
+    }
+  ],
+  "probeReports": {
+    "valid": [
+      {
+        "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+        "podUid": "2f1e0d9c-8b7a-4695-a483-72615f4e3d2c",
+        "bootId": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+        "admissionId": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+        "seq": 9,
+        "prevDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+        "state": "ok",
+        "failedCapabilities": [],
+        "challenge": null,
+        "final": false,
+        "servedKongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+        "appliedEpoch": 1,
+        "appliedRevision": 4,
+        "appliedHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+        "appliedKongConfigHash": "8b19f0cec3a75468f925fe3472726575"
+      },
+      {
+        "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+        "podUid": "2f1e0d9c-8b7a-4695-a483-72615f4e3d2c",
+        "bootId": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+        "admissionId": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+        "seq": 9,
+        "prevDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+        "state": "ok",
+        "failedCapabilities": [],
+        "challenge": null,
+        "final": false,
+        "servedKongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+        "appliedEpoch": null,
+        "appliedRevision": null,
+        "appliedHash": null,
+        "appliedKongConfigHash": null
+      },
+      {
+        "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+        "podUid": "2f1e0d9c-8b7a-4695-a483-72615f4e3d2c",
+        "bootId": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+        "admissionId": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+        "seq": 9,
+        "prevDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+        "state": "ok",
+        "failedCapabilities": [],
+        "challenge": null,
+        "final": false
+      }
+    ],
+    "invalid": [
+      {
+        "reason": "applied revision without epoch",
+        "value": {
+          "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+          "podUid": "2f1e0d9c-8b7a-4695-a483-72615f4e3d2c",
+          "bootId": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+          "admissionId": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+          "seq": 9,
+          "prevDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+          "state": "ok",
+          "failedCapabilities": [],
+          "challenge": null,
+          "final": false,
+          "servedKongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+          "appliedRevision": 4,
+          "appliedHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+          "appliedKongConfigHash": "8b19f0cec3a75468f925fe3472726575"
+        }
+      },
+      {
+        "reason": "applied epoch null with a revision",
+        "value": {
+          "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+          "podUid": "2f1e0d9c-8b7a-4695-a483-72615f4e3d2c",
+          "bootId": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+          "admissionId": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+          "seq": 9,
+          "prevDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+          "state": "ok",
+          "failedCapabilities": [],
+          "challenge": null,
+          "final": false,
+          "servedKongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+          "appliedEpoch": null,
+          "appliedRevision": 4,
+          "appliedHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+          "appliedKongConfigHash": "8b19f0cec3a75468f925fe3472726575"
+        }
+      },
+      {
+        "reason": "applied without the served hash",
+        "value": {
+          "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+          "podUid": "2f1e0d9c-8b7a-4695-a483-72615f4e3d2c",
+          "bootId": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+          "admissionId": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+          "seq": 9,
+          "prevDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+          "state": "ok",
+          "failedCapabilities": [],
+          "challenge": null,
+          "final": false,
+          "appliedEpoch": 1,
+          "appliedRevision": 4,
+          "appliedHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+          "appliedKongConfigHash": "8b19f0cec3a75468f925fe3472726575"
+        }
+      },
+      {
+        "reason": "applied with a null served hash",
+        "value": {
+          "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+          "podUid": "2f1e0d9c-8b7a-4695-a483-72615f4e3d2c",
+          "bootId": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+          "admissionId": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+          "seq": 9,
+          "prevDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+          "state": "ok",
+          "failedCapabilities": [],
+          "challenge": null,
+          "final": false,
+          "servedKongConfigHash": null,
+          "appliedEpoch": 1,
+          "appliedRevision": 4,
+          "appliedHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+          "appliedKongConfigHash": "8b19f0cec3a75468f925fe3472726575"
+        }
+      },
+      {
+        "reason": "applied without the Kong hash",
+        "value": {
+          "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+          "podUid": "2f1e0d9c-8b7a-4695-a483-72615f4e3d2c",
+          "bootId": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+          "admissionId": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+          "seq": 9,
+          "prevDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+          "state": "ok",
+          "failedCapabilities": [],
+          "challenge": null,
+          "final": false,
+          "servedKongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+          "appliedEpoch": 1,
+          "appliedRevision": 4,
+          "appliedHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+          "appliedKongConfigHash": null
+        }
+      }
+    ]
+  },
+  "expected": {
+    "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+    "nodeId": "kong-7d9f-0",
+    "podUid": "2f1e0d9c-8b7a-4695-a483-72615f4e3d2c",
+    "admissionId": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+    "epoch": 1,
+    "revision": 4,
+    "configHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+    "kongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+    "lastVerifiedRevision": 3,
+    "revisionRecordedAt": "2026-10-27T12:00:00Z",
+    "now": "2026-10-27T12:01:00Z"
+  },
+  "cases": [
+    {
+      "name": "status and fresh probe report agree with the deployment",
+      "status": {
+        "nodeId": "kong-7d9f-0",
+        "epoch": 1,
+        "appliedRevision": 4,
+        "appliedHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+        "kongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+        "kongHealthy": true,
+        "isolationState": "ok"
+      },
+      "probe": {
+        "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+        "podUid": "2f1e0d9c-8b7a-4695-a483-72615f4e3d2c",
+        "bootId": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+        "admissionId": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+        "seq": 9,
+        "prevDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+        "state": "ok",
+        "failedCapabilities": [],
+        "challenge": null,
+        "final": false,
+        "servedKongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+        "appliedEpoch": 1,
+        "appliedRevision": 4,
+        "appliedHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+        "appliedKongConfigHash": "8b19f0cec3a75468f925fe3472726575"
+      },
+      "receivedAt": "2026-10-27T12:00:45Z",
+      "evidence": "verified"
+    },
+    {
+      "name": "no status yet",
+      "status": null,
+      "probe": {
+        "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+        "podUid": "2f1e0d9c-8b7a-4695-a483-72615f4e3d2c",
+        "bootId": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+        "admissionId": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+        "seq": 9,
+        "prevDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+        "state": "ok",
+        "failedCapabilities": [],
+        "challenge": null,
+        "final": false,
+        "servedKongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+        "appliedEpoch": 1,
+        "appliedRevision": 4,
+        "appliedHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+        "appliedKongConfigHash": "8b19f0cec3a75468f925fe3472726575"
+      },
+      "receivedAt": "2026-10-27T12:00:45Z",
+      "evidence": "awaiting-status"
+    },
+    {
+      "name": "status of the previous revision (still applying)",
+      "status": {
+        "nodeId": "kong-7d9f-0",
+        "epoch": 1,
+        "appliedRevision": 3,
+        "appliedHash": "sha256:1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d",
+        "kongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+        "kongHealthy": true,
+        "isolationState": "ok"
+      },
+      "probe": {
+        "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+        "podUid": "2f1e0d9c-8b7a-4695-a483-72615f4e3d2c",
+        "bootId": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+        "admissionId": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+        "seq": 9,
+        "prevDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+        "state": "ok",
+        "failedCapabilities": [],
+        "challenge": null,
+        "final": false,
+        "servedKongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+        "appliedEpoch": 1,
+        "appliedRevision": 4,
+        "appliedHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+        "appliedKongConfigHash": "8b19f0cec3a75468f925fe3472726575"
+      },
+      "receivedAt": "2026-10-27T12:00:45Z",
+      "evidence": "awaiting-status"
+    },
+    {
+      "name": "status without the Kong hash",
+      "status": {
+        "nodeId": "kong-7d9f-0",
+        "epoch": 1,
+        "appliedRevision": 4,
+        "appliedHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+        "kongConfigHash": null,
+        "kongHealthy": true,
+        "isolationState": "ok"
+      },
+      "probe": {
+        "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+        "podUid": "2f1e0d9c-8b7a-4695-a483-72615f4e3d2c",
+        "bootId": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+        "admissionId": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+        "seq": 9,
+        "prevDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+        "state": "ok",
+        "failedCapabilities": [],
+        "challenge": null,
+        "final": false,
+        "servedKongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+        "appliedEpoch": 1,
+        "appliedRevision": 4,
+        "appliedHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+        "appliedKongConfigHash": "8b19f0cec3a75468f925fe3472726575"
+      },
+      "receivedAt": "2026-10-27T12:00:45Z",
+      "evidence": "awaiting-status"
+    },
+    {
+      "name": "status of another node",
+      "status": {
+        "nodeId": "kong-7d9f-1",
+        "epoch": 1,
+        "appliedRevision": 4,
+        "appliedHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+        "kongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+        "kongHealthy": true,
+        "isolationState": "ok"
+      },
+      "probe": {
+        "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+        "podUid": "2f1e0d9c-8b7a-4695-a483-72615f4e3d2c",
+        "bootId": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+        "admissionId": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+        "seq": 9,
+        "prevDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+        "state": "ok",
+        "failedCapabilities": [],
+        "challenge": null,
+        "final": false,
+        "servedKongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+        "appliedEpoch": 1,
+        "appliedRevision": 4,
+        "appliedHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+        "appliedKongConfigHash": "8b19f0cec3a75468f925fe3472726575"
+      },
+      "receivedAt": "2026-10-27T12:00:45Z",
+      "evidence": "awaiting-status"
+    },
+    {
+      "name": "revision declared only by the agent: no probe report",
+      "status": {
+        "nodeId": "kong-7d9f-0",
+        "epoch": 1,
+        "appliedRevision": 4,
+        "appliedHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+        "kongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+        "kongHealthy": true,
+        "isolationState": "ok"
+      },
+      "probe": null,
+      "receivedAt": null,
+      "evidence": "awaiting-probe-report"
+    },
+    {
+      "name": "probe report without applied revision (no applied.json, bootstrap)",
+      "status": {
+        "nodeId": "kong-7d9f-0",
+        "epoch": 1,
+        "appliedRevision": 4,
+        "appliedHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+        "kongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+        "kongHealthy": true,
+        "isolationState": "ok"
+      },
+      "probe": {
+        "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+        "podUid": "2f1e0d9c-8b7a-4695-a483-72615f4e3d2c",
+        "bootId": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+        "admissionId": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+        "seq": 9,
+        "prevDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+        "state": "ok",
+        "failedCapabilities": [],
+        "challenge": null,
+        "final": false,
+        "servedKongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+        "appliedEpoch": null,
+        "appliedRevision": null,
+        "appliedHash": null,
+        "appliedKongConfigHash": null
+      },
+      "receivedAt": "2026-10-27T12:00:45Z",
+      "evidence": "awaiting-probe-report"
+    },
+    {
+      "name": "probe report not ok (inconclusive) never counts",
+      "status": {
+        "nodeId": "kong-7d9f-0",
+        "epoch": 1,
+        "appliedRevision": 4,
+        "appliedHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+        "kongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+        "kongHealthy": true,
+        "isolationState": "ok"
+      },
+      "probe": {
+        "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+        "podUid": "2f1e0d9c-8b7a-4695-a483-72615f4e3d2c",
+        "bootId": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+        "admissionId": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+        "seq": 9,
+        "prevDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+        "state": "inconclusive",
+        "failedCapabilities": [],
+        "challenge": null,
+        "final": false,
+        "servedKongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+        "appliedEpoch": 1,
+        "appliedRevision": 4,
+        "appliedHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+        "appliedKongConfigHash": "8b19f0cec3a75468f925fe3472726575"
+      },
+      "receivedAt": "2026-10-27T12:00:45Z",
+      "evidence": "awaiting-probe-report"
+    },
+    {
+      "name": "report received before the revision was recorded",
+      "status": {
+        "nodeId": "kong-7d9f-0",
+        "epoch": 1,
+        "appliedRevision": 4,
+        "appliedHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+        "kongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+        "kongHealthy": true,
+        "isolationState": "ok"
+      },
+      "probe": {
+        "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+        "podUid": "2f1e0d9c-8b7a-4695-a483-72615f4e3d2c",
+        "bootId": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+        "admissionId": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+        "seq": 9,
+        "prevDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+        "state": "ok",
+        "failedCapabilities": [],
+        "challenge": null,
+        "final": false,
+        "servedKongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+        "appliedEpoch": 1,
+        "appliedRevision": 4,
+        "appliedHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+        "appliedKongConfigHash": "8b19f0cec3a75468f925fe3472726575"
+      },
+      "receivedAt": "2026-10-27T11:59:59Z",
+      "evidence": "awaiting-probe-report"
+    },
+    {
+      "name": "report older than 60 s (agent withholding the chain)",
+      "status": {
+        "nodeId": "kong-7d9f-0",
+        "epoch": 1,
+        "appliedRevision": 4,
+        "appliedHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+        "kongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+        "kongHealthy": true,
+        "isolationState": "ok"
+      },
+      "probe": {
+        "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+        "podUid": "2f1e0d9c-8b7a-4695-a483-72615f4e3d2c",
+        "bootId": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+        "admissionId": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+        "seq": 9,
+        "prevDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+        "state": "ok",
+        "failedCapabilities": [],
+        "challenge": null,
+        "final": false,
+        "servedKongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+        "appliedEpoch": 1,
+        "appliedRevision": 4,
+        "appliedHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+        "appliedKongConfigHash": "8b19f0cec3a75468f925fe3472726575"
+      },
+      "receivedAt": "2026-10-27T11:59:59Z",
+      "evidence": "awaiting-probe-report",
+      "expected": {
+        "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+        "nodeId": "kong-7d9f-0",
+        "podUid": "2f1e0d9c-8b7a-4695-a483-72615f4e3d2c",
+        "admissionId": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+        "epoch": 1,
+        "revision": 4,
+        "configHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+        "kongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+        "lastVerifiedRevision": 3,
+        "revisionRecordedAt": "2026-10-27T11:59:00Z",
+        "now": "2026-10-27T12:01:00Z"
+      }
+    },
+    {
+      "name": "report of another admission",
+      "status": {
+        "nodeId": "kong-7d9f-0",
+        "epoch": 1,
+        "appliedRevision": 4,
+        "appliedHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+        "kongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+        "kongHealthy": true,
+        "isolationState": "ok"
+      },
+      "probe": {
+        "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+        "podUid": "2f1e0d9c-8b7a-4695-a483-72615f4e3d2c",
+        "bootId": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+        "admissionId": "4d5e6f70-8b9c-4dae-9f10-2b3c4d5e6f70",
+        "seq": 9,
+        "prevDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+        "state": "ok",
+        "failedCapabilities": [],
+        "challenge": null,
+        "final": false,
+        "servedKongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+        "appliedEpoch": 1,
+        "appliedRevision": 4,
+        "appliedHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+        "appliedKongConfigHash": "8b19f0cec3a75468f925fe3472726575"
+      },
+      "receivedAt": "2026-10-27T12:00:45Z",
+      "evidence": "awaiting-probe-report"
+    },
+    {
+      "name": "report of another pod",
+      "status": {
+        "nodeId": "kong-7d9f-0",
+        "epoch": 1,
+        "appliedRevision": 4,
+        "appliedHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+        "kongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+        "kongHealthy": true,
+        "isolationState": "ok"
+      },
+      "probe": {
+        "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+        "podUid": "3a2b1c0d-9e8f-4a7b-b6c5-d4e3f2a1b0c9",
+        "bootId": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+        "admissionId": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+        "seq": 9,
+        "prevDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+        "state": "ok",
+        "failedCapabilities": [],
+        "challenge": null,
+        "final": false,
+        "servedKongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+        "appliedEpoch": 1,
+        "appliedRevision": 4,
+        "appliedHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+        "appliedKongConfigHash": "8b19f0cec3a75468f925fe3472726575"
+      },
+      "receivedAt": "2026-10-27T12:00:45Z",
+      "evidence": "awaiting-probe-report"
+    },
+    {
+      "name": "report of another cluster",
+      "status": {
+        "nodeId": "kong-7d9f-0",
+        "epoch": 1,
+        "appliedRevision": 4,
+        "appliedHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+        "kongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+        "kongHealthy": true,
+        "isolationState": "ok"
+      },
+      "probe": {
+        "clusterId": "6e7f8091-2b3c-4d4e-9f50-6b7c8d9e0f1a",
+        "podUid": "2f1e0d9c-8b7a-4695-a483-72615f4e3d2c",
+        "bootId": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+        "admissionId": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+        "seq": 9,
+        "prevDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+        "state": "ok",
+        "failedCapabilities": [],
+        "challenge": null,
+        "final": false,
+        "servedKongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+        "appliedEpoch": 1,
+        "appliedRevision": 4,
+        "appliedHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+        "appliedKongConfigHash": "8b19f0cec3a75468f925fe3472726575"
+      },
+      "receivedAt": "2026-10-27T12:00:45Z",
+      "evidence": "awaiting-probe-report"
+    },
+    {
+      "name": "Kong serves a hash other than the declared one",
+      "status": {
+        "nodeId": "kong-7d9f-0",
+        "epoch": 1,
+        "appliedRevision": 4,
+        "appliedHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+        "kongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+        "kongHealthy": true,
+        "isolationState": "ok"
+      },
+      "probe": {
+        "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+        "podUid": "2f1e0d9c-8b7a-4695-a483-72615f4e3d2c",
+        "bootId": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+        "admissionId": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+        "seq": 9,
+        "prevDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+        "state": "verifying",
+        "failedCapabilities": [],
+        "challenge": null,
+        "final": false,
+        "servedKongConfigHash": "aa3c9a8e7d6b5a4c3b2a1908f7e6d5c4",
+        "appliedEpoch": null,
+        "appliedRevision": null,
+        "appliedHash": null,
+        "appliedKongConfigHash": null
+      },
+      "receivedAt": "2026-10-27T12:00:45Z",
+      "evidence": "served-config-divergence"
+    },
+    {
+      "name": "probe signed another revision",
+      "status": {
+        "nodeId": "kong-7d9f-0",
+        "epoch": 1,
+        "appliedRevision": 4,
+        "appliedHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+        "kongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+        "kongHealthy": true,
+        "isolationState": "ok"
+      },
+      "probe": {
+        "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+        "podUid": "2f1e0d9c-8b7a-4695-a483-72615f4e3d2c",
+        "bootId": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+        "admissionId": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+        "seq": 9,
+        "prevDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+        "state": "ok",
+        "failedCapabilities": [],
+        "challenge": null,
+        "final": false,
+        "servedKongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+        "appliedEpoch": 1,
+        "appliedRevision": 3,
+        "appliedHash": "sha256:1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d",
+        "appliedKongConfigHash": "8b19f0cec3a75468f925fe3472726575"
+      },
+      "receivedAt": "2026-10-27T12:00:45Z",
+      "evidence": "revision-mismatch"
+    },
+    {
+      "name": "probe applied hash differs from the served one",
+      "status": {
+        "nodeId": "kong-7d9f-0",
+        "epoch": 1,
+        "appliedRevision": 4,
+        "appliedHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+        "kongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+        "kongHealthy": true,
+        "isolationState": "ok"
+      },
+      "probe": {
+        "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+        "podUid": "2f1e0d9c-8b7a-4695-a483-72615f4e3d2c",
+        "bootId": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+        "admissionId": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+        "seq": 9,
+        "prevDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+        "state": "ok",
+        "failedCapabilities": [],
+        "challenge": null,
+        "final": false,
+        "servedKongConfigHash": "aa3c9a8e7d6b5a4c3b2a1908f7e6d5c4",
+        "appliedEpoch": 1,
+        "appliedRevision": 4,
+        "appliedHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+        "appliedKongConfigHash": "8b19f0cec3a75468f925fe3472726575"
+      },
+      "receivedAt": "2026-10-27T12:00:45Z",
+      "evidence": "revision-mismatch"
+    },
+    {
+      "name": "agent and probe agree on a Kong hash the control plane did not derive (other bytes)",
+      "status": {
+        "nodeId": "kong-7d9f-0",
+        "epoch": 1,
+        "appliedRevision": 4,
+        "appliedHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+        "kongConfigHash": "aa3c9a8e7d6b5a4c3b2a1908f7e6d5c4",
+        "kongHealthy": true,
+        "isolationState": "ok"
+      },
+      "probe": {
+        "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+        "podUid": "2f1e0d9c-8b7a-4695-a483-72615f4e3d2c",
+        "bootId": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+        "admissionId": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+        "seq": 9,
+        "prevDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+        "state": "ok",
+        "failedCapabilities": [],
+        "challenge": null,
+        "final": false,
+        "servedKongConfigHash": "aa3c9a8e7d6b5a4c3b2a1908f7e6d5c4",
+        "appliedEpoch": 1,
+        "appliedRevision": 4,
+        "appliedHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+        "appliedKongConfigHash": "aa3c9a8e7d6b5a4c3b2a1908f7e6d5c4"
+      },
+      "receivedAt": "2026-10-27T12:00:45Z",
+      "evidence": "kong-hash-divergence"
+    },
+    {
+      "name": "status of a revision lower than the last verified",
+      "status": {
+        "nodeId": "kong-7d9f-0",
+        "epoch": 1,
+        "appliedRevision": 2,
+        "appliedHash": "sha256:1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d",
+        "kongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+        "kongHealthy": true,
+        "isolationState": "ok"
+      },
+      "probe": {
+        "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+        "podUid": "2f1e0d9c-8b7a-4695-a483-72615f4e3d2c",
+        "bootId": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+        "admissionId": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+        "seq": 9,
+        "prevDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+        "state": "ok",
+        "failedCapabilities": [],
+        "challenge": null,
+        "final": false,
+        "servedKongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+        "appliedEpoch": 1,
+        "appliedRevision": 4,
+        "appliedHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+        "appliedKongConfigHash": "8b19f0cec3a75468f925fe3472726575"
+      },
+      "receivedAt": "2026-10-27T12:00:45Z",
+      "evidence": "revision-regression"
+    }
+  ]
+}
