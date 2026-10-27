@@ -727,8 +727,9 @@ describe("agent protocol v2", () => {
     // stop confirmed, nothing ever goes back to unknown, and served is final.
     expect(machine.transitions.map(([from, to]: string[]) => `${from}>${to}`).sort()).toEqual(["never-served-verified>served", "unknown>never-served-verified", "unknown>served"]);
     const why = (from: string, to: string) => machine.transitions.find(([f, t]: string[]) => f === from && t === to)[2];
-    expect(why("unknown", "never-served-verified")).toBe("verified final report seq 1 with kongStopConfirmed true");
-    expect(why("unknown", "served")).toContain("other than a seq 1 final with kongStopConfirmed true");
+    expect(why("unknown", "never-served-verified")).toBe("verified final report seq 1 in state awaiting-admission with kongStopConfirmed true");
+    expect(why("unknown", "served")).toContain("other than a seq 1 final in state awaiting-admission with kongStopConfirmed true");
+    expect(why("unknown", "served")).toContain("or an integrity conflict");
     expect(why("unknown", "served")).toContain("a closing without a confirmed stop");
     // A seq 1 final without a confirmed stop is a valid report, and it counts as served, never as never served.
     const unconfirmed = { clusterId: u, podUid: u, bootId: u, admissionId: u, seq: 1, prevDigest: null, state: "awaiting-admission", failedCapabilities: [], challenge: null, final: true, finalReason: "pod-terminated", kongStopConfirmed: false };
