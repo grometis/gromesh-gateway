@@ -21,6 +21,9 @@ import (
 	"github.com/gromesh/gateway/apps/agent/internal/cpmock"
 )
 
+// exampleInstance is the instanceId of contracts/examples/snapshot-v2.example.json.
+const exampleInstance = "00000000-0000-4000-8000-0000000000a1"
+
 // deploymentEnvelope is the contract example at (epoch, revision); content names its config, and so its hash.
 func deploymentEnvelope(t *testing.T, epoch, revision int64, content string) []byte {
 	t.Helper()
@@ -43,6 +46,17 @@ func deploymentEnvelope(t *testing.T, epoch, revision int64, content string) []b
 	return out
 }
 
+// posted is the config Kong received: the string of {"config": "<bytes>"}, its only member.
+func posted(t *testing.T, body []byte) []byte {
+	t.Helper()
+	var fields map[string]json.RawMessage
+	var config string
+	if json.Unmarshal(body, &fields) != nil || len(fields) != 1 || json.Unmarshal(fields["config"], &config) != nil {
+		t.Fatalf("Kong did not receive {\"config\": <string>}: %.80s", body)
+	}
+	return []byte(config)
+}
+
 func hashOf(t *testing.T, envelope []byte) string {
 	t.Helper()
 	d, err := DecodeDeployment(envelope)
@@ -57,6 +71,7 @@ func newWorkspacesAgent(t *testing.T, cp *cpmock.Server, k *kongMock, path strin
 	a := newTestAgent(t, cp, k, path)
 	// Workspaces mode is chosen by the handoff directory alone; the isolation relay has tests of its own.
 	a.config.HandoffDir = t.TempDir()
+	a.config.InstanceID = exampleInstance
 	// Run keeps a deployments it is given, so a test reads it without racing.
 	a.deploy = &deployments{store: store{path: path, meta: deploymentMeta}}
 	return a
@@ -264,7 +279,7 @@ func TestWorkspacesConfirmsANewRevisionOn304(t *testing.T) {
 	if s := waitDeployment(t, cp, applied(1, 1, hash)); !s.KongHealthy || s.FailedRevision != nil {
 		t.Fatalf("unexpected status %+v", s)
 	}
-	if body := receive(t, k.bodies, nil); !bytes.Equal(body, mustDecode(t, one).Config) {
+	if body := receive(t, k.bodies, nil); !bytes.Equal(posted(t, body), mustDecode(t, one).Config) {
 		t.Fatal("Kong did not receive the opaque config bytes unchanged")
 	}
 	cp.SetDeployment(deploymentEnvelope(t, 1, 2, "a"))
@@ -442,6 +457,7 @@ func TestWorkspacesTheMarkKeepsItsEpochUntilANewerRevisionApplies(t *testing.T) 
 			w.WriteHeader(int(k.failureStatus.Load()))
 			return
 		}
+		k.served.Store(kongHash(body))
 		w.WriteHeader(http.StatusCreated)
 	}
 	k.failed.Store(true)
@@ -683,10 +699,10 @@ func TestWorkspacesPersistenceFailures(t *testing.T) {
 		receive(t, k.bodies, nil)
 		failRename.Store(true)
 		cp.SetDeployment(two)
-		if body := receive(t, k.bodies, nil); !bytes.Equal(body, mustDecode(t, two).Config) {
+		if body := receive(t, k.bodies, nil); !bytes.Equal(posted(t, body), mustDecode(t, two).Config) {
 			t.Fatal("the new config was not sent first")
 		}
-		if body := receive(t, k.bodies, nil); !bytes.Equal(body, mustDecode(t, one).Config) {
+		if body := receive(t, k.bodies, nil); !bytes.Equal(posted(t, body), mustDecode(t, one).Config) {
 			t.Fatal("Kong did not get the running config back")
 		}
 		drain(t, k)
@@ -780,7 +796,7 @@ func TestWorkspacesColdStartIgnoresAnUnusableVolume(t *testing.T) {
 }
 
 func restoring(d *deployments) *Agent {
-	a := &Agent{config: Config{NodeID: "node-1"}, log: slog.New(slog.NewJSONHandler(io.Discard, nil)), deploy: d}
+	a := &Agent{config: Config{NodeID: "node-1", InstanceID: exampleInstance}, log: slog.New(slog.NewJSONHandler(io.Discard, nil)), deploy: d}
 	a.restoreDeployment()
 	return a
 }
@@ -793,12 +809,18 @@ func TestWorkspacesRestoresOnlyALivePermanentFailure(t *testing.T) {
 		failure string
 		kept    bool
 	}{
-		"above the applied revision": {fmt.Sprintf(`{"epoch":1,"revision":4,"hash":%q,"status":400}`, other), true},
-		"newer epoch":                {fmt.Sprintf(`{"epoch":2,"revision":1,"hash":%q,"status":413}`, other), true},
-		"below the applied revision": {fmt.Sprintf(`{"epoch":1,"revision":2,"hash":%q,"status":400}`, other), false},
-		"the applied revision":       {fmt.Sprintf(`{"epoch":1,"revision":3,"hash":%q,"status":400}`, one.Hash), false},
-		"transient status":           {fmt.Sprintf(`{"epoch":1,"revision":4,"hash":%q,"status":500}`, other), false},
-		"key in another case":        {fmt.Sprintf(`{"epoch":1,"revision":4,"hash":%q,"Status":400}`, other), false},
+		"above the applied revision":     {fmt.Sprintf(`{"epoch":1,"revision":4,"hash":%q,"status":400}`, other), true},
+		"newer epoch":                    {fmt.Sprintf(`{"epoch":2,"revision":1,"hash":%q,"status":413}`, other), true},
+		"below the applied revision":     {fmt.Sprintf(`{"epoch":1,"revision":2,"hash":%q,"status":400}`, other), false},
+		"the applied revision":           {fmt.Sprintf(`{"epoch":1,"revision":3,"hash":%q,"status":400}`, one.Hash), false},
+		"transient status":               {fmt.Sprintf(`{"epoch":1,"revision":4,"hash":%q,"status":500}`, other), false},
+		"key in another case":            {fmt.Sprintf(`{"epoch":1,"revision":4,"hash":%q,"Status":400}`, other), false},
+		"another instance":               {fmt.Sprintf(`{"epoch":1,"revision":4,"hash":%q,"status":0,"reason":"instance-mismatch"}`, other), true},
+		"invalid envelope":               {fmt.Sprintf(`{"epoch":1,"revision":4,"hash":%q,"status":0,"reason":"invalid-envelope"}`, other), true},
+		"Kong's rejection named":         {fmt.Sprintf(`{"epoch":1,"revision":4,"hash":%q,"status":413,"reason":"kong-rejected"}`, other), true},
+		"another instance with a status": {fmt.Sprintf(`{"epoch":1,"revision":4,"hash":%q,"status":400,"reason":"instance-mismatch"}`, other), false},
+		"Kong's rejection without one":   {fmt.Sprintf(`{"epoch":1,"revision":4,"hash":%q,"status":0,"reason":"kong-rejected"}`, other), false},
+		"unknown reason":                 {fmt.Sprintf(`{"epoch":1,"revision":4,"hash":%q,"status":0,"reason":"other"}`, other), false},
 	} {
 		path := filepath.Join(t.TempDir(), "kong.json")
 		d := &deployments{store: store{path: path, meta: deploymentMeta}}
