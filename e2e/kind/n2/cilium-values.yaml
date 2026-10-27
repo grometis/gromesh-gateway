@@ -1,0 +1,25 @@
+# Cilium for the N2 lab. Digests and version come from versions.env (cluster.sh passes them).
+ipam:
+  mode: kubernetes
+ipv4:
+  enabled: true
+ipv6:
+  enabled: true
+# kube-proxy stays (E §4.2): fewer variables; Cilium only enforces policy and routes.
+kubeProxyReplacement: "false"
+routingMode: tunnel
+tunnelProtocol: vxlan
+image:
+  pullPolicy: IfNotPresent
+  useDigest: true
+operator:
+  replicas: 1
+# Only L3/L4 policy is under test; Envoy and the Hubble relay/UI would only cost memory on an 8 GB Docker VM.
+l7Proxy: false
+envoy:
+  enabled: false
+hubble:
+  relay:
+    enabled: false
+  ui:
+    enabled: false
