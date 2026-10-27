@@ -450,10 +450,26 @@ func TestWorkspacesModeRefusesAMissingOrMalformedKongVersion(t *testing.T) {
 			t.Fatalf("%s: registered Kong %q", name, v)
 		}
 	}
-	for _, path := range []string{filepath.Join(dir, "missing"), link} {
+	// 65 bytes that start like a version: the size limit alone refuses it.
+	long := filepath.Join(dir, "long")
+	if err := os.WriteFile(long, []byte("3.9.4"+strings.Repeat("0", 60)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fifo := filepath.Join(dir, "fifo")
+	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{filepath.Join(dir, "missing"), link, long, fifo} {
+		done := make(chan error, 1)
 		c.config.KongVersionFile = path
-		if v, err := c.kongVersion(context.Background()); err == nil {
-			t.Fatalf("%s: registered Kong %q", path, v)
+		go func() { _, err := c.kongVersion(context.Background()); done <- err }()
+		select {
+		case err := <-done:
+			if err == nil {
+				t.Fatalf("%s: registered a Kong version", path)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%s: reading the version blocked", path)
 		}
 	}
 	c.config.KongVersionFile = target
