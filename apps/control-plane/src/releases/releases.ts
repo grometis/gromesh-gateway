@@ -35,6 +35,7 @@ import {
   type InstanceRow,
   type ReleaseRow,
 } from "../db/schema.js";
+import { v2ExpectedNodes } from "../deployments/deployments.js";
 import { requireEnvironment, uuidParam } from "../environments/environments.js";
 import { loadGatewayState } from "../gateway/gateway.js";
 import { PluginCatalog, PluginCatalogModule } from "../plugin-catalog/catalog.js";
@@ -300,9 +301,8 @@ export class ReleasesService {
       if (err instanceof CompileError) throw unprocessable("The instance's composition refuses this deployment", err.issues);
       throw err;
     }
-    // D2: only clusters explicitly in the v2 protocol have expected nodes; the delivery itself is N3-C4's, until
-    // then no node is expected and none can receive this revision.
-    const expectedNodes: { clusterId: string; nodeId: string }[] = [];
+    // D2: only the nodes of clusters explicitly in v2 are expected (agent protocol v2, "Delivery protocol per cluster").
+    const expectedNodes = await v2ExpectedNodes(tx);
     await tx.insert(deployments).values({
       epoch: FIRST_EPOCH,
       revision,

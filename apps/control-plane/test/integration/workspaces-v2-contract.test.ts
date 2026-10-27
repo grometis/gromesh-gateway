@@ -21,6 +21,7 @@ import { InstanceController } from "../../src/instance/instance.js";
 import { SigningKeysController } from "../../src/instance/signing-keys.js";
 import { ClusterIsolationController } from "../../src/isolation/isolation.js";
 import { DeploymentsController, ReleasesController } from "../../src/releases/releases.js";
+import { DeliveryProtocolController } from "../../src/deployments/deployments.js";
 import { startHarness, type Harness } from "./harness.js";
 
 // N0: the Workspaces contracts (v2) are planned; nothing here is implemented yet. These tests keep them coherent until
@@ -115,6 +116,7 @@ describe("planned operations", () => {
       ClusterIsolationController,
       ReleasesController,
       DeploymentsController,
+      DeliveryProtocolController,
     ]) {
       const base = (Reflect.getMetadata("path", controller) as string).replace(/^\/?/, "/");
       for (const name of Object.getOwnPropertyNames(controller.prototype)) {
@@ -820,7 +822,7 @@ describe("delivery protocol and convergence evidence (N3-K1)", () => {
     }
     expect(Object.keys(docs["agent-protocol.openapi.yaml"].paths["/agent/v1/snapshots/current"].get.responses)).toContain("409");
     const set = v2Ops.find(({ op }) => op.operationId === "setClusterDeliveryProtocol")!;
-    expect(set.op["x-gromesh-planned"]).toBe(true);
+    // Implemented by N3-C4: the planned mark is the handler coverage test's concern.
     expect(set.op.security).toEqual([{ cookieAuth: [], csrfToken: [] }]);
     const body = bodyOf("/clusters/{clusterId}/delivery-protocol", "put");
     expect(body({ protocol: "v2", reason: "lab N2 activation" })).toBe(true);

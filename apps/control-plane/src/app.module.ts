@@ -32,6 +32,7 @@ import { InstanceModule } from "./instance/instance.js";
 import { SigningKeysModule } from "./instance/signing-keys.js";
 import { IsolationModule } from "./isolation/isolation.js";
 import { ReleasesModule } from "./releases/releases.js";
+import { DeploymentsModule } from "./deployments/deployments.js";
 
 @Module({})
 export class AppModule {
@@ -68,6 +69,7 @@ export class AppModule {
         SigningKeysModule,
         IsolationModule,
         ReleasesModule,
+        DeploymentsModule,
       ],
       providers: [
         { provide: APP_CONFIG, useValue: config },
