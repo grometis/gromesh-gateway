@@ -2,10 +2,13 @@
 package cpmock
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -35,27 +38,51 @@ type Status struct {
 	ReportedAt     string  `json:"reportedAt"`
 }
 
+// DeploymentStatus is the StatusReport of agent protocol v2.
+type DeploymentStatus struct {
+	NodeID          string  `json:"nodeId"`
+	Epoch           int64   `json:"epoch"`
+	AppliedRevision *int64  `json:"appliedRevision"`
+	AppliedHash     *string `json:"appliedHash"`
+	FailedRevision  *int64  `json:"failedRevision"`
+	FailedHash      *string `json:"failedHash"`
+	FailureStatus   *int    `json:"failureStatus"`
+	KongHealthy     bool    `json:"kongHealthy"`
+	Analytics       *string `json:"analytics"`
+	IsolationState  *string `json:"isolationState"`
+}
+
 type Server struct {
-	HTTP              *httptest.Server
-	Registrations     chan Registration
-	Statuses          chan Status
-	SnapshotRequests  chan string
-	EventConnections  chan string
-	mu                sync.Mutex
-	snapshot          []byte
-	hash              string
-	sseDown           bool
-	subscribers       map[chan string]struct{}
-	closed            chan struct{}
-	nodeToken         string
-	registrationToken string
-	isolation         http.Handler
+	HTTP               *httptest.Server
+	Registrations      chan Registration
+	Statuses           chan Status
+	SnapshotRequests   chan string
+	EventConnections   chan string
+	DeploymentRequests chan string
+	DeploymentStatuses chan DeploymentStatus
+	// RefusedStatuses receives the epoch of each v2 status refused with 409.
+	RefusedStatuses    chan int64
+	mu                 sync.Mutex
+	deployment         []byte
+	deploymentEpoch    int64
+	deploymentRevision int64
+	deploymentHash     string
+	down               bool
+	snapshot           []byte
+	hash               string
+	sseDown            bool
+	subscribers        map[chan string]struct{}
+	closed             chan struct{}
+	nodeToken          string
+	registrationToken  string
+	isolation          http.Handler
 }
 
 func New() *Server {
 	s := &Server{
 		Registrations: make(chan Registration, 128), Statuses: make(chan Status, 128),
 		SnapshotRequests: make(chan string, 128), EventConnections: make(chan string, 128),
+		DeploymentRequests: make(chan string, 128), DeploymentStatuses: make(chan DeploymentStatus, 128), RefusedStatuses: make(chan int64, 128),
 		subscribers: make(map[chan string]struct{}), closed: make(chan struct{}),
 		nodeToken:         NodeToken,
 		registrationToken: RegistrationToken,
@@ -66,8 +93,148 @@ func New() *Server {
 	mux.HandleFunc("GET /agent/v1/events", s.events)
 	mux.HandleFunc("POST /agent/v1/status", s.status)
 	mux.HandleFunc("/agent/v2/isolation/", s.isolationRequest)
-	s.HTTP = httptest.NewServer(mux)
+	mux.HandleFunc("GET /agent/v2/deployments/current", s.currentDeployment)
+	mux.HandleFunc("POST /agent/v2/status", s.deploymentStatus)
+	s.HTTP = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		down := s.down
+		s.mu.Unlock()
+		if down {
+			// An unreachable control plane: the connection drops without an HTTP answer.
+			if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+				conn.Close()
+			}
+			return
+		}
+		mux.ServeHTTP(w, r)
+	}))
 	return s
+}
+
+// SetDown makes every request fail without an HTTP response, as if the control plane were unreachable.
+func (s *Server) SetDown(down bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.down = down
+}
+
+// SetDeployment serves data (snapshot-v2) as the instance's current deployment; nil serves 404.
+func (s *Server) SetDeployment(data []byte) {
+	var envelope struct {
+		Epoch    int64  `json:"epoch"`
+		Revision int64  `json:"revision"`
+		Hash     string `json:"hash"`
+	}
+	if data != nil {
+		if err := json.Unmarshal(data, &envelope); err != nil {
+			panic(err)
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deployment = append([]byte(nil), data...)
+	if data == nil {
+		s.deployment = nil
+	}
+	s.deploymentEpoch, s.deploymentRevision, s.deploymentHash = envelope.Epoch, envelope.Revision, envelope.Hash
+}
+
+func (s *Server) currentDeployment(w http.ResponseWriter, r *http.Request) {
+	if !authorized(w, r, s.currentNodeToken()) {
+		return
+	}
+	defer func() {
+		select {
+		case s.DeploymentRequests <- r.Header.Get("If-None-Match"):
+		default:
+		}
+	}()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.deployment == nil {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	// A 304 still carries the current epoch and revision, which the agent confirms.
+	w.Header().Set("X-Gromesh-Epoch", strconv.FormatInt(s.deploymentEpoch, 10))
+	w.Header().Set("X-Gromesh-Revision", strconv.FormatInt(s.deploymentRevision, 10))
+	if r.Header.Get("If-None-Match") == s.deploymentHash {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.Header().Set("ETag", s.deploymentHash)
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(s.deployment)
+}
+
+var digest = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+
+func validDeploymentStatus(body []byte) (DeploymentStatus, bool) {
+	var status DeploymentStatus
+	var fields map[string]json.RawMessage
+	d := json.NewDecoder(bytes.NewReader(body))
+	d.DisallowUnknownFields()
+	if d.Decode(&status) != nil || json.Unmarshal(body, &fields) != nil {
+		return status, false
+	}
+	for _, required := range []string{"nodeId", "epoch", "appliedRevision", "appliedHash", "kongHealthy"} {
+		if _, ok := fields[required]; !ok {
+			return status, false
+		}
+	}
+	if string(fields["kongHealthy"]) != "true" && string(fields["kongHealthy"]) != "false" {
+		return status, false
+	}
+	for _, name := range []string{"analytics", "isolationState"} {
+		if raw, ok := fields[name]; ok && string(raw) == "null" {
+			return status, false
+		}
+	}
+	revision := func(r *int64) bool { return r == nil || *r >= 1 }
+	hash := func(h *string) bool { return h == nil || digest.MatchString(*h) }
+	analytics := status.Analytics == nil || *status.Analytics == "analytics-healthy" || *status.Analytics == "analytics-degraded"
+	isolation := status.IsolationState == nil
+	if status.IsolationState != nil {
+		switch *status.IsolationState {
+		case "awaiting-admission", "verifying", "ok", "inconclusive", "kong-unavailable", "guard-missing", "no-proof", "violation":
+			isolation = true
+		}
+	}
+	ok := status.NodeID != "" && len(status.NodeID) <= 253 && status.Epoch >= 1 && revision(status.AppliedRevision) &&
+		hash(status.AppliedHash) && revision(status.FailedRevision) && hash(status.FailedHash) && analytics && isolation
+	return status, ok
+}
+
+func (s *Server) deploymentStatus(w http.ResponseWriter, r *http.Request) {
+	if !authorized(w, r, s.currentNodeToken()) {
+		return
+	}
+	var body bytes.Buffer
+	if _, err := body.ReadFrom(r.Body); err != nil || r.Header.Get("Content-Type") != "application/json" {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		return
+	}
+	status, ok := validDeploymentStatus(body.Bytes())
+	if !ok {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		return
+	}
+	s.mu.Lock()
+	current := s.deploymentEpoch
+	s.mu.Unlock()
+	if status.Epoch < current {
+		select {
+		case s.RefusedStatuses <- status.Epoch:
+		default:
+		}
+		w.WriteHeader(http.StatusConflict)
+		return
+	}
+	select {
+	case s.DeploymentStatuses <- status:
+	default:
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // SetIsolation serves the agent protocol v2 isolation operations with h, behind the node token.
