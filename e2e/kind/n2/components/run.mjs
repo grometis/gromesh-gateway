@@ -15,7 +15,7 @@ import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
   Api, apply, assertLab, CONTEXT, controlPlaneObjects, controlPlaneSecret, cpSecrets, createSecret, dbSkew, denyPolicies, docker, Forward, helm, here, json,
-  kubeconfig, kubectl, NODES, NS, registrationSecret, relayObjects, removeSuiteObjects, root, sql,
+  kubeconfig, kubectl, NODES, NS, registrationSecret, relayObjects, removeSuiteObjects, root, run, sql,
 } from "./lab.mjs";
 
 const out = process.env.LAB_OUT ?? mkdtempSync(join(tmpdir(), "gromesh-n2-comp-"));
@@ -269,7 +269,7 @@ const thawAll = async () => Promise.all([...frozen].map(thaw));
 function watchExits(node, ids, timeoutS) {
   const script = `end=$(( $(date +%s) + ${timeoutS} )); while [ "$(date +%s)" -lt "$end" ]; do all=1; for id in "$@"; do
 st=$(crictl inspect -o go-template --template '{{.status.state}} {{.status.finishedAt}} {{.status.exitCode}}' "$id" 2>/dev/null) || st=GONE; echo "$id $st";
-case "$st" in CONTAINER_EXITED*) ;; *) all=0 ;; esac; done; [ "$all" = 1 ] && exit 0; sleep 0.2; done; exit 3`;
+case "$st" in CONTAINER_EXITED*) ;; *) all=0 ;; esac; done; [ "$all" = 1 ] && exit 0; sleep 0.05; done; exit 3`;
   return docker(["exec", node, "sh", "-c", script, "sh", ...Object.values(ids)], { allowFail: true, timeout: (timeoutS + 15) * 1000 }).then(({ code, stdout }) => {
     const last = {};
     for (const line of stdout.split("\n").filter(Boolean)) { const [id, ...rest] = line.split(" "); last[id] = rest; }
@@ -754,48 +754,161 @@ async function gracefulDeletion() {
   done(it);
 }
 
-/** Item 9: the agent of a pod stopped: its reports stop reaching the CP, new admissions are held; back when it resumes. */
+/** The lease file the probe writes for the kong container: its state, or absent. */
+async function leaseState(podName) {
+  const r = await kubectl(["-n", NS.dp, "exec", podName, "-c", "kong", "--", "cat", "/gromesh/isolation/lease.json"], { allowFail: true, timeout: 10_000 });
+  if (r.code !== 0) return /No such file/.test(r.stderr) ? "absent" : `unreadable: ${r.stderr.trim().slice(0, 120)}`;
+  try { return JSON.parse(r.stdout).state; } catch { return "unparsable"; }
+}
+const claimsOf = (row) => JSON.parse(Buffer.from(row.payload, "base64url"));
+
+/**
+ * The probe this run uses carries the F2 fix: the agent image (which ships the probe) is labelled with the revision it
+ * was built from, on every worker, and that revision contains the fix commit and its source.
+ */
+const F2_FIX = "3b8bccb949987f70a2f2feee32685b75c3bd59fd";
+async function f2Proof() {
+  const labels = [];
+  for (const node of NODES.workers) {
+    const r = await docker(["exec", node, "crictl", "inspecti", "-o", "go-template", "--template", '{{index .info.imageSpec.config.Labels "org.opencontainers.image.revision"}}', IMAGES.agent], { allowFail: true });
+    labels.push(r.code === 0 ? r.stdout.trim() : "");
+  }
+  const rev = labels[0];
+  const proof = { image: IMAGES.agent, imageId: report.imageIds?.agent, revisionLabels: labels, fixCommit: F2_FIX, ancestor: false, sourceHasFix: false };
+  if (!/^[0-9a-f]{40}$/.test(rev) || labels.some((l) => l !== rev)) return { ...proof, ok: false, why: "no single revision label on the agent image" };
+  proof.ancestor = (await run("git", ["-C", root, "merge-base", "--is-ancestor", F2_FIX, rev], { allowFail: true })).code === 0;
+  const source = await run("git", ["-C", root, "show", `${rev}:apps/isolation/internal/probe/round.go`], { allowFail: true });
+  proof.sourceHasFix = source.code === 0 && source.stdout.includes('return "inconclusive", ch.URL + " connected without an answer: "');
+  return { ...proof, ok: proof.ancestor && proof.sourceHasFix };
+}
+
+/** Item 9: the agent of a pod stopped: its chain goes silent, new admissions are held; nothing is a violation, and it resumes without a release. */
 async function agentStopped() {
-  const it = item("9", "Agent stopped (SIGSTOP): report gap → new admissions held; resumes when the agent does", {
-    hold: "no grant while the silent chain cannot answer", communication: `communication-failure ${s(BUDGET.communication[0])}–${s(BUDGET.communication[1])} after the last report (alert, not releasable: 409)`,
-    resume: `resume → grant ≤ P + T + 3 × agent interval + 2 s + the agent's refused backoff 30 s = ${s(BUDGET.resumeGrant)}` });
+  const it = item("9", "Agent stopped (SIGSTOP), probe with the F2 fix: CAP-6 inconclusive (never violation), communication-failure, new admissions held; SIGCONT resumes without a release", {
+    probe: "reports written during the stop carry CAP-6 in failedCapabilities with a state other than violation; the lease is never violation",
+    communication: `communication-failure ${s(BUDGET.communication[0])}–${s(BUDGET.communication[1])} after the last report, never confirmed-violation (release refused: 409)`,
+    resume: `the pendency closes chain-resumed with no release; resume → grant of the held pod ≤ P + T + 3 × agent interval + 2 s + the agent's refused backoff 30 s = ${s(BUDGET.resumeGrant)}`,
+    ok: "back to ok and the 300 s inconclusive → no-proof window: blocked until N3 (see the blocked list)" });
   const silent = ctx.p2;
+  const id = ctx.a2.admission_id;
+  // p3 is deleted only once its chain is acked: a granted admission its probe never adopted stays open with no proof
+  // and holds every new admission (see the findings), which would hide what this item measures.
+  await waitFor("p3's chain acked", async () => (await admissionRow(ctx.a3.admission_id)).acked_seq >= 2, { timeoutMs: 3 * P + 30_000, intervalMs: 2000 });
   const known = new Set((await live()).map((p) => p.uid));
+  const follower = new Follower(silent.name, "isolation-probe");
+  followers.push(follower);
+  const leaseBefore = await leaseState(silent.name);
+  const before = (await reports(id)).at(-1);
   const target = await freeze(silent.name, "agent", "gromesh-agent");
   const stopped = Date.now();
   mark("agent SIGSTOP", { pod: silent.name, pid: target.pid });
   await kubectl(["-n", NS.dp, "delete", "pod", ctx.p3.name, "--wait=false"]);
   const pod = await newPod(known);
   ctx.p4 = pod;
-  // Held past the decision window and past the communication-failure threshold.
-  const pendency = await waitFor("communication-failure for the silent admission", async () => (await pendencies(ctx.clusterId)).find((p) => p.admission_id === ctx.a2.admission_id && p.lifecycle === "communication-failure"), { timeoutMs: COMMUNICATION + 60_000, intervalMs: 2000 });
-  await waitFor("a refused request of the new pod", async () => (await admissionOf(ctx.clusterId, pod.uid)).some((a) => a.outcome === "refused"), { timeoutMs: DECISION + 30_000, intervalMs: 2000 });
-  const whileStopped = await admissionOf(ctx.clusterId, pod.uid);
-  const silentRow = await admissionRow(ctx.a2.admission_id);
-  const releaseAttempt = await ctx.api.req("POST", `/api/v2/clusters/${ctx.clusterId}/isolation-releases`, { session: ctx.admin, body: { pendencyId: pendency.id, justification: "lab: communication-failure must not be releasable" } });
-  negative(it, "release a communication-failure pendency (admin session+CSRF)", 409, releaseAttempt.status, releaseAttempt.status === 409);
-  negative(it, "new pod granted while the agent is stopped", "no grant", whileStopped.map((a) => `${a.outcome}${a.reason ? `/${a.reason}` : ""}`).join(","), !whileStopped.some((a) => a.outcome === "granted"));
-  await thaw(target);
+  // The lease as the kong container sees it, all along the stop.
+  const leases = [];
+  let sampling = true;
+  const sampler = (async () => { while (sampling) { leases.push({ msAfterStop: Date.now() - stopped, state: await leaseState(silent.name) }); await sleep(5000); } })();
+  let pendency;
+  let whileStopped;
+  let releaseAttempt;
+  try {
+    // Held past the decision window and past the communication-failure threshold.
+    pendency = await waitFor("communication-failure for the silent admission", async () => (await pendencies(ctx.clusterId)).find((p) => p.admission_id === id && p.lifecycle === "communication-failure"), { timeoutMs: COMMUNICATION + 60_000, intervalMs: 2000 });
+    await waitFor("a refused request of the new pod", async () => (await admissionOf(ctx.clusterId, pod.uid)).some((a) => a.outcome === "refused"), { timeoutMs: DECISION + 30_000, intervalMs: 2000 });
+    whileStopped = await admissionOf(ctx.clusterId, pod.uid);
+    releaseAttempt = await ctx.api.req("POST", `/api/v2/clusters/${ctx.clusterId}/isolation-releases`, { session: ctx.admin, body: { pendencyId: pendency.id, justification: "lab: communication-failure must not be releasable" } });
+  } finally {
+    sampling = false;
+    await sampler;
+    it.measures.frozenAgent = await thaw(target);
+  }
   const resumed = Date.now();
   mark("agent SIGCONT", { stoppedMs: resumed - stopped });
+  negative(it, "release a communication-failure pendency (admin session+CSRF)", 409, releaseAttempt.status, releaseAttempt.status === 409);
+  negative(it, "new pod granted while the agent is stopped", "no grant", whileStopped.map((a) => `${a.outcome}${a.reason ? `/${a.reason}` : ""}`).join(","), !whileStopped.some((a) => a.outcome === "granted"));
   const granted = await waitFor("new pod granted after the agent resumed", () => grantedOf(ctx.clusterId, pod.uid), { timeoutMs: BUDGET.resumeGrant + 30_000, intervalMs: 1000 });
-  const closedPendency = (await pendencies(ctx.clusterId)).find((p) => p.id === pendency.id);
-  const rows = await reports(ctx.a2.admission_id);
-  const backlog = rows.filter((r) => r.received >= resumed);
-  const lastBefore = silentRow.last_report ?? stopped;
+  const closedPendency = await waitFor("the pendency closed after the resume", async () => { const p = (await pendencies(ctx.clusterId)).find((x) => x.id === pendency.id); return p.lifecycle !== "communication-failure" ? p : null; }, { timeoutMs: 60_000, intervalMs: 1000 }).catch(() => null);
+  const rows = await reports(id);
+  const during = rows.filter((r) => r.seq > before.seq).map((r) => ({ seq: r.seq, state: r.state, failed: claimsOf(r).failedCapabilities, received: r.received }));
+  // The agent sends the backlog the instant it is continued, before thaw() returns: what reached the CP after the stop.
+  const stoppedRounds = during.filter((r) => r.received >= stopped);
+  const allPendencies = (await pendencies(ctx.clusterId)).filter((p) => p.admission_id === id);
+  const [{ n: releases }] = await sql(`select count(*)::int as n from isolation_releases where pendency_id = '${pendency.id}'`);
+  const lastBefore = before.received;
   Object.assign(it.measures, {
-    stoppedMs: resumed - stopped,
-    lastReportBeforeStopToPendencyMs: pendency.opened - lastBefore,
+    stoppedMs: resumed - stopped, stateBeforeStop: before.state, leaseBeforeStop: leaseBefore,
+    leaseDuringStop: [...new Set(leases.map((l) => l.state))], leaseSamples: leases.length,
+    lastReportToPendencyMs: pendency.opened - lastBefore,
     newPodRequestsWhileStopped: whileStopped.map((a) => ({ outcome: a.outcome, reason: a.reason })),
-    resumeToBacklogMs: backlog.length ? backlog[0].received - resumed : null, backlogReports: backlog.length,
+    reportsWrittenDuringStop: stoppedRounds.map((r) => `${r.seq}:${r.state}:${(r.failed ?? []).join("+")}`),
+    pendenciesOfTheAdmission: allPendencies.map((p) => `${p.kind}/${p.lifecycle}${p.close_reason ? `/${p.close_reason}` : ""}`), releasesOfThePendency: releases,
     resumeToGrantMs: granted.decided - resumed,
-    pendencyAfterResume: closedPendency ? { lifecycle: closedPendency.lifecycle, closeReason: closedPendency.close_reason, resumeToClosedMs: closedPendency.closed ? closedPendency.closed - resumed : null } : null,
+    pendencyAfterResume: closedPendency ? { lifecycle: closedPendency.lifecycle, closeReason: closedPendency.close_reason, resumeToClosedMs: closedPendency.closed - resumed } : null,
+    probeLogDuringStop: follower.lines.filter((l) => l.at >= stopped && l.at <= resumed + 2_000).map((l) => l.text).slice(0, 40),
   });
   expect(it, pendency.opened - lastBefore >= BUDGET.communication[0] && pendency.opened - lastBefore <= BUDGET.communication[1], `communication-failure ${pendency.opened - lastBefore} ms after the last report`);
-  expect(it, closedPendency?.lifecycle === "closed" && closedPendency.close_reason === "chain-resumed", `pendency after resume ${JSON.stringify(closedPendency)}`);
-  expect(it, chainProblems(rows, await probeKeyOf(ctx.a2.admission_id)).length === 0, "the chain across the stop is broken");
+  expect(it, stoppedRounds.length >= 2 && stoppedRounds.every((r) => r.state !== "violation"), `reports written during the stop: ${JSON.stringify(it.measures.reportsWrittenDuringStop)}`);
+  expect(it, stoppedRounds.some((r) => (r.failed ?? []).includes("CAP-6")), "no report of the stop names CAP-6: the frozen agent's :9100 was not exercised");
+  expect(it, !leases.some((l) => l.state === "violation"), `lease during the stop: ${JSON.stringify(it.measures.leaseDuringStop)}`);
+  expect(it, !allPendencies.some((p) => p.kind === "confirmed-violation"), `pendencies of the admission: ${JSON.stringify(it.measures.pendenciesOfTheAdmission)}`);
+  expect(it, closedPendency?.lifecycle === "closed" && closedPendency.close_reason === "chain-resumed" && releases === 0, `pendency after resume ${JSON.stringify(it.measures.pendencyAfterResume)}, ${releases} releases`);
+  expect(it, chainProblems(rows, await probeKeyOf(id)).length === 0, "the chain across the stop is broken");
   expect(it, granted.decided - resumed <= BUDGET.resumeGrant, `resume → grant ${granted.decided - resumed} ms > ${BUDGET.resumeGrant} ms`);
+  it.notes.push("before N3 a pod goes guard-missing 60 s after nginx starts (no canary route), so its state cycles verifying ↔ guard-missing: 'back to ok' and the 300 s inconclusive → no-proof window cannot be reached and are in the blocked list");
+  blocked({ id: "9 (ok, no-proof)", item: "9", missing: "a pod in ok: the return to ok after SIGCONT and the 300 s inconclusive → no-proof window need a verified guard (an inconclusive round in guard-missing keeps guard-missing)",
+    component: "compiler + agent (N3)", pr: "N3 (not opened)", unblock: "a serving pod with the guard canary: freeze its agent for > 300 s, expect no-proof and no lease; SIGCONT within the window, expect ok without a release" });
   ctx.a4 = granted;
+  done(it);
+}
+
+/** Negative control of item 9: a real violation (a forbidden TCP target accepted) is still confirmed-violation and needs a release. */
+async function violationControl() {
+  const it = item("9-control", "Real violation (the allowed backend declared forbidden for one new pod): violation report, confirmed-violation, held until a release", {
+    violation: "the new pod's report is violation with CAP-1; the CP opens confirmed-violation (releasable) and it stays open for 60 s with no release; a later request is refused pendency-open" });
+  // No policy changes: the probe of pods created from now on also tries the allowed backend as a forbidden target, so
+  // it is reached, which is exactly a forbidden target accepted. Running pods keep the configuration they loaded.
+  const control = { capability: "CAP-1", kind: "tcp", name: "control: allowed backend declared forbidden", address: hostPort(ctx.topo.ext.backend.v4, 8080) };
+  const checks = ctx.checks;
+  ctx.checks = [...checks, control];
+  try {
+    await release("upgrade", [ctx.k1], 2);
+  } finally {
+    ctx.checks = checks;
+  }
+  mark("chart rollout with the control check");
+  const known = new Set((await live()).map((p) => p.uid));
+  const victim = (await live()).find((p) => p.uid === ctx.p4?.uid) ?? (await live())[0];
+  // Deleted only once its chain is acked: an admission whose probe never adopted it stays open with no proof and
+  // holds every new admission (item 5), which is not what this control is about.
+  const victimAdmission = (await grantedOf(ctx.clusterId, victim.uid)).admission_id;
+  await waitFor("the victim's chain acked", async () => (await admissionRow(victimAdmission)).acked_seq >= 2, { timeoutMs: 3 * P + 30_000, intervalMs: 2000 });
+  await kubectl(["-n", NS.dp, "delete", "pod", victim.name, "--wait=false"]);
+  const pod = await newPod(known);
+  const granted = await waitFor("the control pod granted", () => grantedOf(ctx.clusterId, pod.uid), { timeoutMs: 120_000, intervalMs: 1000 });
+  const violated = await waitFor("a violation report of the control pod", async () => (await reports(granted.admission_id)).find((r) => r.state === "violation"), { timeoutMs: 3 * P, intervalMs: 1000 });
+  const pendency = await waitFor("confirmed-violation", async () => (await pendencies(ctx.clusterId)).find((p) => p.admission_id === granted.admission_id && p.lifecycle === "confirmed-violation"), { timeoutMs: 30_000, intervalMs: 1000 });
+  await sleep(60_000);
+  const after = (await pendencies(ctx.clusterId)).find((p) => p.id === pendency.id);
+  const iso = await ctx.api.ok("GET", `/api/v2/clusters/${ctx.clusterId}/isolation`, { session: ctx.admin });
+  const viewed = iso.pendencies.find((p) => p.id === pendency.id);
+  const [{ n: releases }] = await sql(`select count(*)::int as n from isolation_releases where pendency_id = '${pendency.id}'`);
+  // A later pod: refused while the confirmed violation is open.
+  const known2 = new Set((await live()).map((p) => p.uid));
+  const other = (await live()).find((p) => p.uid !== pod.uid);
+  await kubectl(["-n", NS.dp, "delete", "pod", other.name, "--wait=false"]);
+  const later = await newPod(known2);
+  const refused = await waitFor("a later request refused pendency-open", async () => (await admissionOf(ctx.clusterId, later.uid)).find((a) => a.reason === "pendency-open"), { timeoutMs: 90_000, intervalMs: 1000 }).catch(() => null);
+  const laterRequests = await admissionOf(ctx.clusterId, later.uid);
+  Object.assign(it.measures, {
+    violationReport: { seq: violated.seq, failed: claimsOf(violated).failedCapabilities }, lease: await leaseState(pod.name),
+    pendency: { kind: pendency.kind, capability: pendency.capability, lifecycleAfter60s: after.lifecycle, releasable: viewed?.releasable, releases },
+    laterRequests: laterRequests.map((a) => `${a.outcome}${a.reason ? `/${a.reason}` : ""}`),
+  });
+  negative(it, "a real violation (forbidden TCP target accepted)", "violation report with CAP-1 → confirmed-violation, open 60 s later, releasable, no release",
+    JSON.stringify(it.measures.pendency), claimsOf(violated).failedCapabilities.includes("CAP-1") && after.lifecycle === "confirmed-violation" && viewed?.releasable === true && releases === 0);
+  negative(it, "a later admission while the confirmed violation is open", "refused pendency-open", it.measures.laterRequests.join(","), Boolean(refused) && !laterRequests.some((a) => a.outcome === "granted"));
+  expect(it, it.measures.lease !== "ok" && it.measures.lease !== "inconclusive", `the violating pod still holds a ${it.measures.lease} lease`);
   done(it);
 }
 
@@ -967,17 +1080,19 @@ async function revocation() {
 }
 
 // What the suite cannot exercise yet. Each is listed as blocked with what unblocks it, never as passed.
+// A step listed here runs, and counts, only when its proof holds; otherwise it is blocked (LAB_RUN_BLOCKED runs it as a
+// diagnostic that stays blocked).
 const BLOCKED_STEPS = {
-  agentStopped: { id: "9", missing: "the probe takes a frozen agent's :9100 (connected, no answer) as a CAP-6 violation (finding F2), so a stopped agent latches its pod in violation instead of only silencing the chain",
-    component: "isolation-probe (apps/isolation/internal/probe/round.go)", pr: "none yet: the F2 fix is in progress (task F2)",
-    unblock: "the F2 PR exists; the agent image is rebuilt from it; run with LAB_RUN_BLOCKED=agentStopped" },
+  agentStopped: { id: "9", missing: "a probe with the F2 fix: without it a frozen agent's :9100 (connected, no answer) is a CAP-6 violation that latches the pod",
+    component: "isolation-probe (apps/isolation/internal/probe/round.go)", pr: "#174 (task/N2-F2-inconclusive-http)",
+    unblock: "an agent image labelled with a revision that contains 3b8bccb (the F2 fix), on every worker", proof: f2Proof },
 };
 const N3 = [
   { id: "n", missing: "traffic served behind the guard (the route guard canary answering 204 with the lease nonce)", component: "compiler + agent (v2 snapshot with the guard route)", pr: "N3 (not opened)", unblock: "the agent applies a v2 snapshot with the guard canary; pods leave guard-missing" },
   { id: "o", missing: "503 and Kong-stop budgets on a pod serving traffic (item 6 measures the exit of an nginx that serves nothing)", component: "compiler + agent (N3)", pr: "N3 (not opened)", unblock: "a serving pod: the suite measures the stop with nginx running" },
   { id: "p (part)", missing: "readiness Ready with the canary", component: "compiler + agent (N3)", pr: "N3 (not opened)", unblock: "the guard canary answers in a serving pod" },
 ];
-const ITEM_OF = { reportsInOrder: "3", secondPod: "4", gracefulDeletion: "6", agentStopped: "9", killedPod: "5, 7", revocation: "8" };
+const ITEM_OF = { reportsInOrder: "3", secondPod: "4", gracefulDeletion: "6", agentStopped: "9", killedPod: "5, 7", revocation: "8", violationControl: "9-control" };
 
 /** Every secret this run created, looked for in every file it leaves: none may appear. */
 function secretScan() {
@@ -1026,13 +1141,25 @@ async function finish() {
 
 async function main() {
   for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => { report.aborted = { signal }; finish().finally(() => process.exit(130)); });
-  const steps = [setup, coldStart, reportsInOrder, secondPod, gracefulDeletion, agentStopped, killedPod, revocation];
+  const all = [setup, coldStart, reportsInOrder, secondPod, gracefulDeletion, agentStopped, killedPod, revocation, violationControl];
+  // LAB_STEPS=<step,...> runs a subset in order (setup always first). violationControl leaves a confirmed violation
+  // open, so it is never part of the default run.
+  const chosen = (process.env.LAB_STEPS ?? "").split(",").filter(Boolean);
+  const steps = chosen.length ? all.filter((st) => st === setup || chosen.includes(st.name)) : all.filter((st) => st !== violationControl);
+  report.steps = steps.map((st) => st.name);
   const forced = new Set((process.env.LAB_RUN_BLOCKED ?? "").split(",").filter(Boolean));
   try {
     for (const step of steps) {
-      const reason = (!forced.has(step.name) && BLOCKED_STEPS[step.name]) || ctx.blocked;
+      let gate = BLOCKED_STEPS[step.name];
+      if (gate?.proof && !ctx.blocked) {
+        const proof = await gate.proof();
+        report.proofs = { ...report.proofs, [step.name]: proof };
+        if (proof.ok) gate = null;
+      }
+      const reason = (!forced.has(step.name) && gate) || ctx.blocked;
       if (reason) {
-        report.items.push({ title: step.name, result: "blocked", failures: [], ...reason, id: ITEM_OF[step.name] ?? step.name });
+        const { proof, ...why } = reason;
+        report.items.push({ title: step.name, result: "blocked", failures: [], ...why, id: ITEM_OF[step.name] ?? step.name });
         log(`step ${step.name}: BLOCKED (${reason.missing})`);
         continue;
       }
@@ -1040,8 +1167,8 @@ async function main() {
       try {
         await step();
         // A blocked step run on request is diagnostic: whatever it measured, it stays blocked.
-        if (forced.has(step.name) && BLOCKED_STEPS[step.name]) {
-          for (const it of report.items.slice(before)) Object.assign(it, { diagnosticResult: it.result, result: "blocked", ...BLOCKED_STEPS[step.name], id: it.id });
+        if (forced.has(step.name) && gate) {
+          for (const it of report.items.slice(before)) { const { proof, ...why } = gate; Object.assign(it, { diagnosticResult: it.result, result: "blocked", ...why, id: it.id }); }
         }
       } catch (error) {
         log(`step ${step.name} aborted: ${error.stack ?? error}`);
