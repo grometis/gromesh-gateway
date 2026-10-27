@@ -273,15 +273,22 @@ export class DeliveryService {
     }
     if (views.length === 0) {
       // No expected node: none joined yet, or every expected cluster returned to v1. Nothing proves the revision, so it
-      // never converges; a revision that was waiting is degraded (the next deployment supersedes it) and frees the lease.
-      if (holdsLease) {
+      // never converges. One that was waiting for nodes (converging, or recorded with nodes and holding the lease) is
+      // degraded, whoever holds the lease, and the next deployment supersedes it; one that never had a node stays active.
+      if (current === "converging" || (current === "active" && holdsLease)) {
         const left: ["converging" | "degraded", string][] = current === "active" ? [["converging", "some node has not applied yet"]] : [];
-        if (current !== "degraded") left.push(["degraded", "every expected cluster left; nothing applied"]);
+        left.push(["degraded", "every expected cluster left; nothing applied"]);
         await transition(tx, dep.epoch, dep.revision, left);
-        await this.freeLease(tx);
       }
+      if (holdsLease) await this.freeLease(tx);
       return views;
     }
+    // Nodes to wait for (a cluster that turned v2 after a revision recorded without nodes joined): the revision takes the
+    // free lease and its convergence deadline from now, so it fails instead of waiting forever.
+    if (!holdsLease && lease.revision === null && this.config.workspacesDeployments) {
+      await tx.update(deploymentLease).set({ revision: dep.revision, operation: "deploy", owner: SYSTEM.actor, startedAt: now, deadlineAt: new Date(now.getTime() + this.config.workspacesDeployments.convergenceDeadlineMs) });
+    }
+    const takesLease = holdsLease || (lease.revision === null && !!this.config.workspacesDeployments);
     const converged = verified;
     const degraded = views.some((v) => !v.online || !v.healthy || v.failed || DEGRADING.includes(v.evidence));
     const steps: ["converging" | "degraded" | "converged", string][] = [];
@@ -297,7 +304,7 @@ export class DeliveryService {
     if (steps.length > 0) await transition(tx, dep.epoch, dep.revision, steps);
     if (converged) {
       await this.activate(tx, dep, now);
-      if (holdsLease) await this.freeLease(tx);
+      if (takesLease) await this.freeLease(tx);
     }
     return views;
   }

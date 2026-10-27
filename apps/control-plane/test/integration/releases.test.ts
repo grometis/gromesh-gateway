@@ -214,8 +214,8 @@ describe("releases and deployments in a laboratory on dev", () => {
     expect(member(last.members, b)).toEqual(member(prev.members, b));
     expect(member(last.members, a)).toEqual({ workspaceId: a, releaseVersion: 2, contentDigest: ra2.contentDigest });
     expect(last.revision).toBe(prev.revision + 1);
-    // Never had an expected node: it stays active (the machine supersedes only converged, degraded or failed).
-    expect((await states(h, prev.revision)).at(-1)).toBe("active");
+    // Never had an expected node: closed through the contract's edges (nothing applied), then superseded.
+    expect(await states(h, prev.revision)).toEqual(["composed", "active", "converging", "degraded", "superseded"]);
   });
 
   it("returns 409 while another deployment holds the lease, and fails that deployment once its deadline passed", async () => {

@@ -423,8 +423,12 @@ describe("a deployment recorded before its cluster turns v2 (D-1, laboratory ord
       const served = await agentCall(base, c.token, "GET", "v2/deployments/current");
       expect(served.status, served.raw).toBe(200);
       expect((await h.sql.query(`select delivery_protocol from clusters where id = $1`, [c.id])).rows[0].delivery_protocol).toBe("v2");
-      // The activation re-evaluates: the cluster's node joins the expected nodes and the revision waits for it.
+      // The activation re-evaluates: the cluster's node joins the expected nodes and the revision waits for it, under
+      // the lease and a convergence deadline from now.
       expect(await history(dep.revision)).toEqual(["composed", "active", "converging"]);
+      const held = (await h.sql.query(`select revision, deadline_at from deployment_lease`)).rows[0];
+      expect(held.revision).toBe(dep.revision);
+      expect(held.deadline_at).not.toBeNull();
 
       // The node joined: its declaration alone never converges the revision.
       const applied = { nodeId: "node-1", epoch: 1, appliedRevision: dep.revision, appliedHash: dep.config_hash, kongConfigHash: dep.kong_config_hash, kongHealthy: true };
@@ -437,6 +441,45 @@ describe("a deployment recorded before its cluster turns v2 (D-1, laboratory ord
       expect((await agentCall(base, c.token, "POST", "v2/status", applied)).status).toBe(204);
       expect(await history(dep.revision)).toEqual(["composed", "active", "converging", "converged"]);
       expect((await h.sql.query(`select count(*)::int as n from content_activations`)).rows[0].n).toBe(1);
+      expect((await h.sql.query(`select revision from deployment_lease`)).rows[0].revision).toBeNull();
+    } finally {
+      await h.close();
+    }
+  });
+
+  it("closes an empty revision a new deployment replaces, and degrades a late-joined revision whose cluster returns to v1", async () => {
+    const h = await startHarness({ databaseUrl: await freshDatabase("d1b"), workspacesDeployments: LAB });
+    try {
+      const base = (await h.app.getUrl()).replace("[::1]", "127.0.0.1");
+      expect((await v2(h.api, "POST", "/instance/signing-keys", { validUntil: new Date(Date.now() + 30 * 86_400_000).toISOString() })).status).toBe(201);
+      const c = await cluster(h, base);
+      const ws = (await h.api("POST", "/environments", { name: uniq("ws") })).body.id as string;
+      const svc = (await h.api("POST", `/environments/${ws}/services`, { name: uniq("svc"), protocol: "http", host: "echo", port: 80 })).body.id;
+      await h.api("POST", `/environments/${ws}/routes`, { name: uniq("route"), serviceId: svc, paths: ["/echo"] });
+      const history = async (revision: number) => (await h.sql.query(`select state from deployment_states where epoch = 1 and revision = $1 order by seq`, [revision])).rows.map((r) => r.state as string);
+      expect((await v2(h.api, "POST", `/workspaces/${ws}/releases`, {})).status).toBe(201);
+      expect((await v2(h.api, "POST", "/deployments", { expectedRevision: null, reason: "laboratory deployment" })).status).toBe(201);
+      expect((await v2(h.api, "POST", "/deployments", { expectedRevision: 1, reason: "laboratory deployment" })).status).toBe(201);
+      expect(await history(1)).toEqual(["composed", "active", "converging", "degraded", "superseded"]);
+      expect(await history(2)).toEqual(["composed", "active"]);
+
+      expect((await v2(h.api, "PUT", `/clusters/${c.id}/delivery-protocol`, { protocol: "v2", reason: "laboratory switch after deploy" })).status).toBe(200);
+      const probe = new Probe();
+      const asked = await agentCall(base, c.token, "POST", "v2/isolation/admission-requests", probe.request());
+      const polled = await agentCall(base, c.token, "GET", `v2/isolation/admission-requests/${asked.body!.requestId}`);
+      const admissionId = JSON.parse(Buffer.from(polled.body!.admission.payload, "base64url").toString("utf8")).admissionId as string;
+      expect((await agentCall(base, c.token, "POST", "v2/isolation/reports", { reports: [probe.next(c.id, admissionId, { state: "verifying" })] })).body!.rejected).toEqual([]);
+      expect((await agentCall(base, c.token, "GET", "v2/deployments/current")).status).toBe(200);
+      expect(await history(2)).toEqual(["composed", "active", "converging"]);
+      expect((await h.sql.query(`select revision from deployment_lease`)).rows[0].revision).toBe(2);
+
+      // Its only cluster returns to v1 before proving anything: degraded (never converged) and the lease is free.
+      await h.api("POST", `/environments/${c.env}/services`, { name: uniq("svc"), protocol: "http", host: "echo", port: 80 });
+      expect((await h.api("POST", `/environments/${c.env}/snapshots`, {})).status).toBe(201);
+      expect((await v2(h.api, "PUT", `/clusters/${c.id}/delivery-protocol`, { protocol: "v1", reason: "controlled return drill" })).status).toBe(200);
+      expect(await history(2)).toEqual(["composed", "active", "converging", "degraded"]);
+      expect((await h.sql.query(`select revision from deployment_lease`)).rows[0].revision).toBeNull();
+      expect((await h.sql.query(`select count(*)::int as n from content_activations`)).rows[0].n).toBe(0);
     } finally {
       await h.close();
     }

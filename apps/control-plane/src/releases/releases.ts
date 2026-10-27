@@ -344,10 +344,18 @@ export class ReleasesService {
     return row?.revision;
   }
 
-  /** A new deployment supersedes the previous one where the machine allows it (converged, degraded or failed). */
+  /**
+   * A new deployment supersedes the previous one where the machine allows it (converged, degraded or failed). One still
+   * active never had an expected node (one with nodes holds the lease, so no deployment gets here): it closes through
+   * the contract's edges, converging and degraded, nothing applied, then superseded.
+   */
   private async supersede(tx: Executor, revision: number) {
     const current = await deploymentState(tx, FIRST_EPOCH, revision);
-    if (current && ["converged", "degraded", "failed"].includes(current.state)) await transition(tx, FIRST_EPOCH, revision, [["superseded", "new deployment"]]);
+    if (!current) return;
+    const steps: [DeploymentState, string][] =
+      current.state === "active" ? [["converging", "no expected node"], ["degraded", "no expected node; nothing applied"]] : [];
+    if (current.state === "active" || ["converged", "degraded", "failed"].includes(current.state)) steps.push(["superseded", "new deployment"]);
+    if (steps.length > 0) await transition(tx, FIRST_EPOCH, revision, steps);
   }
 
   /** A lease past its deadline: its deployment fails (C-16) and the lease is free again. */
