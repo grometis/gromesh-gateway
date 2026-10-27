@@ -253,7 +253,9 @@ async function freeze(podName, container, comm) {
 async function thaw(target) {
   // A pid that died with its pod may have been reused: only the same binary is continued.
   const comm = await docker(["exec", target.node, "cat", `/proc/${target.pid}/comm`], { allowFail: true });
-  if (comm.code !== 0) { frozen.delete(target); return "gone"; }
+  // Only the kernel saying the pid does not exist proves the process ended; any other failure keeps it listed.
+  if (comm.code !== 0 && /No such file or directory/.test(comm.stderr)) { frozen.delete(target); return "gone"; }
+  if (comm.code !== 0) return `unknown: ${comm.stderr.trim()}`;
   if (comm.stdout.trim() !== target.comm) { frozen.delete(target); return `pid reused by ${comm.stdout.trim()}`; }
   const cont = await docker(["exec", target.node, "kill", "-CONT", String(target.pid)], { allowFail: true });
   // A failed SIGCONT keeps the process listed: the run cannot end clean with it still stopped.
@@ -383,8 +385,6 @@ async function preflight() {
 async function setup() {
   const it = item("1", "Postgres + control plane from main; admin, instance signing key (session+CSRF), cluster, registration token; data plane chart in Workspaces mode", { note: "setup" });
   report.environment = await assertLab();
-  // Only a context proven to be the lab is ever mutated, cleanup included.
-  ctx.labVerified = true;
   const topo = await topology();
   ctx.topo = topo;
   report.topology = topo;
@@ -393,7 +393,9 @@ async function setup() {
   await preflight();
   mark("preflight", { images: report.imageIds });
 
-  // A fresh, reproducible start: only this suite's namespaces and its own cluster-wide policies are removed.
+  // A fresh, reproducible start: only this suite's namespaces and its own cluster-wide policies are removed. From here
+  // on the run owns them, and only then does its cleanup remove them (never after a failed lab check or preflight).
+  ctx.owned = true;
   await removeSuiteObjects();
 
   const secrets = cpSecrets();
@@ -1008,7 +1010,7 @@ async function finish() {
   for (const f of followers) f.stop();
   ctx.forward?.stop();
   if (report.items.some((i) => i.result === "fail") || report.aborted) await diagnostics().catch((error) => log(`diagnostics: ${error.message}`));
-  if (!ctx.labVerified) report.cleanup = "nothing touched: the context was not proven to be the lab";
+  if (!ctx.owned) report.cleanup = "nothing touched: the run stopped before the lab check and the preflight passed";
   else if (process.env.LAB_KEEP === "1") report.cleanup = "kept (LAB_KEEP=1)";
   else {
     await removeSuiteObjects().then(() => { report.cleanup = "namespaces and policies removed"; }, (error) => { report.cleanup = `failed: ${error.message}`; report.cleanupFailed = true; });
