@@ -107,6 +107,7 @@ const rows = async () => Number(await chq(`SELECT count() FROM gromesh.requests 
 
 function values({ clickhousePeers }) {
   return {
+    replicaCount: 1,
     agent: { token: "lab-placeholder-registration-token", controlPlaneUrl: "http://control-plane.invalid:3000",
       image: { repository: AGENT_IMAGE.split(":")[0], tag: AGENT_IMAGE.split(":")[1], digest: "", pullPolicy: "Never" } },
     kong: { image: { repository: KONG_IMAGE.split(":")[0], tag: KONG_IMAGE.split(":")[1], digest: "", pullPolicy: "Never" } },
@@ -141,8 +142,10 @@ async function install(v) {
 async function pod() {
   return until("data plane pod with a running collector", async () => {
     const list = await json(["get", "pods", "-n", DP, "-l", "app.kubernetes.io/name=data-plane"]);
-    const live = list.items.filter((p) => !p.metadata.deletionTimestamp);
-    const p = live.length === 1 ? live[0] : undefined;
+    // During a rollout the old pod stays (Kong never turns Ready without a lease here): take the newest one.
+    const live = list.items.filter((p) => !p.metadata.deletionTimestamp)
+      .sort((a, b) => Date.parse(b.metadata.creationTimestamp) - Date.parse(a.metadata.creationTimestamp));
+    const p = live[0];
     const c = p?.status.initContainerStatuses?.find((s) => s.name === "collector");
     return c?.state?.running && c.started ? p : undefined;
   }, 300_000);
@@ -151,8 +154,13 @@ const inCollector = (p, sh) => kubectl(["exec", "-n", DP, p.metadata.name, "-c",
 // Status of a POST from inside the pod; the header value comes from the collector's own environment when asked.
 async function postInPod(p, { tokenFrom = "", body }) {
   const header = tokenFrom ? `--header "X-Gromesh-Collector-Token: $${tokenFrom}"` : "";
-  const r = await inCollector(p, `wget -q -S -O /dev/null ${header} --post-data '${body}' http://127.0.0.1:8080/kong 2>&1 | sed -n 's/^ *HTTP\\/1.1 \\([0-9]*\\).*/\\1/p' | head -1`);
-  return r.stdout.trim();
+  // A pod just rolled may still be starting Vector: no status yet means retry, never a verdict.
+  for (let i = 0; i < 30; i++) {
+    const r = await inCollector(p, `wget -q -S -O /dev/null ${header} --post-data '${body}' http://127.0.0.1:8080/kong 2>&1 | sed -n 's/^ *HTTP\\/1.1 \\([0-9]*\\).*/\\1/p' | head -1`);
+    if (r.stdout.trim()) return r.stdout.trim();
+    await sleep(2000);
+  }
+  return "";
 }
 const event = (rid) => JSON.stringify([{ environment_id: instanceId, started_at: Date.now(), client_ip: "10.0.0.9",
   request: { id: rid, uri: "/lab", method: "GET", size: 1 }, response: { status: 200, size: 1 }, latencies: { kong: 1, proxy: 1, request: 2 } }]);
@@ -179,6 +187,9 @@ async function fromNode(ip) {
 async function main() {
   const status = await run("bash", [join(here, "cluster.sh"), "status"], { allowFail: true, env: { LAB_KUBECONFIG: kubeconfig } });
   assert.equal(status.code, 0, `the lab is not the pinned kind cluster: ${status.stderr.trim()}`);
+  // A fresh start: a rerun would otherwise meet ClickHouse users created with an earlier run's passwords.
+  await helm(["uninstall", "dp", "-n", DP], { allowFail: true });
+  await kubectl(["delete", "namespace", DP, OBS, FX, "--ignore-not-found", "--wait=true"], { timeout: 300_000 });
   await clickhouse();
   await apply([{ apiVersion: "v1", kind: "Namespace", metadata: { name: DP } },
     { apiVersion: "v1", kind: "Secret", metadata: { name: "clickhouse-writer", namespace: DP }, stringData: { "writer-password": chWriter } }]);
