@@ -30,6 +30,62 @@ refuse 'realIpHeader' --set-string 'kong.realIpHeader=Bad Header' --set 'kong.tr
 helm template dp "$chart" --set-string agent.token=ci-placeholder --set-string kong.realIpHeader=CF-Connecting-IP --set 'kong.trustedIps={10.244.0.0/16,2001:db8::/32}' > "$work/client-ip.yaml"
 real_ip_env="$(docker run --rm -i mikefarah/yq:4.44.3 ea 'select(.kind == "Deployment") | .spec.template.spec.containers[] | select(.name == "kong") | [.env[] | select(.name == "KONG_REAL_IP_HEADER" or .name == "KONG_TRUSTED_IPS") | .name + "=" + .value] | sort | join(";")' < "$work/client-ip.yaml")"
 [[ "$real_ip_env" == 'KONG_REAL_IP_HEADER=CF-Connecting-IP;KONG_TRUSTED_IPS=10.244.0.0/16,2001:db8::/32' ]]
+# Workspaces mode: only on Kubernetes >= 1.33, with every capability covered and the probe on its own UID.
+helm lint "$chart" --strict -f "$chart/ci/values-workspaces.yaml" --kube-version 1.33.0
+helm template dp "$chart" -f "$chart/ci/values-workspaces.yaml" --kube-version 1.33.0 > "$work/workspaces.yaml"
+refuse_ws() {
+  local expected="$1"
+  shift
+  if helm template dp "$chart" -f "$chart/ci/values-workspaces.yaml" "$@" > /dev/null 2> "$work/ws.log"; then
+    echo "Chart unexpectedly accepted Workspaces mode: $*" >&2
+    exit 1
+  fi
+  grep -Fq "$expected" "$work/ws.log"
+}
+refuse_ws 'requires Kubernetes >= 1.33' --kube-version 1.32.9
+refuse_ws 'no forbidden target for CAP-3' --kube-version 1.33.0 --set 'workspaces.probe.checks[2].kind=tcp-open'
+refuse_ws 'must differ from kong.runAsUser' --kube-version 1.33.0 --set workspaces.probe.runAsUser=1001
+refuse_ws 'workspaces.clusterId' --kube-version 1.33.0 --set-string workspaces.clusterId=nope
+refuse_ws 'positive control' --kube-version 1.33.0 --set 'workspaces.probe.checks[5].kind=tcp'
+# The probe's own rules accept the rendered configuration (it would never issue a lease otherwise).
+docker run --rm -i mikefarah/yq:4.44.3 ea 'select(.kind == "ConfigMap" and (.metadata.name | test("-isolation-probe$"))) | .data["probe.json"]' < "$work/workspaces.yaml" > "$work/probe.json"
+docker run --rm -v "$PWD/apps/isolation:/src:ro" -v "$work/probe.json:/probe.json:ro" -w /src -e GOTOOLCHAIN=local -e GOCACHE=/tmp/go-cache \
+  golang:1.27.2-alpine go run ./cmd/isolation-probe check-config /probe.json
+pnpm --filter @gromesh/control-plane exec node --input-type=module - "$work/workspaces.yaml" <<'JS'
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { parseAllDocuments } from 'yaml';
+const docs = parseAllDocuments(readFileSync(process.argv[2], 'utf8')).map(doc => doc.toJSON());
+const pod = docs.find(r => r.kind === 'Deployment').spec.template.spec;
+// Native sidecars, in this order, before the only main container (B §3.5.3, decision R9-2).
+assert.deepEqual(pod.initContainers.map(c => [c.name, c.restartPolicy ?? null]), [['seed-config', null], ['isolation-install', null], ['agent', 'Always'], ['isolation-probe', 'Always']]);
+assert.deepEqual(pod.containers.map(c => c.name), ['kong']);
+const kong = pod.containers[0];
+const probe = pod.initContainers.find(c => c.name === 'isolation-probe');
+const agent = pod.initContainers.find(c => c.name === 'agent');
+assert.equal(kong.command[0], '/gromesh/isolation-bin/kong-supervisor');
+assert.deepEqual(kong.livenessProbe, { exec: { command: ['/gromesh/isolation-bin/kong-liveness'] }, periodSeconds: 1, timeoutSeconds: 1, failureThreshold: 1, terminationGracePeriodSeconds: 1 });
+assert.equal(kong.startupProbe.periodSeconds, 1);
+assert.equal(kong.env.find(e => e.name === 'KONG_PLUGINS').value, 'bundled,gromesh-workspace,gromesh-route-guard');
+assert.equal(kong.env.find(e => e.name === 'GROMESH_POD_UID').valueFrom.fieldRef.fieldPath, 'metadata.uid');
+assert.equal(kong.env.find(e => e.name === 'KONG_NGINX_MAIN_ENV').value, 'GROMESH_POD_UID');
+// The lease: written only by the probe on its own UID, read-only in kong, absent from the agent.
+const mount = (c, name) => c.volumeMounts.find(m => m.name === name);
+assert.equal(mount(kong, 'isolation').readOnly, true);
+assert.equal(mount(kong, 'isolation-bin').readOnly, true);
+assert.ok(!mount(probe, 'isolation').readOnly);
+assert.equal(mount(agent, 'isolation'), undefined);
+assert.equal(mount(probe, 'kong-admin'), undefined);
+assert.equal(mount(probe, 'agent-state'), undefined);
+assert.notEqual(probe.securityContext.runAsUser, kong.securityContext.runAsUser);
+assert.equal(probe.ports, undefined, 'the probe never listens');
+assert.deepEqual(probe.readinessProbe, { exec: { command: ['/gromesh/isolation-bin/isolation-probe', 'ready'] }, periodSeconds: 1, timeoutSeconds: 1, failureThreshold: 1 });
+assert.equal(pod.terminationGracePeriodSeconds, 30);
+assert.equal(pod.shareProcessNamespace, undefined);
+const config = JSON.parse(docs.find(r => r.kind === 'ConfigMap' && r.metadata.name.endsWith('-isolation-probe')).data['probe.json']);
+assert.equal(new Set(config.checks.filter(c => ['tcp', 'http'].includes(c.kind)).map(c => c.capability)).size, 7);
+console.log('Workspaces mode render passed: native sidecars before kong, supervisor and liveness, lease read-only in kong and absent from the agent');
+JS
 pnpm --filter @gromesh/control-plane exec node --input-type=module - "$work/default.yaml" "$work/full.yaml" <<'JS'
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';

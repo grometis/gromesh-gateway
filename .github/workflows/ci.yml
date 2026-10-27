@@ -93,6 +93,7 @@ jobs:
               - .github/workflows/**
               - deploy/helm/**
               - apps/agent/**
+              - apps/isolation/**
               - e2e/kind/**
               - images/**
               - apps/*/Dockerfile

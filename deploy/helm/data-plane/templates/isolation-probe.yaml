@@ -1,0 +1,10 @@
+{{- if .Values.workspaces.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "data-plane.fullname" . }}-isolation-probe
+  labels:
+    {{- include "data-plane.labels" . | nindent 4 }}
+data:
+  probe.json: {{ dict "checks" .Values.workspaces.probe.checks | toJson | quote }}
+{{- end }}

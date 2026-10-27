@@ -291,6 +291,84 @@
           }
         }
       }
+    },
+    "workspaces": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "clusterId": {
+          "type": "string"
+        },
+        "instancePublicKey": {
+          "type": "string",
+          "pattern": "^$|^[A-Za-z0-9_-]{43}$"
+        },
+        "probe": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "runAsUser": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "resources": {
+              "type": "object"
+            },
+            "checks": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "capability",
+                  "kind",
+                  "name"
+                ],
+                "properties": {
+                  "capability": {
+                    "enum": [
+                      "CAP-1",
+                      "CAP-2",
+                      "CAP-3",
+                      "CAP-4",
+                      "CAP-5",
+                      "CAP-6",
+                      "CAP-7"
+                    ]
+                  },
+                  "kind": {
+                    "enum": [
+                      "tcp",
+                      "http",
+                      "dns",
+                      "tcp-open"
+                    ]
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "address": {
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  },
+                  "expectStatus": {
+                    "type": "integer"
+                  },
+                  "host": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      }
     }
   },
   "definitions": {

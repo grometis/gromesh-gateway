@@ -1,6 +1,9 @@
 // isolation-probe is the native sidecar that proves the kong pod's isolation and issues its lease.
 // isolation-probe        run (rounds every 15 s; the guard canary every second while a lease is out)
 // isolation-probe ready  exec readiness: the pod is Ready only in state ok with a valid lease (the probe never listens)
+// isolation-probe check-config <file>  validates a configuration with the probe's own rules (chart CI)
+// isolation-probe install <dir>  copies kong-supervisor and kong-liveness, shipped beside it, into dir (init
+// container: the kong image does not carry them)
 // Environment: GROMESH_POD_UID, GROMESH_CLUSTER_ID, GROMESH_INSTANCE_PUBLIC_KEY (Ed25519, base64url),
 // GROMESH_PROBE_DIR, GROMESH_HANDOFF_DIR, GROMESH_PROBE_CONFIG, GROMESH_CANARY_URL.
 package main
@@ -29,6 +32,22 @@ func main() {
 	dir := env("GROMESH_PROBE_DIR", "/gromesh/isolation")
 	if len(os.Args) > 1 && os.Args[1] == "ready" {
 		os.Exit(ready(dir))
+	}
+	if len(os.Args) == 3 && os.Args[1] == "check-config" {
+		// The chart's CI: the configuration it renders, validated by the probe's own rules.
+		if _, err := probe.LoadConfig(os.Args[2]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Println("probe config ok")
+		return
+	}
+	if len(os.Args) == 3 && os.Args[1] == "install" {
+		if err := install(os.Args[2]); err != nil {
+			fmt.Fprintln(os.Stderr, "isolation-probe install:", err)
+			os.Exit(1)
+		}
+		return
 	}
 	logf := func(format string, args ...any) { fmt.Fprintf(os.Stderr, "isolation-probe: "+format+"\n", args...) }
 	key, err := base64.RawURLEncoding.DecodeString(os.Getenv("GROMESH_INSTANCE_PUBLIC_KEY"))
@@ -91,6 +110,44 @@ func main() {
 		case <-tick.C:
 		}
 	}
+}
+
+// install copies each binary through an exclusive temporary of its own, so an interrupted earlier attempt never blocks
+// a retry, and renames it into place.
+func install(dest string) error {
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	return installFrom(filepath.Dir(self), dest)
+}
+
+func installFrom(src, dest string) error {
+	for _, name := range []string{"kong-supervisor", "kong-liveness"} {
+		data, err := os.ReadFile(filepath.Join(src, name))
+		if err != nil {
+			return err
+		}
+		f, err := os.CreateTemp(dest, "."+name+".*")
+		if err != nil {
+			return err
+		}
+		_, werr := f.Write(data)
+		if cerr := f.Close(); werr == nil {
+			werr = cerr
+		}
+		if werr == nil {
+			werr = os.Chmod(f.Name(), 0o555)
+		}
+		if werr == nil {
+			werr = os.Rename(f.Name(), filepath.Join(dest, name))
+		}
+		if werr != nil {
+			_ = os.Remove(f.Name())
+			return werr
+		}
+	}
+	return nil
 }
 
 func ready(dir string) int {

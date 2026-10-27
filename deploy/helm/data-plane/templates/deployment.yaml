@@ -57,12 +57,69 @@ spec:
           volumeMounts:
             - name: snapshot
               mountPath: /kong/declarative
+        {{- if .Values.workspaces.enabled }}
+        # Installs kong-supervisor and kong-liveness (apps/isolation, shipped in the agent image) for the kong container.
+        - name: isolation-install
+          image: {{ include "data-plane.image" .Values.agent.image | quote }}
+          imagePullPolicy: {{ .Values.agent.image.pullPolicy }}
+          command: [/gromesh/isolation-bin/isolation-probe, install, /isolation-bin]
+          securityContext:
+            runAsUser: 1001
+            {{- include "data-plane.containerSecurityContext" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.initResources | nindent 12 }}
+          volumeMounts:
+            - name: isolation-bin
+              mountPath: /isolation-bin
+        {{- include "data-plane.agent" . | nindent 8 }}
+        - name: isolation-probe
+          image: {{ include "data-plane.image" .Values.agent.image | quote }}
+          imagePullPolicy: {{ .Values.agent.image.pullPolicy }}
+          restartPolicy: Always
+          command: [/gromesh/isolation-bin/isolation-probe]
+          securityContext:
+            runAsUser: {{ .Values.workspaces.probe.runAsUser }}
+            {{- include "data-plane.containerSecurityContext" . | nindent 12 }}
+          env:
+            - name: GROMESH_POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+            - name: GROMESH_CLUSTER_ID
+              value: {{ .Values.workspaces.clusterId | quote }}
+            - name: GROMESH_INSTANCE_PUBLIC_KEY
+              value: {{ .Values.workspaces.instancePublicKey | quote }}
+            - name: GROMESH_PROBE_CONFIG
+              value: /etc/gromesh/probe/probe.json
+          # The probe never listens: Ready only in state ok with a valid lease.
+          readinessProbe:
+            exec:
+              command: [/gromesh/isolation-bin/isolation-probe, ready]
+            periodSeconds: 1
+            timeoutSeconds: 1
+            failureThreshold: 1
+          resources:
+            {{- toYaml .Values.workspaces.probe.resources | nindent 12 }}
+          volumeMounts:
+            - name: isolation
+              mountPath: /gromesh/isolation
+            - name: isolation-handoff
+              mountPath: /gromesh/handoff
+            - name: isolation-probe-config
+              mountPath: /etc/gromesh/probe
+              readOnly: true
+        {{- end }}
       containers:
         - name: kong
           image: {{ include "data-plane.image" .Values.kong.image | quote }}
           imagePullPolicy: {{ .Values.kong.image.pullPolicy }}
           # A container restarted after an unclean exit finds its old sockets in the volume, and bind() fails.
+          {{- if .Values.workspaces.enabled }}
+          # kong-supervisor is PID 1: no nginx without a valid lease, stopped within 1 s of losing it.
+          command: [/gromesh/isolation-bin/kong-supervisor, --, /bin/sh, -ec]
+          {{- else }}
           command: [/bin/sh, -ec]
+          {{- end }}
           args:
             - rm -f /kong/admin/admin.sock /kong/admin/status.sock && exec /usr/local/bin/gromesh-entrypoint kong docker-start
           securityContext:
@@ -111,8 +168,22 @@ spec:
               value: /dev/stdout
             - name: KONG_PROXY_ERROR_LOG
               value: /dev/stderr
+            {{- if .Values.workspaces.enabled }}
+            - name: KONG_PLUGINS
+              value: bundled,gromesh-workspace,gromesh-route-guard
+            # The route guard reads the pod uid in the nginx workers (nginx clears the environment otherwise).
+            - name: GROMESH_POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+            - name: KONG_NGINX_MAIN_ENV
+              value: GROMESH_POD_UID
+            - name: GROMESH_KONG_STATE_FILE
+              value: /gromesh/kong-state/kong-state.json
+            {{- else }}
             - name: KONG_PLUGINS
               value: bundled
+            {{- end }}
             - name: KONG_NGINX_WORKER_PROCESSES
               value: {{ .Values.kong.workerProcesses | quote }}
             - name: KONG_DNS_NOT_FOUND_TTL
@@ -136,6 +207,22 @@ spec:
             periodSeconds: 5
             timeoutSeconds: 2
             failureThreshold: 3
+          {{- if .Values.workspaces.enabled }}
+          # Independent of the supervisor: a heartbeat older than 3 s, or nginx without a valid lease, fails at once;
+          # the kubelet raises the probe's grace of 1 s to its minimum of 2 s (B §3.5.3, G).
+          startupProbe:
+            exec:
+              command: [/bin/sh, -c, test -s /gromesh/kong-state/kong-state.json]
+            periodSeconds: 1
+            failureThreshold: 10
+          livenessProbe:
+            exec:
+              command: [/gromesh/isolation-bin/kong-liveness]
+            periodSeconds: 1
+            timeoutSeconds: 1
+            failureThreshold: 1
+            terminationGracePeriodSeconds: 1
+          {{- else }}
           livenessProbe:
             tcpSocket:
               port: proxy-http
@@ -143,6 +230,7 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 3
+          {{- end }}
           resources:
             {{- toYaml .Values.kong.resources | nindent 12 }}
           volumeMounts:
@@ -158,44 +246,19 @@ spec:
             - name: kong-listeners
               mountPath: /etc/gromesh/kong
               readOnly: true
-        - name: agent
-          image: {{ include "data-plane.image" .Values.agent.image | quote }}
-          imagePullPolicy: {{ .Values.agent.image.pullPolicy }}
-          securityContext:
-            runAsUser: 1001
-            {{- include "data-plane.containerSecurityContext" . | nindent 12 }}
-          env:
-            - name: GROMESH_CP_URL
-              value: {{ .Values.agent.controlPlaneUrl | quote }}
-            - name: GROMESH_REGISTRATION_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "data-plane.secretName" . }}
-                  key: {{ .Values.agent.existingSecretKey }}
-            - name: GROMESH_NODE_ID
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
-            - name: KONG_ADMIN_URL
-              value: unix:///kong/admin/admin.sock
-            - name: KONG_STATUS_URL
-              value: unix:///kong/admin/status.sock
-            - name: SNAPSHOT_PATH
-              value: /kong/declarative/kong.json
-            - name: GROMESH_STATE_DIR
-              value: /var/lib/gromesh
-          ports:
-            - name: agent-metrics
-              containerPort: 9100
-          resources:
-            {{- toYaml .Values.agent.resources | nindent 12 }}
-          volumeMounts:
-            - name: snapshot
-              mountPath: /kong/declarative
-            - name: agent-state
-              mountPath: /var/lib/gromesh
-            - name: kong-admin
-              mountPath: /kong/admin
+            {{- if .Values.workspaces.enabled }}
+            - name: isolation
+              mountPath: /gromesh/isolation
+              readOnly: true
+            - name: kong-state
+              mountPath: /gromesh/kong-state
+            - name: isolation-bin
+              mountPath: /gromesh/isolation-bin
+              readOnly: true
+            {{- end }}
+        {{- if not .Values.workspaces.enabled }}
+        {{- include "data-plane.agent" . | nindent 8 }}
+        {{- end }}
       volumes:
         - name: snapshot
           emptyDir: {}
@@ -210,3 +273,21 @@ spec:
         - name: kong-listeners
           configMap:
             name: {{ include "data-plane.fullname" . }}-kong-listeners
+        {{- if .Values.workspaces.enabled }}
+        # Written only by the probe (its own UID); read-only in kong; never mounted by the agent.
+        - name: isolation
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: kong-state
+          emptyDir:
+            sizeLimit: 1Mi
+        - name: isolation-bin
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: isolation-handoff
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: isolation-probe-config
+          configMap:
+            name: {{ include "data-plane.fullname" . }}-isolation-probe
+        {{- end }}
