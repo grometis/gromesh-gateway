@@ -57,17 +57,19 @@ async function states(h: Harness, revision: number) {
   return (await h.sql.query(`select state from deployment_states where epoch = 1 and revision = $1 order by seq`, [revision])).rows.map((r) => r.state as string);
 }
 
-describe("publishRelease is off by default (D4)", () => {
+describe("publishRelease is off by default (D4, N3-K1)", () => {
   let h: Harness;
   beforeAll(async () => {
     h = await startHarness({ databaseUrl: await freshDatabase("off") });
   });
   afterAll(async () => h?.close());
 
-  it("answers 403 to publishing and listing and writes nothing", async () => {
+  it("answers 409 workspaces-mode-disabled to publishing, lists nothing and writes nothing", async () => {
     const ws = await workspace(h);
-    expect((await v2api(h.api, "POST", `/workspaces/${ws}/releases`, {})).status).toBe(403);
-    expect((await v2api(h.api, "GET", `/workspaces/${ws}/releases`)).status).toBe(403);
+    const res = await v2api(h.api, "POST", `/workspaces/${ws}/releases`, {});
+    expect(res.status).toBe(409);
+    expect(res.body).toMatchObject({ status: 409, code: "workspaces-mode-disabled", type: "https://gromesh.dev/problems/workspaces-mode-disabled" });
+    expect((await v2api(h.api, "GET", `/workspaces/${ws}/releases`)).body).toEqual([]);
     for (const table of ["instance", "releases", "deployments", "deployment_states"]) {
       expect((await h.sql.query(`select count(*)::int as n from ${table}`)).rows[0].n, table).toBe(0);
     }

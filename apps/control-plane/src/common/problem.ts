@@ -47,3 +47,7 @@ export const notFound = (what: string) => new ProblemException(HttpStatus.NOT_FO
 export const conflict = (detail: string, errors?: FieldError[]) => new ProblemException(HttpStatus.CONFLICT, detail, errors);
 export const unprocessable = (detail: string, errors: FieldError[]) =>
   new ProblemException(HttpStatus.UNPROCESSABLE_ENTITY, detail, errors);
+
+/** A refusal of the delivery rules (agent protocol v2, DeliveryProblem): a 409 whose `code` the caller acts on. */
+export const deliveryRefused = (code: string, detail: string) =>
+  new HttpException({ type: `https://gromesh.dev/problems/${code}`, title: "Conflict", status: HttpStatus.CONFLICT, code, detail }, HttpStatus.CONFLICT);

@@ -14,7 +14,7 @@ import { audit } from "../audit/audit.js";
 import { Ctx, RequiredPermission, type RequestContext } from "../auth/auth.js";
 import { contractBodyV2, inlineBody } from "../common/contract.js";
 import { destinationIssues, destinationPolicy, type DestinationPolicy } from "../common/destinations.js";
-import { conflict, notFound, ProblemException, unprocessable } from "../common/problem.js";
+import { conflict, deliveryRefused, notFound, ProblemException, unprocessable } from "../common/problem.js";
 import { stateVaultReferenceIssues } from "../common/vault-references.js";
 import { APP_CONFIG, type AppConfig } from "../config.js";
 import { deploymentContext, ENCRYPTOR, Encryptor, releaseContext } from "../crypto/crypto.js";
@@ -122,15 +122,15 @@ export class ReleasesService {
     this.destinations = destinationPolicy(config);
   }
 
-  /** D4: off unless a disposable laboratory turned it on; nothing of this module acts on a real installation. */
+  /** D4: off unless a disposable laboratory turned it on (N3-K1: 409 workspaces-mode-disabled, nothing recorded). */
   private settings(): Settings {
     const settings = this.config.workspacesDeployments;
-    if (!settings) throw forbidden("Workspaces deployments are disabled on this instance");
+    if (!settings) throw deliveryRefused("workspaces-mode-disabled", "Workspaces mode is disabled on this instance");
     return settings;
   }
 
+  /** Reading is harmless: with Workspaces mode off there is simply no release. */
   async list(workspaceId: string) {
-    this.settings();
     await this.requireWorkspace(this.db, workspaceId);
     const rows = await this.db.select().from(releases).where(eq(releases.workspaceId, workspaceId)).orderBy(desc(releases.version));
     return this.toReleases(this.db, rows);
