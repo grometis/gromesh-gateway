@@ -43,7 +43,6 @@ refuse_ws() {
   grep -Fq "$expected" "$work/ws.log"
 }
 refuse_ws 'requires Kubernetes >= 1.33' --kube-version 1.32.9
-refuse_ws 'start with the Kong version' --kube-version 1.33.0 --set kong.image.tag=latest
 refuse_ws 'no forbidden target for CAP-3' --kube-version 1.33.0 --set 'workspaces.probe.checks[2].kind=tcp-open'
 refuse_ws 'must differ from kong.runAsUser' --kube-version 1.33.0 --set workspaces.probe.runAsUser=1001
 refuse_ws 'workspaces.clusterId' --kube-version 1.33.0 --set-string workspaces.clusterId=nope
@@ -105,8 +104,17 @@ assert.deepEqual(mount(probe, 'kong-state'), { name: 'kong-state', mountPath: '/
 assert.equal(mount(agent, 'isolation-probe-config'), undefined, 'the agent never sees the trust set it could swap');
 assert.equal(mount(agent, 'kong-state'), undefined);
 assert.equal(env(agent, 'GROMESH_HANDOFF_DIR').value, '/gromesh/handoff');
-// Registration cannot wait for Kong in this mode: the agent declares the pinned image's version.
-assert.equal(env(agent, 'GROMESH_KONG_VERSION').value, '3.9.4');
+// Registration cannot wait for Kong in this mode: seed-config (the Kong image) writes the version Kong reports, and
+// only the agent reads it; no chart value feeds it.
+const seed = pod.initContainers.find(c => c.name === 'seed-config');
+assert.match(seed.args[0], /luajit -e 'io\.write\(dofile\("\/usr\/local\/share\/lua\/5\.1\/kong\/meta\.lua"\)\._VERSION\)' > \/gromesh\/kong-version\/version/);
+assert.equal(seed.image, kong.image);
+assert.deepEqual(mount(seed, 'kong-version'), { name: 'kong-version', mountPath: '/gromesh/kong-version' });
+assert.deepEqual(mount(agent, 'kong-version'), { name: 'kong-version', mountPath: '/gromesh/kong-version', readOnly: true });
+assert.equal(mount(kong, 'kong-version'), undefined);
+assert.equal(mount(probe, 'kong-version'), undefined);
+assert.equal(env(agent, 'GROMESH_KONG_VERSION_FILE').value, '/gromesh/kong-version/version');
+assert.equal(env(agent, 'GROMESH_KONG_VERSION'), undefined);
 assert.equal(env(agent, 'GROMESH_POD_UID').valueFrom.fieldRef.fieldPath, 'metadata.uid');
 assert.equal(env(agent, 'GROMESH_NODE_NAME').valueFrom.fieldRef.fieldPath, 'spec.nodeName');
 const volume = name => pod.volumes.find(v => v.name === name);

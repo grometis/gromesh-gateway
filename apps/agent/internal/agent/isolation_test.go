@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -373,7 +374,8 @@ func TestTheSessionCarriesIsolationAndSendsTheFinalReportOnStop(t *testing.T) {
 }
 
 // Cold start in Workspaces mode: Kong (and so its Admin API) starts only after the admission, which needs the node
-// token; the agent registers with the pinned version the chart declares and the admission follows (N2-E2 finding F1).
+// token; the agent registers with the version seed-config read from the pinned image and the admission follows (N2-E2
+// finding F1).
 func TestWorkspacesModeRegistersBeforeKongExistsAndGetsTheAdmission(t *testing.T) {
 	cp := cpmock.New()
 	defer cp.Close()
@@ -387,8 +389,11 @@ func TestWorkspacesModeRegistersBeforeKongExistsAndGetsTheAdmission(t *testing.T
 	a.config.KongAdminURL, a.config.KongStatusURL = "unix://"+filepath.Join(none, "admin.sock"), "unix://"+filepath.Join(none, "status.sock")
 	a.client.config.KongAdminURL, a.client.config.KongStatusURL = a.config.KongAdminURL, a.config.KongStatusURL
 	a.config.HandoffDir, a.config.PodUID, a.config.PodName, a.config.NodeName, a.config.BootIDFile = w.handoff, testPod, "dp-0", "worker-1", w.boot
-	a.config.KongVersion = "3.9.4"
-	a.client.config.HandoffDir, a.client.config.KongVersion = a.config.HandoffDir, a.config.KongVersion
+	a.config.KongVersionFile = filepath.Join(t.TempDir(), "version")
+	if err := os.WriteFile(a.config.KongVersionFile, []byte("3.9.4"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a.client.config.HandoffDir, a.client.config.KongVersionFile = a.config.HandoffDir, a.config.KongVersionFile
 	a.isolation = &isolation{config: a.config, client: a.client, log: a.log, interval: time.Hour, retry: func(int) time.Duration { return 0 }}
 	a.isolation.config.StateDir = w.state
 	w.write("probe.pub", testProbeKey)
@@ -397,7 +402,7 @@ func TestWorkspacesModeRegistersBeforeKongExistsAndGetsTheAdmission(t *testing.T
 	select {
 	case r := <-cp.Registrations:
 		if r.KongVersion != "3.9.4" {
-			t.Fatalf("registered Kong %q, want the declared 3.9.4", r.KongVersion)
+			t.Fatalf("registered Kong %q, want the image's 3.9.4", r.KongVersion)
 		}
 	case <-time.After(4 * time.Second):
 		t.Fatal("the agent never registered while Kong was not running")
@@ -411,18 +416,48 @@ func TestWorkspacesModeRegistersBeforeKongExistsAndGetsTheAdmission(t *testing.T
 	}
 }
 
-func TestWorkspacesModeRequiresTheDeclaredKongVersion(t *testing.T) {
+func TestWorkspacesModeRequiresTheKongVersionFile(t *testing.T) {
 	c := Config{RegistrationToken: "t", NodeID: "n", Hostname: "h", SnapshotPath: "/s", ControlPlaneURL: "http://cp",
 		KongAdminURL: "unix:///a", KongStatusURL: "unix:///s", StateDir: "/state",
 		HandoffDir: "/gromesh/handoff", PodUID: testPod, PodName: "dp-0", NodeName: "worker-1", BootIDFile: "/b"}
-	for _, v := range []string{"", "3.9", "3.9.4-abc", "latest"} {
-		c.KongVersion = v
-		if c.validate() == nil {
-			t.Fatalf("Workspaces mode accepted GROMESH_KONG_VERSION %q", v)
+	if c.validate() == nil {
+		t.Fatal("Workspaces mode accepted no GROMESH_KONG_VERSION_FILE")
+	}
+	c.KongVersionFile = "/gromesh/kong-version/version"
+	if err := c.validate(); err != nil {
+		t.Fatalf("a version file was refused: %v", err)
+	}
+}
+
+// Only a well-formed version in a regular file registers; anything else is an error, never a guess.
+func TestWorkspacesModeRefusesAMissingOrMalformedKongVersion(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	if err := os.WriteFile(target, []byte("3.9.4"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	c := &client{config: Config{HandoffDir: "/gromesh/handoff"}}
+	for name, content := range map[string]string{"empty": "", "short": "3.9", "suffix": "3.9.4-abc", "newline": "3.9.4\n", "tag": "latest"} {
+		c.config.KongVersionFile = filepath.Join(dir, name)
+		if err := os.WriteFile(c.config.KongVersionFile, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if v, err := c.kongVersion(context.Background()); err == nil {
+			t.Fatalf("%s: registered Kong %q", name, v)
 		}
 	}
-	c.KongVersion = "3.9.4"
-	if err := c.validate(); err != nil {
-		t.Fatalf("a declared 3.9.4 was refused: %v", err)
+	for _, path := range []string{filepath.Join(dir, "missing"), link} {
+		c.config.KongVersionFile = path
+		if v, err := c.kongVersion(context.Background()); err == nil {
+			t.Fatalf("%s: registered Kong %q", path, v)
+		}
+	}
+	c.config.KongVersionFile = target
+	if v, err := c.kongVersion(context.Background()); err != nil || v != "3.9.4" {
+		t.Fatalf("got %q, %v", v, err)
 	}
 }

@@ -65,10 +65,14 @@ func (c *client) nodeRequest(ctx context.Context, method, path string, body []by
 }
 
 // kongVersion is Kong's own answer, except in Workspaces mode: there Kong starts only after the pod's admission, which
-// needs the node token this registration returns, so the pinned image's version the chart declares stands in for it.
+// needs the node token this registration returns, so the version read from the pinned image stands in for it.
 func (c *client) kongVersion(ctx context.Context) (string, error) {
 	if c.config.HandoffDir != "" {
-		return c.config.KongVersion, nil
+		raw, err := readRegular(c.config.KongVersionFile, 64)
+		if err != nil || !kongVersionPattern.Match(raw) {
+			return "", fmt.Errorf("invalid Kong version in %s", c.config.KongVersionFile)
+		}
+		return string(raw), nil
 	}
 	res, err := c.request(ctx, "GET", c.config.KongAdminURL, "", nil, nil)
 	if err != nil {
