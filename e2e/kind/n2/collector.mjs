@@ -52,7 +52,8 @@ function run(command, args, { input, timeout = 180_000, allowFail = false } = {}
     child.on("close", (code) => {
       clearTimeout(timer);
       if (code === 0 || allowFail) resolve({ code, stdout, stderr });
-      else reject(new Error(redact(`${command} ${args.slice(0, 6).join(" ")} exited ${code}: ${(stderr || stdout).slice(0, 400)}`)));
+      // Redact the whole output first: a cut could split a secret and let part of it through.
+      else reject(new Error(`${command} ${redact(args.slice(0, 6).join(" "))} exited ${code}: ${redact(stderr || stdout).slice(0, 400)}`));
     });
     child.stdin.end(input ?? "");
   });
