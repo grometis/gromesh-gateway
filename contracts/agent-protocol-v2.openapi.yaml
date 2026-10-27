@@ -63,11 +63,13 @@ info:
         the admission never authorized traffic. The control plane closes it by the rule above and records it as
         never served; the absence of a report proves nothing. The probe then removes probe.pub, and the agent asks
         for or polls an admission only while probe.pub exists, so a stopping pod is granted nothing new. Declared
-        residual: a grant already in flight at that moment, a lost final report (agent frozen, probe volume lost) or
-        an abrupt stop (force deletion, node loss) leave the admission open, held as above.
-        Closing never erases evidence: a report numbered above the final one of its chain, or a second seq 1, is an
-        integrity conflict (confirmed-violation); a confirmed-violation pendency of an admission stays open after the
-        admission closes; a closed admission is never adopted again (the probe keeps the ids it closed) and the
+        residual: a grant already in flight at that moment; a closing report that cannot be produced, persisted,
+        delivered or confirmed (queue full or write error, agent frozen, probe volume lost, kongStopConfirmed false);
+        or an abrupt stop (force deletion, node loss) leaves the admission open, held as above.
+        Closing never erases evidence: a report numbered above the final one of its chain, or a report with other
+        content for a seq already received (seq 1 included), is an integrity conflict (confirmed-violation), while
+        an identical retransmission is idempotent; a confirmed-violation pendency of an admission stays open after
+        the admission closes; a closed admission is never adopted again (the probe keeps the ids it closed) and the
         control plane grants no second admission of the same (podUid, bootId).
       - Capabilities the probe proves from the kong container's network namespace (a NetworkPolicy manifest is
         never proof). CAP-1 egress between pods: denied by default in the data plane namespace with an explicit

@@ -705,7 +705,8 @@ describe("agent protocol v2", () => {
     const info = flat(agentV2.info.description);
     expect(info).toContain("a chain whose seq 1 is final proves");
     expect(info).toContain("the absence of a report proves nothing");
-    expect(info).toContain("a report numbered above the final one of its chain, or a second seq 1, is an integrity conflict");
+    expect(info).toContain("a report numbered above the final one of its chain, or a report with other content for a seq already received (seq 1 included), is an integrity conflict (confirmed-violation), while an identical retransmission is idempotent");
+    expect(info).toContain("a closing report that cannot be produced, persisted, delivered or confirmed");
     expect(info).toContain("a confirmed-violation pendency of an admission stays open after the admission closes");
     expect(flat(agentV2.components.schemas.IsolationHandoff.description)).toContain("removed at the pod's stop signal, after which the agent neither asks for nor polls an admission");
     expect(agentV2.components.schemas.ReportAcks.properties.rejected.items.properties.reason.enum).toContain("integrity-conflict");
