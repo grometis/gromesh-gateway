@@ -819,6 +819,18 @@ describe("isolation admissions and reports (N2-D3a)", () => {
     await c3.send(p3.next(c3.id, a3.admissionId, { state: "awaiting-admission", leaseRemainingMs: null, final: true, finalReason: "pod-terminated", kongStopConfirmed: false }));
     expect(await servedOf(c3, p3.podUid)).toBe("served");
     expect((await h.sql.query("select state from isolation_admissions where admission_id = $1", [a3.admissionId])).rows[0].state).toBe("open");
+    // A seq 1 final in violation, then a report past it (the conflict finds that violation already open): served.
+    const c5 = await cluster();
+    const p5 = new Probe();
+    const a5 = await admit(c5, p5);
+    await c5.send(p5.next(c5.id, a5.admissionId, { state: "violation", failedCapabilities: ["CAP-1"], leaseRemainingMs: null, final: true, finalReason: "pod-terminated", kongStopConfirmed: true }));
+    expect(await servedOf(c5, p5.podUid)).toBe("served");
+    expect((await c5.send(p5.next(c5.id, a5.admissionId, { state: "ok" }))).rejected).toEqual([{ index: 0, reason: "integrity-conflict" }]);
+    expect(await servedOf(c5, p5.podUid)).toBe("served");
+    // Released by the admin afterwards, it stays served: a release is no proof of never serving.
+    const pend = (await c5.isolation()).pendencies.find((p) => p.kind === "confirmed-violation")!;
+    expect((await v2(h.api, "POST", `/clusters/${c5.id}/isolation-releases`, { pendencyId: pend.id, justification: "lab: pod deleted, violation reviewed" })).status).toBe(201);
+    expect(await servedOf(c5, p5.podUid)).toBe("served");
     // A report the probe key did not sign is refused before it is stored: it moves nothing.
     const c4 = await cluster();
     const p4 = new Probe();

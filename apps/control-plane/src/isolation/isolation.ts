@@ -534,9 +534,11 @@ export class IsolationService {
 
   /**
    * contract: AdmissionServedState (F3-D2), only from reports stored after their signature was verified with the
-   * admission's probe key. never-served-verified: its only report is a seq 1 final confirming Kong stopped and no
-   * integrity conflict was ever raised on it; served: any other report; unknown (absent here): no report at all.
-   * Nothing is ever closed from this view: unknown changes no state.
+   * admission's probe key. never-served-verified: its only report is a seq 1 awaiting-admission final confirming Kong
+   * stopped and no confirmed violation (integrity conflict included) was ever opened on it; served: any other report
+   * or such a violation; unknown (absent here): no report at all. Nothing is ever closed from this view.
+   * A conflict raised while another violation of the admission is open records no second pendency, but that open
+   * one already makes it served.
    */
   private async servedStates(tx: Executor, admissionIds: string[]): Promise<Map<string, "never-served-verified" | "served">> {
     const out = new Map<string, "never-served-verified" | "served">();
@@ -545,7 +547,7 @@ export class IsolationService {
       .select({
         admissionId: isolationReports.admissionId,
         n: sql<number>`count(*)::int`,
-        closedUnadopted: sql<boolean>`bool_or(${isolationReports.seq} = 1 and ${isolationReports.final} and ${isolationReports.kongStopConfirmed} is true)`,
+        closedUnadopted: sql<boolean>`bool_or(${isolationReports.seq} = 1 and ${isolationReports.final} and ${isolationReports.kongStopConfirmed} is true and ${isolationReports.state} = 'awaiting-admission')`,
       })
       .from(isolationReports)
       .where(inArray(isolationReports.admissionId, admissionIds))
@@ -555,7 +557,7 @@ export class IsolationService {
         await tx
           .select({ admissionId: isolationPendencies.admissionId })
           .from(isolationPendencies)
-          .where(and(inArray(isolationPendencies.admissionId, admissionIds), eq(isolationPendencies.capability, "integrity-conflict")))
+          .where(and(inArray(isolationPendencies.admissionId, admissionIds), eq(isolationPendencies.kind, "confirmed-violation")))
       ).map((p) => p.admissionId),
     );
     for (const c of chains) out.set(c.admissionId, c.n === 1 && c.closedUnadopted && !conflicted.has(c.admissionId) ? "never-served-verified" : "served");
