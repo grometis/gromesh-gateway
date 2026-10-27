@@ -796,6 +796,31 @@ describe("delivery protocol and convergence evidence (N3-K1)", () => {
     expect(vector.cases.filter((c: Doc) => c.evidence === "verified").every((c: Doc) => c.probe && c.status)).toBe(true);
   });
 
+  it("publishes a release without deploying it, also with Workspaces mode disabled (D4)", () => {
+    const publish = v2Ops.find(({ op }) => op.operationId === "publishRelease")!.op;
+    expect(publish.description).toContain("Draft -> Publish Release -> Create Deployment -> Apply -> Verify Convergence");
+    expect(publish.description).toContain("It is allowed while the server's");
+    expect(publish.description).toContain("never here");
+    expect(publish.description).toContain("never creates a workspace");
+    // The operational refusal lives where something reaches a data plane: deployment and activation.
+    const deploy = v2Ops.find(({ op }) => op.operationId === "createDeployment")!.op;
+    expect(deploy.description).toContain("409 workspaces-mode-disabled while the server's Workspaces mode is disabled");
+    const set = v2Ops.find(({ op }) => op.operationId === "setClusterDeliveryProtocol")!.op;
+    expect(set.description).toContain("workspaces-mode-disabled (to v2)");
+    const states = v2.components.schemas.DeliveryProtocolState["x-gromesh-transitions"].transitions as [string, string, string][];
+    expect(states.find(([, to, why]) => to === "v2-pending" && why.includes("protocol v2"))![2]).toContain("Workspaces mode enabled");
+  });
+
+  it("never converges an empty set of expected nodes and keeps md5 out of integrity decisions", () => {
+    const t = v2.components.schemas.DeploymentState["x-gromesh-transitions"].transitions as [string, string, string][];
+    const toConverged = t.filter(([, to]) => to === "converged");
+    expect(toConverged.map(([from]) => from).sort()).toEqual(["active", "converging"]);
+    for (const [from, , why] of toConverged) expect(why, from).toContain("(at least one)");
+    expect(v2.components.schemas.Deployment.description).toContain("A revision with no expected node never converges");
+    expect(agentV2.info.description).toContain("never replaces the SHA-256 identities");
+    expect(agentV2.info.description).toContain("no decision of integrity, provenance or authorization reads");
+  });
+
   it("refuses with a typed code and switches the protocol only explicitly", () => {
     const refusal = (code: string) => ({ type: `https://gromesh.dev/problems/${code}`, title: "Conflict", status: 409, code });
     const deploy = v2Ops.find(({ op }) => op.operationId === "createDeployment")!.op;
