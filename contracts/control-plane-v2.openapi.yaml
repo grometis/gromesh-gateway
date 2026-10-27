@@ -817,7 +817,6 @@ paths:
       x-scope: workspace
       x-gromesh-requirements: [ GW-PUB-06 ]
       x-required-permission: workspace.read
-      x-gromesh-planned: true
       responses:
         "200": { description: Releases, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Release" } } } } }
         "401":
@@ -831,7 +830,6 @@ paths:
       x-gromesh-requirements: [ GW-PUB-01, GW-PUB-03, GW-PUB-06, GW-ENV-07 ]
       security: [ { cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] } ]
       x-required-permission: release.publish
-      x-gromesh-planned: true
       description: |
         Freezes the workspace draft into an immutable release and deploys it on THIS instance (new deployment
         revision composing every workspace's active release). Only on dev: in hml and prd local publishing does not

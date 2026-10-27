@@ -20,6 +20,7 @@ import { WorkspaceConfigTransferController } from "../../src/config-transfer/con
 import { InstanceController } from "../../src/instance/instance.js";
 import { SigningKeysController } from "../../src/instance/signing-keys.js";
 import { ClusterIsolationController } from "../../src/isolation/isolation.js";
+import { ReleasesController } from "../../src/releases/releases.js";
 import { startHarness, type Harness } from "./harness.js";
 
 // N0: the Workspaces contracts (v2) are planned; nothing here is implemented yet. These tests keep them coherent until
@@ -112,6 +113,7 @@ describe("planned operations", () => {
       InstanceController,
       SigningKeysController,
       ClusterIsolationController,
+      ReleasesController,
     ]) {
       const base = (Reflect.getMetadata("path", controller) as string).replace(/^\/?/, "/");
       for (const name of Object.getOwnPropertyNames(controller.prototype)) {

@@ -1,0 +1,394 @@
+import { Body, Controller, Get, HttpCode, HttpStatus, Inject, Injectable, Module, Param, Post } from "@nestjs/common";
+import {
+  buildSnapshotV2,
+  CompileError,
+  contentDigest,
+  type DeploymentMember as ComposedMember,
+  type GatewayState,
+  type KongDeclarativeConfig,
+  platformPlugins,
+  type WorkspaceContent,
+} from "@gromesh/compiler";
+import { and, asc, desc, eq, inArray, max, sql } from "drizzle-orm";
+import { audit } from "../audit/audit.js";
+import { Ctx, RequiredPermission, type RequestContext } from "../auth/auth.js";
+import { contractBodyV2, inlineBody } from "../common/contract.js";
+import { destinationIssues, destinationPolicy, type DestinationPolicy } from "../common/destinations.js";
+import { conflict, notFound, ProblemException, unprocessable } from "../common/problem.js";
+import { stateVaultReferenceIssues } from "../common/vault-references.js";
+import { APP_CONFIG, type AppConfig } from "../config.js";
+import { deploymentContext, ENCRYPTOR, Encryptor, releaseContext } from "../crypto/crypto.js";
+import { DB, type Db, type Executor, type Tx } from "../db/db.js";
+import {
+  contentActivations,
+  contentRevocations,
+  deploymentLease,
+  deployments,
+  deploymentStates,
+  instance,
+  releases,
+  workspaceActiveRelease,
+  workspaces,
+  type DeploymentMember,
+  type InstanceRow,
+  type ReleaseRow,
+} from "../db/schema.js";
+import { uuidParam } from "../environments/environments.js";
+import { loadGatewayState } from "../gateway/gateway.js";
+import { PluginCatalog, PluginCatalogModule } from "../plugin-catalog/catalog.js";
+
+type DeploymentState = (typeof deploymentStates.$inferSelect)["state"];
+type Settings = NonNullable<AppConfig["workspacesDeployments"]>;
+
+/** The epoch of the instance's deployments until the snapshots → releases migration opens the next one (D5). */
+const FIRST_EPOCH = 1;
+const forbidden = (detail: string) => new ProblemException(HttpStatus.FORBIDDEN, detail);
+const PUBLISH_BODY = inlineBody("/workspaces/{workspaceId}/releases", "post");
+
+interface PublishBody {
+  message?: string;
+  expectedActiveVersion?: number | null;
+}
+
+/** A release's content opened: the workspace's draft without credentials, which are values of each instance. */
+type ReleaseState = GatewayState;
+
+/**
+ * The release content in the contract's model (WorkspaceContent): every entity as {id, spec}. Plugin secrets and
+ * certificate keys stay sealed in the release and enter the digest only as an HMAC under the instance's fingerprint key,
+ * so a digest that leaves through the API is no oracle for them (until variables carry them as VarRef, N1-X4b).
+ */
+export function releaseContent(state: ReleaseState, enc: Encryptor, catalog: PluginCatalog): WorkspaceContent {
+  const secret = (owner: string, path: string, value: string) => `hmac-sha256:${enc.fingerprint(["release-secret", owner, path, value].join("\0"))}`;
+  const spec = <T extends { id: string }>(e: T) => {
+    const { id, ...rest } = e;
+    return { id, spec: rest };
+  };
+  return {
+    services: state.services.map(spec),
+    routes: state.routes.map(spec),
+    consumers: state.consumers.map(({ id, aclGroups, ...rest }) => ({ id, aclGroups: aclGroups ?? [], spec: rest })),
+    credentials: [],
+    plugins: state.plugins.map((p) => spec({ ...p, config: catalog.mapSecrets(p.name, p.config ?? {}, (v, path) => secret(p.id, path.join("."), v)) })),
+    upstreams: (state.upstreams ?? []).map(spec),
+    targets: (state.targets ?? []).map(({ id, upstreamId, ...rest }) => ({ id, upstreamId, spec: rest })),
+    certificates: (state.certificates ?? []).map((c) => spec({ ...c, key: secret(c.id, "key", c.key) })),
+    variables: [],
+  };
+}
+
+const withoutCredentials = (state: GatewayState): ReleaseState => ({ ...state, keyAuthCredentials: [], jwtCredentials: [], basicAuthCredentials: [] });
+
+/** The database clock after any lock wait: deadlines are compared with it, never with a replica's clock. */
+async function clock(tx: Executor): Promise<Date> {
+  const { rows } = await tx.execute<{ now: Date | string }>(sql`select clock_timestamp() as now`);
+  return new Date(rows[0]!.now);
+}
+
+/** The machine's current state of a deployment: its highest transition. */
+export async function deploymentState(tx: Executor, epoch: number, revision: number): Promise<{ state: DeploymentState; seq: number } | undefined> {
+  const [row] = await tx
+    .select({ state: deploymentStates.state, seq: deploymentStates.seq })
+    .from(deploymentStates)
+    .where(and(eq(deploymentStates.epoch, epoch), eq(deploymentStates.revision, revision)))
+    .orderBy(desc(deploymentStates.seq))
+    .limit(1);
+  return row;
+}
+
+/** Appends the transitions, in order; the caller holds the deployment lease row, so seqs never race. */
+export async function transition(tx: Executor, epoch: number, revision: number, steps: [DeploymentState, string][]): Promise<void> {
+  let seq = (await deploymentState(tx, epoch, revision))?.seq ?? 0;
+  for (const [state, reason] of steps) await tx.insert(deploymentStates).values({ epoch, revision, seq: ++seq, state, reason });
+}
+
+/** The shortest path the contract's machine allows from `from` to failed on the convergence deadline. */
+const TO_FAILED: Partial<Record<DeploymentState, DeploymentState[]>> = {
+  active: ["converging", "degraded", "failed"],
+  converging: ["degraded", "failed"],
+  degraded: ["failed"],
+};
+
+@Injectable()
+export class ReleasesService {
+  private readonly destinations: DestinationPolicy;
+
+  constructor(
+    @Inject(DB) private readonly db: Db,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
+    @Inject(ENCRYPTOR) private readonly enc: Encryptor,
+    private readonly catalog: PluginCatalog,
+  ) {
+    this.destinations = destinationPolicy(config);
+  }
+
+  /** D4: off unless a disposable laboratory turned it on; nothing of this module acts on a real installation. */
+  private settings(): Settings {
+    const settings = this.config.workspacesDeployments;
+    if (!settings) throw forbidden("Workspaces deployments are disabled on this instance");
+    return settings;
+  }
+
+  async list(workspaceId: string) {
+    this.settings();
+    await this.requireWorkspace(this.db, workspaceId);
+    const rows = await this.db.select().from(releases).where(eq(releases.workspaceId, workspaceId)).orderBy(desc(releases.version));
+    return this.toReleases(this.db, rows);
+  }
+
+  /**
+   * publishRelease (dev only): freezes the workspace draft into an immutable release and composes the instance's next
+   * deployment revision with every workspace's active release. Delivering that revision to a cluster is a separate gate
+   * (D2/D4): until the delivery contract (N3-K1) no cluster is an expected node, and the deployment has none.
+   */
+  async publish(ctx: RequestContext, workspaceId: string, body: PublishBody) {
+    const settings = this.settings();
+    return this.db.transaction(async (tx) => {
+      // The single lease row: every deployment of the instance, from any replica, goes through it one at a time.
+      const [lease] = await tx.select().from(deploymentLease).for("update");
+      const self = await this.instance(tx, settings);
+      if (self.stage !== "dev") throw forbidden(`Local publishing exists only on dev; this instance is ${self.stage}`);
+      const now = await clock(tx);
+      if (lease!.revision !== null) {
+        if (lease!.deadlineAt && lease!.deadlineAt > now) throw conflict(`Deployment revision ${lease!.revision} holds the deployment lease`);
+        await this.expire(tx, lease!.revision);
+      }
+
+      const ws = await this.requireWorkspace(tx, workspaceId, true);
+      if (!ws.slug) throw unprocessable("The workspace cannot be published", [{ path: "slug", message: "the workspace has no slug yet" }]);
+      const [active] = await tx.select().from(workspaceActiveRelease).where(eq(workspaceActiveRelease.workspaceId, workspaceId));
+      if (body.expectedActiveVersion !== undefined && body.expectedActiveVersion !== (active?.version ?? null)) {
+        throw conflict(`Active release is ${active?.version ?? "none"}, expected ${body.expectedActiveVersion ?? "none"}`);
+      }
+
+      const draft = await loadGatewayState(tx, workspaceId, this.enc, this.catalog);
+      const forbiddenIssues = [...destinationIssues(draft, this.destinations), ...stateVaultReferenceIssues(draft)];
+      if (forbiddenIssues.length > 0) throw unprocessable("The draft cannot be published", forbiddenIssues);
+      const state = withoutCredentials(draft);
+      const digest = contentDigest(releaseContent(state, this.enc, this.catalog));
+      const activeRow = active ? await this.findRelease(tx, workspaceId, active.version) : undefined;
+      if (activeRow?.contentDigest === digest) throw conflict("Nothing to publish: the draft equals the active release");
+
+      const [{ last }] = (await tx.select({ last: max(releases.version) }).from(releases).where(eq(releases.workspaceId, workspaceId))) as [{ last: number | null }];
+      const version = (last ?? 0) + 1;
+      const [first] = await tx
+        .select({ version: releases.version })
+        .from(releases)
+        .where(and(eq(releases.workspaceId, workspaceId), eq(releases.contentDigest, digest)))
+        .orderBy(asc(releases.version))
+        .limit(1);
+      const [release] = await tx
+        .insert(releases)
+        .values({
+          workspaceId,
+          version,
+          content: this.enc.sealJson(state, releaseContext(workspaceId, version)),
+          contentDigest: digest,
+          origin: "local",
+          message: body.message ?? null,
+          createdBy: ctx.actor,
+          contentOriginVersion: first?.version ?? version,
+        })
+        .returning();
+      // The slug is part of every public path from the first release on.
+      await tx.update(workspaces).set({ slugLockedAt: sql`coalesce(${workspaces.slugLockedAt}, now())` }).where(eq(workspaces.id, workspaceId));
+
+      const deployment = await this.compose(tx, ctx, self, settings, now, { workspaceId, version, state });
+      await audit(tx, ctx, {
+        action: "release.publish",
+        entityType: "release",
+        entityId: `${workspaceId}:${version}`,
+        environmentId: workspaceId,
+        after: { version, contentDigest: digest, message: body.message ?? null, epoch: deployment.epoch, revision: deployment.revision, configHash: deployment.configHash, expectedNodes: deployment.expectedNodes },
+      });
+      return (await this.toReleases(tx, [release!]))[0]!;
+    });
+  }
+
+  /** The next revision of the instance: the published release replaces its workspace's, every other stays. */
+  private async compose(
+    tx: Tx,
+    ctx: RequestContext,
+    self: InstanceRow,
+    settings: Settings,
+    now: Date,
+    published: { workspaceId: string; version: number; state: ReleaseState },
+  ) {
+    const others = await tx.select().from(workspaceActiveRelease).orderBy(asc(workspaceActiveRelease.workspaceId));
+    const memberRows = [...others.filter((o) => o.workspaceId !== published.workspaceId).map((o) => ({ workspaceId: o.workspaceId, version: o.version })), { workspaceId: published.workspaceId, version: published.version }];
+    const slugs = new Map((await tx.select({ id: workspaces.id, slug: workspaces.slug }).from(workspaces).where(inArray(workspaces.id, memberRows.map((m) => m.workspaceId)))).map((w) => [w.id, w.slug]));
+    const members: ComposedMember[] = [];
+    const recorded: DeploymentMember[] = [];
+    for (const m of memberRows) {
+      const state = m.workspaceId === published.workspaceId ? published.state : await this.openRelease(tx, m.workspaceId, m.version);
+      const content = releaseContent(state, this.enc, this.catalog);
+      members.push({ id: m.workspaceId, slug: slugs.get(m.workspaceId)!, state: await this.withCredentials(tx, m.workspaceId, state), releaseVersion: m.version, content });
+      recorded.push({ workspaceId: m.workspaceId, releaseVersion: m.version, contentDigest: contentDigest(content) });
+    }
+    recorded.sort((a, b) => (a.workspaceId < b.workspaceId ? -1 : 1));
+
+    const [{ last }] = (await tx.select({ last: max(deployments.revision) }).from(deployments).where(eq(deployments.epoch, FIRST_EPOCH))) as [{ last: number | null }];
+    const revision = (last ?? 0) + 1;
+    const endpoint = this.config.platformHttpLogEndpoint;
+    let config: KongDeclarativeConfig;
+    let configHash: string;
+    try {
+      // The composed config is instance-wide: the platform plugins carry the instance id where v1 carries the environment's.
+      const envelope = buildSnapshotV2(
+        members,
+        { instanceId: self.id, epoch: FIRST_EPOCH, revision, reason: "publish", createdAt: now.toISOString() },
+        endpoint ? { platformPlugins: platformPlugins({ httpLogEndpoint: endpoint, environmentId: self.id }) } : undefined,
+      );
+      config = envelope.config;
+      configHash = envelope.hash;
+    } catch (err) {
+      // Nothing is recorded: the release and the deployment roll back together (composed → rejected never persists).
+      if (err instanceof CompileError) throw unprocessable("The instance's composition refuses this release", err.issues);
+      throw err;
+    }
+    // D2: only clusters explicitly enabled for the v2 protocol are expected nodes; until the delivery contract
+    // (N3-K1) none is, and no node can receive this revision.
+    const expectedNodes: string[] = [];
+    await tx.insert(deployments).values({
+      epoch: FIRST_EPOCH,
+      revision,
+      members: recorded,
+      expectedNodes,
+      config: this.enc.sealJson(config, deploymentContext(FIRST_EPOCH, revision)),
+      configHash,
+      reason: "publish",
+      createdBy: ctx.actor,
+      createdAt: now,
+    });
+    const previous = await this.currentRevision(tx, revision);
+    await transition(tx, FIRST_EPOCH, revision, [
+      ["composed", "release published"],
+      ["active", "recorded, expected nodes fixed"],
+    ]);
+    if (previous) await this.supersede(tx, previous);
+    if (expectedNodes.length === 0) {
+      // Vacuous: no node to wait for. No content activation either: content counts as activated only once a node applied it.
+      await transition(tx, FIRST_EPOCH, revision, [["converged", "no expected node"]]);
+    } else {
+      await tx
+        .update(deploymentLease)
+        .set({ revision, operation: "publish", owner: ctx.actor, startedAt: now, deadlineAt: new Date(now.getTime() + settings.convergenceDeadlineMs) });
+    }
+    await tx
+      .insert(workspaceActiveRelease)
+      .values({ workspaceId: published.workspaceId, version: published.version, deploymentRevision: revision })
+      .onConflictDoUpdate({ target: workspaceActiveRelease.workspaceId, set: { version: published.version, deploymentRevision: revision } });
+    return { epoch: FIRST_EPOCH, revision, configHash, expectedNodes };
+  }
+
+  /** The latest revision before `revision`, if any. */
+  private async currentRevision(tx: Executor, revision: number): Promise<number | undefined> {
+    const [row] = await tx
+      .select({ revision: deployments.revision })
+      .from(deployments)
+      .where(and(eq(deployments.epoch, FIRST_EPOCH), sql`${deployments.revision} < ${revision}`))
+      .orderBy(desc(deployments.revision))
+      .limit(1);
+    return row?.revision;
+  }
+
+  /** A new deployment supersedes the previous one where the machine allows it (converged, degraded or failed). */
+  private async supersede(tx: Executor, revision: number) {
+    const current = await deploymentState(tx, FIRST_EPOCH, revision);
+    if (current && ["converged", "degraded", "failed"].includes(current.state)) await transition(tx, FIRST_EPOCH, revision, [["superseded", "new deployment"]]);
+  }
+
+  /** A lease past its deadline: its deployment fails (C-16) and the lease is free again. */
+  private async expire(tx: Executor, revision: number) {
+    const current = await deploymentState(tx, FIRST_EPOCH, revision);
+    const path = current ? TO_FAILED[current.state] : undefined;
+    if (path) await transition(tx, FIRST_EPOCH, revision, path.map((s) => [s, "convergence deadline"]));
+    await tx.update(deploymentLease).set({ revision: null, operation: null, owner: null, startedAt: null, deadlineAt: null });
+  }
+
+  /** D1: the instance row, created on first use with the configured stage; a different stage later is refused. */
+  private async instance(tx: Executor, settings: Settings): Promise<InstanceRow> {
+    await tx.insert(instance).values({ stage: settings.stage }).onConflictDoNothing();
+    const [row] = await tx.select().from(instance);
+    if (row!.stage !== settings.stage) throw conflict(`The instance stage is ${row!.stage}; it never changes (configured: ${settings.stage})`);
+    return row!;
+  }
+
+  /** The credentials of the workspace now (values of this instance), for the consumers the release carries. */
+  private async withCredentials(tx: Executor, workspaceId: string, state: ReleaseState): Promise<GatewayState> {
+    const live = await loadGatewayState(tx, workspaceId, this.enc, this.catalog);
+    const consumers = new Set(state.consumers.map((c) => c.id));
+    return {
+      ...state,
+      keyAuthCredentials: live.keyAuthCredentials.filter((k) => consumers.has(k.consumerId)),
+      jwtCredentials: (live.jwtCredentials ?? []).filter((j) => consumers.has(j.consumerId)),
+      basicAuthCredentials: (live.basicAuthCredentials ?? []).filter((b) => consumers.has(b.consumerId)),
+    };
+  }
+
+  private async openRelease(tx: Executor, workspaceId: string, version: number): Promise<ReleaseState> {
+    const row = await this.findRelease(tx, workspaceId, version);
+    if (!row) throw new Error(`active release ${workspaceId}:${version} is missing`);
+    return this.enc.openJson<ReleaseState>(row.content, releaseContext(workspaceId, version));
+  }
+
+  private async findRelease(tx: Executor, workspaceId: string, version: number): Promise<ReleaseRow | undefined> {
+    const [row] = await tx.select().from(releases).where(and(eq(releases.workspaceId, workspaceId), eq(releases.version, version)));
+    return row;
+  }
+
+  private async requireWorkspace(tx: Executor, workspaceId: string, lock = false) {
+    const query = tx.select().from(workspaces).where(eq(workspaces.id, workspaceId));
+    const [row] = await (lock ? query.for("update") : query);
+    if (!row) throw notFound("Workspace");
+    return row;
+  }
+
+  private async toReleases(tx: Executor, rows: ReleaseRow[]) {
+    if (rows.length === 0) return [];
+    const workspaceId = rows[0]!.workspaceId;
+    const digests = [...new Set(rows.map((r) => r.contentDigest))];
+    const activations = new Map(
+      (await tx.select().from(contentActivations).where(and(eq(contentActivations.workspaceId, workspaceId), inArray(contentActivations.contentDigest, digests)))).map((a) => [a.contentDigest, a]),
+    );
+    const revoked = new Set(
+      (await tx.select({ digest: contentRevocations.contentDigest }).from(contentRevocations).where(and(eq(contentRevocations.workspaceId, workspaceId), inArray(contentRevocations.contentDigest, digests)))).map((r) => r.digest),
+    );
+    return rows.map((r) => ({
+      workspaceId: r.workspaceId,
+      version: r.version,
+      contentDigest: r.contentDigest,
+      origin: r.origin,
+      promotionId: r.promotionId,
+      rollbackOf: r.rollbackOf,
+      contentOriginVersion: r.contentOriginVersion,
+      contentFirstActivatedAt: activations.get(r.contentDigest)?.firstActivatedAt.toISOString() ?? null,
+      originPromotionId: r.originPromotionId,
+      contentRevoked: revoked.has(r.contentDigest),
+      ...(r.message === null ? {} : { message: r.message }),
+      createdBy: r.createdBy,
+      createdAt: r.createdAt.toISOString(),
+    }));
+  }
+}
+
+@Controller("api/v2/workspaces/:workspaceId/releases")
+export class ReleasesController {
+  constructor(private readonly releasesService: ReleasesService) {}
+
+  @Get()
+  @RequiredPermission("workspace.read", "workspace")
+  list(@Param("workspaceId", uuidParam()) workspaceId: string) {
+    return this.releasesService.list(workspaceId);
+  }
+
+  @Post()
+  @HttpCode(201)
+  @RequiredPermission("release.publish", "workspace")
+  publish(@Ctx() ctx: RequestContext, @Param("workspaceId", uuidParam()) workspaceId: string, @Body(contractBodyV2(PUBLISH_BODY)) body: PublishBody) {
+    return this.releasesService.publish(ctx, workspaceId, body);
+  }
+}
+
+@Module({ imports: [PluginCatalogModule], controllers: [ReleasesController], providers: [ReleasesService], exports: [ReleasesService] })
+export class ReleasesModule {}
