@@ -34,6 +34,8 @@ const FX = "gromesh-x4-fx";
 const env = { ...process.env, KUBECONFIG: kubeconfig };
 const secrets = [];
 const results = [];
+// Errors carry command lines and output: every credential is redacted before anything can print it.
+const redact = (text) => secrets.reduce((t, secret) => t.replaceAll(secret, "REDACTED"), String(text ?? ""));
 const record = (item, ok, detail) => {
   results.push({ item, ok, detail });
   assert.ok(ok, `${item}: ${detail}`);
@@ -50,7 +52,7 @@ function run(command, args, { input, timeout = 180_000, allowFail = false } = {}
     child.on("close", (code) => {
       clearTimeout(timer);
       if (code === 0 || allowFail) resolve({ code, stdout, stderr });
-      else reject(new Error(`${command} ${args.slice(0, 6).join(" ")} exited ${code}: ${(stderr || stdout).slice(0, 400)}`));
+      else reject(new Error(redact(`${command} ${args.slice(0, 6).join(" ")} exited ${code}: ${(stderr || stdout).slice(0, 400)}`)));
     });
     child.stdin.end(input ?? "");
   });
@@ -92,11 +94,13 @@ async function clickhouse() {
       volumes: [{ name: "schema", configMap: { name: "schema" } }] } } } },
     { apiVersion: "v1", kind: "Service", metadata: { name: "clickhouse", namespace: OBS }, spec: { selector: { app: "clickhouse" }, ports: [{ port: 8123 }] } }]);
   await until("clickhouse schema", async () => (await chq("SELECT count() FROM gromesh.requests")) !== undefined, 300_000);
-  await chq(`CREATE USER IF NOT EXISTS gromesh_writer IDENTIFIED WITH sha256_password BY '${chWriter}'`);
-  await chq("GRANT INSERT ON gromesh.requests TO gromesh_writer");
+  // The writer password goes in on stdin, never as an argument.
+  await kubectl(["exec", "-i", "-n", OBS, "deploy/clickhouse", "--", "sh", "-c", 'clickhouse-client -u admin --password "$CLICKHOUSE_PASSWORD" -n'],
+    { input: `CREATE USER IF NOT EXISTS gromesh_writer IDENTIFIED WITH sha256_password BY '${chWriter}'; GRANT INSERT ON gromesh.requests TO gromesh_writer;` });
 }
 async function chq(sql) {
-  const { stdout } = await kubectl(["exec", "-n", OBS, "deploy/clickhouse", "--", "clickhouse-client", "-u", "admin", "--password", chAdmin, "-q", sql], { timeout: 60_000 });
+  // The admin password is the ClickHouse container's own CLICKHOUSE_PASSWORD.
+  const { stdout } = await kubectl(["exec", "-n", OBS, "deploy/clickhouse", "--", "sh", "-c", 'clickhouse-client -u admin --password "$CLICKHOUSE_PASSWORD" -q "$1"', "sh", sql], { timeout: 60_000 });
   return stdout.trim();
 }
 const rows = async () => Number(await chq(`SELECT count() FROM gromesh.requests WHERE environment_id = '${instanceId}'`));
@@ -195,6 +199,13 @@ async function main() {
   const probeConfig = await kubectl(["exec", "-n", DP, p.metadata.name, "-c", "isolation-probe", "--", "/gromesh/isolation-bin/isolation-probe", "check-config", "/etc/gromesh/probe.json"], { allowFail: true });
   record("probe accepts the POST CAP-7 check", probeConfig.stdout.trim() === "probe config ok", (probeConfig.stdout + probeConfig.stderr).trim());
 
+  // The chart's policy admits only 8000/8443: open 8080 and 9598 to the fixture namespace alone, so a refusal below
+  // proves the port is closed (nothing listens on the pod IP), not that the CNI dropped the packet; and the 0.0.0.0
+  // control below proves the same path would connect.
+  await apply([{ apiVersion: "v1", kind: "Namespace", metadata: { name: FX } }, { apiVersion: "networking.k8s.io/v1", kind: "NetworkPolicy",
+    metadata: { name: "x4-probe-ports", namespace: DP }, spec: { podSelector: { matchLabels: { "app.kubernetes.io/name": "data-plane" } },
+      policyTypes: ["Ingress"], ingress: [{ from: [{ namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": FX } } }],
+        ports: [{ protocol: "TCP", port: 8080 }, { protocol: "TCP", port: 9598 }] }] } }]);
   const ip = p.status.podIP;
   record("other pod cannot connect", JSON.stringify(await fromOutside(ip)) === JSON.stringify({ intake: "ECONNREFUSED", metrics: "ECONNREFUSED" }), "intake and metrics refused at the pod IP");
   const node = await fromNode(ip);
@@ -234,6 +245,8 @@ async function main() {
 
 try {
   await main();
+} catch (error) {
+  throw new Error(redact(error?.stack ?? error));
 } finally {
   const text = JSON.stringify({ kubernetes: versions.KUBERNETES_VERSION, cilium: versions.CILIUM_VERSION, agentImage: AGENT_IMAGE, kongImage: KONG_IMAGE, vectorImage: VECTOR_IMAGE, results }, null, 2);
   assert.ok(secrets.every((s) => !text.includes(s)), "evidence must not carry a secret");

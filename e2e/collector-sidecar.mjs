@@ -24,9 +24,13 @@ const names = { ch: `x4-ch-${id}`, pod: `x4-pod-${id}`, collector: `x4-collector
 const work = mkdtempSync(join(tmpdir(), "gromesh-x4-"));
 chmodSync(work, 0o755);
 const out = process.env.X4_OUT ?? work;
-const docker = (args, timeout = 120_000) => exec("docker", args, { cwd: root, timeout, maxBuffer: 16 * 1024 * 1024 });
 const results = [];
 const secrets = [];
+// A failed execFile carries its command line and output: redact every credential before it can reach a terminal.
+const redact = (text) => secrets.reduce((t, secret) => t.replaceAll(secret, "REDACTED"), String(text ?? ""));
+const docker = (args, timeout = 120_000) => exec("docker", args, { cwd: root, timeout, maxBuffer: 16 * 1024 * 1024 }).catch((e) => {
+  throw Object.assign(new Error(redact(`docker ${args[0]} failed: ${e.stderr || e.message}`)), { stdout: redact(e.stdout), stderr: redact(e.stderr) });
+});
 const record = (item, ok, detail) => {
   results.push({ item, ok, detail });
   assert.ok(ok, `${item}: ${detail}`);
@@ -43,31 +47,35 @@ const chAdmin = randomBytes(16).toString("hex");
 const chWriter = randomBytes(16).toString("hex");
 secrets.push(token, nextToken, otherClusterToken, chAdmin, chWriter);
 
-// Runs a Node snippet inside the pod's network namespace (or outside it, on the same Docker network).
+// Runs a Node snippet inside the pod's network namespace (or outside it, on the same Docker network). X4_SEND_TOKEN
+// reaches it through the environment (docker run -e NAME copies this process's value): never an argument.
 async function inPod(script, args = [], { outside = false } = {}) {
   const network = outside ? ["--network", net] : ["--network", `container:${names.pod}`];
-  const { stdout } = await docker(["run", "--rm", ...network, NODE_IMAGE, "node", "--input-type=module", "-e", script, ...args], 60_000);
+  const { stdout } = await docker(["run", "--rm", ...network, "-e", "X4_SEND_TOKEN", NODE_IMAGE, "node", "--input-type=module", "-e", script, ...args], 60_000);
   return JSON.parse(stdout.trim().split("\n").at(-1));
 }
 // Vector answers 401 before reading the body and may close the socket under the sender: a refused POST can surface as
 // a socket error instead of its status, so a socket error is retried (the status is what is asserted).
-const post = (url, headers, body) => inPod(`
+// sendToken: the collector token header value, or "" for none.
+const post = (url, sendToken, body) => (process.env.X4_SEND_TOKEN = sendToken, inPod(`
+  const headers = process.env.X4_SEND_TOKEN ? { 'x-gromesh-collector-token': process.env.X4_SEND_TOKEN } : {};
   let last;
   for (let i = 0; i < 3; i++) {
     try {
-      const r = await fetch(process.argv[1], { method: 'POST', headers: JSON.parse(process.argv[2]), body: process.argv[3], signal: AbortSignal.timeout(5000) });
+      const r = await fetch(process.argv[1], { method: 'POST', headers, body: process.argv[2], signal: AbortSignal.timeout(5000) });
       await r.arrayBuffer();
       last = { status: r.status };
       break;
     } catch (e) { last = { error: e.cause?.code ?? e.name }; }
   }
-  console.log(JSON.stringify(last));`, [url, JSON.stringify(headers), body]);
+  console.log(JSON.stringify(last));`, [url, body]));
 
+// The admin password is the ClickHouse container's own CLICKHOUSE_PASSWORD: never an argument.
 async function query(sql) {
-  const { stdout } = await docker(["exec", names.ch, "clickhouse-client", "-u", "admin", "--password", chAdmin, "-q", sql]);
+  const { stdout } = await docker(["exec", names.ch, "sh", "-c", 'clickhouse-client -u admin --password "$CLICKHOUSE_PASSWORD" -q "$1"', "sh", sql]);
   return stdout.trim();
 }
-const rows = async () => Number(await query(`SELECT count() FROM gromesh.requests WHERE environment_id = '${instanceId}'`));
+const rows = async (instance = instanceId) => Number(await query(`SELECT count() FROM gromesh.requests WHERE environment_id = '${instance}'`));
 async function rowsSettle(expected, label) {
   for (let i = 0; i < 60; i++) {
     const n = await rows();
@@ -86,7 +94,7 @@ function event(requestId, instance = instanceId) {
     latencies: { kong: 1, proxy: 1, request: 2 } }]);
 }
 
-async function startCollector({ config = join(root, "deploy/observability/vector"), address = "127.0.0.1:8080", current = token, previous = "" } = {}) {
+async function startCollector({ config = join(root, "deploy/observability/vector"), address = "127.0.0.1:8080" } = {}) {
   await docker(["rm", "-f", names.collector]).catch(() => {});
   await docker(["run", "-d", "--name", names.collector, "--network", `container:${names.pod}`, "--user", "65534:65534",
     "--read-only", "--tmpfs", "/var/lib/vector:uid=65534",
@@ -97,7 +105,7 @@ async function startCollector({ config = join(root, "deploy/observability/vector
     "-v", `${config}:/etc/vector:ro`, "--entrypoint", "sh", VECTOR_IMAGE, "/etc/vector/entrypoint.sh"], 60_000)
     .catch((e) => { throw new Error(`collector start failed: ${e.message.split("\n")[0]}`); });
   for (let i = 0; i < 40; i++) {
-    const r = await post("http://127.0.0.1:8080/kong", {}, "[]");
+    const r = await post("http://127.0.0.1:8080/kong", "", "[]");
     if (r.status) return;
     await sleep(500);
   }
@@ -131,8 +139,8 @@ async function main() {
     assert.ok(i < 120, "ClickHouse did not come up");
     await sleep(1000);
   }
-  await docker(["exec", names.ch, "clickhouse-client", "-u", "admin", "--password", chAdmin, "-n", "-q",
-    `CREATE USER IF NOT EXISTS gromesh_writer IDENTIFIED WITH sha256_password BY '${chWriter}'; GRANT INSERT ON gromesh.requests TO gromesh_writer;`]);
+  process.env.X4_CH_WRITER = chWriter;
+  await docker(["exec", "-e", "X4_CH_WRITER", names.ch, "sh", "-c", `clickhouse-client -u admin --password "$CLICKHOUSE_PASSWORD" -n -q "CREATE USER IF NOT EXISTS gromesh_writer IDENTIFIED WITH sha256_password BY '$X4_CH_WRITER'; GRANT INSERT ON gromesh.requests TO gromesh_writer;"`]);
   process.env.CLICKHOUSE_PASSWORD = chWriter;
 
   // The pod: a network namespace holder, the collector sidecar and Kong.
@@ -209,11 +217,11 @@ async function main() {
   const intake = "http://127.0.0.1:8080/kong";
   const before = await rows();
   const answers = {
-    none: (await post(intake, {}, event(randomBytes(16).toString("hex")))).status,
-    wrong: (await post(intake, { "x-gromesh-collector-token": randomBytes(24).toString("hex") }, event(randomBytes(16).toString("hex")))).status,
-    otherCluster: (await post(intake, { "x-gromesh-collector-token": otherClusterToken }, event(randomBytes(16).toString("hex")))).status,
-    proxyClientHeader: (await post("http://127.0.0.1:8000/forced", { "x-gromesh-collector-token": randomBytes(24).toString("hex") }, event(randomBytes(16).toString("hex")))).status,
-    proxyNoHeader: (await post("http://127.0.0.1:8000/forced", {}, event(randomBytes(16).toString("hex")))).status,
+    none: (await post(intake, "", event(randomBytes(16).toString("hex")))).status,
+    wrong: (await post(intake, randomBytes(24).toString("hex"), event(randomBytes(16).toString("hex")))).status,
+    otherCluster: (await post(intake, otherClusterToken, event(randomBytes(16).toString("hex")))).status,
+    proxyClientHeader: (await post("http://127.0.0.1:8000/forced", randomBytes(24).toString("hex"), event(randomBytes(16).toString("hex")))).status,
+    proxyNoHeader: (await post("http://127.0.0.1:8000/forced", "", event(randomBytes(16).toString("hex")))).status,
   };
   record("token required", Object.values(answers).every((s) => s === 401), JSON.stringify(answers));
   // Kong logs its own two /forced requests (legitimate platform events, status 401); none of the refused bodies lands.
@@ -222,15 +230,18 @@ async function main() {
   record("refused events not written", forcedRows.split("\n").map((l) => JSON.parse(l)).every((r) => r.path === "/forced" && r.status === 401), forcedRows.replaceAll("\n", " "));
 
   // 5. With the token: another instance dropped; a replayed Kong event and a batch sent twice count once.
-  const auth = { "x-gromesh-collector-token": token };
+  const auth = token;
   const accepted = await rows();
-  const forged = await post(intake, auth, event(randomBytes(16).toString("hex"), randomUUID()));
+  const foreign = randomUUID();
+  const forged = await post(intake, auth, event(randomBytes(16).toString("hex"), foreign));
   const replay = await post(intake, auth, event(kongIds[0]));
   const fresh = randomBytes(16).toString("hex");
   const twice = [await post(intake, auth, event(fresh)), await post(intake, auth, event(fresh))];
   record("accepted by the intake", [forged, replay, ...twice].every((r) => r.status === 200), JSON.stringify([forged, replay, ...twice]));
   await rowsSettle(accepted + 1, "dedup and instance pin");
-  record("instance pinned, replay and repeated batch deduplicated", (await rows()) === accepted + 1, `${await rows()} rows (+1: the fresh request once)`);
+  record("replay and repeated batch deduplicated", (await rows()) === accepted + 1, `${await rows()} rows (+1: the fresh request once)`);
+  record("another instance dropped", (await rows(foreign)) === 0 && Number(await query("SELECT count() FROM gromesh.requests WHERE environment_id NOT IN ('" + instanceId + "')")) === 0,
+    "no row with any other environment_id");
 
   // 6. The probe's CAP-7 check against the real sidecar.
   record("probe CAP-7 passes", (await probe(intake, "pass")) === "ok", "POST without token answered 401");
@@ -238,12 +249,12 @@ async function main() {
   // 7. Rotation: the previous token is accepted during the window, then 401.
   setTokens(nextToken, token);
   await startCollector();
-  const during = [(await post(intake, { "x-gromesh-collector-token": token }, event(randomBytes(16).toString("hex")))).status,
-    (await post(intake, { "x-gromesh-collector-token": nextToken }, event(randomBytes(16).toString("hex")))).status];
+  const during = [(await post(intake, token, event(randomBytes(16).toString("hex")))).status,
+    (await post(intake, nextToken, event(randomBytes(16).toString("hex")))).status];
   setTokens(nextToken);
   await startCollector();
-  const after = [(await post(intake, { "x-gromesh-collector-token": token }, event(randomBytes(16).toString("hex")))).status,
-    (await post(intake, { "x-gromesh-collector-token": nextToken }, event(randomBytes(16).toString("hex")))).status];
+  const after = [(await post(intake, token, event(randomBytes(16).toString("hex")))).status,
+    (await post(intake, nextToken, event(randomBytes(16).toString("hex")))).status];
   record("rotation", during.join() === "200,200" && after.join() === "401,200", `window ${during}, after ${after}`);
 
   // Negative controls. (a) Without the auth block a forged event is written and the probe sees a CAP-7 violation.
@@ -256,7 +267,7 @@ async function main() {
   writeFileSync(join(open, "entrypoint.sh"), readFileSync(join(root, "deploy/observability/vector/entrypoint.sh")));
   await startCollector({ config: open });
   const beforeOpen = await rows();
-  const forgedOpen = (await post(intake, {}, event(randomBytes(16).toString("hex")))).status;
+  const forgedOpen = (await post(intake, "", event(randomBytes(16).toString("hex")))).status;
   await rowsSettle(beforeOpen + 1, "control: forged event without auth");
   record("control: no auth writes a forged event", forgedOpen === 200 && (await rows()) === beforeOpen + 1, `status ${forgedOpen}`);
   record("control: probe CAP-7 violation without auth", (await probe(intake, "violation")) === "ok", "POST without token answered 200");
@@ -276,6 +287,8 @@ async function main() {
 
 try {
   await main();
+} catch (error) {
+  throw new Error(redact(error?.stack ?? error));
 } finally {
   for (const n of Object.values(names)) await docker(["rm", "-f", n]).catch(() => {});
   await docker(["network", "rm", net]).catch(() => {});
