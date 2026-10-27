@@ -10,12 +10,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
-	"github.com/gromesh/gateway/apps/isolation/internal/lease"
 	"io"
 	"syscall"
+
+	"github.com/gromesh/gateway/apps/isolation/internal/lease"
 )
 
 // Timing of agent-protocol-v2 (B §3.5.3): period P, round T, inconclusive tolerance I, guard-missing backoff.
@@ -43,25 +45,42 @@ type CanaryResult struct {
 // Probe keeps its state, key and lease in Dir (its own volume: read-only for kong, not mounted by the agent) and
 // exchanges the admission and its public key with the agent through Handoff.
 type Probe struct {
-	Dir         string
-	Handoff     string
-	ClusterID   string
-	PodUID      string
-	InstanceKey ed25519.PublicKey
-	Config      Config
-	Network     Network
-	Canary      func(ctx context.Context) CanaryResult
-	BootID      func() string
-	Boottime    func() (uint64, error)
-	WallClock   func() time.Time
-	Logf        func(format string, args ...any)
+	Dir       string
+	Handoff   string
+	ClusterID string
+	PodUID    string
+	// TrustSet is read again every round: an admission whose kid leaves the set stops counting at the next one.
+	TrustSet  func() (TrustSet, error)
+	Config    Config
+	Network   Network
+	Canary    func(ctx context.Context) CanaryResult
+	BootID    func() string
+	Boottime  func() (uint64, error)
+	WallClock func() time.Time
+	Logf      func(format string, args ...any)
 
 	key ed25519.PrivateKey
 	// mu guards State: the canary runs every second beside a round, which holds it only outside its network phase.
 	mu sync.Mutex
 	// gen changes with every lease written or withdrawn: a canary answer about an older lease is discarded.
 	gen   uint64
-	State Persisted
+	trust TrustSet
+	// trustErr is logged once per change, not every round.
+	trustErr string
+	// releases are the valid confirmed-violation releases the agent handed over this round.
+	releases []ReleaseClaims
+	// unsaved: the last save failed, so the state on disk is behind; nothing is exposed or acked until one succeeds.
+	unsaved bool
+	// inconclusive are the capabilities the last round could not prove.
+	inconclusive []string
+	queue        []queued
+	queueBytes   int64
+	nextOrder    uint64
+	// exposed maps each outbox name to the queued report written there (names are seqs, reused across admissions).
+	exposed map[string]uint64
+	// terminated: the final report is out; no round may report or serve after it.
+	terminated bool
+	State      Persisted
 }
 
 // Persisted survives container and node restarts (the volume is on disk), violation included.
@@ -92,6 +111,20 @@ type Persisted struct {
 	NotFoundSinceNs  uint64   `json:"notFoundSinceNs"`
 	Proven           []string `json:"proven,omitempty"`
 	Failures         []string `json:"failures,omitempty"`
+	// LeaseExpiresNs is when the last lease that readers accept expires (0: none out).
+	LeaseExpiresNs uint64 `json:"leaseExpiresNs"`
+	Chain          Chain  `json:"chain"`
+	// ClosedAdmissions ended with a final report: never adopted or served again.
+	ClosedAdmissions []string `json:"closedAdmissions,omitempty"`
+	// StaleReleases were already handed over before the current violation (or are another pod's); UsedReleases ended
+	// one. Neither ends a violation: a release counts only once, and only if it arrived after the violation.
+	StaleReleases []string `json:"staleReleases,omitempty"`
+	UsedReleases  []string `json:"usedReleases,omitempty"`
+	// Detection counts the rounds' detections (a forbidden target answered), written in the latch with each one;
+	// ReportedDetection is the last one a saved violation report carried. While one is pending, the next violation
+	// report moves Chain.ViolationSeq and no release ends the violation.
+	Detection         uint64 `json:"detection,omitempty"`
+	ReportedDetection uint64 `json:"reportedDetection,omitempty"`
 }
 
 func (p *Probe) leaseFile() string     { return filepath.Join(p.Dir, "lease.json") }
@@ -139,13 +172,22 @@ func (p *Probe) Open() error {
 		return errors.New("probe key corrupt")
 	}
 	p.key = ed25519.NewKeyFromSeed(seed)
-	// The latch is the first thing a violation writes: a crash after it cannot lose the violation.
+	if err := p.loadQueue(); err != nil {
+		return err
+	}
+	if c := p.State.Chain; c.Closed && c.AdmissionID != "" && !slices.Contains(p.State.ClosedAdmissions, c.AdmissionID) {
+		// The final report was saved but not yet the admission's end (a crash in between): it ends here.
+		p.State.ClosedAdmissions = keepLast(append(p.State.ClosedAdmissions, c.AdmissionID), 64)
+	}
+	// The latch is the first thing a violation writes: a crash after it cannot lose the violation, nor a detection
+	// (the same capability again included) whose report the state never saved.
 	if data, err := os.ReadFile(p.violationFile()); err == nil {
-		var latched []string
-		if json.Unmarshal(data, &latched) != nil || len(latched) == 0 {
-			latched = []string{"unknown"}
+		var l latch
+		if json.Unmarshal(data, &l) != nil || len(l.Violated) == 0 || l.Detection == 0 {
+			l = latch{Violated: []string{"unknown"}, Detection: p.State.ReportedDetection + 1}
 		}
-		p.State.Violated = mergeUnique(p.State.Violated, latched)
+		p.State.Violated = mergeUnique(p.State.Violated, l.Violated)
+		p.State.Detection = max(p.State.Detection, l.Detection)
 		p.State.State = "violation"
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -153,14 +195,26 @@ func (p *Probe) Open() error {
 	if p.State.State == "" {
 		p.State.State = "awaiting-admission"
 	}
+	// What was recovered from the queue and the latch is saved before any ack is relayed or report exposed: an ack
+	// could otherwise remove the only copy of it. Until a save succeeds, neither happens (see saved).
+	_ = p.save()
 	return writeSynced(filepath.Join(p.Handoff, "probe.pub"), []byte(p.PublicKey()), 0o644)
 }
 
-func (p *Probe) PublicKey() string {
-	return base64.RawURLEncoding.EncodeToString(p.key.Public().(ed25519.PublicKey))
+// latch is the content of violation.json.
+type latch struct {
+	Violated  []string `json:"violated"`
+	Detection uint64   `json:"detection"`
 }
 
-// Round is one period: identity, admission, capabilities, then the lease.
+// detectionPending: a detection whose violation report is not saved yet.
+func (p *Probe) detectionPending() bool { return p.State.Detection > p.State.ReportedDetection }
+
+func (p *Probe) PublicKey() string { return b64.EncodeToString(p.publicKey()) }
+
+func (p *Probe) publicKey() ed25519.PublicKey { return p.key.Public().(ed25519.PublicKey) }
+
+// Round is one period: identity, admission, capabilities, then the lease and the round's report.
 func (p *Probe) Round(ctx context.Context) {
 	if !p.prepare() {
 		return
@@ -169,26 +223,83 @@ func (p *Probe) Round(ctx context.Context) {
 		// Written as soon as a forbidden target answers, before the round ends.
 		p.mu.Lock()
 		defer p.mu.Unlock()
-		p.violate([]string{capability})
+		if !p.terminated {
+			p.violate([]string{capability})
+		}
 	})
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.conclude(verdict)
+	if p.terminated {
+		return
+	}
+	renew, now, ok := p.conclude(verdict)
+	if !ok {
+		return
+	}
+	// The round's report is durable before the lease it reports is published: no lease is out that no report counts.
+	r := p.roundReport(now)
+	if renew != "" {
+		ms := uint64(lease.Validity / time.Millisecond)
+		r.LeaseRemainingMs = &ms
+	}
+	err := errors.New("no report chain of the current admission")
+	if p.State.AdmissionID != "" && p.State.Chain.AdmissionID == p.State.AdmissionID {
+		err = p.emit(r)
+	}
+	if err != nil {
+		p.Logf("round report: %v", err)
+		p.unproven()
+		return
+	}
+	if renew != "" {
+		p.issue(renew, now)
+	}
 }
 
-// prepare checks identity, admission and the current lease; false when no round is due (no admission).
+// unproven is what a failure to persist leads to: nothing is proven to the control plane, so nothing is served.
+func (p *Probe) unproven() {
+	if p.State.State != "violation" {
+		p.State.State = "no-proof"
+	}
+	p.State.Passes, p.State.FreshAdmission = 0, false
+	p.withdraw(p.State.State)
+}
+
+// prepare relays acks, closes a previous boot's chain, checks identity, admission and the current lease; false when
+// no round is due (no admission).
 func (p *Probe) prepare() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.terminated {
+		return false
+	}
+	p.drainAcks()
+	boot := p.BootID()
+	p.closePreviousBoot(boot)
+	p.syncOutbox()
 	now, err := p.Boottime()
 	if err != nil {
 		p.Logf("CLOCK_BOOTTIME unreadable: %v", err)
 		p.withdraw("no-proof")
 		return false
 	}
-	boot := p.BootID()
+	trust, err := p.TrustSet()
+	if err != nil {
+		// No admission counts without a valid set: nothing is proven to the guard, whatever the state was.
+		if err.Error() != p.trustErr {
+			p.Logf("%v: no lease will be issued", err)
+		}
+		p.trustErr = err.Error()
+		if serving(p.State.State) {
+			p.State.State, p.State.Passes, p.State.FreshAdmission = "no-proof", 0, false
+		}
+		p.withdraw(p.State.State)
+		return false
+	}
+	p.trust, p.trustErr = trust, ""
 	if p.State.BootID != boot {
-		// A new boot: every lease and admission of the previous one is void; a violation or a corrupt state is not.
+		// A new boot: every lease and admission of the previous one is void; a violation or a corrupt state is not, nor
+		// the report chain and what ended or released before.
 		p.Logf("boot %s (was %q): a new admission is needed", boot, p.State.BootID)
 		state := "awaiting-admission"
 		if p.State.Corrupt {
@@ -197,8 +308,12 @@ func (p *Probe) prepare() bool {
 		if len(p.State.Violated) > 0 {
 			state = "violation"
 		}
-		p.State = Persisted{State: state, BootID: boot, Violated: p.State.Violated, Corrupt: p.State.Corrupt}
+		old := p.State
+		p.State = Persisted{State: state, BootID: boot, Violated: old.Violated, Corrupt: old.Corrupt, Chain: old.Chain,
+			ClosedAdmissions: old.ClosedAdmissions, StaleReleases: old.StaleReleases, UsedReleases: old.UsedReleases,
+			Detection: old.Detection, ReportedDetection: old.ReportedDetection}
 	}
+	p.loadReleases()
 	p.refreshAdmission(boot)
 	if p.State.AdmissionID == "" {
 		if p.State.State != "violation" && !p.State.Corrupt {
@@ -216,42 +331,180 @@ func (p *Probe) prepare() bool {
 	return true
 }
 
-// conclude turns a round's verdict into the state and the lease.
-func (p *Probe) conclude(verdict Verdict) {
+// closePreviousBoot sends the node-reboot report of an admission of an earlier boot whose chain is still open. A new
+// boot id proves that every process of that boot, Kong included, has ended.
+func (p *Probe) closePreviousBoot(boot string) {
+	c := p.State.Chain
+	if !uuid(boot) || c.AdmissionID == "" || c.Closed || c.BootID == boot {
+		return
+	}
+	confirmed := true
+	r := Report{State: p.State.State, FailedCapabilities: p.failedCapabilities(), Challenge: p.challenge(), Final: true, FinalReason: "node-reboot", KongStopConfirmed: &confirmed}
+	if p.State.BootID != c.BootID {
+		// The state already moved on to another boot: what the admission ended in is not known.
+		r.State, r.FailedCapabilities = "no-proof", nil
+		if len(p.State.Violated) > 0 {
+			r.State, r.FailedCapabilities = "violation", p.failedCapabilities()
+		}
+	}
+	if err := p.emit(r); err != nil && !p.State.Chain.Closed {
+		// Retried every round: until it is out, no admission of the new boot is adopted.
+		p.Logf("node-reboot report of %s: %v", c.AdmissionID, err)
+		return
+	}
+	p.State.ClosedAdmissions = keepLast(append(p.State.ClosedAdmissions, c.AdmissionID), 64)
+	p.Logf("node-reboot report of admission %s (boot %s) queued", c.AdmissionID, c.BootID)
+	p.save()
+}
+
+// Terminate is the pod's stop signal: the final pod-terminated report of the current admission, which then never
+// serves again. kongStopped is what the probe could confirm about Kong (see KongStopConfirmed).
+func (p *Probe) Terminate(kongStopped bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.terminated {
+		return
+	}
+	p.terminated = true
+	c := p.State.Chain
+	if c.AdmissionID != "" && !c.Closed && c.BootID == p.State.BootID {
+		now, err := p.Boottime()
+		r := p.roundReport(now)
+		if err != nil {
+			r.LeaseRemainingMs = nil
+		}
+		r.Final, r.FinalReason, r.KongStopConfirmed = true, "pod-terminated", &kongStopped
+		if err := p.emit(r); err != nil {
+			p.Logf("final report: %v", err)
+		}
+		// Queued even if its seq was not saved (the queue is then the chain's head): the admission ends either way.
+		if p.State.Chain.Closed {
+			p.State.ClosedAdmissions = keepLast(append(p.State.ClosedAdmissions, c.AdmissionID), 64)
+			p.Logf("final report of admission %s queued (kongStopConfirmed %v)", c.AdmissionID, kongStopped)
+		}
+	}
+	p.State.AdmissionID, p.State.AdmissionJWS, p.State.FreshAdmission = "", "", false
+	p.removeLease()
+	p.save()
+}
+
+// loadReleases reads the releases the agent handed over: only valid confirmed-violation releases of this cluster count.
+// Every release seen while there is no violation is stale for the next one.
+func (p *Probe) loadReleases() {
+	p.releases = nil
+	raw, err := readHandoff(filepath.Join(p.Handoff, "releases.json"), 1<<20)
+	if err == nil {
+		var doc struct {
+			Items []json.RawMessage `json:"items"`
+		}
+		fields, ferr := strictRaw(raw, []string{"items"}, nil)
+		if ferr == nil && json.Unmarshal(fields["items"], &doc.Items) == nil {
+			for _, item := range doc.Items {
+				if c, err := CheckRelease(item, p.trust, p.ClusterID); err == nil && c.Kind == "confirmed-violation" {
+					p.releases = append(p.releases, c)
+				}
+			}
+		}
+	}
+	if len(p.State.Violated) == 0 {
+		for _, r := range p.releases {
+			p.State.StaleReleases = keepLast(mergeUnique(p.State.StaleReleases, []string{r.PendencyID}), 256)
+		}
+	}
+}
+
+// release returns a release that may end the current violation: valid, confirmed-violation (loadReleases keeps no
+// other kind), arrived after it, never used before, and covering it: it names the current admission through a seq at
+// least the report of the chain's last detecting round. A release kept by the agent from another pendency, or from
+// before a later detection, does not.
+func (p *Probe) release() string {
+	c := p.State.Chain
+	if c.AdmissionID == "" || c.AdmissionID != p.State.AdmissionID || c.ViolationSeq == 0 || p.detectionPending() {
+		// The chain has not reported this violation (a detection, or a violation carried from an earlier admission) yet:
+		// no release can cover it.
+		return ""
+	}
+	for _, r := range p.releases {
+		if slices.Contains(p.State.StaleReleases, r.PendencyID) || slices.Contains(p.State.UsedReleases, r.PendencyID) {
+			continue
+		}
+		if slices.ContainsFunc(r.Admissions, func(a ReleasedAdmission) bool {
+			return a.AdmissionID == c.AdmissionID && a.ThroughSeq >= c.ViolationSeq
+		}) {
+			return r.PendencyID
+		}
+	}
+	return ""
+}
+
+func keepLast(s []string, n int) []string {
+	if len(s) > n {
+		return append([]string{}, s[len(s)-n:]...)
+	}
+	return s
+}
+
+// conclude turns a round's verdict into the state; a lease it withdraws is withdrawn at once, one it renews is returned
+// (ok or inconclusive) for Round to issue once the round's report is durable. ok is false when no report is due.
+func (p *Probe) conclude(verdict Verdict) (renew string, now uint64, ok bool) {
 	now, err := p.Boottime()
 	if err != nil {
 		p.withdraw("no-proof")
-		return
+		return "", 0, false
 	}
-	p.State.Proven, p.State.Failures = verdict.Proven, verdict.Failures
+	p.State.Proven, p.State.Failures, p.inconclusive = verdict.Proven, verdict.Failures, verdict.Inconclusive
 	p.State.LastRoundConclusive = len(verdict.Violated) == 0 && len(verdict.Inconclusive) == 0
 	if len(verdict.Violated) > 0 {
 		p.violate(verdict.Violated)
-		return
+		return "", now, true
 	}
 	if len(p.State.Violated) > 0 {
-		// Only a signed release (task N2-D3) ends a violation; a pass changes nothing.
-		p.violate(nil)
-		return
+		// Only a valid signed release that arrived after the violation, with a conclusive pass, ends it.
+		id := p.release()
+		if id == "" || !p.State.LastRoundConclusive || p.queueFull() {
+			p.violate(nil)
+			return "", now, true
+		}
+		// The latch goes first: a crash before the state is saved finds the violation still in the state, and the
+		// release still unused.
+		if err := os.Remove(p.violationFile()); err != nil && !errors.Is(err, os.ErrNotExist) {
+			p.Logf("violation latch not removed (%v): still contained", err)
+			p.violate(nil)
+			return "", now, true
+		}
+		p.Logf("violation of %v released by pendency %s: verifying", p.State.Violated, id)
+		p.State.UsedReleases = keepLast(append(p.State.UsedReleases, id), 256)
+		p.State.Violated, p.State.Passes, p.State.LastConclusiveNs, p.State.FreshAdmission = nil, 1, now, false
+		p.verify()
+		return "ok", now, true
+	}
+	if p.queueFull() {
+		// The reports cannot be kept any more: nothing is proven to the control plane, so nothing is served.
+		p.Logf("report queue full: no-proof")
+		if p.State.State != "awaiting-admission" {
+			p.State.State = "no-proof"
+		}
+		p.State.Passes = 0
+		p.withdraw(p.State.State)
+		return "", now, true
 	}
 	if len(verdict.Inconclusive) > 0 {
 		p.State.Passes = 0
 		if p.State.State == "guard-missing" {
 			p.withdraw("guard-missing")
-			return
+			return "", now, true
 		}
 		if serving(p.State.State) && p.State.LastConclusiveNs != 0 && now-p.State.LastConclusiveNs < uint64(InconclusiveLimit) {
 			if p.State.State == "ok" {
 				p.State.State = "inconclusive"
 			}
-			p.issue("inconclusive", now)
-			return
+			return "inconclusive", now, true
 		}
 		if p.State.State != "awaiting-admission" {
 			p.State.State = "no-proof"
 		}
 		p.withdraw(p.State.State)
-		return
+		return "", now, true
 	}
 
 	p.State.Passes++
@@ -259,7 +512,7 @@ func (p *Probe) conclude(verdict Verdict) {
 	if now < p.State.RetryAtNs {
 		// The guard-missing backoff holds whatever the rounds say.
 		p.withdraw(p.State.State)
-		return
+		return "", now, true
 	}
 	switch p.State.State {
 	case "awaiting-admission", "guard-missing":
@@ -267,7 +520,7 @@ func (p *Probe) conclude(verdict Verdict) {
 	case "no-proof":
 		if p.State.Passes < 2 && !(p.State.FreshAdmission && !p.State.Corrupt) {
 			p.withdraw("no-proof")
-			return
+			return "", now, true
 		}
 		p.State.Corrupt = false
 		p.verify()
@@ -279,7 +532,7 @@ func (p *Probe) conclude(verdict Verdict) {
 		}
 	}
 	p.State.FreshAdmission = false
-	p.issue("ok", now)
+	return "ok", now, true
 }
 
 // verify starts a verification: NotReady until the canary answers with the lease about to be issued.
@@ -380,8 +633,13 @@ func (p *Probe) violate(capabilities []string) {
 	if len(p.State.Violated) == 0 {
 		p.State.Violated = []string{"unknown"}
 	}
-	// The latch first: a crash between the writes below can never lose the violation.
-	data, _ := json.Marshal(p.State.Violated)
+	if len(capabilities) > 0 {
+		// A round that detected a failure: its report moves Chain.ViolationSeq, the latched rounds after it do not.
+		p.State.Detection++
+	}
+	// The latch first, with the detection: a crash between the writes below can never lose the violation, nor make a
+	// repeated detection of a latched capability look already reported.
+	data, _ := json.Marshal(latch{Violated: p.State.Violated, Detection: max(p.State.Detection, 1)})
 	if err := writeSynced(p.violationFile(), data, 0o644); err != nil {
 		p.Logf("violation latch not written: %v", err)
 	}
@@ -409,47 +667,72 @@ func mergeUnique(a, b []string) []string {
 func (p *Probe) refreshAdmission(boot string) {
 	self := Identity{ClusterID: p.ClusterID, PodUID: p.PodUID, BootID: boot, PublicKey: p.key.Public().(ed25519.PublicKey)}
 	if p.State.AdmissionJWS != "" {
-		if claims, err := CheckAdmission([]byte(p.State.AdmissionJWS), p.InstanceKey, self); err != nil || claims.AdmissionID != p.State.AdmissionID {
-			p.Logf("stored admission no longer valid: dropped")
+		if claims, _, err := CheckAdmission([]byte(p.State.AdmissionJWS), p.trust, self); err != nil || claims.AdmissionID != p.State.AdmissionID {
+			p.Logf("stored admission no longer valid (%v): dropped", err)
 			p.State.AdmissionID, p.State.AdmissionJWS, p.State.FreshAdmission = "", "", false
 		}
 	} else if p.State.AdmissionID != "" {
 		p.State.AdmissionID, p.State.FreshAdmission = "", false
 	}
-	raw, err := readHandoff(filepath.Join(p.Handoff, "admission.jws"))
+	if p.ended(p.State.AdmissionID) {
+		p.State.AdmissionID, p.State.AdmissionJWS, p.State.FreshAdmission = "", "", false
+	}
+	raw, err := readHandoff(filepath.Join(p.Handoff, "admission.jws"), 64<<10)
 	if err != nil {
 		return
 	}
-	claims, err := CheckAdmission(raw, p.InstanceKey, self)
+	claims, kid, err := CheckAdmission(raw, p.trust, self)
+	if err == nil && p.ended(claims.AdmissionID) {
+		err = errors.New("admission already ended by a final report")
+	}
+	if c := p.State.Chain; err == nil && c.AdmissionID != claims.AdmissionID && c.AdmissionID != "" && !c.Closed && c.BootID != boot {
+		err = errors.New("the previous boot's admission is not closed yet")
+	}
 	if err != nil {
-		// Another pod's, another boot's, another key's or a forged admission is ignored.
+		// Another pod's, another boot's, another key's, a forged or an ended admission is ignored.
 		if p.State.AdmissionID == "" {
 			p.Logf("admission ignored: %v", err)
 		}
 		return
 	}
 	if claims.AdmissionID != p.State.AdmissionID {
-		p.Logf("admitted: %s", claims.AdmissionID)
+		p.Logf("admitted: %s (instance key %s)", claims.AdmissionID, kid)
 		p.State.AdmissionID, p.State.AdmissionJWS, p.State.FreshAdmission, p.State.Passes = claims.AdmissionID, string(raw), true, 0
+	}
+	if p.State.Chain.AdmissionID != claims.AdmissionID {
+		// The admission's own chain, from seq 1; an admission adopted again (its kid back in the set) continues its own.
+		p.State.Chain = Chain{AdmissionID: claims.AdmissionID, BootID: boot, ProbeKey: p.PublicKey()}
 	}
 }
 
-// issue writes a lease that is valid for V from now; ok or inconclusive.
+// ended: the admission's final report is out (or queued): it is never adopted or served again.
+func (p *Probe) ended(admission string) bool {
+	c := p.State.Chain
+	return admission != "" && (slices.Contains(p.State.ClosedAdmissions, admission) || (c.Closed && c.AdmissionID == admission))
+}
+
+// issue writes a lease that is valid for V from now; ok or inconclusive. The state that knows its nonce is saved
+// first: a lease the state on disk does not name is never accepted after a restart.
 func (p *Probe) issue(state string, now uint64) {
 	nonce := make([]byte, 24)
 	_, _ = rand.Read(nonce)
 	// A new nonce: the tolerance of the guard's cache starts again for this renewal.
 	p.State.PreviousNonce, p.State.Nonce, p.State.PreviousSinceNs = p.State.Nonce, base64.RawURLEncoding.EncodeToString(nonce), 0
+	p.State.LeaseExpiresNs = now + uint64(lease.Validity)
+	if err := p.save(); err != nil {
+		p.unproven()
+		return
+	}
 	p.writeLease(lease.Lease{
 		State: state, PodUID: p.PodUID, BootID: p.State.BootID, AdmissionID: p.State.AdmissionID,
 		IssuedBoottimeNs: now, ExpiresBoottimeNs: now + uint64(lease.Validity), Nonce: p.State.Nonce,
 		Capabilities: p.State.Proven, IssuedAt: p.WallClock().UTC().Format(time.RFC3339),
 	})
-	p.save()
 }
 
 // withdraw replaces the lease by one that no reader accepts (its state), keeping the evidence visible.
 func (p *Probe) withdraw(state string) {
+	p.State.LeaseExpiresNs = 0
 	if p.State.AdmissionID == "" {
 		p.removeLease()
 	} else {
@@ -474,16 +757,28 @@ func (p *Probe) writeLease(l lease.Lease) {
 
 func (p *Probe) removeLease() {
 	p.gen++
+	p.State.LeaseExpiresNs = 0
 	if err := os.Remove(p.leaseFile()); err != nil && !errors.Is(err, os.ErrNotExist) {
 		p.Logf("lease not removed: %v", err)
 	}
 }
 
-func (p *Probe) save() {
+// save writes the state durably. On failure the state on disk is behind the one in memory (a report's seq
+// included) until a later save succeeds: meanwhile no report is exposed and no acked report removed (see saved).
+func (p *Probe) save() error {
 	data, _ := json.Marshal(p.State)
 	if err := writeSynced(p.stateFile(), data, 0o644); err != nil {
 		p.Logf("state not saved: %v", err)
+		p.unsaved = true
+		return err
 	}
+	p.unsaved = false
+	return nil
+}
+
+// saved is true once the state on disk is the one in memory, trying again a save that failed.
+func (p *Probe) saved() bool {
+	return !p.unsaved || p.save() == nil
 }
 
 // writeSynced replaces path atomically and durably: a fresh exclusive temporary (never an existing name, which could
@@ -522,15 +817,15 @@ func writeSynced(path string, data []byte, mode os.FileMode) error {
 }
 
 // readHandoff reads a file the agent wrote: only a regular file, never through a symlink, never blocking on a FIFO.
-func readHandoff(path string) ([]byte, error) {
+func readHandoff(path string, limit int64) ([]byte, error) {
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
 	info, err := f.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Size() > 64<<10 {
-		return nil, errors.New("not a regular file of at most 64 KiB")
+	if err != nil || !info.Mode().IsRegular() || info.Size() > limit {
+		return nil, fmt.Errorf("not a regular file of at most %d bytes", limit)
 	}
-	return io.ReadAll(io.LimitReader(f, 64<<10))
+	return io.ReadAll(io.LimitReader(f, limit))
 }

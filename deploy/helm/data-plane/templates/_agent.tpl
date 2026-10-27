@@ -30,6 +30,23 @@
       value: /kong/declarative/kong.json
     - name: GROMESH_STATE_DIR
       value: /var/lib/gromesh
+    {{- if .Values.workspaces.enabled }}
+    # The isolation admission of this pod in this boot, carried to and from the probe through the handoff.
+    - name: GROMESH_HANDOFF_DIR
+      value: /gromesh/handoff
+    - name: GROMESH_POD_UID
+      valueFrom:
+        fieldRef:
+          fieldPath: metadata.uid
+    - name: GROMESH_POD_NAME
+      valueFrom:
+        fieldRef:
+          fieldPath: metadata.name
+    - name: GROMESH_NODE_NAME
+      valueFrom:
+        fieldRef:
+          fieldPath: spec.nodeName
+    {{- end }}
   ports:
     - name: agent-metrics
       containerPort: 9100

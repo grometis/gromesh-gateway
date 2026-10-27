@@ -71,8 +71,15 @@ http://gromesh-collector:8080/kong
 {{- if not (regexMatch "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" .Values.workspaces.clusterId) -}}
 {{- fail "workspaces.clusterId must be the lowercase UUID of this cluster when workspaces.enabled is true" -}}
 {{- end -}}
-{{- if not (regexMatch "^[A-Za-z0-9_-]{43}$" .Values.workspaces.instancePublicKey) -}}
-{{- fail "workspaces.instancePublicKey must be the instance's Ed25519 public key (base64url) when workspaces.enabled is true" -}}
+{{- /* The kid of each key is checked against its thumbprint by the probe itself (ci/check.sh runs it). */ -}}
+{{- $keys := .Values.workspaces.instanceSigningKeys -}}
+{{- if or (lt (len $keys) 1) (gt (len $keys) 3) -}}
+{{- fail "workspaces.instanceSigningKeys must list 1 to 3 instance signing keys ({kid, publicKey}) when workspaces.enabled is true: without one no admission is ever accepted" -}}
+{{- end -}}
+{{- $seen := dict -}}
+{{- range $keys -}}{{- $_ := set $seen (printf "kid:%s" .kid) true -}}{{- $_ := set $seen (printf "key:%s" .publicKey) true -}}{{- end -}}
+{{- if ne (len $seen) (mul 2 (len $keys)) -}}
+{{- fail "workspaces.instanceSigningKeys has a duplicated kid or publicKey: the probe would refuse the whole set" -}}
 {{- end -}}
 {{- $covered := dict -}}
 {{- range .Values.workspaces.probe.checks -}}

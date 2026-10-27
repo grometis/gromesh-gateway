@@ -31,6 +31,7 @@ type Agent struct {
 	poll         time.Duration
 	heartbeat    time.Duration
 	retry        func(int) time.Duration
+	isolation    *isolation
 	appliedGauge atomic.Int64
 	failures     atomic.Uint64
 	lastSuccess  atomic.Int64
@@ -75,12 +76,17 @@ func New(config Config, logger *slog.Logger) (*Agent, error) {
 	applyTransport.ResponseHeaderTimeout = 60 * time.Second
 	applyHTTP := *httpClient
 	applyHTTP.Transport = applyTransport
-	return &Agent{
+	a := &Agent{
 		config: config, client: &client{config: config, http: httpClient, applyHTTP: &applyHTTP, unauthorized: make(chan struct{}, 1)},
 		store: store{path: config.SnapshotPath}, log: logger,
 		status:     StatusReport{NodeID: config.NodeID, State: "idle"},
 		streamIdle: 45 * time.Second, retry: retryDelay, applyRetry: applyRetryDelay,
-	}, nil
+	}
+	if config.HandoffDir != "" {
+		// The probe renews every 15 s: a challenge or an ack relayed within 2 s reaches its next round.
+		a.isolation = &isolation{config: config, client: a.client, log: logger, interval: 2 * time.Second, retry: retryDelay}
+	}
+	return a, nil
 }
 
 func applyRetryDelay(attempt int) time.Duration {
@@ -167,15 +173,23 @@ func (a *Agent) runSession(ctx context.Context, registration Registration, saved
 	ctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	heartbeatDone := make(chan struct{})
+	isolationDone := make(chan struct{})
 	wake := make(chan struct{}, 1)
 	go func() {
 		defer close(done)
 		a.events(ctx, wake)
 	}()
+	go func() {
+		defer close(isolationDone)
+		if a.isolation != nil {
+			a.isolation.run(ctx)
+		}
+	}()
 	defer func() {
 		cancel()
 		<-done
 		<-heartbeatDone
+		<-isolationDone
 		a.client.http.CloseIdleConnections()
 		a.client.applyHTTP.CloseIdleConnections()
 	}()

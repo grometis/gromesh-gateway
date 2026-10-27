@@ -193,9 +193,12 @@ networkPolicy:
 # and the kong image must carry the product plugins (gromesh-workspace, gromesh-route-guard).
 workspaces:
   enabled: false
-  # This cluster's id in the control plane and the instance's Ed25519 public key (base64url), for the admission.
+  # This cluster's id in the control plane.
   clusterId: ""
-  instancePublicKey: ""
+  # The isolation-probe's InstanceTrustSet: the only instance signing keys whose admissions and releases it accepts,
+  # as listInstanceSigningKeys gives them ({kid, publicKey}, 1 to 3: the active ones of a rotation and a retired one
+  # whose admissions are still open). Revoking a key reaches the pods only through a rollout without it.
+  instanceSigningKeys: []
   probe:
     # UID of the probe alone: only it writes the lease volume.
     runAsUser: 1002

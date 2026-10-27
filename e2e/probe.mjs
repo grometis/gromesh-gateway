@@ -6,13 +6,12 @@
 // the probe. A configuration without the canary's guard is guard-missing and stops Kong. PROBE=blind is the negative
 // control: a probe configured without that target never notices, and the same checks must fail.
 import assert from "node:assert/strict";
-import { generateKeyPairSync, sign } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { NODE_IMAGE } from "./docker-images.mjs";
-import { docker, ECHO_IMAGE, Harness, root } from "./isolation-harness.mjs";
+import { docker, Harness, instanceJws, instanceKey, root } from "./isolation-harness.mjs";
 
 const { composeWorkspaces } = await import(pathToFileURL(join(root, "packages/compiler/dist/index.js")).href);
 const blind = process.env.PROBE === "blind";
@@ -47,12 +46,7 @@ function probeConfig() {
 // A server that resolves at once and listens on :80 only after /tmp/open exists.
 const TARGET = "const fs=require('fs'),net=require('net');let s=null;setInterval(()=>{if(!s&&fs.existsSync('/tmp/open')){s=net.createServer(c=>c.end()).listen(80)}},100)";
 
-const b64 = (data) => Buffer.from(data).toString("base64url");
-function jws(privateKey, claims) {
-  const protectedHeader = b64(JSON.stringify({ alg: "EdDSA" }));
-  const payload = b64(JSON.stringify(claims));
-  return JSON.stringify({ protected: protectedHeader, payload, signature: b64(sign(null, Buffer.from(`${protectedHeader}.${payload}`), privateKey)) });
-}
+const jws = (key, claims) => instanceJws(key, "gromesh-admission+json", claims);
 
 async function status(proxy) {
   try {
@@ -83,12 +77,11 @@ async function main() {
   try {
     await harness.setup();
     const handoff = join(harness.dir, "handoff");
-    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-    const instancePublicKey = publicKey.export({ format: "jwk" }).x;
+    const instance = instanceKey();
     const target = (await docker("run", "-d", "--rm", "--network", harness.network, "--network-alias", "forbidden-cap2", NODE_IMAGE, "node", "-e", TARGET)).stdout.trim();
     harness.containers.push(target);
-    const { id: kong, proxy } = await harness.gateway(composeWorkspaces([member]), { supervised: true });
-    let probe = await harness.probe(kong, { config: probeConfig(), instancePublicKey, clusterId: CLUSTER, handoff });
+    const { id: kong, proxy, state: kongState } = await harness.gateway(composeWorkspaces([member]), { supervised: true });
+    let probe = await harness.probe(kong, { config: probeConfig(), trustSet: [instance], clusterId: CLUSTER, handoff, kongState });
 
     // No admission: no lease, no nginx.
     await sleep(5000);
@@ -97,12 +90,12 @@ async function main() {
     const probePublicKey = readFileSync(join(handoff, "probe.pub"), "utf8").trim();
     const bootId = (await docker("exec", kong, "cat", "/proc/sys/kernel/random/boot_id")).stdout.trim();
     const claims = { clusterId: CLUSTER, podUid: harness.podUid, nodeName: "kind-worker", bootId, admissionId: "6a1f3c2e-0b7d-4c1a-9f10-0000000000ad", probePublicKey, startDeadline: new Date(Date.now() + 300_000).toISOString() };
-    await docker("run", "--rm", "-v", `${handoff}:/h`, NODE_IMAGE, "sh", "-c", `printf '%s' '${jws(privateKey, { ...claims, podUid: "6a1f3c2e-0b7d-4c1a-9f10-0000000000ff" })}' > /h/admission.jws`);
+    await docker("run", "--rm", "-v", `${handoff}:/h`, NODE_IMAGE, "sh", "-c", `printf '%s' '${jws(instance, { ...claims, podUid: "6a1f3c2e-0b7d-4c1a-9f10-0000000000ff" })}' > /h/admission.jws`);
     await sleep(17_000);
     check((await nginx(kong)) === 0, "an admission of another pod must be ignored");
 
     // Admitted: the next round issues the lease, Kong starts, the canary makes the probe Ready.
-    await docker("run", "--rm", "-v", `${handoff}:/h`, NODE_IMAGE, "sh", "-c", `printf '%s' '${jws(privateKey, claims)}' > /h/admission.jws`);
+    await docker("run", "--rm", "-v", `${handoff}:/h`, NODE_IMAGE, "sh", "-c", `printf '%s' '${jws(instance, claims)}' > /h/admission.jws`);
     check((await until(() => status(proxy), (s) => s === 200, 40_000)) !== null, "the admitted pod must serve");
     check((await until(() => ready(probe), Boolean, 10_000)) !== null, "the guard canary must make the probe Ready");
 
@@ -147,10 +140,10 @@ async function main() {
         second.containers.push((await docker("run", "-d", "--rm", "--network", second.network, "--network-alias", "forbidden-cap2", NODE_IMAGE, "node", "-e", TARGET)).stdout.trim());
         const handoff2 = join(second.dir, "handoff");
         const { id: kong2, proxy: proxy2 } = await second.gateway(unguarded, { supervised: true });
-        const probe2 = await second.probe(kong2, { config: probeConfig(), instancePublicKey, clusterId: CLUSTER, handoff: handoff2 });
+        const probe2 = await second.probe(kong2, { config: probeConfig(), trustSet: [instance], clusterId: CLUSTER, handoff: handoff2 });
         await second.waitFor("probe key", async () => readFileSync(join(handoff2, "probe.pub"), "utf8").length > 0);
         const key2 = readFileSync(join(handoff2, "probe.pub"), "utf8").trim();
-        await docker("run", "--rm", "-v", `${handoff2}:/h`, NODE_IMAGE, "sh", "-c", `printf '%s' '${jws(privateKey, { ...claims, podUid: second.podUid, probePublicKey: key2 })}' > /h/admission.jws`);
+        await docker("run", "--rm", "-v", `${handoff2}:/h`, NODE_IMAGE, "sh", "-c", `printf '%s' '${jws(instance, { ...claims, podUid: second.podUid, probePublicKey: key2 })}' > /h/admission.jws`);
         // The canary runs every second from the start: the unguarded configuration is caught before it serves.
         // t = 0 when Kong first answers with this configuration (a path without a route: Kong's own 404).
         const started = await until(async () => (await fetch(`${proxy2}/nothing-here`, { signal: AbortSignal.timeout(500) })).status === 404, Boolean, 40_000);
