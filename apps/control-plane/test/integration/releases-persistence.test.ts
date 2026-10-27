@@ -96,15 +96,23 @@ async function describeTable(url: string, table: string) {
 const tablesOf = async (url: string) =>
   (await query(url, `select table_name from information_schema.tables where table_schema = 'public' and table_type = 'BASE TABLE' order by table_name`)).map((r) => r.table_name as string);
 
+/** A database migrated up to the migration before N3-C2, holding the v1 seed. */
+async function v1Database(label: string): Promise<string> {
+  const url = await freshDatabase(label);
+  await runMigrations(url, folderUpTo(N3 - 1));
+  for (const s of V1_SEED) await query(url, s);
+  // As a start of the previous version would: the slugs of the seeded workspaces are filled in.
+  await runMigrations(url, folderUpTo(N3 - 1));
+  return url;
+}
+
 describe("N3-C2 releases and deployments persistence", () => {
+  // The v1 database after the N3-C2 migration, for every case but the upgrade itself (which has its own).
   let url: string;
 
   beforeAll(async () => {
-    url = await freshDatabase("upgrade");
-    await runMigrations(url, folderUpTo(N3 - 1));
-    for (const s of V1_SEED) await query(url, s);
-    // As a start of the previous version would: the slugs of the seeded workspaces are filled in.
-    await runMigrations(url, folderUpTo(N3 - 1));
+    url = await v1Database("upgraded");
+    await runMigrations(url);
   }, 120_000);
 
   afterAll(async () => {
@@ -116,6 +124,7 @@ describe("N3-C2 releases and deployments persistence", () => {
   });
 
   it("is additive: every v1 table keeps its columns, constraints, indexes, triggers and rows", async () => {
+    const url = await v1Database("upgrade");
     const v1Tables = await tablesOf(url);
     expect(v1Tables.filter((t) => NEW_TABLES.includes(t))).toEqual([]);
     const before = Object.fromEntries(await Promise.all(v1Tables.map(async (t) => [t, await describeTable(url, t)] as const)));
