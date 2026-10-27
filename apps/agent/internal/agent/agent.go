@@ -106,7 +106,9 @@ func (a *Agent) resetApplyRetry(hash string) {
 func (a *Agent) Run(ctx context.Context) error {
 	var saved *Snapshot
 	if a.config.HandoffDir != "" {
-		a.deploy = &deployments{store: store{path: a.config.SnapshotPath, meta: deploymentMeta}}
+		if a.deploy == nil {
+			a.deploy = &deployments{store: store{path: a.config.SnapshotPath, meta: deploymentMeta}}
+		}
 		a.restoreDeployment()
 	} else if loaded, err := a.store.load(); err != nil {
 		a.log.Warn("ignoring unusable persisted snapshot", "error", err)

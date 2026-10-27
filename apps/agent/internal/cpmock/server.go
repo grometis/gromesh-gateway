@@ -67,6 +67,7 @@ type Server struct {
 	deploymentEpoch    int64
 	deploymentRevision int64
 	deploymentHash     string
+	alwaysSendBody     bool
 	down               bool
 	snapshot           []byte
 	hash               string
@@ -139,6 +140,13 @@ func (s *Server) SetDeployment(data []byte) {
 	s.deploymentEpoch, s.deploymentRevision, s.deploymentHash = envelope.Epoch, envelope.Revision, envelope.Hash
 }
 
+// SetAlwaysSendBody answers 200 with the deployment even when If-None-Match names its hash.
+func (s *Server) SetAlwaysSendBody(always bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.alwaysSendBody = always
+}
+
 func (s *Server) currentDeployment(w http.ResponseWriter, r *http.Request) {
 	if !authorized(w, r, s.currentNodeToken()) {
 		return
@@ -158,7 +166,7 @@ func (s *Server) currentDeployment(w http.ResponseWriter, r *http.Request) {
 	// A 304 still carries the current epoch and revision, which the agent confirms.
 	w.Header().Set("X-Gromesh-Epoch", strconv.FormatInt(s.deploymentEpoch, 10))
 	w.Header().Set("X-Gromesh-Revision", strconv.FormatInt(s.deploymentRevision, 10))
-	if r.Header.Get("If-None-Match") == s.deploymentHash {
+	if r.Header.Get("If-None-Match") == s.deploymentHash && !s.alwaysSendBody {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}

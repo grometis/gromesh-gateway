@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"time"
 )
@@ -23,6 +24,8 @@ const deploymentMeta = "deployment.json"
 var (
 	slugPattern   = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 	counterHeader = regexp.MustCompile(`^[1-9][0-9]{0,17}$`)
+	envelopeKeys  = []string{"schemaVersion", "instanceId", "epoch", "revision", "hash", "createdAt", "reason", "members", "mandatoryPluginsVersion", "valuesDigest", "config"}
+	memberKeys    = []string{"workspaceId", "slug", "releaseVersion", "contentDigest"}
 	reasons       = map[string]bool{"publish": true, "promotion": true, "rollback": true, "reconcile": true, "mandatory-plugins": true, "values": true, "migration": true}
 )
 
@@ -59,6 +62,9 @@ func DecodeDeployment(data []byte) (*Deployment, error) {
 	if err := decoder.Decode(new(json.RawMessage)); err != io.EOF {
 		return nil, fmt.Errorf("invalid trailing deployment data")
 	}
+	if !exactKeys(data, envelopeKeys) {
+		return nil, fmt.Errorf("invalid deployment envelope")
+	}
 	if d.SchemaVersion != 2 || !uuidPattern.MatchString(d.InstanceID) || d.Epoch < 1 || d.Revision < 1 || !hashPattern.MatchString(d.Hash) {
 		return nil, fmt.Errorf("invalid deployment schema version, instance ID, epoch, revision or hash")
 	}
@@ -71,8 +77,16 @@ func DecodeDeployment(data []byte) (*Deployment, error) {
 			return nil, fmt.Errorf("invalid deployment reason")
 		}
 	}
-	if d.Members == nil {
+	var top struct {
+		Members []json.RawMessage `json:"members"`
+	}
+	if d.Members == nil || json.Unmarshal(data, &top) != nil {
 		return nil, fmt.Errorf("deployment members are required")
+	}
+	for _, m := range top.Members {
+		if !exactKeys(m, memberKeys) {
+			return nil, fmt.Errorf("invalid deployment member")
+		}
 	}
 	for _, m := range *d.Members {
 		if !uuidPattern.MatchString(m.WorkspaceID) || len(m.Slug) > 40 || !slugPattern.MatchString(m.Slug) || m.ReleaseVersion < 1 || !hashPattern.MatchString(m.ContentDigest) {
@@ -90,6 +104,38 @@ func DecodeDeployment(data []byte) (*Deployment, error) {
 	return &d, nil
 }
 
+// exactKeys refuses what DisallowUnknownFields lets through: encoding/json matches field names case-insensitively, and
+// the contract names every member exactly.
+func exactKeys(object []byte, allowed []string) bool {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(object, &fields) != nil {
+		return false
+	}
+	for key := range fields {
+		if !slices.Contains(allowed, key) {
+			return false
+		}
+	}
+	return true
+}
+
+// readStrict decodes a file the agent wrote itself: a regular file, one JSON object with exactly the given members.
+func readStrict(path string, v any, keys []string) (bool, error) {
+	data, err := readRegular(path, 4<<10)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(v) != nil || decoder.Decode(new(json.RawMessage)) != io.EOF || !exactKeys(data, keys) {
+		return false, fmt.Errorf("invalid content in %s", path)
+	}
+	return true, nil
+}
+
 func (d *Deployment) position() position { return position{d.Epoch, d.Revision, d.Hash} }
 
 // position is an applied (or confirmed) deployment: a 304 confirms a newer (epoch, revision) of the same hash.
@@ -105,7 +151,7 @@ func (p position) before(q position) bool {
 
 type permanentFailure struct {
 	position
-	status int
+	Status int `json:"status"`
 }
 
 type deployments struct {
@@ -124,21 +170,38 @@ func (d *deployments) positionFile() string {
 	return filepath.Join(filepath.Dir(d.store.path), "."+filepath.Base(d.store.path)+".position")
 }
 
+func (p position) valid() bool {
+	return p.Epoch >= 1 && p.Revision >= 1 && hashPattern.MatchString(p.Hash)
+}
+
 func (d *deployments) loadPosition() (*position, error) {
-	data, err := readRegular(d.positionFile(), 4<<10)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
+	var p position
+	found, err := readStrict(d.positionFile(), &p, []string{"epoch", "revision", "hash"})
+	if !found || err != nil {
 		return nil, err
 	}
-	var p position
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if decoder.Decode(&p) != nil || decoder.Decode(new(json.RawMessage)) != io.EOF || p.Epoch < 1 || p.Revision < 1 || !hashPattern.MatchString(p.Hash) {
+	if !p.valid() {
 		return nil, fmt.Errorf("invalid persisted deployment position")
 	}
 	return &p, nil
+}
+
+// failureFile holds the permanent failure mark, so a restart neither resends a rejected deployment nor forgets its
+// epoch.
+func (d *deployments) failureFile() string {
+	return filepath.Join(filepath.Dir(d.store.path), "."+filepath.Base(d.store.path)+".failure")
+}
+
+func (d *deployments) loadFailure() (*permanentFailure, error) {
+	var f permanentFailure
+	found, err := readStrict(d.failureFile(), &f, []string{"epoch", "revision", "hash", "status"})
+	if !found || err != nil {
+		return nil, err
+	}
+	if !f.valid() || f.Status != http.StatusBadRequest && f.Status != http.StatusRequestEntityTooLarge {
+		return nil, fmt.Errorf("invalid persisted deployment failure")
+	}
+	return &f, nil
 }
 
 // DeploymentStatus is the StatusReport of agent protocol v2.
@@ -256,19 +319,46 @@ func (a *Agent) restoreDeployment() {
 	}
 	if err != nil {
 		a.log.Warn("ignoring unusable persisted deployment", "error", err)
-		return
+		saved = nil
 	}
-	if saved == nil {
-		return
+	if saved != nil {
+		at := saved.position()
+		confirmed, err := d.loadPosition()
+		if err != nil {
+			a.log.Warn("ignoring unusable persisted deployment position", "error", err)
+		} else if confirmed != nil && confirmed.Hash == at.Hash && at.before(*confirmed) {
+			at = *confirmed
+		}
+		a.acceptDeployment(saved, at, false)
 	}
-	at := saved.position()
-	confirmed, err := d.loadPosition()
+	failed, err := d.loadFailure()
 	if err != nil {
-		a.log.Warn("ignoring unusable persisted deployment position", "error", err)
-	} else if confirmed != nil && confirmed.Hash == at.Hash && at.before(*confirmed) {
-		at = *confirmed
+		a.log.Warn("ignoring unusable persisted deployment failure", "error", err)
 	}
-	a.acceptDeployment(saved, at, false)
+	// A mark at or below the applied position is stale: a newer revision already replaced it.
+	if failed != nil && (d.at == nil || d.at.before(failed.position)) {
+		d.failed = failed
+		a.publishDeploymentStatus()
+	}
+}
+
+func (a *Agent) markFailure(failed *permanentFailure) {
+	d := a.deploy
+	d.failed = failed
+	data, _ := json.Marshal(failed)
+	if err := writeAtomic(d.failureFile(), data, 0o644); err != nil {
+		a.log.Warn("cannot persist the permanent failure mark", "error", err)
+	}
+	a.publishDeploymentStatus()
+}
+
+func (a *Agent) clearFailure() {
+	d := a.deploy
+	d.failed = nil
+	if err := os.Remove(d.failureFile()); err != nil && !errors.Is(err, os.ErrNotExist) {
+		a.log.Warn("cannot remove the permanent failure mark", "error", err)
+	}
+	a.publishDeploymentStatus()
 }
 
 func (a *Agent) acceptDeployment(deployment *Deployment, at position, success bool) {
@@ -301,7 +391,7 @@ func (a *Agent) publishDeploymentStatus() {
 			status.AppliedRevision, status.AppliedHash = &revision, &hash
 		}
 		if d.failed != nil && d.failed.Epoch == epoch {
-			revision, hash, code := d.failed.Revision, d.failed.Hash, d.failed.status
+			revision, hash, code := d.failed.Revision, d.failed.Hash, d.failed.Status
 			status.FailedRevision, status.FailedHash, status.FailureStatus = &revision, &hash, &code
 		}
 	}
@@ -360,8 +450,7 @@ func (a *Agent) refreshDeployment(ctx context.Context) {
 		}
 	}
 	if d.failed != nil && d.failed.position != next {
-		d.failed = nil
-		a.publishDeploymentStatus()
+		a.clearFailure()
 	}
 	if d.at != nil && next.Hash == d.at.Hash {
 		a.confirmDeployment(ctx, current)
@@ -391,9 +480,8 @@ func (a *Agent) refreshDeployment(ctx context.Context) {
 	if err := a.client.apply(ctx, deployment.Config); err != nil {
 		var responseErr *applyError
 		if errors.As(err, &responseErr) && (responseErr.statusCode == http.StatusBadRequest || responseErr.statusCode == http.StatusRequestEntityTooLarge) {
-			d.failed = &permanentFailure{next, responseErr.statusCode}
+			a.markFailure(&permanentFailure{next, responseErr.statusCode})
 			a.failures.Add(1)
-			a.publishDeploymentStatus()
 			a.log.Error("deployment rejected by Kong", "epoch", next.Epoch, "revision", next.Revision, "status", responseErr.statusCode)
 			a.reportDeployment(ctx)
 			return

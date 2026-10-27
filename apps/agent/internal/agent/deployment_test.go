@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -55,6 +57,8 @@ func newWorkspacesAgent(t *testing.T, cp *cpmock.Server, k *kongMock, path strin
 	a := newTestAgent(t, cp, k, path)
 	// Workspaces mode is chosen by the handoff directory alone; the isolation relay has tests of its own.
 	a.config.HandoffDir = t.TempDir()
+	// Run keeps a deployments it is given, so a test reads it without racing.
+	a.deploy = &deployments{store: store{path: path, meta: deploymentMeta}}
 	return a
 }
 
@@ -149,6 +153,12 @@ func TestDeploymentEnvelopeValidation(t *testing.T) {
 		"bad values digest":           func(m map[string]any) { m["valuesDigest"] = "x" },
 		"config not an object":        func(m map[string]any) { m["config"] = []any{} },
 		"no config":                   func(m map[string]any) { delete(m, "config") },
+		"epoch in another case":       func(m map[string]any) { m["Epoch"] = m["epoch"]; delete(m, "epoch") },
+		"both cases of revision":      func(m map[string]any) { m["Revision"] = 99 },
+		"member key in another case": func(m map[string]any) {
+			member(m)["WorkspaceId"] = member(m)["workspaceId"]
+			delete(member(m), "workspaceId")
+		},
 	} {
 		if _, err := DecodeDeployment(edit(f)); err == nil {
 			t.Errorf("%s: accepted", name)
@@ -338,7 +348,7 @@ func TestWorkspacesMarksAPermanentFailurePerRevision(t *testing.T) {
 			a := newWorkspacesAgent(t, cp, k, filepath.Join(t.TempDir(), "kong.json"))
 			a.applyRetry = func(int) time.Duration { return 0 }
 			drain(t, k)
-			start(t, a)
+			stop := start(t, a)
 			good := deploymentEnvelope(t, 1, 1, "a")
 			goodHash := hashOf(t, good)
 			cp.SetDeployment(good)
@@ -357,6 +367,17 @@ func TestWorkspacesMarksAPermanentFailurePerRevision(t *testing.T) {
 			if k.calls.Load() != 2 {
 				t.Fatalf("the marked revision was retried: %d Kong calls", k.calls.Load())
 			}
+			// The mark survives a restart: the rejected deployment is not sent to Kong again.
+			stop()
+			restarted := newWorkspacesAgent(t, cp, k, a.config.SnapshotPath)
+			start(t, restarted)
+			waitDeployment(t, cp, func(s cpmock.DeploymentStatus) bool {
+				return s.FailedRevision != nil && *s.FailedRevision == 2 && applied(1, 1, goodHash)(s)
+			})
+			settle(t, cp, 3)
+			if k.calls.Load() != 2 {
+				t.Fatalf("the marked revision was retried after a restart: %d Kong calls", k.calls.Load())
+			}
 			// A new revision of the same content clears the mark.
 			cp.SetDeployment(deploymentEnvelope(t, 1, 3, "b"))
 			s = waitDeployment(t, cp, applied(1, 3, badHash))
@@ -365,6 +386,9 @@ func TestWorkspacesMarksAPermanentFailurePerRevision(t *testing.T) {
 			}
 			if k.calls.Load() != 3 {
 				t.Fatalf("%d Kong calls, want 3", k.calls.Load())
+			}
+			if _, err := os.Stat(restarted.deploy.failureFile()); !os.IsNotExist(err) {
+				t.Fatalf("the cleared mark is still on the volume: %v", err)
 			}
 		})
 	}
@@ -379,7 +403,7 @@ func TestWorkspacesRefusesAnOlderEpochThanAMarkedFailure(t *testing.T) {
 	k.failed.Store(true)
 	a := newWorkspacesAgent(t, cp, k, filepath.Join(t.TempDir(), "kong.json"))
 	drain(t, k)
-	start(t, a)
+	stop := start(t, a)
 	bad := deploymentEnvelope(t, 2, 1, "a")
 	cp.SetDeployment(bad)
 	s := waitDeployment(t, cp, func(s cpmock.DeploymentStatus) bool { return s.FailedRevision != nil })
@@ -387,6 +411,10 @@ func TestWorkspacesRefusesAnOlderEpochThanAMarkedFailure(t *testing.T) {
 		t.Fatalf("unexpected first failure status %+v", s)
 	}
 	k.failed.Store(false)
+	// After a restart the marked epoch still counts.
+	stop()
+	start(t, newWorkspacesAgent(t, cp, k, a.config.SnapshotPath))
+	waitDeployment(t, cp, func(s cpmock.DeploymentStatus) bool { return s.Epoch == 2 && s.FailedRevision != nil })
 	cp.SetDeployment(deploymentEnvelope(t, 1, 5, "b"))
 	settle(t, cp, 3)
 	if k.calls.Load() != 1 {
@@ -451,19 +479,7 @@ func TestWorkspacesColdStartWithTheControlPlaneDownAdoptsTheVolume(t *testing.T)
 	}
 	restarted := newWorkspacesAgent(t, cp, k, path)
 	start(t, restarted)
-	deadline := time.Now().Add(4 * time.Second)
-	for {
-		restarted.statusMu.RLock()
-		s := restarted.deployStatus
-		restarted.statusMu.RUnlock()
-		if s != nil && s.Epoch == 1 && *s.AppliedRevision == 4 && *s.AppliedHash == hash {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the volume was not adopted with the control plane down: %+v", s)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitAdopted(t, restarted, position{1, 4, hash})
 	if len(cp.DeploymentRequests) != 0 || len(cp.Registrations) != 1 {
 		t.Fatal("the control plane answered while down")
 	}
@@ -476,6 +492,139 @@ func TestWorkspacesColdStartWithTheControlPlaneDownAdoptsTheVolume(t *testing.T)
 	newer := deploymentEnvelope(t, 2, 1, "b")
 	cp.SetDeployment(newer)
 	waitDeployment(t, cp, applied(2, 1, hashOf(t, newer)))
+}
+
+func waitAdopted(t *testing.T, a *Agent, want position) {
+	t.Helper()
+	deadline := time.Now().Add(4 * time.Second)
+	for {
+		a.statusMu.RLock()
+		s := a.deployStatus
+		a.statusMu.RUnlock()
+		if s != nil && s.Epoch == want.Epoch && s.AppliedRevision != nil && *s.AppliedRevision == want.Revision && *s.AppliedHash == want.Hash {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the volume was not adopted at %+v: %+v", want, s)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// A 304 into a newer epoch is confirmed and survives a restart: an older epoch stays refused.
+func TestWorkspacesConfirmsANewEpochOn304AcrossARestart(t *testing.T) {
+	cp := cpmock.New()
+	t.Cleanup(cp.Close)
+	cp.SetSSEDown(true)
+	k := newKong(t)
+	path := filepath.Join(t.TempDir(), "kong.json")
+	stop := start(t, newWorkspacesAgent(t, cp, k, path))
+	three := deploymentEnvelope(t, 1, 3, "a")
+	hash := hashOf(t, three)
+	cp.SetDeployment(three)
+	waitDeployment(t, cp, applied(1, 3, hash))
+	cp.SetDeployment(deploymentEnvelope(t, 2, 1, "a"))
+	waitDeployment(t, cp, applied(2, 1, hash))
+	stop()
+	cp.SetDown(true)
+	restarted := newWorkspacesAgent(t, cp, k, path)
+	start(t, restarted)
+	waitAdopted(t, restarted, position{2, 1, hash})
+	cp.SetDown(false)
+	cp.SetDeployment(deploymentEnvelope(t, 1, 9, "b"))
+	settle(t, cp, 3)
+	if s := lastStatus(t, cp); !applied(2, 1, hash)(s) || k.calls.Load() != 1 {
+		t.Fatalf("an older epoch moved the agent: %+v, %d Kong calls", s, k.calls.Load())
+	}
+}
+
+// A 200 for a newer revision of the running hash is confirmed without Kong, and its envelope replaces the volume's.
+func TestWorkspacesConfirmsANewRevisionSentWithItsBody(t *testing.T) {
+	cp := cpmock.New()
+	t.Cleanup(cp.Close)
+	cp.SetSSEDown(true)
+	cp.SetAlwaysSendBody(true)
+	k := newKong(t)
+	path := filepath.Join(t.TempDir(), "kong.json")
+	a := newWorkspacesAgent(t, cp, k, path)
+	start(t, a)
+	one := deploymentEnvelope(t, 1, 1, "a")
+	hash := hashOf(t, one)
+	cp.SetDeployment(one)
+	waitDeployment(t, cp, applied(1, 1, hash))
+	two := deploymentEnvelope(t, 1, 2, "a")
+	cp.SetDeployment(two)
+	waitDeployment(t, cp, applied(1, 2, hash))
+	settle(t, cp, 3)
+	if saved, _, err := a.deploy.store.loadRaw(); err != nil || !bytes.Equal(saved, two) || k.calls.Load() != 1 {
+		t.Fatalf("the confirmed envelope is not on the volume, or Kong was called (%d)", k.calls.Load())
+	}
+}
+
+// Persistence failures: nothing is confirmed or kept that is not on the volume, and Kong goes back to the running
+// config when a new one cannot be committed.
+func TestWorkspacesPersistenceFailures(t *testing.T) {
+	t.Run("commit", func(t *testing.T) {
+		cp := cpmock.New()
+		t.Cleanup(cp.Close)
+		cp.SetSSEDown(true)
+		k := newKong(t)
+		path := filepath.Join(t.TempDir(), "kong.json")
+		a := newWorkspacesAgent(t, cp, k, path)
+		var failRename atomic.Bool
+		a.deploy = &deployments{store: store{path: path, meta: deploymentMeta, rename: func(from, to string) error {
+			if failRename.Load() {
+				return errors.New("injected rename failure")
+			}
+			return os.Rename(from, to)
+		}}}
+		start(t, a)
+		one, two := deploymentEnvelope(t, 1, 1, "a"), deploymentEnvelope(t, 1, 2, "b")
+		cp.SetDeployment(one)
+		waitDeployment(t, cp, applied(1, 1, hashOf(t, one)))
+		receive(t, k.bodies, nil)
+		failRename.Store(true)
+		cp.SetDeployment(two)
+		if body := receive(t, k.bodies, nil); !bytes.Equal(body, mustDecode(t, two).Config) {
+			t.Fatal("the new config was not sent first")
+		}
+		if body := receive(t, k.bodies, nil); !bytes.Equal(body, mustDecode(t, one).Config) {
+			t.Fatal("Kong did not get the running config back")
+		}
+		drain(t, k)
+		if s := lastStatus(t, cp); !applied(1, 1, hashOf(t, one))(s) || s.FailedRevision != nil {
+			t.Fatalf("an uncommitted deployment was reported: %+v", s)
+		}
+		failRename.Store(false)
+		waitDeployment(t, cp, applied(1, 2, hashOf(t, two)))
+	})
+	t.Run("confirmation", func(t *testing.T) {
+		cp := cpmock.New()
+		t.Cleanup(cp.Close)
+		cp.SetSSEDown(true)
+		k := newKong(t)
+		dir := t.TempDir()
+		a := newWorkspacesAgent(t, cp, k, filepath.Join(dir, "kong.json"))
+		start(t, a)
+		one := deploymentEnvelope(t, 1, 1, "a")
+		hash := hashOf(t, one)
+		cp.SetDeployment(one)
+		waitDeployment(t, cp, applied(1, 1, hash))
+		// A directory where the position goes: the confirmation cannot be written.
+		blocked := filepath.Join(dir, ".kong.json.position")
+		if err := os.Mkdir(blocked, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		cp.SetDeployment(deploymentEnvelope(t, 1, 2, "a"))
+		settle(t, cp, 3)
+		if s := lastStatus(t, cp); !applied(1, 1, hash)(s) {
+			t.Fatalf("a revision was confirmed without being persisted: %+v", s)
+		}
+		if err := os.Remove(blocked); err != nil {
+			t.Fatal(err)
+		}
+		waitDeployment(t, cp, applied(1, 2, hash))
+	})
 }
 
 // Negative controls for the volume: a v1 snapshot, a deployment whose boot config differs, and a confirmed position
@@ -509,11 +658,12 @@ func TestWorkspacesColdStartIgnoresAnUnusableVolume(t *testing.T) {
 			position string
 			want     position
 		}{
-			"another hash":       {fmt.Sprintf(`{"epoch":1,"revision":9,"hash":"sha256:%064d"}`, 0), position{1, 3, one.Hash}},
-			"lower revision":     {fmt.Sprintf(`{"epoch":1,"revision":2,"hash":%q}`, one.Hash), position{1, 3, one.Hash}},
-			"unknown field":      {fmt.Sprintf(`{"epoch":1,"revision":9,"hash":%q,"x":1}`, one.Hash), position{1, 3, one.Hash}},
-			"newer epoch":        {fmt.Sprintf(`{"epoch":2,"revision":1,"hash":%q}`, one.Hash), position{2, 1, one.Hash}},
-			"confirmed revision": {fmt.Sprintf(`{"epoch":1,"revision":9,"hash":%q}`, one.Hash), position{1, 9, one.Hash}},
+			"another hash":        {fmt.Sprintf(`{"epoch":1,"revision":9,"hash":"sha256:%064d"}`, 0), position{1, 3, one.Hash}},
+			"lower revision":      {fmt.Sprintf(`{"epoch":1,"revision":2,"hash":%q}`, one.Hash), position{1, 3, one.Hash}},
+			"unknown field":       {fmt.Sprintf(`{"epoch":1,"revision":9,"hash":%q,"x":1}`, one.Hash), position{1, 3, one.Hash}},
+			"newer epoch":         {fmt.Sprintf(`{"epoch":2,"revision":1,"hash":%q}`, one.Hash), position{2, 1, one.Hash}},
+			"confirmed revision":  {fmt.Sprintf(`{"epoch":1,"revision":9,"hash":%q}`, one.Hash), position{1, 9, one.Hash}},
+			"key in another case": {fmt.Sprintf(`{"epoch":1,"Revision":9,"hash":%q}`, one.Hash), position{1, 3, one.Hash}},
 		} {
 			d := &deployments{store: store{path: path, meta: deploymentMeta}}
 			pending, err := d.store.stageRaw(one.raw, one.Config)
@@ -535,6 +685,40 @@ func restoring(d *deployments) *Agent {
 	a := &Agent{config: Config{NodeID: "node-1"}, log: slog.New(slog.NewJSONHandler(io.Discard, nil)), deploy: d}
 	a.restoreDeployment()
 	return a
+}
+
+// The persisted mark counts only above the applied position and only for 400/413.
+func TestWorkspacesRestoresOnlyALivePermanentFailure(t *testing.T) {
+	one := mustDecode(t, deploymentEnvelope(t, 1, 3, "a"))
+	other := fmt.Sprintf("sha256:%064d", 1)
+	for name, tc := range map[string]struct {
+		failure string
+		kept    bool
+	}{
+		"above the applied revision": {fmt.Sprintf(`{"epoch":1,"revision":4,"hash":%q,"status":400}`, other), true},
+		"newer epoch":                {fmt.Sprintf(`{"epoch":2,"revision":1,"hash":%q,"status":413}`, other), true},
+		"below the applied revision": {fmt.Sprintf(`{"epoch":1,"revision":2,"hash":%q,"status":400}`, other), false},
+		"the applied revision":       {fmt.Sprintf(`{"epoch":1,"revision":3,"hash":%q,"status":400}`, one.Hash), false},
+		"transient status":           {fmt.Sprintf(`{"epoch":1,"revision":4,"hash":%q,"status":500}`, other), false},
+		"key in another case":        {fmt.Sprintf(`{"epoch":1,"revision":4,"hash":%q,"Status":400}`, other), false},
+	} {
+		path := filepath.Join(t.TempDir(), "kong.json")
+		d := &deployments{store: store{path: path, meta: deploymentMeta}}
+		pending, err := d.store.stageRaw(one.raw, one.Config)
+		if err != nil || pending.commit() != nil {
+			t.Fatal("cannot write the fixture")
+		}
+		if err := os.WriteFile(d.failureFile(), []byte(tc.failure), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		a := restoring(d)
+		if (d.failed != nil) != tc.kept || d.at == nil || *d.at != one.position() {
+			t.Errorf("%s: failed %+v, applied %+v", name, d.failed, d.at)
+		}
+		if tc.kept && (a.deployStatus == nil || a.deployStatus.FailedRevision == nil) {
+			t.Errorf("%s: the restored mark is not reported", name)
+		}
+	}
 }
 
 // With GROMESH_HANDOFF_DIR unset nothing of protocol v2 is spoken, even when the control plane serves both.
