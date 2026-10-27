@@ -5,6 +5,7 @@ export { composeWorkspaces, regexIssue, CANARY_PATH, PLATFORM_TAG, ROUTE_GUARD_P
 export { CompileError, type CompileIssue } from "./errors.js";
 export { canonicalJson, hashConfig } from "./hash.js";
 export { buildSnapshot, type SnapshotMeta } from "./snapshot.js";
+export { buildSnapshotV2, contentDigest, workspaceConfigIssues, type ContentEntity, type DeploymentMember, type DeploymentMeta, type DeploymentReason, type SnapshotEnvelopeV2, type WorkspaceContent } from "./snapshot-v2.js";
 export { diffConfigs, ENTITY_KINDS, type EntityChange, type EntityKind } from "./diff.js";
 export { exportConfig, credentialKeyHint, type ConfigDocument, type ConfigConsumer, type ConfigPlugin, type ConsumerRef, type CredentialStatus } from "./document.js";
 export { convertKongConfig, type ImportIdentity } from "./import.js";
