@@ -65,7 +65,8 @@ async function until(fn, ok, timeoutMs) {
   }
 }
 
-const nginx = async (id) => Number((await docker("exec", id, "sh", "-c", "cat /proc/[0-9]*/comm 2>/dev/null | grep -c '^nginx$' || true")).stdout.trim());
+// Only the serving nginx (its master/worker titles): the image's HEALTHCHECK runs `kong health`, whose resty CLI is an nginx binary too.
+const nginx = async (id) => Number((await docker("exec", id, "sh", "-c", "for p in /proc/[0-9]*; do tr '\\0' ' ' < $p/cmdline 2>/dev/null; echo; done | grep -cE '^nginx: (master|worker) process' || true")).stdout.trim());
 const probeLogs = async (id) => docker("logs", id).then((r) => r.stdout + r.stderr, () => "");
 
 /** The outbox as the agent reads it: each report verified like the control plane does (typed header, probe key). */

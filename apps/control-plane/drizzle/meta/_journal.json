@@ -148,6 +148,13 @@
       "when": 1793043942071,
       "tag": "0020_isolation_admissions",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1793073871532,
+      "tag": "0021_releases_deployments",
+      "breakpoints": true
     }
   ]
 }
