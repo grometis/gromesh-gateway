@@ -43,6 +43,7 @@ refuse_ws() {
   grep -Fq "$expected" "$work/ws.log"
 }
 refuse_ws 'requires Kubernetes >= 1.33' --kube-version 1.32.9
+refuse_ws 'start with the Kong version' --kube-version 1.33.0 --set kong.image.tag=latest
 refuse_ws 'no forbidden target for CAP-3' --kube-version 1.33.0 --set 'workspaces.probe.checks[2].kind=tcp-open'
 refuse_ws 'must differ from kong.runAsUser' --kube-version 1.33.0 --set workspaces.probe.runAsUser=1001
 refuse_ws 'workspaces.clusterId' --kube-version 1.33.0 --set-string workspaces.clusterId=nope
@@ -104,6 +105,8 @@ assert.deepEqual(mount(probe, 'kong-state'), { name: 'kong-state', mountPath: '/
 assert.equal(mount(agent, 'isolation-probe-config'), undefined, 'the agent never sees the trust set it could swap');
 assert.equal(mount(agent, 'kong-state'), undefined);
 assert.equal(env(agent, 'GROMESH_HANDOFF_DIR').value, '/gromesh/handoff');
+// Registration cannot wait for Kong in this mode: the agent declares the pinned image's version.
+assert.equal(env(agent, 'GROMESH_KONG_VERSION').value, '3.9.4');
 assert.equal(env(agent, 'GROMESH_POD_UID').valueFrom.fieldRef.fieldPath, 'metadata.uid');
 assert.equal(env(agent, 'GROMESH_NODE_NAME').valueFrom.fieldRef.fieldPath, 'spec.nodeName');
 const volume = name => pod.volumes.find(v => v.name === name);

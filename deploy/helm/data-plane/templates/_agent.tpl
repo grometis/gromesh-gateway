@@ -34,6 +34,9 @@
     # The isolation admission of this pod in this boot, carried to and from the probe through the handoff.
     - name: GROMESH_HANDOFF_DIR
       value: /gromesh/handoff
+    # Kong starts only after the admission, so the agent registers with the pinned image's version (tag <version>-<sha>).
+    - name: GROMESH_KONG_VERSION
+      value: {{ regexFind "^[0-9]+\\.[0-9]+\\.[0-9]+" .Values.kong.image.tag | required "workspaces mode needs kong.image.tag to start with the Kong version (e.g. 3.9.4-<sha>)" | quote }}
     - name: GROMESH_POD_UID
       valueFrom:
         fieldRef:

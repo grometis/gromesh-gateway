@@ -371,3 +371,57 @@ func TestTheSessionCarriesIsolationAndSendsTheFinalReportOnStop(t *testing.T) {
 		t.Fatalf("the final flush sent %v", lens(batches))
 	}
 }
+
+// Cold start in Workspaces mode: Kong (and so its Admin API) starts only after the admission, which needs the node
+// token; the agent registers with the pinned version the chart declares and the admission follows (N2-E2 finding F1).
+func TestWorkspacesModeRegistersBeforeKongExistsAndGetsTheAdmission(t *testing.T) {
+	cp := cpmock.New()
+	defer cp.Close()
+	k := newKong(t)
+	w := newIsolationWorld(t)
+	w.cp.decide = func(int, int) string { return "granted" }
+	cp.SetIsolation(w.cp)
+	a := newTestAgent(t, cp, k, filepath.Join(t.TempDir(), "kong.json"))
+	// No Kong yet: its Admin API is a socket nobody listens on.
+	a.config.KongAdminURL = "unix://" + filepath.Join(t.TempDir(), "admin.sock")
+	a.client.config.KongAdminURL = a.config.KongAdminURL
+	a.config.HandoffDir, a.config.PodUID, a.config.PodName, a.config.NodeName, a.config.BootIDFile = w.handoff, testPod, "dp-0", "worker-1", w.boot
+	a.config.KongVersion = "3.9.4"
+	a.client.config.HandoffDir, a.client.config.KongVersion = a.config.HandoffDir, a.config.KongVersion
+	a.isolation = &isolation{config: a.config, client: a.client, log: a.log, interval: time.Hour, retry: func(int) time.Duration { return 0 }}
+	a.isolation.config.StateDir = w.state
+	w.write("probe.pub", testProbeKey)
+	stop := start(t, a)
+	defer stop()
+	select {
+	case r := <-cp.Registrations:
+		if r.KongVersion != "3.9.4" {
+			t.Fatalf("registered Kong %q, want the declared 3.9.4", r.KongVersion)
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatal("the agent never registered while Kong was not running")
+	}
+	deadline := time.Now().Add(4 * time.Second)
+	for w.file("admission.jws") == "" && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if w.file("admission.jws") != grantedJWS {
+		t.Fatal("no admission was handed over before Kong started")
+	}
+}
+
+func TestWorkspacesModeRequiresTheDeclaredKongVersion(t *testing.T) {
+	c := Config{RegistrationToken: "t", NodeID: "n", Hostname: "h", SnapshotPath: "/s", ControlPlaneURL: "http://cp",
+		KongAdminURL: "unix:///a", KongStatusURL: "unix:///s", StateDir: "/state",
+		HandoffDir: "/gromesh/handoff", PodUID: testPod, PodName: "dp-0", NodeName: "worker-1", BootIDFile: "/b"}
+	for _, v := range []string{"", "3.9", "3.9.4-abc", "latest"} {
+		c.KongVersion = v
+		if c.validate() == nil {
+			t.Fatalf("Workspaces mode accepted GROMESH_KONG_VERSION %q", v)
+		}
+	}
+	c.KongVersion = "3.9.4"
+	if err := c.validate(); err != nil {
+		t.Fatalf("a declared 3.9.4 was refused: %v", err)
+	}
+}

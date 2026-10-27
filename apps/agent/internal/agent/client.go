@@ -64,12 +64,15 @@ func (c *client) nodeRequest(ctx context.Context, method, path string, body []by
 	return res, err
 }
 
-func (c *client) register(ctx context.Context) (Registration, error) {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
+// kongVersion is Kong's own answer, except in Workspaces mode: there Kong starts only after the pod's admission, which
+// needs the node token this registration returns, so the pinned image's version the chart declares stands in for it.
+func (c *client) kongVersion(ctx context.Context) (string, error) {
+	if c.config.HandoffDir != "" {
+		return c.config.KongVersion, nil
+	}
 	res, err := c.request(ctx, "GET", c.config.KongAdminURL, "", nil, nil)
 	if err != nil {
-		return Registration{}, fmt.Errorf("read Kong version: %w", err)
+		return "", fmt.Errorf("read Kong version: %w", err)
 	}
 	var info struct {
 		Version string `json:"version"`
@@ -77,10 +80,20 @@ func (c *client) register(ctx context.Context) (Registration, error) {
 	err = json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(&info)
 	res.Body.Close()
 	if res.StatusCode != http.StatusOK || err != nil || info.Version == "" {
-		return Registration{}, fmt.Errorf("invalid Kong version response (HTTP %d)", res.StatusCode)
+		return "", fmt.Errorf("invalid Kong version response (HTTP %d)", res.StatusCode)
 	}
-	body, _ := json.Marshal(RegisterRequest{NodeID: c.config.NodeID, Hostname: c.config.Hostname, KongVersion: info.Version, AgentVersion: Version})
-	res, err = c.request(ctx, "POST", endpoint(c.config.ControlPlaneURL, "/agent/v1/register"), c.config.RegistrationToken, body, nil)
+	return info.Version, nil
+}
+
+func (c *client) register(ctx context.Context) (Registration, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	version, err := c.kongVersion(ctx)
+	if err != nil {
+		return Registration{}, err
+	}
+	body, _ := json.Marshal(RegisterRequest{NodeID: c.config.NodeID, Hostname: c.config.Hostname, KongVersion: version, AgentVersion: Version})
+	res, err := c.request(ctx, "POST", endpoint(c.config.ControlPlaneURL, "/agent/v1/register"), c.config.RegistrationToken, body, nil)
 	if err != nil {
 		return Registration{}, err
 	}
