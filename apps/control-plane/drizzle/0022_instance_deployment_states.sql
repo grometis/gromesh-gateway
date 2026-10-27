@@ -31,3 +31,20 @@ CREATE TRIGGER "instance_immutable" BEFORE UPDATE OR DELETE ON "instance" FOR EA
 CREATE TRIGGER "instance_no_truncate" BEFORE TRUNCATE ON "instance" FOR EACH STATEMENT EXECUTE FUNCTION "gromesh_instance_immutable"();--> statement-breakpoint
 CREATE TRIGGER "deployment_states_append_only" BEFORE UPDATE OR DELETE ON "deployment_states" FOR EACH ROW EXECUTE FUNCTION "gromesh_append_only"();--> statement-breakpoint
 CREATE TRIGGER "deployment_states_no_truncate" BEFORE TRUNCATE ON "deployment_states" FOR EACH STATEMENT EXECUTE FUNCTION "gromesh_append_only"();
+--> statement-breakpoint
+-- Key rotation re-seals releases and deployments without making them mutable (N3-C2 question 3): an UPDATE passes
+-- only inside a transaction that set gromesh.reseal, and only when it changes nothing but the sealed column (the
+-- trigger's argument). The application opens and re-seals the same document; DELETE and TRUNCATE stay refused.
+CREATE FUNCTION "gromesh_reseal_only"() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'UPDATE' AND current_setting('gromesh.reseal', true) = 'on'
+     AND (to_jsonb(NEW) - TG_ARGV[0]) = (to_jsonb(OLD) - TG_ARGV[0]) THEN
+    RETURN NEW;
+  END IF;
+  RAISE EXCEPTION '% on % is not allowed: the table is append-only', TG_OP, TG_TABLE_NAME USING ERRCODE = '55000';
+END;
+$$;--> statement-breakpoint
+DROP TRIGGER "releases_append_only" ON "releases";--> statement-breakpoint
+CREATE TRIGGER "releases_reseal_only" BEFORE UPDATE OR DELETE ON "releases" FOR EACH ROW EXECUTE FUNCTION "gromesh_reseal_only"('content');--> statement-breakpoint
+DROP TRIGGER "deployments_append_only" ON "deployments";--> statement-breakpoint
+CREATE TRIGGER "deployments_reseal_only" BEFORE UPDATE OR DELETE ON "deployments" FOR EACH ROW EXECUTE FUNCTION "gromesh_reseal_only"('config');

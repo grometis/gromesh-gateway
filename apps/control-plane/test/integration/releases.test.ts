@@ -3,6 +3,7 @@ import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { contractsV2 } from "../../src/common/contract.js";
+import { AtRestService } from "../../src/crypto/at-rest.js";
 import { deploymentContext, Encryptor, releaseContext } from "../../src/crypto/crypto.js";
 import { runMigrations } from "../../src/db/migrate.js";
 import { ENCRYPTION_KEYS, startHarness, uniq, type ApiClient, type Harness } from "./harness.js";
@@ -53,6 +54,19 @@ async function workspace(h: Harness, withConsumer = false) {
 async function deploymentRows(h: Harness) {
   return (await h.sql.query(`select epoch, revision, members, expected_nodes, config, config_hash from deployments order by revision`)).rows;
 }
+const MACHINE = v2.components.schemas.DeploymentState["x-gromesh-transitions"] as { initial: string[]; transitions: [string, string, string][] };
+const EDGES = new Set(MACHINE.transitions.map(([from, to]) => `${from}>${to}`));
+/** Every recorded history starts in an initial state and moves only along the contract's edges. */
+async function expectContractHistories(h: Harness) {
+  const rows = (await h.sql.query(`select revision, state from deployment_states where epoch = 1 order by revision, seq`)).rows as { revision: number; state: string }[];
+  const byRevision = new Map<number, string[]>();
+  for (const r of rows) byRevision.set(r.revision, [...(byRevision.get(r.revision) ?? []), r.state]);
+  expect(byRevision.size).toBeGreaterThan(0);
+  for (const [revision, history] of byRevision) {
+    expect(MACHINE.initial, `revision ${revision}`).toContain(history[0]);
+    for (let i = 1; i < history.length; i++) expect(EDGES.has(`${history[i - 1]}>${history[i]}`), `revision ${revision}: ${history.join(" > ")}`).toBe(true);
+  }
+}
 async function states(h: Harness, revision: number) {
   return (await h.sql.query(`select state from deployment_states where epoch = 1 and revision = $1 order by seq`, [revision])).rows.map((r) => r.state as string);
 }
@@ -78,9 +92,11 @@ describe("publishRelease is off by default (D4, N3-K1)", () => {
 
 describe("publishRelease in a laboratory on dev", () => {
   let h: Harness;
+  let url: string;
   let enc: Encryptor;
   beforeAll(async () => {
-    h = await startHarness({ databaseUrl: await freshDatabase("lab"), workspacesDeployments: LAB });
+    url = await freshDatabase("lab");
+    h = await startHarness({ databaseUrl: url, workspacesDeployments: LAB });
     enc = Encryptor.fromConfig({ writeKey: ENCRYPTION_KEYS.k1, readKeys: [ENCRYPTION_KEYS.k2], fingerprintKey: ENCRYPTION_KEYS.fingerprint });
   });
   afterAll(async () => h?.close());
@@ -156,15 +172,90 @@ describe("publishRelease in a laboratory on dev", () => {
 
   it("returns 409 while another deployment holds the lease, and fails that deployment once its deadline passed", async () => {
     const ws = await workspace(h);
+    // A deployment still converging (as one with expected nodes would be), holding the lease.
     const [last] = (await deploymentRows(h)).slice(-1);
-    await h.sql.query(`insert into deployment_states (epoch, revision, seq, state, reason) select 1, $1, max(seq) + 1, 'converging', 'test' from deployment_states where revision = $1`, [last.revision]);
-    await h.sql.query(`update deployment_lease set revision = $1, operation = 'publish', deadline_at = now() + interval '1 hour'`, [last.revision]);
+    const held = last.revision + 1;
+    const config = enc.sealJson(enc.openJson(last.config, deploymentContext(1, last.revision)), deploymentContext(1, held));
+    await h.sql.query(
+      `insert into deployments (epoch, revision, members, expected_nodes, config, config_hash, reason, created_by)
+       select epoch, $1, members, '[{"clusterId":"00000000-0000-4000-8000-000000000001","nodeId":"n1"}]', $3, config_hash, 'publish', created_by from deployments where revision = $2`,
+      [held, last.revision, JSON.stringify(config)],
+    );
+    await h.sql.query(`insert into deployment_states (epoch, revision, seq, state, reason) values (1, $1, 1, 'composed', 't'), (1, $1, 2, 'active', 't'), (1, $1, 3, 'converging', 't')`, [held]);
+    await h.sql.query(`update deployment_lease set revision = $1, operation = 'publish', started_at = now(), deadline_at = now() + interval '1 hour'`, [held]);
     expect((await v2api(h.api, "POST", `/workspaces/${ws}/releases`, {})).status).toBe(409);
     expect((await h.sql.query(`select count(*)::int as n from releases where workspace_id = $1`, [ws])).rows[0].n).toBe(0);
 
     await h.sql.query(`update deployment_lease set deadline_at = now() - interval '1 second'`);
     expect((await v2api(h.api, "POST", `/workspaces/${ws}/releases`, {})).status).toBe(201);
-    expect((await states(h, last.revision)).slice(-3)).toEqual(["degraded", "failed", "superseded"]);
+    expect(await states(h, held)).toEqual(["composed", "active", "converging", "degraded", "failed", "superseded"]);
+    expect((await h.sql.query(`select revision from deployment_lease`)).rows[0].revision).toBeNull();
+    await expectContractHistories(h);
+  });
+
+  it("reads the draft as one committed state: a publish waits for an edit in flight and freezes all of it", async () => {
+    const ws = await workspace(h);
+    const edit = new pg.Client({ connectionString: url });
+    await edit.connect();
+    try {
+      await edit.query("begin");
+      // An edit in flight: one more service, and the draft mark every mutation writes in its transaction.
+      await edit.query(
+        `insert into services (id, environment_id, name, protocol, host, port, tags) select gen_random_uuid(), environment_id, name || '-2', protocol, 'echo-late', port, tags from services where environment_id = $1`,
+        [ws],
+      );
+      await edit.query(`update environments set has_unpublished_changes = true, draft_changed_at = now() where id = $1`, [ws]);
+      let settled = false;
+      const publish = v2api(h.api, "POST", `/workspaces/${ws}/releases`, {}).finally(() => (settled = true));
+      await new Promise((r) => setTimeout(r, 500));
+      expect(settled).toBe(false);
+      await edit.query("commit");
+      expect((await publish).status).toBe(201);
+    } finally {
+      await edit.end();
+    }
+    const sealed = (await h.sql.query(`select content from releases where workspace_id = $1 and version = 1`, [ws])).rows[0].content;
+    expect(enc.openJson<Doc>(sealed, releaseContext(ws, 1)).services.map((s: Doc) => s.host).sort()).toEqual(["echo", "echo-late"]);
+  });
+
+  it("serializes publishes from concurrent requests: consecutive revisions, no member lost", async () => {
+    const [a, b] = [await workspace(h), await workspace(h)];
+    const before = (await deploymentRows(h)).at(-1)!.revision as number;
+    const results = await Promise.all([v2api(h.api, "POST", `/workspaces/${a}/releases`, {}), v2api(h.api, "POST", `/workspaces/${b}/releases`, {})]);
+    expect(results.map((r) => r.status)).toEqual([201, 201]);
+    const rows = await deploymentRows(h);
+    expect(rows.slice(-2).map((r) => r.revision)).toEqual([before + 1, before + 2]);
+    const members = (rows.at(-1)!.members as Doc[]).map((m) => m.workspaceId);
+    expect(members).toEqual(expect.arrayContaining([a, b]));
+    await expectContractHistories(h);
+  });
+
+  it("re-seals releases and deployments on key rotation, and nothing else of them changes", async () => {
+    const ws = await workspace(h);
+    expect((await v2api(h.api, "POST", `/workspaces/${ws}/releases`, {})).status).toBe(201);
+    const before = (await h.sql.query(`select workspace_id, version, content_digest, content->>'$enc' as sealed from releases order by 1, 2`)).rows;
+    const rotating = await startHarness({ databaseUrl: url, workspacesDeployments: LAB, encryption: { writeKey: ENCRYPTION_KEYS.k2, readKeys: [ENCRYPTION_KEYS.k1], fingerprintKey: ENCRYPTION_KEYS.fingerprint } });
+    try {
+      let report = await rotating.app.get(AtRestService).rotate();
+      for (let i = 0; report.skipped && i < 50; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+        report = await rotating.app.get(AtRestService).rotate();
+      }
+      expect(report.releases).toBe(before.length);
+      expect(report.deployments).toBe((await deploymentRows(h)).length);
+    } finally {
+      await rotating.close();
+    }
+    const after = (await h.sql.query(`select workspace_id, version, content_digest, content->>'$enc' as sealed from releases order by 1, 2`)).rows;
+    expect(after.map((r) => [r.workspace_id, r.version, r.content_digest])).toEqual(before.map((r) => [r.workspace_id, r.version, r.content_digest]));
+    after.forEach((r, i) => expect(r.sealed).not.toBe(before[i].sealed));
+    // Only k2 now: a later publish still opens every active release to compose.
+    const k2only = await startHarness({ databaseUrl: url, workspacesDeployments: LAB, encryption: { writeKey: ENCRYPTION_KEYS.k2, readKeys: [], fingerprintKey: ENCRYPTION_KEYS.fingerprint } });
+    try {
+      expect((await v2api(k2only.api, "POST", `/workspaces/${await workspace(k2only)}/releases`, {})).status).toBe(201);
+    } finally {
+      await k2only.close();
+    }
   });
 
   it("refuses what the composition refuses, recording nothing", async () => {
@@ -192,8 +283,25 @@ describe("publishRelease in a laboratory on dev", () => {
   });
 
   it("keeps the instance identity, releases, deployments and their transitions immutable", async () => {
-    for (const statement of [`update instance set stage = 'prd'`, `delete from instance`, `update deployment_states set state = 'failed'`, `delete from deployment_states`, `update releases set message = 'x'`]) {
-      await expect(h.sql.query(statement), statement).rejects.toMatchObject({ code: "55000" });
+    for (const statement of [
+      `update instance set stage = 'prd'`,
+      `delete from instance`,
+      `update deployment_states set state = 'failed'`,
+      `delete from deployment_states`,
+      `update releases set message = 'x'`,
+      `delete from releases`,
+      `update deployments set config_hash = config_hash`,
+      // The re-seal flag lets only the sealed column change.
+      `begin; set local gromesh.reseal = 'on'; update releases set message = 'x'; commit`,
+      `begin; set local gromesh.reseal = 'on'; delete from deployments; commit`,
+    ]) {
+      const client = new pg.Client({ connectionString: url });
+      await client.connect();
+      try {
+        await expect(client.query(statement), statement).rejects.toMatchObject({ code: "55000" });
+      } finally {
+        await client.end();
+      }
     }
   });
 });

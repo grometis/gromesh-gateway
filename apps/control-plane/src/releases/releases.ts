@@ -33,7 +33,7 @@ import {
   type InstanceRow,
   type ReleaseRow,
 } from "../db/schema.js";
-import { uuidParam } from "../environments/environments.js";
+import { requireEnvironment, uuidParam } from "../environments/environments.js";
 import { loadGatewayState } from "../gateway/gateway.js";
 import { PluginCatalog, PluginCatalogModule } from "../plugin-catalog/catalog.js";
 
@@ -155,6 +155,9 @@ export class ReleasesService {
       }
 
       const ws = await this.requireWorkspace(tx, workspaceId, true);
+      // Every edit and import of the draft updates this row in its own transaction (markDraftChanged): holding it, the
+      // draft read below is one committed state, never half of an edit in flight (as v1 publish).
+      await requireEnvironment(tx, workspaceId, true);
       if (!ws.slug) throw unprocessable("The workspace cannot be published", [{ path: "slug", message: "the workspace has no slug yet" }]);
       const [active] = await tx.select().from(workspaceActiveRelease).where(eq(workspaceActiveRelease.workspaceId, workspaceId));
       if (body.expectedActiveVersion !== undefined && body.expectedActiveVersion !== (active?.version ?? null)) {
