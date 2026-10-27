@@ -1007,7 +1007,7 @@ paths:
       requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: false, required: [ expectedRevision, reason ], properties: { expectedRevision: { type: [ integer, "null" ], minimum: 1 }, reason: { type: string, minLength: 1 } } } } } }
       responses:
         "201": { description: Deployment recorded and served, content: { application/json: { schema: { $ref: "#/components/schemas/Deployment" } } } }
-        "409": { description: "Lease held, revision changed, or refused by the delivery rules", content: { application/problem+json: { schema: { oneOf: [ { $ref: "#/components/schemas/DeliveryProblem" }, { $ref: "#/components/schemas/Problem" } ] } } } }
+        "409": { description: "Lease held, revision changed, or refused by the delivery rules", content: { application/problem+json: { schema: { anyOf: [ { $ref: "#/components/schemas/DeliveryProblem" }, { $ref: "#/components/schemas/Problem" } ] } } } }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/ValidationError" }
