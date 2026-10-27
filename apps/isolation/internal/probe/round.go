@@ -26,7 +26,9 @@ var Capabilities = []string{"CAP-1", "CAP-2", "CAP-3", "CAP-4", "CAP-5", "CAP-6"
 
 // Check is one target of a round.
 //   - tcp: Address must NOT accept a connection (refused, timeout, unresolvable: unreachable).
-//   - http: URL must be unreachable or answer exactly ExpectStatus (an internal service that refuses this client).
+//   - http: URL must be unreachable or answer exactly ExpectStatus (an internal service that refuses this client). The
+//     connection itself may be allowed, so only an HTTP answer other than ExpectStatus is a violation; connecting and
+//     then getting no answer (timeout, TLS, protocol error) proves neither: inconclusive.
 //     Method is GET by default; POST (empty body) reaches an intake that answers GET with 405 before authenticating,
 //     like the sidecar collector (CAP-7): only its 401 proves the credential is checked.
 //   - dns, tcp-open: positive controls; failing them makes the round inconclusive, never passing.
@@ -122,7 +124,8 @@ type Verdict struct {
 // Network is what a round uses; tests replace it.
 type Network interface {
 	Dial(ctx context.Context, address string) error
-	// Get reports whether the TCP connection was established, whatever happened after it.
+	// Get reports whether the TCP connection was established, whatever happened after it: a failure after connecting
+	// (a reset included) is never taken for a refusal.
 	Get(ctx context.Context, method, url string) (status int, connected bool, err error)
 	Resolve(ctx context.Context, host string) error
 }
@@ -267,8 +270,9 @@ func evaluate(ctx context.Context, network Network, ch Check) (string, string) {
 		case err == nil:
 			return "violation", fmt.Sprintf("%s answered %d", ch.URL, status)
 		case connected:
-			// Connected but without the expected answer (TLS, protocol, no response): reachable, not refused.
-			return "violation", ch.URL + " reachable without the expected answer: " + err.Error()
+			// Connected but no answer (TLS, protocol, timeout): the service may be frozen or broken, e.g. an agent
+			// stopped by SIGSTOP whose kernel still accepts on :9100. Not a bypass, and not a refusal either.
+			return "inconclusive", ch.URL + " connected without an answer: " + err.Error()
 		case unreachable(err):
 			return "pass", ""
 		}
