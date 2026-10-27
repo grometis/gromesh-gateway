@@ -758,7 +758,16 @@ async function gracefulDeletion() {
 async function leaseState(podName) {
   const r = await kubectl(["-n", NS.dp, "exec", podName, "-c", "kong", "--", "cat", "/gromesh/isolation/lease.json"], { allowFail: true, timeout: 10_000 });
   if (r.code !== 0) return /No such file/.test(r.stderr) ? "absent" : `unreadable: ${r.stderr.trim().slice(0, 120)}`;
-  try { return JSON.parse(r.stdout).state; } catch { return "unparsable"; }
+  try { const { state } = JSON.parse(r.stdout); return typeof state === "string" ? state : "unparsable"; } catch { return "unparsable"; }
+}
+/** A lease observation that proves something: a state the probe wrote, or the file proven absent. */
+const observed = (state) => !/^(unreadable|unparsable)/.test(state);
+/** The probe's own chain head (probe-state.json): the last seq it numbered for `admissionId`, read from the kong container. */
+async function probeSeq(podName, admissionId) {
+  const r = await kubectl(["-n", NS.dp, "exec", podName, "-c", "kong", "--", "cat", "/gromesh/isolation/probe-state.json"], { timeout: 10_000 });
+  const { chain } = JSON.parse(r.stdout);
+  if (chain?.admissionId !== admissionId || !Number.isInteger(chain.seq)) throw new Error(`probe-state of ${podName} holds no chain of ${admissionId}`);
+  return chain.seq;
 }
 const claimsOf = (row) => JSON.parse(Buffer.from(row.payload, "base64url"));
 
@@ -800,6 +809,10 @@ async function agentStopped() {
   const leaseBefore = await leaseState(silent.name);
   const before = (await reports(id)).at(-1);
   const target = await freeze(silent.name, "agent", "gromesh-agent");
+  // The chain head the probe numbered when the agent stopped: reports after it, up to the head read just before the
+  // SIGCONT, are the rounds written during the stop (a received time cannot tell them from rounds after the resume).
+  const seqAtStop = await probeSeq(silent.name, id);
+  let seqAtResume;
   const stopped = Date.now();
   mark("agent SIGSTOP", { pod: silent.name, pid: target.pid });
   await kubectl(["-n", NS.dp, "delete", "pod", ctx.p3.name, "--wait=false"]);
@@ -821,6 +834,7 @@ async function agentStopped() {
   } finally {
     sampling = false;
     await sampler;
+    seqAtResume = await probeSeq(silent.name, id).catch((error) => { log(`probe seq before SIGCONT: ${error.message}`); return null; });
     it.measures.frozenAgent = await thaw(target);
   }
   const resumed = Date.now();
@@ -832,7 +846,7 @@ async function agentStopped() {
   const rows = await reports(id);
   const during = rows.filter((r) => r.seq > before.seq).map((r) => ({ seq: r.seq, state: r.state, failed: claimsOf(r).failedCapabilities, received: r.received }));
   // The agent sends the backlog the instant it is continued, before thaw() returns: what reached the CP after the stop.
-  const stoppedRounds = during.filter((r) => r.received >= stopped);
+  const stoppedRounds = seqAtResume === null ? [] : during.filter((r) => r.seq > seqAtStop && r.seq <= seqAtResume);
   const allPendencies = (await pendencies(ctx.clusterId)).filter((p) => p.admission_id === id);
   const [{ n: releases }] = await sql(`select count(*)::int as n from isolation_releases where pendency_id = '${pendency.id}'`);
   const lastBefore = before.received;
@@ -850,6 +864,7 @@ async function agentStopped() {
   expect(it, pendency.opened - lastBefore >= BUDGET.communication[0] && pendency.opened - lastBefore <= BUDGET.communication[1], `communication-failure ${pendency.opened - lastBefore} ms after the last report`);
   expect(it, stoppedRounds.length >= 2 && stoppedRounds.every((r) => r.state !== "violation"), `reports written during the stop: ${JSON.stringify(it.measures.reportsWrittenDuringStop)}`);
   expect(it, stoppedRounds.some((r) => (r.failed ?? []).includes("CAP-6")), "no report of the stop names CAP-6: the frozen agent's :9100 was not exercised");
+  expect(it, leases.length > 0 && leases.every((l) => observed(l.state)), `the lease was not observed during the stop: ${JSON.stringify(it.measures.leaseDuringStop)}`);
   expect(it, !leases.some((l) => l.state === "violation"), `lease during the stop: ${JSON.stringify(it.measures.leaseDuringStop)}`);
   expect(it, !allPendencies.some((p) => p.kind === "confirmed-violation"), `pendencies of the admission: ${JSON.stringify(it.measures.pendenciesOfTheAdmission)}`);
   expect(it, closedPendency?.lifecycle === "closed" && closedPendency.close_reason === "chain-resumed" && releases === 0, `pendency after resume ${JSON.stringify(it.measures.pendencyAfterResume)}, ${releases} releases`);
@@ -908,7 +923,7 @@ async function violationControl() {
   negative(it, "a real violation (forbidden TCP target accepted)", "violation report with CAP-1 → confirmed-violation, open 60 s later, releasable, no release",
     JSON.stringify(it.measures.pendency), claimsOf(violated).failedCapabilities.includes("CAP-1") && after.lifecycle === "confirmed-violation" && viewed?.releasable === true && releases === 0);
   negative(it, "a later admission while the confirmed violation is open", "refused pendency-open", it.measures.laterRequests.join(","), Boolean(refused) && !laterRequests.some((a) => a.outcome === "granted"));
-  expect(it, it.measures.lease !== "ok" && it.measures.lease !== "inconclusive", `the violating pod still holds a ${it.measures.lease} lease`);
+  expect(it, observed(it.measures.lease) && it.measures.lease !== "ok" && it.measures.lease !== "inconclusive", `the violating pod's lease: ${it.measures.lease}`);
   done(it);
 }
 
