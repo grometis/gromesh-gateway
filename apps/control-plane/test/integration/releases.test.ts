@@ -99,21 +99,49 @@ async function untilLockWait(url: string) {
 
 describe("Workspaces deployments are off by default (D4, N3-K1)", () => {
   let h: Harness;
+  let staged: Harness;
   beforeAll(async () => {
     h = await startHarness({ databaseUrl: await freshDatabase("off") });
+    staged = await startHarness({ databaseUrl: await freshDatabase("offdev"), instanceStage: "dev" });
   });
-  afterAll(async () => h?.close());
+  afterAll(async () => {
+    await h?.close();
+    await staged?.close();
+  });
 
-  it("answers 409 workspaces-mode-disabled to publishing and deploying, lists nothing and writes nothing", async () => {
+  const counts = async (x: Harness) => {
+    const out: Record<string, number> = {};
+    for (const table of ["instance", "releases", "deployments", "deployment_states", "workspace_active_release", "snapshots"]) {
+      out[table] = (await x.sql.query(`select count(*)::int as n from ${table}`)).rows[0].n;
+    }
+    return out;
+  };
+
+  it("refuses to deploy with 409 workspaces-mode-disabled and never assumes a stage it was not given", async () => {
     const ws = await workspace(h);
-    for (const res of [await v2api(h.api, "POST", `/workspaces/${ws}/releases`, {}), await deploy(h.api, null)]) {
-      expect(res.status).toBe(409);
-      expect(res.body).toMatchObject({ status: 409, code: "workspaces-mode-disabled", type: "https://gromesh.dev/problems/workspaces-mode-disabled" });
-    }
+    const deployed = await deploy(h.api, null);
+    expect(deployed.status).toBe(409);
+    expect(deployed.body).toMatchObject({ status: 409, code: "workspaces-mode-disabled", type: "https://gromesh.dev/problems/workspaces-mode-disabled" });
+    // No stage configured and no instance yet: publishing is refused (403), never treated as dev.
+    expect((await v2api(h.api, "POST", `/workspaces/${ws}/releases`, {})).status).toBe(403);
     expect((await v2api(h.api, "GET", `/workspaces/${ws}/releases`)).body).toEqual([]);
-    for (const table of ["instance", "releases", "deployments", "deployment_states", "workspace_active_release"]) {
-      expect((await h.sql.query(`select count(*)::int as n from ${table}`)).rows[0].n, table).toBe(0);
-    }
+    expect(await counts(h)).toEqual({ instance: 0, releases: 0, deployments: 0, deployment_states: 0, workspace_active_release: 0, snapshots: 0 });
+  });
+
+  it("publishes a validated release of an existing workspace with the mode off, and nothing reaches a data plane", async () => {
+    const ws = await workspace(staged);
+    const before = await counts(staged);
+    const published = await v2api(staged.api, "POST", `/workspaces/${ws}/releases`, { message: "frozen while off" });
+    expect(published.status).toBe(201);
+    expect(published.body).toMatchObject({ version: 1 });
+    // The deployment stays refused: no revision, no transition, no v1 snapshot touched.
+    expect((await deploy(staged.api, null)).body).toMatchObject({ status: 409, code: "workspaces-mode-disabled" });
+    const after = await counts(staged);
+    expect(after).toEqual({ ...before, instance: 1, releases: 1, workspace_active_release: 1 });
+    expect((await staged.sql.query(`select deployment_revision from workspace_active_release`)).rows).toEqual([{ deployment_revision: null }]);
+    expect((await staged.sql.query(`select stage from instance`)).rows).toEqual([{ stage: "dev" }]);
+    // Publishing never creates a workspace: an unknown one is 404.
+    expect((await v2api(staged.api, "POST", `/workspaces/00000000-0000-4000-8000-000000000999/releases`, {})).status).toBe(404);
   });
 });
 
@@ -236,6 +264,17 @@ describe("releases and deployments in a laboratory on dev", () => {
     expect((await h.sql.query(`select count(*)::int as n from releases where workspace_id = $1`, [ws])).rows[0].n).toBe(0);
 
     await h.sql.query(`update deployment_lease set deadline_at = now() - interval '1 second'`);
+    // Publishing never fails the expired lease's deployment (D4: a release writes no deployment transition), neither
+    // here nor on a replica with the Workspaces mode off.
+    expect((await v2api(h.api, "POST", `/workspaces/${ws}/releases`, {})).status).toBe(201);
+    const off = await startHarness({ databaseUrl: url, instanceStage: "dev" });
+    try {
+      expect((await v2api(off.api, "POST", `/workspaces/${await workspace(off)}/releases`, {})).status).toBe(201);
+    } finally {
+      await off.close();
+    }
+    expect(await states(h, held)).toEqual(["composed", "active", "converging"]);
+    expect((await h.sql.query(`select revision from deployment_lease`)).rows[0].revision).toBe(held);
     expect((await deploy(h.api, held)).status).toBe(201);
     expect(await states(h, held)).toEqual(["composed", "active", "converging", "degraded", "failed", "superseded"]);
     expect((await h.sql.query(`select revision from deployment_lease`)).rows[0].revision).toBeNull();

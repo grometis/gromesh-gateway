@@ -78,6 +78,15 @@ info:
         trusted only for second preimages of bytes the control plane produced; the probe and the canary observe
         Kong from the pod, so a node that is entirely compromised (agent, probe key and Kong) is outside this proof,
         as in the isolation rules.
+      - kongConfigHash (md5) is only a correspondence check: it shows that the configuration Kong applied and serves
+        is the one the control plane derived from the authorized bytes. It never replaces the SHA-256 identities
+        (hash/configHash, contentDigest) nor the signatures that carry integrity, provenance and authorization
+        (signed admissions, releases and probe reports); no decision of integrity, provenance or authorization reads
+        it.
+      - What a converged node ties together: instance (instanceId), cluster (clusterId), pod and node (podUid,
+        nodeId, admissionId), deployment (epoch, revision), the releases it composes (Deployment members:
+        workspaceId, release version, contentDigest), configHash, kongConfigHash and the application state (status
+        and probe evidence, ConvergenceEvidence).
       - Loss or divergence of evidence. Without a fresh report the node is awaiting-probe-report (applying) and the
         deployment converging or degraded, never converged. Status and report disagreeing on revision, hash or Kong
         hash: evidence revision-mismatch, node degraded. Kong serving a hash other than applied.json's: the probe

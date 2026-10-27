@@ -42,6 +42,7 @@ import { PluginCatalog, PluginCatalogModule } from "../plugin-catalog/catalog.js
 
 type DeploymentState = (typeof deploymentStates.$inferSelect)["state"];
 type Settings = NonNullable<AppConfig["workspacesDeployments"]>;
+type Stage = Settings["stage"];
 
 /** The epoch of the instance's deployments until the snapshots → releases migration opens the next one (D5). */
 const FIRST_EPOCH = 1;
@@ -125,7 +126,10 @@ export class ReleasesService {
     this.destinations = destinationPolicy(config);
   }
 
-  /** D4: off unless a disposable laboratory turned it on (N3-K1: 409 workspaces-mode-disabled, nothing recorded). */
+  /**
+   * D4: deployment and activation are off unless a disposable laboratory turned them on (N3-K1: 409
+   * workspaces-mode-disabled, nothing recorded). Publishing a release never needs it.
+   */
   private settings(): Settings {
     const settings = this.config.workspacesDeployments;
     if (!settings) throw deliveryRefused("workspaces-mode-disabled", "Workspaces mode is disabled on this instance");
@@ -141,28 +145,31 @@ export class ReleasesService {
 
   /**
    * The single lease row: every release and deployment of the instance, from any replica, goes through it one at a
-   * time. A lease past its deadline is expired here; a live one refuses with 409. Dev only (403).
+   * time. A live lease refuses with 409. Dev only (403). Only a deployment (`expire`) fails a lease past its deadline:
+   * publishing a release treats it as free and writes no deployment transition (D4), so it stays inert with the
+   * Workspaces mode off.
    */
-  private async lease(tx: Tx, settings: Settings) {
+  private async lease(tx: Tx, stage: Stage | null, expire: boolean) {
     const [lease] = await tx.select().from(deploymentLease).for("update");
-    const self = await this.instance(tx, settings);
+    const self = await this.instance(tx, stage);
     if (self.stage !== "dev") throw forbidden(`Local publishing and deployment exist only on dev; this instance is ${self.stage}`);
     const now = await clock(tx);
     if (lease!.revision !== null) {
       if (lease!.deadlineAt && lease!.deadlineAt > now) throw conflict(`Deployment revision ${lease!.revision} holds the deployment lease`);
-      await this.expire(tx, lease!.revision);
+      if (expire) await this.expire(tx, lease!.revision);
     }
     return { self, now };
   }
 
   /**
    * publishRelease (dev only): freezes the workspace draft into an immutable release, which becomes the workspace's
-   * active release. It deploys nothing (decision D4): only createDeployment composes a revision.
+   * active release. It deploys nothing and grants nothing (decision D4): only createDeployment composes a revision,
+   * so it is allowed with Workspaces deployments off.
    */
   async publish(ctx: RequestContext, workspaceId: string, body: PublishBody) {
-    const settings = this.settings();
+    const stage = this.config.workspacesDeployments?.stage ?? this.config.instanceStage ?? null;
     return this.db.transaction(async (tx) => {
-      const { self } = await this.lease(tx, settings);
+      const { self } = await this.lease(tx, stage, false);
 
       // Every edit and import of the draft updates this row in its own transaction (markDraftChanged): holding it, the
       // draft read below is one committed state, never half of an edit in flight (as v1 publish). Environment before
@@ -240,7 +247,7 @@ export class ReleasesService {
   async deploy(ctx: RequestContext, body: { expectedRevision: number | null; reason: string }) {
     const settings = this.settings();
     return this.db.transaction(async (tx) => {
-      const { self, now } = await this.lease(tx, settings);
+      const { self, now } = await this.lease(tx, settings.stage, true);
       const latest = await this.currentRevision(tx);
       if (body.expectedRevision !== (latest ?? null)) throw conflict(`Current revision is ${latest ?? "none"}, expected ${body.expectedRevision ?? "none"}`);
       const deployment = await this.compose(tx, ctx, self, settings, now);
@@ -367,11 +374,13 @@ export class ReleasesService {
   }
 
   /** D1: the instance row, created on first use with the configured stage; a different stage later is refused. */
-  private async instance(tx: Executor, settings: Settings): Promise<InstanceRow> {
-    await tx.insert(instance).values({ stage: settings.stage }).onConflictDoNothing();
+  /** The configured stage creates the row once; with none configured only an existing row tells the stage. */
+  private async instance(tx: Executor, stage: Stage | null): Promise<InstanceRow> {
+    if (stage !== null) await tx.insert(instance).values({ stage }).onConflictDoNothing();
     const [row] = await tx.select().from(instance);
-    if (row!.stage !== settings.stage) throw conflict(`The instance stage is ${row!.stage}; it never changes (configured: ${settings.stage})`);
-    return row!;
+    if (!row) throw forbidden("The instance stage is not configured (GROMESH_INSTANCE_STAGE); local publishing exists only on dev");
+    if (stage !== null && row.stage !== stage) throw conflict(`The instance stage is ${row.stage}; it never changes (configured: ${stage})`);
+    return row;
   }
 
   /** The credentials of the workspace now (values of this instance), for the consumers the release carries. */
