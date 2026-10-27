@@ -195,6 +195,9 @@ workspaces:
   enabled: false
   # This cluster's id in the control plane.
   clusterId: ""
+  # The id of the instance this cluster belongs to (getInstance): the agent refuses a deployment of another instance
+  # and the probe counts applied.json only for it.
+  instanceId: ""
   # The isolation-probe's InstanceTrustSet: the only instance signing keys whose admissions and releases it accepts,
   # as listInstanceSigningKeys gives them ({kid, publicKey}, 1 to 3: the active ones of a rotation and a retired one
   # whose admissions are still open). Revoking a key reaches the pods only through a rollout without it.

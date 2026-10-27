@@ -302,6 +302,9 @@
         "clusterId": {
           "type": "string"
         },
+        "instanceId": {
+          "type": "string"
+        },
         "instanceSigningKeys": {
           "type": "array",
           "maxItems": 3,
