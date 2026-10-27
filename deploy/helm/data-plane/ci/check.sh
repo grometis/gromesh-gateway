@@ -104,6 +104,17 @@ assert.deepEqual(mount(probe, 'kong-state'), { name: 'kong-state', mountPath: '/
 assert.equal(mount(agent, 'isolation-probe-config'), undefined, 'the agent never sees the trust set it could swap');
 assert.equal(mount(agent, 'kong-state'), undefined);
 assert.equal(env(agent, 'GROMESH_HANDOFF_DIR').value, '/gromesh/handoff');
+// Registration cannot wait for Kong in this mode: seed-config (the Kong image) writes the version Kong reports, and
+// only the agent reads it; no chart value feeds it.
+const seed = pod.initContainers.find(c => c.name === 'seed-config');
+assert.match(seed.args[0], /luajit -e 'io\.write\(dofile\("\/usr\/local\/share\/lua\/5\.1\/kong\/meta\.lua"\)\._VERSION\)' > \/gromesh\/kong-version\/version/);
+assert.equal(seed.image, kong.image);
+assert.deepEqual(mount(seed, 'kong-version'), { name: 'kong-version', mountPath: '/gromesh/kong-version' });
+assert.deepEqual(mount(agent, 'kong-version'), { name: 'kong-version', mountPath: '/gromesh/kong-version', readOnly: true });
+assert.equal(mount(kong, 'kong-version'), undefined);
+assert.equal(mount(probe, 'kong-version'), undefined);
+assert.equal(env(agent, 'GROMESH_KONG_VERSION_FILE').value, '/gromesh/kong-version/version');
+assert.equal(env(agent, 'GROMESH_KONG_VERSION'), undefined);
 assert.equal(env(agent, 'GROMESH_POD_UID').valueFrom.fieldRef.fieldPath, 'metadata.uid');
 assert.equal(env(agent, 'GROMESH_NODE_NAME').valueFrom.fieldRef.fieldPath, 'spec.nodeName');
 const volume = name => pod.volumes.find(v => v.name === name);
