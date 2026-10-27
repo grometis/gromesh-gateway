@@ -483,7 +483,8 @@ func TestWorkspacesTheMarkKeepsItsEpochUntilANewerRevisionApplies(t *testing.T) 
 	}
 }
 
-// A mark that could not be written is written on the next poll of the same deployment, without Kong.
+// A mark that could not be written is written on a later poll, without Kong, even when the control plane has moved to
+// a revision that only fails transiently.
 func TestWorkspacesRetriesPersistingTheMark(t *testing.T) {
 	cp := cpmock.New()
 	t.Cleanup(cp.Close)
@@ -501,6 +502,9 @@ func TestWorkspacesRetriesPersistingTheMark(t *testing.T) {
 	bad := deploymentEnvelope(t, 1, 1, "a")
 	cp.SetDeployment(bad)
 	waitDeployment(t, cp, func(s cpmock.DeploymentStatus) bool { return s.FailedRevision != nil })
+	k.failureStatus.Store(http.StatusServiceUnavailable)
+	cp.SetDeployment(deploymentEnvelope(t, 1, 2, "b"))
+	settle(t, cp, 2)
 	if err := os.Remove(blocked); err != nil {
 		t.Fatal(err)
 	}
@@ -510,11 +514,13 @@ func TestWorkspacesRetriesPersistingTheMark(t *testing.T) {
 	}
 	stop()
 	k.failed.Store(false)
+	cp.SetDeployment(bad)
+	calls := k.calls.Load()
 	start(t, newWorkspacesAgent(t, cp, k, path))
 	waitDeployment(t, cp, func(s cpmock.DeploymentStatus) bool { return s.FailedRevision != nil && *s.FailedRevision == 1 })
 	settle(t, cp, 3)
-	if k.calls.Load() != 1 {
-		t.Fatalf("the rejected deployment was sent again: %d Kong calls", k.calls.Load())
+	if k.calls.Load() != calls {
+		t.Fatalf("the rejected deployment was sent again: %d Kong calls, want %d", k.calls.Load(), calls)
 	}
 }
 

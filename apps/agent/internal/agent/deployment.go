@@ -159,7 +159,7 @@ type deployments struct {
 	applied *Deployment
 	at      *position
 	failed  *permanentFailure
-	// failedSaved is false while the mark is only in memory; the next poll of the same deployment writes it again.
+	// failedSaved is false while the mark is only in memory; every poll writes it again until it is on the volume.
 	failedSaved bool
 	retry       position
 	attempt     int
@@ -427,6 +427,10 @@ func (a *Agent) reportDeployment(ctx context.Context) {
 
 func (a *Agent) refreshDeployment(ctx context.Context) {
 	d := a.deploy
+	// Whatever the control plane serves now, a mark only in memory is written again: it keeps its epoch known.
+	if d.failed != nil && !d.failedSaved {
+		a.saveFailure()
+	}
 	hash := ""
 	if d.at != nil {
 		hash = d.at.Hash
@@ -467,9 +471,6 @@ func (a *Agent) refreshDeployment(ctx context.Context) {
 		return
 	}
 	if d.failed != nil && d.failed.position == next {
-		if !d.failedSaved {
-			a.saveFailure()
-		}
 		return
 	}
 	if next != d.retry {
