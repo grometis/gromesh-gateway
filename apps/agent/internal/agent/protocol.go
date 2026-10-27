@@ -10,8 +10,9 @@ import (
 )
 
 var (
-	hashPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-	uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+	hashPattern        = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	uuidPattern        = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+	kongVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
 )
 
 type RegisterRequest struct {
