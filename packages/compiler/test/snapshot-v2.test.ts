@@ -10,6 +10,7 @@ import {
   CompileError,
   composeWorkspaces,
   contentDigest,
+  jcs,
   workspaceConfigIssues,
   type DeploymentMember,
   type DeploymentMeta,
@@ -123,6 +124,10 @@ describe("buildSnapshotV2", () => {
     expect(() => buildSnapshotV2([member("a")], meta({ mandatoryPluginsVersion: 0 }))).toThrow(RangeError);
     expect(() => buildSnapshotV2([member("a")], meta({ valuesDigest: "sha256:abc" }))).toThrow(RangeError);
     expect(() => buildSnapshotV2([member("a", 0)], meta())).toThrow(RangeError);
+    for (const createdAt of ["invalid", "2026-13-01T00:00:00Z", "2026-02-30T00:00:00Z", "2026-10-27T00:00:00", "2026-10-27"]) {
+      expect(() => buildSnapshotV2([], meta({ createdAt })), createdAt).toThrow(RangeError);
+    }
+    expect(validateEnvelope(buildSnapshotV2([], meta({ createdAt: "2026-10-27T00:00:00.5-03:00" })))).toBe(true);
     expect(() => buildSnapshotV2([member("a"), { ...member("b"), slug: "tvro" }], meta())).toThrow(CompileError);
   });
 });
@@ -134,13 +139,16 @@ describe("contentDigest", () => {
     const shuffled = { ...sorted, routes: [...sorted.routes].reverse(), variables: [{ name: "Z", type: "string" }, ...c.variables] };
     const ordered = { ...shuffled, routes: sorted.routes, variables: [...c.variables, { name: "Z", type: "string" }] };
     expect(contentDigest(shuffled)).toBe(contentDigest(ordered));
-    expect(contentDigest(ordered)).toBe(`sha256:${createHash("sha256").update(canonicalJson(ordered)).digest("hex")}`);
     expect(contentDigest(content("a", ["/other"]))).not.toBe(contentDigest(c));
   });
 
-  it("canonicalJson matches the RFC 8785 sample (Appendix B values and key ordering)", () => {
-    const input = JSON.parse('{"numbers":[333333333.33333329,1E30,4.50,2e-3,0.000000000000000000000000001],"string":"\\u20ac$\\u000F\\u000aA\'\\u0042\\u0022\\u005c\\\\\\"\\/","literals":[null,true,false]}');
-    expect(canonicalJson(input)).toBe('{"literals":[null,true,false],"numbers":[333333333.3333333,1e+30,4.5,0.002,1e-27],"string":"€$\\u000f\\nA\'B\\"\\\\\\\\\\"/"}');
+  it("matches a digest computed by hand from the JCS bytes, with integer-like keys in code unit order", () => {
+    const c: WorkspaceContent = {
+      services: [], consumers: [], credentials: [], plugins: [], upstreams: [], targets: [], certificates: [], variables: [],
+      routes: [{ id: id("a", 2), spec: { name: "r", headers: { "2": ["b"], "10": ["a"] } } }],
+    };
+    const bytes = `{"certificates":[],"consumers":[],"credentials":[],"plugins":[],"routes":[{"id":"${id("a", 2)}","spec":{"headers":{"10":["a"],"2":["b"]},"name":"r"}}],"services":[],"targets":[],"upstreams":[],"variables":[]}`;
+    expect(contentDigest(c)).toBe(`sha256:${createHash("sha256").update(bytes, "utf8").digest("hex")}`);
   });
 
   it("refuses credentials and repeated keys", () => {
@@ -148,6 +156,31 @@ describe("contentDigest", () => {
     const c = content("a");
     expect(() => contentDigest({ ...c, routes: [...c.routes, ...c.routes] })).toThrow(RangeError);
     expect(() => contentDigest({ ...c, variables: [...c.variables, ...c.variables] })).toThrow(RangeError);
+  });
+});
+
+describe("jcs (RFC 8785)", () => {
+  it("serializes the RFC 8785 §3.2.2 sample", () => {
+    const input = JSON.parse(String.raw`{"numbers":[333333333.33333329,1E30,4.50,2e-3,0.000000000000000000000000001],"string":"\u20ac$\u000F\u000aA'\u0042\u0022\u005c\\\"\/","literals":[null,true,false]}`);
+    expect(jcs(input)).toBe(String.raw`{"literals":[null,true,false],"numbers":[333333333.3333333,1e+30,4.5,0.002,1e-27],"string":"€$\u000f\nA'B\"\\\\\"/"}`);
+  });
+
+  it("sorts keys by UTF-16 code units (RFC 8785 §3.2.3 sample), integer-like keys included", () => {
+    const input = JSON.parse(String.raw`{"\u20ac":"Euro Sign","\r":"Carriage Return","\ufb33":"Hebrew Letter Dalet With Dagesh","1":"One","\ud83d\ude00":"Emoji: Grinning Face","\u0080":"Control","\u00f6":"Latin Small Letter O With Diaeresis"}`);
+    const expected = [
+      ["\\r", "Carriage Return"], ["1", "One"], ["\u0080", "Control"], ["\u00f6", "Latin Small Letter O With Diaeresis"],
+      ["\u20ac", "Euro Sign"], ["\ud83d\ude00", "Emoji: Grinning Face"], ["\ufb33", "Hebrew Letter Dalet With Dagesh"],
+    ].map(([k, v]) => `"${k}":"${v}"`).join(",");
+    expect(jcs(input)).toBe(`{${expected}}`);
+    expect(jcs({ "2": 0, "10": 1, a: 2 })).toBe('{"10":1,"2":0,"a":2}');
+  });
+
+  it("refuses what is not I-JSON", () => {
+    expect(() => jcs({ s: "\ud800" })).toThrow(RangeError);
+    expect(() => jcs({ s: "x\udc00" })).toThrow(RangeError);
+    expect(() => jcs([Number.NaN])).toThrow(RangeError);
+    expect(() => jcs([Infinity])).toThrow(RangeError);
+    expect(jcs({ s: "\ud83d\ude00" })).toBe('{"s":"😀"}');
   });
 });
 
@@ -184,6 +217,35 @@ describe("workspaceConfigIssues", () => {
       { path: `config.routes[${r}].paths[2]`, message: "must be under the Workspace prefix" },
       { path: `config.routes[${r}]`, message: "must run gromesh-route-guard exactly once" },
     ]);
+  });
+
+  it("refuses guards that do not run on every request: disabled, scoped to a consumer or a service", () => {
+    const routeId = (cfg: KongDeclarativeConfig) => cfg.routes[routeOf(cfg, "tvro~pix")]!.id;
+    const canaryId = (cfg: KongDeclarativeConfig) => cfg.routes.find((r) => r.paths?.includes("/.gromesh/guard/current"))!.id;
+    for (const target of [routeId, canaryId]) {
+      for (const mutate of [
+        (p: KongDeclarativeConfig["plugins"][number]) => { p.enabled = false; },
+        (p: KongDeclarativeConfig["plugins"][number]) => { p.consumer = id("a", 3); },
+        (p: KongDeclarativeConfig["plugins"][number]) => { p.service = id("a", 1); },
+      ]) {
+        const cfg = clone(composed());
+        const rid = target(cfg);
+        mutate(cfg.plugins.find((p) => p.name === "gromesh-route-guard" && p.route === rid)!);
+        expect(workspaceConfigIssues(cfg, members.map(ref)).length, `${mutate}`).toBeGreaterThan(0);
+      }
+    }
+    const disabled = clone(composed());
+    disabled.plugins.find((p) => p.name === "gromesh-workspace")!.enabled = false;
+    expect(workspaceConfigIssues(disabled, members.map(ref))).toContainEqual({ path: "config.plugins", message: "gromesh-workspace must exist once, global, tagged gromesh-platform" });
+  });
+
+  it("refuses a regex path whose alternatives escape the prefix group", () => {
+    for (const escape of ["~/tvro(?:/a)|(?:/assine)", "~/tvro(?:/a)|/assine(?:/b)", "~/tvro(?:/a|^/assine)"]) {
+      const cfg = clone(composed());
+      const r = routeOf(cfg, "tvro~pix");
+      cfg.routes[r]!.paths = [escape];
+      expect(workspaceConfigIssues(cfg, members.map(ref)), escape).toEqual([{ path: `config.routes[${r}].paths[0]`, message: "must be under the Workspace prefix" }]);
+    }
   });
 
   it("refuses an entity without exactly one ownership tag, or tagged for a non-member", () => {

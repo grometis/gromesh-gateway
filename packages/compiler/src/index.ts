@@ -3,7 +3,7 @@ export { platformPlugins, type PlatformPluginOptions } from "./platform-plugins.
 export { basicAuthPasswordHash, compile, diffGatewayStates, validate, hashIssues, DEFAULT_MANAGED_TAG } from "./compile.js";
 export { composeWorkspaces, regexIssue, CANARY_PATH, PLATFORM_TAG, ROUTE_GUARD_PLUGIN, WORKSPACE_PLUGIN, WORKSPACE_TAG_PREFIX, type RouteAuthPolicy, type WorkspaceMember } from "./compose.js";
 export { CompileError, type CompileIssue } from "./errors.js";
-export { canonicalJson, hashConfig } from "./hash.js";
+export { canonicalJson, hashConfig, jcs } from "./hash.js";
 export { buildSnapshot, type SnapshotMeta } from "./snapshot.js";
 export { buildSnapshotV2, contentDigest, workspaceConfigIssues, type ContentEntity, type DeploymentMember, type DeploymentMeta, type DeploymentReason, type SnapshotEnvelopeV2, type WorkspaceContent } from "./snapshot-v2.js";
 export { diffConfigs, ENTITY_KINDS, type EntityChange, type EntityKind } from "./diff.js";

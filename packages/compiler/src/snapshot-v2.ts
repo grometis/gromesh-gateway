@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { CANARY_PATH, composeWorkspaces, PLATFORM_TAG, ROUTE_GUARD_PLUGIN, WORKSPACE_PLUGIN, WORKSPACE_TAG_PREFIX, type WorkspaceMember } from "./compose.js";
+import { CANARY_PATH, composeWorkspaces, PLATFORM_TAG, regexIssue, ROUTE_GUARD_PLUGIN, WORKSPACE_PLUGIN, WORKSPACE_TAG_PREFIX, type WorkspaceMember } from "./compose.js";
 import { CompileError, type CompileIssue } from "./errors.js";
-import { canonicalJson, hashConfig } from "./hash.js";
+import { hashConfig, jcs } from "./hash.js";
 import type { CompileOptions, KongDeclarativeConfig } from "./model.js";
 
 /** An entity of a release content in the Gromesh model (contract: Package* in control-plane-v2). */
@@ -59,12 +59,13 @@ export interface SnapshotEnvelopeV2 {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
+/** RFC 3339 date-time, as the contract's `format: date-time`. */
+const DATE_TIME_RE = /^(\d{4})-(\d{2})-(\d{2})T([01]\d|2[0-3]):[0-5]\d:([0-5]\d|60)(\.\d+)?(Z|[+-]([01]\d|2[0-3]):[0-5]\d)$/i;
 const ENTITY_ARRAYS = ["services", "routes", "consumers", "plugins", "upstreams", "targets", "certificates"] as const;
 
 /**
  * contentDigest of a release (contract: WorkspaceContent): SHA-256 of the RFC 8785 (JCS) form, every array ordered by
- * id and variables by name. canonicalJson is JCS for JSON values: ECMAScript serialization of strings and numbers,
- * object keys sorted by UTF-16 code units.
+ * id and variables by name.
  */
 export function contentDigest(content: WorkspaceContent): string {
   if (content.credentials.length > 0) throw new RangeError("content.credentials must be empty");
@@ -76,7 +77,7 @@ export function contentDigest(content: WorkspaceContent): string {
   };
   const normalized: Record<string, unknown> = { ...content, credentials: [], variables: ordered(content.variables, (v) => v.name, "variables") };
   for (const name of ENTITY_ARRAYS) normalized[name] = ordered(content[name], (e) => e.id, name);
-  return "sha256:" + createHash("sha256").update(canonicalJson(normalized), "utf8").digest("hex");
+  return "sha256:" + createHash("sha256").update(jcs(normalized), "utf8").digest("hex");
 }
 
 /**
@@ -92,6 +93,7 @@ export function buildSnapshotV2(members: DeploymentMember[], meta: DeploymentMet
   if (meta.mandatoryPluginsVersion != null && (!Number.isInteger(meta.mandatoryPluginsVersion) || meta.mandatoryPluginsVersion < 1)) {
     throw new RangeError("mandatoryPluginsVersion must be a positive integer or null");
   }
+  if (meta.createdAt !== undefined && !isDateTime(meta.createdAt)) throw new RangeError("createdAt must be an RFC 3339 date-time");
   if (meta.valuesDigest != null && !DIGEST_RE.test(meta.valuesDigest)) throw new RangeError("valuesDigest must be sha256:<64 hex> or null");
   members.forEach((m, i) => {
     if (!Number.isInteger(m.releaseVersion) || m.releaseVersion < 1) throw new RangeError(`members[${i}].releaseVersion must be a positive integer`);
@@ -135,7 +137,9 @@ export function workspaceConfigIssues(config: KongDeclarativeConfig, members: Pi
     else if (own[0] !== PLATFORM_TAG && !slugOf.has(own[0]!)) add(`${path}.tags`, "carries the tag of a Workspace that is not a member");
     return own.length === 1 && own[0] !== PLATFORM_TAG ? (slugOf.get(own[0]!) ?? null) : null;
   };
-  const guards = (routeId: string) => config.plugins.filter((p) => p.name === ROUTE_GUARD_PLUGIN && p.route === routeId);
+  // Only an enabled instance scoped to the route alone runs on every request of that route.
+  const guards = (routeId: string) =>
+    config.plugins.filter((p) => p.name === ROUTE_GUARD_PLUGIN && p.enabled && p.route === routeId && !p.service && !p.consumer);
 
   config.services.forEach((s, i) => {
     const slug = owner(`services[${i}]`, s.tags);
@@ -151,7 +155,10 @@ export function workspaceConfigIssues(config: KongDeclarativeConfig, members: Pi
     if (slug === null) return;
     if (!r.name.startsWith(`${slug}~`)) add(`routes[${i}].name`, "must be <slug>~<name>");
     (r.paths ?? []).forEach((path, j) => {
-      const inside = path.startsWith("~") ? path.startsWith(`~/${slug}(?:`) && path.endsWith(")") : path.startsWith(`/${slug}/`);
+      const group = `~/${slug}(?:`;
+      const inside = path.startsWith("~")
+        ? path.startsWith(group) && path.endsWith(")") && regexIssue(path.slice(group.length, -1)) === null
+        : path.startsWith(`/${slug}/`);
       if (!inside) add(`routes[${i}].paths[${j}]`, "must be under the Workspace prefix");
     });
     if ((r.paths ?? []).length === 0) add(`routes[${i}].paths`, "a Workspace route must have a path under its prefix");
@@ -159,7 +166,7 @@ export function workspaceConfigIssues(config: KongDeclarativeConfig, members: Pi
   });
 
   const workspacePlugin = config.plugins.filter((p) => p.name === WORKSPACE_PLUGIN);
-  if (workspacePlugin.length !== 1 || workspacePlugin[0]!.route || workspacePlugin[0]!.service || workspacePlugin[0]!.consumer || !workspacePlugin[0]!.tags?.includes(PLATFORM_TAG)) {
+  if (workspacePlugin.length !== 1 || !workspacePlugin[0]!.enabled || workspacePlugin[0]!.route || workspacePlugin[0]!.service || workspacePlugin[0]!.consumer || !workspacePlugin[0]!.tags?.includes(PLATFORM_TAG)) {
     add("plugins", `${WORKSPACE_PLUGIN} must exist once, global, tagged ${PLATFORM_TAG}`);
   }
   const canary = config.routes.filter((r) => r.paths?.includes(CANARY_PATH));
@@ -167,4 +174,12 @@ export function workspaceConfigIssues(config: KongDeclarativeConfig, members: Pi
     add("routes", `the platform canary ${CANARY_PATH} must exist once, tagged ${PLATFORM_TAG}, behind ${ROUTE_GUARD_PLUGIN}`);
   }
   return issues;
+}
+
+function isDateTime(value: string): boolean {
+  const m = DATE_TIME_RE.exec(value);
+  if (!m) return false;
+  const [year, month, day] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const days = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return month >= 1 && month <= 12 && day >= 1 && day <= days;
 }
