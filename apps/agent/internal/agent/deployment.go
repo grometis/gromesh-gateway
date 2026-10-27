@@ -159,9 +159,11 @@ type deployments struct {
 	applied *Deployment
 	at      *position
 	failed  *permanentFailure
-	retry   position
-	attempt int
-	next    time.Time
+	// failedSaved is false while the mark is only in memory; the next poll of the same deployment writes it again.
+	failedSaved bool
+	retry       position
+	attempt     int
+	next        time.Time
 }
 
 // positionFile holds the latest confirmed position of the persisted deployment. It counts only for the same hash and
@@ -337,24 +339,30 @@ func (a *Agent) restoreDeployment() {
 	}
 	// A mark at or below the applied position is stale: a newer revision already replaced it.
 	if failed != nil && (d.at == nil || d.at.before(failed.position)) {
-		d.failed = failed
+		d.failed, d.failedSaved = failed, true
 		a.publishDeploymentStatus()
 	}
 }
 
 func (a *Agent) markFailure(failed *permanentFailure) {
-	d := a.deploy
-	d.failed = failed
-	data, _ := json.Marshal(failed)
-	if err := writeAtomic(d.failureFile(), data, 0o644); err != nil {
-		a.log.Warn("cannot persist the permanent failure mark", "error", err)
-	}
+	a.deploy.failed = failed
+	a.saveFailure()
 	a.publishDeploymentStatus()
+}
+
+func (a *Agent) saveFailure() {
+	d := a.deploy
+	data, _ := json.Marshal(d.failed)
+	err := writeAtomic(d.failureFile(), data, 0o644)
+	d.failedSaved = err == nil
+	if err != nil {
+		a.log.Warn("cannot persist the permanent failure mark; retrying on the next poll", "error", err)
+	}
 }
 
 func (a *Agent) clearFailure() {
 	d := a.deploy
-	d.failed = nil
+	d.failed, d.failedSaved = nil, false
 	if err := os.Remove(d.failureFile()); err != nil && !errors.Is(err, os.ErrNotExist) {
 		a.log.Warn("cannot remove the permanent failure mark", "error", err)
 	}
@@ -368,6 +376,11 @@ func (a *Agent) acceptDeployment(deployment *Deployment, at position, success bo
 	a.appliedGauge.Store(at.Revision)
 	if success {
 		a.lastSuccess.Store(time.Now().Unix())
+	}
+	// The mark goes only once a newer revision is applied or confirmed: until then it keeps its epoch known.
+	if d.failed != nil && !at.before(d.failed.position) {
+		a.clearFailure()
+		return
 	}
 	a.publishDeploymentStatus()
 }
@@ -449,14 +462,14 @@ func (a *Agent) refreshDeployment(ctx context.Context) {
 			return
 		}
 	}
-	if d.failed != nil && d.failed.position != next {
-		a.clearFailure()
-	}
 	if d.at != nil && next.Hash == d.at.Hash {
 		a.confirmDeployment(ctx, current)
 		return
 	}
-	if d.failed != nil {
+	if d.failed != nil && d.failed.position == next {
+		if !d.failedSaved {
+			a.saveFailure()
+		}
 		return
 	}
 	if next != d.retry {

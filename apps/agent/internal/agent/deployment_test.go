@@ -426,6 +426,98 @@ func TestWorkspacesRefusesAnOlderEpochThanAMarkedFailure(t *testing.T) {
 	waitDeployment(t, cp, applied(2, 2, hashOf(t, next)))
 }
 
+// The mark keeps its epoch known until a newer revision is applied: a next revision that only fails transiently does
+// not let an older epoch in, before or after a restart.
+func TestWorkspacesTheMarkKeepsItsEpochUntilANewerRevisionApplies(t *testing.T) {
+	cp := cpmock.New()
+	t.Cleanup(cp.Close)
+	cp.SetSSEDown(true)
+	k := newKong(t)
+	var older atomic.Bool
+	k.onApply = func(w http.ResponseWriter, r *http.Request, body []byte) {
+		if bytes.Contains(body, []byte("older.tvro.example")) {
+			older.Store(true)
+		}
+		if k.failed.Load() {
+			w.WriteHeader(int(k.failureStatus.Load()))
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+	}
+	k.failed.Store(true)
+	path := filepath.Join(t.TempDir(), "kong.json")
+	a := newWorkspacesAgent(t, cp, k, path)
+	drain(t, k)
+	stop := start(t, a)
+	cp.SetDeployment(deploymentEnvelope(t, 2, 1, "a"))
+	waitDeployment(t, cp, func(s cpmock.DeploymentStatus) bool { return s.FailedRevision != nil })
+	k.failureStatus.Store(http.StatusServiceUnavailable)
+	cp.SetDeployment(deploymentEnvelope(t, 2, 2, "b"))
+	before := k.calls.Load()
+	for k.calls.Load() < before+2 {
+		receive(t, cp.DeploymentRequests, nil)
+	}
+	for _, restart := range []bool{false, true} {
+		if restart {
+			stop()
+			stop = start(t, newWorkspacesAgent(t, cp, k, path))
+		}
+		cp.SetDeployment(deploymentEnvelope(t, 1, 5, "older"))
+		settle(t, cp, 3)
+		if older.Load() {
+			t.Fatalf("an older epoch reached Kong (restart: %v)", restart)
+		}
+		if s := lastStatus(t, cp); s.Epoch != 2 || s.FailedRevision == nil || *s.FailedRevision != 1 {
+			t.Fatalf("the mark of epoch 2 was lost (restart: %v): %+v", restart, s)
+		}
+	}
+	// Control: once the next revision applies, the mark is gone from the status and the volume.
+	k.failed.Store(false)
+	next := deploymentEnvelope(t, 2, 2, "b")
+	cp.SetDeployment(next)
+	if s := waitDeployment(t, cp, applied(2, 2, hashOf(t, next))); s.FailedRevision != nil {
+		t.Fatalf("the mark survived the applied revision: %+v", s)
+	}
+	if _, err := os.Stat(a.deploy.failureFile()); !os.IsNotExist(err) {
+		t.Fatalf("the mark is still on the volume: %v", err)
+	}
+}
+
+// A mark that could not be written is written on the next poll of the same deployment, without Kong.
+func TestWorkspacesRetriesPersistingTheMark(t *testing.T) {
+	cp := cpmock.New()
+	t.Cleanup(cp.Close)
+	cp.SetSSEDown(true)
+	k := newKong(t)
+	k.failed.Store(true)
+	path := filepath.Join(t.TempDir(), "kong.json")
+	a := newWorkspacesAgent(t, cp, k, path)
+	blocked := a.deploy.failureFile()
+	if err := os.Mkdir(blocked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	drain(t, k)
+	stop := start(t, a)
+	bad := deploymentEnvelope(t, 1, 1, "a")
+	cp.SetDeployment(bad)
+	waitDeployment(t, cp, func(s cpmock.DeploymentStatus) bool { return s.FailedRevision != nil })
+	if err := os.Remove(blocked); err != nil {
+		t.Fatal(err)
+	}
+	settle(t, cp, 3)
+	if info, err := os.Stat(blocked); err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("the mark was not written once the volume recovered: %v", err)
+	}
+	stop()
+	k.failed.Store(false)
+	start(t, newWorkspacesAgent(t, cp, k, path))
+	waitDeployment(t, cp, func(s cpmock.DeploymentStatus) bool { return s.FailedRevision != nil && *s.FailedRevision == 1 })
+	settle(t, cp, 3)
+	if k.calls.Load() != 1 {
+		t.Fatalf("the rejected deployment was sent again: %d Kong calls", k.calls.Load())
+	}
+}
+
 // Negative control: any other Kong failure is retried and never marked.
 func TestWorkspacesTransientFailureIsRetriedNotMarked(t *testing.T) {
 	cp := cpmock.New()
