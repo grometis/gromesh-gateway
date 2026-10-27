@@ -785,6 +785,61 @@ describe("isolation admissions and reports (N2-D3a)", () => {
     expect((await pendencyRows(c3.id)).map((p) => p.lifecycle)).toEqual(["confirmed-violation"]);
   });
 
+  // F3-D2: whether an admission ever served comes only from verified reports; unknown never closes anything.
+  it("tells never-served-verified, served and unknown apart from verified reports only", async () => {
+    const servedOf = async (c: Cluster, podUid: string) => (await c.isolation()).pods.find((p) => p.podUid === podUid)!.servedState;
+    // Granted and silent: unknown, and the admission stays open and holding (no closing on missing evidence).
+    const c = await cluster();
+    const silent = new Probe();
+    const s = await admit(c, silent);
+    expect(await servedOf(c, silent.podUid)).toBe("unknown");
+    expect((await h.sql.query("select state from isolation_admissions where admission_id = $1", [s.admissionId])).rows[0].state).toBe("open");
+    const held = await c.ask(new Probe());
+    expect((await c.poll(held.requestId)).outcome).toBe("pending");
+    // Closed by its probe before adoption: never-served-verified.
+    const c1 = await cluster();
+    const p1 = new Probe();
+    const a1 = await admit(c1, p1);
+    await c1.send(p1.next(c1.id, a1.admissionId, { state: "awaiting-admission", leaseRemainingMs: null, final: true, finalReason: "pod-terminated", kongStopConfirmed: true }));
+    expect(await servedOf(c1, p1.podUid)).toBe("never-served-verified");
+    // A report past that final one: integrity conflict, and the admission counts as served from then on.
+    await c1.send(p1.next(c1.id, a1.admissionId, { state: "ok" }));
+    expect(await servedOf(c1, p1.podUid)).toBe("served");
+    // Adopted (any report other than such a seq 1 final), then closed normally: served.
+    const c2 = await cluster();
+    const p2 = new Probe();
+    const a2 = await admit(c2, p2);
+    await c2.send(p2.next(c2.id, a2.admissionId));
+    await c2.send(p2.next(c2.id, a2.admissionId, { final: true, finalReason: "pod-terminated", kongStopConfirmed: true }));
+    expect(await servedOf(c2, p2.podUid)).toBe("served");
+    // A seq 1 final that could not confirm Kong stopped: served (never never-served), and still open.
+    const c3 = await cluster();
+    const p3 = new Probe();
+    const a3 = await admit(c3, p3);
+    await c3.send(p3.next(c3.id, a3.admissionId, { state: "awaiting-admission", leaseRemainingMs: null, final: true, finalReason: "pod-terminated", kongStopConfirmed: false }));
+    expect(await servedOf(c3, p3.podUid)).toBe("served");
+    expect((await h.sql.query("select state from isolation_admissions where admission_id = $1", [a3.admissionId])).rows[0].state).toBe("open");
+    // A seq 1 final in violation, then a report past it (the conflict finds that violation already open): served.
+    const c5 = await cluster();
+    const p5 = new Probe();
+    const a5 = await admit(c5, p5);
+    await c5.send(p5.next(c5.id, a5.admissionId, { state: "violation", failedCapabilities: ["CAP-1"], leaseRemainingMs: null, final: true, finalReason: "pod-terminated", kongStopConfirmed: true }));
+    expect(await servedOf(c5, p5.podUid)).toBe("served");
+    expect((await c5.send(p5.next(c5.id, a5.admissionId, { state: "ok" }))).rejected).toEqual([{ index: 0, reason: "integrity-conflict" }]);
+    expect(await servedOf(c5, p5.podUid)).toBe("served");
+    // Released by the admin afterwards, it stays served: a release is no proof of never serving.
+    const pend = (await c5.isolation()).pendencies.find((p) => p.kind === "confirmed-violation")!;
+    expect((await v2(h.api, "POST", `/clusters/${c5.id}/isolation-releases`, { pendencyId: pend.id, justification: "lab: pod deleted, violation reviewed" })).status).toBe(201);
+    expect(await servedOf(c5, p5.podUid)).toBe("served");
+    // A report the probe key did not sign is refused before it is stored: it moves nothing.
+    const c4 = await cluster();
+    const p4 = new Probe();
+    const a4 = await admit(c4, p4);
+    const forged = new Probe().signRaw(JSON.stringify(p4.claims(c4.id, a4.admissionId, { state: "awaiting-admission", leaseRemainingMs: null, final: true, finalReason: "pod-terminated", kongStopConfirmed: true }, 1, null)));
+    expect((await c4.send(forged)).rejected).toHaveLength(1);
+    expect(await servedOf(c4, p4.podUid)).toBe("unknown");
+  });
+
   it("keeps a confirmed violation open after its admission closes: deleting the pod never erases it", async () => {
     const c = await cluster();
     const pa = new Probe();

@@ -532,6 +532,38 @@ export class IsolationService {
     return { from, ackedSeq: current.ackedSeq, state: current.lastState, broken };
   }
 
+  /**
+   * contract: AdmissionServedState (F3-D2), only from reports stored after their signature was verified with the
+   * admission's probe key. never-served-verified: its only report is a seq 1 awaiting-admission final confirming Kong
+   * stopped and no confirmed violation (integrity conflict included) was ever opened on it; served: any other report
+   * or such a violation; unknown (absent here): no report at all. Nothing is ever closed from this view.
+   * A conflict raised while another violation of the admission is open records no second pendency, but that open
+   * one already makes it served.
+   */
+  private async servedStates(tx: Executor, admissionIds: string[]): Promise<Map<string, "never-served-verified" | "served">> {
+    const out = new Map<string, "never-served-verified" | "served">();
+    if (admissionIds.length === 0) return out;
+    const chains = await tx
+      .select({
+        admissionId: isolationReports.admissionId,
+        n: sql<number>`count(*)::int`,
+        closedUnadopted: sql<boolean>`bool_or(${isolationReports.seq} = 1 and ${isolationReports.final} and ${isolationReports.kongStopConfirmed} is true and ${isolationReports.state} = 'awaiting-admission')`,
+      })
+      .from(isolationReports)
+      .where(inArray(isolationReports.admissionId, admissionIds))
+      .groupBy(isolationReports.admissionId);
+    const conflicted = new Set(
+      (
+        await tx
+          .select({ admissionId: isolationPendencies.admissionId })
+          .from(isolationPendencies)
+          .where(and(inArray(isolationPendencies.admissionId, admissionIds), eq(isolationPendencies.kind, "confirmed-violation")))
+      ).map((p) => p.admissionId),
+    );
+    for (const c of chains) out.set(c.admissionId, c.n === 1 && c.closedUnadopted && !conflicted.has(c.admissionId) ? "never-served-verified" : "served");
+    return out;
+  }
+
   /** contract: ClusterIsolation. The timers run first, so what it shows is what the next decision would see. */
   async cluster(clusterId: string) {
     return this.db.transaction(async (tx) => {
@@ -547,6 +579,7 @@ export class IsolationService {
         .orderBy(asc(isolationPendencies.openedAt), asc(isolationPendencies.id));
       const latest = new Map<string, IsolationAdmissionRow>();
       for (const r of rows) if (!latest.has(`${r.podUid}/${r.bootId}`)) latest.set(`${r.podUid}/${r.bootId}`, r);
+      const served = await this.servedStates(tx, [...latest.values()].flatMap((r) => (r.admissionId ? [r.admissionId] : [])));
       const pods = [...latest.values()].map((r) => {
         const held = pendencies.filter((p) => p.admissionId !== null && p.admissionId === r.admissionId).map((p) => p.lifecycle);
         const open = r.outcome === "granted" && r.state === "open";
@@ -558,6 +591,7 @@ export class IsolationService {
           admissionId: r.admissionId,
           state: r.lastState ?? "awaiting-admission",
           admission: r.outcome === "pending" ? "requested" : r.outcome === "refused" ? "refused" : r.state!,
+          servedState: (r.admissionId && served.get(r.admissionId)) || "unknown",
           reporting: !open ? "closed" : held.includes("unconfirmed-isolation") ? "unconfirmed-isolation" : held.includes("communication-failure") ? "communication-failure" : "reporting",
           kongStopConfirmed: r.kongStopConfirmed,
           lastSeq: r.ackedSeq,
