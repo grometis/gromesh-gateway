@@ -833,13 +833,13 @@ paths:
       x-required-permission: release.publish
       x-gromesh-planned: true
       description: |
-        Freezes the workspace draft into an immutable release and makes it the desired state of THIS instance (new
-        deployment revision composing every workspace's active release). A deployment revision is delivered only to
-        clusters whose deliveryProtocol is v2 (setClusterDeliveryProtocol; agent protocol v2, "Delivery protocol per
-        cluster"): creating a release never reaches a v1 or v2-pending cluster. While the server's Workspaces mode is
-        disabled (the default; N2 enables it only in disposable labs) it answers 409 workspaces-mode-disabled and
-        records nothing. Only on dev: in hml and prd local publishing does not exist (403); content arrives only
-        through promotions. Needs the deployment lease (409 otherwise).
+        Freezes the workspace draft into an immutable release, which becomes the workspace's active release (the
+        content a later deployment composes). Creating a release deploys nothing (decision D4): only createDeployment
+        composes a deployment revision, and a revision reaches only clusters whose deliveryProtocol is v2. While the
+        server's Workspaces mode is disabled (the default; N2 enables it only in disposable labs) it answers 409
+        workspaces-mode-disabled and records nothing. It never changes the v1 publication state of the workspace's
+        environment (draft flags, snapshots). Only on dev: in hml and prd local publishing does not exist (403);
+        content arrives only through promotions. Needs the deployment lease (409 otherwise).
       requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { message: { type: string }, expectedActiveVersion: { type: [ integer, "null" ] } }, additionalProperties: false } } } }
       responses:
         "201": { description: Published, content: { application/json: { schema: { $ref: "#/components/schemas/Release" } } } }
@@ -900,7 +900,9 @@ paths:
         moves a v1 cluster to v2-pending: from then on the v1 endpoints answer 409 delivery-protocol-switching to its
         nodes (the v1 snapshots of its environment stay recorded and untouched) and the control plane moves it to v2
         by itself once the activation gate holds: every expected node of the cluster has an open admission with a
-        conclusive passing round and no pendency is open in its scope (recorded and audited as a system transition).
+        conclusive passing round, no node without an open admission (a v1-mode agent) is registered and online, and
+        no pendency is open in its scope (recorded and audited as a system transition; agent protocol v2, "One
+        writer per Kong").
         protocol v1 cancels a v2-pending cluster, or returns a v2 cluster to v1 (controlled return): the cluster leaves
         the expected nodes of every v2 deployment (converging deployments re-evaluate) and its nodes receive their
         environment's current v1 snapshot again; history (snapshots, releases, deployments, reports) is kept. 409
@@ -981,6 +983,33 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /deployments:
+    post:
+      tags: [ deployments ]
+      operationId: createDeployment
+      x-scope: instance
+      x-gromesh-requirements: [ GW-DEP-01, GW-DEP-02, GW-DEP-04 ]
+      security: [ { cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] } ]
+      x-required-permission: release.publish
+      x-gromesh-planned: true
+      description: |
+        The explicit deployment of THIS instance (decision D4): composes every workspace's active release into a new
+        deployment revision through the compiler, validates the whole configuration, fixes its configHash and
+        kongConfigHash (agent protocol v2, "Applied revision and convergence evidence") and its expected nodes (the
+        nodes of the clusters whose deliveryProtocol is v2), and serves it to them. A revision reaches a cluster only
+        through the delivery rules (v2 protocol, admission and the activation gate); nothing is served to v1 or
+        v2-pending clusters. expectedRevision guards against a concurrent deployment (409 when the current revision
+        differs). Composition or validation failure: the deployment is rejected and nothing is served (422 with the
+        paths). 409 workspaces-mode-disabled while the server's Workspaces mode is disabled; 409 when the deployment
+        lease is held. Only on dev (403 in hml and prd, where promotions deploy). Requires release.publish in the
+        instance scope (a grant on one workspace does not deploy the instance). Audited in the same transaction.
+      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: false, required: [ expectedRevision, reason ], properties: { expectedRevision: { type: [ integer, "null" ], minimum: 1 }, reason: { type: string, minLength: 1 } } } } } }
+      responses:
+        "201": { description: Deployment recorded and served, content: { application/json: { schema: { $ref: "#/components/schemas/Deployment" } } } }
+        "409": { description: "Lease held, revision changed, or refused by the delivery rules", content: { application/problem+json: { schema: { oneOf: [ { $ref: "#/components/schemas/DeliveryProblem" }, { $ref: "#/components/schemas/Problem" } ] } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/ValidationError" }
   /deployments/current:
     get:
@@ -4292,7 +4321,7 @@ components:
         terminal: []
         transitions:
           - [ v1, v2-pending, "setClusterDeliveryProtocol protocol v2 with Workspaces mode enabled (audited)" ]
-          - [ v2-pending, v2, "activation gate: every expected node has an open admission with a conclusive passing round and no pendency is open in scope (system transition, audited)" ]
+          - [ v2-pending, v2, "activation gate: every expected node has an open admission with a conclusive passing round, no node without an open admission is registered and online, and no pendency is open in scope (system transition, audited)" ]
           - [ v2-pending, v1, "setClusterDeliveryProtocol protocol v1: switch cancelled (audited)" ]
           - [ v2, v1, "setClusterDeliveryProtocol protocol v1: controlled return to the environment's current v1 snapshot (audited)" ]
     DeliveryProblem:
@@ -4310,8 +4339,10 @@ components:
         Expected nodes of a revision: the registered, not deregistered nodes of the clusters whose deliveryProtocol is
         v2 when the revision is recorded (a cluster that turns v2 later joins at its activation; one that returns to
         v1 leaves). A node is applied only with the evidence of agent protocol v2 ("Applied revision and convergence
-        evidence"): its StatusReport and its probe's signed report agree on epoch, revision, configHash and
-        kongConfigHash; evidence tells what is missing otherwise.
+        evidence"): its StatusReport and its probe's fresh signed report agree on epoch, revision, configHash and the
+        kongConfigHash derived by the control plane; evidence tells what is missing otherwise. state is the
+        history of the revision (a converged revision stays converged); convergence and the clusters' status are the
+        current view and turn degraded when an expected node loses its evidence.
       required: [ epoch, revision, state, members, configHash, convergence ]
       properties:
         epoch: { type: integer, minimum: 1 }
@@ -4319,6 +4350,7 @@ components:
         state: { $ref: "#/components/schemas/DeploymentState" }
         members: { type: array, items: { type: object, required: [ workspaceId, releaseVersion, contentDigest ], properties: { workspaceId: { type: string, format: uuid }, releaseVersion: { type: integer }, contentDigest: { $ref: "#/components/schemas/Digest" } } } }
         configHash: { $ref: "#/components/schemas/Digest" }
+        kongConfigHash: { type: string, pattern: "^[0-9a-f]{32}$", description: "md5 hex of the JCS bytes of the config, as Kong computes it for those bytes; derived by the control plane, never learned from a node" }
         convergence: { enum: [ converged, converging, degraded, no-nodes ] }
         clusters: { type: array, items: { type: object, properties: { id: { type: string, format: uuid }, status: { enum: [ converged, converging, degraded, no-nodes ] }, nodes: { type: array, items: { type: object, properties: { nodeId: { type: string }, state: { enum: [ applying, applied, failed, idle ] }, appliedRevision: { type: [ integer, "null" ] }, online: { type: boolean }, kongConfigHash: { type: [ string, "null" ], pattern: "^[0-9a-f]{32}$" }, evidence: { $ref: "#/components/schemas/ConvergenceEvidence" } } } } } } }
     PromotionRequest:

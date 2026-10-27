@@ -740,21 +740,39 @@ describe("agent protocol v2", () => {
 
 describe("delivery protocol and convergence evidence (N3-K1)", () => {
   const vector = JSON.parse(read("examples/delivery-v2.example.json"));
-  type Evidence = { epoch: number; revision: number; configHash: string; recordedKongConfigHash: string | null; lastVerifiedRevision: number };
-  // The reference reading of "Applied revision and convergence evidence": only the agent's status and the probe's
-  // signed report agreeing with the authorized deployment and with the Kong hash recorded for its configHash count.
-  const evidenceOf = (e: Evidence, status: Doc, probe: Doc): string => {
+  const jcs = (v: unknown): string =>
+    v === null || typeof v !== "object" ? JSON.stringify(v)
+    : Array.isArray(v) ? `[${v.map(jcs).join(",")}]`
+    : `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${jcs((v as Record<string, unknown>)[k])}`).join(",")}}`;
+  type Expected = { clusterId: string; nodeId: string; podUid: string; admissionId: string; epoch: number; revision: number; configHash: string; kongConfigHash: string; lastVerifiedRevision: number; revisionRecordedAt: string; now: string };
+  // The reference reading of "Applied revision and convergence evidence": only the agent's status and a fresh signed
+  // report of the node's own admission agreeing with the deployment and with the Kong hash the control plane derived.
+  const evidenceOf = (e: Expected, { status, probe, receivedAt }: Doc): string => {
     if (!status) return "awaiting-status";
     if (status.epoch === e.epoch && status.appliedRevision !== null && status.appliedRevision < e.lastVerifiedRevision) return "revision-regression";
     if (status.epoch !== e.epoch || status.appliedRevision !== e.revision || status.appliedHash !== e.configHash || !status.kongConfigHash) return "awaiting-status";
-    if (!probe || probe.state !== "ok" || probe.appliedEpoch == null) {
-      return probe?.servedKongConfigHash && probe.servedKongConfigHash !== status.kongConfigHash ? "served-config-divergence" : "awaiting-probe-report";
+    const at = Date.parse(receivedAt);
+    const own = probe && probe.clusterId === e.clusterId && probe.podUid === e.podUid && probe.admissionId === e.admissionId;
+    if (!own || at < Date.parse(e.revisionRecordedAt) || Date.parse(e.now) - at > 60_000) return "awaiting-probe-report";
+    if (probe.state !== "ok" || probe.appliedEpoch == null) {
+      return probe.servedKongConfigHash && probe.servedKongConfigHash !== status.kongConfigHash ? "served-config-divergence" : "awaiting-probe-report";
     }
-    const same = probe.appliedEpoch === e.epoch && probe.appliedRevision === e.revision && probe.appliedHash === e.configHash && probe.appliedKongConfigHash === status.kongConfigHash;
+    const same = probe.appliedEpoch === e.epoch && probe.appliedRevision === e.revision && probe.appliedHash === e.configHash &&
+      probe.appliedKongConfigHash === status.kongConfigHash && probe.servedKongConfigHash === probe.appliedKongConfigHash;
     if (!same) return "revision-mismatch";
-    if (e.recordedKongConfigHash !== null && status.kongConfigHash !== e.recordedKongConfigHash) return "kong-hash-divergence";
+    if (status.kongConfigHash !== e.kongConfigHash) return "kong-hash-divergence";
     return "verified";
   };
+
+  it("derives the expected Kong hash from the JCS bytes the agent posts as a string", () => {
+    const { config, jcs: bytes, kongConfigHash, postBody } = vector.kongConfigHashOf;
+    expect(jcs(config)).toBe(bytes);
+    expect(createHash("md5").update(bytes, "utf8").digest("hex")).toBe(kongConfigHash);
+    expect(JSON.parse(postBody)).toEqual({ config: bytes });
+    expect(vector.expected.kongConfigHash).toBe(kongConfigHash);
+    expect(valid("Deployment", { epoch: 1, revision: 4, state: "active", members: [], configHash: vector.expected.configHash, kongConfigHash, convergence: "converging" })).toBe(true);
+    expect(valid("Deployment", { epoch: 1, revision: 4, state: "active", members: [], configHash: vector.expected.configHash, kongConfigHash: vector.expected.configHash, convergence: "converging" })).toBe(false);
+  });
 
   it("accepts applied.json and refuses every invalid one", () => {
     expect(validAgent("AppliedRevision", vector.applied)).toBe(true);
@@ -774,12 +792,15 @@ describe("delivery protocol and convergence evidence (N3-K1)", () => {
   it("converges only with status and probe evidence agreeing with the deployment", () => {
     const evidence = new Set(v2.components.schemas.ConvergenceEvidence.enum);
     expect(new Set(vector.cases.map((c: Doc) => c.evidence))).toEqual(evidence);
-    for (const c of vector.cases) expect(evidenceOf(c.expected ?? vector.expected, c.status, c.probe), c.name).toBe(c.evidence);
+    for (const c of vector.cases) expect(evidenceOf(c.expected ?? vector.expected, c), c.name).toBe(c.evidence);
     expect(vector.cases.filter((c: Doc) => c.evidence === "verified").every((c: Doc) => c.probe && c.status)).toBe(true);
   });
 
   it("refuses with a typed code and switches the protocol only explicitly", () => {
     const refusal = (code: string) => ({ type: `https://gromesh.dev/problems/${code}`, title: "Conflict", status: 409, code });
+    const deploy = v2Ops.find(({ op }) => op.operationId === "createDeployment")!.op;
+    expect([deploy["x-gromesh-planned"], deploy["x-scope"], deploy["x-required-permission"]]).toEqual([true, "instance", "release.publish"]);
+    expect(v2Ops.find(({ op }) => op.operationId === "publishRelease")!.op.description).toContain("Creating a release deploys nothing");
     for (const code of ["workspaces-mode-disabled", "delivery-protocol-v1", "delivery-protocol-v2", "delivery-protocol-switching", "epoch-outdated", "revision-regression", "unknown-deployment"]) {
       expect(validAgent("DeliveryProblem", refusal(code)), code).toBe(true);
     }
