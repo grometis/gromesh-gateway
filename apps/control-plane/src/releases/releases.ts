@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { Body, Controller, Get, HttpCode, HttpStatus, Inject, Injectable, Module, Param, Post } from "@nestjs/common";
 import {
   buildSnapshotV2,
@@ -5,6 +6,7 @@ import {
   contentDigest,
   type DeploymentMember as ComposedMember,
   type GatewayState,
+  jcs,
   type KongDeclarativeConfig,
   platformPlugins,
   type WorkspaceContent,
@@ -137,27 +139,35 @@ export class ReleasesService {
   }
 
   /**
-   * publishRelease (dev only): freezes the workspace draft into an immutable release and composes the instance's next
-   * deployment revision with every workspace's active release. Delivering that revision to a cluster is a separate gate
-   * (D2/D4): until the delivery contract (N3-K1) no cluster is an expected node, and the deployment has none.
+   * The single lease row: every release and deployment of the instance, from any replica, goes through it one at a
+   * time. A lease past its deadline is expired here; a live one refuses with 409. Dev only (403).
+   */
+  private async lease(tx: Tx, settings: Settings) {
+    const [lease] = await tx.select().from(deploymentLease).for("update");
+    const self = await this.instance(tx, settings);
+    if (self.stage !== "dev") throw forbidden(`Local publishing and deployment exist only on dev; this instance is ${self.stage}`);
+    const now = await clock(tx);
+    if (lease!.revision !== null) {
+      if (lease!.deadlineAt && lease!.deadlineAt > now) throw conflict(`Deployment revision ${lease!.revision} holds the deployment lease`);
+      await this.expire(tx, lease!.revision);
+    }
+    return { self, now };
+  }
+
+  /**
+   * publishRelease (dev only): freezes the workspace draft into an immutable release, which becomes the workspace's
+   * active release. It deploys nothing (decision D4): only createDeployment composes a revision.
    */
   async publish(ctx: RequestContext, workspaceId: string, body: PublishBody) {
     const settings = this.settings();
     return this.db.transaction(async (tx) => {
-      // The single lease row: every deployment of the instance, from any replica, goes through it one at a time.
-      const [lease] = await tx.select().from(deploymentLease).for("update");
-      const self = await this.instance(tx, settings);
-      if (self.stage !== "dev") throw forbidden(`Local publishing exists only on dev; this instance is ${self.stage}`);
-      const now = await clock(tx);
-      if (lease!.revision !== null) {
-        if (lease!.deadlineAt && lease!.deadlineAt > now) throw conflict(`Deployment revision ${lease!.revision} holds the deployment lease`);
-        await this.expire(tx, lease!.revision);
-      }
+      const { self } = await this.lease(tx, settings);
 
-      const ws = await this.requireWorkspace(tx, workspaceId, true);
       // Every edit and import of the draft updates this row in its own transaction (markDraftChanged): holding it, the
-      // draft read below is one committed state, never half of an edit in flight (as v1 publish).
+      // draft read below is one committed state, never half of an edit in flight (as v1 publish). Environment before
+      // workspace, the order an environment's deletion takes them (its cascade), so the two never deadlock.
       await requireEnvironment(tx, workspaceId, true);
+      const ws = await this.requireWorkspace(tx, workspaceId, true);
       if (!ws.slug) throw unprocessable("The workspace cannot be published", [{ path: "slug", message: "the workspace has no slug yet" }]);
       const [active] = await tx.select().from(workspaceActiveRelease).where(eq(workspaceActiveRelease.workspaceId, workspaceId));
       if (body.expectedActiveVersion !== undefined && body.expectedActiveVersion !== (active?.version ?? null)) {
@@ -168,7 +178,16 @@ export class ReleasesService {
       const forbiddenIssues = [...destinationIssues(draft, this.destinations), ...stateVaultReferenceIssues(draft)];
       if (forbiddenIssues.length > 0) throw unprocessable("The draft cannot be published", forbiddenIssues);
       const state = withoutCredentials(draft);
-      const digest = contentDigest(releaseContent(state, this.enc, this.catalog));
+      const content = releaseContent(state, this.enc, this.catalog);
+      const digest = contentDigest(content);
+      // The release must compose on its own (prefix, guard, reserved names): what only fails against the other
+      // workspaces surfaces at createDeployment.
+      try {
+        buildSnapshotV2([{ id: workspaceId, slug: ws.slug, state: await this.withCredentials(tx, workspaceId, state), releaseVersion: 1, content }], { instanceId: self.id, epoch: FIRST_EPOCH, revision: 1 });
+      } catch (err) {
+        if (err instanceof CompileError) throw unprocessable("The draft cannot be published", err.issues);
+        throw err;
+      }
       const activeRow = active ? await this.findRelease(tx, workspaceId, active.version) : undefined;
       if (activeRow?.contentDigest === digest) throw conflict("Nothing to publish: the draft equals the active release");
 
@@ -196,34 +215,63 @@ export class ReleasesService {
       // The slug is part of every public path from the first release on.
       await tx.update(workspaces).set({ slugLockedAt: sql`coalesce(${workspaces.slugLockedAt}, now())` }).where(eq(workspaces.id, workspaceId));
 
-      const deployment = await this.compose(tx, ctx, self, settings, now, { workspaceId, version, state });
+      // The revision that composes it is unknown until the next createDeployment.
+      await tx
+        .insert(workspaceActiveRelease)
+        .values({ workspaceId, version, deploymentRevision: null })
+        .onConflictDoUpdate({ target: workspaceActiveRelease.workspaceId, set: { version, deploymentRevision: null } });
       await audit(tx, ctx, {
         action: "release.publish",
         entityType: "release",
         entityId: `${workspaceId}:${version}`,
         environmentId: workspaceId,
-        after: { version, contentDigest: digest, message: body.message ?? null, epoch: deployment.epoch, revision: deployment.revision, configHash: deployment.configHash, expectedNodes: deployment.expectedNodes },
+        after: { version, contentDigest: digest, message: body.message ?? null },
       });
       return (await this.toReleases(tx, [release!]))[0]!;
     });
   }
 
-  /** The next revision of the instance: the published release replaces its workspace's, every other stays. */
-  private async compose(
-    tx: Tx,
-    ctx: RequestContext,
-    self: InstanceRow,
-    settings: Settings,
-    now: Date,
-    published: { workspaceId: string; version: number; state: ReleaseState },
-  ) {
-    const others = await tx.select().from(workspaceActiveRelease).orderBy(asc(workspaceActiveRelease.workspaceId));
-    const memberRows = [...others.filter((o) => o.workspaceId !== published.workspaceId).map((o) => ({ workspaceId: o.workspaceId, version: o.version })), { workspaceId: published.workspaceId, version: published.version }];
+  /**
+   * createDeployment (dev only, decision D4): composes every workspace's active release into the instance's next
+   * revision through the compiler, fixes configHash, kongConfigHash (md5 of the JCS bytes served to the agents, N3-K1)
+   * and the expected nodes. A composition the compiler refuses records nothing (422).
+   */
+  async deploy(ctx: RequestContext, body: { expectedRevision: number | null; reason: string }) {
+    const settings = this.settings();
+    return this.db.transaction(async (tx) => {
+      const { self, now } = await this.lease(tx, settings);
+      const latest = await this.currentRevision(tx);
+      if (body.expectedRevision !== (latest ?? null)) throw conflict(`Current revision is ${latest ?? "none"}, expected ${body.expectedRevision ?? "none"}`);
+      const deployment = await this.compose(tx, ctx, self, settings, now);
+      await audit(tx, ctx, {
+        action: "deployment.create",
+        entityType: "deployment",
+        entityId: `${deployment.epoch}:${deployment.revision}`,
+        environmentId: null,
+        after: { reason: body.reason, epoch: deployment.epoch, revision: deployment.revision, configHash: deployment.configHash, kongConfigHash: deployment.kongConfigHash, members: deployment.members, expectedNodes: deployment.expectedNodes },
+      });
+      return {
+        epoch: deployment.epoch,
+        revision: deployment.revision,
+        state: deployment.state,
+        members: deployment.members,
+        configHash: deployment.configHash,
+        kongConfigHash: deployment.kongConfigHash,
+        convergence: deployment.expectedNodes.length === 0 ? "no-nodes" : "converging",
+        clusters: [],
+      };
+    });
+  }
+
+  /** The next revision of the instance: every workspace's active release. */
+  private async compose(tx: Tx, ctx: RequestContext, self: InstanceRow, settings: Settings, now: Date) {
+    const memberRows = (await tx.select().from(workspaceActiveRelease).orderBy(asc(workspaceActiveRelease.workspaceId))).map((o) => ({ workspaceId: o.workspaceId, version: o.version }));
+    if (memberRows.length === 0) throw unprocessable("Nothing to deploy", [{ path: "workspaces", message: "no workspace has a release" }]);
     const slugs = new Map((await tx.select({ id: workspaces.id, slug: workspaces.slug }).from(workspaces).where(inArray(workspaces.id, memberRows.map((m) => m.workspaceId)))).map((w) => [w.id, w.slug]));
     const members: ComposedMember[] = [];
     const recorded: DeploymentMember[] = [];
     for (const m of memberRows) {
-      const state = m.workspaceId === published.workspaceId ? published.state : await this.openRelease(tx, m.workspaceId, m.version);
+      const state = await this.openRelease(tx, m.workspaceId, m.version);
       const content = releaseContent(state, this.enc, this.catalog);
       members.push({ id: m.workspaceId, slug: slugs.get(m.workspaceId)!, state: await this.withCredentials(tx, m.workspaceId, state), releaseVersion: m.version, content });
       recorded.push({ workspaceId: m.workspaceId, releaseVersion: m.version, contentDigest: contentDigest(content) });
@@ -235,6 +283,7 @@ export class ReleasesService {
     const endpoint = this.config.platformHttpLogEndpoint;
     let config: KongDeclarativeConfig;
     let configHash: string;
+    let kongConfigHash: string;
     try {
       // The composed config is instance-wide: the platform plugins carry the instance id where v1 carries the environment's.
       const envelope = buildSnapshotV2(
@@ -244,14 +293,16 @@ export class ReleasesService {
       );
       config = envelope.config;
       configHash = envelope.hash;
+      // What Kong computes for the bytes the agent posts as {"config": "<JCS>"} (agent protocol v2, "Expected Kong hash").
+      kongConfigHash = createHash("md5").update(jcs(config), "utf8").digest("hex");
     } catch (err) {
-      // Nothing is recorded: the release and the deployment roll back together (composed → rejected never persists).
-      if (err instanceof CompileError) throw unprocessable("The instance's composition refuses this release", err.issues);
+      // Nothing is recorded and nothing is served (composed → rejected never persists).
+      if (err instanceof CompileError) throw unprocessable("The instance's composition refuses this deployment", err.issues);
       throw err;
     }
-    // D2: only clusters explicitly enabled for the v2 protocol are expected nodes; until the delivery contract
-    // (N3-K1) none is, and no node can receive this revision.
-    const expectedNodes: string[] = [];
+    // D2: only clusters explicitly in the v2 protocol have expected nodes; the delivery itself is N3-C4's, until
+    // then no node is expected and none can receive this revision.
+    const expectedNodes: { clusterId: string; nodeId: string }[] = [];
     await tx.insert(deployments).values({
       epoch: FIRST_EPOCH,
       revision,
@@ -259,37 +310,37 @@ export class ReleasesService {
       expectedNodes,
       config: this.enc.sealJson(config, deploymentContext(FIRST_EPOCH, revision)),
       configHash,
+      kongConfigHash,
       reason: "publish",
       createdBy: ctx.actor,
       createdAt: now,
     });
     const previous = await this.currentRevision(tx, revision);
     await transition(tx, FIRST_EPOCH, revision, [
-      ["composed", "release published"],
+      ["composed", "deployment requested"],
       ["active", "recorded, expected nodes fixed"],
     ]);
     if (previous) await this.supersede(tx, previous);
+    let state: DeploymentState = "active";
     if (expectedNodes.length === 0) {
       // Vacuous: no node to wait for. No content activation either: content counts as activated only once a node applied it.
       await transition(tx, FIRST_EPOCH, revision, [["converged", "no expected node"]]);
+      state = "converged";
     } else {
       await tx
         .update(deploymentLease)
-        .set({ revision, operation: "publish", owner: ctx.actor, startedAt: now, deadlineAt: new Date(now.getTime() + settings.convergenceDeadlineMs) });
+        .set({ revision, operation: "deploy", owner: ctx.actor, startedAt: now, deadlineAt: new Date(now.getTime() + settings.convergenceDeadlineMs) });
     }
-    await tx
-      .insert(workspaceActiveRelease)
-      .values({ workspaceId: published.workspaceId, version: published.version, deploymentRevision: revision })
-      .onConflictDoUpdate({ target: workspaceActiveRelease.workspaceId, set: { version: published.version, deploymentRevision: revision } });
-    return { epoch: FIRST_EPOCH, revision, configHash, expectedNodes };
+    await tx.update(workspaceActiveRelease).set({ deploymentRevision: revision });
+    return { epoch: FIRST_EPOCH, revision, state, members: recorded, configHash, kongConfigHash, expectedNodes };
   }
 
-  /** The latest revision before `revision`, if any. */
-  private async currentRevision(tx: Executor, revision: number): Promise<number | undefined> {
+  /** The latest revision of the instance's epoch (before `below` when given), if any. */
+  private async currentRevision(tx: Executor, below?: number): Promise<number | undefined> {
     const [row] = await tx
       .select({ revision: deployments.revision })
       .from(deployments)
-      .where(and(eq(deployments.epoch, FIRST_EPOCH), sql`${deployments.revision} < ${revision}`))
+      .where(and(eq(deployments.epoch, FIRST_EPOCH), below === undefined ? undefined : sql`${deployments.revision} < ${below}`))
       .orderBy(desc(deployments.revision))
       .limit(1);
     return row?.revision;
@@ -393,5 +444,17 @@ export class ReleasesController {
   }
 }
 
-@Module({ imports: [PluginCatalogModule], controllers: [ReleasesController], providers: [ReleasesService], exports: [ReleasesService] })
+@Controller("api/v2/deployments")
+export class DeploymentsController {
+  constructor(private readonly releasesService: ReleasesService) {}
+
+  @Post()
+  @HttpCode(201)
+  @RequiredPermission("release.publish", "instance")
+  deploy(@Ctx() ctx: RequestContext, @Body(contractBodyV2(inlineBody("/deployments", "post"))) body: { expectedRevision: number | null; reason: string }) {
+    return this.releasesService.deploy(ctx, body);
+  }
+}
+
+@Module({ imports: [PluginCatalogModule], controllers: [ReleasesController, DeploymentsController], providers: [ReleasesService], exports: [ReleasesService] })
 export class ReleasesModule {}

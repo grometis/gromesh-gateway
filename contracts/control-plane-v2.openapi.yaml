@@ -990,7 +990,6 @@ paths:
       x-gromesh-requirements: [ GW-DEP-01, GW-DEP-02, GW-DEP-04 ]
       security: [ { cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] } ]
       x-required-permission: release.publish
-      x-gromesh-planned: true
       description: |
         The explicit deployment of THIS instance (decision D4): composes every workspace's active release into a new
         deployment revision through the compiler, validates the whole configuration, fixes its configHash and

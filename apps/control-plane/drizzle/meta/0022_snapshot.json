@@ -1,5 +1,5 @@
 {
-  "id": "60f2029b-b036-405c-abe5-5fbaa6537883",
+  "id": "4f55090e-47e5-4387-bdfc-456efcdbf8fb",
   "prevId": "1ed62651-a512-46a5-991b-6180064ab1c1",
   "version": "7",
   "dialect": "postgresql",
@@ -1404,6 +1404,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "kong_config_hash": {
+          "name": "kong_config_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "reason": {
           "name": "reason",
           "type": "text",
@@ -1451,6 +1457,10 @@
         "deployments_config_hash_ck": {
           "name": "deployments_config_hash_ck",
           "value": "\"deployments\".\"config_hash\" ~ '^sha256:[0-9a-f]{64}$'"
+        },
+        "deployments_kong_config_hash_ck": {
+          "name": "deployments_kong_config_hash_ck",
+          "value": "\"deployments\".\"kong_config_hash\" ~ '^[0-9a-f]{32}$'"
         },
         "deployments_reason_ck": {
           "name": "deployments_reason_ck",
@@ -4308,7 +4318,7 @@
           "name": "deployment_revision",
           "type": "integer",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         }
       },
       "indexes": {},

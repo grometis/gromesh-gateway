@@ -19,8 +19,11 @@ CREATE TABLE "instance" (
 	CONSTRAINT "instance_stage_ck" CHECK ("instance"."stage" in ('dev', 'hml', 'prd'))
 );
 --> statement-breakpoint
+ALTER TABLE "workspace_active_release" ALTER COLUMN "deployment_revision" DROP NOT NULL;--> statement-breakpoint
+ALTER TABLE "deployments" ADD COLUMN "kong_config_hash" text;--> statement-breakpoint
 ALTER TABLE "deployment_states" ADD CONSTRAINT "deployment_states_deployment_fk" FOREIGN KEY ("epoch","revision") REFERENCES "public"."deployments"("epoch","revision") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE UNIQUE INDEX "instance_id_uq" ON "instance" USING btree ("id");--> statement-breakpoint
+ALTER TABLE "deployments" ADD CONSTRAINT "deployments_kong_config_hash_ck" CHECK ("deployments"."kong_config_hash" ~ '^[0-9a-f]{32}$');--> statement-breakpoint
 -- The instance identity (D1) never changes nor disappears; the transitions of a deployment are append-only (C §4).
 CREATE FUNCTION "gromesh_instance_immutable"() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN

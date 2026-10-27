@@ -830,6 +830,8 @@ export const deployments = pgTable(
     // The composed Kong config; stored sealed.
     config: jsonb("config").$type<SealedJson | KongDeclarativeConfig>().notNull(),
     configHash: text("config_hash").notNull(),
+    // md5 of the JCS bytes of config, what Kong reports for them (N3-K1); derived here, never learned from a node.
+    kongConfigHash: text("kong_config_hash"),
     reason: text("reason", { enum: ["publish", "promotion", "rollback", "reconcile", "mandatory-plugins", "values"] }).notNull(),
     promotionId: uuid("promotion_id"),
     createdBy: jsonb("created_by").$type<Actor>().notNull(),
@@ -839,6 +841,7 @@ export const deployments = pgTable(
     primaryKey({ columns: [t.epoch, t.revision] }),
     check("deployments_revision_ck", sql`${t.epoch} >= 1 and ${t.revision} >= 1`),
     check("deployments_config_hash_ck", digest(t.configHash)),
+    check("deployments_kong_config_hash_ck", sql`${t.kongConfigHash} ~ '^[0-9a-f]{32}$'`),
     check("deployments_reason_ck", sql`${t.reason} in ('publish', 'promotion', 'rollback', 'reconcile', 'mandatory-plugins', 'values')`),
   ],
 );
@@ -852,7 +855,8 @@ export const workspaceActiveRelease = pgTable(
       .primaryKey()
       .references(() => workspaces.id),
     version: integer("version").notNull(),
-    deploymentRevision: integer("deployment_revision").notNull(),
+    // The revision that last composed it; null between publishRelease and the next createDeployment (D4).
+    deploymentRevision: integer("deployment_revision"),
   },
   (t) => [foreignKey({ name: "workspace_active_release_release_fk", columns: [t.workspaceId, t.version], foreignColumns: [releases.workspaceId, releases.version] })],
 );
