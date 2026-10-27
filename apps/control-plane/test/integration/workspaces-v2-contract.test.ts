@@ -674,6 +674,9 @@ describe("agent protocol v2", () => {
     ["ProbeReport", { ...report, prevDigest: null }, false],
     ["ProbeReport", { ...report, final: true }, false],
     ["ProbeReport", { ...report, final: true, finalReason: "pod-terminated", kongStopConfirmed: true }, true],
+    // N2-F3: the probe closes an admission it never adopted with a final seq 1 (never served).
+    ["ProbeReport", { ...report, seq: 1, prevDigest: null, state: "awaiting-admission", final: true, finalReason: "pod-terminated", kongStopConfirmed: true }, true],
+    ["ProbeReport", { ...report, seq: 1, prevDigest: d, state: "awaiting-admission", final: true, finalReason: "pod-terminated", kongStopConfirmed: true }, false],
     ["ProbeReport", { ...report, finalReason: "pod-terminated" }, false],
     ["ProbeReport", { ...report, state: "violation" }, false],
     ["ProbeReport", { ...report, state: "violation", failedCapabilities: ["CAP-3"] }, true],
@@ -693,6 +696,19 @@ describe("agent protocol v2", () => {
     ["IsolationReleaseClaims", { clusterId: u, pendencyId: u, kind: "communication-failure", expiresAt: "2026-10-24T00:15:00Z" }, false],
   ])("%s %j -> %s", (name, value, expected) => {
     expect(validAgent(name, value)).toBe(expected);
+  });
+
+  it("closes an admission before adoption only with a final seq 1, and never erases evidence by closing (N2-F3)", () => {
+    const closing = agentV2.components.schemas.AdmissionState["x-gromesh-transitions"].transitions.find(([from, to]: string[]) => from === "open" && to === "closed");
+    expect(closing[2]).toContain("seq 1 when the probe closes it before adopting it");
+    const flat = (text: string) => text.replace(/\s+/g, " ");
+    const info = flat(agentV2.info.description);
+    expect(info).toContain("a chain whose seq 1 is final proves");
+    expect(info).toContain("the absence of a report proves nothing");
+    expect(info).toContain("a report numbered above the final one of its chain, or a second seq 1, is an integrity conflict");
+    expect(info).toContain("a confirmed-violation pendency of an admission stays open after the admission closes");
+    expect(flat(agentV2.components.schemas.IsolationHandoff.description)).toContain("removed at the pod's stop signal, after which the agent neither asks for nor polls an admission");
+    expect(agentV2.components.schemas.ReportAcks.properties.rejected.items.properties.reason.enum).toContain("integrity-conflict");
   });
 
   it("serves deployments that match the snapshot v2 schema, and refuses the v1 envelope", () => {

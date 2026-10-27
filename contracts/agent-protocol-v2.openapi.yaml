@@ -56,6 +56,19 @@ info:
         after the kong container exited, which native sidecar ordering guarantees before the sidecars are
         signalled) or a node-reboot report of the previous boot. Otherwise it stays open and holds every new
         admission of the cluster until its chain arrives or a platform admin releases it.
+        Closing before adoption: the probe publishes a lease only after the report of that round is durable in its
+        queue, so no lease of an admission exists before its seq 1. At the pod's stop signal the probe also closes
+        the admission of its own key that the handoff holds and it has not adopted yet (valid for this cluster,
+        pod, boot and key, and not ended): its final report is then seq 1, and a chain whose seq 1 is final proves
+        the admission never authorized traffic. The control plane closes it by the rule above and records it as
+        never served; the absence of a report proves nothing. The probe then removes probe.pub, and the agent asks
+        for or polls an admission only while probe.pub exists, so a stopping pod is granted nothing new. Declared
+        residual: a grant already in flight at that moment, a lost final report (agent frozen, probe volume lost) or
+        an abrupt stop (force deletion, node loss) leave the admission open, held as above.
+        Closing never erases evidence: a report numbered above the final one of its chain, or a second seq 1, is an
+        integrity conflict (confirmed-violation); a confirmed-violation pendency of an admission stays open after the
+        admission closes; a closed admission is never adopted again (the probe keeps the ids it closed) and the
+        control plane grants no second admission of the same (podUid, bootId).
       - Capabilities the probe proves from the kong container's network namespace (a NetworkPolicy manifest is
         never proof). CAP-1 egress between pods: denied by default in the data plane namespace with an explicit
         backend list; a test pod outside it is unreachable. CAP-2 host and privileged networks: the IP of every node
@@ -361,7 +374,7 @@ components:
         initial: [open]
         terminal: [closed, closed-without-proof]
         transitions:
-          - [open, closed, "final report with kongStopConfirmed and complete chain, or node-reboot report of the previous boot"]
+          - [open, closed, "final report with kongStopConfirmed and complete chain (seq 1 when the probe closes it before adopting it: never served), or node-reboot report of the previous boot"]
           - [open, closed-without-proof, "releaseIsolationContainment of the unconfirmed-isolation pendency (audited)"]
     ProbeReport:
       type: object
@@ -476,7 +489,8 @@ components:
         Directory /gromesh/handoff shared by the agent and the isolation-probe of one pod. Not an HTTP body. Every file
         is written atomically (temporary file, fsync, rename) by its only writer and read only as a regular file,
         never through a symlink and never blocking:
-          probe.pub (probe): its Ed25519 public key, base64url, the probePublicKey of the admission request;
+          probe.pub (probe): its Ed25519 public key, base64url, the probePublicKey of the admission request; removed
+            at the pod's stop signal, after which the agent neither asks for nor polls an admission;
           admission.jws (agent): the granted admission as received (AdmissionRequestStatus.admission);
           challenge (agent): the latest challenge of getIsolationChallenge, absent when null;
           releases.json (agent): {"items": [...]} as received from listIsolationReleases;
