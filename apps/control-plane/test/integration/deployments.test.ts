@@ -96,6 +96,34 @@ async function cluster(h: Harness, base: string) {
   return { env, id: node.clusterId, token: node.nodeToken, registrationToken: created.body.registrationToken as string };
 }
 
+describe("a v1 cluster beside v2 releases and deployments (D5)", () => {
+  it("keeps receiving the same v1 snapshot while the instance publishes and deploys v2", async () => {
+    const h = await startHarness({ databaseUrl: await freshDatabase("v1"), workspacesDeployments: LAB });
+    try {
+      const base = (await h.app.getUrl()).replace("[::1]", "127.0.0.1");
+      expect((await v2(h.api, "POST", "/instance/signing-keys", { validUntil: new Date(Date.now() + 30 * 86_400_000).toISOString() })).status).toBe(201);
+      const c = await cluster(h, base);
+      const svc = (await h.api("POST", `/environments/${c.env}/services`, { name: uniq("svc"), protocol: "http", host: "echo", port: 80 })).body.id;
+      await h.api("POST", `/environments/${c.env}/routes`, { name: uniq("route"), serviceId: svc, paths: ["/echo"] });
+      expect((await h.api("POST", `/environments/${c.env}/snapshots`, {})).status).toBe(201);
+      const before = await agentCall(base, c.token, "GET", "v1/snapshots/current");
+      expect(before.status, before.raw).toBe(200);
+
+      // The same environment is a workspace: its release and the instance's deployment never touch the v1 flow.
+      expect((await v2(h.api, "POST", `/workspaces/${c.env}/releases`, {})).status).toBe(201);
+      expect((await v2(h.api, "POST", "/deployments", { expectedRevision: null, reason: "laboratory deployment" })).status).toBe(201);
+      const after = await agentCall(base, c.token, "GET", "v1/snapshots/current");
+      expect(after.status, after.raw).toBe(200);
+      expect(after.raw).toBe(before.raw);
+      expect((await h.sql.query(`select expected_nodes from deployments`)).rows[0].expected_nodes).toEqual([]);
+      expect((await h.sql.query(`select delivery_protocol from clusters where id = $1`, [c.id])).rows[0].delivery_protocol).toBe("v1");
+      expect((await agentCall(base, c.token, "GET", "v2/deployments/current")).body!.code).toBe("delivery-protocol-v1");
+    } finally {
+      await h.close();
+    }
+  });
+});
+
 describe("v2 delivery with Workspaces mode off (D4)", () => {
   it("refuses the v2 endpoints and the switch to v2 with workspaces-mode-disabled; v1 is untouched", async () => {
     const h = await startHarness({ databaseUrl: await freshDatabase("off") });
@@ -216,6 +244,10 @@ describe("v2 delivery and convergence in a laboratory", () => {
     expect(none.status, none.raw).toBe(404);
     expect((await h.sql.query(`select delivery_protocol from clusters where id = $1`, [c.id])).rows[0].delivery_protocol).toBe("v2");
     expect((await h.sql.query(`select after from audit_events where action = 'cluster.delivery-protocol' and actor->>'type' = 'system'`)).rows).toHaveLength(1);
+    // Active v2: the v1 flow never writes this cluster again (D5, one writer).
+    const v1after = await agentCall(base, c.token, "GET", "v1/snapshots/current");
+    expect(v1after.status, v1after.raw).toBe(409);
+    expect(v1after.body!.type).toBe("https://gromesh.dev/problems/delivery-protocol-v2");
 
     const dep = await publish();
     expect((await h.sql.query(`select expected_nodes from deployments where revision = $1`, [dep.revision])).rows[0].expected_nodes).toEqual([{ clusterId: c.id, nodeId: "node-1" }]);
