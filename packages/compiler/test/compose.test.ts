@@ -59,7 +59,7 @@ const ofWorkspace = (cfg: KongDeclarativeConfig, ws: string) => {
 describe("composeWorkspaces", () => {
   it("namespaces names, prefixes paths, keeps the full path and tags every entity with its Workspace", () => {
     const cfg = composeWorkspaces(members());
-    expect(cfg.services.map((s) => [s.name, s.host]).sort()).toEqual([
+    expect(cfg.services.filter((s) => !s.tags?.includes("gromesh-platform")).map((s) => [s.name, s.host]).sort()).toEqual([
       ["assine~pix", "orders.assine.gromesh.internal"],
       ["tvro~pix", "orders.tvro.gromesh.internal"],
     ]);
@@ -263,6 +263,14 @@ describe("composeWorkspaces", () => {
     const a = members();
     const b = members().reverse().map((m) => ({ ...m, state: { ...m.state, consumers: [...m.state.consumers].reverse() } }));
     expect(hashConfig(composeWorkspaces(a))).toBe(hashConfig(composeWorkspaces(b)));
+  });
+
+  it("emits the platform guard canary behind its own guard", () => {
+    const cfg = composeWorkspaces(members());
+    const route = cfg.routes.find((r) => r.paths?.includes("/.gromesh/guard/current"));
+    expect(route).toMatchObject({ name: "gromesh-platform~guard-canary", protocols: ["http"], strip_path: false, tags: ["gromesh-platform", "managed-by:gromesh"] });
+    expect(cfg.services.find((s) => s.id === route?.service)).toMatchObject({ host: "guard-canary.gromesh.internal", tags: ["gromesh-platform", "managed-by:gromesh"] });
+    expect(cfg.plugins.filter((p) => p.route === route?.id)).toEqual([expect.objectContaining({ name: "gromesh-route-guard", config: { canary: true } })]);
   });
 
   it("tags the mandatory platform plugins gromesh-platform and keeps them global", () => {

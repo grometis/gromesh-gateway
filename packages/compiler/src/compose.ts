@@ -13,6 +13,7 @@ export const WORKSPACE_TAG_PREFIX = "gromesh-ws:";
 export const PLATFORM_TAG = "gromesh-platform";
 export const WORKSPACE_PLUGIN = "gromesh-workspace";
 export const ROUTE_GUARD_PLUGIN = "gromesh-route-guard";
+export const CANARY_PATH = "/.gromesh/guard/current";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SLUG_RE = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
@@ -81,6 +82,13 @@ export function composeWorkspaces(members: WorkspaceMember[], options: CompileOp
     targets: parts.flatMap((s) => s.targets ?? []),
     certificates: parts.flatMap((s) => s.certificates ?? []),
   };
+  // The platform canary the isolation-probe calls after every start and config change (contract: snapshot-v2): the
+  // guard answers it with the lease's nonce, so only a running guard with a valid lease can pass it.
+  const canaryService = derivedId("gromesh-platform:guard-canary:service");
+  const canaryRoute = derivedId("gromesh-platform:guard-canary:route");
+  merged.services.push({ id: canaryService, name: `${PLATFORM_TAG}~guard-canary`, protocol: "http", host: `guard-canary${INTERNAL_SUFFIX}`, port: 80, tags: [PLATFORM_TAG] });
+  merged.routes.push({ id: canaryRoute, name: `${PLATFORM_TAG}~guard-canary`, serviceId: canaryService, protocols: ["http"], paths: [CANARY_PATH], stripPath: false, tags: [PLATFORM_TAG] });
+  merged.plugins.push({ id: derivedId(`${ROUTE_GUARD_PLUGIN}:${canaryRoute}`), name: ROUTE_GUARD_PLUGIN, scope: { routeId: canaryRoute }, config: { canary: true }, tags: [PLATFORM_TAG] });
   const platformTagged = [
     ...platform.map((p) => ({ ...p, tags: [...(p.tags ?? []), PLATFORM_TAG] })),
     { id: derivedId(WORKSPACE_PLUGIN), name: WORKSPACE_PLUGIN, config: {}, tags: [PLATFORM_TAG] },

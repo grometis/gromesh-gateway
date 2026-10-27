@@ -87,6 +87,21 @@ export class Harness {
     return { id, proxy: `http://127.0.0.1:${port}` };
   }
 
+  /**
+   * The real isolation-probe in the gateway's network namespace (it proves what Kong reaches), writing the lease
+   * volume; `handoff` is the directory the agent would share with it. Returns the container id.
+   */
+  async probe(kongId, { config, instancePublicKey, clusterId, handoff }) {
+    writeFileSync(join(this.dir, "probe.json"), JSON.stringify(config), { mode: 0o644 });
+    mkdirSync(handoff, { recursive: true });
+    const id = (await docker("run", "-d", "--network", `container:${kongId}`, "-v", `${this.leaseVolume}:/gromesh/isolation`,
+      "-v", `${handoff}:/gromesh/handoff`, "-v", `${join(this.dir, "bin")}:/gromesh/bin:ro`, "-v", `${join(this.dir, "probe.json")}:/etc/gromesh/probe.json:ro`,
+      "-e", `GROMESH_POD_UID=${this.podUid}`, "-e", `GROMESH_CLUSTER_ID=${clusterId}`, "-e", `GROMESH_INSTANCE_PUBLIC_KEY=${instancePublicKey}`,
+      "--entrypoint", "/gromesh/bin/isolation-probe", NODE_IMAGE)).stdout.trim();
+    this.containers.push(id);
+    return id;
+  }
+
   async waitFor(what, ok, { timeoutMs = 60_000, id } = {}) {
     const began = Date.now();
     for (;;) {
