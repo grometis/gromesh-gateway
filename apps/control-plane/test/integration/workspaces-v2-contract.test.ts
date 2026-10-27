@@ -802,7 +802,8 @@ describe("delivery protocol and convergence evidence (N3-K1)", () => {
   it("refuses with a typed code and switches the protocol only explicitly", () => {
     const refusal = (code: string) => ({ type: `https://gromesh.dev/problems/${code}`, title: "Conflict", status: 409, code });
     const deploy = v2Ops.find(({ op }) => op.operationId === "createDeployment")!.op;
-    expect([deploy["x-gromesh-planned"], deploy["x-scope"], deploy["x-required-permission"]]).toEqual([true, "instance", "release.publish"]);
+    // Implemented by N3-C3: the planned mark is the handler coverage test's concern.
+    expect([deploy["x-scope"], deploy["x-required-permission"]]).toEqual(["instance", "release.publish"]);
     expect(v2Ops.find(({ op }) => op.operationId === "publishRelease")!.op.description).toContain("Creating a release deploys nothing");
     for (const code of ["workspaces-mode-disabled", "delivery-protocol-v1", "delivery-protocol-v2", "delivery-protocol-switching", "epoch-outdated", "revision-regression", "unknown-deployment"]) {
       expect(validAgent("DeliveryProblem", refusal(code)), code).toBe(true);

@@ -297,7 +297,8 @@ describe("releases and deployments in a laboratory on dev", () => {
       // Every member of the revision before is still there with the same version and digest, plus both new ones.
       for (const m of before.members as Doc[]) expect(last.members).toContainEqual(m);
       expect((last.members as Doc[]).map((m) => m.workspaceId)).toEqual(expect.arrayContaining([a, b]));
-      expect(last.members).toHaveLength((before.members as Doc[]).length + 2);
+      // Exactly the active releases: the members composed before, the ones published since, a and b.
+      expect(last.members).toHaveLength((await h.sql.query(`select count(*)::int as n from workspace_active_release`)).rows[0].n);
       await expectContractHistories(h);
     } finally {
       await replica.close();
