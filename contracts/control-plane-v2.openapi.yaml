@@ -827,6 +827,7 @@ paths:
     post:
       tags: [ releases ]
       operationId: publishRelease
+      x-gromesh-workspaces-mode-disabled: allowed
       x-scope: workspace
       x-gromesh-requirements: [ GW-PUB-01, GW-PUB-03, GW-PUB-06, GW-ENV-07 ]
       security: [ { cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] } ]
@@ -896,6 +897,7 @@ paths:
     put:
       tags: [ deployments ]
       operationId: setClusterDeliveryProtocol
+      x-gromesh-workspaces-mode-disabled: refused-to-v2
       x-gromesh-requirements: [ GW-ENV-01, GW-DEP-02, GW-DEP-08 ]
       x-required-permission: platform.admin
       x-scope: instance
@@ -993,6 +995,7 @@ paths:
     post:
       tags: [ deployments ]
       operationId: createDeployment
+      x-gromesh-workspaces-mode-disabled: refused
       x-scope: instance
       x-gromesh-requirements: [ GW-DEP-01, GW-DEP-02, GW-DEP-04 ]
       security: [ { cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] } ]
@@ -4299,6 +4302,7 @@ components:
       enum: [ verified, awaiting-status, awaiting-probe-report, revision-mismatch, served-config-divergence, kong-hash-divergence, revision-regression ]
     DeploymentState:
       enum: [ composed, rejected, active, converging, converged, degraded, failed, superseded ]
+      x-gromesh-empty-revision: { neverReaches: [ converged ], holdsLease: false, exits: [ converging, superseded ] }
       x-gromesh-transitions:
         initial: [ composed ]
         terminal: [ rejected, superseded ]
@@ -4306,6 +4310,7 @@ components:
           - [ composed, rejected, "composition or validator failed (nothing applied; lease released)" ]
           - [ composed, active, "recorded, expected nodes fixed, agents notified" ]
           - [ active, converging, "some node has not applied yet" ]
+          - [ active, superseded, "a new deployment replaces a revision that has no expected node (it never held the deployment lease)" ]
           - [ active, converged, "every expected node (at least one) already confirmed the revision with evidence verified; a revision with no expected node stays active" ]
           - [ converging, converged, "every expected node (at least one) applied with revision and hash, evidence verified" ]
           - [ converging, degraded, "node failed (400/413), offline > 45 s or Kong unhealthy" ]
@@ -4321,6 +4326,7 @@ components:
         snapshots; v2: the instance's deployments; v2-pending: neither flow delivers anything new (each node keeps
         what it applied) until the activation gate holds.
       enum: [ v1, v2-pending, v2 ]
+      x-gromesh-activation-gate: [ workspaces-mode-enabled, every-expected-node-open-admission, conclusive-passing-round, failed-capabilities-empty, no-v1-node-online, no-open-pendency ]
       x-gromesh-transitions:
         initial: [ v1, v2-pending ]
         terminal: []
@@ -4343,8 +4349,9 @@ components:
       description: |
         Expected nodes of a revision: the registered, not deregistered nodes of the clusters whose deliveryProtocol is
         v2 when the revision is recorded (a cluster that turns v2 later joins at its activation; one that returns to
-        v1 leaves). A revision with no expected node never converges: it stays active until a cluster joins it
-        (an empty set never counts as every node applied). A node is applied only with the evidence of agent protocol v2 ("Applied revision and convergence
+        v1 leaves). A revision with no expected node never converges: it stays active, without holding the deployment
+        lease, until a cluster joins it (it then takes the free lease and its deadline starts) or a new deployment
+        supersedes it (an empty set never counts as every node applied; x-gromesh-empty-revision). A node is applied only with the evidence of agent protocol v2 ("Applied revision and convergence
         evidence"): its StatusReport and its probe's fresh signed report agree on epoch, revision, configHash and the
         kongConfigHash derived by the control plane; evidence tells what is missing otherwise. state is the
         history of the revision (a converged revision stays converged); convergence and the clusters' status are the
