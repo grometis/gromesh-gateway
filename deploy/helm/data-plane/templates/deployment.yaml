@@ -49,6 +49,11 @@ spec:
                 umask 022
                 printf '%s\n' '{"_format_version":"3.0"}' > /kong/declarative/kong.json
               fi
+              {{- if .Values.workspaces.enabled }}
+              # The agent registers before Kong may start; this is the version Kong itself reports, read from the
+              # digest-pinned image, never from a chart value.
+              luajit -e 'io.write(dofile("/usr/local/share/lua/5.1/kong/meta.lua")._VERSION)' > /gromesh/kong-version/version
+              {{- end }}
           securityContext:
             runAsUser: 1001
             {{- include "data-plane.containerSecurityContext" . | nindent 12 }}
@@ -57,6 +62,10 @@ spec:
           volumeMounts:
             - name: snapshot
               mountPath: /kong/declarative
+            {{- if .Values.workspaces.enabled }}
+            - name: kong-version
+              mountPath: /gromesh/kong-version
+            {{- end }}
         {{- if .Values.workspaces.enabled }}
         # Installs kong-supervisor and kong-liveness (apps/isolation, shipped in the agent image) for the kong container.
         - name: isolation-install
@@ -296,6 +305,10 @@ spec:
         - name: isolation-handoff
           emptyDir:
             sizeLimit: 80Mi
+        # Written only by seed-config (the Kong image); read-only in the agent.
+        - name: kong-version
+          emptyDir:
+            sizeLimit: 1Mi
         - name: isolation-probe-config
           configMap:
             name: {{ include "data-plane.fullname" . }}-isolation-probe

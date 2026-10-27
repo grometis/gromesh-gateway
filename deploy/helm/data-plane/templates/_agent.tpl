@@ -34,6 +34,9 @@
     # The isolation admission of this pod in this boot, carried to and from the probe through the handoff.
     - name: GROMESH_HANDOFF_DIR
       value: /gromesh/handoff
+    # Kong starts only after the admission, so the agent registers with the version seed-config read from the pinned image.
+    - name: GROMESH_KONG_VERSION_FILE
+      value: /gromesh/kong-version/version
     - name: GROMESH_POD_UID
       valueFrom:
         fieldRef:
@@ -63,5 +66,8 @@
     # The admission, the probe's public key and its reports; never the lease volume.
     - name: isolation-handoff
       mountPath: /gromesh/handoff
+    - name: kong-version
+      mountPath: /gromesh/kong-version
+      readOnly: true
     {{- end }}
 {{- end -}}
