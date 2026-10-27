@@ -3,6 +3,7 @@ package probe
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -723,4 +724,93 @@ func TestARepeatedDetectionLostInACrashIsNotCoveredByAnOlderRelease(t *testing.T
 	w.releases(covering("6a1f3c2e-0b7d-4c1a-9f10-0000000000f2", admissionID, seq))
 	w.round()
 	w.expect("verifying", true)
+}
+
+// N2-F3: a pod stopped between its admission's grant and the probe's next round. The admission is closed with a final
+// seq 1 (it never authorized traffic) instead of staying open and holding every admission of the cluster.
+func TestAnAdmissionStoppedBeforeAdoptionClosesWithAFinalSeq1(t *testing.T) {
+	dir := t.TempDir()
+	w := newWorld(t, dir)
+	w.round() // awaiting-admission: the state knows its boot
+	w.admit(nil)
+	w.p.Terminate(true)
+	reports := w.outbox()
+	if len(reports) != 1 {
+		t.Fatalf("%d reports", len(reports))
+	}
+	r := reports[0].report
+	if r.Seq != 1 || r.PrevDigest != nil || !r.Final || r.FinalReason != "pod-terminated" || !*r.KongStopConfirmed || r.AdmissionID != admissionID || r.State != "awaiting-admission" || r.LeaseRemainingMs != nil {
+		t.Fatalf("closing report %+v", r)
+	}
+	if w.leaseValid() == nil {
+		t.Fatal("a lease exists for an admission never adopted")
+	}
+	if _, err := os.Stat(filepath.Join(w.p.Handoff, "probe.pub")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("probe.pub left for the agent to ask with: %v", err)
+	}
+	// The probe container restarts (not the pod): the closed admission is never adopted again (no reuse).
+	w.p = w.probe(dir)
+	w.round()
+	w.round()
+	w.expect("awaiting-admission", false)
+	if n := len(w.outbox()); n != 1 {
+		t.Fatalf("reports after the closing one: %d", n)
+	}
+}
+
+func TestOnlyTheProbesOwnValidAdmissionIsClosedBeforeAdoption(t *testing.T) {
+	for name, mutate := range map[string]func(*AdmissionClaims){
+		"another pod":  func(c *AdmissionClaims) { c.PodUID = "6a1f3c2e-0b7d-4c1a-9f10-0000000000ff" },
+		"another boot": func(c *AdmissionClaims) { c.BootID = boot2 },
+		"another key":  func(c *AdmissionClaims) { c.ProbePublicKey = strings.Repeat("A", 43) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := newWorld(t, t.TempDir())
+			w.round()
+			w.admit(mutate)
+			w.p.Terminate(true)
+			if n := len(w.outbox()); n != 0 {
+				t.Fatalf("%d reports for an admission that is not the probe's", n)
+			}
+		})
+	}
+	// Signed by a key outside the trust set: forged, ignored.
+	w := newWorld(t, t.TempDir())
+	w.round()
+	other, kid := instanceKey()
+	c := AdmissionClaims{ClusterID: cluster, PodUID: pod, NodeName: "n1", BootID: w.boot, AdmissionID: admissionID, ProbePublicKey: w.p.PublicKey(), StartDeadline: "2026-10-26T12:00:00Z"}
+	w.handoff("admission.jws", string(signInstance(other, kid, TypAdmission, c)))
+	w.p.Terminate(true)
+	if n := len(w.outbox()); n != 0 {
+		t.Fatalf("%d reports for a forged admission", n)
+	}
+}
+
+// An adopted admission still closes on its own chain (seq above 1), never restarted at seq 1.
+func TestAnAdoptedAdmissionClosesOnItsOwnChain(t *testing.T) {
+	w := newWorld(t, t.TempDir())
+	w.admit(nil)
+	w.round()
+	w.expect("verifying", true)
+	w.p.Terminate(true)
+	reports := w.outbox()
+	chained(t, reports, 1, nil)
+	if len(reports) != 2 || !reports[1].report.Final || reports[0].report.Final {
+		t.Fatalf("reports %+v", reports)
+	}
+}
+
+// A chain of an earlier boot still open is never overwritten by a closing before adoption.
+func TestAnOpenChainOfAnEarlierBootIsNotReplacedAtTheStop(t *testing.T) {
+	dir := t.TempDir()
+	w := newWorld(t, dir)
+	w.admit(nil)
+	w.round()
+	before := w.p.State.Chain
+	w.boot = boot2
+	w.admit(func(c *AdmissionClaims) { c.AdmissionID = "6a1f3c2e-0b7d-4c1a-9f10-0000000000bb" })
+	w.p.Terminate(true)
+	if w.p.State.Chain.AdmissionID != before.AdmissionID {
+		t.Fatalf("chain replaced: %+v", w.p.State.Chain)
+	}
 }

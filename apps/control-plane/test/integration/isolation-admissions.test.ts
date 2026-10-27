@@ -687,9 +687,7 @@ describe("isolation admissions and reports (N2-D3a)", () => {
     const pa = new Probe();
     const a = await admit(c, pa);
     await c.send(pa.next(c.id, a.admissionId));
-    // Final without Kong stopped: still open, still holds.
-    await c.send(pa.next(c.id, a.admissionId, { final: true, finalReason: "pod-terminated", kongStopConfirmed: false }));
-    expect((await h.sql.query("select state from isolation_admissions where admission_id = $1", [a.admissionId])).rows[0].state).toBe("open");
+    await c.send(pa.next(c.id, a.admissionId));
     const r3 = pa.next(c.id, a.admissionId);
     const r4 = pa.next(c.id, a.admissionId, { final: true, finalReason: "pod-terminated", kongStopConfirmed: true });
     // The final report behind a gap closes nothing until the chain is complete.
@@ -710,6 +708,81 @@ describe("isolation admissions and reports (N2-D3a)", () => {
     await c2.send(pb.next(c2.id, b.admissionId));
     await c2.send(pb.next(c2.id, b.admissionId, { final: true, finalReason: "node-reboot", kongStopConfirmed: false }));
     expect((await h.sql.query("select state, close_reason from isolation_admissions where admission_id = $1", [b.admissionId])).rows[0]).toEqual({ state: "closed", close_reason: "node-reboot" });
+  });
+
+  it("keeps open, and holding, an admission whose final report could not confirm Kong stopped", async () => {
+    const c = await cluster();
+    const pa = new Probe();
+    const a = await admit(c, pa);
+    await c.send(pa.next(c.id, a.admissionId));
+    await c.send(pa.next(c.id, a.admissionId, { final: true, finalReason: "pod-terminated", kongStopConfirmed: false }));
+    expect((await h.sql.query("select state from isolation_admissions where admission_id = $1", [a.admissionId])).rows[0].state).toBe("open");
+    const held = await c.ask(new Probe());
+    expect((await c.poll(held.requestId)).outcome).toBe("pending");
+  });
+
+  // N2-F3: the pod stopped between the grant and the probe's adoption. Its probe closes the admission with a final seq 1.
+  it("closes an admission the probe never adopted with a final seq 1, audited as never served, and the rollout goes on", async () => {
+    const c = await cluster();
+    const pa = new Probe();
+    const a = await admit(c, pa);
+    const next = await c.ask(new Probe());
+    expect((await c.poll(next.requestId)).outcome).toBe("pending");
+    const closing = pa.next(c.id, a.admissionId, { state: "awaiting-admission", leaseRemainingMs: null, final: true, finalReason: "pod-terminated", kongStopConfirmed: true });
+    expect((await c.send(closing)).acks).toEqual([{ admissionId: a.admissionId, ackedSeq: 1 }]);
+    // Its ack was lost and the agent sends it again: an identical retransmission is idempotent, never a conflict.
+    expect(await c.send(closing)).toEqual({ acks: [{ admissionId: a.admissionId, ackedSeq: 1 }], rejected: [] });
+    expect((await h.sql.query("select state, close_reason from isolation_admissions where admission_id = $1", [a.admissionId])).rows[0]).toEqual({ state: "closed", close_reason: "kong-stop-confirmed" });
+    const audited = await h.sql.query("select after from audit_events where action = 'isolation.admission.close' and entity_id = $1", [a.admissionId]);
+    expect(audited.rows[0].after).toMatchObject({ seq: 1, neverServed: true });
+    // The replacement pod is admitted without any release: the closed admission no longer holds the cluster.
+    expect((await c.poll(next.requestId)).outcome).toBe("granted");
+    expect(await pendencyRows(c.id)).toEqual([]);
+    const view = await c.isolation();
+    expect(view.pods.find((p) => p.podUid === pa.podUid)).toMatchObject({ admission: "closed", lastSeq: 1, state: "awaiting-admission" });
+    // Never admitted again: the same (podUid, bootId) asks in vain.
+    expect((await c.call("POST", "/admission-requests", pa.request())).status).toBe(409);
+  });
+
+  it("never lets a closing erase evidence: a report past the final one, or a forged seq 1 final over a chain, is an integrity conflict", async () => {
+    // A report above the final one.
+    const c = await cluster();
+    const pa = new Probe();
+    const a = await admit(c, pa);
+    await c.send(pa.next(c.id, a.admissionId, { state: "awaiting-admission", leaseRemainingMs: null, final: true, finalReason: "pod-terminated", kongStopConfirmed: true }));
+    const past = await c.send(pa.next(c.id, a.admissionId, { state: "ok" }));
+    expect(past.rejected).toEqual([{ index: 0, reason: "integrity-conflict" }]);
+    expect((await pendencyRows(c.id)).map((p) => [p.lifecycle, p.capability])).toEqual([["confirmed-violation", "integrity-conflict"]]);
+    // A final seq 1 claiming no adoption over a chain that already began: the same seq with other content.
+    const c2 = await cluster();
+    const pb = new Probe();
+    const b = await admit(c2, pb);
+    await c2.send(pb.next(c2.id, b.admissionId));
+    const forged = pb.signRaw(JSON.stringify(pb.claims(c2.id, b.admissionId, { state: "awaiting-admission", leaseRemainingMs: null, final: true, finalReason: "pod-terminated", kongStopConfirmed: true }, 1, null)));
+    expect((await c2.send(forged)).rejected).toEqual([{ index: 0, reason: "integrity-conflict" }]);
+    expect((await h.sql.query("select state from isolation_admissions where admission_id = $1", [b.admissionId])).rows[0].state).toBe("open");
+    expect((await pendencyRows(c2.id)).map((p) => p.lifecycle)).toEqual(["confirmed-violation"]);
+    // A final report below a report already stored (above a gap) is the same conflict, whatever the arrival order.
+    const c3 = await cluster();
+    const pc = new Probe();
+    const d = await admit(c3, pc);
+    const s1 = pc.next(c3.id, d.admissionId, { final: true, finalReason: "pod-terminated", kongStopConfirmed: true });
+    const s2 = pc.next(c3.id, d.admissionId);
+    await c3.send(s2);
+    expect((await c3.send(s1)).rejected).toEqual([{ index: 0, reason: "integrity-conflict" }]);
+    expect((await pendencyRows(c3.id)).map((p) => p.lifecycle)).toEqual(["confirmed-violation"]);
+  });
+
+  it("keeps a confirmed violation open after its admission closes: deleting the pod never erases it", async () => {
+    const c = await cluster();
+    const pa = new Probe();
+    const a = await admit(c, pa);
+    await c.send(pa.next(c.id, a.admissionId, { state: "violation", failedCapabilities: ["CAP-3"] }));
+    await c.send(pa.next(c.id, a.admissionId, { state: "violation", failedCapabilities: ["CAP-3"], final: true, finalReason: "pod-terminated", kongStopConfirmed: true }));
+    expect((await h.sql.query("select state from isolation_admissions where admission_id = $1", [a.admissionId])).rows[0].state).toBe("closed");
+    expect((await pendencyRows(c.id)).map((p) => [p.lifecycle, p.capability])).toEqual([["confirmed-violation", "CAP-3"]]);
+    const replacement = await c.ask(new Probe());
+    expect((await c.poll(replacement.requestId))).toMatchObject({ outcome: "refused", reason: "pendency-open" });
   });
 
   it("refuses with no-signing-key when no active key covers now, and counts the open admissions a revoked key signed", { timeout: 90_000 }, async () => {

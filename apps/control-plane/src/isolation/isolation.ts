@@ -1,7 +1,7 @@
 import { createHash, createPublicKey, type KeyObject, randomBytes, randomUUID, verify } from "node:crypto";
 import { Body, Controller, Get, HttpCode, Inject, Injectable, Logger, Module, Param, Post, Req, UseGuards } from "@nestjs/common";
 import type { Request } from "express";
-import { and, asc, desc, eq, gt, inArray, isNotNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, lt, lte, or, sql } from "drizzle-orm";
 import { AgentBearerGuard, AgentGatewayModule, AgentGatewayService, agentContext, bearer } from "../agent-gateway/agent-gateway.js";
 import { audit } from "../audit/audit.js";
 import { Ctx, Public, RequiredPermission, type RequestContext, SessionOnly } from "../auth/auth.js";
@@ -414,6 +414,19 @@ export class IsolationService {
       }
       return "integrity-conflict";
     }
+    // Nothing follows a final report: a report above it, or a final one below a report already stored, is the probe key
+    // signing past the end of its chain (contract: closing never erases evidence).
+    const [past] = await tx
+      .select({ seq: isolationReports.seq })
+      .from(isolationReports)
+      .where(and(eq(isolationReports.admissionId, a.admissionId!), report.final ? gt(isolationReports.seq, report.seq) : and(eq(isolationReports.final, true), lt(isolationReports.seq, report.seq))))
+      .limit(1);
+    if (past) {
+      if ((await this.openPendencies(tx, a.admissionId!)).every((p) => p.lifecycle !== "confirmed-violation")) {
+        await this.openPendency(tx, cluster, ctx, a, "confirmed-violation", "integrity-conflict");
+      }
+      return "integrity-conflict";
+    }
     await tx.insert(isolationReports).values({
       admissionId: a.admissionId!,
       seq: report.seq,
@@ -511,7 +524,8 @@ export class IsolationService {
         })
         .where(eq(isolationAdmissions.admissionId, admissionId))
         .returning()) as [IsolationAdmissionRow];
-      if (closes) await audit(tx, ctx, { action: "isolation.admission.close", entityType: "isolation-admission", entityId: admissionId, environmentId: cluster.environmentId, after: { state: "closed", reason: current.closeReason, seq: next.seq } });
+      // A chain whose seq 1 is final never had a lease: the probe publishes one only after its round's report is durable.
+      if (closes) await audit(tx, ctx, { action: "isolation.admission.close", entityType: "isolation-admission", entityId: admissionId, environmentId: cluster.environmentId, after: { state: "closed", reason: current.closeReason, seq: next.seq, neverServed: next.seq === 1 } });
     }
     return { from, ackedSeq: current.ackedSeq, state: current.lastState, broken };
   }
