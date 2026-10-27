@@ -54,12 +54,18 @@ assert_nodes() {
 }
 
 # The Cilium release as installed: chart version, image digests in the spec.
+# With the pinned chart file, also its content: a release keeping the version and the images may run other templates.
 assert_cilium_release() {
-  local release
+  local release chart="${1:-}" want got
   release="$(h list -n kube-system --filter '^cilium$' -o json)"
   [[ "$release" == *'"chart":"cilium-'"$CILIUM_VERSION"'"'* && "$release" == *'"status":"deployed"'* ]] || die "Cilium release $release, pinned cilium-$CILIUM_VERSION"
   [[ "$(k -n kube-system get daemonset cilium -o jsonpath='{.spec.template.spec.containers[?(@.name=="cilium-agent")].image}')" == *"@$CILIUM_IMAGE_DIGEST" ]] || die "cilium-agent image is not $CILIUM_IMAGE_DIGEST"
   [[ "$(k -n kube-system get deployment cilium-operator -o jsonpath='{.spec.template.spec.containers[0].image}')" == *"@$CILIUM_OPERATOR_GENERIC_DIGEST" ]] || die "cilium-operator image is not $CILIUM_OPERATOR_GENERIC_DIGEST"
+  if [[ -n "$chart" ]]; then
+    want="$(node "$here/chart-fingerprint.mjs" tgz "$chart")"
+    got="$(k -n kube-system get secret -l owner=helm,name=cilium,status=deployed -o jsonpath='{.items[0].data.release}' | base64 -d | base64 -d | gunzip | node "$here/chart-fingerprint.mjs" release)"
+    [[ -n "$want" && "$got" == "$want" ]] || die "the installed Cilium chart's templates ($got) are not the pinned chart's ($want)"
+  fi
 }
 
 # Everything, once Ready: registered nodes, the kind config this script writes, running Cilium images and config.
@@ -79,12 +85,18 @@ assert_pins() {
   for id in $(k -n kube-system get pods -l name=cilium-operator -o jsonpath='{range .items[*]}{.status.containerStatuses[0].imageID}{"\n"}{end}'); do
     [[ "$id" == *"@$CILIUM_OPERATOR_GENERIC_DIGEST" ]] || die "a cilium-operator pod runs $id"
   done
-  # The agent's effective configuration for every choice cilium-values.yaml makes.
-  for pair in ipam=kubernetes enable-ipv4=true enable-ipv6=true kube-proxy-replacement=false routing-mode=tunnel \
-    tunnel-protocol=vxlan enable-l7-proxy=false external-envoy-proxy=false; do
-    key="${pair%%=*}"; value="${pair#*=}"
-    actual="$(k -n kube-system get configmap cilium-config -o jsonpath="{.data.$key}")"
-    [[ "$actual" == "$value" ]] || die "cilium-config $key=$actual, expected $value"
+  # What every running agent uses, not the ConfigMap (a changed ConfigMap takes effect only when an agent restarts).
+  local pod config status
+  for pod in $(k -n kube-system get pods -l k8s-app=cilium -o jsonpath='{.items[*].metadata.name}'); do
+    config="$(k -n kube-system exec "$pod" -c cilium-agent -- cilium-dbg config --all)"
+    for pair in IPAM=kubernetes EnableIPv4=true EnableIPv6=true RoutingMode=tunnel EnableL7Proxy=false ExternalEnvoyProxy=false; do
+      key="${pair%%=*}"; value="${pair#*=}"
+      actual="$(awk -v k="$key" '$1 == k {print $3; exit}' <<<"$config")"
+      [[ "$actual" == "$value" ]] || die "agent $pod runs $key=$actual, expected $value"
+    done
+    status="$(k -n kube-system exec "$pod" -c cilium-agent -- cilium-dbg status)"
+    grep -qE '^KubeProxyReplacement:[[:space:]]+False' <<<"$status" || die "agent $pod runs kube-proxy replacement"
+    grep -qE '^Routing:.*Tunnel \[vxlan\]' <<<"$status" || die "agent $pod does not route through a vxlan tunnel"
   done
 }
 
@@ -139,7 +151,7 @@ EOF
     sleep $((i * 5))
   done; fi
   [[ "$digest" == "$CILIUM_CHART_DIGEST" ]] || { echo "Cilium chart digest '$digest' != $CILIUM_CHART_DIGEST" >&2; exit 1; }
-  if h status cilium -n kube-system >/dev/null 2>&1; then assert_cilium_release
+  if h status cilium -n kube-system >/dev/null 2>&1; then assert_cilium_release "$chart_dir/cilium-$CILIUM_VERSION.tgz"
   else h install cilium "$chart_dir/cilium-$CILIUM_VERSION.tgz" --namespace kube-system -f "$here/cilium-values.yaml" \
     --set image.digest="$CILIUM_IMAGE_DIGEST" --set operator.image.genericDigest="$CILIUM_OPERATOR_GENERIC_DIGEST"
   fi
@@ -164,7 +176,7 @@ EOF
 status() {
   assert_lab
   assert_pins
-  echo "pins: Kubernetes $KUBERNETES_VERSION, node ${NODE_IMAGE#*@}, Cilium $CILIUM_VERSION agent $CILIUM_IMAGE_DIGEST operator $CILIUM_OPERATOR_GENERIC_DIGEST, cilium-config as cilium-values.yaml"
+  echo "pins: Kubernetes $KUBERNETES_VERSION, node ${NODE_IMAGE#*@}, Cilium $CILIUM_VERSION agent $CILIUM_IMAGE_DIGEST operator $CILIUM_OPERATOR_GENERIC_DIGEST, chart templates and every running agent as pinned"
   k version -o json | awk -F'"' '/gitVersion/ {print "server " $4; exit}'
   k get nodes -o custom-columns='NAME:.metadata.name,READY:.status.conditions[?(@.type=="Ready")].status,ARCH:.status.nodeInfo.architecture,KERNEL:.status.nodeInfo.kernelVersion,IPS:.status.addresses[?(@.type=="InternalIP")].address,PODCIDRS:.spec.podCIDRs'
   k -n kube-system get pods -o custom-columns='POD:.metadata.name,NODE:.spec.nodeName,IMAGE:.status.containerStatuses[0].imageID' | grep -E 'cilium|NAME|POD'
