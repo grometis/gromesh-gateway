@@ -23,6 +23,13 @@ type Report struct {
 	Final              bool     `json:"final"`
 	FinalReason        string   `json:"finalReason,omitempty"`
 	KongStopConfirmed  *bool    `json:"kongStopConfirmed,omitempty"`
+	// What the canary served in the round, and the applied.json it matched: present only when it did (agent protocol
+	// v2, applied revision evidence), so a report without them is the same bytes as before.
+	ServedKongConfigHash  *string `json:"servedKongConfigHash,omitempty"`
+	AppliedEpoch          *int64  `json:"appliedEpoch,omitempty"`
+	AppliedRevision       *int64  `json:"appliedRevision,omitempty"`
+	AppliedHash           *string `json:"appliedHash,omitempty"`
+	AppliedKongConfigHash *string `json:"appliedKongConfigHash,omitempty"`
 }
 
 var reportHeader = []byte(`{"alg":"EdDSA","typ":"` + TypReport + `"}`)
@@ -50,7 +57,7 @@ var (
 func ParseReport(payload []byte) (Report, error) {
 	raw, err := strictRaw(payload,
 		[]string{"clusterId", "podUid", "bootId", "admissionId", "seq", "prevDigest", "state", "failedCapabilities", "challenge", "final"},
-		[]string{"leaseRemainingMs", "finalReason", "kongStopConfirmed"})
+		[]string{"leaseRemainingMs", "finalReason", "kongStopConfirmed", "servedKongConfigHash", "appliedEpoch", "appliedRevision", "appliedHash", "appliedKongConfigHash"})
 	if err != nil {
 		return Report{}, fmt.Errorf("report: %w", err)
 	}
@@ -132,7 +139,52 @@ func ParseReport(payload []byte) (Report, error) {
 		}
 		r.KongStopConfirmed = &stop
 	}
+	if err := parseApplied(raw, &r); err != nil {
+		return r, err
+	}
 	return r, nil
+}
+
+// parseApplied reads the applied revision evidence: the four applied members all null (or absent) or all set, and set
+// only with the served hash they name.
+func parseApplied(raw map[string]json.RawMessage, r *Report) error {
+	hash := func(name string, re *regexp.Regexp, into **string) bool {
+		v, ok := raw[name]
+		if !ok || string(v) == "null" {
+			return true
+		}
+		var s string
+		if len(v) == 0 || v[0] != '"' || json.Unmarshal(v, &s) != nil || !re.MatchString(s) {
+			return false
+		}
+		*into = &s
+		return true
+	}
+	counter := func(name string, into **int64) bool {
+		v, ok := raw[name]
+		if !ok || string(v) == "null" {
+			return true
+		}
+		var n int64
+		if !digits.Match(v) || json.Unmarshal(v, &n) != nil || n < 1 {
+			return false
+		}
+		*into = &n
+		return true
+	}
+	if !hash("servedKongConfigHash", kongHashRE, &r.ServedKongConfigHash) || !counter("appliedEpoch", &r.AppliedEpoch) ||
+		!counter("appliedRevision", &r.AppliedRevision) || !hash("appliedHash", digestRE, &r.AppliedHash) ||
+		!hash("appliedKongConfigHash", kongHashRE, &r.AppliedKongConfigHash) {
+		return errors.New("report applied revision evidence malformed")
+	}
+	set := r.AppliedEpoch != nil
+	if (r.AppliedRevision != nil) != set || (r.AppliedHash != nil) != set || (r.AppliedKongConfigHash != nil) != set {
+		return errors.New("the applied members go all together")
+	}
+	if set && (r.ServedKongConfigHash == nil || *r.ServedKongConfigHash != *r.AppliedKongConfigHash) {
+		return errors.New("an applied revision goes only with the served config hash it names")
+	}
+	return nil
 }
 
 var digits = regexp.MustCompile(`^(0|[1-9][0-9]{0,17})$`)
