@@ -13,7 +13,8 @@ sources:
 
   kong:
     type: http_server
-    address: 0.0.0.0:8080
+    # Workspaces mode (sidecar in the Kong pod): 127.0.0.1 only, no Service; the token still decides (B §3.5.2).
+    address: "${GROMESH_COLLECTOR_ADDRESS:-0.0.0.0:8080}"
     path: /kong
     strict_path: true
     decoding:
@@ -128,8 +129,18 @@ transforms:
       latency_upstream_ms = if latency_upstream_ms < 0 { null } else { latency_upstream_ms }
       retention_days = int(.retention_days) ?? 7
       if retention_days < 1 || retention_days > 7 { retention_days = 7 }
+      # Sidecar (GROMESH_POD_UID set): the row id is derived from (cluster, pod, Kong's request id), so a replayed or
+      # repeated batch carries the same ids and the dedupe below drops it; an event without a request id is dropped.
+      pod_uid = get_env_var("GROMESH_POD_UID") ?? ""
+      id = uuid_v4()
+      if pod_uid != "" {
+        request_id = string(.request.id) ?? ""
+        if !match(request_id, r'^[0-9a-f]{32}$') { abort }
+        h = sha2(cluster_id + "|" + pod_uid + "|" + request_id, variant: "SHA-256")
+        id = slice!(h, 0, 8) + "-" + slice!(h, 8, 12) + "-" + slice!(h, 12, 16) + "-" + slice!(h, 16, 20) + "-" + slice!(h, 20, 32)
+      }
       . = {
-        "id": uuid_v4(),
+        "id": id,
         "ts": format_timestamp!(ts, format: "%Y-%m-%d %H:%M:%S%.3f", timezone: "UTC"),
         "environment_id": environment_id,
         "cluster_id": cluster_id,
@@ -148,15 +159,24 @@ transforms:
         "retention_days": retention_days
       }
 
+  # Only derived ids can repeat (sidecar): a batch delivered twice counts once while its ids are in the cache.
+  dedupe:
+    type: dedupe
+    inputs: [sanitize]
+    fields:
+      match: [id]
+    cache:
+      num_events: 20000
+
 sinks:
   metrics:
     type: prometheus_exporter
     inputs: [internal_metrics]
-    address: 0.0.0.0:9598
+    address: "${GROMESH_COLLECTOR_METRICS_ADDRESS:-0.0.0.0:9598}"
 
   requests:
     type: clickhouse
-    inputs: [sanitize]
+    inputs: [dedupe]
     # Vector 0.57 requires --dangerously-allow-env-var-interpolation (entrypoint and test runners).
     endpoint: "${CLICKHOUSE_ENDPOINT:-http://clickhouse:8123}"
     database: "${CLICKHOUSE_DATABASE:-gromesh}"
