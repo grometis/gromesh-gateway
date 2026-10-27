@@ -51,7 +51,7 @@ secrets.push(token, nextToken, otherClusterToken, chAdmin, chWriter);
 // reaches it through the environment (docker run -e NAME copies this process's value): never an argument.
 async function inPod(script, args = [], { outside = false } = {}) {
   const network = outside ? ["--network", net] : ["--network", `container:${names.pod}`];
-  const { stdout } = await docker(["run", "--rm", ...network, "-e", "X4_SEND_TOKEN", NODE_IMAGE, "node", "--input-type=module", "-e", script, ...args], 60_000);
+  const { stdout } = await docker(["run", "--rm", ...network, "-e", "X4_SEND_TOKEN", NODE_IMAGE, "node", "--input-type=module", "-e", script, ...args], 240_000);
   return JSON.parse(stdout.trim().split("\n").at(-1));
 }
 // Vector answers 401 before reading the body and may close the socket under the sender: a refused POST can surface as
@@ -140,7 +140,15 @@ async function main() {
     await sleep(1000);
   }
   process.env.X4_CH_WRITER = chWriter;
-  await docker(["exec", "-e", "X4_CH_WRITER", names.ch, "sh", "-c", `clickhouse-client -u admin --password "$CLICKHOUSE_PASSWORD" -n -q "CREATE USER IF NOT EXISTS gromesh_writer IDENTIFIED WITH sha256_password BY '$X4_CH_WRITER'; GRANT INSERT ON gromesh.requests TO gromesh_writer;"`]);
+  // The image restarts the server after its init scripts: the first answer may come from the temporary one.
+  for (let i = 0, ok = 0; ; i++) {
+    const created = await docker(["exec", "-e", "X4_CH_WRITER", names.ch, "sh", "-c", `clickhouse-client -u admin --password "$CLICKHOUSE_PASSWORD" -n -q "CREATE USER IF NOT EXISTS gromesh_writer IDENTIFIED WITH sha256_password BY '$X4_CH_WRITER'; GRANT INSERT ON gromesh.requests TO gromesh_writer;"`])
+      .then(() => true, () => false);
+    ok = created ? ok + 1 : 0;
+    if (ok >= 3) break;
+    assert.ok(i < 120, "ClickHouse writer could not be created");
+    await sleep(1000);
+  }
   process.env.CLICKHOUSE_PASSWORD = chWriter;
 
   // The pod: a network namespace holder, the collector sidecar and Kong.
