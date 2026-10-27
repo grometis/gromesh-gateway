@@ -358,7 +358,7 @@ describe("state machines in the contracts", () => {
 
   it("finds the machines of the approved design", () => {
     expect(machines.map(([n]) => n.split("#")[1]).sort()).toEqual(
-      ["AdmissionOutcome", "AdmissionState", "ApprovalState", "DeploymentState", "EmergencyPostReviewStatus", "InstanceSigningKeyStatus", "IsolationPendencyLifecycle", "PodIsolationState", "PromotionStatus", "WorkspaceRequestStatus"].sort(),
+      ["AdmissionOutcome", "AdmissionServedState", "AdmissionState", "ApprovalState", "DeploymentState", "EmergencyPostReviewStatus", "InstanceSigningKeyStatus", "IsolationPendencyLifecycle", "PodIsolationState", "PromotionStatus", "WorkspaceRequestStatus"].sort(),
     );
   });
 
@@ -710,6 +710,26 @@ describe("agent protocol v2", () => {
     expect(info).toContain("a confirmed-violation pendency of an admission stays open after the admission closes");
     expect(flat(agentV2.components.schemas.IsolationHandoff.description)).toContain("removed at the pod's stop signal, after which the agent neither asks for nor polls an admission");
     expect(agentV2.components.schemas.ReportAcks.properties.rejected.items.properties.reason.enum).toContain("integrity-conflict");
+  });
+
+  it("exposes whether an admission ever served only from verified evidence (N2-F3, F3-D2)", () => {
+    const pod = { podUid: u, bootId: u, podName: "kong-0", nodeName: "n1", state: "ok", admission: "closed", servedState: "never-served-verified", reporting: "closed", lastSeq: 1 };
+    const isolation = (p: Record<string, unknown>) => ({ clusterId: u, pods: [p], pendencies: [] });
+    expect(valid("ClusterIsolation", isolation(pod)), JSON.stringify(validator("control-plane-v2.openapi.yaml", "ClusterIsolation").errors)).toBe(true);
+    for (const s of ["served", "unknown"]) expect(valid("ClusterIsolation", isolation({ ...pod, servedState: s })), s).toBe(true);
+    // Planned until the N2-F3 implementation makes it required (rule 11): declared, marked, not yet required.
+    const item = v2.components.schemas.ClusterIsolation.properties.pods.items;
+    expect([item.properties.servedState["x-gromesh-planned"], item.required.includes("servedState")]).toEqual([true, false]);
+    for (const s of ["never-served", "NEVER_SERVED_VERIFIED", null]) expect(valid("ClusterIsolation", isolation({ ...pod, servedState: s })), String(s)).toBe(false);
+    const machine = v2.components.schemas.AdmissionServedState["x-gromesh-transitions"];
+    expect(machine.initial).toEqual(["unknown"]);
+    // unknown never becomes never-served-verified without the verified seq 1 final, and served is final.
+    expect(machine.transitions.filter(([, to]: string[]) => to === "never-served-verified")).toEqual([["unknown", "never-served-verified", "verified final report seq 1 with kongStopConfirmed true"]]);
+    expect(machine.transitions.filter(([from]: string[]) => from === "served")).toEqual([]);
+    const info = agentV2.info.description.replace(/\s+/g, " ");
+    expect(info).toContain("never from a declaration of the agent");
+    expect(info).toContain("the control plane never closes an admission automatically on unknown");
+    expect(info).toContain("accepted as fail-closed, decision F3-D1");
   });
 
   it("serves deployments that match the snapshot v2 schema, and refuses the v1 envelope", () => {

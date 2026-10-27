@@ -63,9 +63,20 @@ info:
         the admission never authorized traffic. The control plane closes it by the rule above and records it as
         never served; the absence of a report proves nothing. The probe then removes probe.pub, and the agent asks
         for or polls an admission only while probe.pub exists, so a stopping pod is granted nothing new. Declared
-        residual: a grant already in flight at that moment; a closing report that cannot be produced, persisted,
-        delivered or confirmed (queue full or write error, agent frozen, probe volume lost, kongStopConfirmed false);
-        or an abrupt stop (force deletion, node loss) leaves the admission open, held as above.
+        residual (accepted as fail-closed, decision F3-D1): a grant already in flight at that moment; a closing report
+        that cannot be produced, persisted, delivered or confirmed (queue full or write error, agent frozen, probe
+        volume lost, kongStopConfirmed false); or an abrupt stop (force deletion, node loss) leaves the admission
+        open, held as above.
+        Served state (decision F3-D2; ClusterIsolation servedState in control-plane-v2), derived by the control
+        plane only from reports verified with the probe key bound to the admission, never from a declaration of the
+        agent: never-served-verified when the chain's seq 1 is a final report with kongStopConfirmed true (the probe
+        never adopted the admission, so no lease of it existed); served when the chain holds any report that is not
+        such a seq 1 final (the probe adopted it, so a lease may have authorized traffic); unknown otherwise (no
+        verified report: requested, refused, granted and silent, or released by an admin). unknown never counts as
+        never-served-verified, and the control plane never closes an admission automatically on unknown: without
+        a verified closing it stays open and holds as above. A state only moves from unknown to served or to
+        never-served-verified, and never-served-verified to served (a later report of the chain is an integrity
+        conflict anyway); served never changes.
         Closing never erases evidence: a report numbered above the final one of its chain, or a report with other
         content for a seq already received (seq 1 included), is an integrity conflict (confirmed-violation), while
         an identical retransmission is idempotent; a confirmed-violation pendency of an admission stays open after
