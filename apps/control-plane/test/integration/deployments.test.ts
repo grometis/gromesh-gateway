@@ -460,7 +460,7 @@ describe("a deployment recorded before its cluster turns v2 (D-1, laboratory ord
       expect((await v2(h.api, "POST", `/workspaces/${ws}/releases`, {})).status).toBe(201);
       expect((await v2(h.api, "POST", "/deployments", { expectedRevision: null, reason: "laboratory deployment" })).status).toBe(201);
       expect((await v2(h.api, "POST", "/deployments", { expectedRevision: 1, reason: "laboratory deployment" })).status).toBe(201);
-      expect(await history(1)).toEqual(["composed", "active", "converging", "degraded", "superseded"]);
+      expect(await history(1)).toEqual(["composed", "active", "superseded"]);
       expect(await history(2)).toEqual(["composed", "active"]);
 
       expect((await v2(h.api, "PUT", `/clusters/${c.id}/delivery-protocol`, { protocol: "v2", reason: "laboratory switch after deploy" })).status).toBe(200);
