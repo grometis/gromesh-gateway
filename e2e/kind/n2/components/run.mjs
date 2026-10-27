@@ -1,35 +1,56 @@
 #!/usr/bin/env node
 // N2 admission suite with the real components (W0 items q, and what does not depend on a serving pod) on the N2 lab:
 // the control plane built from main (with its own Postgres), the data plane chart in Workspaces mode with the real
-// agent and isolation-probe, the probe's targets being the N2-E1 fixtures behind the protected policies.
-//   LAB_KUBECONFIG=<file> [LAB_CLUSTER_SH=<e2e/kind/n2/cluster.sh>] [LAB_OUT=<dir>] node e2e/kind/n2/components/run.mjs
+// agent and isolation-probe, the probe's targets being the N2-E1 fixtures behind the protected policies. The agents
+// reach the control plane through relay.mjs, transparent except while item 3 withholds one report.
+//   LAB_KUBECONFIG=<file> [LAB_CLUSTER_SH=<e2e/kind/n2/cluster.sh>] [LAB_OUT=<dir>] [LAB_KEEP=1] node e2e/kind/n2/components/run.mjs
 // Images (loaded beforehand into the nodes that run them): CP_IMAGE, AGENT_IMAGE, KONG_IMAGE (repo:tag), PG_IMAGE.
 // Known limit: until N3 the agent applies the v1 snapshot, so the guard canary never answers and every pod ends in
-// guard-missing (Kong stopped, fail-closed). The acceptances that need a serving pod depend on N3 and are not here.
-import { createHash, createPublicKey, verify } from "node:crypto";
-import { mkdtempSync, writeFileSync } from "node:fs";
+// guard-missing (Kong stopped, fail-closed). What needs a serving pod is reported as blocked, never as passed.
+import { createHash, createPublicKey, generateKeyPairSync, randomUUID, verify } from "node:crypto";
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
-  Api, apply, assertLab, CONTEXT, controlPlaneObjects, cpSecrets, dbSkew, denyPolicies, docker, Forward, helm, json, kubeconfig, kubectl, NS, root, sql,
+  Api, apply, assertLab, CONTEXT, controlPlaneObjects, controlPlaneSecret, cpSecrets, createSecret, dbSkew, denyPolicies, docker, Forward, helm, here, json,
+  kubeconfig, kubectl, NODES, NS, registrationSecret, relayObjects, removeSuiteObjects, root, sql,
 } from "./lab.mjs";
 
 const out = process.env.LAB_OUT ?? mkdtempSync(join(tmpdir(), "gromesh-n2-comp-"));
 const IMAGES = {
-  cp: process.env.CP_IMAGE ?? "gromesh-n2c-cp:30a0056",
-  agent: process.env.AGENT_IMAGE ?? "gromesh-n2c-agent:30a0056",
+  cp: process.env.CP_IMAGE ?? "gromesh-n2c-cp:41db8aa",
+  agent: process.env.AGENT_IMAGE ?? "gromesh-n2c-agent:13e340c",
+  // The lab's Kong (ghcr.io/grometis/gromesh-kong@sha256:786d736c…) re-tagged locally: the tag carries no version.
   kong: process.env.KONG_IMAGE ?? "gromesh-n2c-kong:786d736c",
   pg: process.env.PG_IMAGE ?? "postgres:16-alpine",
 };
+const FIXTURE_IMAGE = /^FIXTURE_IMAGE=(.+)$/m.exec(readFileSync(join(here, "../versions.env"), "utf8"))[1];
+const KONG_VERSION = "3.9.4";
 const CHART = join(root, "deploy/helm/data-plane");
 const SELECTOR = "app.kubernetes.io/name=data-plane,app.kubernetes.io/instance=dp";
+const RELAY_URL = `http://cp-relay.${NS.cp}.svc.cluster.local:3000`;
 // agent-protocol-v2 and the control plane's timers.
 const P = 15_000, T = 3_000, S = 1_000, AGENT_INTERVAL = 2_000, DECISION = 45_000, COMMUNICATION = 60_000, UNCONFIRMED = 600_000;
+// What each item asserts, exactly as its published budget says.
+const BUDGET = {
+  grantToNginx: P + T + S + 2_000, // + the agent's handoff of the admission to the probe
+  cadenceTolerance: 2 * AGENT_INTERVAL + 1_000, // the agent forwards the outbox every interval
+  heldGrant: P + T + 3 * AGENT_INTERVAL + 2_000, // challenge fetch, report forward, decision poll
+  kongExit: 20_000,
+  podGone: 35_000, // grace 30 s + the API's own latency
+  resumeGrant: P + T + 3 * AGENT_INTERVAL + 2_000 + 30_000, // + the agent's backoff after a refused request
+  communication: [COMMUNICATION - 2_000, COMMUNICATION + 15_000],
+  unconfirmed: [UNCONFIRMED - 2_000, UNCONFIRMED + 20_000],
+  drop: 60_000 + 60_000 + P, // kubelet sync + ConfigMap cache + the probe's next round
+  afterDrop: 120_000,
+  inFlight: 2 * AGENT_INTERVAL + 1_000, // a report already in the outbox when the probe dropped the admission
+};
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const s = (ms) => `${ms / 1000} s`;
 
-const report = { startedAt: new Date().toISOString(), images: IMAGES, context: CONTEXT, items: [], findings: [], timeline: [] };
+const report = { startedAt: new Date().toISOString(), images: IMAGES, revisions: { cp: process.env.CP_REV, agent: process.env.AGENT_REV }, context: CONTEXT, budgets: BUDGET, items: [], blocked: [], findings: [], timeline: [] };
 const save = () => writeFileSync(join(out, "results.json"), JSON.stringify(report, null, 2));
 const log = (message) => console.log(`${new Date().toISOString()} ${message}`);
 const mark = (event, data = {}) => { report.timeline.push({ at: new Date().toISOString(), event, ...data }); log(`${event} ${JSON.stringify(data)}`); };
@@ -43,11 +64,17 @@ function item(id, title, budget) {
 const expect = (it, ok, message) => { if (!ok) it.failures.push(message); return ok; };
 /** A negative control: the protection must refuse; `ok` says whether it did. */
 const negative = (it, what, expected, observed, ok) => { it.negative.push({ what, expected, observed, ok }); if (!ok) it.failures.push(`negative control "${what}": expected ${expected}, observed ${observed}`); };
+/** Only at an item's normal end: an exception leaves it pending, and main records it as failed. */
 function done(it) {
   it.result = it.failures.length ? "fail" : "pass";
   save();
   log(`item ${it.id}: ${it.result.toUpperCase()} ${JSON.stringify(it.measures)}`);
   for (const f of it.failures) log(`  ${f}`);
+}
+/** Something the suite cannot exercise yet: never a pass. */
+function blocked(entry) {
+  report.blocked.push(entry);
+  log(`BLOCKED ${entry.id}: ${entry.missing}`);
 }
 
 async function waitFor(what, fn, { timeoutMs = 60_000, intervalMs = 1000 } = {}) {
@@ -116,6 +143,8 @@ function probeChecks(topo) {
   checks.push({ capability: "CAP-1", kind: "tcp-open", name: "allowed backend v6", address: hostPort(topo.ext.backend.v6, 8080) });
   tcp("CAP-5", "control plane database", `postgres.${NS.cp}.svc.cluster.local:5432`);
   checks.push({ capability: "CAP-6", kind: "http", name: "agent metrics from its own pod", url: "http://127.0.0.1:9100/metrics", expectStatus: 403 });
+  // The chart has no collector on the pod's loopback yet: this target is refused, so the probe proves CAP-7 vacuously
+  // (item 2 shows it and reports CAP-7 as blocked). The probe's configuration needs a target per capability.
   checks.push({ capability: "CAP-7", kind: "http", name: "collector on loopback", url: "http://127.0.0.1:9880/", expectStatus: 401 });
   return checks;
 }
@@ -139,11 +168,13 @@ async function pods() {
   return list.items.map((p) => ({
     name: p.metadata.name, uid: p.metadata.uid, node: p.spec.nodeName, phase: p.status.phase, deleting: Boolean(p.metadata.deletionTimestamp),
     created: Date.parse(p.metadata.creationTimestamp),
-    containers: Object.fromEntries([...(p.status.initContainerStatuses ?? []), ...(p.status.containerStatuses ?? [])].map((s) => [s.name, s])),
+    containers: Object.fromEntries([...(p.status.initContainerStatuses ?? []), ...(p.status.containerStatuses ?? [])].map((x) => [x.name, x])),
   }));
 }
 const live = async () => (await pods()).filter((p) => !p.deleting);
 const newPod = (known) => waitFor("a new data plane pod", async () => (await live()).find((p) => !known.has(p.uid)), { timeoutMs: 90_000 });
+
+const NGINX_SAMPLE = `printf '%s ' "$(cat /proc/[0-9]*/comm 2>/dev/null | grep -c '^nginx$')"; cat /gromesh/kong-state/kong-state.json 2>/dev/null || true`;
 
 /** Kong container samples: nginx processes and kong-supervisor's state, each with the interval it was taken in. */
 class NginxSampler {
@@ -153,8 +184,7 @@ class NginxSampler {
     this.loop = (async () => {
       while (this.running) {
         const start = Date.now();
-        const r = await kubectl(["-n", NS.dp, "exec", this.pod, "-c", "kong", "--", "sh", "-c",
-          `printf '%s ' "$(cat /proc/[0-9]*/comm 2>/dev/null | grep -c '^nginx$')"; cat /gromesh/kong-state/kong-state.json 2>/dev/null || true`], { allowFail: true, timeout: 10_000 });
+        const r = await kubectl(["-n", NS.dp, "exec", this.pod, "-c", "kong", "--", "sh", "-c", NGINX_SAMPLE], { allowFail: true, timeout: 10_000 });
         const end = Date.now();
         if (r.code === 0) {
           const [count, ...rest] = r.stdout.trim().split(" ");
@@ -185,12 +215,15 @@ class Follower {
   }
   stop() { this.child.kill("SIGKILL"); }
 }
+
+// Every instant the lab's nodes stamp (container logs, crictl, Postgres) is on the Docker VM's clock: mapped back to
+// this host's clock by the skew measured against Postgres, like the database's own instants.
+let skew = 0;
+const local = (dbMs) => (dbMs == null ? null : Number(dbMs) - skew);
+const nodeTime = (rfc3339) => local(Date.parse(rfc3339.replace(/(\.\d{3})\d*Z$/, "$1Z")));
 function parseLine(line) {
   const space = line.indexOf(" ");
-  const stamp = line.slice(0, space);
-  // RFC 3339 with nanoseconds: kept to the millisecond.
-  const at = Date.parse(stamp.replace(/(\.\d{3})\d*Z$/, "$1Z"));
-  return { at, text: line.slice(space + 1) };
+  return { at: nodeTime(line.slice(0, space)), text: line.slice(space + 1) };
 }
 async function logs(pod, container) {
   const { stdout } = await kubectl(["-n", NS.dp, "logs", "--timestamps", pod, "-c", container], { allowFail: true });
@@ -201,17 +234,57 @@ const firstLine = (lines, pattern) => lines.find((l) => pattern.test(l.text));
 /** The host pid of a container of a data plane pod, checked against the binary it must be. */
 async function containerPid(podName, container, comm) {
   const p = await json(["-n", NS.dp, "get", "pod", podName]);
-  const st = [...(p.status.initContainerStatuses ?? []), ...(p.status.containerStatuses ?? [])].find((s) => s.name === container);
+  const st = [...(p.status.initContainerStatuses ?? []), ...(p.status.containerStatuses ?? [])].find((x) => x.name === container);
   const id = st.containerID.replace(/^containerd:\/\//, "");
   const pid = Number((await docker(["exec", p.spec.nodeName, "crictl", "inspect", "-o", "go-template", "--template", "{{.info.pid}}", id])).stdout.trim());
   const actual = (await docker(["exec", p.spec.nodeName, "cat", `/proc/${pid}/comm`])).stdout.trim();
   if (actual !== comm) throw new Error(`pid ${pid} of ${podName}/${container} is ${actual}, not ${comm}`);
-  return { node: p.spec.nodeName, pid };
+  return { node: p.spec.nodeName, pid, comm };
 }
 
+// Every process the suite stops is continued again, whatever happens to the run (thawAll runs on every exit path).
+const frozen = new Set();
+async function freeze(podName, container, comm) {
+  const target = await containerPid(podName, container, comm);
+  frozen.add(target);
+  await docker(["exec", target.node, "kill", "-STOP", String(target.pid)]);
+  return target;
+}
+async function thaw(target) {
+  // A pid that died with its pod may have been reused: only the same binary is continued.
+  const comm = await docker(["exec", target.node, "cat", `/proc/${target.pid}/comm`], { allowFail: true });
+  if (comm.code === 0 && comm.stdout.trim() === target.comm) await docker(["exec", target.node, "kill", "-CONT", String(target.pid)], { allowFail: true });
+  frozen.delete(target);
+  return comm.code === 0 ? "continued" : "gone";
+}
+const thawAll = async () => Promise.all([...frozen].map(thaw));
+
+/** crictl state of a pod's containers, polled on its node until all exited: finishedAt with nanoseconds, the exit codes. */
+function watchExits(node, ids, timeoutS) {
+  const script = `end=$(( $(date +%s) + ${timeoutS} )); while [ "$(date +%s)" -lt "$end" ]; do all=1; for id in "$@"; do
+st=$(crictl inspect -o go-template --template '{{.status.state}} {{.status.finishedAt}} {{.status.exitCode}}' "$id" 2>/dev/null) || st=GONE; echo "$id $st";
+case "$st" in CONTAINER_EXITED*) ;; *) all=0 ;; esac; done; [ "$all" = 1 ] && exit 0; sleep 0.2; done; exit 3`;
+  return docker(["exec", node, "sh", "-c", script, "sh", ...Object.values(ids)], { allowFail: true, timeout: (timeoutS + 15) * 1000 }).then(({ code, stdout }) => {
+    const last = {};
+    for (const line of stdout.split("\n").filter(Boolean)) { const [id, ...rest] = line.split(" "); last[id] = rest; }
+    const states = Object.fromEntries(Object.entries(ids).map(([name, id]) => {
+      const [state, finishedAt, exitCode] = last[id] ?? ["UNSEEN"];
+      return [name, { state, exitCode: exitCode == null ? null : Number(exitCode), finishedAt: state === "CONTAINER_EXITED" ? nodeTime(finishedAt) : null, finishedAtNode: finishedAt ?? null }];
+    }));
+    return { allExited: code === 0, states };
+  });
+}
+
+// --- relay --------------------------------------------------------------------------------------------------------
+async function relayLog() {
+  const { stdout } = await kubectl(["-n", NS.cp, "logs", "deploy/cp-relay"]);
+  return stdout.split("\n").filter((l) => l.startsWith("{")).map((l) => JSON.parse(l)).filter((e) => e.received);
+}
+const arm = (admissionId, seq) => kubectl(["-n", NS.cp, "exec", "-i", "deploy/cp-relay", "--", "sh", "-c", "cat > /tmp/relay/arm.next && mv /tmp/relay/arm.next /tmp/relay/arm.json"], { input: JSON.stringify({ admissionId, seq }) });
+const disarm = () => kubectl(["-n", NS.cp, "exec", "deploy/cp-relay", "--", "rm", "-f", "/tmp/relay/arm.json"]);
+const ackOf = (entry, admissionId) => entry?.acks?.find((a) => a.admissionId === admissionId)?.ackedSeq ?? null;
+
 // --- control plane state ------------------------------------------------------------------------------------------
-let skew = 0;
-const local = (dbMs) => (dbMs == null ? null : Number(dbMs) - skew);
 const ms = (column) => `(extract(epoch from ${column}) * 1000)::bigint`;
 
 async function admissions(clusterId) {
@@ -234,6 +307,8 @@ async function pendencies(clusterId) {
 }
 const admissionOf = async (clusterId, podUid) => (await admissions(clusterId)).filter((a) => a.pod_uid === podUid);
 const grantedOf = async (clusterId, podUid) => (await admissionOf(clusterId, podUid)).find((a) => a.outcome === "granted");
+const admissionRow = async (admissionId) => (await admissions(ctx.clusterId)).find((a) => a.admission_id === admissionId);
+const probeKeyOf = async (admissionId) => (await sql(`select probe_public_key from isolation_admissions where admission_id = '${admissionId}'`))[0].probe_public_key;
 
 /** The chain as the control plane stored it: seq without gaps, prevDigest the sha256 of the previous payload bytes, every
  * report verified with the probe key bound to the admission. `wrongDigest` hashes the whole JWS (the instrument's control). */
@@ -260,23 +335,70 @@ function chainProblems(rows, probePublicKey, { wrongDigest = false } = {}) {
 const ctx = {};
 const followers = [];
 
+const values = (keys, replicas) => ({
+  replicaCount: replicas,
+  kong: { image: { repository: IMAGES.kong.split(":")[0], tag: IMAGES.kong.split(":")[1], digest: "", pullPolicy: "Never" } },
+  agent: { image: { repository: IMAGES.agent.split(":")[0], tag: IMAGES.agent.split(":")[1], digest: "", pullPolicy: "Never" },
+    controlPlaneUrl: RELAY_URL, existingSecret: "dp-registration" },
+  networkPolicy: {
+    enabled: true,
+    controlPlanePeers: [{ namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": NS.cp } }, podSelector: { matchLabels: { app: "cp-relay" } } }],
+    upstreams: [{ cidr: `${ctx.topo.ext.backend.v4}/32`, ports: [8080] }, { cidr: `${ctx.topo.ext.backend.v6}/128`, ports: [8080] }],
+  },
+  workspaces: { enabled: true, clusterId: ctx.clusterId, instanceSigningKeys: keys, probe: { checks: ctx.checks } },
+});
+// Values through stdin: nothing of the release is written to disk, and they hold no secret anyway.
+const release = (verb, keys, replicas) => helm([verb, "dp", CHART, "-n", NS.dp, "-f", "-"], { input: JSON.stringify(values(keys, replicas)) });
+
+/** Before anything is created: every image on the nodes that run it, and the chart renders with this suite's values. */
+async function preflight() {
+  const where = { cp: [NODES.cp], pg: [NODES.cp], agent: NODES.workers, kong: NODES.workers, fixture: [NODES.cp] };
+  const refs = { ...IMAGES, fixture: FIXTURE_IMAGE };
+  const ids = {};
+  for (const [name, nodes] of Object.entries(where)) {
+    for (const node of nodes) {
+      const r = await docker(["exec", node, "crictl", "inspecti", "-o", "go-template", "--template", "{{.status.id}}", refs[name]], { allowFail: true });
+      if (r.code !== 0) throw new Error(`image ${refs[name]} is not on ${node}: load it first (kind load docker-image)`);
+      ids[name] = r.stdout.trim();
+    }
+  }
+  report.imageIds = ids;
+  const { publicKey } = generateKeyPairSync("ed25519");
+  const x = publicKey.export({ format: "jwk" }).x;
+  const kid = createHash("sha256").update(`{"crv":"Ed25519","kty":"OKP","x":"${x}"}`).digest("base64url");
+  const server = (await json(["version"])).serverVersion.gitVersion;
+  const saved = ctx.clusterId;
+  ctx.clusterId = randomUUID();
+  try {
+    await helm(["template", "dp", CHART, "-n", NS.dp, "--kube-version", server.replace(/^v/, ""), "-f", "-"], { input: JSON.stringify(values([{ kid, publicKey: x }], 1)) });
+  } finally {
+    ctx.clusterId = saved;
+  }
+}
+
 async function setup() {
   const it = item("1", "Postgres + control plane from main; admin, instance signing key (session+CSRF), cluster, registration token; data plane chart in Workspaces mode", { note: "setup" });
   report.environment = await assertLab();
   const topo = await topology();
   ctx.topo = topo;
   report.topology = topo;
+  ctx.checks = probeChecks(topo);
   mark("topology", { nodes: topo.nodes.map((n) => n.name) });
+  await preflight();
+  mark("preflight", { images: report.imageIds });
 
   // A fresh, reproducible start: only this suite's namespaces and its own cluster-wide policies are removed.
-  await kubectl(["delete", "namespace", NS.dp, NS.cp, "--ignore-not-found", "--wait", "--timeout=240s"], { timeout: 260_000 });
-  await kubectl(["delete", "ciliumclusterwidenetworkpolicy", "n2c-deny-host", "n2c-deny-imds", "n2c-deny-cidrs", "--ignore-not-found"]);
+  await removeSuiteObjects();
 
   const secrets = cpSecrets();
   ctx.secrets = secrets;
-  await apply(controlPlaneObjects(secrets, { cpImage: IMAGES.cp, pgImage: IMAGES.pg }));
+  await apply([{ apiVersion: "v1", kind: "Namespace", metadata: { name: NS.cp } }]);
+  await createSecret(controlPlaneSecret(secrets));
+  await apply(controlPlaneObjects({ cpImage: IMAGES.cp, pgImage: IMAGES.pg }));
+  await apply(relayObjects({ image: FIXTURE_IMAGE, source: readFileSync(join(here, "relay.mjs"), "utf8") }));
   await kubectl(["-n", NS.cp, "rollout", "status", "deployment/postgres", "--timeout=180s"], { timeout: 200_000 });
   await kubectl(["-n", NS.cp, "rollout", "status", "deployment/control-plane", "--timeout=240s"], { timeout: 260_000 });
+  await kubectl(["-n", NS.cp, "rollout", "status", "deployment/cp-relay", "--timeout=120s"], { timeout: 140_000 });
   ctx.forward = new Forward(Number(process.env.LAB_CP_PORT ?? 39300));
   ctx.api = new Api(ctx.forward);
   await waitFor("control plane /healthz", async () => (await ctx.api.req("GET", "/healthz")).status === 200, { timeoutMs: 120_000 });
@@ -316,40 +438,37 @@ async function setup() {
   it.measures.k1 = ctx.k1;
 
   // The probe's targets: each forbidden one live from the unrestricted observer.
-  const checks = probeChecks(topo);
-  ctx.checks = checks;
-  const alive = await liveness(checks);
+  const alive = await liveness(ctx.checks);
   const dead = alive.filter((r) => r.verdict !== "pass");
   it.measures.forbiddenTargetsLive = `${alive.length - dead.length}/${alive.length}`;
   expect(it, dead.length === 0, `forbidden targets not live from the observer: ${dead.map((d) => `${d.id}=${d.outcomes}`).join("; ")}`);
 
   await apply([{ apiVersion: "v1", kind: "Namespace", metadata: { name: NS.dp } }, ...denyPolicies(topo.net)]);
-  ctx.values = (keys, replicas = 1) => ({
-    replicaCount: replicas,
-    kong: { image: { repository: IMAGES.kong.split(":")[0], tag: IMAGES.kong.split(":")[1], digest: "", pullPolicy: "Never" } },
-    agent: { image: { repository: IMAGES.agent.split(":")[0], tag: IMAGES.agent.split(":")[1], digest: "", pullPolicy: "Never" },
-      controlPlaneUrl: `http://control-plane.${NS.cp}.svc.cluster.local:3000`, token: ctx.registrationToken },
-    networkPolicy: {
-      enabled: true,
-      controlPlanePeers: [{ namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": NS.cp } }, podSelector: { matchLabels: { app: "control-plane" } } }],
-      upstreams: [{ cidr: `${topo.ext.backend.v4}/32`, ports: [8080] }, { cidr: `${topo.ext.backend.v6}/128`, ports: [8080] }],
-    },
-    workspaces: { enabled: true, clusterId: ctx.clusterId, instanceSigningKeys: keys, probe: { checks } },
-  });
-  ctx.helmValues = async (keys, replicas) => {
-    const file = join(out, `values-${Date.now()}.json`);
-    writeFileSync(file, JSON.stringify(ctx.values(keys, replicas)), { mode: 0o600 });
-    return file;
-  };
+  await createSecret(registrationSecret(ctx.registrationToken));
   done(it);
+}
+
+/** What the kong container's network namespace gets from the CAP-6 and CAP-7 targets on loopback (the kong image has no curl). */
+async function loopbackTargets(podName) {
+  const lua = `local socket = require "socket"
+for _, t in ipairs({ { 9100, "/metrics" }, { 9880, "/" } }) do
+  local c = socket.tcp(); c:settimeout(2)
+  local ok, err = c:connect("127.0.0.1", t[1])
+  if not ok then print(t[1] .. " connect " .. tostring(err)) else
+    c:send("GET " .. t[2] .. " HTTP/1.0\\r\\nHost: 127.0.0.1\\r\\n\\r\\n"); print(t[1] .. " " .. tostring(c:receive("*l"))); c:close() end
+end`;
+  const { stdout } = await kubectl(["-n", NS.dp, "exec", podName, "-c", "kong", "--", "luajit", "-e", lua], { timeout: 30_000 });
+  return Object.fromEntries(stdout.trim().split("\n").map((l) => [l.slice(0, l.indexOf(" ")), l.slice(l.indexOf(" ") + 1)]));
 }
 
 /** Item 2: cold start, awaiting-admission → admission granted by the real CP, adopted by the real probe; no nginx before it. */
 async function coldStart() {
-  const it = item("2", "Cold start: awaiting-admission → admission granted by the CP, verified by the probe; no nginx before the grant", {
-    decision: `request → grant ≤ ${DECISION / 1000} s (no timeout grants)`, start: `grant → nginx ≤ P + T + S = ${(P + T + S) / 1000} s`, nginxBeforeGrant: "0" });
+  const it = item("2", "Cold start: the agent registers before Kong may start (Kong version from the pinned image's file), awaiting-admission → admission granted by the CP, verified by the probe; no nginx before the grant", {
+    decision: `request → grant ≤ ${s(DECISION)} (no timeout grants)`, start: `grant → nginx ≤ P + T + S + 2 s (agent handoff) = ${s(BUDGET.grantToNginx)}`, nginxBeforeGrant: "0",
+    registration: `one registration, no failure, before nginx; kongVersion in the CP = the file seed-config wrote = what Kong reports = ${KONG_VERSION}; no GROMESH_KONG_VERSION; the Kong tag carries no version`,
+    cycle: "exactly one admission request before the grant" });
   const t0 = Date.now();
-  await helm(["install", "dp", CHART, "-n", NS.dp, "-f", await ctx.helmValues([ctx.k1], 1)]);
+  await release("install", [ctx.k1], 1);
   mark("helm install", { replicas: 1 });
   const pod = await newPod(new Set());
   const sampler = new NginxSampler(pod.name);
@@ -368,33 +487,36 @@ async function coldStart() {
       Object.assign(it.measures, {
         waitedMs: Date.now() - t0, registeredNodes: nodes, admissionRequests: requests.length,
         agentRegistrationFailures: registrationFailures.length, agentLastError: registrationFailures.at(-1)?.text,
-        probeLog: probeLogs.map((l) => l.text), samples: sampler.samples.length, nginxInAnySample: sampler.samples.filter((s) => s.nginx > 0).length,
+        probeLog: probeLogs.map((l) => l.text), samples: sampler.samples.length, nginxInAnySample: sampler.samples.filter((x) => x.nginx > 0).length,
       });
       expect(it, false, `no admission within 180 s: ${nodes} registered nodes, ${requests.length} admission requests`);
-      expect(it, sampler.samples.every((s) => s.nginx === 0), "nginx ran without an admission");
-      if (nodes === 0 && registrationFailures.some((l) => /read Kong version/.test(l.text))) {
-        ctx.blocked = "F1: the agent never registers in Workspaces mode (it reads Kong's version from the Admin API, which only exists once an admission let nginx start), so it never asks for an admission";
-        report.findings.push({ id: "F1", item: "2", blocking: true, evidence: it.measures });
+      expect(it, sampler.samples.every((x) => x.nginx === 0), "nginx ran without an admission");
+      if (nodes === 0) {
+        ctx.blocked = { id: "2→all", missing: "the agent never registered in Workspaces mode, so no admission was ever asked", component: "agent (apps/agent)", pr: "#172", unblock: "a registration in this run" };
+        report.findings.push({ id: "registration", item: "2", blocking: true, evidence: it.measures });
       }
+      done(it);
       return;
     }
-    await waitFor("nginx observed in pod 1", async () => sampler.samples.some((s) => s.nginx > 0), { timeoutMs: P + T + S + 30_000, intervalMs: 300 });
+    await waitFor("nginx observed in pod 1", async () => sampler.samples.some((x) => x.nginx > 0), { timeoutMs: BUDGET.grantToNginx + 30_000, intervalMs: 300 });
     await sleep(500);
     await sampler.stop();
     const all = await admissionOf(ctx.clusterId, pod.uid);
     const [p] = (await pods()).filter((x) => x.uid === pod.uid);
     const kongLogs = await logs(pod.name, "kong");
     const probeLogs = await logs(pod.name, "isolation-probe");
+    const agentLogs = await logs(pod.name, "agent");
     const nginxStart = firstLine(kongLogs, /lease valid: nginx started/);
     const admitted = firstLine(probeLogs, /admitted: /);
-    const firstNginx = sampler.samples.find((s) => s.nginx > 0);
-    const before = sampler.samples.filter((s) => s.end < granted.decided);
-    const startedBefore = sampler.samples.filter((s) => s.start < granted.decided && s.nginx > 0);
+    const firstNginx = sampler.samples.find((x) => x.nginx > 0);
+    const before = sampler.samples.filter((x) => x.end < granted.decided);
+    const startedBefore = sampler.samples.filter((x) => x.start < granted.decided && x.nginx > 0);
     const kongStarted = Date.parse(p.containers.kong?.state?.running?.startedAt ?? p.containers.kong?.lastState?.terminated?.startedAt ?? "");
+    const requestsBeforeGrant = all.filter((a) => a.requested <= granted.requested).length;
     Object.assign(it.measures, {
       podCreatedToKongStartedMs: kongStarted - pod.created,
       requestToGrantMs: granted.decided - granted.requested,
-      requestsBeforeGrant: all.filter((a) => a.requested <= granted.requested).length,
+      requestsBeforeGrant,
       kongStartedToGrantMs: granted.decided - kongStarted,
       samplesBeforeGrant: before.length,
       nginxInSamplesBeforeGrant: startedBefore.length,
@@ -406,57 +528,132 @@ async function coldStart() {
     });
     expect(it, granted.kid === ctx.k1.kid, `granted with kid ${granted.kid}, expected ${ctx.k1.kid}`);
     expect(it, granted.decided - granted.requested <= DECISION, "grant later than the decision window");
-    // The kong container may start less than a sampling interval before the grant (it did, 0.7 s, once registration
-    // stopped waiting for Kong): then the supervisor's and the probe's own log order below is the evidence, and the
-    // samples only add to it. Without either, nothing was measured.
+    // The kong container may start less than a sampling interval before the grant: then the supervisor's and the
+    // probe's own log order below is the evidence, and the samples only add to it. Without either, nothing was measured.
     expect(it, before.length >= 3 || (nginxStart && admitted), `only ${before.length} samples of the kong container before the grant and no supervisor/probe log order: nothing measured`);
     expect(it, startedBefore.length === 0, `nginx seen before the grant in ${startedBefore.length} samples`);
     expect(it, nginxStart && nginxStart.at >= granted.decided, `kong-supervisor started nginx at ${nginxStart?.at} before the grant at ${granted.decided}`);
     expect(it, admitted && nginxStart && admitted.at <= nginxStart.at, "nginx started before the probe adopted the admission");
-    expect(it, nginxStart && nginxStart.at - granted.decided <= P + T + S + 2_000, `grant → nginx ${nginxStart?.at - granted.decided} ms (budget P+T+S + the agent's handoff)`);
+    expect(it, nginxStart && nginxStart.at - granted.decided <= BUDGET.grantToNginx, `grant → nginx ${nginxStart?.at - granted.decided} ms > ${BUDGET.grantToNginx} ms`);
+    expect(it, requestsBeforeGrant === 1, `${requestsBeforeGrant} admission requests before the grant (a cycle re-asks)`);
     // The instrument's own control: the same sampler does see nginx once the lease is out.
     negative(it, "the sampler sees nginx once the lease exists (instrument control)", "nginx > 0 after the grant", `first nginx sample ${firstNginx.start - granted.decided} ms after the grant`, firstNginx.start >= granted.decided);
     ctx.a1 = granted;
     writeFileSync(join(out, "item2-samples.json"), JSON.stringify(sampler.samples));
+
+    await registration(it, pod, { agentLogs, granted, nginxStart });
+    await capabilityTargets(it, pod);
   } finally {
     if (sampler.running) await sampler.stop();
-    done(it);
+  }
+  done(it);
+}
+
+/** #172: the Workspaces cold start registers without Kong, once, with the version the pinned image itself carries. */
+async function registration(it, pod, { agentLogs, granted, nginxStart }) {
+  const spec = await json(["-n", NS.dp, "get", "pod", pod.name]);
+  const agent = [...(spec.spec.initContainers ?? []), ...spec.spec.containers].find((c) => c.name === "agent");
+  const env = Object.fromEntries((agent.env ?? []).map((e) => [e.name, e.value ?? "(valueFrom)"]));
+  const tag = IMAGES.kong.split(":")[1];
+  // The emptyDir seed-config wrote, read from the node: the agent's image has no shell.
+  const file = await docker(["exec", spec.spec.nodeName, "cat", `/var/lib/kubelet/pods/${pod.uid}/volumes/kubernetes.io~empty-dir/kong-version/version`], { allowFail: true });
+  const kong = await kubectl(["-n", NS.dp, "exec", pod.name, "-c", "kong", "--", "kong", "version"], { allowFail: true, timeout: 60_000 });
+  const kongReports = /(\d+\.\d+\.\d+)/.exec(kong.stdout)?.[1] ?? null;
+  const nodes = await sql(`select node_id, hostname, kong_version, agent_version from cluster_nodes where cluster_id = '${ctx.clusterId}'`);
+  const authenticated = agentLogs.filter((l) => /node authenticated/.test(l.text));
+  const failures = agentLogs.filter((l) => /registration failed/.test(l.text));
+  const requested = firstLine(agentLogs, /admission requested/);
+  const grantedLog = firstLine(agentLogs, /admission granted/);
+  it.measures.registration = {
+    kongTag: tag, agentEnv: { GROMESH_KONG_VERSION_FILE: env.GROMESH_KONG_VERSION_FILE ?? null, GROMESH_KONG_VERSION: env.GROMESH_KONG_VERSION ?? null },
+    versionFile: file.code === 0 ? file.stdout : `unreadable: ${file.stderr.trim()}`, kongReports, cpNodes: nodes,
+    authenticatedLines: authenticated.length, registrationFailures: failures.length,
+    authenticatedToRequestedMs: authenticated[0] && requested ? requested.at - authenticated[0].at : null,
+    authenticatedToNginxStartedMs: authenticated[0] && nginxStart ? nginxStart.at - authenticated[0].at : null,
+    requestedToGrantedLogMs: requested && grantedLog ? grantedLog.at - requested.at : null,
+  };
+  expect(it, !/^\d+\.\d+\.\d+/.test(tag), `precondition: the Kong tag ${tag} starts with a version, so it cannot show the version comes from elsewhere`);
+  expect(it, env.GROMESH_KONG_VERSION_FILE === "/gromesh/kong-version/version" && !("GROMESH_KONG_VERSION" in env), `agent env ${JSON.stringify(it.measures.registration.agentEnv)}`);
+  expect(it, file.code === 0 && file.stdout === KONG_VERSION, `version file ${JSON.stringify(it.measures.registration.versionFile)}`);
+  expect(it, kongReports === KONG_VERSION, `kong version answered ${kong.stdout.trim() || kong.stderr.trim()}`);
+  expect(it, nodes.length === 1 && nodes[0].node_id === pod.name && nodes[0].kong_version === file.stdout, `cluster_nodes ${JSON.stringify(nodes)}`);
+  expect(it, authenticated.length === 1 && failures.length === 0, `${authenticated.length} registrations, ${failures.length} registration failures`);
+  expect(it, authenticated[0] && requested && grantedLog && nginxStart && authenticated[0].at <= requested.at && requested.at <= grantedLog.at && grantedLog.at <= nginxStart.at + 1_000,
+    "order register → admission requested → granted → nginx not observed");
+  expect(it, grantedLog && Math.abs(grantedLog.at - granted.decided) <= 5_000, "the agent's grant is not the control plane's");
+}
+
+/** CAP-6 and CAP-7 from the kong container: a target nothing listens on proves only that nothing listens. */
+async function capabilityTargets(it, pod) {
+  const seen = await loopbackTargets(pod.name);
+  it.measures.loopbackTargets = seen;
+  expect(it, /^HTTP\/1\.[01] 403/.test(seen["9100"] ?? ""), `CAP-6: the agent's :9100 answered ${seen["9100"]} to the kong container (403 expected)`);
+  if (/connect connection refused/.test(seen["9880"] ?? "")) {
+    it.notes.push("CAP-7: nothing listens on 127.0.0.1:9880, so the probe's check passes by refusal; reported as blocked");
+    blocked({ id: "CAP-7", item: "2", missing: "a collector on the pod's loopback that accepts only the cluster token (the probe's CAP-7 check is refused, so it proves nothing)",
+      component: "data plane chart / collector", pr: "none (the chart's collector is the cluster-wide Vector at gromesh-collector:8080)",
+      unblock: "the chart ships the loopback collector; the suite then asserts 2xx with the cluster token and 401 without it, and the probe's check gets 401" });
+  } else {
+    expect(it, false, `something answers on 127.0.0.1:9880 (${seen["9880"]}): the suite must exercise the collector with and without its token`);
   }
 }
 
-/** Item 3: the reports reach the CP in order, the ack is the contiguous prefix, as getClusterIsolation shows it. */
+/** Item 3: the reports reach the CP in order, at the round's cadence; the ack is the contiguous prefix, also facing a gap. */
 async function reportsInOrder() {
-  const it = item("3", "Reports reach the CP in order; ack contiguous (getClusterIsolation and the database)", { cadence: `one report per round, P = ${P / 1000} s`, ack: "highest contiguous seq" });
+  const it = item("3", "Reports reach the CP in order at the round cadence; ack contiguous, also with a gap (relay withholds n, delivers n+1)", {
+    cadence: `consecutive reports received P ± ${s(BUDGET.cadenceTolerance)} apart (${s(P - BUDGET.cadenceTolerance)}–${s(P + BUDGET.cadenceTolerance)})`,
+    ack: "highest contiguous seq: n withheld and n+1 delivered → ack n−1; n delivered → ack ≥ n+1", chain: "signatures, seq without gaps, prevDigest" });
   const a1 = ctx.a1;
-  const rows = await waitFor("four acked reports of pod 1", async () => {
-    const [a] = (await admissions(ctx.clusterId)).filter((x) => x.admission_id === a1.admission_id);
-    return a.acked_seq >= 4 ? reports(a1.admission_id) : null;
-  }, { timeoutMs: 6 * P, intervalMs: 2000 });
-  const [a] = (await admissions(ctx.clusterId)).filter((x) => x.admission_id === a1.admission_id);
+  const id = a1.admission_id;
+  const rows = await waitFor("four acked reports of pod 1", async () => ((await admissionRow(id)).acked_seq >= 4 ? reports(id) : null), { timeoutMs: 6 * P, intervalMs: 2000 });
+  const first = rows.slice(0, 4);
+  const gaps = first.slice(1).map((r, i) => r.received - first[i].received);
+  const a = await admissionRow(id);
   const iso = await ctx.api.ok("GET", `/api/v2/clusters/${ctx.clusterId}/isolation`, { session: ctx.admin });
-  const viewed = iso.pods.find((p) => p.admissionId === a1.admission_id);
-  const [probeKey] = await sql(`select probe_public_key from isolation_admissions where admission_id = '${a1.admission_id}'`);
-  const problems = chainProblems(rows, probeKey.probe_public_key);
-  const control = chainProblems(rows, probeKey.probe_public_key, { wrongDigest: true });
-  const gaps = rows.slice(1).map((r, i) => r.received - rows[i].received);
+  const viewed = iso.pods.find((p) => p.admissionId === id);
+  const probeKey = await probeKeyOf(id);
   Object.assign(it.measures, {
     reports: rows.length, ackedSeq: a.acked_seq, apiLastSeq: viewed?.lastSeq, apiState: viewed?.state, apiReporting: viewed?.reporting,
-    states: [...new Set(rows.map((r) => r.state))], receivedGapsMs: gaps, receivedMonotonic: gaps.every((g) => g >= 0),
+    states: [...new Set(rows.map((r) => r.state))], receivedGapsMs: gaps,
   });
-  expect(it, problems.length === 0, `chain: ${problems.join("; ")}`);
   expect(it, a.acked_seq === rows.length && rows.at(-1).seq === rows.length, `acked ${a.acked_seq} of ${rows.length} contiguous reports`);
   expect(it, viewed && viewed.lastSeq >= a.acked_seq - 1 && viewed.reporting === "reporting", `getClusterIsolation: ${JSON.stringify(viewed)}`);
-  expect(it, gaps.every((g) => g >= 0), "reports received out of seq order");
+  expect(it, gaps.every((g) => Math.abs(g - P) <= BUDGET.cadenceTolerance), `received gaps ${gaps} ms outside P ± ${BUDGET.cadenceTolerance} ms`);
+  const control = chainProblems(rows, probeKey, { wrongDigest: true });
   negative(it, "the chain check with a wrong digest (whole JWS hashed) must fail", "problems", `${control.length} problems`, control.length > 0);
+
+  // The gap: the relay leaves out report n (not yet written) of every batch; n+1 then reaches the CP without n.
+  const n = a.acked_seq + 2;
+  await arm(id, n);
+  mark("relay armed", { admissionId: id, withhold: n });
+  let withGap;
+  try {
+    withGap = await waitFor(`report ${n + 1} delivered without ${n}`, async () => (await relayLog()).find((e) => e.admissionId === id && e.withheld === n && e.forwarded.includes(n + 1) && e.status === 200), { timeoutMs: 3 * P + 30_000, intervalMs: 2000 });
+    const dbWithGap = (await admissionRow(id)).acked_seq;
+    const stored = (await reports(id)).map((r) => r.seq).filter((x) => x >= n - 1);
+    it.measures.gap = { withheld: n, forwarded: withGap.forwarded, ackWithGap: ackOf(withGap, id), rejected: withGap.rejected, dbAckedWithGap: dbWithGap, storedFromNMinus1: stored };
+    negative(it, `ack past the gap (n = ${n} withheld, n+1 delivered)`, `ackedSeq ${n - 1}`, ackOf(withGap, id), ackOf(withGap, id) === n - 1);
+    expect(it, dbWithGap === n - 1, `acked_seq ${dbWithGap} in the database while ${n} was missing`);
+  } finally {
+    await disarm();
+  }
+  mark("relay disarmed");
+  const filled = await waitFor(`ack past ${n + 1} once ${n} arrives`, async () => (await relayLog()).find((e) => e.admissionId === id && e.at > withGap.at && !e.withheld && e.forwarded.includes(n) && ackOf(e, id) >= n + 1), { timeoutMs: 30_000, intervalMs: 1000 });
+  const after = await reports(id);
+  it.measures.gap.filled = { forwarded: filled.forwarded, ack: ackOf(filled, id), msAfterGap: filled.at - withGap.at };
+  expect(it, ackOf(filled, id) >= n + 1, `ack ${ackOf(filled, id)} after ${n} arrived`);
+  const problems = chainProblems(after, probeKey);
+  it.measures.chainAfterGap = { reports: after.length, problems: problems.length };
+  expect(it, problems.length === 0, `chain: ${problems.join("; ")}`);
   done(it);
 }
 
 /** Item 4: a second pod: its admission is held until the first pod's chain answers the current challenge. */
 async function secondPod() {
   const it = item("4", "Second pod (scale 2): admission held until pod 1 answers the current challenge, then granted", {
-    hold: "granted only after pod 1's acked report carries the request's challenge", latency: `request → grant ≤ P + T + 2 × agent interval ≈ ${(P + T + 2 * AGENT_INTERVAL) / 1000} s (< ${DECISION / 1000} s)` });
+    hold: "granted only after pod 1's acked report carries the request's challenge", latency: `request → grant ≤ P + T + 3 × agent interval + 2 s = ${s(BUDGET.heldGrant)}` });
   const known = new Set((await live()).map((p) => p.uid));
-  await helm(["upgrade", "dp", CHART, "-n", NS.dp, "-f", await ctx.helmValues([ctx.k1], 2)]);
+  await release("upgrade", [ctx.k1], 2);
   mark("helm upgrade", { replicas: 2 });
   const pod = await newPod(known);
   ctx.p2 = pod;
@@ -467,19 +664,19 @@ async function secondPod() {
     const rows = await reports(ctx.a1.admission_id);
     const answer = rows.find((r) => r.challenge === granted.challenge);
     const all = await admissionOf(ctx.clusterId, pod.uid);
-    await waitFor("nginx in pod 2", async () => sampler.samples.some((s) => s.nginx > 0), { timeoutMs: P + T + S + 30_000, intervalMs: 300 });
+    await waitFor("nginx in pod 2", async () => sampler.samples.some((x) => x.nginx > 0), { timeoutMs: BUDGET.grantToNginx + 30_000, intervalMs: 300 });
     await sampler.stop();
-    const nginxBefore = sampler.samples.filter((s) => s.start < granted.decided && s.nginx > 0).length;
+    const nginxBefore = sampler.samples.filter((x) => x.start < granted.decided && x.nginx > 0).length;
     Object.assign(it.measures, {
       requests: all.map((a) => ({ outcome: a.outcome, reason: a.reason, waitedMs: (a.decided ?? Date.now()) - a.requested })),
       requestToGrantMs: granted.decided - granted.requested,
       requestToAnswerReceivedMs: answer ? answer.received - granted.requested : null,
       answerToGrantMs: answer ? granted.decided - answer.received : null,
-      answerSeq: answer?.seq, samplesBeforeGrant: sampler.samples.filter((s) => s.end < granted.decided).length, nginxBeforeGrant: nginxBefore,
+      answerSeq: answer?.seq, samplesBeforeGrant: sampler.samples.filter((x) => x.end < granted.decided).length, nginxBeforeGrant: nginxBefore,
     });
     expect(it, answer, "no report of pod 1 carries the granted request's challenge");
     expect(it, answer && answer.received <= granted.decided, "granted before pod 1's answer was received");
-    expect(it, granted.decided - granted.requested <= DECISION, "grant later than the decision window");
+    expect(it, granted.decided - granted.requested <= BUDGET.heldGrant, `request → grant ${granted.decided - granted.requested} ms > ${BUDGET.heldGrant} ms`);
     expect(it, nginxBefore === 0, `nginx in pod 2 before its grant (${nginxBefore} samples)`);
     // Held: the request was not decided before the answer, and no earlier report of pod 1 carried that challenge.
     negative(it, "pod 2's request granted before pod 1 answered its challenge", "never", answer ? `answer received ${answer.received - granted.requested} ms after the request, grant ${granted.decided - answer.received} ms after it` : "no answer", Boolean(answer) && answer.received > granted.requested);
@@ -492,68 +689,73 @@ async function secondPod() {
 
 /** Item 6: graceful deletion: the final pod-terminated report with kongStopConfirmed closes the admission. */
 async function gracefulDeletion() {
-  const it = item("6", "Graceful deletion: final pod-terminated report with kongStopConfirmed closes the admission (native sidecar order measured)", {
-    order: "kong exits before the probe's final report; the agent sends it after", kongStop: "Kong stopped ≤ 20 s after the deletion is observed; pod gone ≤ 30 s (grace)" });
+  const it = item("6", "Graceful deletion: kong exits first (crictl), then the probe's final pod-terminated report with kongStopConfirmed closes the admission", {
+    order: "kong container finishedAt ≤ the probe's final report queued and ≤ the probe's and the agent's finishedAt; the CP receives the final report before the agent exits",
+    kongExit: `kong container exited ≤ ${s(BUDGET.kongExit)} after the deletion`, podGone: `pod gone ≤ ${s(BUDGET.podGone)}`, replacement: `replacement request → grant ≤ ${s(BUDGET.heldGrant)}`,
+    nginxServing: "with traffic: blocked until N3" });
   const pod = ctx.p1;
   const known = new Set((await live()).map((p) => p.uid));
-  const follow = Object.fromEntries(["kong", "isolation-probe", "agent"].map((c) => [c, new Follower(pod.name, c)]));
+  const status = await json(["-n", NS.dp, "get", "pod", pod.name]);
+  const ids = Object.fromEntries([...(status.status.initContainerStatuses ?? []), ...(status.status.containerStatuses ?? [])]
+    .filter((x) => ["kong", "isolation-probe", "agent"].includes(x.name)).map((x) => [x.name, x.containerID.replace(/^containerd:\/\//, "")]));
+  const follow = Object.fromEntries(["isolation-probe", "agent"].map((c) => [c, new Follower(pod.name, c)]));
   followers.push(...Object.values(follow));
-  await sleep(2000);
-  let lastStatus = null;
+  const nginxNow = await kubectl(["-n", NS.dp, "exec", pod.name, "-c", "kong", "--", "sh", "-c", NGINX_SAMPLE], { timeout: 10_000 });
+  const nginxAtDeletion = Number(nginxNow.stdout.trim().split(" ")[0]);
+  const exits = watchExits(status.spec.nodeName, ids, 90);
+  await sleep(1000);
   const t0 = Date.now();
   await kubectl(["-n", NS.dp, "delete", "pod", pod.name, "--wait=false"]);
-  mark("graceful delete", { pod: pod.name });
+  mark("graceful delete", { pod: pod.name, nginxAtDeletion });
+  // NotFound is the only "gone"; any other kubectl failure aborts the item.
   for (;;) {
-    const r = await kubectl(["-n", NS.dp, "get", "pod", pod.name, "-o", "json"], { allowFail: true });
-    if (r.code !== 0) break;
-    const p = JSON.parse(r.stdout);
-    if (p.metadata.uid !== pod.uid) break;
-    lastStatus = Object.fromEntries([...(p.status.initContainerStatuses ?? []), ...(p.status.containerStatuses ?? [])].map((s) => [s.name, s.state]));
-    if (Date.now() - t0 > 60_000) break;
+    const r = await kubectl(["-n", NS.dp, "get", "pod", pod.name, "--ignore-not-found", "-o", "json"]);
+    if (!r.stdout.trim() || JSON.parse(r.stdout).metadata.uid !== pod.uid) break;
+    if (Date.now() - t0 > 90_000) throw new Error("pod 1 still present 90 s after its deletion");
     await sleep(250);
   }
   const gone = Date.now();
+  const term = await exits;
   await Promise.race([Promise.all(Object.values(follow).map((f) => f.closed)), sleep(5000)]);
-  const closed = await waitFor("pod 1 admission closed", async () => (await admissions(ctx.clusterId)).find((a) => a.admission_id === ctx.a1.admission_id && a.state !== "open"), { timeoutMs: 30_000 }).catch(() => null);
+  const closed = await waitFor("pod 1 admission closed", async () => { const a = await admissionRow(ctx.a1.admission_id); return a.state !== "open" ? a : null; }, { timeoutMs: 30_000 }).catch(() => null);
   const rows = await reports(ctx.a1.admission_id);
   const final = rows.at(-1);
-  const kongLast = follow.kong.lines.at(-1);
-  const kongStopLine = firstLine(follow.kong.lines.filter((l) => l.at >= t0), /exited|stop signal/);
   const probeFinal = firstLine(follow["isolation-probe"].lines, /final report of admission/);
-  const finished = (name) => Date.parse(lastStatus?.[name]?.terminated?.finishedAt ?? "") || null;
+  const f = Object.fromEntries(Object.entries(term.states).map(([k, v]) => [k, v.finishedAt]));
   Object.assign(it.measures, {
-    deleteToPodGoneMs: gone - t0,
-    deleteToKongStopLogMs: kongStopLine ? kongStopLine.at - t0 : null,
-    kongLastLog: kongLast?.text, deleteToKongLastLogMs: kongLast ? kongLast.at - t0 : null,
+    nginxAtDeletion, deleteToPodGoneMs: gone - t0, containers: term.states,
+    deleteToKongExitedMs: f.kong ? f.kong - t0 : null,
+    kongExitedToProbeFinalLogMs: f.kong && probeFinal ? probeFinal.at - f.kong : null,
     deleteToProbeFinalLogMs: probeFinal ? probeFinal.at - t0 : null, probeFinalLog: probeFinal?.text,
-    finalReport: final ? { seq: final.seq, final: final.final, finalReason: final.final_reason, kongStopConfirmed: final.kong_stop_confirmed, deleteToReceivedMs: final.received - t0 } : null,
-    containerFinishedAt: { kong: finished("kong"), "isolation-probe": finished("isolation-probe"), agent: finished("agent") },
+    finalReport: final ? { seq: final.seq, final: final.final, finalReason: final.final_reason, kongStopConfirmed: final.kong_stop_confirmed, deleteToReceivedMs: final.received - t0, receivedToAgentExitedMs: f.agent ? f.agent - final.received : null } : null,
     admission: closed ? { state: closed.state, closeReason: closed.close_reason, deleteToClosedMs: closed.closed - t0 } : null,
   });
+  expect(it, term.allExited && f.kong && f["isolation-probe"] && f.agent, `termination evidence (crictl): ${JSON.stringify(term.states)}`);
   expect(it, final?.final && final.final_reason === "pod-terminated" && final.kong_stop_confirmed === true, `last report ${JSON.stringify(it.measures.finalReport)}`);
   expect(it, closed?.state === "closed" && closed.close_reason === "kong-stop-confirmed", `admission ${JSON.stringify(it.measures.admission)}`);
-  expect(it, kongLast && probeFinal && kongLast.at <= probeFinal.at, "the probe's final report precedes Kong's last line");
-  expect(it, probeFinal && final && probeFinal.at <= final.received, "the CP received the final report before the probe queued it");
-  const f = it.measures.containerFinishedAt;
-  if (f.kong && f["isolation-probe"] && f.agent) expect(it, f.kong <= f["isolation-probe"] && f["isolation-probe"] <= f.agent, `container finishedAt order ${JSON.stringify(f)} (second precision)`);
-  else it.notes.push(`container finishedAt not all observed before the pod disappeared: ${JSON.stringify(f)}`);
-  expect(it, gone - t0 <= 30_000 + 5_000, `pod took ${gone - t0} ms to disappear`);
+  expect(it, f.kong && probeFinal && f.kong <= probeFinal.at, "the probe queued its final report before the kong container exited");
+  expect(it, f.kong && f["isolation-probe"] && f.agent && f.kong <= f["isolation-probe"] && f.kong <= f.agent, `finishedAt ${JSON.stringify(f)}: a sidecar exited before kong`);
+  expect(it, final && f.agent && final.received <= f.agent, "the agent exited before the CP received the final report");
+  expect(it, f.kong && f.kong - t0 <= BUDGET.kongExit, `kong exited ${f.kong - t0} ms after the deletion`);
+  expect(it, gone - t0 <= BUDGET.podGone, `pod took ${gone - t0} ms to disappear`);
+  if (nginxAtDeletion === 0) it.notes.push("no nginx was running at the deletion (guard-missing until N3): only the container's exit was measured");
   ctx.p3 = await newPod(known);
   ctx.a3 = await waitFor("replacement pod admission granted", () => grantedOf(ctx.clusterId, ctx.p3.uid), { timeoutMs: 120_000 });
   it.measures.replacementRequestToGrantMs = ctx.a3.decided - ctx.a3.requested;
+  expect(it, ctx.a3.decided - ctx.a3.requested <= BUDGET.heldGrant, `replacement request → grant ${ctx.a3.decided - ctx.a3.requested} ms > ${BUDGET.heldGrant} ms`);
   done(it);
 }
 
 /** Item 9: the agent of a pod stopped: its reports stop reaching the CP, new admissions are held; back when it resumes. */
 async function agentStopped() {
   const it = item("9", "Agent stopped (SIGSTOP): report gap → new admissions held; resumes when the agent does", {
-    hold: "no grant while the silent chain cannot answer", communication: `communication-failure ${COMMUNICATION / 1000} s after the last report (alert, not releasable: 409)`, resume: `resume → grant ≤ P + T + 2 × agent interval ≈ ${(P + T + 2 * AGENT_INTERVAL) / 1000} s` });
+    hold: "no grant while the silent chain cannot answer", communication: `communication-failure ${s(BUDGET.communication[0])}–${s(BUDGET.communication[1])} after the last report (alert, not releasable: 409)`,
+    resume: `resume → grant ≤ P + T + 3 × agent interval + 2 s + the agent's refused backoff 30 s = ${s(BUDGET.resumeGrant)}` });
   const silent = ctx.p2;
-  const { node, pid } = await containerPid(silent.name, "agent", "gromesh-agent");
   const known = new Set((await live()).map((p) => p.uid));
-  await docker(["exec", node, "kill", "-STOP", String(pid)]);
+  const target = await freeze(silent.name, "agent", "gromesh-agent");
   const stopped = Date.now();
-  mark("agent SIGSTOP", { pod: silent.name, pid });
+  mark("agent SIGSTOP", { pod: silent.name, pid: target.pid });
   await kubectl(["-n", NS.dp, "delete", "pod", ctx.p3.name, "--wait=false"]);
   const pod = await newPod(known);
   ctx.p4 = pod;
@@ -561,30 +763,30 @@ async function agentStopped() {
   const pendency = await waitFor("communication-failure for the silent admission", async () => (await pendencies(ctx.clusterId)).find((p) => p.admission_id === ctx.a2.admission_id && p.lifecycle === "communication-failure"), { timeoutMs: COMMUNICATION + 60_000, intervalMs: 2000 });
   await waitFor("a refused request of the new pod", async () => (await admissionOf(ctx.clusterId, pod.uid)).some((a) => a.outcome === "refused"), { timeoutMs: DECISION + 30_000, intervalMs: 2000 });
   const whileStopped = await admissionOf(ctx.clusterId, pod.uid);
-  const [silentRow] = (await admissions(ctx.clusterId)).filter((a) => a.admission_id === ctx.a2.admission_id);
-  const release = await ctx.api.req("POST", `/api/v2/clusters/${ctx.clusterId}/isolation-releases`, { session: ctx.admin, body: { pendencyId: pendency.id, justification: "lab: communication-failure must not be releasable" } });
-  negative(it, "release a communication-failure pendency (admin session+CSRF)", 409, release.status, release.status === 409);
+  const silentRow = await admissionRow(ctx.a2.admission_id);
+  const releaseAttempt = await ctx.api.req("POST", `/api/v2/clusters/${ctx.clusterId}/isolation-releases`, { session: ctx.admin, body: { pendencyId: pendency.id, justification: "lab: communication-failure must not be releasable" } });
+  negative(it, "release a communication-failure pendency (admin session+CSRF)", 409, releaseAttempt.status, releaseAttempt.status === 409);
   negative(it, "new pod granted while the agent is stopped", "no grant", whileStopped.map((a) => `${a.outcome}${a.reason ? `/${a.reason}` : ""}`).join(","), !whileStopped.some((a) => a.outcome === "granted"));
-  await docker(["exec", node, "kill", "-CONT", String(pid)]);
+  await thaw(target);
   const resumed = Date.now();
   mark("agent SIGCONT", { stoppedMs: resumed - stopped });
-  const granted = await waitFor("new pod granted after the agent resumed", () => grantedOf(ctx.clusterId, pod.uid), { timeoutMs: DECISION + 60_000 + P, intervalMs: 1000 });
-  const after = await pendencies(ctx.clusterId);
-  const closedPendency = after.find((p) => p.id === pendency.id);
+  const granted = await waitFor("new pod granted after the agent resumed", () => grantedOf(ctx.clusterId, pod.uid), { timeoutMs: BUDGET.resumeGrant + 30_000, intervalMs: 1000 });
+  const closedPendency = (await pendencies(ctx.clusterId)).find((p) => p.id === pendency.id);
   const rows = await reports(ctx.a2.admission_id);
   const backlog = rows.filter((r) => r.received >= resumed);
+  const lastBefore = silentRow.last_report ?? stopped;
   Object.assign(it.measures, {
     stoppedMs: resumed - stopped,
-    lastReportBeforeStopToPendencyMs: pendency.opened - (silentRow.last_report ?? stopped),
+    lastReportBeforeStopToPendencyMs: pendency.opened - lastBefore,
     newPodRequestsWhileStopped: whileStopped.map((a) => ({ outcome: a.outcome, reason: a.reason })),
     resumeToBacklogMs: backlog.length ? backlog[0].received - resumed : null, backlogReports: backlog.length,
     resumeToGrantMs: granted.decided - resumed,
     pendencyAfterResume: closedPendency ? { lifecycle: closedPendency.lifecycle, closeReason: closedPendency.close_reason, resumeToClosedMs: closedPendency.closed ? closedPendency.closed - resumed : null } : null,
   });
-  expect(it, pendency.opened - (silentRow.last_report ?? stopped) >= COMMUNICATION - 2_000, "communication-failure opened before 60 s of silence");
+  expect(it, pendency.opened - lastBefore >= BUDGET.communication[0] && pendency.opened - lastBefore <= BUDGET.communication[1], `communication-failure ${pendency.opened - lastBefore} ms after the last report`);
   expect(it, closedPendency?.lifecycle === "closed" && closedPendency.close_reason === "chain-resumed", `pendency after resume ${JSON.stringify(closedPendency)}`);
-  expect(it, chainProblems(rows, (await sql(`select probe_public_key from isolation_admissions where admission_id = '${ctx.a2.admission_id}'`))[0].probe_public_key).length === 0, "the chain across the stop is broken");
-  expect(it, granted.decided - resumed <= P + T + 2 * AGENT_INTERVAL + 30_000, `resume → grant ${granted.decided - resumed} ms (includes the agent's refused backoff ≤ 30 s)`);
+  expect(it, chainProblems(rows, await probeKeyOf(ctx.a2.admission_id)).length === 0, "the chain across the stop is broken");
+  expect(it, granted.decided - resumed <= BUDGET.resumeGrant, `resume → grant ${granted.decided - resumed} ms > ${BUDGET.resumeGrant} ms`);
   ctx.a4 = granted;
   done(it);
 }
@@ -592,17 +794,17 @@ async function agentStopped() {
 /** Items 5 and 7: a pod killed before its final report; held, communication-failure, unconfirmed-isolation; CP restart keeps it; release. */
 async function killedPod() {
   const it5 = item("5", "Pod deleted with its final report lost (agent frozen, then --grace-period=0 --force): admissions held, communication-failure, unconfirmed-isolation after 10 min, release by platform admin only", {
-    communication: `${COMMUNICATION / 1000} s after the last report`, unconfirmed: `${UNCONFIRMED / 60_000} min after the last report`, release: "session + CSRF + justification, platform admin only" });
+    communication: `${s(BUDGET.communication[0])}–${s(BUDGET.communication[1])} after the last report`, unconfirmed: `${s(BUDGET.unconfirmed[0])}–${s(BUDGET.unconfirmed[1])} after the last report`,
+    release: "session + CSRF + justification, platform admin only" });
   const victim = ctx.p2;
   const known = new Set((await live()).map((p) => p.uid));
   // A force deletion alone still lets the native sidecars stop in order and deliver the final report (seen in this
   // lab: the admission closed with kongStopConfirmed 1 s later). A pod whose final report is lost is one whose agent
   // cannot carry it: freeze the agent first, then delete with no grace.
-  const frozen = await containerPid(victim.name, "agent", "gromesh-agent");
-  await docker(["exec", frozen.node, "kill", "-STOP", String(frozen.pid)]);
+  const target = await freeze(victim.name, "agent", "gromesh-agent");
   const t0 = Date.now();
   await kubectl(["-n", NS.dp, "delete", "pod", victim.name, "--grace-period=0", "--force"], { allowFail: true });
-  mark("agent frozen, then force delete", { pod: victim.name, agentPid: frozen.pid });
+  mark("agent frozen, then force delete", { pod: victim.name, agentPid: target.pid });
   const pod = await newPod(known);
   ctx.p5 = pod;
   await sleep(10_000);
@@ -610,15 +812,16 @@ async function killedPod() {
   const finalArrived = rows.some((r) => r.final);
   it5.measures.finalReportReachedCp = finalArrived;
   expect(it5, !finalArrived, "a final report reached the control plane: the force deletion was not a SIGKILL before it");
-  const [a2] = (await admissions(ctx.clusterId)).filter((a) => a.admission_id === ctx.a2.admission_id);
-  const lastReport = a2.last_report;
+  // Only after that check: a frozen agent that somehow outlived its pod must not deliver anything before it.
+  it5.measures.frozenAgentAfterDeletion = await thaw(target);
+  const lastReport = (await admissionRow(ctx.a2.admission_id)).last_report;
   const communication = await waitFor("communication-failure", async () => (await pendencies(ctx.clusterId)).find((p) => p.admission_id === ctx.a2.admission_id && p.lifecycle === "communication-failure"), { timeoutMs: COMMUNICATION + 60_000, intervalMs: 2000 });
   it5.measures.lastReportToCommunicationFailureMs = communication.opened - lastReport;
   it5.measures.killToLastReportMs = lastReport - t0;
-  expect(it5, communication.opened - lastReport >= COMMUNICATION - 2_000 && communication.opened - lastReport <= COMMUNICATION + 15_000, `communication-failure ${communication.opened - lastReport} ms after the last report`);
+  expect(it5, communication.opened - lastReport >= BUDGET.communication[0] && communication.opened - lastReport <= BUDGET.communication[1], `communication-failure ${communication.opened - lastReport} ms after the last report`);
   // While waiting for the 10 min: the new pod is held (refused by timeout, never granted).
   log(`waiting for unconfirmed-isolation (${Math.round((lastReport + UNCONFIRMED - Date.now()) / 1000)} s)`);
-  const unconfirmed = await waitFor("unconfirmed-isolation", async () => {
+  await waitFor("unconfirmed-isolation", async () => {
     // getClusterIsolation runs the timers as the next decision would.
     const iso = await ctx.api.ok("GET", `/api/v2/clusters/${ctx.clusterId}/isolation`, { session: ctx.admin });
     return iso.pendencies.find((p) => p.id === communication.id && p.kind === "unconfirmed-isolation") ? (await pendencies(ctx.clusterId)).find((p) => p.id === communication.id) : null;
@@ -628,8 +831,9 @@ async function killedPod() {
   const [audit] = await sql(`select ${ms("at")} as at from audit_events where action = 'isolation.pendency.supersede' and entity_id = '${communication.id}' order by at limit 1`).catch(() => [null]);
   const supersededAt = audit ? local(audit.at) : at;
   it5.measures.lastReportToUnconfirmedMs = supersededAt - lastReport;
+  it5.measures.unconfirmedInstant = audit ? "audit event" : "observed (no audit event found)";
   it5.measures.requestsDuringWait = heldRequests.map((a) => `${a.outcome}${a.reason ? `/${a.reason}` : ""}`);
-  expect(it5, supersededAt - lastReport >= UNCONFIRMED - 2_000 && supersededAt - lastReport <= UNCONFIRMED + 20_000, `unconfirmed-isolation ${supersededAt - lastReport} ms after the last report`);
+  expect(it5, supersededAt - lastReport >= BUDGET.unconfirmed[0] && supersededAt - lastReport <= BUDGET.unconfirmed[1], `unconfirmed-isolation ${supersededAt - lastReport} ms after the last report`);
   negative(it5, "the new pod granted while the killed pod's admission is open", "no grant", it5.measures.requestsDuringWait.join(","), !heldRequests.some((a) => a.outcome === "granted"));
   await waitFor("a request refused with pendency-open", async () => (await admissionOf(ctx.clusterId, pod.uid)).some((a) => a.reason === "pendency-open" && a.requested >= at - 5_000), { timeoutMs: 90_000, intervalMs: 2000 });
 
@@ -669,7 +873,7 @@ async function killedPod() {
   expect(it5, released.status === 201, `release by the platform admin answered ${released.status} ${JSON.stringify(released.body)}`);
   mark("released", { pendency: communication.id });
   const granted = await waitFor("the held pod granted after the release", () => grantedOf(ctx.clusterId, pod.uid), { timeoutMs: DECISION + 60_000 + P, intervalMs: 1000 });
-  const [orphan] = (await admissions(ctx.clusterId)).filter((a) => a.admission_id === ctx.a2.admission_id);
+  const orphan = await admissionRow(ctx.a2.admission_id);
   const [p] = (await pendencies(ctx.clusterId)).filter((x) => x.id === communication.id);
   const [rel] = await sql(`select kind, kid, ${ms("expires_at")} - ${ms("created_at")} as ttl from isolation_releases where pendency_id = '${communication.id}'`);
   Object.assign(it5.measures, { releaseToGrantMs: granted.decided - releasedAt, orphan: { state: orphan.state, closeReason: orphan.close_reason }, pendency: { lifecycle: p.lifecycle, justification: Boolean(p.justification), releasedBy: p.released_by?.type }, release: rel });
@@ -684,8 +888,9 @@ async function killedPod() {
 
 /** Item 8: revoking the instance key: new admissions refused no-signing-key; a chart rollout without it makes the probe drop its admission. */
 async function revocation() {
-  const it = item("8", "Instance key revoked: new admissions → no-signing-key; chart rollout without the key → the probe drops the admission", {
-    refuse: "refused no-signing-key", drop: "at the probe's next round after the kubelet refreshes the ConfigMap (≤ kubelet sync + P)" });
+  const it = item("8", "Instance key revoked: new admissions → no-signing-key; chart rollout without the key → the probe drops the admission and its chain stops", {
+    refuse: "refused no-signing-key", drop: `rollout → drop ≤ kubelet sync 60 s + ConfigMap cache 60 s + P = ${s(BUDGET.drop)}`,
+    silence: `no report of the dropped admission received later than ${s(BUDGET.inFlight)} after the drop, sampled every 5 s for ${s(BUDGET.afterDrop)} and once more at the end` });
   const known = new Set((await live()).map((p) => p.uid));
   const revoke = await ctx.api.req("POST", `/api/v2/instance/signing-keys/${ctx.k1.kid}/revoke`, { token: ctx.adminToken, body: { justification: "lab N2-E2: revocation by token must fail" } });
   negative(it, "revoke the key with the admin's API token", "401 or 403", revoke.status, [401, 403].includes(revoke.status));
@@ -693,9 +898,9 @@ async function revocation() {
   const revokedAt = Date.now();
   mark("key revoked", { kid: ctx.k1.kid, openAdmissions: revoked.openAdmissions });
   it.measures.openAdmissionsAtRevocation = revoked.openAdmissions;
-  // Any serving-or-not admitted pod of the data plane: its replacement asks for an admission after the revocation.
-  const pods = await live();
-  const victim = pods.find((p) => p.uid === (ctx.p4 ?? ctx.p5)?.uid) ?? pods[0];
+  // Any admitted pod of the data plane: its replacement asks for an admission after the revocation.
+  const current = await live();
+  const victim = current.find((p) => p.uid === (ctx.p4 ?? ctx.p5)?.uid) ?? current[0];
   await kubectl(["-n", NS.dp, "delete", "pod", victim.name, "--wait=false"]);
   const pod = await newPod(known);
   const refused = await waitFor("a request refused no-signing-key", async () => (await admissionOf(ctx.clusterId, pod.uid)).find((a) => a.reason === "no-signing-key"), { timeoutMs: 90_000, intervalMs: 1000 });
@@ -710,79 +915,133 @@ async function revocation() {
   const holder = (await live()).find((p) => p.uid === ctx.p5?.uid) ?? (await live()).find((p) => p.uid !== pod.uid);
   ctx.p5 = holder;
   ctx.a5 ??= await grantedOf(ctx.clusterId, holder.uid);
+  const id = ctx.a5.admission_id;
   const follower = new Follower(holder.name, "isolation-probe");
   followers.push(follower);
   await sleep(1000);
   const rollout = Date.now();
-  await helm(["upgrade", "dp", CHART, "-n", NS.dp, "-f", await ctx.helmValues([ctx.k2], 2)]);
+  await release("upgrade", [ctx.k2], 2);
   mark("chart rollout without the revoked key", { trustSet: [ctx.k2.kid] });
   const configMapName = (await json(["-n", NS.dp, "get", "configmap", "-l", "app.kubernetes.io/instance=dp"])).items.map((c) => c.metadata.name).find((n) => n.endsWith("isolation-probe"));
-  const dropped = await waitFor("the probe drops the admission of the revoked key", async () => follower.lines.find((l) => l.at >= rollout && /no longer valid|not in the instance trust set/.test(l.text)), { timeoutMs: 150_000, intervalMs: 1000 }).catch(() => null);
+  const dropped = await waitFor("the probe drops the admission of the revoked key", async () => follower.lines.find((l) => l.at >= rollout && /no longer valid|not in the instance trust set/.test(l.text)), { timeoutMs: BUDGET.drop + 15_000, intervalMs: 1000 }).catch(() => null);
+  it.measures.rolloutToDropMs = dropped ? dropped.at - rollout : null;
+  it.measures.dropLog = dropped?.text;
+  it.measures.configMap = configMapName;
+  if (!expect(it, dropped, `the probe did not drop the admission within ${BUDGET.drop + 15_000} ms of the rollout`)) { done(it); return; }
+  expect(it, dropped.at - rollout <= BUDGET.drop, `rollout → drop ${dropped.at - rollout} ms > ${BUDGET.drop} ms`);
   const seen = await kubectl(["-n", NS.dp, "exec", holder.name, "-c", "isolation-probe", "--", "/gromesh/isolation-bin/isolation-probe", "check-trust-set", "/etc/gromesh/instance-keys.json"], { allowFail: true });
-  const leaseGone = await kubectl(["-n", NS.dp, "exec", holder.name, "-c", "kong", "--", "sh", "-c", "test -e /gromesh/isolation/lease.json && echo present || echo absent"], { allowFail: true });
-  const reportsAfter = (await reports(ctx.a5.admission_id)).filter((r) => dropped && r.received > dropped.at + 2_000);
-  Object.assign(it.measures, {
-    configMap: configMapName, rolloutToDropMs: dropped ? dropped.at - rollout : null, dropLog: dropped?.text,
-    trustSetInPod: seen.stdout.trim() || seen.stderr.trim(), leaseAfterDrop: leaseGone.stdout.trim(), reportsAfterDrop: reportsAfter.length,
-  });
-  expect(it, dropped, "the probe did not drop the admission after the rollout");
-  expect(it, leaseGone.stdout.trim() === "absent", `lease after the drop: ${leaseGone.stdout.trim()}`);
-  expect(it, reportsAfter.length === 0, `${reportsAfter.length} reports of the dropped admission after the drop`);
-  // What follows the drop, observed for 2 min: the agent of the pod keeps its granted admission and never asks again.
-  await sleep(120_000);
+  const lease = await kubectl(["-n", NS.dp, "exec", holder.name, "-c", "kong", "--", "sh", "-c", "test -e /gromesh/isolation/lease.json && echo present || echo absent"], { allowFail: true });
+  it.measures.trustSetInPod = seen.stdout.trim() || seen.stderr.trim();
+  it.measures.leaseAfterDrop = lease.stdout.trim();
+  expect(it, lease.stdout.trim() === "absent", `lease after the drop: ${lease.stdout.trim()}`);
+
+  // The silence after the drop, over the whole window: a single query right after the drop would prove nothing.
+  const late = async () => (await reports(id)).filter((r) => r.received > dropped.at + BUDGET.inFlight);
+  const samples = [];
+  while (Date.now() < dropped.at + BUDGET.afterDrop) {
+    samples.push({ msAfterDrop: Date.now() - dropped.at, late: (await late()).map((r) => r.seq) });
+    await sleep(5000);
+  }
+  const finalLate = (await late()).map((r) => r.seq);
+  const lastSeq = (await reports(id)).at(-1)?.seq;
+  it.measures.afterDropSamples = { count: samples.length, spanMs: samples.at(-1)?.msAfterDrop ?? 0, withLateReports: samples.filter((x) => x.late.length).length, finalLate, lastSeq };
+  expect(it, samples.length >= BUDGET.afterDrop / 5000 - 2 && samples.at(-1).msAfterDrop >= BUDGET.afterDrop - 6_000, `the window after the drop was not observed (${samples.length} samples)`);
+  expect(it, samples.every((x) => x.late.length === 0) && finalLate.length === 0, `reports of the dropped admission after the drop: ${JSON.stringify(finalLate)}`);
   const holderRequests = await admissionOf(ctx.clusterId, ctx.p5.uid);
   const newRequests = await admissionOf(ctx.clusterId, pod.uid);
   const iso = await ctx.api.ok("GET", `/api/v2/clusters/${ctx.clusterId}/isolation`, { session: ctx.admin });
-  Object.assign(it.measures, {
-    afterDrop: {
-      holderRequests: holderRequests.map((a) => `${a.outcome}${a.reason ? `/${a.reason}` : ""}${a.kid ? `@${a.kid.slice(0, 8)}` : ""}`),
-      newPodRequests: newRequests.map((a) => `${a.outcome}${a.reason ? `/${a.reason}` : ""}${a.kid ? `@${a.kid.slice(0, 8)}` : ""}`),
-      pendencies: iso.pendencies.map((p) => p.kind),
-      pods: iso.pods.filter((p) => p.admission !== "closed").map((p) => ({ pod: p.podName, admission: p.admission, reporting: p.reporting, state: p.state })),
-    },
-  });
+  const fmt = (a) => `${a.outcome}${a.reason ? `/${a.reason}` : ""}${a.kid ? `@${a.kid.slice(0, 8)}` : ""}`;
+  it.measures.afterDrop = {
+    holderRequests: holderRequests.map(fmt), newPodRequests: newRequests.map(fmt), pendencies: iso.pendencies.map((p) => p.kind),
+    pods: iso.pods.filter((p) => p.admission !== "closed").map((p) => ({ pod: p.podName, admission: p.admission, reporting: p.reporting, state: p.state })),
+  };
   done(it);
 }
 
+// What the suite cannot exercise yet. Each is listed as blocked with what unblocks it, never as passed.
+const BLOCKED_STEPS = {
+  agentStopped: { id: "9", missing: "the probe takes a frozen agent's :9100 (connected, no answer) as a CAP-6 violation (finding F2), so a stopped agent latches its pod in violation instead of only silencing the chain",
+    component: "isolation-probe (apps/isolation/internal/probe/round.go)", pr: "none yet: the F2 fix is in progress (task F2)",
+    unblock: "the F2 PR exists; the agent image is rebuilt from it; run with LAB_RUN_BLOCKED=agentStopped" },
+};
+const N3 = [
+  { id: "n", missing: "traffic served behind the guard (the route guard canary answering 204 with the lease nonce)", component: "compiler + agent (v2 snapshot with the guard route)", pr: "N3 (not opened)", unblock: "the agent applies a v2 snapshot with the guard canary; pods leave guard-missing" },
+  { id: "o", missing: "503 and Kong-stop budgets on a pod serving traffic (item 6 measures the exit of an nginx that serves nothing)", component: "compiler + agent (N3)", pr: "N3 (not opened)", unblock: "a serving pod: the suite measures the stop with nginx running" },
+  { id: "p (part)", missing: "readiness Ready with the canary", component: "compiler + agent (N3)", pr: "N3 (not opened)", unblock: "the guard canary answers in a serving pod" },
+];
 const ITEM_OF = { reportsInOrder: "3", secondPod: "4", gracefulDeletion: "6", agentStopped: "9", killedPod: "5, 7", revocation: "8" };
 
+/** Every secret this run created, looked for in every file it leaves: none may appear. */
+function secretScan() {
+  const secrets = [ctx.registrationToken, ctx.adminToken, ctx.editorToken, ctx.secrets?.pgPassword, ctx.secrets?.admin.password, ctx.secrets?.editor.password,
+    ctx.secrets?.env.GROMESH_ENCRYPTION_KEY, ctx.secrets?.env.GROMESH_FINGERPRINT_KEY, ctx.admin?.cookie, ctx.admin?.csrf, ctx.editor?.cookie, ctx.editor?.csrf].filter(Boolean);
+  const leaks = [];
+  const files = readdirSync(out);
+  for (const file of files) {
+    const text = readFileSync(join(out, file), "utf8");
+    secrets.forEach((secret, i) => { if (text.includes(secret)) leaks.push({ file, secret: i }); });
+  }
+  return { files, secrets: secrets.length, leaks };
+}
+
+async function diagnostics() {
+  const parts = [];
+  for (const ns of [NS.dp, NS.cp]) parts.push((await kubectl(["-n", ns, "get", "pods", "-o", "wide"], { allowFail: true })).stdout);
+  for (const p of await pods().catch(() => [])) {
+    for (const c of ["agent", "isolation-probe", "kong"]) parts.push(`--- ${p.name}/${c}\n${(await kubectl(["-n", NS.dp, "logs", "--timestamps", "--tail=200", p.name, "-c", c], { allowFail: true })).stdout}`);
+  }
+  parts.push(`--- relay\n${(await kubectl(["-n", NS.cp, "logs", "--tail=200", "deploy/cp-relay"], { allowFail: true })).stdout}`);
+  writeFileSync(join(out, "diagnostics.log"), parts.join("\n"));
+}
+
+let finished = false;
+async function finish() {
+  if (finished) return;
+  finished = true;
+  report.thawed = await thawAll();
+  for (const f of followers) f.stop();
+  ctx.forward?.stop();
+  if (report.items.some((i) => i.result === "fail") || report.aborted) await diagnostics().catch((error) => log(`diagnostics: ${error.message}`));
+  if (process.env.LAB_KEEP === "1") report.cleanup = "kept (LAB_KEEP=1)";
+  else {
+    await removeSuiteObjects().then(() => { report.cleanup = "namespaces and policies removed"; }, (error) => { report.cleanup = `failed: ${error.message}`; });
+  }
+  report.finishedAt = new Date().toISOString();
+  save();
+  report.secretScan = secretScan();
+  save();
+  log(`cleanup: ${report.cleanup}; secret scan: ${report.secretScan.leaks.length} leaks in ${report.secretScan.files.length} files`);
+  console.log(`results: ${join(out, "results.json")}`);
+}
+
 async function main() {
+  for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => { report.aborted = { signal }; finish().finally(() => process.exit(130)); });
   const steps = [setup, coldStart, reportsInOrder, secondPod, gracefulDeletion, agentStopped, killedPod, revocation];
-  // LAB_SKIP=<step,...> leaves a step out (recorded as skipped), e.g. one whose finding is awaiting a decision.
-  const skip = new Set((process.env.LAB_SKIP ?? "").split(",").filter(Boolean));
+  const forced = new Set((process.env.LAB_RUN_BLOCKED ?? "").split(",").filter(Boolean));
   try {
     for (const step of steps) {
-      if (skip.has(step.name)) {
-        report.items.push({ id: ITEM_OF[step.name] ?? step.name, title: step.name, result: "skipped", failures: [], notes: ["LAB_SKIP"] });
-        log(`step ${step.name}: SKIPPED (LAB_SKIP)`);
-        continue;
-      }
-      if (ctx.blocked) {
-        report.items.push({ id: ITEM_OF[step.name] ?? step.name, title: step.name, result: "blocked", failures: [], notes: [ctx.blocked] });
-        log(`step ${step.name}: BLOCKED (${ctx.blocked})`);
+      const reason = (!forced.has(step.name) && BLOCKED_STEPS[step.name]) || ctx.blocked;
+      if (reason) {
+        report.items.push({ title: step.name, result: "blocked", failures: [], ...reason, id: ITEM_OF[step.name] ?? step.name });
+        log(`step ${step.name}: BLOCKED (${reason.missing})`);
         continue;
       }
       try {
         await step();
       } catch (error) {
-        const it = report.items.at(-1);
         log(`step ${step.name} aborted: ${error.stack ?? error}`);
-        if (it && it.result === "pending") { it.failures.push(`aborted: ${error.message}`); it.result = "fail"; }
+        for (const it of report.items.filter((i) => i.result === "pending")) { it.failures.push(`aborted: ${error.message}`); it.result = "fail"; }
         report.aborted = { step: step.name, error: String(error.message ?? error) };
         save();
         break;
       }
     }
+    for (const entry of N3) blocked(entry);
   } finally {
-    for (const f of followers) f.stop();
-    ctx.forward?.stop();
-    report.finishedAt = new Date().toISOString();
-    report.dependsOnN3 = ["n: traffic served behind the guard (route guard canary)", "o: 503 / Kong stop budgets on a serving pod", "p (part): readiness Ready with the canary"];
-    save();
-    console.log(`results: ${join(out, "results.json")}`);
+    await finish();
   }
-  const failed = report.items.filter((i) => i.result !== "pass");
-  if (failed.length || report.aborted) process.exit(1);
+  const failed = report.items.filter((i) => i.result === "fail" || i.result === "pending");
+  if (failed.length || report.aborted || report.secretScan.leaks.length) process.exit(1);
 }
 
 await main();

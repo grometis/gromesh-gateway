@@ -52,6 +52,8 @@ export const helm = (args, options) => run("helm", ["--kubeconfig", kubeconfig, 
 export const docker = (args, options) => run("docker", args, options);
 export const json = async (args) => JSON.parse((await kubectl([...args, "-o", "json"])).stdout);
 export const apply = (objects) => kubectl(["apply", "-f", "-"], { input: JSON.stringify({ apiVersion: "v1", kind: "List", items: objects }) });
+// Secrets go through create, never apply: apply would copy their data into the last-applied annotation.
+export const createSecret = (secret) => kubectl(["create", "-f", "-"], { input: JSON.stringify(secret) });
 
 /**
  * cluster.sh status (N2-E1) proves, read-only, that the context is the named kind cluster (endpoint and CA as kind
@@ -176,16 +178,19 @@ export function cpSecrets() {
 const onControlPlaneNode = { nodeName: NODES.cp, tolerations: [{ operator: "Exists" }], automountServiceAccountToken: false };
 const restricted = { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } };
 
+export const controlPlaneSecret = (secrets) => ({ apiVersion: "v1", kind: "Secret", metadata: { name: "cp-env", namespace: NS.cp }, type: "Opaque",
+  stringData: { ...secrets.env, BOOTSTRAP_ADMIN_EMAIL: secrets.admin.email, BOOTSTRAP_ADMIN_PASSWORD: secrets.admin.password, POSTGRES_PASSWORD: secrets.pgPassword } });
+
+/** The registration token reaches the chart only as this Secret (agent.existingSecret): no values file ever holds it. */
+export const registrationSecret = (token) => ({ apiVersion: "v1", kind: "Secret", metadata: { name: "dp-registration", namespace: NS.dp }, type: "Opaque",
+  stringData: { "registration-token": token } });
+
 /** Postgres and one control plane replica, both on the control plane node: nothing the suite does to a worker touches them. */
-export function controlPlaneObjects(secrets, { cpImage, pgImage }) {
-  const secret = { apiVersion: "v1", kind: "Secret", metadata: { name: "cp-env", namespace: NS.cp }, type: "Opaque",
-    stringData: { ...secrets.env, BOOTSTRAP_ADMIN_EMAIL: secrets.admin.email, BOOTSTRAP_ADMIN_PASSWORD: secrets.admin.password, POSTGRES_PASSWORD: secrets.pgPassword } };
+export function controlPlaneObjects({ cpImage, pgImage }) {
   const deployment = (name, spec) => ({ apiVersion: "apps/v1", kind: "Deployment", metadata: { name, namespace: NS.cp, labels: { app: name } },
     spec: { replicas: 1, strategy: { type: "Recreate" }, selector: { matchLabels: { app: name } }, template: { metadata: { labels: { app: name } }, spec: { ...onControlPlaneNode, ...spec } } } });
   const service = (name, port) => ({ apiVersion: "v1", kind: "Service", metadata: { name, namespace: NS.cp }, spec: { selector: { app: name }, ports: [{ port, targetPort: port }] } });
   return [
-    { apiVersion: "v1", kind: "Namespace", metadata: { name: NS.cp } },
-    secret,
     deployment("postgres", { containers: [{ name: "postgres", image: pgImage, imagePullPolicy: "Never",
       env: [{ name: "POSTGRES_DB", value: "gromesh" }, { name: "POSTGRES_USER", value: "gromesh" }, { name: "POSTGRES_PASSWORD", valueFrom: { secretKeyRef: { name: "cp-env", key: "POSTGRES_PASSWORD" } } }],
       ports: [{ containerPort: 5432 }], readinessProbe: { exec: { command: ["pg_isready", "-U", "gromesh", "-d", "gromesh"] }, periodSeconds: 2 },
@@ -204,6 +209,27 @@ export function controlPlaneObjects(secrets, { cpImage, pgImage }) {
   ];
 }
 
+/**
+ * The agents' way to the control plane (relay.mjs): transparent until the suite arms it to leave one report out, so the
+ * control plane's ack can be seen facing a gap. On the control plane node, with the lab's fixture image.
+ */
+export function relayObjects({ image, source }) {
+  const labels = { app: "cp-relay" };
+  return [
+    { apiVersion: "v1", kind: "ConfigMap", metadata: { name: "cp-relay", namespace: NS.cp }, data: { "relay.mjs": source } },
+    { apiVersion: "apps/v1", kind: "Deployment", metadata: { name: "cp-relay", namespace: NS.cp, labels },
+      spec: { replicas: 1, strategy: { type: "Recreate" }, selector: { matchLabels: labels }, template: { metadata: { labels }, spec: {
+        ...onControlPlaneNode, securityContext: { runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, seccompProfile: { type: "RuntimeDefault" } },
+        containers: [{ name: "relay", image, imagePullPolicy: "IfNotPresent", command: ["node", "/relay/relay.mjs"],
+          env: [{ name: "UPSTREAM", value: `http://control-plane.${NS.cp}.svc.cluster.local:3000` }],
+          ports: [{ containerPort: 3000 }], readinessProbe: { tcpSocket: { port: 3000 }, periodSeconds: 2 },
+          securityContext: { ...restricted, readOnlyRootFilesystem: true }, resources: { requests: { cpu: "20m", memory: "48Mi" }, limits: { memory: "128Mi" } },
+          volumeMounts: [{ name: "source", mountPath: "/relay", readOnly: true }, { name: "arm", mountPath: "/tmp/relay" }] }],
+        volumes: [{ name: "source", configMap: { name: "cp-relay" } }, { name: "arm", emptyDir: { sizeLimit: "1Mi" } }] } } } },
+    { apiVersion: "v1", kind: "Service", metadata: { name: "cp-relay", namespace: NS.cp }, spec: { selector: labels, ports: [{ port: 3000, targetPort: 3000 }] } },
+  ];
+}
+
 const ccnp = (name, egressDeny) => ({
   apiVersion: "cilium.io/v2", kind: "CiliumClusterwideNetworkPolicy", metadata: { name },
   spec: {
@@ -213,6 +239,8 @@ const ccnp = (name, egressDeny) => ({
   },
 });
 
+export const POLICIES = ["n2c-deny-host", "n2c-deny-imds", "n2c-deny-cidrs"];
+
 /** The N2-E1 protected layers for this suite's data plane namespace (the chart's own NetworkPolicy comes with the release). */
 export function denyPolicies(net) {
   return [
@@ -220,4 +248,10 @@ export function denyPolicies(net) {
     ccnp("n2c-deny-imds", [{ toCIDR: ["169.254.169.254/32", "169.254.170.2/32", "fd00:ec2::254/128"] }]),
     ccnp("n2c-deny-cidrs", [{ toCIDR: [...net.nodeCidrs, ...net.deniedCidrs] }]),
   ];
+}
+
+/** Everything this suite installs, and nothing else: its two namespaces (release included) and its cluster-wide policies. */
+export async function removeSuiteObjects() {
+  await kubectl(["delete", "namespace", NS.dp, NS.cp, "--ignore-not-found", "--wait", "--timeout=240s"], { timeout: 260_000 });
+  await kubectl(["delete", "ciliumclusterwidenetworkpolicy", ...POLICIES, "--ignore-not-found"]);
 }
