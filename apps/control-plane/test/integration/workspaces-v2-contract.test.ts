@@ -722,10 +722,17 @@ describe("agent protocol v2", () => {
     expect([item.properties.servedState["x-gromesh-planned"], item.required.includes("servedState")]).toEqual([true, false]);
     for (const s of ["never-served", "NEVER_SERVED_VERIFIED", null]) expect(valid("ClusterIsolation", isolation({ ...pod, servedState: s })), String(s)).toBe(false);
     const machine = v2.components.schemas.AdmissionServedState["x-gromesh-transitions"];
-    expect(machine.initial).toEqual(["unknown"]);
-    // unknown never becomes never-served-verified without the verified seq 1 final, and served is final.
-    expect(machine.transitions.filter(([, to]: string[]) => to === "never-served-verified")).toEqual([["unknown", "never-served-verified", "verified final report seq 1 with kongStopConfirmed true"]]);
-    expect(machine.transitions.filter(([from]: string[]) => from === "served")).toEqual([]);
+    expect([machine.initial, machine.terminal]).toEqual([["unknown"], ["served"]]);
+    // The whole machine is pinned: unknown reaches never-served-verified only by the verified seq 1 final with the
+    // stop confirmed, nothing ever goes back to unknown, and served is final.
+    expect(machine.transitions.map(([from, to]: string[]) => `${from}>${to}`).sort()).toEqual(["never-served-verified>served", "unknown>never-served-verified", "unknown>served"]);
+    const why = (from: string, to: string) => machine.transitions.find(([f, t]: string[]) => f === from && t === to)[2];
+    expect(why("unknown", "never-served-verified")).toBe("verified final report seq 1 with kongStopConfirmed true");
+    expect(why("unknown", "served")).toContain("other than a seq 1 final with kongStopConfirmed true");
+    expect(why("unknown", "served")).toContain("a closing without a confirmed stop");
+    // A seq 1 final without a confirmed stop is a valid report, and it counts as served, never as never served.
+    const unconfirmed = { clusterId: u, podUid: u, bootId: u, admissionId: u, seq: 1, prevDigest: null, state: "awaiting-admission", failedCapabilities: [], challenge: null, final: true, finalReason: "pod-terminated", kongStopConfirmed: false };
+    expect(validAgent("ProbeReport", unconfirmed), JSON.stringify(validator("agent-protocol-v2.openapi.yaml", "ProbeReport").errors)).toBe(true);
     const info = agentV2.info.description.replace(/\s+/g, " ");
     expect(info).toContain("never from a declaration of the agent");
     expect(info).toContain("the control plane never closes an admission automatically on unknown");

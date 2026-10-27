@@ -4885,7 +4885,8 @@ components:
         Whether the pod's admission may have authorized traffic (decision F3-D2; agent protocol v2, "Served state"),
         derived only from reports verified with the probe key bound to the admission. never-served-verified: the
         chain's seq 1 is a final report with kongStopConfirmed true. served: the chain holds any other report (the
-        probe adopted the admission). unknown: no verified report (requested, refused, granted and silent, or
+        probe adopted the admission, or a closing did not confirm Kong's stop: counted as served, never as never
+        served). unknown: no verified report (requested, refused, granted and silent, or
         released by an admin). unknown never counts as never-served-verified and never closes an admission
         automatically.
       enum: [ never-served-verified, served, unknown ]
@@ -4894,7 +4895,7 @@ components:
         terminal: [ served ]
         transitions:
           - [ unknown, never-served-verified, "verified final report seq 1 with kongStopConfirmed true" ]
-          - [ unknown, served, "verified report of the chain other than a seq 1 final (adoption)" ]
+          - [ unknown, served, "verified report of the chain other than a seq 1 final with kongStopConfirmed true (adoption, or a closing without a confirmed stop)" ]
           - [ never-served-verified, served, "a later report of the chain (integrity conflict: confirmed-violation)" ]
     ClusterIsolation:
       type: object
