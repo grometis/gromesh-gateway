@@ -665,6 +665,46 @@ bindings valem só para a N1; o relatório da migração (`accessChanges`) lista
 variáveis (N1-X4b) ficam para a N2, como a escrita v2 de service, route e plugin e o import v2 (estes também
 dependem da trilha F-1).
 
+### N3 — recorte mínimo para os aceites da N2 (autorizado em 2026-10-27; nenhum merge sem o Fabrício)
+Só o que os aceites n, o, p e CAP-5…CAP-7 com pod servindo exigem. Fora: rollback, reconcile, revogação, promoções,
+aprovações DEV → HML → PRD e o restante da N3/N4. Este planejamento não autoriza nenhuma implementação além das
+tarefas da tabela. O modo Workspaces segue desabilitado para uso operacional: só laboratórios descartáveis o ligam, de
+forma explícita. Sem Workspaces, nada muda (v1 byte a byte).
+
+Decisões do PO (2026-10-27):
+- **D1 Identidade da instância.** Antecipa da N4 só a persistência da entidade `instance` (id estável e único, stage
+  imutável). Reaproveita as chaves Ed25519 de `instance_signing_keys`: nenhuma segunda identidade nem segundo mecanismo
+  de assinatura. Migração aditiva e testada; nenhuma migração em ambiente operacional nesta fase.
+- **D2 Quem recebe deployments v2.** Só clusters explicitamente habilitados para o protocolo v2. Um cluster tem um único
+  protocolo de entrega ativo; os v1 seguem no fluxo atual; nenhuma conversão automática; a troca de protocolo é
+  explícita, validada e auditada, com estados e transições no contrato, e mantém a identidade e a convergência do cluster.
+- **D3 Canário ligado à revisão aplicada.** `applied.json` no handoff e `appliedRevision` no relatório da sonda, ligados
+  ao estado efetivamente aplicado: instance, cluster, pod, deployment, revisão, hash, identidade do agente e resultado.
+  O agente só declara uma revisão aplicada depois de o Kong confirmar a config correspondente; o CP confronta o reporte
+  com o deployment e o hash esperados; revisão declarada isoladamente não prova convergência; o canário detecta config
+  servindo diferente da revisão autorizada. Exige PR de contrato antes do código.
+- **D4 `publishRelease`.** Criar uma release imutável (RBAC) não é implantá-la num cluster. A entrega v2 a um cluster
+  exige deployment autorizado, config válida, cluster compatível (D2), admissão válida, isolamento comprovado e
+  época/revisão/hash corretos. Sem aprovações DEV → HML → PRD nesta fase.
+- **D5 Coexistência v1/v2.** Um fluxo de publicação/aplicação ativo por cluster; o v1 não sobrescreve um deployment v2
+  ativo; o v2 não altera o estado legado em silêncio; a troca preserva histórico, config e retorno controlado; um agente
+  antigo nunca interpreta um deployment v2 (recusa segura); o suporte v1 não é removido.
+
+| Tarefa | Depende de | Escopo | Aceite |
+| --- | --- | --- | --- |
+| N3-C1 Envelope do snapshot v2 (#176) | N2-C1 | `packages/compiler` | unidade: valida contra `snapshot-v2.schema.json`; canário e guard em toda route de Workspace; alterar A não muda o `contentDigest` de B; mesmos membros → mesmo hash, qualquer revisão |
+| N3-C2 Persistência de releases e deployments (#177) | N1 | `apps/control-plane/src/db`, `apps/control-plane/drizzle` | integração: migração aditiva (colunas v1 intactas); UPDATE/DELETE recusados em `releases`, `deployments`, `content_activations`, `content_revocations`; lease de linha única |
+| N3-X1 Agente v2 em modo Workspaces (#178) | N2-X3 | `apps/agent` | `go test` com cpmock v2: época/revisão, 304 confirmado, marca de falha, partida a frio; testes v1 inalterados sem `GROMESH_HANDOFF_DIR`. Merge só depois da N3-C5 comprovada |
+| N3-K1 Contrato D2/D3 | D1–D5 | `contracts/` (+ exemplo e teste) | lint + Ajv; protocolo de entrega por cluster com estados e transições; `applied.json`; `ProbeReport.appliedRevision`; regras de convergência e códigos de recusa; controles negativos; rastreabilidade GW-*; aprovação do Fabrício antes do código que dependa dele |
+| N3-C3 Configuração v2 | N3-C1, N3-C2, D1 | `apps/control-plane`, `apps/control-plane/drizzle` (instance) | integração: `publishRelease` congela o rascunho em release imutável e compõe a revisão desejada pelo compilador; alterar A não muda o `contentDigest` de B; lease ocupado → 409; desligado fora de laboratório; auditoria na mesma transação |
+| N3-C4 Deployment e convergência | N3-C3, N3-K1 | `apps/control-plane` | integração: só cluster v2 recebe a revisão; 304 com revisão; época antiga → 409; revisão menor recusada; convergência só com status do agente e evidência da sonda batendo com o hash esperado; `content_activations` uma vez; prazo → failed |
+| N3-C5 Agente e reporte | N3-X1, N3-K1 | `apps/agent`, `apps/isolation` | `go test` + kind: `applied.json` só depois da confirmação do Kong; sonda leva `appliedRevision`; canário com config divergente → pod fora de `ok`; aplicação idempotente; sem regressão de revisão |
+
+**N2, frentes paralelas:** N2-F3K contrato do encerramento de admissão nunca adotada (se o contrato mudar) e N2-F3 a
+correção (admissão emitida e não adotada encerrada só com prova assinada de que não houve lease; violação confirmada nunca
+apagada por exclusão ou recriação de pod); N2-X4 coletor sidecar no loopback do pod (CAP-7), com autenticação, replay e
+dedup preservados. Depois da N3-C5: complemento da N2-E2 (n, o, p, CAP-5…CAP-7 com pod servindo).
+
 ## Backlog (pós-MVP, em ordem de prioridade)
 
 1. **Observabilidade resiliente:** feito (B1, PR #5). `dns_not_found_ttl`/`dns_error_ttl` = 1 s no compose e no chart (NXDOMAIN frio do coletor: 80,6 s → 10,3 s nas duas imagens), fila do http-log cobrindo 60 s, alerta `CollectorWithoutEvents` no Prometheus (compose e chart) e aceite automatizado em `e2e/observability.spec.ts` (reinício do coletor e NXDOMAIN frio perdem 0 s de eventos).
