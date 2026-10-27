@@ -224,13 +224,120 @@ func TestTheFinalReportEndsTheAdmission(t *testing.T) {
 	if n := len(w.outbox()); n != 2 {
 		t.Fatalf("reports after the final: %d", n)
 	}
-	// An unconfirmed stop says so.
-	w2 := newWorld(t, t.TempDir())
-	w2.admit(nil)
-	w2.round()
-	w2.p.Terminate(false)
-	if r := w2.outbox()[1].report; *r.KongStopConfirmed {
-		t.Fatal("an unconfirmed stop reported as confirmed")
+}
+
+// F4: only the probe container restarts while Kong keeps running. The admission is neither closed nor lost: the chain
+// resumes from the persisted state and the pod serves again after a new proof, without a new admission.
+func TestARestartOfTheProbeAloneResumesTheChain(t *testing.T) {
+	dir := t.TempDir()
+	w := newWorld(t, dir)
+	w.admit(nil)
+	w.round()
+	w.canary = CanaryResult{Status: 204, Nonce: w.p.State.Nonce}
+	w.p.CanaryStep(context.Background())
+	w.expect("ok", true)
+	w.p.Terminate(false)
+	if w.leaseValid() == nil {
+		t.Fatal("a lease outlived the probe")
+	}
+	if r := w.outbox(); len(r) != 1 || r[0].report.Final {
+		t.Fatalf("a stop without a confirmed Kong stop ended the chain: %d reports", len(r))
+	}
+	w.p = w.probe(dir)
+	if w.p.State.AdmissionID != admissionID {
+		t.Fatalf("admission %q lost across the restart", w.p.State.AdmissionID)
+	}
+	// Nothing is served on the first round back: a new proof comes first.
+	w.round()
+	w.expect("no-proof", false)
+	w.round()
+	w.expect("verifying", true)
+	w.canary = CanaryResult{Status: 204, Nonce: w.p.State.Nonce}
+	w.p.CanaryStep(context.Background())
+	w.expect("ok", true)
+	reports := w.outbox()
+	chained(t, reports, 1, nil)
+	for _, r := range reports {
+		if r.report.Final || r.report.AdmissionID != admissionID {
+			t.Fatalf("report %d: final %v admission %s", r.report.Seq, r.report.Final, r.report.AdmissionID)
+		}
+	}
+	// The pod's real stop afterwards still closes the same chain.
+	w.p.Terminate(true)
+	reports = w.outbox()
+	chained(t, reports, 1, nil)
+	if last := reports[len(reports)-1].report; !last.Final || !*last.KongStopConfirmed {
+		t.Fatalf("final %+v", last)
+	}
+}
+
+// F4: an admission not adopted yet is not closed by a restart of the probe alone: it is adopted after it.
+func TestARestartOfTheProbeAloneBeforeAdoptionKeepsTheAdmission(t *testing.T) {
+	dir := t.TempDir()
+	w := newWorld(t, dir)
+	w.admit(nil)
+	w.p.Terminate(false)
+	if n := len(w.outbox()); n != 0 {
+		t.Fatalf("%d reports for an admission never adopted", n)
+	}
+	w.p = w.probe(dir)
+	w.round()
+	w.expect("verifying", true)
+	if r := w.outbox(); len(r) != 1 || r[0].report.Seq != 1 || r[0].report.Final {
+		t.Fatalf("reports %+v", r)
+	}
+}
+
+// F4: a violation survives a restart of the probe alone; the chain keeps reporting it and nothing is served.
+func TestARestartOfTheProbeAloneKeepsTheViolation(t *testing.T) {
+	dir := t.TempDir()
+	w := newWorld(t, dir)
+	w.admit(nil)
+	w.round()
+	w.net.set("forbidden-CAP-2:80", true)
+	w.round()
+	w.expect("violation", false)
+	w.p.Terminate(false)
+	w.net.set("forbidden-CAP-2:80", false)
+	w.p = w.probe(dir)
+	w.round()
+	w.round()
+	w.expect("violation", false)
+	reports := w.outbox()
+	chained(t, reports, 1, nil)
+	if last := reports[len(reports)-1].report; last.State != "violation" || last.Final {
+		t.Fatalf("last %+v", last)
+	}
+}
+
+// F4: back from a restart of the probe alone with a full queue, nothing is renewed.
+func TestARestartOfTheProbeAloneWithAFullQueueServesNothing(t *testing.T) {
+	dir := t.TempDir()
+	w := newWorld(t, dir)
+	w.admit(nil)
+	w.round()
+	w.p.Terminate(false)
+	w.p = w.probe(dir)
+	w.p.queueBytes += QueueLimit
+	w.round()
+	w.round()
+	w.round()
+	w.expect("no-proof", false)
+}
+
+// F4: a probe that lost its volume has a new key: the admission granted to the old key is never adopted (fail-closed).
+func TestARestartOfTheProbeAloneWithItsVolumeLostIsNeverServed(t *testing.T) {
+	dir := t.TempDir()
+	w := newWorld(t, dir)
+	w.admit(nil)
+	w.round()
+	w.p.Terminate(false)
+	_ = os.RemoveAll(filepath.Join(dir, "probe"))
+	w.p = w.probe(dir)
+	w.round()
+	w.round()
+	if w.p.State.AdmissionID != "" || w.leaseValid() == nil {
+		t.Fatalf("the old key's admission was adopted (%s)", w.p.State.AdmissionID)
 	}
 }
 
