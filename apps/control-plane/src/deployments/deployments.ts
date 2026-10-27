@@ -135,8 +135,13 @@ export class DeliveryService {
   private async deliverable(tx: Tx, cluster: ClusterRow): Promise<void> {
     if (!this.enabled) throw deliveryRefused("workspaces-mode-disabled", "Workspaces mode is disabled on this instance");
     if (cluster.deliveryProtocol === "v1") throw deliveryRefused("delivery-protocol-v1", "This cluster receives v1 snapshots");
-    if (cluster.deliveryProtocol === "v2-pending" && !(await this.activateCluster(tx, cluster.id))) {
-      throw deliveryRefused("delivery-protocol-switching", "This cluster is switching to v2: the activation gate does not hold yet");
+    if (cluster.deliveryProtocol === "v2-pending") {
+      if (!(await this.activateCluster(tx, cluster.id))) {
+        throw deliveryRefused("delivery-protocol-switching", "This cluster is switching to v2: the activation gate does not hold yet");
+      }
+      // The activation commits even when the call is then refused: the latest revision takes the joined nodes (and the
+      // lease) in the same transaction, so no path leaves it active and "empty" for the next deployment to supersede.
+      await this.evaluate(tx);
     }
   }
 

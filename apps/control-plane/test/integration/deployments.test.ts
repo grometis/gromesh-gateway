@@ -389,6 +389,42 @@ describe("v2 delivery and convergence in a laboratory", () => {
 });
 
 describe("a deployment recorded before its cluster turns v2 (D-1, laboratory order)", () => {
+  it("evaluates the revision when the activation commits on a refused status, so a new deployment never closes it as empty", async () => {
+    const h = await startHarness({ databaseUrl: await freshDatabase("d1r"), workspacesDeployments: LAB });
+    try {
+      const base = (await h.app.getUrl()).replace("[::1]", "127.0.0.1");
+      expect((await v2(h.api, "POST", "/instance/signing-keys", { validUntil: new Date(Date.now() + 30 * 86_400_000).toISOString() })).status).toBe(201);
+      const c = await cluster(h, base);
+      const ws = (await h.api("POST", "/environments", { name: uniq("ws") })).body.id as string;
+      const svc = (await h.api("POST", `/environments/${ws}/services`, { name: uniq("svc"), protocol: "http", host: "echo", port: 80 })).body.id;
+      await h.api("POST", `/environments/${ws}/routes`, { name: uniq("route"), serviceId: svc, paths: ["/echo"] });
+      const history = async (revision: number) => (await h.sql.query(`select state from deployment_states where epoch = 1 and revision = $1 order by seq`, [revision])).rows.map((r) => r.state as string);
+      expect((await v2(h.api, "POST", `/workspaces/${ws}/releases`, {})).status).toBe(201);
+      expect((await v2(h.api, "POST", "/deployments", { expectedRevision: null, reason: "laboratory deployment" })).status).toBe(201);
+      expect(await history(1)).toEqual(["composed", "active"]);
+
+      expect((await v2(h.api, "PUT", `/clusters/${c.id}/delivery-protocol`, { protocol: "v2", reason: "laboratory switch after deploy" })).status).toBe(200);
+      const probe = new Probe();
+      const asked = await agentCall(base, c.token, "POST", "v2/isolation/admission-requests", probe.request());
+      const polled = await agentCall(base, c.token, "GET", `v2/isolation/admission-requests/${asked.body!.requestId}`);
+      const admissionId = JSON.parse(Buffer.from(polled.body!.admission.payload, "base64url").toString("utf8")).admissionId as string;
+      expect((await agentCall(base, c.token, "POST", "v2/isolation/reports", { reports: [probe.next(c.id, admissionId, { state: "verifying" })] })).body!.rejected).toEqual([]);
+
+      // The first v2 call is a status the control plane refuses (an epoch it never had): the activation still commits.
+      const refused = await agentCall(base, c.token, "POST", "v2/status", { nodeId: "node-1", epoch: 2, appliedRevision: null, appliedHash: null, kongHealthy: true });
+      expect(refused.status, refused.raw).toBe(409);
+      expect((await h.sql.query(`select delivery_protocol from clusters where id = $1`, [c.id])).rows[0].delivery_protocol).toBe("v2");
+      // ...and so does the revision's evaluation: it waits for the joined node, under the lease.
+      expect(await history(1)).toEqual(["composed", "active", "converging"]);
+      expect((await h.sql.query(`select revision from deployment_lease`)).rows[0].revision).toBe(1);
+      // A new deployment cannot take it as empty: the lease is held.
+      expect((await v2(h.api, "POST", "/deployments", { expectedRevision: 1, reason: "laboratory deployment" })).status).toBe(409);
+      expect(await history(1)).toEqual(["composed", "active", "converging"]);
+    } finally {
+      await h.close();
+    }
+  });
+
   it("never converges without an expected node, and the cluster activated later joins and must prove the revision", async () => {
     const h = await startHarness({ databaseUrl: await freshDatabase("d1"), workspacesDeployments: LAB });
     try {
