@@ -124,10 +124,11 @@ export function buildSnapshotV2(members: DeploymentMember[], meta: DeploymentMet
 
 /**
  * The guarantees snapshot-v2 states about `config`: one ownership tag per route, service, consumer and plugin (a
- * member's or the platform's); Workspace names and paths under the member's slug; a route guard on every Workspace
+ * member's or the platform's); Workspace names and paths under the member's slug; strip_path false unless the
+ * member's route set stripPath (a legacy-preserved route carries it in its state); a route guard on every Workspace
  * route; gromesh-workspace global; the platform canary behind the guard.
  */
-export function workspaceConfigIssues(config: KongDeclarativeConfig, members: Pick<WorkspaceMember, "id" | "slug">[]): CompileIssue[] {
+export function workspaceConfigIssues(config: KongDeclarativeConfig, members: WorkspaceMember[]): CompileIssue[] {
   const issues: CompileIssue[] = [];
   const add = (path: string, message: string) => issues.push({ path: `config.${path}`, message });
   const slugOf = new Map(members.map((m) => [`${WORKSPACE_TAG_PREFIX}${m.id.toLowerCase()}`, m.slug]));
@@ -137,9 +138,11 @@ export function workspaceConfigIssues(config: KongDeclarativeConfig, members: Pi
     else if (own[0] !== PLATFORM_TAG && !slugOf.has(own[0]!)) add(`${path}.tags`, "carries the tag of a Workspace that is not a member");
     return own.length === 1 && own[0] !== PLATFORM_TAG ? (slugOf.get(own[0]!) ?? null) : null;
   };
-  // Only an enabled instance scoped to the route alone runs on every request of that route.
-  const guards = (routeId: string) =>
-    config.plugins.filter((p) => p.name === ROUTE_GUARD_PLUGIN && p.enabled && p.route === routeId && !p.service && !p.consumer);
+  const stripPath = new Map(members.flatMap((m) => m.state.routes.map((r): [string, boolean] => [r.id.toLowerCase(), r.stripPath ?? false])));
+  // Only an enabled instance scoped to the route alone, with Kong's default protocols, runs on every request of that
+  // route (Kong skips an instance whose protocols do not include the request's).
+  const runsAlways = (p: KongDeclarativeConfig["plugins"][number]) => p.enabled && !p.service && !p.consumer && p.protocols === undefined;
+  const guards = (routeId: string) => config.plugins.filter((p) => p.name === ROUTE_GUARD_PLUGIN && p.route === routeId && runsAlways(p));
 
   config.services.forEach((s, i) => {
     const slug = owner(`services[${i}]`, s.tags);
@@ -161,12 +164,15 @@ export function workspaceConfigIssues(config: KongDeclarativeConfig, members: Pi
         : path.startsWith(`/${slug}/`);
       if (!inside) add(`routes[${i}].paths[${j}]`, "must be under the Workspace prefix");
     });
+    const expected = stripPath.get(r.id.toLowerCase());
+    if (expected === undefined) add(`routes[${i}]`, "is not a route of its Workspace");
+    else if (r.strip_path !== expected) add(`routes[${i}].strip_path`, `must be ${expected}`);
     if ((r.paths ?? []).length === 0) add(`routes[${i}].paths`, "a Workspace route must have a path under its prefix");
     if (guards(r.id).length !== 1) add(`routes[${i}]`, `must run ${ROUTE_GUARD_PLUGIN} exactly once`);
   });
 
   const workspacePlugin = config.plugins.filter((p) => p.name === WORKSPACE_PLUGIN);
-  if (workspacePlugin.length !== 1 || !workspacePlugin[0]!.enabled || workspacePlugin[0]!.route || workspacePlugin[0]!.service || workspacePlugin[0]!.consumer || !workspacePlugin[0]!.tags?.includes(PLATFORM_TAG)) {
+  if (workspacePlugin.length !== 1 || !runsAlways(workspacePlugin[0]!) || workspacePlugin[0]!.route || !workspacePlugin[0]!.tags?.includes(PLATFORM_TAG)) {
     add("plugins", `${WORKSPACE_PLUGIN} must exist once, global, tagged ${PLATFORM_TAG}`);
   }
   const canary = config.routes.filter((r) => r.paths?.includes(CANARY_PATH));
@@ -181,5 +187,10 @@ function isDateTime(value: string): boolean {
   if (!m) return false;
   const [year, month, day] = [Number(m[1]), Number(m[2]), Number(m[3])];
   const days = new Date(Date.UTC(year, month, 0)).getUTCDate();
-  return month >= 1 && month <= 12 && day >= 1 && day <= days;
+  if (month < 1 || month > 12 || day < 1 || day > days) return false;
+  if (m[5] !== "60") return true;
+  // A leap second exists only at 23:59:60 UTC (RFC 3339 §5.7).
+  const offset = m[7]!.toUpperCase() === "Z" ? 0 : (m[7]![0] === "-" ? -1 : 1) * (Number(m[7]!.slice(1, 3)) * 60 + Number(m[7]!.slice(4, 6)));
+  const minuteOfDay = Number(m[4]) * 60 + Number(value.slice(14, 16));
+  return ((minuteOfDay - offset) % 1440 + 1440) % 1440 === 23 * 60 + 59;
 }

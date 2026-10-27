@@ -68,7 +68,6 @@ const member = (ws: "a" | "b", releaseVersion = 1, paths = ["/pix"]): Deployment
 const meta = (extra: Partial<DeploymentMeta> = {}): DeploymentMeta => ({ instanceId: INSTANCE, epoch: 1, revision: 1, createdAt: "2026-10-27T00:00:00.000Z", ...extra });
 
 const clone = (cfg: KongDeclarativeConfig): KongDeclarativeConfig => JSON.parse(JSON.stringify(cfg));
-const ref = (m: DeploymentMember) => ({ id: m.id, slug: m.slug });
 
 describe("buildSnapshotV2", () => {
   it("produces an envelope the contract accepts, members ordered by workspaceId", () => {
@@ -124,10 +123,12 @@ describe("buildSnapshotV2", () => {
     expect(() => buildSnapshotV2([member("a")], meta({ mandatoryPluginsVersion: 0 }))).toThrow(RangeError);
     expect(() => buildSnapshotV2([member("a")], meta({ valuesDigest: "sha256:abc" }))).toThrow(RangeError);
     expect(() => buildSnapshotV2([member("a", 0)], meta())).toThrow(RangeError);
-    for (const createdAt of ["invalid", "2026-13-01T00:00:00Z", "2026-02-30T00:00:00Z", "2026-10-27T00:00:00", "2026-10-27"]) {
+    for (const createdAt of ["2026-10-27T12:34:60Z", "2026-10-27T23:59:60-03:00", "invalid", "2026-13-01T00:00:00Z", "2026-02-30T00:00:00Z", "2026-10-27T00:00:00", "2026-10-27"]) {
       expect(() => buildSnapshotV2([], meta({ createdAt })), createdAt).toThrow(RangeError);
     }
-    expect(validateEnvelope(buildSnapshotV2([], meta({ createdAt: "2026-10-27T00:00:00.5-03:00" })))).toBe(true);
+    for (const createdAt of ["2026-10-27T00:00:00.5-03:00", "2016-12-31T23:59:60Z", "2016-12-31T20:59:60-03:00"]) {
+      expect(validateEnvelope(buildSnapshotV2([], meta({ createdAt }))), createdAt).toBe(true);
+    }
     expect(() => buildSnapshotV2([member("a"), { ...member("b"), slug: "tvro" }], meta())).toThrow(CompileError);
   });
 });
@@ -190,18 +191,18 @@ describe("workspaceConfigIssues", () => {
   const routeOf = (cfg: KongDeclarativeConfig, name: string) => cfg.routes.findIndex((r) => r.name === name);
 
   it("accepts what composeWorkspaces emits", () => {
-    expect(workspaceConfigIssues(composed(), members.map(ref))).toEqual([]);
+    expect(workspaceConfigIssues(composed(), members)).toEqual([]);
   });
 
   it("refuses a config without the canary or with the canary unguarded", () => {
     const without = clone(composed());
     const i = without.routes.findIndex((r) => r.paths?.includes("/.gromesh/guard/current"));
     without.routes.splice(i, 1);
-    expect(workspaceConfigIssues(without, members.map(ref)).map((x) => x.path)).toContain("config.routes");
+    expect(workspaceConfigIssues(without, members).map((x) => x.path)).toContain("config.routes");
     const unguarded = clone(composed());
     const canary = unguarded.routes[i]!.id;
     unguarded.plugins = unguarded.plugins.filter((p) => p.route !== canary);
-    expect(workspaceConfigIssues(unguarded, members.map(ref)).map((x) => x.path)).toContain("config.routes");
+    expect(workspaceConfigIssues(unguarded, members).map((x) => x.path)).toContain("config.routes");
   });
 
   it("refuses a Workspace route without its guard, outside its prefix or misnamed", () => {
@@ -211,7 +212,7 @@ describe("workspaceConfigIssues", () => {
     cfg.plugins = cfg.plugins.filter((p) => !(p.name === "gromesh-route-guard" && p.route === routeId));
     cfg.routes[r]!.paths = ["/assine/pix", "~/tvro(?:/x)", "~/tvrox"];
     cfg.routes[r]!.name = "assine~pix";
-    expect(workspaceConfigIssues(cfg, members.map(ref))).toEqual([
+    expect(workspaceConfigIssues(cfg, members)).toEqual([
       { path: `config.routes[${r}].name`, message: "must be <slug>~<name>" },
       { path: `config.routes[${r}].paths[0]`, message: "must be under the Workspace prefix" },
       { path: `config.routes[${r}].paths[2]`, message: "must be under the Workspace prefix" },
@@ -227,16 +228,39 @@ describe("workspaceConfigIssues", () => {
         (p: KongDeclarativeConfig["plugins"][number]) => { p.enabled = false; },
         (p: KongDeclarativeConfig["plugins"][number]) => { p.consumer = id("a", 3); },
         (p: KongDeclarativeConfig["plugins"][number]) => { p.service = id("a", 1); },
+        (p: KongDeclarativeConfig["plugins"][number]) => { p.protocols = []; },
+        (p: KongDeclarativeConfig["plugins"][number]) => { p.protocols = ["grpc"]; },
       ]) {
         const cfg = clone(composed());
         const rid = target(cfg);
         mutate(cfg.plugins.find((p) => p.name === "gromesh-route-guard" && p.route === rid)!);
-        expect(workspaceConfigIssues(cfg, members.map(ref)).length, `${mutate}`).toBeGreaterThan(0);
+        expect(workspaceConfigIssues(cfg, members).length, `${mutate}`).toBeGreaterThan(0);
       }
     }
-    const disabled = clone(composed());
-    disabled.plugins.find((p) => p.name === "gromesh-workspace")!.enabled = false;
-    expect(workspaceConfigIssues(disabled, members.map(ref))).toContainEqual({ path: "config.plugins", message: "gromesh-workspace must exist once, global, tagged gromesh-platform" });
+    for (const mutate of [
+      (p: KongDeclarativeConfig["plugins"][number]) => { p.enabled = false; },
+      (p: KongDeclarativeConfig["plugins"][number]) => { p.protocols = []; },
+    ]) {
+      const cfg = clone(composed());
+      mutate(cfg.plugins.find((p) => p.name === "gromesh-workspace")!);
+      expect(workspaceConfigIssues(cfg, members), `${mutate}`).toContainEqual({ path: "config.plugins", message: "gromesh-workspace must exist once, global, tagged gromesh-platform" });
+    }
+  });
+
+  it("requires strip_path false unless the member's route set stripPath", () => {
+    for (const value of [true, undefined]) {
+      const cfg = clone(composed());
+      const r = routeOf(cfg, "tvro~pix");
+      cfg.routes[r]!.strip_path = value;
+      expect(workspaceConfigIssues(cfg, members), String(value)).toEqual([{ path: `config.routes[${r}].strip_path`, message: "must be false" }]);
+    }
+    const explicit = [{ ...member("a"), state: { ...state("a"), routes: [{ ...state("a").routes[0]!, stripPath: true }] } }, member("b")];
+    expect(workspaceConfigIssues(composeWorkspaces(explicit), explicit)).toEqual([]);
+    const cfg = composeWorkspaces(explicit);
+    const r = routeOf(cfg, "tvro~pix");
+    cfg.routes[r]!.strip_path = false;
+    expect(workspaceConfigIssues(cfg, explicit)).toEqual([{ path: `config.routes[${r}].strip_path`, message: "must be true" }]);
+    expect(workspaceConfigIssues(composed(), [{ ...member("a"), state: { ...state("a"), routes: [] } }, member("b")])).toContainEqual({ path: `config.routes[${r}]`, message: "is not a route of its Workspace" });
   });
 
   it("refuses a regex path whose alternatives escape the prefix group", () => {
@@ -244,7 +268,7 @@ describe("workspaceConfigIssues", () => {
       const cfg = clone(composed());
       const r = routeOf(cfg, "tvro~pix");
       cfg.routes[r]!.paths = [escape];
-      expect(workspaceConfigIssues(cfg, members.map(ref)), escape).toEqual([{ path: `config.routes[${r}].paths[0]`, message: "must be under the Workspace prefix" }]);
+      expect(workspaceConfigIssues(cfg, members), escape).toEqual([{ path: `config.routes[${r}].paths[0]`, message: "must be under the Workspace prefix" }]);
     }
   });
 
@@ -252,18 +276,18 @@ describe("workspaceConfigIssues", () => {
     const cfg = clone(composed());
     cfg.services[0]!.tags = cfg.services[0]!.tags!.filter((t) => !t.startsWith("gromesh-"));
     cfg.consumers[0]!.tags = [...cfg.consumers[0]!.tags!, "gromesh-platform"];
-    const found = workspaceConfigIssues(cfg, members.map(ref));
+    const found = workspaceConfigIssues(cfg, members);
     expect(found).toContainEqual({ path: "config.services[0].tags", message: "must carry exactly one of gromesh-platform or a member's Workspace tag" });
     expect(found).toContainEqual({ path: "config.consumers[0].tags", message: "must carry exactly one of gromesh-platform or a member's Workspace tag" });
-    expect(workspaceConfigIssues(composed(), [ref(member("a"))]).some((x) => x.message === "carries the tag of a Workspace that is not a member")).toBe(true);
+    expect(workspaceConfigIssues(composed(), [member("a")]).some((x) => x.message === "carries the tag of a Workspace that is not a member")).toBe(true);
   });
 
   it("refuses a missing or scoped gromesh-workspace", () => {
     const missing = clone(composed());
     missing.plugins = missing.plugins.filter((p) => p.name !== "gromesh-workspace");
-    expect(workspaceConfigIssues(missing, members.map(ref))).toContainEqual({ path: "config.plugins", message: "gromesh-workspace must exist once, global, tagged gromesh-platform" });
+    expect(workspaceConfigIssues(missing, members)).toContainEqual({ path: "config.plugins", message: "gromesh-workspace must exist once, global, tagged gromesh-platform" });
     const scoped = clone(composed());
     scoped.plugins.find((p) => p.name === "gromesh-workspace")!.route = scoped.routes[0]!.id;
-    expect(workspaceConfigIssues(scoped, members.map(ref))).toContainEqual({ path: "config.plugins", message: "gromesh-workspace must exist once, global, tagged gromesh-platform" });
+    expect(workspaceConfigIssues(scoped, members)).toContainEqual({ path: "config.plugins", message: "gromesh-workspace must exist once, global, tagged gromesh-platform" });
   });
 });
