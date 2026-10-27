@@ -253,9 +253,13 @@ async function freeze(podName, container, comm) {
 async function thaw(target) {
   // A pid that died with its pod may have been reused: only the same binary is continued.
   const comm = await docker(["exec", target.node, "cat", `/proc/${target.pid}/comm`], { allowFail: true });
-  if (comm.code === 0 && comm.stdout.trim() === target.comm) await docker(["exec", target.node, "kill", "-CONT", String(target.pid)], { allowFail: true });
+  if (comm.code !== 0) { frozen.delete(target); return "gone"; }
+  if (comm.stdout.trim() !== target.comm) { frozen.delete(target); return `pid reused by ${comm.stdout.trim()}`; }
+  const cont = await docker(["exec", target.node, "kill", "-CONT", String(target.pid)], { allowFail: true });
+  // A failed SIGCONT keeps the process listed: the run cannot end clean with it still stopped.
+  if (cont.code !== 0) return `SIGCONT failed: ${cont.stderr.trim()}`;
   frozen.delete(target);
-  return comm.code === 0 ? "continued" : "gone";
+  return "continued";
 }
 const thawAll = async () => Promise.all([...frozen].map(thaw));
 
@@ -379,6 +383,8 @@ async function preflight() {
 async function setup() {
   const it = item("1", "Postgres + control plane from main; admin, instance signing key (session+CSRF), cluster, registration token; data plane chart in Workspaces mode", { note: "setup" });
   report.environment = await assertLab();
+  // Only a context proven to be the lab is ever mutated, cleanup included.
+  ctx.labVerified = true;
   const topo = await topology();
   ctx.topo = topo;
   report.topology = topo;
@@ -1002,10 +1008,12 @@ async function finish() {
   for (const f of followers) f.stop();
   ctx.forward?.stop();
   if (report.items.some((i) => i.result === "fail") || report.aborted) await diagnostics().catch((error) => log(`diagnostics: ${error.message}`));
-  if (process.env.LAB_KEEP === "1") report.cleanup = "kept (LAB_KEEP=1)";
+  if (!ctx.labVerified) report.cleanup = "nothing touched: the context was not proven to be the lab";
+  else if (process.env.LAB_KEEP === "1") report.cleanup = "kept (LAB_KEEP=1)";
   else {
-    await removeSuiteObjects().then(() => { report.cleanup = "namespaces and policies removed"; }, (error) => { report.cleanup = `failed: ${error.message}`; });
+    await removeSuiteObjects().then(() => { report.cleanup = "namespaces and policies removed"; }, (error) => { report.cleanup = `failed: ${error.message}`; report.cleanupFailed = true; });
   }
+  if (frozen.size) { report.cleanupFailed = true; report.stillFrozen = [...frozen]; }
   report.finishedAt = new Date().toISOString();
   save();
   report.secretScan = secretScan();
@@ -1026,8 +1034,13 @@ async function main() {
         log(`step ${step.name}: BLOCKED (${reason.missing})`);
         continue;
       }
+      const before = report.items.length;
       try {
         await step();
+        // A blocked step run on request is diagnostic: whatever it measured, it stays blocked.
+        if (forced.has(step.name) && BLOCKED_STEPS[step.name]) {
+          for (const it of report.items.slice(before)) Object.assign(it, { diagnosticResult: it.result, result: "blocked", ...BLOCKED_STEPS[step.name], id: it.id });
+        }
       } catch (error) {
         log(`step ${step.name} aborted: ${error.stack ?? error}`);
         for (const it of report.items.filter((i) => i.result === "pending")) { it.failures.push(`aborted: ${error.message}`); it.result = "fail"; }
@@ -1041,7 +1054,7 @@ async function main() {
     await finish();
   }
   const failed = report.items.filter((i) => i.result === "fail" || i.result === "pending");
-  if (failed.length || report.aborted || report.secretScan.leaks.length) process.exit(1);
+  if (failed.length || report.aborted || report.secretScan.leaks.length || report.cleanupFailed) process.exit(1);
 }
 
 await main();

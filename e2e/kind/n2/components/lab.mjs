@@ -252,6 +252,11 @@ export function denyPolicies(net) {
 
 /** Everything this suite installs, and nothing else: its two namespaces (release included) and its cluster-wide policies. */
 export async function removeSuiteObjects() {
-  await kubectl(["delete", "namespace", NS.dp, NS.cp, "--ignore-not-found", "--wait", "--timeout=240s"], { timeout: 260_000 });
-  await kubectl(["delete", "ciliumclusterwidenetworkpolicy", ...POLICIES, "--ignore-not-found"]);
+  // Both are attempted whatever the other does; any failure is reported.
+  const results = await Promise.allSettled([
+    kubectl(["delete", "namespace", NS.dp, NS.cp, "--ignore-not-found", "--wait", "--timeout=240s"], { timeout: 260_000 }),
+    kubectl(["delete", "ciliumclusterwidenetworkpolicy", ...POLICIES, "--ignore-not-found"]),
+  ]);
+  const failed = results.filter((r) => r.status === "rejected").map((r) => r.reason.message);
+  if (failed.length) throw new Error(failed.join("; "));
 }
