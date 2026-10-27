@@ -833,9 +833,13 @@ paths:
       x-required-permission: release.publish
       x-gromesh-planned: true
       description: |
-        Freezes the workspace draft into an immutable release and deploys it on THIS instance (new deployment
-        revision composing every workspace's active release). Only on dev: in hml and prd local publishing does not
-        exist (403); content arrives only through promotions. Needs the deployment lease (409 otherwise).
+        Freezes the workspace draft into an immutable release and makes it the desired state of THIS instance (new
+        deployment revision composing every workspace's active release). A deployment revision is delivered only to
+        clusters whose deliveryProtocol is v2 (setClusterDeliveryProtocol; agent protocol v2, "Delivery protocol per
+        cluster"): creating a release never reaches a v1 or v2-pending cluster. While the server's Workspaces mode is
+        disabled (the default; N2 enables it only in disposable labs) it answers 409 workspaces-mode-disabled and
+        records nothing. Only on dev: in hml and prd local publishing does not exist (403); content arrives only
+        through promotions. Needs the deployment lease (409 otherwise).
       requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { message: { type: string }, expectedActiveVersion: { type: [ integer, "null" ] } }, additionalProperties: false } } } }
       responses:
         "201": { description: Published, content: { application/json: { schema: { $ref: "#/components/schemas/Release" } } } }
@@ -882,6 +886,36 @@ paths:
       x-required-permission-when:
         - when: body.emergency == true
           permission: rollback.emergency
+  /clusters/{clusterId}/delivery-protocol:
+    parameters: [ { $ref: "#/components/parameters/ClusterId" } ]
+    put:
+      tags: [ deployments ]
+      operationId: setClusterDeliveryProtocol
+      x-gromesh-requirements: [ GW-ENV-01, GW-DEP-02, GW-DEP-08 ]
+      x-required-permission: platform.admin
+      x-scope: instance
+      x-gromesh-planned: true
+      description: |
+        The only way to change a cluster's delivery flow (DeliveryProtocolState; decisions D2 and D5). protocol v2
+        moves a v1 cluster to v2-pending: from then on the v1 endpoints answer 409 delivery-protocol-switching to its
+        nodes (the v1 snapshots of its environment stay recorded and untouched) and the control plane moves it to v2
+        by itself once the activation gate holds: every expected node of the cluster has an open admission with a
+        conclusive passing round and no pendency is open in its scope (recorded and audited as a system transition).
+        protocol v1 cancels a v2-pending cluster, or returns a v2 cluster to v1 (controlled return): the cluster leaves
+        the expected nodes of every v2 deployment (converging deployments re-evaluate) and its nodes receive their
+        environment's current v1 snapshot again; history (snapshots, releases, deployments, reports) is kept. 409
+        DeliveryProblem: workspaces-mode-disabled (to v2), delivery-protocol-unchanged (same protocol or already
+        switching to it), no-v1-snapshot (return to v1 when the environment has no published snapshot). Session +
+        CSRF; reason required; audited in the same transaction with the previous and new state.
+      security: [ { cookieAuth: [], csrfToken: [] } ]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: false, required: [ protocol, reason ], properties: { protocol: { enum: [ v1, v2 ] }, reason: { type: string, minLength: 10 } } } } } }
+      responses:
+        "200": { description: New state, content: { application/json: { schema: { $ref: "#/components/schemas/InstanceCluster" } } } }
+        "409": { description: Refused by the delivery rules, content: { application/problem+json: { schema: { $ref: "#/components/schemas/DeliveryProblem" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /clusters/{clusterId}/isolation:
     parameters: [ { $ref: "#/components/parameters/ClusterId" } ]
     get:
@@ -3531,7 +3565,7 @@ paths:
       x-gromesh-planned: true
       x-gromesh-requirements:
         - GW-ENV-01
-      description: Every cluster of the instance receives the instance's current deployment (all Workspaces). Session + CSRF.
+      description: A cluster created here starts with deliveryProtocol v2-pending and receives the instance's current deployment (all Workspaces) only after the activation gate (DeliveryProtocolState). Session + CSRF.
       security:
         - cookieAuth: []
           csrfToken: []
@@ -4222,6 +4256,13 @@ components:
         message: { type: string }
         createdBy: { type: object }
         createdAt: { type: string, format: date-time }
+    ConvergenceEvidence:
+      description: |
+        Why a node counts or not as applied for the current revision (agent protocol v2, "Applied revision and
+        convergence evidence"). verified is the only value that counts; every other keeps the node applying
+        (awaiting-status, awaiting-probe-report) or degraded (revision-mismatch, served-config-divergence,
+        kong-hash-divergence, revision-regression).
+      enum: [ verified, awaiting-status, awaiting-probe-report, revision-mismatch, served-config-divergence, kong-hash-divergence, revision-regression ]
     DeploymentState:
       enum: [ composed, rejected, active, converging, converged, degraded, failed, superseded ]
       x-gromesh-transitions:
@@ -4240,8 +4281,37 @@ components:
           - [ failed, superseded, "reconciliation (reapply, same content) or rollback creates a new deployment" ]
           - [ converged, superseded, "new deployment" ]
           - [ converging, superseded, "emergency rollback only (owning promotion -> failed, reason superseded)" ]
+    DeliveryProtocolState:
+      description: |
+        A cluster's single active delivery flow (agent protocol v2, "Delivery protocol per cluster"). v1: environment
+        snapshots; v2: the instance's deployments; v2-pending: neither flow delivers anything new (each node keeps
+        what it applied) until the activation gate holds.
+      enum: [ v1, v2-pending, v2 ]
+      x-gromesh-transitions:
+        initial: [ v1, v2-pending ]
+        terminal: []
+        transitions:
+          - [ v1, v2-pending, "setClusterDeliveryProtocol protocol v2 with Workspaces mode enabled (audited)" ]
+          - [ v2-pending, v2, "activation gate: every expected node has an open admission with a conclusive passing round and no pendency is open in scope (system transition, audited)" ]
+          - [ v2-pending, v1, "setClusterDeliveryProtocol protocol v1: switch cancelled (audited)" ]
+          - [ v2, v1, "setClusterDeliveryProtocol protocol v1: controlled return to the environment's current v1 snapshot (audited)" ]
+    DeliveryProblem:
+      description: Problem of the delivery rules; type is https://gromesh.dev/problems/<code>.
+      allOf:
+        - $ref: "#/components/schemas/Problem"
+        - type: object
+          required: [ code ]
+          properties:
+            status: { const: 409 }
+            code: { enum: [ workspaces-mode-disabled, delivery-protocol-unchanged, no-v1-snapshot ] }
     Deployment:
       type: object
+      description: |
+        Expected nodes of a revision: the registered, not deregistered nodes of the clusters whose deliveryProtocol is
+        v2 when the revision is recorded (a cluster that turns v2 later joins at its activation; one that returns to
+        v1 leaves). A node is applied only with the evidence of agent protocol v2 ("Applied revision and convergence
+        evidence"): its StatusReport and its probe's signed report agree on epoch, revision, configHash and
+        kongConfigHash; evidence tells what is missing otherwise.
       required: [ epoch, revision, state, members, configHash, convergence ]
       properties:
         epoch: { type: integer, minimum: 1 }
@@ -4250,7 +4320,7 @@ components:
         members: { type: array, items: { type: object, required: [ workspaceId, releaseVersion, contentDigest ], properties: { workspaceId: { type: string, format: uuid }, releaseVersion: { type: integer }, contentDigest: { $ref: "#/components/schemas/Digest" } } } }
         configHash: { $ref: "#/components/schemas/Digest" }
         convergence: { enum: [ converged, converging, degraded, no-nodes ] }
-        clusters: { type: array, items: { type: object, properties: { id: { type: string, format: uuid }, status: { enum: [ converged, converging, degraded, no-nodes ] }, nodes: { type: array, items: { type: object, properties: { nodeId: { type: string }, state: { enum: [ applying, applied, failed, idle ] }, appliedRevision: { type: [ integer, "null" ] }, online: { type: boolean } } } } } } }
+        clusters: { type: array, items: { type: object, properties: { id: { type: string, format: uuid }, status: { enum: [ converged, converging, degraded, no-nodes ] }, nodes: { type: array, items: { type: object, properties: { nodeId: { type: string }, state: { enum: [ applying, applied, failed, idle ] }, appliedRevision: { type: [ integer, "null" ] }, online: { type: boolean }, kongConfigHash: { type: [ string, "null" ], pattern: "^[0-9a-f]{32}$" }, evidence: { $ref: "#/components/schemas/ConvergenceEvidence" } } } } } } }
     PromotionRequest:
       description: Both kinds name the source release (deployed and converged on the source); partial adds a non-empty selection, whose dependency closure the TARGET recomputes over that release.
       oneOf:
@@ -5384,6 +5454,7 @@ components:
         - status
         - nodes
         - createdAt
+        - deliveryProtocol
       properties:
         id:
           type: string
@@ -5439,10 +5510,21 @@ components:
                 format: date-time
               online:
                 type: boolean
+              kongConfigHash:
+                type: [ string, "null" ]
+                pattern: ^[0-9a-f]{32}$
+              evidence:
+                $ref: "#/components/schemas/ConvergenceEvidence"
         createdAt:
           type: string
           format: date-time
-      description: "A cluster belongs to the instance, not to a workspace: it receives the composition of every workspace."
+        deliveryProtocol:
+          $ref: "#/components/schemas/DeliveryProtocolState"
+        environmentId:
+          type: [ string, "null" ]
+          format: uuid
+          description: Environment the cluster was created under (v1); selects its snapshots only while deliveryProtocol is v1.
+      description: "A cluster belongs to the instance, not to a workspace: with deliveryProtocol v2 it receives the composition of every workspace; status refers to the flow of its deliveryProtocol."
     PackageService:
       type: object
       additionalProperties: false

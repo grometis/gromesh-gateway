@@ -14,6 +14,59 @@ info:
         its volume holds a higher revision, and refuses an older epoch (409 from the control plane on report).
       - A permanent failure (Kong 400/413) is marked per (epoch, revision, hash); a new revision clears the mark.
 
+    Delivery protocol per cluster (N3 minimal slice; decisions D2, D4, D5):
+      - Every cluster has exactly one active delivery flow, its deliveryProtocol (DeliveryProtocolState in
+        control-plane-v2): v1 (environment snapshots, agent-protocol.openapi.yaml) or v2 (the instance deployment,
+        this contract). A cluster is never converted implicitly: only setClusterDeliveryProtocol changes it,
+        explicitly, validated and audited. The cluster keeps its id, its node tokens and its registration; its
+        environmentId (RegisterResponse) names the environment it was created under and selects nothing while the
+        protocol is not v1.
+      - The control plane serves getCurrentDeployment only to a node of a v2 cluster, and only while the server's
+        Workspaces mode is enabled (a server configuration, disabled by default; enabled only in disposable labs
+        during N2). Otherwise it answers 409 DeliveryProblem: workspaces-mode-disabled, delivery-protocol-v1 or
+        delivery-protocol-switching (v2-pending: neither flow delivers anything new until the activation gate). A
+        node of a v2 or v2-pending cluster gets 409 delivery-protocol-v2 / delivery-protocol-switching from the v1
+        getCurrentSnapshot, so a v1 publication never overwrites a v2 deployment and an agent that speaks only v1
+        never receives a v2 envelope (it keeps the configuration it already applied).
+      - The agent in Workspaces mode is configured with its instanceId (chart workspaces.instanceId, like the
+        InstanceTrustSet) and never applies an envelope of another instance: it reports failureReason
+        instance-mismatch for that (epoch, revision, hash) and keeps the configuration it applied.
+
+    Applied revision and convergence evidence (decision D3; GW-DEP-02, GW-DEP-05):
+      - The agent declares a revision applied only after Kong confirmed it: POST /config answered 201 with the config
+        bytes exactly as served (the control plane serves the canonical JSON of the config, so the bytes are a
+        function of the hash) and Kong's GET /status then reports a configuration_hash (kongConfigHash). Only then
+        it writes applied.json (AppliedRevision) to the handoff and reports StatusReport with the same values. A
+        failed apply leaves applied.json as it was: Kong still serves the previous revision.
+      - The guard canary answers X-Gromesh-Config-Hash, Kong's own current configuration hash, which neither the
+        agent nor the handoff controls. The probe copies (appliedEpoch, appliedRevision, appliedHash,
+        appliedKongConfigHash) from applied.json into its signed report only in a round in which the canary answered
+        with the lease nonce and a hash equal to applied.json's kongConfigHash, and always reports what the canary
+        served (servedKongConfigHash). A missing, unreadable or invalid applied.json, or one of another pod, cluster
+        or instance, counts as absent.
+      - What each piece proves. applied.json is written by the agent and proves nothing alone. The probe's report
+        proves, under the probe key bound to the admission, that the Kong of that pod served the configuration whose
+        hash the agent declared applied. The control plane links the declared revision to the authorized one: a
+        node counts as applied for the current (epoch, revision) only when (1) its latest StatusReport names that
+        epoch, revision and the deployment's configHash with a kongConfigHash; (2) the latest acknowledged report
+        of the open admission of that node, in state ok, carries the same epoch, revision, configHash and
+        kongConfigHash; and (3) that kongConfigHash equals the one first recorded for that configHash and Kong
+        version on this instance (identical bytes give the same Kong the same hash on every node). A revision declared only by the agent, a
+        probe report of another revision, or a kongConfigHash different from the recorded one never converges.
+        Declared residual: an agent that lies about the bytes it posted is inside the trusted path of configuration
+        delivery (it holds Kong's Admin API); the cross-node equality of (3) detects it unless every node lies alike.
+      - Loss or divergence of evidence. Without a report (communication-failure) the node stays applying and the
+        deployment converging or degraded, never converged. Status and report disagreeing on revision or hash:
+        evidence revision-mismatch, node degraded. Kong serving a hash other than applied.json's: the probe moves
+        the pod ok -> verifying, and to guard-missing after 60 s (NotReady; containment follows the lease rules);
+        the node is degraded with evidence served-config-divergence. A kongConfigHash different from the one
+        recorded for the configHash: evidence kong-hash-divergence, node degraded. Each is audited once when it
+        opens and when it clears.
+      - Regression. Inside an epoch the control plane refuses a StatusReport whose appliedRevision is lower than the
+        node's last verified revision (409 revision-regression; the node stays degraded until it reports the
+        current revision) and one naming a (revision, hash) that is no deployment of this instance (409
+        unknown-deployment). An older epoch keeps answering 409 epoch-outdated.
+
     Fail-closed isolation (Workspaces mode). Pod layout: agent, isolation-probe and collector are native sidecars
     (Kubernetes >= 1.33, or an earlier minor with recorded N2 evidence); kong is the only main container. Rules:
       - Lease: written by the isolation-probe only (IsolationLease), read by the route guard, the kong container's
@@ -71,9 +124,10 @@ info:
         another node, the metadata aliases (IPv4 and IPv6), a pod outside the list, a rebinding name, each internal
         service and the control plane through an unauthorized address; after Kong starts, the guard canary
         GET http://127.0.0.1:8000/.gromesh/guard/current (a platform route behind the guard answering 204 with
-        the lease nonce and the applied revision; every 1 s until the first success after each start or config
-        change). The control plane refuses to activate workspaces mode on a cluster until every pod has a
-        conclusive passing round.
+        the lease nonce and Kong's current config hash, compared with applied.json as described above; every 1 s
+        until the first success after each start or config change). The control plane refuses to activate
+        workspaces mode on a cluster until every pod has a conclusive passing round: the transition v2-pending -> v2
+        of the cluster's DeliveryProtocolState.
       - Probe persistence: each report is written with fsync to the probe's own volume before it is sent and kept in
         a queue until the control plane acks it (sizeLimit 64Mi); a full queue stops lease renewal (no-proof). The
         probe state (violation included), seq, key and queue survive container and node restarts. The probe key is
@@ -120,6 +174,7 @@ paths:
             X-Gromesh-Revision: { schema: { type: integer } }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { description: No deployment yet }
+        "409": { $ref: "#/components/responses/DeliveryRefused" }
   /agent/v2/status:
     post:
       tags: [agent]
@@ -135,7 +190,7 @@ paths:
       responses:
         "204": { description: Recorded }
         "401": { $ref: "#/components/responses/Unauthorized" }
-        "409": { description: Epoch older than the instance's current epoch }
+        "409": { $ref: "#/components/responses/DeliveryRefused" }
         "422": { $ref: "#/components/responses/ValidationError" }
   /agent/v2/isolation/admission-requests:
     post:
@@ -252,8 +307,29 @@ components:
       content:
         application/problem+json:
           schema: { $ref: "./agent-protocol.openapi.yaml#/components/schemas/Problem" }
+    DeliveryRefused:
+      description: Refused by the delivery rules (code in the body)
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/DeliveryProblem" }
   schemas:
+    DeliveryProblem:
+      description: |
+        RFC 9457 problem of the delivery rules; type is https://gromesh.dev/problems/<code>. The agent acts on code
+        only: workspaces-mode-disabled, delivery-protocol-v1 and delivery-protocol-switching mean "nothing to apply
+        now" (keep the applied configuration, poll again); epoch-outdated means a newer epoch exists (fetch the
+        current deployment); revision-regression and unknown-deployment mean the report was not recorded (fetch the
+        current deployment and report again). delivery-protocol-v2 is the v1 endpoints' answer to a node of a v2
+        cluster.
+      allOf:
+        - $ref: "./agent-protocol.openapi.yaml#/components/schemas/Problem"
+        - type: object
+          required: [code]
+          properties:
+            status: { const: 409 }
+            code: { enum: [workspaces-mode-disabled, delivery-protocol-v1, delivery-protocol-v2, delivery-protocol-switching, epoch-outdated, revision-regression, unknown-deployment] }
     Digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+    KongConfigHash: { type: string, pattern: "^[0-9a-f]{32}$", description: "Kong's own configuration hash (GET /status configuration_hash, X-Gromesh-Config-Hash of the canary)" }
     Jws:
       type: object
       description: JWS JSON flattened serialization with attached payload (alg EdDSA, typed protected header as in the description above). Verified over the received bytes.
@@ -275,6 +351,8 @@ components:
         failedRevision: { type: [integer, "null"], minimum: 1 }
         failedHash: { oneOf: [{ $ref: "#/components/schemas/Digest" }, { type: "null" }] }
         failureStatus: { type: [integer, "null"], description: "Kong's HTTP status for a permanent failure (400/413)" }
+        failureReason: { enum: [kong-rejected, instance-mismatch, invalid-envelope], description: "Why failedRevision was not applied; kong-rejected goes with failureStatus" }
+        kongConfigHash: { oneOf: [{ $ref: "#/components/schemas/KongConfigHash" }, { type: "null" }], description: "Kong's configuration_hash read after it confirmed appliedRevision; the same value the agent wrote to applied.json" }
         kongHealthy: { type: boolean }
         analytics: { enum: [analytics-healthy, analytics-degraded], description: "Collector health; never affects convergence, containment or readiness" }
         isolationState: { $ref: "#/components/schemas/PodIsolationState" }
@@ -286,12 +364,12 @@ components:
         terminal: []
         transitions:
           - [awaiting-admission, verifying, "admission for this podUid and bootId + conclusive pass: lease issued, nginx started"]
-          - [verifying, ok, "canary passes for the applied revision (Ready)"]
+          - [verifying, ok, "canary passes with the lease nonce and a config hash equal to applied.json's kongConfigHash (Ready)"]
           - [verifying, kong-unavailable, "canary without connection"]
           - [ok, kong-unavailable, "Kong down; lease still valid; NotReady"]
           - [kong-unavailable, verifying, "Kong answers"]
-          - [ok, verifying, "new config applied (NotReady until the canary passes)"]
-          - [verifying, guard-missing, "canary without guard, wrong nonce, or 404 for more than 60 s"]
+          - [ok, verifying, "canary config hash differs from the one of the last ok round: new config applied or divergence (NotReady until the canary passes)"]
+          - [verifying, guard-missing, "canary without guard, wrong nonce, 404, or config hash not matching applied.json for more than 60 s"]
           - [ok, guard-missing, "canary without guard"]
           - [guard-missing, verifying, "backoff elapsed: new lease, new start"]
           - [ok, inconclusive, "inconclusive round"]
@@ -382,6 +460,16 @@ components:
         final: { type: boolean }
         finalReason: { enum: [pod-terminated, node-reboot] }
         kongStopConfirmed: { type: boolean }
+        servedKongConfigHash: { oneOf: [{ $ref: "#/components/schemas/KongConfigHash" }, { type: "null" }], description: "X-Gromesh-Config-Hash of the canary's last answer in this round; null when it did not answer with the lease nonce" }
+        appliedEpoch: { type: [integer, "null"], minimum: 1, description: "From applied.json, only when the canary served its kongConfigHash in this round; otherwise null (as the other applied* members)" }
+        appliedRevision: { type: [integer, "null"], minimum: 1 }
+        appliedHash: { oneOf: [{ $ref: "#/components/schemas/Digest" }, { type: "null" }] }
+        appliedKongConfigHash: { oneOf: [{ $ref: "#/components/schemas/KongConfigHash" }, { type: "null" }], description: "Equal to servedKongConfigHash whenever not null" }
+      dependentRequired:
+        appliedEpoch: [appliedRevision, appliedHash, appliedKongConfigHash, servedKongConfigHash]
+        appliedRevision: [appliedEpoch]
+        appliedHash: [appliedEpoch]
+        appliedKongConfigHash: [appliedEpoch]
       allOf:
         - if: { properties: { seq: { const: 1 } } }
           then: { properties: { prevDigest: { type: "null" } } }
@@ -391,6 +479,9 @@ components:
           else: { not: { anyOf: [{ required: [finalReason] }, { required: [kongStopConfirmed] }] } }
         - if: { properties: { state: { const: violation } } }
           then: { properties: { failedCapabilities: { minItems: 1 } } }
+        - if: { required: [appliedEpoch], properties: { appliedEpoch: { type: integer } } }
+          then: { properties: { appliedRevision: { type: integer }, appliedHash: { $ref: "#/components/schemas/Digest" }, appliedKongConfigHash: { $ref: "#/components/schemas/KongConfigHash" }, servedKongConfigHash: { $ref: "#/components/schemas/KongConfigHash" } } }
+          else: { properties: { appliedRevision: { type: "null" }, appliedHash: { type: "null" }, appliedKongConfigHash: { type: "null" } } }
     SignedProbeReport:
       allOf:
         - $ref: "#/components/schemas/Jws"
@@ -484,5 +575,28 @@ components:
             itself lives in the probe's own volume);
           acks.json (agent): {"admissionId", "ackedSeq"} as acknowledged by the control plane for the current
             admission; the probe drops from its queue only that admission's reports up to ackedSeq. A false ack can
-            only lose reports, which the control plane sees as a gap (admissions held).
+            only lose reports, which the control plane sees as a gap (admissions held);
+          applied.json (agent): the AppliedRevision Kong confirmed last, written only after that confirmation. A
+            stale or false applied.json can only keep the pod out of ok (the canary hash will not match) or have its
+            report fail the control plane's checks; it never makes a node converge.
       type: object
+    AppliedRevision:
+      type: object
+      description: |
+        File /gromesh/handoff/applied.json (agent), not an HTTP body: the last revision Kong confirmed in this pod.
+        Read by the probe only as a regular file of at most 4 KiB; anything else counts as absent. Written after
+        POST /config answered 201 and GET /status reported kongConfigHash; result is always applied (a failure
+        leaves the previous file, and goes to StatusReport).
+      additionalProperties: false
+      required: [instanceId, clusterId, nodeId, podUid, epoch, revision, hash, kongConfigHash, result, appliedAt]
+      properties:
+        instanceId: { type: string, format: uuid, description: "Envelope instanceId, equal to the pod's configured instance" }
+        clusterId: { type: string, format: uuid, description: "From the agent's registration" }
+        nodeId: { type: string, minLength: 1, maxLength: 253, description: "The agent's identity: nodeId of its registration and of StatusReport" }
+        podUid: { type: string, format: uuid }
+        epoch: { type: integer, minimum: 1 }
+        revision: { type: integer, minimum: 1 }
+        hash: { $ref: "#/components/schemas/Digest", description: "The envelope's hash (deployment configHash)" }
+        kongConfigHash: { $ref: "#/components/schemas/KongConfigHash" }
+        result: { const: applied }
+        appliedAt: { type: string, format: date-time, description: "Display and audit only" }

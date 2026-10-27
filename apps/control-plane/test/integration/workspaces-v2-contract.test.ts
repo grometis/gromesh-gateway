@@ -358,7 +358,7 @@ describe("state machines in the contracts", () => {
 
   it("finds the machines of the approved design", () => {
     expect(machines.map(([n]) => n.split("#")[1]).sort()).toEqual(
-      ["AdmissionOutcome", "AdmissionState", "ApprovalState", "DeploymentState", "EmergencyPostReviewStatus", "InstanceSigningKeyStatus", "IsolationPendencyLifecycle", "PodIsolationState", "PromotionStatus", "WorkspaceRequestStatus"].sort(),
+      ["AdmissionOutcome", "AdmissionState", "ApprovalState", "DeliveryProtocolState", "DeploymentState", "EmergencyPostReviewStatus", "InstanceSigningKeyStatus", "IsolationPendencyLifecycle", "PodIsolationState", "PromotionStatus", "WorkspaceRequestStatus"].sort(),
     );
   });
 
@@ -735,6 +735,74 @@ describe("agent protocol v2", () => {
     expect(isolation.length).toBe(1);
     expect(owner(isolation[0]!)).toBe("gromesh-platform");
     for (const scope of ["route", "service", "consumer"]) expect(isolation[0]![scope], scope).toBeUndefined();
+  });
+});
+
+describe("delivery protocol and convergence evidence (N3-K1)", () => {
+  const vector = JSON.parse(read("examples/delivery-v2.example.json"));
+  type Evidence = { epoch: number; revision: number; configHash: string; recordedKongConfigHash: string | null; lastVerifiedRevision: number };
+  // The reference reading of "Applied revision and convergence evidence": only the agent's status and the probe's
+  // signed report agreeing with the authorized deployment and with the Kong hash recorded for its configHash count.
+  const evidenceOf = (e: Evidence, status: Doc, probe: Doc): string => {
+    if (!status) return "awaiting-status";
+    if (status.epoch === e.epoch && status.appliedRevision !== null && status.appliedRevision < e.lastVerifiedRevision) return "revision-regression";
+    if (status.epoch !== e.epoch || status.appliedRevision !== e.revision || status.appliedHash !== e.configHash || !status.kongConfigHash) return "awaiting-status";
+    if (!probe || probe.state !== "ok" || probe.appliedEpoch == null) {
+      return probe?.servedKongConfigHash && probe.servedKongConfigHash !== status.kongConfigHash ? "served-config-divergence" : "awaiting-probe-report";
+    }
+    const same = probe.appliedEpoch === e.epoch && probe.appliedRevision === e.revision && probe.appliedHash === e.configHash && probe.appliedKongConfigHash === status.kongConfigHash;
+    if (!same) return "revision-mismatch";
+    if (e.recordedKongConfigHash !== null && status.kongConfigHash !== e.recordedKongConfigHash) return "kong-hash-divergence";
+    return "verified";
+  };
+
+  it("accepts applied.json and refuses every invalid one", () => {
+    expect(validAgent("AppliedRevision", vector.applied)).toBe(true);
+    for (const { reason, value } of vector.invalidApplied) expect(validAgent("AppliedRevision", value), reason).toBe(false);
+    expect(agentV2.components.schemas.IsolationHandoff.description).toContain("applied.json (agent)");
+  });
+
+  it("carries the applied revision in the signed report only as a whole, with the served hash", () => {
+    for (const value of vector.probeReports.valid) expect(validAgent("ProbeReport", value), JSON.stringify(validator("agent-protocol-v2.openapi.yaml", "ProbeReport").errors)).toBe(true);
+    for (const { reason, value } of vector.probeReports.invalid) expect(validAgent("ProbeReport", value), reason).toBe(false);
+    for (const c of vector.cases) {
+      if (c.status) expect(validAgent("StatusReport", c.status), c.name).toBe(true);
+      if (c.probe) expect(validAgent("ProbeReport", c.probe), c.name).toBe(true);
+    }
+  });
+
+  it("converges only with status and probe evidence agreeing with the deployment", () => {
+    const evidence = new Set(v2.components.schemas.ConvergenceEvidence.enum);
+    expect(new Set(vector.cases.map((c: Doc) => c.evidence))).toEqual(evidence);
+    for (const c of vector.cases) expect(evidenceOf(c.expected ?? vector.expected, c.status, c.probe), c.name).toBe(c.evidence);
+    expect(vector.cases.filter((c: Doc) => c.evidence === "verified").every((c: Doc) => c.probe && c.status)).toBe(true);
+  });
+
+  it("refuses with a typed code and switches the protocol only explicitly", () => {
+    const refusal = (code: string) => ({ type: `https://gromesh.dev/problems/${code}`, title: "Conflict", status: 409, code });
+    for (const code of ["workspaces-mode-disabled", "delivery-protocol-v1", "delivery-protocol-v2", "delivery-protocol-switching", "epoch-outdated", "revision-regression", "unknown-deployment"]) {
+      expect(validAgent("DeliveryProblem", refusal(code)), code).toBe(true);
+    }
+    expect(validAgent("DeliveryProblem", refusal("timeout"))).toBe(false);
+    expect(validAgent("DeliveryProblem", { ...refusal("epoch-outdated"), status: 422 })).toBe(false);
+    expect(valid("DeliveryProblem", refusal("no-v1-snapshot"))).toBe(true);
+    for (const path of ["/agent/v2/deployments/current", "/agent/v2/status"]) {
+      const op = agentV2.paths[path].get ?? agentV2.paths[path].post;
+      expect(op.responses["409"].$ref, path).toBe("#/components/responses/DeliveryRefused");
+    }
+    expect(Object.keys(docs["agent-protocol.openapi.yaml"].paths["/agent/v1/snapshots/current"].get.responses)).toContain("409");
+    const set = v2Ops.find(({ op }) => op.operationId === "setClusterDeliveryProtocol")!;
+    expect(set.op["x-gromesh-planned"]).toBe(true);
+    expect(set.op.security).toEqual([{ cookieAuth: [], csrfToken: [] }]);
+    const body = bodyOf("/clusters/{clusterId}/delivery-protocol", "put");
+    expect(body({ protocol: "v2", reason: "lab N2 activation" })).toBe(true);
+    for (const bad of [{ protocol: "v2" }, { protocol: "v3", reason: "lab N2 activation" }, { protocol: "v2", reason: "lab N2 activation", force: true }]) expect(body(bad), JSON.stringify(bad)).toBe(false);
+    // Only the activation gate turns a cluster v2, and every switch back is explicit.
+    const t = v2.components.schemas.DeliveryProtocolState["x-gromesh-transitions"].transitions as [string, string, string][];
+    expect(t.filter(([, to]) => to === "v2").map(([from, , why]) => [from, why.startsWith("activation gate")])).toEqual([["v2-pending", true]]);
+    for (const [from, to, why] of t) if (to === "v1" || to === "v2-pending") expect(why, `${from} -> ${to}`).toContain("setClusterDeliveryProtocol");
+    expect(valid("InstanceCluster", { id: u, name: "edge", status: "no-nodes", nodes: [], createdAt: "2026-10-27T00:00:00Z" })).toBe(false);
+    expect(valid("InstanceCluster", { id: u, name: "edge", status: "no-nodes", nodes: [], createdAt: "2026-10-27T00:00:00Z", deliveryProtocol: "v2-pending", environmentId: null })).toBe(true);
   });
 });
 
