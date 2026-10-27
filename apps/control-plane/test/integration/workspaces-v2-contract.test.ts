@@ -748,7 +748,7 @@ describe("delivery protocol and convergence evidence (N3-K1)", () => {
   // The reference reading of "Applied revision and convergence evidence": only the agent's status and a fresh signed
   // report of the node's own admission agreeing with the deployment and with the Kong hash the control plane derived.
   const evidenceOf = (e: Expected, { status, probe, receivedAt }: Doc): string => {
-    if (!status) return "awaiting-status";
+    if (!status || status.nodeId !== e.nodeId) return "awaiting-status";
     if (status.epoch === e.epoch && status.appliedRevision !== null && status.appliedRevision < e.lastVerifiedRevision) return "revision-regression";
     if (status.epoch !== e.epoch || status.appliedRevision !== e.revision || status.appliedHash !== e.configHash || !status.kongConfigHash) return "awaiting-status";
     const at = Date.parse(receivedAt);
@@ -805,6 +805,9 @@ describe("delivery protocol and convergence evidence (N3-K1)", () => {
       expect(validAgent("DeliveryProblem", refusal(code)), code).toBe(true);
     }
     expect(validAgent("DeliveryProblem", refusal("timeout"))).toBe(false);
+    const deploy409 = ajv.compile({ $ref: `${BASE}control-plane-v2.openapi.yaml#/paths/~1deployments/post/responses/409/content/application~1problem+json/schema` });
+    expect(deploy409(refusal("workspaces-mode-disabled"))).toBe(true);
+    expect(deploy409({ type: "https://gromesh.dev/problems/409", title: "Conflict", status: 409 })).toBe(true);
     expect(validAgent("DeliveryProblem", { ...refusal("epoch-outdated"), status: 422 })).toBe(false);
     expect(valid("DeliveryProblem", refusal("no-v1-snapshot"))).toBe(true);
     for (const path of ["/agent/v2/deployments/current", "/agent/v2/status"]) {

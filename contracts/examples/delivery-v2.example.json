@@ -395,6 +395,37 @@
       "evidence": "awaiting-status"
     },
     {
+      "name": "status of another node",
+      "status": {
+        "nodeId": "kong-7d9f-1",
+        "epoch": 1,
+        "appliedRevision": 4,
+        "appliedHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+        "kongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+        "kongHealthy": true,
+        "isolationState": "ok"
+      },
+      "probe": {
+        "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+        "podUid": "2f1e0d9c-8b7a-4695-a483-72615f4e3d2c",
+        "bootId": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+        "admissionId": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+        "seq": 9,
+        "prevDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+        "state": "ok",
+        "failedCapabilities": [],
+        "challenge": null,
+        "final": false,
+        "servedKongConfigHash": "8b19f0cec3a75468f925fe3472726575",
+        "appliedEpoch": 1,
+        "appliedRevision": 4,
+        "appliedHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+        "appliedKongConfigHash": "8b19f0cec3a75468f925fe3472726575"
+      },
+      "receivedAt": "2026-10-27T12:00:45Z",
+      "evidence": "awaiting-status"
+    },
+    {
       "name": "revision declared only by the agent: no probe report",
       "status": {
         "nodeId": "kong-7d9f-0",
