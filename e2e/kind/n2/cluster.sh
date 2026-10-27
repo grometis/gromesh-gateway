@@ -54,18 +54,20 @@ assert_nodes() {
 }
 
 # The Cilium release as installed: chart version, image digests in the spec.
-# With the pinned chart file, also its content: a release keeping the version and the images may run other templates.
+# Also its content against the pinned chart file: a release keeping the version and the images may run other
+# templates or defaults.
 assert_cilium_release() {
   local release chart="${1:-}" want got
   release="$(h list -n kube-system --filter '^cilium$' -o json)"
   [[ "$release" == *'"chart":"cilium-'"$CILIUM_VERSION"'"'* && "$release" == *'"status":"deployed"'* ]] || die "Cilium release $release, pinned cilium-$CILIUM_VERSION"
   [[ "$(k -n kube-system get daemonset cilium -o jsonpath='{.spec.template.spec.containers[?(@.name=="cilium-agent")].image}')" == *"@$CILIUM_IMAGE_DIGEST" ]] || die "cilium-agent image is not $CILIUM_IMAGE_DIGEST"
   [[ "$(k -n kube-system get deployment cilium-operator -o jsonpath='{.spec.template.spec.containers[0].image}')" == *"@$CILIUM_OPERATOR_GENERIC_DIGEST" ]] || die "cilium-operator image is not $CILIUM_OPERATOR_GENERIC_DIGEST"
-  if [[ -n "$chart" ]]; then
-    want="$(node "$here/chart-fingerprint.mjs" tgz "$chart")"
-    got="$(k -n kube-system get secret -l owner=helm,name=cilium,status=deployed -o jsonpath='{.items[0].data.release}' | base64 -d | base64 -d | gunzip | node "$here/chart-fingerprint.mjs" release)"
-    [[ -n "$want" && "$got" == "$want" ]] || die "the installed Cilium chart's templates ($got) are not the pinned chart's ($want)"
-  fi
+  [[ -n "$chart" ]] || die "no pinned chart file to compare the installed release with"
+  # The pinned chart as a release would carry it (client-side dry run: nothing reaches the cluster).
+  want="$(h install cilium "$chart" --namespace kube-system --dry-run=client -o json -f "$here/cilium-values.yaml" \
+    --set image.digest="$CILIUM_IMAGE_DIGEST" --set operator.image.genericDigest="$CILIUM_OPERATOR_GENERIC_DIGEST" | node "$here/chart-fingerprint.mjs")"
+  got="$(k -n kube-system get secret -l owner=helm,name=cilium,status=deployed -o jsonpath='{.items[0].data.release}' | base64 -d | base64 -d | gunzip | node "$here/chart-fingerprint.mjs")"
+  [[ "$want" =~ ^[0-9a-f]{64}$ && "$got" == "$want" ]] || die "the installed Cilium chart ($got) is not the pinned chart ($want): templates, defaults, schema or files differ"
 }
 
 # Everything, once Ready: registered nodes, the kind config this script writes, running Cilium images and config.
@@ -78,7 +80,7 @@ assert_pins() {
   ! k -n kube-system get daemonset kindnet >/dev/null 2>&1 || die "kindnet is installed"
   k -n kube-system get daemonset kube-proxy >/dev/null || die "kube-proxy is missing"
   [[ -z "$(k get nodes -o jsonpath='{range .items[*]}{.spec.podCIDRs}{"\n"}{end}' | grep -v ':' || true)" ]] || die "a node has no IPv6 pod CIDR"
-  assert_cilium_release
+  assert_cilium_release "$chart"
   for id in $(k -n kube-system get pods -l k8s-app=cilium -o jsonpath='{range .items[*]}{.status.containerStatuses[?(@.name=="cilium-agent")].imageID}{"\n"}{end}'); do
     [[ "$id" == *"@$CILIUM_IMAGE_DIGEST" ]] || die "a cilium-agent pod runs $id"
   done
@@ -115,6 +117,24 @@ check_kind() {
   else echo "kind $version: not the release binary ($sum), accepted outside CI"; fi
 }
 
+# The pinned chart, verified by digest (pulled) or by content (CILIUM_CHART_TGZ, pre-pulled), into $chart; the caller
+# removes $chart_dir.
+pinned_chart() {
+  local digest i
+  chart_dir="$(mktemp -d)"
+  chart="$chart_dir/cilium-$CILIUM_VERSION.tgz"
+  if [[ -n "${CILIUM_CHART_TGZ:-}" ]]; then
+    [[ "$( (sha256sum "$CILIUM_CHART_TGZ" 2>/dev/null || shasum -a 256 "$CILIUM_CHART_TGZ") | awk '{print $1}')" == "$CILIUM_CHART_TGZ_SHA256" ]] \
+      || { echo "$CILIUM_CHART_TGZ is not the pinned chart" >&2; exit 1; }
+    cp "$CILIUM_CHART_TGZ" "$chart"
+    digest="$CILIUM_CHART_DIGEST"
+  else for i in 1 2 3 4; do
+    digest="$(h pull "$CILIUM_CHART" --version "$CILIUM_VERSION" -d "$chart_dir" 2>&1 | awk '/^Digest:/ {print $2}')" && [[ -n "$digest" ]] && break
+    sleep $((i * 5))
+  done; fi
+  [[ "$digest" == "$CILIUM_CHART_DIGEST" ]] || { echo "Cilium chart digest '$digest' != $CILIUM_CHART_DIGEST" >&2; exit 1; }
+}
+
 up() {
   check_kind
   local t0 t1 t2 workers="" i
@@ -137,22 +157,11 @@ EOF
   t1=$(date +%s)
   assert_lab
   assert_nodes $((WORKERS + 1))
-  local chart_dir digest
-  chart_dir="$(mktemp -d)"
+  local chart chart_dir
+  pinned_chart
   trap 'rm -rf "$chart_dir"' RETURN
-  if [[ -n "${CILIUM_CHART_TGZ:-}" ]]; then
-    # Pre-pulled chart (e.g. a registry reachable only over a path helm does not try): verified by content.
-    [[ "$( (sha256sum "$CILIUM_CHART_TGZ" 2>/dev/null || shasum -a 256 "$CILIUM_CHART_TGZ") | awk '{print $1}')" == "$CILIUM_CHART_TGZ_SHA256" ]] \
-      || { echo "$CILIUM_CHART_TGZ is not the pinned chart" >&2; exit 1; }
-    cp "$CILIUM_CHART_TGZ" "$chart_dir/cilium-$CILIUM_VERSION.tgz"
-    digest="$CILIUM_CHART_DIGEST"
-  else for i in 1 2 3 4; do
-    digest="$(h pull "$CILIUM_CHART" --version "$CILIUM_VERSION" -d "$chart_dir" 2>&1 | awk '/^Digest:/ {print $2}')" && [[ -n "$digest" ]] && break
-    sleep $((i * 5))
-  done; fi
-  [[ "$digest" == "$CILIUM_CHART_DIGEST" ]] || { echo "Cilium chart digest '$digest' != $CILIUM_CHART_DIGEST" >&2; exit 1; }
-  if h status cilium -n kube-system >/dev/null 2>&1; then assert_cilium_release "$chart_dir/cilium-$CILIUM_VERSION.tgz"
-  else h install cilium "$chart_dir/cilium-$CILIUM_VERSION.tgz" --namespace kube-system -f "$here/cilium-values.yaml" \
+  if h status cilium -n kube-system >/dev/null 2>&1; then assert_cilium_release "$chart"
+  else h install cilium "$chart" --namespace kube-system -f "$here/cilium-values.yaml" \
     --set image.digest="$CILIUM_IMAGE_DIGEST" --set operator.image.genericDigest="$CILIUM_OPERATOR_GENERIC_DIGEST"
   fi
   k -n kube-system rollout status daemonset/cilium --timeout=600s
@@ -175,6 +184,9 @@ EOF
 
 status() {
   assert_lab
+  local chart chart_dir
+  pinned_chart
+  trap 'rm -rf "$chart_dir"' RETURN
   assert_pins
   echo "pins: Kubernetes $KUBERNETES_VERSION, node ${NODE_IMAGE#*@}, Cilium $CILIUM_VERSION agent $CILIUM_IMAGE_DIGEST operator $CILIUM_OPERATOR_GENERIC_DIGEST, chart templates and every running agent as pinned"
   k version -o json | awk -F'"' '/gitVersion/ {print "server " $4; exit}'
