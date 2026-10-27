@@ -21,3 +21,29 @@ function sortKeys(value: unknown): unknown {
   }
   return value;
 }
+
+/**
+ * RFC 8785 (JCS). Unlike canonicalJson, keys are written in UTF-16 code unit order even when they look like array
+ * indexes (JSON.stringify always emits integer-like keys first, in numeric order), and only I-JSON values are
+ * accepted: finite numbers and well-formed strings.
+ */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+export function jcs(value: unknown): string {
+  if (value === null || typeof value === "boolean") return JSON.stringify(value);
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new RangeError("JCS accepts only finite numbers");
+    return JSON.stringify(value);
+  }
+  if (typeof value === "string") {
+    if (LONE_SURROGATE.test(value)) throw new RangeError("JCS accepts only well-formed strings (no lone surrogates)");
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) return `[${value.map(jcs).join(",")}]`;
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const keys = Object.keys(record).filter((k) => record[k] !== undefined).sort();
+    return `{${keys.map((k) => `${jcs(k)}:${jcs(record[k])}`).join(",")}}`;
+  }
+  throw new RangeError(`JCS cannot serialize a ${typeof value}`);
+}
