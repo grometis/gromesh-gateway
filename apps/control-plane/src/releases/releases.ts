@@ -321,12 +321,10 @@ export class ReleasesService {
       ["active", "recorded, expected nodes fixed"],
     ]);
     if (previous) await this.supersede(tx, previous);
-    let state: DeploymentState = "active";
-    if (expectedNodes.length === 0) {
-      // Vacuous: no node to wait for. No content activation either: content counts as activated only once a node applied it.
-      await transition(tx, FIRST_EPOCH, revision, [["converged", "no expected node"]]);
-      state = "converged";
-    } else {
+    const state: DeploymentState = "active";
+    // No expected node yet: the revision stays active and never converges by itself (nothing proves it); a cluster
+    // that turns v2 later joins its expected nodes at activation. Only a revision with nodes to wait for holds the lease.
+    if (expectedNodes.length > 0) {
       await tx
         .update(deploymentLease)
         .set({ revision, operation: "deploy", owner: ctx.actor, startedAt: now, deadlineAt: new Date(now.getTime() + settings.convergenceDeadlineMs) });

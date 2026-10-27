@@ -271,13 +271,23 @@ export class DeliveryService {
       await this.freeLease(tx);
       return views;
     }
-    // Every expected cluster left (returned to v1): nothing to wait for, nothing activated.
-    const converged = views.length === 0 || verified;
+    if (views.length === 0) {
+      // No expected node: none joined yet, or every expected cluster returned to v1. Nothing proves the revision, so it
+      // never converges; a revision that was waiting is degraded (the next deployment supersedes it) and frees the lease.
+      if (holdsLease) {
+        const left: ["converging" | "degraded", string][] = current === "active" ? [["converging", "some node has not applied yet"]] : [];
+        if (current !== "degraded") left.push(["degraded", "every expected cluster left; nothing applied"]);
+        await transition(tx, dep.epoch, dep.revision, left);
+        await this.freeLease(tx);
+      }
+      return views;
+    }
+    const converged = verified;
     const degraded = views.some((v) => !v.online || !v.healthy || v.failed || DEGRADING.includes(v.evidence));
     const steps: ["converging" | "degraded" | "converged", string][] = [];
     if (converged) {
       if (current === "degraded") steps.push(["converging", "nodes back"]);
-      steps.push(["converged", views.length === 0 ? "no expected node left" : "every expected node applied with revision and hash"]);
+      steps.push(["converged", "every expected node applied with revision and hash"]);
     } else if (degraded) {
       if (current === "active") steps.push(["converging", "some node has not applied yet"]);
       if (current !== "degraded") steps.push(["degraded", "node failed, offline, Kong unhealthy or evidence diverges"]);
@@ -286,7 +296,7 @@ export class DeliveryService {
     }
     if (steps.length > 0) await transition(tx, dep.epoch, dep.revision, steps);
     if (converged) {
-      if (verified) await this.activate(tx, dep, now);
+      await this.activate(tx, dep, now);
       if (holdsLease) await this.freeLease(tx);
     }
     return views;
