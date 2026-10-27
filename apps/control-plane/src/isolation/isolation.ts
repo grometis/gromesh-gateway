@@ -414,12 +414,14 @@ export class IsolationService {
       }
       return "integrity-conflict";
     }
-    // Nothing follows a final report: a report above it, or a final one below a report already stored, is the probe key
-    // signing past the end of its chain (contract: closing never erases evidence).
+    // Nothing follows a final report: any report above a stored final one (a second final included), or a final one
+    // below a report already stored, is the probe key signing past the end of its chain, whatever the arrival order
+    // (contract: closing never erases evidence).
+    const afterFinal = and(eq(isolationReports.final, true), lt(isolationReports.seq, report.seq));
     const [past] = await tx
       .select({ seq: isolationReports.seq })
       .from(isolationReports)
-      .where(and(eq(isolationReports.admissionId, a.admissionId!), report.final ? gt(isolationReports.seq, report.seq) : and(eq(isolationReports.final, true), lt(isolationReports.seq, report.seq))))
+      .where(and(eq(isolationReports.admissionId, a.admissionId!), report.final ? or(afterFinal, gt(isolationReports.seq, report.seq)) : afterFinal))
       .limit(1);
     if (past) {
       if ((await this.openPendencies(tx, a.admissionId!)).every((p) => p.lifecycle !== "confirmed-violation")) {

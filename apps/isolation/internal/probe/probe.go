@@ -400,8 +400,9 @@ func (p *Probe) Terminate(kongStopped bool) {
 // its round is durable, so a chain that starts with its final report proves the admission never authorized traffic.
 func (p *Probe) closeUnadopted() {
 	boot := p.BootID()
-	// Only on the boot the state was last prepared for: a chain of an earlier boot still open is never overwritten.
-	if c := p.State.Chain; !uuid(boot) || boot != p.State.BootID || (c.AdmissionID != "" && !c.Closed) {
+	// Only on the boot the state was last prepared for, or before the first preparation of a fresh state: a chain of an
+	// earlier boot still open is never overwritten, nor a state of an earlier boot reported as this one's.
+	if c := p.State.Chain; !uuid(boot) || (p.State.BootID != "" && boot != p.State.BootID) || (c.AdmissionID != "" && !c.Closed) {
 		return
 	}
 	trust, err := p.TrustSet()
@@ -418,6 +419,7 @@ func (p *Probe) closeUnadopted() {
 		return
 	}
 	p.Logf("admission %s closed before adoption: it never authorized traffic", claims.AdmissionID)
+	p.State.BootID = boot
 	p.State.Chain = Chain{AdmissionID: claims.AdmissionID, BootID: boot, ProbeKey: p.PublicKey()}
 }
 

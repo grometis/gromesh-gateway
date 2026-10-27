@@ -762,6 +762,18 @@ describe("isolation admissions and reports (N2-D3a)", () => {
     expect((await c2.send(forged)).rejected).toEqual([{ index: 0, reason: "integrity-conflict" }]);
     expect((await h.sql.query("select state from isolation_admissions where admission_id = $1", [b.admissionId])).rows[0].state).toBe("open");
     expect((await pendencyRows(c2.id)).map((p) => p.lifecycle)).toEqual(["confirmed-violation"]);
+    // A second final report after one that could not confirm Kong stopped, in both arrival orders and in one batch.
+    for (const order of ["in order", "reversed", "one batch"]) {
+      const cx = await cluster();
+      const px = new Probe();
+      const x = await admit(cx, px);
+      const first = px.next(cx.id, x.admissionId, { state: "awaiting-admission", leaseRemainingMs: null, final: true, finalReason: "pod-terminated", kongStopConfirmed: false });
+      const second = px.next(cx.id, x.admissionId, { final: true, finalReason: "pod-terminated", kongStopConfirmed: true });
+      const sent = order === "one batch" ? [await cx.send(first, second)] : order === "reversed" ? [await cx.send(second), await cx.send(first)] : [await cx.send(first), await cx.send(second)];
+      expect(sent.flatMap((r) => r.rejected.map((j) => j.reason)), order).toEqual(["integrity-conflict"]);
+      expect((await h.sql.query("select state from isolation_admissions where admission_id = $1", [x.admissionId])).rows[0].state, order).toBe("open");
+      expect((await pendencyRows(cx.id)).map((p) => p.lifecycle), order).toEqual(["confirmed-violation"]);
+    }
     // A final report below a report already stored (above a gap) is the same conflict, whatever the arrival order.
     const c3 = await cluster();
     const pc = new Probe();

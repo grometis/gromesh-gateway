@@ -758,6 +758,17 @@ func TestAnAdmissionStoppedBeforeAdoptionClosesWithAFinalSeq1(t *testing.T) {
 	}
 }
 
+// Stopped before its first round ever prepared the state: the admission is closed all the same.
+func TestAnAdmissionIsClosedEvenBeforeTheFirstRound(t *testing.T) {
+	w := newWorld(t, t.TempDir())
+	w.admit(nil)
+	w.p.Terminate(true)
+	reports := w.outbox()
+	if len(reports) != 1 || reports[0].report.Seq != 1 || !reports[0].report.Final || reports[0].report.BootID != w.boot || reports[0].report.State != "awaiting-admission" {
+		t.Fatalf("reports %+v", reports)
+	}
+}
+
 func TestOnlyTheProbesOwnValidAdmissionIsClosedBeforeAdoption(t *testing.T) {
 	for name, mutate := range map[string]func(*AdmissionClaims){
 		"another pod":  func(c *AdmissionClaims) { c.PodUID = "6a1f3c2e-0b7d-4c1a-9f10-0000000000ff" },
