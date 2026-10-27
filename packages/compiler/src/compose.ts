@@ -1,12 +1,20 @@
 import { declarativeConfig, derivedId, validate } from "./compile.js";
 import { CompileError, type CompileIssue } from "./errors.js";
 import type { CompileOptions, GatewayState, KongDeclarativeConfig, Plugin, Route } from "./model.js";
+import { canonicalJson } from "./hash.js";
+import { privilegedUses } from "./privileged.js";
 
 /** One Workspace of an instance: its id, its immutable slug and the state of its active release. */
 export interface WorkspaceMember {
   id: string;
   slug: string;
   state: GatewayState;
+  /**
+   * The composedPrivilegedFingerprint a platform admin approved for this release (F-1), recorded by the control
+   * plane. The composed config runs every Workspace in the same workers, so a privileged capability it carries is
+   * composed only if it is exactly the approved one, on exactly the routes approved.
+   */
+  approvedPrivileged?: string;
 }
 
 export const WORKSPACE_TAG_PREFIX = "gromesh-ws:";
@@ -70,6 +78,14 @@ export function composeWorkspaces(members: WorkspaceMember[], options: CompileOp
   if (issues.length > 0) throw new CompileError(issues);
 
   const parts = members.map((m) => namespaced(m, platform));
+  parts.forEach((part, i) => {
+    const m = members[i]!;
+    if (!part.plugins.some((p) => privilegedUses(p).length > 0) || m.approvedPrivileged === composedPrivilegedFingerprint(m.state)) return;
+    m.state.plugins.forEach((p, j) => {
+      for (const u of privilegedUses(p)) add(`workspaces[${i}].plugins[${j}].${u.path}`, `${u.message}: not the privileged configuration approved for this release`);
+    });
+  });
+  if (issues.length > 0) throw new CompileError(issues);
   const merged: GatewayState = {
     services: parts.flatMap((s) => s.services),
     routes: parts.flatMap((s) => s.routes),
@@ -269,6 +285,26 @@ function namespaced(m: WorkspaceMember, platform: Plugin[]): GatewayState {
  * lookup_cfg): route+service 3, route 2, service 1, global 0; -1 when it does not apply. Consumer combinations are
  * never authenticators.
  */
+/**
+ * What a platform admin approves for a Workspace's release: every enabled privileged plugin with all that decides what
+ * it does and the routes where Kong runs it (it is not shadowed there by a more specific instance of its name). A new
+ * route, or a removed shadowing instance, that extends a privileged plugin changes it. A consumer-scoped instance may
+ * run on any route, so it counts every route.
+ */
+export function composedPrivilegedFingerprint(state: GatewayState): string {
+  const privileged = state.plugins
+    .filter((p) => p.enabled !== false && privilegedUses(p).length > 0)
+    .map((p) => ({
+      id: p.id, name: p.name, scope: p.scope ?? {}, config: p.config ?? {}, protocols: p.protocols ?? [],
+      runsOn: state.routes
+        .filter((r) => p.scope?.consumerId || (scopeRank(p, r) >= 0 && !state.plugins.some((o) => o !== p && o.name === p.name && o.enabled !== false && scopeRank(o, r) > scopeRank(p, r))))
+        .map((r) => r.id)
+        .sort(),
+    }))
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return canonicalJson(privileged);
+}
+
 function scopeRank(p: Plugin, r: Route): number {
   const s = p.scope ?? {};
   if (s.consumerId) return -1;

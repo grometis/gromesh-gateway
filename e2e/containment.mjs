@@ -74,8 +74,9 @@ async function heartbeat(id) {
   return JSON.parse(stdout).heartbeatBoottimeNs;
 }
 
+// Only the serving nginx (its master/worker titles): the image's HEALTHCHECK runs `kong health`, whose resty CLI is an nginx binary too.
 async function nginxProcesses(id) {
-  const { stdout } = await docker("exec", id, "sh", "-c", "cat /proc/[0-9]*/comm 2>/dev/null | grep -c '^nginx$' || true");
+  const { stdout } = await docker("exec", id, "sh", "-c", "for p in /proc/[0-9]*; do tr '\\0' ' ' < $p/cmdline 2>/dev/null; echo; done | grep -cE '^nginx: (master|worker) process' || true");
   return Number(stdout.trim());
 }
 

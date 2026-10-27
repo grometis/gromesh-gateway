@@ -21,10 +21,13 @@ type Config struct {
 	// Workspaces mode (GROMESH_HANDOFF_DIR set): the agent asks for the pod's isolation admission and carries the
 	// probe's documents through the handoff; it never interprets them.
 	HandoffDir string
-	PodUID     string
-	PodName    string
-	NodeName   string
-	BootIDFile string
+	// Where the pinned Kong image's own version was written before the agent starts (seed-config): in Workspaces mode
+	// Kong only starts after the admission, which needs the node token, so registration cannot wait for its Admin API.
+	KongVersionFile string
+	PodUID          string
+	PodName         string
+	NodeName        string
+	BootIDFile      string
 }
 
 func ConfigFromEnv() (Config, error) {
@@ -45,7 +48,7 @@ func ConfigFromEnv() (Config, error) {
 		KongStatusURL: value("KONG_STATUS_URL", "unix:///kong/admin/status.sock"),
 		SnapshotPath:  value("SNAPSHOT_PATH", "/kong/declarative/kong.json"),
 		StateDir:      value("GROMESH_STATE_DIR", defaultStateDir),
-		HandoffDir:    os.Getenv("GROMESH_HANDOFF_DIR"), PodUID: os.Getenv("GROMESH_POD_UID"),
+		HandoffDir:    os.Getenv("GROMESH_HANDOFF_DIR"), KongVersionFile: os.Getenv("GROMESH_KONG_VERSION_FILE"), PodUID: os.Getenv("GROMESH_POD_UID"),
 		PodName: os.Getenv("GROMESH_POD_NAME"), NodeName: os.Getenv("GROMESH_NODE_NAME"),
 		BootIDFile: value("GROMESH_BOOT_ID_FILE", "/proc/sys/kernel/random/boot_id"),
 	}
@@ -61,6 +64,9 @@ func (c Config) validate() error {
 	}
 	if c.HandoffDir != "" && (!uuidPattern.MatchString(c.PodUID) || c.PodName == "" || len(c.PodName) > 253 || c.NodeName == "" || len(c.NodeName) > 253 || c.BootIDFile == "") {
 		return fmt.Errorf("GROMESH_HANDOFF_DIR requires GROMESH_POD_UID (UUID), GROMESH_POD_NAME and GROMESH_NODE_NAME")
+	}
+	if c.HandoffDir != "" && c.KongVersionFile == "" {
+		return fmt.Errorf("GROMESH_HANDOFF_DIR requires GROMESH_KONG_VERSION_FILE (the pinned Kong image's version)")
 	}
 	for _, field := range []struct {
 		name, value string
