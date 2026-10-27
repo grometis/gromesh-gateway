@@ -4995,6 +4995,24 @@ components:
       type: object
       required: [ id, name, permissions, builtin ]
       properties: { id: { type: string, format: uuid }, name: { type: string }, displayName: { type: string }, permissions: { type: array, items: { type: string } }, builtin: { type: boolean } }
+    AdmissionServedState:
+      description: |
+        Whether the pod's admission may have authorized traffic (decision F3-D2; agent protocol v2, "Served state"),
+        derived only from reports verified with the probe key bound to the admission. never-served-verified: the
+        chain's only report is its seq 1, a final report in state awaiting-admission with kongStopConfirmed true, and
+        no integrity conflict was ever raised on the admission. served: the chain holds any other report, or an
+        integrity conflict was raised (the probe adopted the admission, a closing did not confirm Kong's stop, or the
+        chain cannot be trusted: counted as served, never as never served). unknown: no verified report (requested, refused, granted and silent, or
+        released by an admin). unknown never counts as never-served-verified and never closes an admission
+        automatically.
+      enum: [ never-served-verified, served, unknown ]
+      x-gromesh-transitions:
+        initial: [ unknown ]
+        terminal: [ served ]
+        transitions:
+          - [ unknown, never-served-verified, "verified final report seq 1 in state awaiting-admission with kongStopConfirmed true" ]
+          - [ unknown, served, "verified report of the chain other than a seq 1 final in state awaiting-admission with kongStopConfirmed true (adoption, or a closing without a confirmed stop), or an integrity conflict" ]
+          - [ never-served-verified, served, "a later report of the chain or any integrity conflict (confirmed-violation)" ]
     ClusterIsolation:
       type: object
       required: [ clusterId, pods, pendencies ]
@@ -5014,6 +5032,7 @@ components:
               admissionId: { type: [ string, "null" ], format: uuid }
               state: { $ref: "./agent-protocol-v2.openapi.yaml#/components/schemas/PodIsolationState" }
               admission: { enum: [ requested, refused, open, closed, closed-without-proof ] }
+              servedState: { $ref: "#/components/schemas/AdmissionServedState", x-gromesh-planned: true, description: "Planned until the N2-F3 implementation, which removes the mark and makes it required (rule 11)" }
               reporting: { enum: [ reporting, communication-failure, unconfirmed-isolation, closed ] }
               kongStopConfirmed: { type: [ boolean, "null" ] }
               lastSeq: { type: integer, minimum: 0 }

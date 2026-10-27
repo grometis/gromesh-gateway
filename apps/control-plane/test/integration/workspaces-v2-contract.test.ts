@@ -358,7 +358,7 @@ describe("state machines in the contracts", () => {
 
   it("finds the machines of the approved design", () => {
     expect(machines.map(([n]) => n.split("#")[1]).sort()).toEqual(
-      ["AdmissionOutcome", "AdmissionState", "ApprovalState", "DeliveryProtocolState", "DeploymentState", "EmergencyPostReviewStatus", "InstanceSigningKeyStatus", "IsolationPendencyLifecycle", "PodIsolationState", "PromotionStatus", "WorkspaceRequestStatus"].sort(),
+      ["AdmissionOutcome", "AdmissionServedState", "AdmissionState", "ApprovalState", "DeliveryProtocolState", "DeploymentState", "EmergencyPostReviewStatus", "InstanceSigningKeyStatus", "IsolationPendencyLifecycle", "PodIsolationState", "PromotionStatus", "WorkspaceRequestStatus"].sort(),
     );
   });
 
@@ -674,6 +674,9 @@ describe("agent protocol v2", () => {
     ["ProbeReport", { ...report, prevDigest: null }, false],
     ["ProbeReport", { ...report, final: true }, false],
     ["ProbeReport", { ...report, final: true, finalReason: "pod-terminated", kongStopConfirmed: true }, true],
+    // N2-F3: the probe closes an admission it never adopted with a final seq 1 (never served).
+    ["ProbeReport", { ...report, seq: 1, prevDigest: null, state: "awaiting-admission", final: true, finalReason: "pod-terminated", kongStopConfirmed: true }, true],
+    ["ProbeReport", { ...report, seq: 1, prevDigest: d, state: "awaiting-admission", final: true, finalReason: "pod-terminated", kongStopConfirmed: true }, false],
     ["ProbeReport", { ...report, finalReason: "pod-terminated" }, false],
     ["ProbeReport", { ...report, state: "violation" }, false],
     ["ProbeReport", { ...report, state: "violation", failedCapabilities: ["CAP-3"] }, true],
@@ -693,6 +696,48 @@ describe("agent protocol v2", () => {
     ["IsolationReleaseClaims", { clusterId: u, pendencyId: u, kind: "communication-failure", expiresAt: "2026-10-24T00:15:00Z" }, false],
   ])("%s %j -> %s", (name, value, expected) => {
     expect(validAgent(name, value)).toBe(expected);
+  });
+
+  it("closes an admission before adoption only with a final seq 1, and never erases evidence by closing (N2-F3)", () => {
+    const closing = agentV2.components.schemas.AdmissionState["x-gromesh-transitions"].transitions.find(([from, to]: string[]) => from === "open" && to === "closed");
+    expect(closing[2]).toContain("seq 1 when the probe closes it before adopting it");
+    const flat = (text: string) => text.replace(/\s+/g, " ");
+    const info = flat(agentV2.info.description);
+    expect(info).toContain("a chain whose seq 1 is final proves");
+    expect(info).toContain("the absence of a report proves nothing");
+    expect(info).toContain("a report numbered above the final one of its chain, or a report with other content for a seq already received (seq 1 included), is an integrity conflict (confirmed-violation), while an identical retransmission is idempotent");
+    expect(info).toContain("a closing report that cannot be produced, persisted, delivered or confirmed");
+    expect(info).toContain("a confirmed-violation pendency of an admission stays open after the admission closes");
+    expect(flat(agentV2.components.schemas.IsolationHandoff.description)).toContain("removed at the pod's stop signal, after which the agent neither asks for nor polls an admission");
+    expect(agentV2.components.schemas.ReportAcks.properties.rejected.items.properties.reason.enum).toContain("integrity-conflict");
+  });
+
+  it("exposes whether an admission ever served only from verified evidence (N2-F3, F3-D2)", () => {
+    const pod = { podUid: u, bootId: u, podName: "kong-0", nodeName: "n1", state: "ok", admission: "closed", servedState: "never-served-verified", reporting: "closed", lastSeq: 1 };
+    const isolation = (p: Record<string, unknown>) => ({ clusterId: u, pods: [p], pendencies: [] });
+    expect(valid("ClusterIsolation", isolation(pod)), JSON.stringify(validator("control-plane-v2.openapi.yaml", "ClusterIsolation").errors)).toBe(true);
+    for (const s of ["served", "unknown"]) expect(valid("ClusterIsolation", isolation({ ...pod, servedState: s })), s).toBe(true);
+    // Planned until the N2-F3 implementation makes it required (rule 11): declared, marked, not yet required.
+    const item = v2.components.schemas.ClusterIsolation.properties.pods.items;
+    expect([item.properties.servedState["x-gromesh-planned"], item.required.includes("servedState")]).toEqual([true, false]);
+    for (const s of ["never-served", "NEVER_SERVED_VERIFIED", null]) expect(valid("ClusterIsolation", isolation({ ...pod, servedState: s })), String(s)).toBe(false);
+    const machine = v2.components.schemas.AdmissionServedState["x-gromesh-transitions"];
+    expect([machine.initial, machine.terminal]).toEqual([["unknown"], ["served"]]);
+    // The whole machine is pinned: unknown reaches never-served-verified only by the verified seq 1 final with the
+    // stop confirmed, nothing ever goes back to unknown, and served is final.
+    expect(machine.transitions.map(([from, to]: string[]) => `${from}>${to}`).sort()).toEqual(["never-served-verified>served", "unknown>never-served-verified", "unknown>served"]);
+    const why = (from: string, to: string) => machine.transitions.find(([f, t]: string[]) => f === from && t === to)[2];
+    expect(why("unknown", "never-served-verified")).toBe("verified final report seq 1 in state awaiting-admission with kongStopConfirmed true");
+    expect(why("unknown", "served")).toContain("other than a seq 1 final in state awaiting-admission with kongStopConfirmed true");
+    expect(why("unknown", "served")).toContain("or an integrity conflict");
+    expect(why("unknown", "served")).toContain("a closing without a confirmed stop");
+    // A seq 1 final without a confirmed stop is a valid report, and it counts as served, never as never served.
+    const unconfirmed = { clusterId: u, podUid: u, bootId: u, admissionId: u, seq: 1, prevDigest: null, state: "awaiting-admission", failedCapabilities: [], challenge: null, final: true, finalReason: "pod-terminated", kongStopConfirmed: false };
+    expect(validAgent("ProbeReport", unconfirmed), JSON.stringify(validator("agent-protocol-v2.openapi.yaml", "ProbeReport").errors)).toBe(true);
+    const info = agentV2.info.description.replace(/\s+/g, " ");
+    expect(info).toContain("never from a declaration of the agent");
+    expect(info).toContain("the control plane never closes an admission automatically on unknown");
+    expect(info).toContain("accepted as fail-closed, decision F3-D1");
   });
 
   it("serves deployments that match the snapshot v2 schema, and refuses the v1 envelope", () => {
