@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7.1
 
-FROM ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55 AS build
+FROM ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac AS build
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
@@ -44,7 +44,7 @@ RUN --mount=type=cache,target=/root/.cache/bazel,sharing=locked \
         --verbose_failures --jobs=2 //:kong_deb \
     && install -m 0644 "bazel-bin/pkg/kong.${TARGETARCH:-$(dpkg --print-architecture)}.deb" /tmp/kong.deb
 
-FROM ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55 AS runtime
+FROM ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac AS runtime
 
 LABEL org.opencontainers.image.title="Gromesh Gateway data plane" \
     org.opencontainers.image.version="3.9.4" \
