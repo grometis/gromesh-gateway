@@ -84,6 +84,15 @@ paths:
           description: The agent already has the current snapshot
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: |
+            The node's cluster does not deliver v1 snapshots (its deliveryProtocol is v2 or v2-pending; agent protocol
+            v2, "Delivery protocol per cluster"). Problem type https://gromesh.dev/problems/delivery-protocol-v2 or
+            .../delivery-protocol-switching. The agent keeps the configuration it applied and polls again.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
   /agent/v1/events:
     get:
       tags: [agent]
