@@ -94,6 +94,11 @@ collector:
   # control plane's PLATFORM_HTTP_LOG_ENDPOINT points at), strips credentials and writes gromesh.requests in
   # ClickHouse tagged with this cluster's id. Off: point httpLogEndpoint at an external collector instead.
   enabled: false
+  # deployment: one Vector per cluster behind the fixed Service name (above). sidecar: Workspaces mode only (and the
+  # only mode there, B §3.5.2): a native sidecar in each Kong pod listening on 127.0.0.1:8080 only, no Service; the
+  # control plane's platform http-log endpoint must then be http://127.0.0.1:8080/kong, and environmentId is the
+  # instance id the composition tags events with. Its metrics stay on the pod's loopback too.
+  mode: deployment
   # Only needed when enabled is false and an external collector serves the fixed name; informs NetworkPolicy.
   httpLogEndpoint: ""
   # UUID of this cluster in the control plane (POST /environments/{envId}/clusters). Required when enabled:
@@ -134,7 +139,7 @@ collector:
       memory: 512Mi
 
 metrics:
-  # Adds pod scrape annotations for gateway :8100/metrics and collector :9598/metrics.
+  # Adds pod scrape annotations for gateway :8100/metrics and collector :9598/metrics (deployment mode).
   # Publish the platform prometheus plugin through the control plane/compiler; annotations cannot enable it.
   # The agent separately serves :9100/metrics, with no health endpoint, so there
   # is no agent liveness probe that could mistake a metrics response for health.
@@ -172,6 +177,8 @@ networkPolicy:
   proxyPeers: []
   controlPlanePeers: []
   collectorPeers: []
+  # collector.mode sidecar: the Kong pod itself writes to ClickHouse (port from collector.clickhouse.endpoint).
+  clickhousePeers: []
   # Each upstream needs an explicit CIDR and TCP ports (Service DNAT behavior
   # depends on the CNI; allow backend pod CIDRs when it evaluates post-DNAT).
   upstreams: []
