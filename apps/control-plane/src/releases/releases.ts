@@ -35,6 +35,7 @@ import {
   type InstanceRow,
   type ReleaseRow,
 } from "../db/schema.js";
+import { v2ExpectedNodes } from "../deployments/deployments.js";
 import { requireEnvironment, uuidParam } from "../environments/environments.js";
 import { loadGatewayState } from "../gateway/gateway.js";
 import { PluginCatalog, PluginCatalogModule } from "../plugin-catalog/catalog.js";
@@ -307,9 +308,8 @@ export class ReleasesService {
       if (err instanceof CompileError) throw unprocessable("The instance's composition refuses this deployment", err.issues);
       throw err;
     }
-    // D2: only clusters explicitly in the v2 protocol have expected nodes; the delivery itself is N3-C4's, until
-    // then no node is expected and none can receive this revision.
-    const expectedNodes: { clusterId: string; nodeId: string }[] = [];
+    // D2: only the nodes of clusters explicitly in v2 are expected (agent protocol v2, "Delivery protocol per cluster").
+    const expectedNodes = await v2ExpectedNodes(tx);
     await tx.insert(deployments).values({
       epoch: FIRST_EPOCH,
       revision,
@@ -328,12 +328,10 @@ export class ReleasesService {
       ["active", "recorded, expected nodes fixed"],
     ]);
     if (previous) await this.supersede(tx, previous);
-    let state: DeploymentState = "active";
-    if (expectedNodes.length === 0) {
-      // Vacuous: no node to wait for. No content activation either: content counts as activated only once a node applied it.
-      await transition(tx, FIRST_EPOCH, revision, [["converged", "no expected node"]]);
-      state = "converged";
-    } else {
+    const state: DeploymentState = "active";
+    // No expected node yet: the revision stays active and never converges by itself (nothing proves it); a cluster
+    // that turns v2 later joins its expected nodes at activation. Only a revision with nodes to wait for holds the lease.
+    if (expectedNodes.length > 0) {
       await tx
         .update(deploymentLease)
         .set({ revision, operation: "deploy", owner: ctx.actor, startedAt: now, deadlineAt: new Date(now.getTime() + settings.convergenceDeadlineMs) });
@@ -353,10 +351,19 @@ export class ReleasesService {
     return row?.revision;
   }
 
-  /** A new deployment supersedes the previous one where the machine allows it (converged, degraded or failed). */
+  /**
+   * A new deployment supersedes the previous one where the machine allows it (converged, degraded or failed). One still
+   * active was recorded without an expected node (one with nodes holds the lease, so no deployment gets here) and
+   * never held the lease: it closes by the direct edge active → superseded (x-gromesh-empty-revision).
+   */
   private async supersede(tx: Executor, revision: number) {
     const current = await deploymentState(tx, FIRST_EPOCH, revision);
-    if (current && ["converged", "degraded", "failed"].includes(current.state)) await transition(tx, FIRST_EPOCH, revision, [["superseded", "new deployment"]]);
+    if (!current) return;
+    if (current.state === "active") {
+      await transition(tx, FIRST_EPOCH, revision, [["superseded", "a new deployment replaces a revision with no expected node"]]);
+    } else if (["converged", "degraded", "failed"].includes(current.state)) {
+      await transition(tx, FIRST_EPOCH, revision, [["superseded", "new deployment"]]);
+    }
   }
 
   /** A lease past its deadline: its deployment fails (C-16) and the lease is free again. */

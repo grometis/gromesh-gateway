@@ -209,7 +209,6 @@ paths:
     get:
       tags: [agent]
       operationId: getCurrentDeployment
-      x-gromesh-planned: true
       x-gromesh-requirements: [GW-DEP-02, GW-DEP-05, GW-DEP-09]
       summary: Current deployment of the node's instance
       parameters:
@@ -239,7 +238,6 @@ paths:
     post:
       tags: [agent]
       operationId: reportNodeStatus
-      x-gromesh-planned: true
       x-gromesh-requirements: [GW-DEP-02, GW-DEP-03, GW-DEP-05, GW-WS-16b]
       summary: Applied (epoch, revision, hash), failures and health
       requestBody:

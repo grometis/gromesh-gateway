@@ -542,7 +542,15 @@ export const clusters = pgTable("clusters", {
   name: text("name").notNull(),
   registrationTokenHash: text("registration_token_hash").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [uniqueIndex("clusters_env_name_uq").on(t.environmentId, t.name), uniqueIndex("clusters_token_uq").on(t.registrationTokenHash)]);
+  // The cluster's single active delivery flow (DeliveryProtocolState, decisions D2/D5): changed only by
+  // setClusterDeliveryProtocol and by the activation gate (v2-pending -> v2).
+  deliveryProtocol: text("delivery_protocol", { enum: ["v1", "v2-pending", "v2"] }).notNull().default("v1"),
+  deliveryProtocolChangedAt: timestamp("delivery_protocol_changed_at", { withTimezone: true }),
+}, (t) => [
+  uniqueIndex("clusters_env_name_uq").on(t.environmentId, t.name),
+  uniqueIndex("clusters_token_uq").on(t.registrationTokenHash),
+  check("clusters_delivery_protocol_ck", sql`${t.deliveryProtocol} in ('v1', 'v2-pending', 'v2')`),
+]);
 
 export const clusterNodes = pgTable("cluster_nodes", {
   clusterId: uuid("cluster_id").notNull().references(() => clusters.id, { onDelete: "cascade" }),
@@ -561,6 +569,16 @@ export const clusterNodes = pgTable("cluster_nodes", {
   epoch: integer("epoch"),
   appliedRevision: integer("applied_revision"),
   failedRevision: integer("failed_revision"),
+  // v2 StatusReport (N3-C4): the deployment hash the agent declares applied with Kong's own config hash, the failure
+  // reason, and the highest revision this node was verified at (revision-regression is measured against it).
+  deploymentHash: text("deployment_hash"),
+  kongConfigHash: text("kong_config_hash"),
+  failedDeploymentHash: text("failed_deployment_hash"),
+  failureReason: text("failure_reason"),
+  verifiedEpoch: integer("verified_epoch"),
+  verifiedRevision: integer("verified_revision"),
+  // The node's last ConvergenceEvidence, so a divergence is audited once when it opens and once when it clears.
+  evidence: text("evidence"),
   error: text("error"),
   kongHealthy: boolean("kong_healthy").notNull().default(false),
   reportedAt: timestamp("reported_at", { withTimezone: true }),
@@ -916,3 +934,4 @@ export const deploymentStates = pgTable(
     check("deployment_states_state_ck", sql`${t.state} in ('composed', 'rejected', 'active', 'converging', 'converged', 'degraded', 'failed', 'superseded')`),
   ],
 );
+

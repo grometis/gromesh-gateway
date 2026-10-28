@@ -899,7 +899,6 @@ paths:
       x-gromesh-requirements: [ GW-ENV-01, GW-DEP-02, GW-DEP-08 ]
       x-required-permission: platform.admin
       x-scope: instance
-      x-gromesh-planned: true
       description: |
         The only way to change a cluster's delivery flow (DeliveryProtocolState; decisions D2 and D5). protocol v2
         moves a v1 cluster to v2-pending: from then on the v1 endpoints answer 409 delivery-protocol-switching to its
