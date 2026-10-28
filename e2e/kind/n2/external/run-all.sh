@@ -22,24 +22,30 @@ KONG_REF="${KONG_REF:-$KONG_IMAGE_REF}"
 SUITES="${SUITES:-env components f3 f3-residual4 f3-neg collector v2}"
 export LAB_KUBECONFIG
 RUN_ID="run-$(date -u +%Y%m%dT%H%M%SZ)-$$"
-owned=0 failed=0 work=""
+owned=0 creating=0 failed=0 work=""
 built=() trees=()
 
-# This run's cluster: absent before `up` and still carrying RUN_ID.
-marker() { kubectl --kubeconfig "$LAB_KUBECONFIG" --context "kind-$CLUSTER_NAME" -n kube-system get configmap gromesh-lab-run \
-  -o jsonpath='{.data.runId}' 2>/dev/null || true; }
+# The run id lives in the cluster itself and is read and written only through the kubeconfig kind exports for the named
+# cluster on this host's (checked) Docker daemon, never through LAB_KUBECONFIG, whatever that file names. Any error
+# reads as "not this run's".
+kind_kc() { local f="$work/kind.kubeconfig"; kind get kubeconfig --name "$CLUSTER_NAME" >"$f" 2>/dev/null && echo "$f"; }
+marker() { local f; f="$(kind_kc)" || return 0
+  kubectl --kubeconfig "$f" -n kube-system get configmap gromesh-lab-run -o jsonpath='{.data.runId}' 2>/dev/null || true; }
 cleanup() {
   local code=$? t id
   trap - EXIT
   for t in ${built[@]+"${built[@]}"}; do docker image rm "$t" >/dev/null 2>&1 || true; done
   for t in ${trees[@]+"${trees[@]}"}; do git -C "$root" worktree remove --force "$t" >/dev/null 2>&1 || true; done
-  [[ -z "$work" ]] || rm -rf "$work"
   if (( owned )) && [[ "${LAB_KEEP:-}" != 1 ]]; then
     id="$(marker)"
-    # Empty: `up` failed before the marker was written; the cluster did not exist before this run.
-    if [[ -z "$id" || "$id" == "$RUN_ID" ]]; then bash "$n2/cluster.sh" down || code=1
-    else echo "cluster $CLUSTER_NAME carries run id $id, not $RUN_ID: left alone" >&2; code=1; fi
+    if [[ "$id" == "$RUN_ID" ]]; then bash "$n2/cluster.sh" down || code=1
+    else echo "cluster $CLUSTER_NAME does not carry this run's id ($RUN_ID; read '${id}'): left alone" >&2; code=1; fi
+  elif (( creating )) && kind get clusters 2>/dev/null | grep -qx "$CLUSTER_NAME"; then
+    # `up` failed before the cluster was marked: deleting it would rest on an unproven ownership.
+    echo "cluster $CLUSTER_NAME was not marked as this run's: left in place; remove it with 'kind delete cluster --name $CLUSTER_NAME' after checking it" >&2
+    code=1
   fi
+  [[ -z "$work" ]] || rm -rf "$work"
   (( code != 0 || ! failed )) || code=1
   exit "$code"
 }
@@ -53,14 +59,19 @@ work="$(mktemp -d)"
 load() { echo "$(date -u +%FT%TZ) $(cut -d' ' -f1-3 /proc/loadavg) $*" | tee -a "$OUT/load.txt"; }
 load "host ready ($RUN_ID)"
 
-if kind get clusters 2>/dev/null | grep -qx "$CLUSTER_NAME"; then
+# Ownership is proven, not assumed: the cluster list must be readable and must not hold the lab cluster, and the run
+# owns the cluster only once its id is written into it.
+clusters="$(kind get clusters)" || { echo "kind cannot list clusters: refusing to create or delete anything" >&2; exit 1; }
+if grep -qx "$CLUSTER_NAME" <<<"$clusters"; then
   echo "kind cluster $CLUSTER_NAME already exists: refusing to reuse or delete it (remove it yourself if it is a leftover)" >&2
   exit 1
 fi
-owned=1
+creating=1
 bash "$n2/cluster.sh" up
-kubectl --kubeconfig "$LAB_KUBECONFIG" --context "kind-$CLUSTER_NAME" -n kube-system create configmap gromesh-lab-run \
-  --from-literal=runId="$RUN_ID" >/dev/null
+kc="$(kind_kc)" || { echo "kind exported no kubeconfig for $CLUSTER_NAME" >&2; exit 1; }
+kubectl --kubeconfig "$kc" -n kube-system create configmap gromesh-lab-run --from-literal=runId="$RUN_ID" >/dev/null
+[[ "$(marker)" == "$RUN_ID" ]] || { echo "could not mark $CLUSTER_NAME with $RUN_ID" >&2; exit 1; }
+owned=1 creating=0
 load "cluster up"
 
 # Builds the control plane and the agent (which ships the isolation probe) of one ref, labelled with its revision.
@@ -96,11 +107,15 @@ built+=("$PG_LOCAL")
 for image in "${built[@]}"; do kind load docker-image --name "$CLUSTER_NAME" "$image" >/dev/null; done
 # What actually ran: each image by id, repo digests and source revision (ClickHouse, Vector and the fixtures are
 # pulled by digest inside the cluster).
-for image in "$KONG_REF" "$PG_IMAGE" "${built[@]}" "$CLICKHOUSE_IMAGE" "$VECTOR_IMAGE" "$FIXTURE_IMAGE"; do
-  docker image inspect -f "$image {{.Id}} {{join .RepoDigests \",\"}} {{index .Config.Labels \"org.opencontainers.image.revision\"}}" "$image" 2>/dev/null \
-    || echo "$image (pinned by digest, pulled in the cluster)"
+for image in "$KONG_REF" "$PG_IMAGE" "${built[@]}"; do
+  docker image inspect -f "$image {{.Id}} {{join .RepoDigests \",\"}} {{index .Config.Labels \"org.opencontainers.image.revision\"}}" "$image"
 done >"$OUT/images.txt"
 load "images loaded"
+# After each suite, what the cluster actually ran (ClickHouse, Vector and the fixtures are pulled there by digest):
+# every container's image and resolved image id, from the cluster itself.
+ran() { local f; f="$(kind_kc)" || return 0
+  kubectl --kubeconfig "$f" get pods -A -o jsonpath='{range .items[*]}{range .status.containerStatuses[*]}{.image}{" "}{.imageID}{"\n"}{end}{range .status.initContainerStatuses[*]}{.image}{" "}{.imageID}{"\n"}{end}{end}' 2>/dev/null \
+    | sort -u | sed "s|^|$1 |" >>"$OUT/images-ran.txt" || true; }
 
 # One suite: its own OUT subdirectory, the load before and after (a run under saturation is not evidence).
 suite() {
@@ -110,6 +125,7 @@ suite() {
   env LAB_OUT="$OUT/$name" KONG_IMAGE="$KONG_IMAGE" PG_IMAGE="$PG_LOCAL" "$@" >"$OUT/$name/run.log" 2>&1 || rc=$?
   if (( rc == 0 )); then echo "$name: pass" | tee -a "$OUT/summary.txt"
   else echo "$name: FAIL (exit $rc; see $name/run.log)" | tee -a "$OUT/summary.txt"; failed=1; fi
+  ran "$name"
   load "$name end"
 }
 
