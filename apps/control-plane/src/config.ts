@@ -63,6 +63,18 @@ export interface AppConfig {
   uniqueConflictMax: number;
   /** How often each replica writes the v1 calls of sessions it counted (token calls are written at once). */
   apiV1UsageFlushMs: number;
+  /**
+   * Workspaces deployments (N3, decision D4): off unless GROMESH_EXPERIMENTAL_WORKSPACES=lab, which only disposable
+   * laboratories set while the N2 gates are open. On, GROMESH_INSTANCE_STAGE (dev, hml or prd) is required: it becomes
+   * the instance's immutable stage on the first deployment. Off, createDeployment and the switch to v2 answer 409 workspaces-mode-disabled; publishing a release stays allowed.
+   */
+  workspacesDeployments: { stage: "dev" | "hml" | "prd"; convergenceDeadlineMs: number } | null;
+  /**
+   * GROMESH_INSTANCE_STAGE, also with Workspaces deployments off: publishing a release (decision D4) reaches no data
+   * plane and needs only the stage, which becomes the instance's immutable stage on first use. Unset (and no instance
+   * row yet): the stage is unknown and local publishing is refused (403), never assumed to be dev.
+   */
+  instanceStage?: "dev" | "hml" | "prd" | null;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -115,7 +127,25 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     workspaceSlugPollMs: Number(env.WORKSPACE_SLUG_POLL_MS ?? 30_000),
     uniqueConflictMax: Number(env.UNIQUE_CONFLICT_MAX ?? 20),
     apiV1UsageFlushMs: Number(env.API_V1_USAGE_FLUSH_MS ?? 5000),
+    workspacesDeployments: workspacesDeployments(env),
+    instanceStage: instanceStage(env),
   };
+}
+
+function instanceStage(env: NodeJS.ProcessEnv): AppConfig["instanceStage"] {
+  const stage = env.GROMESH_INSTANCE_STAGE;
+  if (stage === undefined || stage === "") return null;
+  if (stage !== "dev" && stage !== "hml" && stage !== "prd") throw new Error("GROMESH_INSTANCE_STAGE must be dev, hml or prd");
+  return stage;
+}
+
+function workspacesDeployments(env: NodeJS.ProcessEnv): AppConfig["workspacesDeployments"] {
+  const mode = env.GROMESH_EXPERIMENTAL_WORKSPACES;
+  if (mode === undefined || mode === "") return null;
+  if (mode !== "lab") throw new Error("GROMESH_EXPERIMENTAL_WORKSPACES accepts only lab (unset: off)");
+  const stage = env.GROMESH_INSTANCE_STAGE;
+  if (stage !== "dev" && stage !== "hml" && stage !== "prd") throw new Error("GROMESH_INSTANCE_STAGE must be dev, hml or prd when Workspaces deployments are on");
+  return { stage, convergenceDeadlineMs: Number(env.GROMESH_CONVERGENCE_DEADLINE_MS ?? 10 * 60 * 1000) };
 }
 
 export const APP_CONFIG = Symbol("APP_CONFIG");

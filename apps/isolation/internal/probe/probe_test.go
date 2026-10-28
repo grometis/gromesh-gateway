@@ -33,6 +33,8 @@ type fakeNet struct {
 	unresolved map[string]bool
 	// connectedNoAnswer: the TCP connection is accepted and the request then fails (TLS, protocol, no response).
 	connectedNoAnswer map[string]bool
+	// answer: the status an open URL answers (200 when absent).
+	answer map[string]int
 	// local: the attempt fails on this side (no route chosen, no socket), not at the destination.
 	local map[string]bool
 	dns   bool
@@ -57,7 +59,7 @@ func (n *fakeNet) Dial(ctx context.Context, address string) error {
 	}
 	return &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}
 }
-func (n *fakeNet) Get(ctx context.Context, url string) (int, bool, error) {
+func (n *fakeNet) Get(ctx context.Context, _ string, url string) (int, bool, error) {
 	n.mu.Lock()
 	hung := n.connectedNoAnswer[url]
 	n.mu.Unlock()
@@ -66,6 +68,11 @@ func (n *fakeNet) Get(ctx context.Context, url string) (int, bool, error) {
 	}
 	if err := n.Dial(ctx, url); err != nil {
 		return 0, false, err
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if status, ok := n.answer[url]; ok {
+		return status, true, nil
 	}
 	return 200, true, nil
 }
@@ -105,7 +112,7 @@ type world struct {
 }
 
 func newWorld(t *testing.T, dir string) *world {
-	w := &world{t: t, net: &fakeNet{open: map[string]bool{"backend:80": true}, slow: map[string]bool{}, unresolved: map[string]bool{}, connectedNoAnswer: map[string]bool{}, local: map[string]bool{}, dns: true}, now: 1_000 * uint64(time.Second), boot: boot1}
+	w := &world{t: t, net: &fakeNet{open: map[string]bool{"backend:80": true}, slow: map[string]bool{}, unresolved: map[string]bool{}, connectedNoAnswer: map[string]bool{}, answer: map[string]int{}, local: map[string]bool{}, dns: true}, now: 1_000 * uint64(time.Second), boot: boot1}
 	w.instKey, w.kid = instanceKey()
 	w.trust = TrustSet{w.kid: w.instKey.Public().(ed25519.PublicKey)}
 	w.p = w.probe(dir)
@@ -466,7 +473,7 @@ func TestAdmissionPayloadIsStrict(t *testing.T) {
 	}
 }
 
-func TestReachedWithoutTheExpectedAnswerIsAViolationAndALocalFailureProvesNothing(t *testing.T) {
+func TestConnectedWithoutAnAnswerAndALocalFailureProveNothing(t *testing.T) {
 	w := newWorld(t, t.TempDir())
 	w.p.Config.Checks = append(w.p.Config.Checks, Check{Capability: "CAP-5", Kind: "http", Name: "validator", URL: "http://validator:8001/", ExpectStatus: 401})
 	w.admit(nil)
@@ -476,7 +483,10 @@ func TestReachedWithoutTheExpectedAnswerIsAViolationAndALocalFailureProvesNothin
 	w.net.local["forbidden-CAP-6:80"] = false
 	w.net.connectedNoAnswer["http://validator:8001/"] = true
 	w.round()
-	w.expect("violation", false)
+	w.expect("awaiting-admission", false)
+	if len(w.p.State.Violated) != 0 {
+		t.Fatalf("violated %v", w.p.State.Violated)
+	}
 }
 
 func TestACanaryAfterAnInconclusiveRoundIsNotReady(t *testing.T) {

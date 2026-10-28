@@ -51,7 +51,9 @@ capabilities:
 
 {{/* The http-log target: the in-cluster collector when enabled, otherwise the configured external one (or none). */}}
 {{- define "data-plane.collectorEndpoint" -}}
-{{- if .Values.collector.enabled -}}
+{{- if and .Values.collector.enabled (eq .Values.collector.mode "sidecar") -}}
+http://127.0.0.1:8080/kong
+{{- else if .Values.collector.enabled -}}
 http://gromesh-collector:8080/kong
 {{- else -}}
 {{- .Values.collector.httpLogEndpoint -}}
@@ -70,6 +72,9 @@ http://gromesh-collector:8080/kong
 {{- end -}}
 {{- if not (regexMatch "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" .Values.workspaces.clusterId) -}}
 {{- fail "workspaces.clusterId must be the lowercase UUID of this cluster when workspaces.enabled is true" -}}
+{{- end -}}
+{{- if not (regexMatch "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" .Values.workspaces.instanceId) -}}
+{{- fail "workspaces.instanceId must be the lowercase UUID of this cluster's instance when workspaces.enabled is true" -}}
 {{- end -}}
 {{- /* The kid of each key is checked against its thumbprint by the probe itself (ci/check.sh runs it). */ -}}
 {{- $keys := .Values.workspaces.instanceSigningKeys -}}
@@ -96,6 +101,21 @@ http://gromesh-collector:8080/kong
 {{- if eq (int $.Values.workspaces.probe.runAsUser) (int $.Values.kong.runAsUser) -}}
 {{- fail "workspaces.probe.runAsUser must differ from kong.runAsUser: only the probe writes the lease" -}}
 {{- end -}}
+{{- end -}}
+{{- if not (has .Values.collector.mode (list "deployment" "sidecar")) -}}
+{{- fail "collector.mode must be deployment or sidecar" -}}
+{{- end -}}
+{{- if and .Values.collector.enabled (eq .Values.collector.mode "sidecar") (not .Values.workspaces.enabled) -}}
+{{- fail "collector.mode sidecar is the Workspaces-mode layout (native sidecar after the probe): set workspaces.enabled" -}}
+{{- end -}}
+{{- if and .Values.collector.enabled .Values.workspaces.enabled (ne .Values.collector.mode "sidecar") -}}
+{{- fail "with workspaces.enabled the collector runs only as the pod's sidecar (collector.mode sidecar): a cluster-wide collector is reachable from other pods" -}}
+{{- end -}}
+{{- if and .Values.collector.enabled .Values.workspaces.enabled (ne (lower .Values.collector.clusterId) .Values.workspaces.clusterId) -}}
+{{- fail "collector.clusterId must equal workspaces.clusterId: the sidecar tags rows with the pod's own cluster" -}}
+{{- end -}}
+{{- if and .Values.networkPolicy.enabled .Values.collector.enabled (eq .Values.collector.mode "sidecar") (empty .Values.networkPolicy.clickhousePeers) -}}
+{{- fail "networkPolicy.clickhousePeers must select ClickHouse when the collector is a sidecar of the Kong pod" -}}
 {{- end -}}
 {{- if .Values.collector.enabled -}}
 {{- if not (regexMatch "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" .Values.collector.clusterId) -}}

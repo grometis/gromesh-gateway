@@ -3,7 +3,9 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -83,6 +85,22 @@ type kongMock struct {
 	healthy       atomic.Bool
 	bodies        chan []byte
 	onApply       func(http.ResponseWriter, *http.Request, []byte)
+	// served is Kong's configuration_hash, computed as Kong 3.9 does; reported, when set, replaces it in /status.
+	served   atomic.Value
+	reported atomic.Value
+}
+
+// kongHash is Kong 3.9's configuration_hash of a POST /config body: the md5 of the "config" string when there is
+// one, otherwise of the body (a config object, as v1 sends it).
+func kongHash(body []byte) string {
+	var wrapped struct {
+		Config *string `json:"config"`
+	}
+	if json.Unmarshal(body, &wrapped) == nil && wrapped.Config != nil {
+		body = []byte(*wrapped.Config)
+	}
+	sum := md5.Sum(body)
+	return hex.EncodeToString(sum[:])
 }
 
 func newKong(t *testing.T) *kongMock {
@@ -100,7 +118,16 @@ func newKong(t *testing.T) *kongMock {
 		case "GET /status":
 			if !k.healthy.Load() {
 				w.WriteHeader(http.StatusServiceUnavailable)
+				return
 			}
+			hash, _ := k.served.Load().(string)
+			if reported, _ := k.reported.Load().(string); reported != "" {
+				hash = reported
+			}
+			if hash == "" {
+				hash = strings.Repeat("0", 32)
+			}
+			fmt.Fprintf(w, `{"configuration_hash":%q,"server":{"connections_active":1}}`, hash)
 		case "POST /config":
 			if r.Header.Get("Content-Type") != "application/json" {
 				t.Error("config must be sent as application/json")
@@ -117,6 +144,7 @@ func newKong(t *testing.T) *kongMock {
 				fmt.Fprint(w, "Kong validation failed: "+strings.Repeat("x", 9<<10))
 				return
 			}
+			k.served.Store(kongHash(b))
 			w.WriteHeader(http.StatusCreated)
 		default:
 			http.NotFound(w, r)
