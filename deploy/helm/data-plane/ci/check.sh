@@ -30,6 +30,12 @@ refuse 'realIpHeader' --set-string 'kong.realIpHeader=Bad Header' --set 'kong.tr
 helm template dp "$chart" --set-string agent.token=ci-placeholder --set-string kong.realIpHeader=CF-Connecting-IP --set 'kong.trustedIps={10.244.0.0/16,2001:db8::/32}' > "$work/client-ip.yaml"
 real_ip_env="$(docker run --rm -i mikefarah/yq:4.44.3 ea 'select(.kind == "Deployment") | .spec.template.spec.containers[] | select(.name == "kong") | [.env[] | select(.name == "KONG_REAL_IP_HEADER" or .name == "KONG_TRUSTED_IPS") | .name + "=" + .value] | sort | join(";")' < "$work/client-ip.yaml")"
 [[ "$real_ip_env" == 'KONG_REAL_IP_HEADER=CF-Connecting-IP;KONG_TRUSTED_IPS=10.244.0.0/16,2001:db8::/32' ]]
+# No registration credentials at all: refused, never rendered without them.
+if helm template dp "$chart" > /dev/null 2> "$work/missing-token.log"; then
+  echo 'Chart unexpectedly accepted missing registration credentials' >&2
+  exit 1
+fi
+grep -q 'Set agent.existingSecret' "$work/missing-token.log"
 # Workspaces mode: only on Kubernetes >= 1.33, with every capability covered and the probe on its own UID.
 helm lint "$chart" --strict -f "$chart/ci/values-workspaces.yaml" --kube-version 1.33.0
 helm template dp "$chart" -f "$chart/ci/values-workspaces.yaml" --kube-version 1.33.0 > "$work/workspaces.yaml"

@@ -161,45 +161,6 @@ jobs:
       RUN_CHARTS: ${{ needs.changes.outputs.all == 'true' || needs.changes.outputs.charts == 'true' }}
     steps:
       - uses: actions/checkout@v7
-      - name: Lint and render the data-plane chart (defaults and full)
-        if: env.RUN_CHARTS == 'true'
-        shell: bash
-        run: |
-          helm() {
-            docker run --rm -v "$PWD:/w:ro" -w /w alpine/helm:3.16.2 "$@"
-          }
-          # A synthetic token exercises Secret creation without committing credentials.
-          helm lint deploy/helm/data-plane --strict --set-string agent.token=ci-placeholder
-          helm template dp deploy/helm/data-plane --set-string agent.token=ci-placeholder > /dev/null
-          helm lint deploy/helm/data-plane --strict -f deploy/helm/data-plane/ci/values-full.yaml
-          helm template dp deploy/helm/data-plane -f deploy/helm/data-plane/ci/values-full.yaml > /dev/null
-          helm lint deploy/helm/data-plane --strict -f deploy/helm/data-plane/ci/values-homelab.yaml
-          helm template dp deploy/helm/data-plane -f deploy/helm/data-plane/ci/values-homelab.yaml > /tmp/helm-dp-homelab.yaml
-          # Homelab: every container books its whole memory limit (as in deploy/helm/data-plane/ci/check.sh).
-          unbooked="$(docker run --rm -i mikefarah/yq:4.44.3 ea '[.. | select(tag == "!!map" and has("image")) | select(.resources.limits.memory == null or .resources.requests.memory != .resources.limits.memory) | .name] | join(",")' < /tmp/helm-dp-homelab.yaml)"
-          [[ -z "$unbooked" ]] || { echo "Homelab containers whose memory request differs from the limit: $unbooked" >&2; exit 1; }
-          # kong.realIpHeader/kong.trustedIps: schema-checked, set together, passed to the Kong container.
-          refuse() {
-            local expected="$1"
-            shift
-            if helm template dp deploy/helm/data-plane --set-string agent.token=ci-placeholder "$@" > /dev/null 2> /tmp/helm-dp-real-ip.log; then
-              echo "Chart unexpectedly accepted: $*" >&2
-              exit 1
-            fi
-            grep -Fq "$expected" /tmp/helm-dp-real-ip.log
-          }
-          refuse 'go together' --set-string kong.realIpHeader=CF-Connecting-IP
-          refuse 'go together' --set 'kong.trustedIps={10.244.0.0/16}'
-          refuse 'trustedIps' --set-string kong.realIpHeader=CF-Connecting-IP --set 'kong.trustedIps={0.0.0.0/0}'
-          refuse 'realIpHeader' --set-string 'kong.realIpHeader=Bad Header' --set 'kong.trustedIps={10.244.0.0/16}'
-          helm template dp deploy/helm/data-plane --set-string agent.token=ci-placeholder --set-string kong.realIpHeader=CF-Connecting-IP --set 'kong.trustedIps={10.244.0.0/16,2001:db8::/32}' > "/tmp/helm-dp-client-ip.yaml"
-          real_ip_env="$(docker run --rm -i mikefarah/yq:4.44.3 ea 'select(.kind == "Deployment") | .spec.template.spec.containers[] | select(.name == "kong") | [.env[] | select(.name == "KONG_REAL_IP_HEADER" or .name == "KONG_TRUSTED_IPS") | .name + "=" + .value] | sort | join(";")' < "/tmp/helm-dp-client-ip.yaml")"
-          [[ "$real_ip_env" == 'KONG_REAL_IP_HEADER=CF-Connecting-IP;KONG_TRUSTED_IPS=10.244.0.0/16,2001:db8::/32' ]]
-          if helm template dp deploy/helm/data-plane > /dev/null 2> /tmp/helm-dp-missing-token.log; then
-            echo 'Chart unexpectedly accepted missing registration credentials' >&2
-            exit 1
-          fi
-          grep -q 'Set agent.existingSecret' /tmp/helm-dp-missing-token.log
       - name: Install Helm 3.19.0
         if: env.RUN_CHARTS == 'true'
         shell: bash
@@ -217,15 +178,19 @@ jobs:
         env:
           KUBECONFORM: 'true'
         run: bash deploy/helm/control-plane/ci/check.sh
+      # The data-plane chart check reads its renders with the control plane's yaml package: charts need the install too.
       - uses: pnpm/action-setup@v6
-        if: env.RUN_CODE == 'true'
+        if: env.RUN_CODE == 'true' || env.RUN_CHARTS == 'true'
       - uses: actions/setup-node@v7
-        if: env.RUN_CODE == 'true'
+        if: env.RUN_CODE == 'true' || env.RUN_CHARTS == 'true'
         with:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-        if: env.RUN_CODE == 'true'
+        if: env.RUN_CODE == 'true' || env.RUN_CHARTS == 'true'
+      - name: "Data-plane chart: strict lint, render, rejection tests, Workspaces and collector sidecar renders"
+        if: env.RUN_CHARTS == 'true'
+        run: bash deploy/helm/data-plane/ci/check.sh
       # Plugin configs are validated by a real Kong (control-plane integration tests). A step, not a service: the
       # image is read from the compose default so image-digests never has to edit this workflow.
       - name: Start the Kong validator (compose default image)
