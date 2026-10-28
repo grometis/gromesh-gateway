@@ -263,8 +263,9 @@ async function readVolume(vol, path) {
 }
 /** One request to Kong's admin or status socket, from a throwaway node container as the kong user (no curl in Kong). */
 async function kongSocket(pod, sock, method, path, body) {
-  const script = `const h=require("http");const b=process.argv[1]||"";const r=h.request({socketPath:"/kong/admin/${sock}.sock",method:"${method}",path:${JSON.stringify(path)},headers:b?{"content-type":"application/json","content-length":Buffer.byteLength(b)}:{}},res=>{let d="";res.on("data",c=>d+=c);res.on("end",()=>{process.stdout.write(JSON.stringify({status:res.statusCode,body:d}))})});r.on("error",e=>{process.stdout.write(JSON.stringify({status:0,body:String(e)}))});r.end(b)`;
-  const r = await docker(["run", "--rm", "-i", "--user", "1001:1001", "-v", `${pod.volumes.kongAdmin}:/kong/admin`, NODE_IMAGE, "sh", "-c", 'node -e "$0" "$(cat)"', script], { input: body ?? "", allowFail: true });
+  // The body (a config with key-auth keys and JWT secrets) reaches the helper on stdin only, never in its argv.
+  const script = `const h=require("http");let b="";process.stdin.on("data",c=>b+=c).on("end",()=>{const r=h.request({socketPath:"/kong/admin/${sock}.sock",method:"${method}",path:${JSON.stringify(path)},headers:b?{"content-type":"application/json","content-length":Buffer.byteLength(b)}:{}},res=>{let d="";res.on("data",c=>d+=c);res.on("end",()=>{process.stdout.write(JSON.stringify({status:res.statusCode,body:d}))})});r.on("error",e=>{process.stdout.write(JSON.stringify({status:0,body:String(e)}))});r.end(b)})`;
+  const r = await docker(["run", "--rm", "-i", "--user", "1001:1001", "-v", `${pod.volumes.kongAdmin}:/kong/admin`, NODE_IMAGE, "node", "-e", script], { input: body ?? "", allowFail: true });
   try { return JSON.parse(r.stdout); } catch { return { status: 0, body: r.stderr.slice(0, 300) }; }
 }
 async function kongStatus(pod) {
@@ -569,11 +570,20 @@ async function negatives() {
 
   // Kong serving another config. Agent running: it posts the authorized config again; the node may stay verified only
   // while its last matching report is inside the contract's 60 s freshness window.
+  // served: "down" only when Kong is gone (its status socket missing or refusing, and the proxy refusing); any other
+  // failure of the measurement is "unknown" and never counts as containment.
+  const served = async (z) => {
+    const r = await kongSocket(ctx.pod, "status", "GET", "/status");
+    if (r.status === 200) {
+      try { return JSON.parse(r.body).configuration_hash === z.kong_config_hash ? "expected" : "other"; } catch { return "unknown"; }
+    }
+    const gone = r.status === 0 && /ECONNREFUSED|ENOENT/.test(r.body);
+    return gone && (await httpStatus(`${ctx.pod.proxy}/`)) === "down" ? "down" : "unknown";
+  };
   const sample = async (t0) => {
     const x = (await nodes()).find((y) => y.node_id === ctx.pod.nodeId);
     const z = await latestDeployment();
-    const st = await kongStatus(ctx.pod);
-    return { ms: Date.now() - t0, evidence: x.evidence, state: z.state, served: st?.configuration_hash === z.kong_config_hash ? "expected" : st ? "other" : "down" };
+    return { ms: Date.now() - t0, evidence: x.evidence, revision: z.revision, state: z.state, served: await served(z) };
   };
   const other = JSON.stringify({ config: JSON.stringify({ _format_version: "3.0" }) });
   let t0 = Date.now();
@@ -593,6 +603,26 @@ async function negatives() {
   negative(s, "verified while Kong serves another config (agent running)", "only inside the 60 s freshness window", `${s.facts.verifiedWhileOtherMaxMs} ms`, s.facts.verifiedWhileOtherMaxMs <= 60_000);
   expect(s, repaired, "the agent did not restore the authorized config");
 
+  // Probe paused, agent running: statuses keep arriving and re-evaluate, but no probe report does. The node's evidence
+  // must leave verified once its last report is older than the 60 s window (plus one probe round and one status).
+  await waitFor("verified before the probe pauses", async () => (await sample(Date.now())).evidence === "verified", { timeoutMs: 90_000, intervalMs: 2000 }).catch(() => null);
+  await docker(["pause", ctx.pod.probe]);
+  t0 = Date.now();
+  const probeSilent = [];
+  let expiredMs = null;
+  while (Date.now() - t0 < 120_000 && expiredMs === null) {
+    const x = await sample(t0);
+    probeSilent.push(x);
+    if (x.evidence !== "verified") expiredMs = x.ms;
+    else await sleep(2000);
+  }
+  s.facts.probePaused = probeSilent;
+  s.facts.probePausedEvidenceExpiredMs = expiredMs;
+  negative(s, "verified while the probe is silent (agent running)", "leaves verified within 60 s + one probe round + one status", expiredMs === null ? "still verified at 120 s" : `${expiredMs} ms`, expiredMs !== null && expiredMs <= 60_000 + 30_000);
+  await docker(["unpause", ctx.pod.probe]);
+  const probeBack = await waitFor("the resumed probe re-verifies", async () => { const x = await sample(t0); return x.served === "expected" && x.evidence === "verified" ? x : null; }, { timeoutMs: 180_000, intervalMs: 2000 }).catch((e) => { s.failures.push(e.message); return null; });
+  s.facts.probeRecoveredMs = probeBack?.ms ?? null;
+
   // Agent paused: nobody repairs and no report reaches the control plane. The CP must not declare anything new, must
   // open communication-failure for the silent pod, and the probe alone must contain Kong (guard-missing → stopped).
   await waitFor("verified again", async () => (await sample(Date.now())).evidence === "verified", { timeoutMs: 90_000, intervalMs: 2000 }).catch(() => null);
@@ -600,14 +630,17 @@ async function negatives() {
   await docker(["pause", ctx.pod.agent]);
   t0 = Date.now();
   await kongSocket(ctx.pod, "admin", "POST", "/config", other);
+  const during = await ok("POST", "/api/v2/deployments", { session: ctx.session, body: { expectedRevision: before.revision, reason: "v2flow: revision while the node is silent" } });
   const paused = [];
-  let pendencyMs = null, containedMs = null;
+  let pendencyMs = null, containedMs = null, downInARow = 0;
   while (Date.now() - t0 < 150_000 && (pendencyMs === null || containedMs === null)) {
     const x = await sample(t0);
     const iso = (await req("GET", `/api/v2/clusters/${ctx.cluster.id}/isolation`, { session: ctx.session })).body;
     const pend = iso?.pendencies?.find((p) => p.kind === "communication-failure" && (p.podUid === ctx.pod.podUid || p.podUid === null));
     if (pend && pendencyMs === null) pendencyMs = x.ms;
-    if (x.served === "down" && containedMs === null) containedMs = x.ms;
+    // Contained: two consecutive samples with Kong gone (a single failed measurement proves nothing).
+    downInARow = x.served === "down" ? downInARow + 1 : 0;
+    if (downInARow >= 2 && containedMs === null) containedMs = x.ms;
     paused.push({ ...x, pendency: pend?.kind ?? null });
     await sleep(3000);
   }
@@ -615,11 +648,14 @@ async function negatives() {
   s.facts.pausedCommunicationFailureMs = pendencyMs;
   s.facts.pausedKongContainedMs = containedMs;
   const after = await latestDeployment();
-  negative(s, "no new convergence while the node is silent and Kong serves another config", "same revision and state", `${after.revision}/${after.state}`, after.revision === before.revision && after.state === before.state);
+  const silentNode = (await nodes()).find((y) => y.node_id === ctx.pod.nodeId);
+  s.facts.revisionWhileSilent = { revision: during.revision, state: after.state, verifiedRevision: silentNode.verified_revision };
+  negative(s, "a revision recorded while the node is silent and Kong serves another config", "not converged, never verified on the node",
+    `${after.revision}/${after.state}/verified=${silentNode.verified_revision}`, after.revision === during.revision && after.state !== "converged" && !(Number(silentNode.verified_revision) >= during.revision));
   negative(s, "silent node (agent paused)", "communication-failure opened by the control plane", pendencyMs === null ? "none" : `${pendencyMs} ms`, pendencyMs !== null);
   negative(s, "Kong serving a config other than applied.json, agent paused", "contained by the probe (Kong stopped)", containedMs === null ? "still serving" : `${containedMs} ms`, containedMs !== null);
   // Recorded, not asserted: cluster_nodes.evidence is recomputed only by evaluate(); with no status nothing recomputes it.
-  report.findings.push({ id: "D-3", what: "cluster_nodes.evidence stays 'verified' while the node is silent", observed: paused.filter((x) => x.evidence === "verified").length + " samples", impact: "internal column only; no API exposes it (listClusters is planned); the isolation pendency and the probe's containment cover the silence" });
+  report.findings.push({ id: "D-3", what: "cluster_nodes.evidence stays 'verified' while the node is silent", observed: paused.filter((x) => x.evidence === "verified").length + " samples", impact: "history only (audit); the current reading is DeliveryService.clusterView (PR #194); the isolation pendency and the probe's containment cover the silence" });
   await docker(["unpause", ctx.pod.agent]);
   const back = await waitFor("the resumed agent restores and re-verifies", async () => { const x = await sample(t0); return x.served === "expected" && x.evidence === "verified" ? x : null; }, { timeoutMs: 120_000, intervalMs: 2000 }).catch((e) => { s.failures.push(e.message); return null; });
   s.facts.recoveredMs = back?.ms ?? null;
