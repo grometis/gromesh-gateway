@@ -32,6 +32,8 @@ type Agent struct {
 	heartbeat    time.Duration
 	retry        func(int) time.Duration
 	isolation    *isolation
+	deploy       *deployments
+	deployStatus *DeploymentStatus
 	appliedGauge atomic.Int64
 	failures     atomic.Uint64
 	lastSuccess  atomic.Int64
@@ -102,10 +104,16 @@ func (a *Agent) resetApplyRetry(hash string) {
 }
 
 func (a *Agent) Run(ctx context.Context) error {
-	saved, err := a.store.load()
-	if err != nil {
+	var saved *Snapshot
+	if a.config.HandoffDir != "" {
+		if a.deploy == nil {
+			a.deploy = &deployments{store: store{path: a.config.SnapshotPath, meta: deploymentMeta}}
+		}
+		a.restoreDeployment()
+	} else if loaded, err := a.store.load(); err != nil {
 		a.log.Warn("ignoring unusable persisted snapshot", "error", err)
-		saved = nil
+	} else {
+		saved = loaded
 	}
 	identity := identityStore{dir: a.config.StateDir}
 	registration, err := identity.load(a.config, a.log)
@@ -224,6 +232,10 @@ func (a *Agent) runSession(ctx context.Context, registration Registration, saved
 }
 
 func (a *Agent) report(ctx context.Context) {
+	if a.deploy != nil {
+		a.reportDeployment(ctx)
+		return
+	}
 	a.statusMu.RLock()
 	status := a.status
 	a.statusMu.RUnlock()
@@ -265,6 +277,10 @@ func (a *Agent) fail(ctx context.Context, snapshot *Snapshot, message string, pe
 }
 
 func (a *Agent) refresh(ctx context.Context, environmentID string) {
+	if a.deploy != nil {
+		a.refreshDeployment(ctx)
+		return
+	}
 	hash := ""
 	if a.applied != nil {
 		hash = a.applied.Hash
