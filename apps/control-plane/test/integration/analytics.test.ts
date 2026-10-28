@@ -293,6 +293,29 @@ describe("a request stored more than once (at-least-once delivery)", () => {
     expect(explorer.body.items.map((r: { id: string }) => r.id).sort()).toEqual([once.id, twice.id].sort());
     expect(explorer.body.nextCursor).toBeNull();
   });
+
+  it("keeps percentiles and pages of one request per id, also for distinct requests at the same instant", async () => {
+    const env = await h.api("POST", "/environments", { name: uniq("dedup-q") });
+    const envId = env.body.id as string;
+    // Nine fast requests and one slow one at the same instant: p50 10 ms. Copies of the slow one would move p50 to 100.
+    const fast = Array.from({ length: 9 }, () => row(envId, 30_000, 200, 10));
+    const slow = row(envId, 30_000, 200, 100);
+    await admin.insert({ table: "requests", values: [...fast, slow], format: "JSONEachRow" });
+    for (let i = 0; i < 9; i++) await admin.insert({ table: "requests", values: [slow], format: "JSONEachRow" });
+    const totals = (await h.api("GET", `/environments/${envId}/analytics/summary?${period()}&interval=5m`)).body.totals;
+    expect(totals).toMatchObject({ requests: 10, p50Ms: 10 });
+    // Pages of 3 over the ten distinct ids (same ts, ordered by id): every id once, no copy, no gap.
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const page: ApiResponse = await h.api("GET", `/environments/${envId}/requests?${period()}&limit=3${cursor ? `&cursor=${cursor}` : ""}`);
+      expect(page.status, JSON.stringify(page.body)).toBe(200);
+      seen.push(...page.body.items.map((r: { id: string }) => r.id));
+      cursor = page.body.nextCursor;
+    } while (cursor);
+    expect(seen.length).toBe(10);
+    expect(new Set(seen)).toEqual(new Set([...fast, slow].map((r) => r.id)));
+  });
 });
 
 describe("maskClientIp", () => {
