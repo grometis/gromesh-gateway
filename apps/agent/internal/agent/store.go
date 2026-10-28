@@ -10,7 +10,9 @@ import (
 )
 
 type store struct {
-	path   string
+	path string
+	// meta names the envelope file of each generation: snapshot.json (v1) unless set.
+	meta   string
 	rename func(string, string) error
 }
 
@@ -22,32 +24,9 @@ type stagedSnapshot struct {
 }
 
 func (s *store) load() (*Snapshot, error) {
-	f, err := os.Open(s.path)
-	if os.IsNotExist(err) {
-		if _, linkErr := os.Lstat(s.path); linkErr == nil {
-			return nil, fmt.Errorf("persisted snapshot link is broken")
-		}
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("read persisted config: %w", err)
-	}
-	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
+	data, config, err := s.loadRaw()
+	if data == nil || err != nil {
 		return nil, err
-	}
-	dir, err := s.generation(info)
-	if err != nil {
-		return nil, err
-	}
-	config, err := io.ReadAll(io.LimitReader(f, maxSnapshotBytes+1))
-	if err != nil || len(config) > maxSnapshotBytes {
-		return nil, fmt.Errorf("cannot read persisted config or config exceeds 64 MiB")
-	}
-	data, err := os.ReadFile(filepath.Join(dir, "snapshot.json"))
-	if err != nil {
-		return nil, fmt.Errorf("read persisted snapshot metadata: %w", err)
 	}
 	snapshot, err := DecodeSnapshot(data)
 	if err != nil {
@@ -57,6 +36,45 @@ func (s *store) load() (*Snapshot, error) {
 		return nil, fmt.Errorf("persisted config does not match snapshot metadata")
 	}
 	return snapshot, nil
+}
+
+func (s *store) metaName() string {
+	if s.meta == "" {
+		return "snapshot.json"
+	}
+	return s.meta
+}
+
+// loadRaw returns the envelope and the boot config of the published generation, or nothing when none was published.
+func (s *store) loadRaw() ([]byte, []byte, error) {
+	f, err := os.Open(s.path)
+	if os.IsNotExist(err) {
+		if _, linkErr := os.Lstat(s.path); linkErr == nil {
+			return nil, nil, fmt.Errorf("persisted snapshot link is broken")
+		}
+		return nil, nil, nil
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("read persisted config: %w", err)
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, nil, err
+	}
+	dir, err := s.generation(info)
+	if err != nil {
+		return nil, nil, err
+	}
+	config, err := io.ReadAll(io.LimitReader(f, maxSnapshotBytes+1))
+	if err != nil || len(config) > maxSnapshotBytes {
+		return nil, nil, fmt.Errorf("cannot read persisted config or config exceeds 64 MiB")
+	}
+	data, err := os.ReadFile(filepath.Join(dir, s.metaName()))
+	if err != nil {
+		return nil, nil, fmt.Errorf("read persisted snapshot metadata: %w", err)
+	}
+	return data, config, nil
 }
 
 func (s *store) generation(info os.FileInfo) (string, error) {
@@ -105,6 +123,14 @@ func syncDir(path string) error {
 }
 
 func (s *store) stage(snapshot *Snapshot) (*stagedSnapshot, error) {
+	data, err := snapshot.MarshalJSON()
+	if err != nil {
+		return nil, err
+	}
+	return s.stageRaw(data, snapshot.Config)
+}
+
+func (s *store) stageRaw(data, config []byte) (*stagedSnapshot, error) {
 	parent := filepath.Dir(s.path)
 	if err := os.MkdirAll(parent, 0755); err != nil {
 		return nil, err
@@ -118,12 +144,9 @@ func (s *store) stage(snapshot *Snapshot) (*stagedSnapshot, error) {
 		p.discard()
 		return nil, err
 	}
-	data, err := snapshot.MarshalJSON()
+	err = writeSynced(filepath.Join(dir, s.metaName()), data)
 	if err == nil {
-		err = writeSynced(filepath.Join(dir, "snapshot.json"), data)
-	}
-	if err == nil {
-		err = writeSynced(filepath.Join(dir, "kong.json"), snapshot.Config)
+		err = writeSynced(filepath.Join(dir, "kong.json"), config)
 	}
 	if err == nil {
 		err = syncDir(dir)
