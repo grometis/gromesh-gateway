@@ -43,9 +43,17 @@ const secrets = new Set();
 function redact(text) {
   let s = String(text);
   for (const v of secrets) if (v && v.length >= 6) s = s.split(v).join("REDACTED");
-  return s;
+  // Kong prints a fresh request-debug token at start; it would let anyone reaching that proxy turn on request debugging.
+  return s.replace(/(token for request debugging: )[0-9a-f-]{36}/g, "$1REDACTED");
 }
-const report = { startedAt: new Date().toISOString(), run: RUN, images: IMAGES, steps: [], negative: [], findings: [], timeline: [] };
+// What a pass of this run can and cannot stand for: Docker has no NetworkPolicy, CNI or pod lifecycle.
+const SCOPE = {
+  provenInDocker: ["immutable release publication", "deployment separate from publication", "application by the agent",
+    "revision and hash verification", "convergence on agent status and probe evidence", "v1 compatibility",
+    "plugin behaviour on the real Kong"],
+  notProvenInDocker: ["Kubernetes NetworkPolicy", "host/CNI isolation", "pod lifecycle", "CAP-1…CAP-7 in Kubernetes"],
+};
+const report = { startedAt: new Date().toISOString(), run: RUN, images: IMAGES, scope: SCOPE, steps: [], negative: [], findings: [], timeline: [] };
 const save = () => writeFileSync(join(out, "results.json"), redact(JSON.stringify(report, null, 2)));
 const log = (m) => console.log(redact(`${new Date().toISOString()} ${m}`));
 const mark = (event, data = {}) => { report.timeline.push({ at: new Date().toISOString(), event, ...data }); log(`${event} ${JSON.stringify(data)}`); save(); };
