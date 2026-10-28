@@ -605,7 +605,8 @@ async function negatives() {
 
   // Probe paused, agent running: statuses keep arriving and re-evaluate, but no probe report does. The node's evidence
   // must leave verified once its last report is older than the 60 s window (plus one probe round and one status).
-  await waitFor("verified before the probe pauses", async () => (await sample(Date.now())).evidence === "verified", { timeoutMs: 90_000, intervalMs: 2000 }).catch(() => null);
+  // A precondition, not a hope: without verified first, the expiry below would prove nothing.
+  await waitFor("verified before the probe pauses", async () => (await sample(Date.now())).evidence === "verified", { timeoutMs: 90_000, intervalMs: 2000 });
   await docker(["pause", ctx.pod.probe]);
   t0 = Date.now();
   const probeSilent = [];
@@ -616,6 +617,7 @@ async function negatives() {
     if (x.evidence !== "verified") expiredMs = x.ms;
     else await sleep(2000);
   }
+  expect(s, probeSilent[0]?.evidence === "verified", `the node was not verified when the probe paused (${probeSilent[0]?.evidence})`);
   s.facts.probePaused = probeSilent;
   s.facts.probePausedEvidenceExpiredMs = expiredMs;
   negative(s, "verified while the probe is silent (agent running)", "leaves verified within 60 s + one probe round + one status", expiredMs === null ? "still verified at 120 s" : `${expiredMs} ms`, expiredMs !== null && expiredMs <= 60_000 + 30_000);
@@ -625,7 +627,7 @@ async function negatives() {
 
   // Agent paused: nobody repairs and no report reaches the control plane. The CP must not declare anything new, must
   // open communication-failure for the silent pod, and the probe alone must contain Kong (guard-missing → stopped).
-  await waitFor("verified again", async () => (await sample(Date.now())).evidence === "verified", { timeoutMs: 90_000, intervalMs: 2000 }).catch(() => null);
+  await waitFor("verified again", async () => (await sample(Date.now())).evidence === "verified", { timeoutMs: 90_000, intervalMs: 2000 });
   const before = await latestDeployment();
   await docker(["pause", ctx.pod.agent]);
   t0 = Date.now();
