@@ -446,7 +446,7 @@ describe("v2 schemas", () => {
   const release = { workspaceId: u, version: 3, contentDigest: d, origin: "rollback", rollbackOf: 1, contentOriginVersion: 1, contentFirstActivatedAt: "2026-09-01T00:00:00Z", originPromotionId: u, contentRevoked: false, createdAt: "2026-10-23T00:00:00Z" };
   const promo = { id: u, packageId: u, status: "validating", kind: "rollback", proofUse: "historical", contentDigest: d, workspaceKey: u, slug: "a" };
   const pend = (kind: string, releasable: boolean, scope = "cluster") => ({ clusterId: u, pods: [], pendencies: [{ id: u, kind, scope, openedAt: "2026-10-24T00:00:00Z", releasable }] });
-  const pod = { podUid: u, bootId: u, podName: "kong-0", nodeName: "n1", state: "verifying", admission: "open", reporting: "communication-failure", lastSeq: 7, leaseRemainingMs: 21000 };
+  const pod = { podUid: u, bootId: u, podName: "kong-0", nodeName: "n1", state: "verifying", admission: "open", servedState: "served", reporting: "communication-failure", lastSeq: 7, leaseRemainingMs: 21000 };
   const exec = (result: string, failureReason: string | null = null) => ({ promotionId: u, result, failureReason, executedBy: { userId: u, personId: u }, startedAt: "2026-10-24T00:00:00Z" });
   const review = { id: u, promotionId: u, status: "pending", openedAt: "2026-10-24T00:00:00Z", reviewer: null, justification: null, correctiveAction: null, decidedAt: null };
   const reviewer = { userId: u, personId: u, startedAt: "2026-10-24T01:00:00Z" };
@@ -722,9 +722,11 @@ describe("agent protocol v2", () => {
     const isolation = (p: Record<string, unknown>) => ({ clusterId: u, pods: [p], pendencies: [] });
     expect(valid("ClusterIsolation", isolation(pod)), JSON.stringify(validator("control-plane-v2.openapi.yaml", "ClusterIsolation").errors)).toBe(true);
     for (const s of ["served", "unknown"]) expect(valid("ClusterIsolation", isolation({ ...pod, servedState: s })), s).toBe(true);
-    // Planned until the N2-F3 implementation makes it required (rule 11): declared, marked, not yet required.
+    // Implemented (N2-F3): required, no longer planned.
     const item = v2.components.schemas.ClusterIsolation.properties.pods.items;
-    expect([item.properties.servedState["x-gromesh-planned"], item.required.includes("servedState")]).toEqual([true, false]);
+    expect([item.properties.servedState["x-gromesh-planned"], item.required.includes("servedState")]).toEqual([undefined, true]);
+    const { servedState: _omitted, ...withoutState } = pod;
+    expect(valid("ClusterIsolation", isolation(withoutState))).toBe(false);
     for (const s of ["never-served", "NEVER_SERVED_VERIFIED", null]) expect(valid("ClusterIsolation", isolation({ ...pod, servedState: s })), String(s)).toBe(false);
     const machine = v2.components.schemas.AdmissionServedState["x-gromesh-transitions"];
     expect([machine.initial, machine.terminal]).toEqual([["unknown"], ["served"]]);

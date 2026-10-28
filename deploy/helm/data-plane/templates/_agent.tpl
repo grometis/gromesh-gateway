@@ -34,6 +34,8 @@
     # The isolation admission of this pod in this boot, carried to and from the probe through the handoff.
     - name: GROMESH_HANDOFF_DIR
       value: /gromesh/handoff
+    - name: GROMESH_INSTANCE_ID
+      value: {{ .Values.workspaces.instanceId | quote }}
     # Kong starts only after the admission, so the agent registers with the version seed-config read from the pinned image.
     - name: GROMESH_KONG_VERSION_FILE
       value: /gromesh/kong-version/version
