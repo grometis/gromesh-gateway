@@ -2,9 +2,9 @@ import { Inject, Injectable, Logger } from "@nestjs/common";
 import { and, eq, isNull, or, sql } from "drizzle-orm";
 import type pg from "pg";
 import { DB, PG_POOL, type Db } from "../db/db.js";
-import { basicAuthCredentials, certificates, instanceSigningKeys, jwtCredentials, keyAuthCredentials, plugins, snapshots } from "../db/schema.js";
+import { basicAuthCredentials, certificates, deployments, instanceSigningKeys, jwtCredentials, keyAuthCredentials, plugins, releases, snapshots } from "../db/schema.js";
 import { PluginCatalog } from "../plugin-catalog/catalog.js";
-import { basicAuthHashContext, certificateKeyContext, credentialContext, ENCRYPTOR, Encryptor, instanceSigningKeyContext, isLegacySealed, isSealed, isSealedJson, jwtSecretContext, pluginSecretContext, snapshotContext } from "./crypto.js";
+import { basicAuthHashContext, certificateKeyContext, credentialContext, deploymentContext, ENCRYPTOR, Encryptor, instanceSigningKeyContext, isLegacySealed, isSealed, isSealedJson, jwtSecretContext, pluginSecretContext, releaseContext, snapshotContext } from "./crypto.js";
 
 export interface AtRestReport {
   credentials: number;
@@ -14,13 +14,15 @@ export interface AtRestReport {
   jwtSecrets: number;
   basicAuthHashes: number;
   signingKeys: number;
+  releases: number;
+  deployments: number;
   /** Another replica held the lock: nothing was done here. */
   skipped: boolean;
 }
 
 /** Test hook: runs before each row is written back, so a concurrent edit can be interposed deterministically. */
 export interface AtRestHooks {
-  beforeWrite?: (table: "credentials" | "plugins" | "snapshots" | "certificates" | "jwtSecrets" | "basicAuthHashes" | "signingKeys", id: string) => Promise<void>;
+  beforeWrite?: (table: "credentials" | "plugins" | "snapshots" | "certificates" | "jwtSecrets" | "basicAuthHashes" | "signingKeys" | "releases" | "deployments", id: string) => Promise<void>;
 }
 
 /** One replica re-seals at a time: the others skip. */
@@ -69,7 +71,7 @@ export class AtRestService {
     const client = await this.created.pool.connect();
     try {
       const { rows } = await client.query<{ locked: boolean }>("select pg_try_advisory_lock($1) as locked", [LOCK_KEY]);
-      if (!rows[0]?.locked) return { credentials: 0, plugins: 0, snapshots: 0, certificates: 0, jwtSecrets: 0, basicAuthHashes: 0, signingKeys: 0, skipped: true };
+      if (!rows[0]?.locked) return { credentials: 0, plugins: 0, snapshots: 0, certificates: 0, jwtSecrets: 0, basicAuthHashes: 0, signingKeys: 0, releases: 0, deployments: 0, skipped: true };
       try {
         return { ...(await work()), skipped: false };
       } finally {
@@ -81,7 +83,7 @@ export class AtRestService {
   }
 
   private async reseal(needsText: (stored: string) => boolean, needsDoc: (doc: unknown) => boolean, hooks: AtRestHooks): Promise<Omit<AtRestReport, "skipped">> {
-    const report = { credentials: 0, plugins: 0, snapshots: 0, certificates: 0, jwtSecrets: 0, basicAuthHashes: 0, signingKeys: 0 };
+    const report = { credentials: 0, plugins: 0, snapshots: 0, certificates: 0, jwtSecrets: 0, basicAuthHashes: 0, signingKeys: 0, releases: 0, deployments: 0 };
 
     for (const { id } of await this.db.select({ id: keyAuthCredentials.id }).from(keyAuthCredentials).where(or(isNull(keyAuthCredentials.keyHash), sql`true`))) {
       await this.retry("credentials", id, async () => {
@@ -219,9 +221,51 @@ export class AtRestService {
       });
     }
 
+    // Releases and deployments are immutable: the trigger lets through only a re-seal of the same column, in a
+    // transaction that declares it (migration 0022).
+    for (const { workspaceId, version } of await this.db.select({ workspaceId: releases.workspaceId, version: releases.version }).from(releases)) {
+      await this.retry("releases", `${workspaceId}:${version}`, async () => {
+        const ctx = releaseContext(workspaceId, version);
+        const [row] = await this.db.select({ content: releases.content }).from(releases).where(and(eq(releases.workspaceId, workspaceId), eq(releases.version, version)));
+        if (!row || !needsDoc(row.content)) return true;
+        await hooks.beforeWrite?.("releases", `${workspaceId}:${version}`);
+        const written = await this.db.transaction(async (tx) => {
+          await tx.execute(sql`set local gromesh.reseal = 'on'`);
+          return tx
+            .update(releases)
+            .set({ content: this.enc.sealJson(this.enc.openJson(row.content, ctx), ctx) })
+            .where(and(eq(releases.workspaceId, workspaceId), eq(releases.version, version), sql`${releases.content} = ${JSON.stringify(row.content)}::jsonb`))
+            .returning({ version: releases.version });
+        });
+        if (written.length === 0) return false;
+        report.releases++;
+        return true;
+      });
+    }
+
+    for (const { epoch, revision } of await this.db.select({ epoch: deployments.epoch, revision: deployments.revision }).from(deployments)) {
+      await this.retry("deployments", `${epoch}:${revision}`, async () => {
+        const ctx = deploymentContext(epoch, revision);
+        const [row] = await this.db.select({ config: deployments.config }).from(deployments).where(and(eq(deployments.epoch, epoch), eq(deployments.revision, revision)));
+        if (!row || !needsDoc(row.config)) return true;
+        await hooks.beforeWrite?.("deployments", `${epoch}:${revision}`);
+        const written = await this.db.transaction(async (tx) => {
+          await tx.execute(sql`set local gromesh.reseal = 'on'`);
+          return tx
+            .update(deployments)
+            .set({ config: this.enc.sealJson(this.enc.openJson(row.config, ctx), ctx) })
+            .where(and(eq(deployments.epoch, epoch), eq(deployments.revision, revision), sql`${deployments.config} = ${JSON.stringify(row.config)}::jsonb`))
+            .returning({ revision: deployments.revision });
+        });
+        if (written.length === 0) return false;
+        report.deployments++;
+        return true;
+      });
+    }
+
     if (Object.values(report).some((n) => n > 0)) {
       this.logger.log(
-        `Sealed ${report.credentials} credentials, ${report.plugins} plugin configs, ${report.snapshots} snapshots, ${report.certificates} certificate keys, ${report.jwtSecrets} JWT secrets, ${report.basicAuthHashes} basic-auth hashes, ${report.signingKeys} instance signing keys`,
+        `Sealed ${report.credentials} credentials, ${report.plugins} plugin configs, ${report.snapshots} snapshots, ${report.certificates} certificate keys, ${report.jwtSecrets} JWT secrets, ${report.basicAuthHashes} basic-auth hashes, ${report.signingKeys} instance signing keys, ${report.releases} releases, ${report.deployments} deployments`,
       );
     }
     return report;

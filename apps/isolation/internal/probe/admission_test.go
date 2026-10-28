@@ -275,13 +275,18 @@ func TestAnInvalidTrustSetIssuesNoLease(t *testing.T) {
 
 func TestReleasesAndReportsAreTypedToo(t *testing.T) {
 	w := newWorld(t, t.TempDir())
+	// Another kid of the same shape; the thumbprint is random, so its first character may already be the swap's.
+	unknown := "x" + w.kid[1:]
+	if unknown == w.kid {
+		unknown = "y" + w.kid[1:]
+	}
 	release := ReleaseClaims{ClusterID: cluster, PendencyID: "6a1f3c2e-0b7d-4c1a-9f10-0000000000e1", Kind: "confirmed-violation", ExpiresAt: "2026-10-26T12:15:00Z", Admissions: []ReleasedAdmission{{admissionID, 3}}}
 	if _, err := CheckRelease(signInstance(w.instKey, w.kid, TypRelease, release), w.trust, cluster); err != nil {
 		t.Fatal(err)
 	}
 	for name, raw := range map[string][]byte{
 		"admission typ":       signInstance(w.instKey, w.kid, TypAdmission, release),
-		"unknown kid":         signInstance(w.instKey, "x"+w.kid[1:], TypRelease, release),
+		"unknown kid":         signInstance(w.instKey, unknown, TypRelease, release),
 		"unknown kind":        signInstance(w.instKey, w.kid, TypRelease, ReleaseClaims{ClusterID: cluster, PendencyID: release.PendencyID, Kind: "everything", ExpiresAt: release.ExpiresAt, Admissions: release.Admissions}),
 		"report-style header": sign(w.instKey, []byte(`{"alg":"EdDSA","typ":"`+TypRelease+`"}`), []byte(`{}`)),
 	} {
