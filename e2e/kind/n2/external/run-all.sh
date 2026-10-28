@@ -34,7 +34,7 @@ marker() { local f; f="$(kind_kc)" || return 0
 cleanup() {
   local code=$? t id
   trap - EXIT
-  [[ -z "$sampler_pid" ]] || kill "$sampler_pid" 2>/dev/null || true
+  stop_sampler
   for t in ${built[@]+"${built[@]}"}; do docker image rm "$t" >/dev/null 2>&1 || true; done
   for t in ${trees[@]+"${trees[@]}"}; do git -C "$root" worktree remove --force "$t" >/dev/null 2>&1 || true; done
   if (( owned )) && [[ "${LAB_KEEP:-}" != 1 ]]; then
@@ -117,15 +117,22 @@ load "images loaded"
 # before they return. A failed sample is recorded as ERROR, never dropped.
 sample() { local f="$work/sampler.kubeconfig"
   kind get kubeconfig --name "$CLUSTER_NAME" >"$f" 2>/dev/null || { echo "ERROR kind get kubeconfig"; return; }
-  kubectl --kubeconfig "$f" get pods -A -o jsonpath='{range .items[*]}{range .status.containerStatuses[*]}{.image}{" "}{.imageID}{"\n"}{end}{range .status.initContainerStatuses[*]}{.image}{" "}{.imageID}{"\n"}{end}{end}' 2>/dev/null \
+  kubectl --kubeconfig "$f" --request-timeout=10s get pods -A -o jsonpath='{range .items[*]}{range .status.containerStatuses[*]}{.image}{" "}{.imageID}{"\n"}{end}{range .status.initContainerStatuses[*]}{.image}{" "}{.imageID}{"\n"}{end}{end}' 2>/dev/null \
     || echo "ERROR kubectl get pods"; }
 sampler() { while :; do sample >>"$1"; sleep 5; done; }
-# A suite passes only with evidence that each expected image ran (a name the run built or a pinned digest).
+# The sampler leads its own process group (setsid), so stopping it also stops its sleep, kind or kubectl.
+start_sampler() { export -f sample sampler; export work CLUSTER_NAME
+  setsid bash -c 'sampler "$1"' _ "$1" & sampler_pid=$!; }
+stop_sampler() { [[ -n "$sampler_pid" ]] || return 0
+  kill -TERM -- "-$sampler_pid" 2>/dev/null || true; wait "$sampler_pid" 2>/dev/null || true; sampler_pid=""; }
+# A suite passes only with evidence that each expected image ran (a name the run built or a pinned digest), counted
+# only on lines that carry the resolved image id: a container not yet started has its image but no imageID.
 ran() {
-  local name="$1" raw="$2" want missing=(); shift 2
-  grep -v '^ERROR' "$raw" | sort -u | sed "s|^|$name |" >>"$OUT/images-ran.txt" || true
-  grep -qv '^ERROR' "$raw" || missing+=("any container")
-  for want in "$@"; do grep -v '^ERROR' "$raw" | grep -qF -- "$want" || missing+=("$want"); done
+  local name="$1" raw="$2" seen="$2.resolved" want missing=(); shift 2
+  awk '$1 != "ERROR" && NF >= 2' "$raw" | sort -u >"$seen"
+  sed "s|^|$name |" "$seen" >>"$OUT/images-ran.txt"
+  [[ -s "$seen" ]] || missing+=("any container")
+  for want in "$@"; do grep -qF -- "$want" "$seen" || missing+=("$want"); done
   (( ${#missing[@]} == 0 )) && return 0
   echo "not observed running: ${missing[*]}; $(grep -c '^ERROR' "$raw" || true) failed samples"
   return 1
@@ -138,9 +145,9 @@ suite() {
   mkdir -p "$OUT/$name"
   load "$name start"
   : >"$OUT/$name/images-sampled.txt"
-  sampler "$OUT/$name/images-sampled.txt" & sampler_pid=$!
+  start_sampler "$OUT/$name/images-sampled.txt"
   env LAB_OUT="$OUT/$name" KONG_IMAGE="$KONG_IMAGE" PG_IMAGE="$PG_LOCAL" "$@" >"$OUT/$name/run.log" 2>&1 || rc=$?
-  kill "$sampler_pid" 2>/dev/null || true; wait "$sampler_pid" 2>/dev/null || true; sampler_pid=""
+  stop_sampler
   sample >>"$OUT/$name/images-sampled.txt"
   # shellcheck disable=SC2086 # the expected images are a word list
   evidence="$(ran "$name" "$OUT/$name/images-sampled.txt" $expected)" || rc="${rc/#0/evidence}"
