@@ -367,6 +367,9 @@ func (p *Probe) closePreviousBoot(boot string) {
 // Terminate is the pod's stop signal: the final pod-terminated report of the current admission, which then never
 // serves again, or of the admission the handoff holds that was not adopted yet (closeUnadopted). kongStopped is what
 // the probe could confirm about Kong (see KongStopConfirmed). probe.pub goes last: the agent then asks for nothing.
+// Without a confirmed Kong stop only this container is known to stop (a restart of the probe alone; native sidecars
+// are signalled after Kong exits): nothing is closed, the chain resumes after the restart from the persisted state,
+// and nothing is served until a new proof. A pod that really ends this way leaves its admission open (residual).
 func (p *Probe) Terminate(kongStopped bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -379,6 +382,16 @@ func (p *Probe) Terminate(kongStopped bool) {
 			p.Logf("probe.pub not removed: %v", err)
 		}
 	}()
+	if !kongStopped {
+		p.Logf("stop without a confirmed Kong stop: the admission stays open and nothing is served until a new proof")
+		if p.State.State != "violation" {
+			p.State.State = "no-proof"
+		}
+		p.State.Passes, p.State.FreshAdmission = 0, false
+		p.removeLease()
+		p.save()
+		return
+	}
 	p.closeUnadopted()
 	c := p.State.Chain
 	if c.AdmissionID != "" && !c.Closed && c.BootID == p.State.BootID {
