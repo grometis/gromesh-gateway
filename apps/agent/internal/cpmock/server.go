@@ -47,6 +47,8 @@ type DeploymentStatus struct {
 	FailedRevision  *int64  `json:"failedRevision"`
 	FailedHash      *string `json:"failedHash"`
 	FailureStatus   *int    `json:"failureStatus"`
+	FailureReason   *string `json:"failureReason"`
+	KongConfigHash  *string `json:"kongConfigHash"`
 	KongHealthy     bool    `json:"kongHealthy"`
 	Analytics       *string `json:"analytics"`
 	IsolationState  *string `json:"isolationState"`
@@ -68,15 +70,18 @@ type Server struct {
 	deploymentRevision int64
 	deploymentHash     string
 	alwaysSendBody     bool
-	down               bool
-	snapshot           []byte
-	hash               string
-	sseDown            bool
-	subscribers        map[chan string]struct{}
-	closed             chan struct{}
-	nodeToken          string
-	registrationToken  string
-	isolation          http.Handler
+	// deploymentRefusal and statusRefusal, when set, answer 409 with that DeliveryProblem code.
+	deploymentRefusal string
+	statusRefusal     string
+	down              bool
+	snapshot          []byte
+	hash              string
+	sseDown           bool
+	subscribers       map[chan string]struct{}
+	closed            chan struct{}
+	nodeToken         string
+	registrationToken string
+	isolation         http.Handler
 }
 
 func New() *Server {
@@ -140,6 +145,26 @@ func (s *Server) SetDeployment(data []byte) {
 	s.deploymentEpoch, s.deploymentRevision, s.deploymentHash = envelope.Epoch, envelope.Revision, envelope.Hash
 }
 
+// SetDeploymentRefusal answers GET /agent/v2/deployments/current with a 409 of code ("" serves again).
+func (s *Server) SetDeploymentRefusal(code string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deploymentRefusal = code
+}
+
+// SetStatusRefusal answers POST /agent/v2/status with a 409 of code ("" records again).
+func (s *Server) SetStatusRefusal(code string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.statusRefusal = code
+}
+
+func refuse(w http.ResponseWriter, code string) {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(http.StatusConflict)
+	fmt.Fprintf(w, `{"type":"https://gromesh.dev/problems/%s","title":"Delivery refused","status":409,"code":%q}`, code, code)
+}
+
 // SetAlwaysSendBody answers 200 with the deployment even when If-None-Match names its hash.
 func (s *Server) SetAlwaysSendBody(always bool) {
 	s.mu.Lock()
@@ -159,6 +184,10 @@ func (s *Server) currentDeployment(w http.ResponseWriter, r *http.Request) {
 	}()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.deploymentRefusal != "" {
+		refuse(w, s.deploymentRefusal)
+		return
+	}
 	if s.deployment == nil {
 		w.WriteHeader(http.StatusNotFound)
 		return
@@ -175,7 +204,10 @@ func (s *Server) currentDeployment(w http.ResponseWriter, r *http.Request) {
 	w.Write(s.deployment)
 }
 
-var digest = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+var (
+	digest   = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	kongHash = regexp.MustCompile(`^[0-9a-f]{32}$`)
+)
 
 func validDeploymentStatus(body []byte) (DeploymentStatus, bool) {
 	var status DeploymentStatus
@@ -200,6 +232,19 @@ func validDeploymentStatus(body []byte) (DeploymentStatus, bool) {
 	}
 	revision := func(r *int64) bool { return r == nil || *r >= 1 }
 	hash := func(h *string) bool { return h == nil || digest.MatchString(*h) }
+	if raw, ok := fields["failureReason"]; ok && string(raw) == "null" {
+		return status, false
+	}
+	if status.FailureReason != nil {
+		switch *status.FailureReason {
+		case "kong-rejected", "instance-mismatch", "invalid-envelope":
+		default:
+			return status, false
+		}
+	}
+	if status.KongConfigHash != nil && !kongHash.MatchString(*status.KongConfigHash) {
+		return status, false
+	}
 	analytics := status.Analytics == nil || *status.Analytics == "analytics-healthy" || *status.Analytics == "analytics-degraded"
 	isolation := status.IsolationState == nil
 	if status.IsolationState != nil {
@@ -228,14 +273,18 @@ func (s *Server) deploymentStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
-	current := s.deploymentEpoch
+	current, refusal := s.deploymentEpoch, s.statusRefusal
 	s.mu.Unlock()
 	if status.Epoch < current {
 		select {
 		case s.RefusedStatuses <- status.Epoch:
 		default:
 		}
-		w.WriteHeader(http.StatusConflict)
+		refuse(w, "epoch-outdated")
+		return
+	}
+	if refusal != "" {
+		refuse(w, refusal)
 		return
 	}
 	select {
