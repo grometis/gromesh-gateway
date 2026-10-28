@@ -1,0 +1,30 @@
+# Run with GROMESH_POD_UID=6a1f3c2e-0b7d-4c1a-9f10-000000000001 and GROMESH_ENVIRONMENT_ID=00000000-0000-4000-8000-000000000001
+# (e2e/key-names.mjs): the sidecar collector of Workspaces mode (N2-X4, B §3.5.2).
+tests:
+  - name: sidecar-row-id-derived-from-cluster-pod-and-request-id
+    inputs:
+      - insert_at: decode
+        type: log
+        log_fields:
+          message: "{\"environment_id\": \"00000000-0000-4000-8000-000000000001\", \"started_at\": 1792100000123, \"request\": {\"id\": \"0123456789abcdef0123456789abcdef\", \"uri\": \"/ok\", \"method\": \"GET\", \"size\": 100}, \"response\": {\"status\": 200, \"size\": 200}, \"client_ip\": \"127.0.0.1\", \"latencies\": {\"kong\": 1, \"proxy\": 2, \"request\": 3}}"
+    outputs:
+      - extract_from: sanitize
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.id, "653b06fb-b7b4-685b-d4b9-b2109eeaf6c7")
+              assert_eq!(.cluster_id, "00000000-0000-4000-8000-00000000c0c0")
+  - name: sidecar-event-without-request-id-dropped
+    no_outputs_from: [sanitize]
+    inputs:
+      - insert_at: decode
+        type: log
+        log_fields:
+          message: "{\"environment_id\": \"00000000-0000-4000-8000-000000000001\", \"started_at\": 1792100000123, \"request\": {\"uri\": \"/forged\", \"method\": \"GET\", \"size\": 100}, \"response\": {\"status\": 200, \"size\": 200}, \"client_ip\": \"127.0.0.1\", \"latencies\": {\"kong\": 1, \"proxy\": 2, \"request\": 3}}"
+  - name: sidecar-other-instance-dropped
+    no_outputs_from: [sanitize]
+    inputs:
+      - insert_at: decode
+        type: log
+        log_fields:
+          message: "{\"environment_id\": \"11111111-1111-4111-8111-111111111111\", \"started_at\": 1792100000123, \"request\": {\"id\": \"0123456789abcdef0123456789abcdef\", \"uri\": \"/forged\", \"method\": \"GET\", \"size\": 100}, \"response\": {\"status\": 200, \"size\": 200}, \"client_ip\": \"127.0.0.1\", \"latencies\": {\"kong\": 1, \"proxy\": 2, \"request\": 3}}"
