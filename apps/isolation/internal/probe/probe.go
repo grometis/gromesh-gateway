@@ -365,7 +365,8 @@ func (p *Probe) closePreviousBoot(boot string) {
 }
 
 // Terminate is the pod's stop signal: the final pod-terminated report of the current admission, which then never
-// serves again. kongStopped is what the probe could confirm about Kong (see KongStopConfirmed).
+// serves again, or of the admission the handoff holds that was not adopted yet (closeUnadopted). kongStopped is what
+// the probe could confirm about Kong (see KongStopConfirmed). probe.pub goes last: the agent then asks for nothing.
 func (p *Probe) Terminate(kongStopped bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -373,6 +374,12 @@ func (p *Probe) Terminate(kongStopped bool) {
 		return
 	}
 	p.terminated = true
+	defer func() {
+		if err := os.Remove(filepath.Join(p.Handoff, "probe.pub")); err != nil && !errors.Is(err, os.ErrNotExist) {
+			p.Logf("probe.pub not removed: %v", err)
+		}
+	}()
+	p.closeUnadopted()
 	c := p.State.Chain
 	if c.AdmissionID != "" && !c.Closed && c.BootID == p.State.BootID {
 		now, err := p.Boottime()
@@ -393,6 +400,34 @@ func (p *Probe) Terminate(kongStopped bool) {
 	p.State.AdmissionID, p.State.AdmissionJWS, p.State.FreshAdmission = "", "", false
 	p.removeLease()
 	p.save()
+}
+
+// closeUnadopted starts the chain of the admission the handoff holds for this cluster, pod, boot and key when no chain
+// of this boot is open: Terminate then makes its seq 1 the final report. A lease is issued only after the report of
+// its round is durable, so a chain that starts with its final report proves the admission never authorized traffic.
+func (p *Probe) closeUnadopted() {
+	boot := p.BootID()
+	// Only on the boot the state was last prepared for, or before the first preparation of a fresh state: a chain of an
+	// earlier boot still open is never overwritten, nor a state of an earlier boot reported as this one's.
+	if c := p.State.Chain; !uuid(boot) || (p.State.BootID != "" && boot != p.State.BootID) || (c.AdmissionID != "" && !c.Closed) {
+		return
+	}
+	trust, err := p.TrustSet()
+	if err != nil {
+		return
+	}
+	raw, err := readHandoff(filepath.Join(p.Handoff, "admission.jws"), 64<<10)
+	if err != nil {
+		return
+	}
+	self := Identity{ClusterID: p.ClusterID, PodUID: p.PodUID, BootID: boot, PublicKey: p.publicKey()}
+	claims, _, err := CheckAdmission(raw, trust, self)
+	if err != nil || p.ended(claims.AdmissionID) {
+		return
+	}
+	p.Logf("admission %s closed before adoption: it never authorized traffic", claims.AdmissionID)
+	p.State.BootID = boot
+	p.State.Chain = Chain{AdmissionID: claims.AdmissionID, BootID: boot, ProbeKey: p.PublicKey()}
 }
 
 // loadReleases reads the releases the agent handed over: only valid confirmed-violation releases of this cluster count.

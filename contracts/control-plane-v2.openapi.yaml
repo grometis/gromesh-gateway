@@ -5019,7 +5019,7 @@ components:
           items:
             type: object
             additionalProperties: false
-            required: [ podUid, bootId, podName, nodeName, state, admission, reporting, lastSeq ]
+            required: [ podUid, bootId, podName, nodeName, state, admission, servedState, reporting, lastSeq ]
             properties:
               podUid: { type: string, format: uuid }
               bootId: { type: string, format: uuid }
@@ -5028,7 +5028,7 @@ components:
               admissionId: { type: [ string, "null" ], format: uuid }
               state: { $ref: "./agent-protocol-v2.openapi.yaml#/components/schemas/PodIsolationState" }
               admission: { enum: [ requested, refused, open, closed, closed-without-proof ] }
-              servedState: { $ref: "#/components/schemas/AdmissionServedState", x-gromesh-planned: true, description: "Planned until the N2-F3 implementation, which removes the mark and makes it required (rule 11)" }
+              servedState: { $ref: "#/components/schemas/AdmissionServedState" }
               reporting: { enum: [ reporting, communication-failure, unconfirmed-isolation, closed ] }
               kongStopConfirmed: { type: [ boolean, "null" ] }
               lastSeq: { type: integer, minimum: 0 }
