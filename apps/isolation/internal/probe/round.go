@@ -29,6 +29,8 @@ var Capabilities = []string{"CAP-1", "CAP-2", "CAP-3", "CAP-4", "CAP-5", "CAP-6"
 //   - http: URL must be unreachable or answer exactly ExpectStatus (an internal service that refuses this client). The
 //     connection itself may be allowed, so only an HTTP answer other than ExpectStatus is a violation; connecting and
 //     then getting no answer (timeout, TLS, protocol error) proves neither: inconclusive.
+//     Method is GET by default; POST (empty body) reaches an intake that answers GET with 405 before authenticating,
+//     like the sidecar collector (CAP-7): only its 401 proves the credential is checked.
 //   - dns, tcp-open: positive controls; failing them makes the round inconclusive, never passing.
 type Check struct {
 	Capability   string `json:"capability"`
@@ -37,6 +39,7 @@ type Check struct {
 	Address      string `json:"address,omitempty"`
 	URL          string `json:"url,omitempty"`
 	ExpectStatus int    `json:"expectStatus,omitempty"`
+	Method       string `json:"method,omitempty"`
 	Host         string `json:"host,omitempty"`
 }
 
@@ -79,12 +82,18 @@ func (c Config) Validate() error {
 			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || (u.Port() != "" && !validPort(u.Port())) || ch.ExpectStatus < 100 || ch.ExpectStatus > 599 {
 				return fmt.Errorf("probe config: check %q needs an http(s) url and expectStatus", ch.Name)
 			}
+			if ch.Method != "" && ch.Method != http.MethodGet && ch.Method != http.MethodPost {
+				return fmt.Errorf("probe config: check %q method must be GET or POST", ch.Name)
+			}
 		case "dns":
 			if ch.Host == "" {
 				return fmt.Errorf("probe config: check %q needs a host", ch.Name)
 			}
 		default:
 			return fmt.Errorf("probe config: check %q has unknown kind %q", ch.Name, ch.Kind)
+		}
+		if ch.Kind != "http" && ch.Method != "" {
+			return fmt.Errorf("probe config: check %q: method is only for http checks", ch.Name)
 		}
 		if ch.Kind == "tcp" || ch.Kind == "http" {
 			covered[ch.Capability] = true
@@ -117,7 +126,7 @@ type Network interface {
 	Dial(ctx context.Context, address string) error
 	// Get reports whether the TCP connection was established, whatever happened after it: a failure after connecting
 	// (a reset included) is never taken for a refusal.
-	Get(ctx context.Context, url string) (status int, connected bool, err error)
+	Get(ctx context.Context, method, url string) (status int, connected bool, err error)
 	Resolve(ctx context.Context, host string) error
 }
 
@@ -131,8 +140,11 @@ func (n realNetwork) Dial(ctx context.Context, address string) error {
 	return err
 }
 
-func (n realNetwork) Get(ctx context.Context, url string) (int, bool, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+func (n realNetwork) Get(ctx context.Context, method, url string) (int, bool, error) {
+	if method == "" {
+		method = http.MethodGet
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, nil)
 	if err != nil {
 		return 0, false, err
 	}
@@ -251,7 +263,7 @@ func evaluate(ctx context.Context, network Network, ch Check) (string, string) {
 		}
 		return "inconclusive", ch.Address + ": " + err.Error()
 	case "http":
-		status, connected, err := network.Get(ctx, ch.URL)
+		status, connected, err := network.Get(ctx, ch.Method, ch.URL)
 		switch {
 		case err == nil && status == ch.ExpectStatus:
 			return "pass", ""

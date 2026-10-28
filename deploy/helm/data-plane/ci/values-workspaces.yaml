@@ -5,6 +5,7 @@ agent:
 workspaces:
   enabled: true
   clusterId: 6a1f3c2e-0b7d-4c1a-9f10-0000000000c1
+  instanceId: 6a1f3c2e-0b7d-4c1a-9f10-0000000000a1
   # TEST-ONLY: the key of contracts/examples/isolation-signatures.example.json, derived from a published seed.
   instanceSigningKeys:
     - { kid: LduU6YNgsIRbClfLYYXfg5VEWL3S5q8TsrvV01NRaic, publicKey: vIeB87e8hCwQ5rBCgRDOAdhiVQhLPBJSuNoepr249V4 }
@@ -18,4 +19,5 @@ workspaces:
       - { capability: CAP-1, kind: tcp-open, name: allowed backend, address: "echo.gromesh-test.svc:80" }
       - { capability: CAP-5, kind: http, name: validator, url: "http://kong-validator.gromesh.svc:8001/", expectStatus: 401 }
       - { capability: CAP-6, kind: http, name: agent metrics, url: "http://127.0.0.1:9100/metrics", expectStatus: 403 }
-      - { capability: CAP-7, kind: http, name: collector, url: "http://127.0.0.1:9880/", expectStatus: 401 }
+      # A POST: the collector answers any GET with 405 before checking the token (N2-X4).
+      - { capability: CAP-7, kind: http, name: collector token, url: "http://127.0.0.1:8080/kong", expectStatus: 401, method: POST }

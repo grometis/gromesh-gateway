@@ -542,7 +542,15 @@ export const clusters = pgTable("clusters", {
   name: text("name").notNull(),
   registrationTokenHash: text("registration_token_hash").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [uniqueIndex("clusters_env_name_uq").on(t.environmentId, t.name), uniqueIndex("clusters_token_uq").on(t.registrationTokenHash)]);
+  // The cluster's single active delivery flow (DeliveryProtocolState, decisions D2/D5): changed only by
+  // setClusterDeliveryProtocol and by the activation gate (v2-pending -> v2).
+  deliveryProtocol: text("delivery_protocol", { enum: ["v1", "v2-pending", "v2"] }).notNull().default("v1"),
+  deliveryProtocolChangedAt: timestamp("delivery_protocol_changed_at", { withTimezone: true }),
+}, (t) => [
+  uniqueIndex("clusters_env_name_uq").on(t.environmentId, t.name),
+  uniqueIndex("clusters_token_uq").on(t.registrationTokenHash),
+  check("clusters_delivery_protocol_ck", sql`${t.deliveryProtocol} in ('v1', 'v2-pending', 'v2')`),
+]);
 
 export const clusterNodes = pgTable("cluster_nodes", {
   clusterId: uuid("cluster_id").notNull().references(() => clusters.id, { onDelete: "cascade" }),
@@ -556,6 +564,21 @@ export const clusterNodes = pgTable("cluster_nodes", {
   appliedVersion: integer("applied_version"),
   appliedHash: text("applied_hash"),
   failedVersion: integer("failed_version"),
+  // Instance deployments (N3), alongside the v1 columns: the epoch and revision the agent confirmed (even with the same
+  // hash) or failed to apply.
+  epoch: integer("epoch"),
+  appliedRevision: integer("applied_revision"),
+  failedRevision: integer("failed_revision"),
+  // v2 StatusReport (N3-C4): the deployment hash the agent declares applied with Kong's own config hash, the failure
+  // reason, and the highest revision this node was verified at (revision-regression is measured against it).
+  deploymentHash: text("deployment_hash"),
+  kongConfigHash: text("kong_config_hash"),
+  failedDeploymentHash: text("failed_deployment_hash"),
+  failureReason: text("failure_reason"),
+  verifiedEpoch: integer("verified_epoch"),
+  verifiedRevision: integer("verified_revision"),
+  // The node's last ConvergenceEvidence, so a divergence is audited once when it opens and once when it clears.
+  evidence: text("evidence"),
   error: text("error"),
   kongHealthy: boolean("kong_healthy").notNull().default(false),
   reportedAt: timestamp("reported_at", { withTimezone: true }),
@@ -733,3 +756,182 @@ export const isolationReleases = pgTable(
 
 export type IsolationAdmissionRow = typeof isolationAdmissions.$inferSelect;
 export type IsolationPendencyRow = typeof isolationPendencies.$inferSelect;
+
+const digest = (column: unknown) => sql`${column} ~ '^sha256:[0-9a-f]{64}$'`;
+
+/**
+ * An immutable version of a workspace (C §4): a trigger refuses UPDATE and DELETE. A rollback copy keeps the content's
+ * provenance (content_origin_version, origin_promotion_id); its first activation lives in content_activations.
+ * promotion_id, origin_promotion_id and attestation_id name tables that do not exist yet: no foreign key.
+ */
+export const releases = pgTable(
+  "releases",
+  {
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id),
+    version: integer("version").notNull(),
+    // The workspace's GatewayState, secrets as references to variables; stored sealed.
+    content: jsonb("content").$type<SealedJson | GatewayState>().notNull(),
+    contentDigest: text("content_digest").notNull(),
+    origin: text("origin", { enum: ["local", "promotion", "rollback", "tombstone", "migration"] }).notNull(),
+    promotionId: uuid("promotion_id"),
+    rollbackOf: integer("rollback_of"),
+    message: text("message"),
+    createdBy: jsonb("created_by").$type<Actor>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    contentOriginVersion: integer("content_origin_version").notNull(),
+    originPromotionId: uuid("origin_promotion_id"),
+    attestationId: uuid("attestation_id"),
+  },
+  (t) => [
+    primaryKey({ columns: [t.workspaceId, t.version] }),
+    index("releases_content_idx").on(t.workspaceId, t.contentDigest),
+    check("releases_version_ck", sql`${t.version} >= 1 and ${t.contentOriginVersion} between 1 and ${t.version}`),
+    check("releases_content_digest_ck", digest(t.contentDigest)),
+    check("releases_origin_ck", sql`${t.origin} in ('local', 'promotion', 'rollback', 'tombstone', 'migration')`),
+    check("releases_promotion_origin_ck", sql`${t.origin} <> 'promotion' or ${t.originPromotionId} is not null`),
+  ],
+);
+export type ReleaseRow = typeof releases.$inferSelect;
+
+/** The first time each content converged here (G-2): insert only. No row: never converged, no emergency rollback. */
+export const contentActivations = pgTable(
+  "content_activations",
+  {
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id),
+    contentDigest: text("content_digest").notNull(),
+    firstActivatedAt: timestamp("first_activated_at", { withTimezone: true }).notNull(),
+    deploymentRevision: integer("deployment_revision").notNull(),
+    originPromotionId: uuid("origin_promotion_id"),
+  },
+  (t) => [primaryKey({ columns: [t.workspaceId, t.contentDigest] }), check("content_activations_digest_ck", digest(t.contentDigest))],
+);
+
+/** Content withdrawn for security (G-2), for every release with that digest: insert only. */
+export const contentRevocations = pgTable(
+  "content_revocations",
+  {
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id),
+    contentDigest: text("content_digest").notNull(),
+    reason: text("reason").notNull(),
+    revokedBy: jsonb("revoked_by").$type<Actor>().notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.workspaceId, t.contentDigest] }), check("content_revocations_digest_ck", digest(t.contentDigest))],
+);
+
+export interface DeploymentMember {
+  workspaceId: string;
+  releaseVersion: number;
+  contentDigest: string;
+}
+
+/**
+ * A revision of the instance's composed config (C §4), immutable like releases. The epoch changes with the agent
+ * protocol (C-18); expected_nodes is fixed when the deployment is created (C-16).
+ */
+export const deployments = pgTable(
+  "deployments",
+  {
+    epoch: integer("epoch").notNull(),
+    revision: integer("revision").notNull(),
+    // Ordered.
+    members: jsonb("members").$type<DeploymentMember[]>().notNull(),
+    expectedNodes: jsonb("expected_nodes").notNull(),
+    mandatoryPluginsVersion: integer("mandatory_plugins_version"),
+    valuesDigest: text("values_digest"),
+    // The composed Kong config; stored sealed.
+    config: jsonb("config").$type<SealedJson | KongDeclarativeConfig>().notNull(),
+    configHash: text("config_hash").notNull(),
+    // md5 of the JCS bytes of config, what Kong reports for them (N3-K1); derived here, never learned from a node.
+    kongConfigHash: text("kong_config_hash"),
+    reason: text("reason", { enum: ["publish", "promotion", "rollback", "reconcile", "mandatory-plugins", "values"] }).notNull(),
+    promotionId: uuid("promotion_id"),
+    createdBy: jsonb("created_by").$type<Actor>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.epoch, t.revision] }),
+    check("deployments_revision_ck", sql`${t.epoch} >= 1 and ${t.revision} >= 1`),
+    check("deployments_config_hash_ck", digest(t.configHash)),
+    check("deployments_kong_config_hash_ck", sql`${t.kongConfigHash} ~ '^[0-9a-f]{32}$'`),
+    check("deployments_reason_ck", sql`${t.reason} in ('publish', 'promotion', 'rollback', 'reconcile', 'mandatory-plugins', 'values')`),
+  ],
+);
+export type DeploymentRow = typeof deployments.$inferSelect;
+
+/** The active release of each workspace, materialized from deployments for reading. */
+export const workspaceActiveRelease = pgTable(
+  "workspace_active_release",
+  {
+    workspaceId: uuid("workspace_id")
+      .primaryKey()
+      .references(() => workspaces.id),
+    version: integer("version").notNull(),
+    // The revision that last composed it; null between publishRelease and the next createDeployment (D4).
+    deploymentRevision: integer("deployment_revision"),
+  },
+  (t) => [foreignKey({ name: "workspace_active_release_release_fk", columns: [t.workspaceId, t.version], foreignColumns: [releases.workspaceId, releases.version] })],
+);
+
+/**
+ * One deployment in progress per instance (C-16): a single row, created by the migration, taken in the transaction
+ * that creates the deployment and released on converged, failed or deadline. It outlives a control-plane crash.
+ */
+export const deploymentLease = pgTable(
+  "deployment_lease",
+  {
+    id: boolean("id").primaryKey().default(true),
+    revision: integer("revision"),
+    operation: text("operation"),
+    owner: jsonb("owner"),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    deadlineAt: timestamp("deadline_at", { withTimezone: true }),
+  },
+  (t) => [check("deployment_lease_single_ck", sql`${t.id}`)],
+);
+
+/**
+ * This control plane's instance (D1, anticipated from N4): one row, created on the first Workspaces deployment with
+ * the stage of the configuration, never changed nor removed afterwards (a trigger refuses both). Its signing keys are
+ * instance_signing_keys: the identity is this id plus those keys, with no second key pair of its own.
+ */
+export const instance = pgTable(
+  "instance",
+  {
+    singleton: boolean("singleton").primaryKey().default(true),
+    id: uuid("id").notNull().defaultRandom(),
+    stage: text("stage", { enum: ["dev", "hml", "prd"] }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("instance_id_uq").on(t.id), check("instance_singleton_ck", sql`${t.singleton}`), check("instance_stage_ck", sql`${t.stage} in ('dev', 'hml', 'prd')`)],
+);
+export type InstanceRow = typeof instance.$inferSelect;
+
+/**
+ * The DeploymentState machine of each deployment (contract: x-gromesh-transitions), one row per transition: deployments
+ * stay immutable and the history is append-only like them. The current state is the highest seq.
+ */
+export const deploymentStates = pgTable(
+  "deployment_states",
+  {
+    epoch: integer("epoch").notNull(),
+    revision: integer("revision").notNull(),
+    seq: integer("seq").notNull(),
+    state: text("state", { enum: ["composed", "rejected", "active", "converging", "converged", "degraded", "failed", "superseded"] }).notNull(),
+    reason: text("reason").notNull(),
+    at: timestamp("at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.epoch, t.revision, t.seq] }),
+    foreignKey({ name: "deployment_states_deployment_fk", columns: [t.epoch, t.revision], foreignColumns: [deployments.epoch, deployments.revision] }),
+    check("deployment_states_seq_ck", sql`${t.seq} >= 1`),
+    check("deployment_states_state_ck", sql`${t.state} in ('composed', 'rejected', 'active', 'converging', 'converged', 'degraded', 'failed', 'superseded')`),
+  ],
+);
+

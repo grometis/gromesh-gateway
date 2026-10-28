@@ -92,6 +92,8 @@ func main() {
 		},
 		Boottime: node.BootTime, WallClock: time.Now, Logf: logf,
 	}
+	// Without it every applied.json counts as absent: readiness as in N2, and no applied revision is reported.
+	p.InstanceID = os.Getenv("GROMESH_INSTANCE_ID")
 	if err := p.Open(); err != nil {
 		logf("cannot open %s: %v: no lease will be issued", dir, err)
 		select {}

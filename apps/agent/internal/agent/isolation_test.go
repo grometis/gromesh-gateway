@@ -419,13 +419,20 @@ func TestWorkspacesModeRegistersBeforeKongExistsAndGetsTheAdmission(t *testing.T
 func TestWorkspacesModeRequiresTheKongVersionFile(t *testing.T) {
 	c := Config{RegistrationToken: "t", NodeID: "n", Hostname: "h", SnapshotPath: "/s", ControlPlaneURL: "http://cp",
 		KongAdminURL: "unix:///a", KongStatusURL: "unix:///s", StateDir: "/state",
-		HandoffDir: "/gromesh/handoff", PodUID: testPod, PodName: "dp-0", NodeName: "worker-1", BootIDFile: "/b"}
+		HandoffDir: "/gromesh/handoff", PodUID: testPod, PodName: "dp-0", NodeName: "worker-1", BootIDFile: "/b",
+		InstanceID: "00000000-0000-4000-8000-0000000000a1"}
 	if c.validate() == nil {
 		t.Fatal("Workspaces mode accepted no GROMESH_KONG_VERSION_FILE")
 	}
 	c.KongVersionFile = "/gromesh/kong-version/version"
 	if err := c.validate(); err != nil {
 		t.Fatalf("a version file was refused: %v", err)
+	}
+	for _, instance := range []string{"", "instance"} {
+		c.InstanceID = instance
+		if c.validate() == nil {
+			t.Fatalf("Workspaces mode accepted the instance %q", instance)
+		}
 	}
 }
 
