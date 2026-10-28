@@ -16,14 +16,20 @@ import {
 } from "./lab.mjs";
 
 const out = process.env.LAB_OUT ?? mkdtempSync(join(tmpdir(), "gromesh-n2-comp-"));
+// Every image this suite pulls is pinned by digest in versions.env (a mutable tag would not reproduce the run).
+const VERSIONS = Object.fromEntries(readFileSync(join(here, "../versions.env"), "utf8").split("\n")
+  .filter((line) => /^[A-Z0-9_]+=/.test(line)).map((line) => line.split(/=(.*)/s).slice(0, 2)));
+for (const key of ["PG_IMAGE", "CLICKHOUSE_IMAGE", "VECTOR_IMAGE", "FIXTURE_IMAGE"]) {
+  if (!/@sha256:[0-9a-f]{64}$/.test(VERSIONS[key] ?? "")) throw new Error(`versions.env: ${key} is not pinned by digest`);
+}
 const IMAGES = {
   cp: process.env.CP_IMAGE ?? "gromesh-n2c-cp:41db8aa",
   agent: process.env.AGENT_IMAGE ?? "gromesh-n2c-agent:13e340c",
   // The lab's Kong (ghcr.io/grometis/gromesh-kong@sha256:786d736c…) re-tagged locally: the tag carries no version.
   kong: process.env.KONG_IMAGE ?? "gromesh-n2c-kong:786d736c",
-  pg: process.env.PG_IMAGE ?? "postgres:16-alpine",
+  pg: process.env.PG_IMAGE ?? VERSIONS.PG_IMAGE,
 };
-const FIXTURE_IMAGE = /^FIXTURE_IMAGE=(.+)$/m.exec(readFileSync(join(here, "../versions.env"), "utf8"))[1];
+const FIXTURE_IMAGE = VERSIONS.FIXTURE_IMAGE;
 const KONG_VERSION = "3.9.4";
 const CHART = join(root, "deploy/helm/data-plane");
 const SELECTOR = "app.kubernetes.io/name=data-plane,app.kubernetes.io/instance=dp";
@@ -323,7 +329,13 @@ const ctx = {};
 const followers = [];
 const OBS = "gromesh-n2-obs";
 const BACKEND_PORT = 8081;
-const CLICKHOUSE_IMAGE = "clickhouse/clickhouse-server:25.8.33.6-alpine";
+const CLICKHOUSE_IMAGE = VERSIONS.CLICKHOUSE_IMAGE;
+const [VECTOR_NAME, VECTOR_DIGEST] = VERSIONS.VECTOR_IMAGE.split("@");
+// Budgets for the workloads the suite adds next to the data plane, so they cannot starve the node it measures on.
+const FIXTURE_RESOURCES = {
+  clickhouse: { requests: { cpu: "250m", memory: "512Mi" }, limits: { cpu: "1", memory: "1536Mi" } },
+  validator: { requests: { cpu: "100m", memory: "256Mi" }, limits: { cpu: "500m", memory: "512Mi" } },
+};
 const V2_BUDGET = { detection: 18_000, block503: 19_000, kongStopSupervisor: 20_000, kongStopLiveness: 24_000, notReady: 20_000,
   probeDown503: 34_000, probeDownStopSupervisor: 35_000, probeDownStopIndependent: 39_000, drainSignal: 1_000, drainExit: 20_000 };
 report.v2Budgets = V2_BUDGET;
@@ -357,7 +369,7 @@ const valuesV2 = (keys, replicas, { clickhousePeers } = {}) => ({
   },
   workspaces: { enabled: true, clusterId: ctx.clusterId, instanceId: ctx.instanceId, instanceSigningKeys: keys, probe: { checks: ctx.checks } },
   collector: { enabled: true, mode: "sidecar", clusterId: ctx.clusterId, environmentId: ctx.instanceId,
-    image: { repository: "timberio/vector", tag: "0.57.0-alpine", digest: "", pullPolicy: "IfNotPresent" },
+    image: { repository: VECTOR_NAME.split(":")[0], tag: VECTOR_NAME.split(":")[1], digest: VECTOR_DIGEST, pullPolicy: "IfNotPresent" },
     clickhouse: { endpoint: `http://clickhouse.${OBS}.svc.cluster.local:8123`, existingSecret: "clickhouse-writer" } },
 });
 const releaseV2 = (verb, keys, replicas, opts) => helm([verb, "dp", CHART, "-n", NS.dp, "-f", "-"], { input: JSON.stringify(valuesV2(keys, replicas, opts)) });
@@ -451,6 +463,7 @@ async function clickhouse() {
         name: "clickhouse", image: CLICKHOUSE_IMAGE, imagePullPolicy: "IfNotPresent",
         env: [{ name: "CLICKHOUSE_DB", value: "gromesh" }, { name: "CLICKHOUSE_USER", value: "admin" },
           { name: "CLICKHOUSE_PASSWORD", valueFrom: { secretKeyRef: { name: "ch", key: "admin" } } }, { name: "CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT", value: "1" }],
+        resources: FIXTURE_RESOURCES.clickhouse,
         ports: [{ containerPort: 8123 }], volumeMounts: [{ name: "schema", mountPath: "/docker-entrypoint-initdb.d" }] }],
       volumes: [{ name: "schema", configMap: { name: "schema" } }] } } } },
     { apiVersion: "v1", kind: "Service", metadata: { name: "clickhouse", namespace: OBS }, spec: { selector: { app: "clickhouse" }, ports: [{ port: 8123 }] } }]);
@@ -466,6 +479,7 @@ function validatorObjects() {
       template: { metadata: { labels }, spec: { nodeName: NODES.cp, tolerations: [{ operator: "Exists" }], automountServiceAccountToken: false, containers: [{ name: "kong", image: IMAGES.kong, imagePullPolicy: "Never",
         env: [{ name: "KONG_DATABASE", value: "off" }, { name: "KONG_PROXY_LISTEN", value: "off" }, { name: "KONG_ADMIN_LISTEN", value: "0.0.0.0:8001" }, { name: "KONG_STATUS_LISTEN", value: "0.0.0.0:8100" },
           { name: "KONG_ADMIN_ACCESS_LOG", value: "off" }, { name: "KONG_NGINX_WORKER_PROCESSES", value: "1" }, { name: "KONG_PLUGINS", value: "bundled,gromesh-workspace,gromesh-route-guard" }],
+        resources: FIXTURE_RESOURCES.validator,
         readinessProbe: { httpGet: { path: "/status", port: 8100 }, periodSeconds: 2 } }] } } } },
     { apiVersion: "v1", kind: "Service", metadata: { name: "kong-validator", namespace: NS.cp }, spec: { selector: labels, ports: [{ port: 8001 }] } },
   ];
@@ -496,8 +510,8 @@ const podReady = (p) => (p.conditions ?? []).find((c) => c.type === "Ready")?.st
 /** Setup: CP (C3/C4/F3) with Workspaces mode off (D4: d4Disabled turns it on), validator, ClickHouse, two workspaces with content. */
 async function setupV2() {
   const it = item("V2-setup", "CP from the integration tree with Workspaces mode off (stage dev), validator, ClickHouse, backend HTTP/WS, two workspaces", { note: "setup" });
-  await vmLoad("setup start");
   report.environment = await assertLab();
+  await vmLoad("setup start");
   const topo = await topology();
   ctx.topo = topo;
   ctx.checks = [...probeChecks(topo).filter((c) => c.capability !== "CAP-7"), CAP7];
@@ -1016,5 +1030,8 @@ async function mainV2() {
     }
   } finally { await finishV2(); }
   console.log(`results: ${join(out, "results.json")}`);
+  // A failed, pending or aborted item, a leaked secret or a failed cleanup fails the run (the runner reads the code).
+  const failed = report.items.filter((i) => i.result === "fail" || i.result === "pending");
+  if (failed.length || report.aborted || report.secretScan?.leaks?.length || report.cleanupFailed) process.exit(1);
 }
 await mainV2();

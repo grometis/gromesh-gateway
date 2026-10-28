@@ -12,6 +12,15 @@ bad() { echo "FAIL: $*" >&2; fail=1; }
 ok() { echo "ok: $*"; }
 
 [[ "$(uname -s)" == Linux ]] || { bad "a Linux host is required (the kind nodes must not share a desktop VM): $(uname -s)"; exit 1; }
+# kind and every docker call act on whatever daemon DOCKER_HOST or the current context names: only this host's own
+# socket is accepted, before anything else runs.
+local_socket=unix:///var/run/docker.sock
+case "${DOCKER_HOST:-}" in ""|"$local_socket") ;; *) bad "DOCKER_HOST=$DOCKER_HOST is not this host's daemon ($local_socket)"; exit 1 ;; esac
+[[ -z "${DOCKER_CONTEXT:-}" || "$DOCKER_CONTEXT" == default ]] || { bad "DOCKER_CONTEXT=$DOCKER_CONTEXT: only the default (local) context"; exit 1; }
+ctx_name="$(docker context show 2>/dev/null || echo '?')"
+endpoint="$(docker context inspect -f '{{.Endpoints.docker.Host}}' 2>/dev/null || echo '?')"
+[[ "$ctx_name" == default && "$endpoint" == "$local_socket" ]] && ok "docker context default -> $endpoint" \
+  || { bad "docker context $ctx_name -> $endpoint: only the default context on $local_socket"; exit 1; }
 cpus="$(nproc)"; (( cpus >= MIN_CPUS )) && ok "$cpus vCPU" || bad "$cpus vCPU < $MIN_CPUS"
 mem="$(awk '/MemTotal/ {printf "%d", $2/1048576}' /proc/meminfo)"; (( mem >= MIN_MEM_GIB - 1 )) && ok "${mem} GiB RAM" || bad "${mem} GiB RAM < $MIN_MEM_GIB"
 docker_root="$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)"

@@ -380,6 +380,7 @@ async function preflight() {
 async function setup() {
   const it = item("1", "Postgres + control plane from main; admin, instance signing key (session+CSRF), cluster, registration token; data plane chart in Workspaces mode", { note: "setup" });
   report.environment = await assertLab();
+  ctx.labVerified = true;
   const topo = await topology();
   ctx.topo = topo;
   report.topology = topo;
@@ -1134,7 +1135,9 @@ async function finish() {
   report.thawed = await thawAll();
   for (const f of followers) f.stop();
   ctx.forward?.stop();
-  if (report.items.some((i) => i.result === "fail") || report.aborted) await diagnostics().catch((error) => log(`diagnostics: ${error.message}`));
+  // Only a cluster whose identity assertLab accepted is read, logs included: a refused kubeconfig may name any cluster.
+  if (ctx.labVerified && (report.items.some((i) => i.result === "fail") || report.aborted)) await diagnostics().catch((error) => log(`diagnostics: ${error.message}`));
+  else if (!ctx.labVerified) report.diagnostics = "skipped: the lab identity was never verified";
   if (!ctx.owned) report.cleanup = "nothing touched: the run stopped before the lab check and the preflight passed";
   else if (process.env.LAB_KEEP === "1") report.cleanup = "kept (LAB_KEEP=1)";
   else {
