@@ -99,6 +99,8 @@ spec:
                   fieldPath: metadata.uid
             - name: GROMESH_CLUSTER_ID
               value: {{ .Values.workspaces.clusterId | quote }}
+            - name: GROMESH_INSTANCE_ID
+              value: {{ .Values.workspaces.instanceId | quote }}
             - name: GROMESH_INSTANCE_KEYS
               value: /etc/gromesh/instance-keys.json
             - name: GROMESH_PROBE_CONFIG

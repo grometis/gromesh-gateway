@@ -1,7 +1,7 @@
 import { createHash, createPublicKey, type KeyObject, randomBytes, randomUUID, verify } from "node:crypto";
 import { Body, Controller, Get, HttpCode, Inject, Injectable, Logger, Module, Param, Post, Req, UseGuards } from "@nestjs/common";
 import type { Request } from "express";
-import { and, asc, desc, eq, gt, inArray, isNotNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, lt, lte, or, sql } from "drizzle-orm";
 import { AgentBearerGuard, AgentGatewayModule, AgentGatewayService, agentContext, bearer } from "../agent-gateway/agent-gateway.js";
 import { audit } from "../audit/audit.js";
 import { Ctx, Public, RequiredPermission, type RequestContext, SessionOnly } from "../auth/auth.js";
@@ -414,6 +414,21 @@ export class IsolationService {
       }
       return "integrity-conflict";
     }
+    // Nothing follows a final report: any report above a stored final one (a second final included), or a final one
+    // below a report already stored, is the probe key signing past the end of its chain, whatever the arrival order
+    // (contract: closing never erases evidence).
+    const afterFinal = and(eq(isolationReports.final, true), lt(isolationReports.seq, report.seq));
+    const [past] = await tx
+      .select({ seq: isolationReports.seq })
+      .from(isolationReports)
+      .where(and(eq(isolationReports.admissionId, a.admissionId!), report.final ? or(afterFinal, gt(isolationReports.seq, report.seq)) : afterFinal))
+      .limit(1);
+    if (past) {
+      if ((await this.openPendencies(tx, a.admissionId!)).every((p) => p.lifecycle !== "confirmed-violation")) {
+        await this.openPendency(tx, cluster, ctx, a, "confirmed-violation", "integrity-conflict");
+      }
+      return "integrity-conflict";
+    }
     await tx.insert(isolationReports).values({
       admissionId: a.admissionId!,
       seq: report.seq,
@@ -511,9 +526,42 @@ export class IsolationService {
         })
         .where(eq(isolationAdmissions.admissionId, admissionId))
         .returning()) as [IsolationAdmissionRow];
-      if (closes) await audit(tx, ctx, { action: "isolation.admission.close", entityType: "isolation-admission", entityId: admissionId, environmentId: cluster.environmentId, after: { state: "closed", reason: current.closeReason, seq: next.seq } });
+      // A chain whose seq 1 is final never had a lease: the probe publishes one only after its round's report is durable.
+      if (closes) await audit(tx, ctx, { action: "isolation.admission.close", entityType: "isolation-admission", entityId: admissionId, environmentId: cluster.environmentId, after: { state: "closed", reason: current.closeReason, seq: next.seq, neverServed: next.seq === 1 } });
     }
     return { from, ackedSeq: current.ackedSeq, state: current.lastState, broken };
+  }
+
+  /**
+   * contract: AdmissionServedState (F3-D2), only from reports stored after their signature was verified with the
+   * admission's probe key. never-served-verified: its only report is a seq 1 awaiting-admission final confirming Kong
+   * stopped and no confirmed violation (integrity conflict included) was ever opened on it; served: any other report
+   * or such a violation; unknown (absent here): no report at all. Nothing is ever closed from this view.
+   * A conflict raised while another violation of the admission is open records no second pendency, but that open
+   * one already makes it served.
+   */
+  private async servedStates(tx: Executor, admissionIds: string[]): Promise<Map<string, "never-served-verified" | "served">> {
+    const out = new Map<string, "never-served-verified" | "served">();
+    if (admissionIds.length === 0) return out;
+    const chains = await tx
+      .select({
+        admissionId: isolationReports.admissionId,
+        n: sql<number>`count(*)::int`,
+        closedUnadopted: sql<boolean>`bool_or(${isolationReports.seq} = 1 and ${isolationReports.final} and ${isolationReports.kongStopConfirmed} is true and ${isolationReports.state} = 'awaiting-admission')`,
+      })
+      .from(isolationReports)
+      .where(inArray(isolationReports.admissionId, admissionIds))
+      .groupBy(isolationReports.admissionId);
+    const conflicted = new Set(
+      (
+        await tx
+          .select({ admissionId: isolationPendencies.admissionId })
+          .from(isolationPendencies)
+          .where(and(inArray(isolationPendencies.admissionId, admissionIds), eq(isolationPendencies.kind, "confirmed-violation")))
+      ).map((p) => p.admissionId),
+    );
+    for (const c of chains) out.set(c.admissionId, c.n === 1 && c.closedUnadopted && !conflicted.has(c.admissionId) ? "never-served-verified" : "served");
+    return out;
   }
 
   /** contract: ClusterIsolation. The timers run first, so what it shows is what the next decision would see. */
@@ -531,6 +579,7 @@ export class IsolationService {
         .orderBy(asc(isolationPendencies.openedAt), asc(isolationPendencies.id));
       const latest = new Map<string, IsolationAdmissionRow>();
       for (const r of rows) if (!latest.has(`${r.podUid}/${r.bootId}`)) latest.set(`${r.podUid}/${r.bootId}`, r);
+      const served = await this.servedStates(tx, [...latest.values()].flatMap((r) => (r.admissionId ? [r.admissionId] : [])));
       const pods = [...latest.values()].map((r) => {
         const held = pendencies.filter((p) => p.admissionId !== null && p.admissionId === r.admissionId).map((p) => p.lifecycle);
         const open = r.outcome === "granted" && r.state === "open";
@@ -542,6 +591,7 @@ export class IsolationService {
           admissionId: r.admissionId,
           state: r.lastState ?? "awaiting-admission",
           admission: r.outcome === "pending" ? "requested" : r.outcome === "refused" ? "refused" : r.state!,
+          servedState: (r.admissionId && served.get(r.admissionId)) || "unknown",
           reporting: !open ? "closed" : held.includes("unconfirmed-isolation") ? "unconfirmed-isolation" : held.includes("communication-failure") ? "communication-failure" : "reporting",
           kongStopConfirmed: r.kongStopConfirmed,
           lastSeq: r.ackedSeq,

@@ -189,11 +189,12 @@ describe("releases and deployments in a laboratory on dev", () => {
     const [dep] = await deploymentRows(h);
     const ws = (await h.sql.query(`select workspace_id from workspace_active_release`)).rows[0].workspace_id;
     const config = enc.openJson<Doc>(dep.config, deploymentContext(1, dep.revision));
-    expect(res.body).toMatchObject({ epoch: 1, revision: dep.revision, state: "converged", configHash: dep.config_hash, convergence: "no-nodes", members: [{ workspaceId: ws, releaseVersion: 1 }] });
+    expect(res.body).toMatchObject({ epoch: 1, revision: dep.revision, state: "active", configHash: dep.config_hash, convergence: "no-nodes", members: [{ workspaceId: ws, releaseVersion: 1 }] });
     expect(res.body.kongConfigHash).toBe(createHash("md5").update(jcs(config), "utf8").digest("hex"));
     expect(dep.kong_config_hash).toBe(res.body.kongConfigHash);
     expect(dep.expected_nodes).toEqual([]);
-    expect(await states(h, dep.revision)).toEqual(["composed", "active", "converged"]);
+    // No expected node (no v2 cluster): it stays active, never converged by itself, and holds no lease (D-1).
+    expect(await states(h, dep.revision)).toEqual(["composed", "active"]);
     expect((await h.sql.query(`select revision from deployment_lease`)).rows[0].revision).toBeNull();
     expect((await h.sql.query(`select deployment_revision from workspace_active_release`)).rows[0].deployment_revision).toBe(dep.revision);
     // No node applied it: never activated.
@@ -241,7 +242,8 @@ describe("releases and deployments in a laboratory on dev", () => {
     expect(member(last.members, b)).toEqual(member(prev.members, b));
     expect(member(last.members, a)).toEqual({ workspaceId: a, releaseVersion: 2, contentDigest: ra2.contentDigest });
     expect(last.revision).toBe(prev.revision + 1);
-    expect((await states(h, prev.revision)).at(-1)).toBe("superseded");
+    // Never had an expected node nor the lease: closed by the direct edge active → superseded.
+    expect(await states(h, prev.revision)).toEqual(["composed", "active", "superseded"]);
   });
 
   it("returns 409 while another deployment holds the lease, and fails that deployment once its deadline passed", async () => {
