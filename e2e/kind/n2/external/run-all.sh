@@ -22,7 +22,7 @@ KONG_REF="${KONG_REF:-$KONG_IMAGE_REF}"
 SUITES="${SUITES:-env components f3 f3-residual4 f3-neg collector v2}"
 export LAB_KUBECONFIG
 RUN_ID="run-$(date -u +%Y%m%dT%H%M%SZ)-$$"
-owned=0 creating=0 failed=0 work=""
+owned=0 creating=0 failed=0 work="" sampler_pid=""
 built=() trees=()
 
 # The run id lives in the cluster itself and is read and written only through the kubeconfig kind exports for the named
@@ -34,6 +34,7 @@ marker() { local f; f="$(kind_kc)" || return 0
 cleanup() {
   local code=$? t id
   trap - EXIT
+  [[ -z "$sampler_pid" ]] || kill "$sampler_pid" 2>/dev/null || true
   for t in ${built[@]+"${built[@]}"}; do docker image rm "$t" >/dev/null 2>&1 || true; done
   for t in ${trees[@]+"${trees[@]}"}; do git -C "$root" worktree remove --force "$t" >/dev/null 2>&1 || true; done
   if (( owned )) && [[ "${LAB_KEEP:-}" != 1 ]]; then
@@ -111,35 +112,56 @@ for image in "$KONG_REF" "$PG_IMAGE" "${built[@]}"; do
   docker image inspect -f "$image {{.Id}} {{join .RepoDigests \",\"}} {{index .Config.Labels \"org.opencontainers.image.revision\"}}" "$image"
 done >"$OUT/images.txt"
 load "images loaded"
-# After each suite, what the cluster actually ran (ClickHouse, Vector and the fixtures are pulled there by digest):
-# every container's image and resolved image id, from the cluster itself.
-ran() { local f; f="$(kind_kc)" || return 0
+# What the cluster actually ran (ClickHouse, Vector and the fixtures are pulled there by digest): every container's
+# image and resolved image id, sampled from the cluster itself while the suite runs, since the suites delete their pods
+# before they return. A failed sample is recorded as ERROR, never dropped.
+sample() { local f="$work/sampler.kubeconfig"
+  kind get kubeconfig --name "$CLUSTER_NAME" >"$f" 2>/dev/null || { echo "ERROR kind get kubeconfig"; return; }
   kubectl --kubeconfig "$f" get pods -A -o jsonpath='{range .items[*]}{range .status.containerStatuses[*]}{.image}{" "}{.imageID}{"\n"}{end}{range .status.initContainerStatuses[*]}{.image}{" "}{.imageID}{"\n"}{end}{end}' 2>/dev/null \
-    | sort -u | sed "s|^|$1 |" >>"$OUT/images-ran.txt" || true; }
+    || echo "ERROR kubectl get pods"; }
+sampler() { while :; do sample >>"$1"; sleep 5; done; }
+# A suite passes only with evidence that each expected image ran (a name the run built or a pinned digest).
+ran() {
+  local name="$1" raw="$2" want missing=(); shift 2
+  grep -v '^ERROR' "$raw" | sort -u | sed "s|^|$name |" >>"$OUT/images-ran.txt" || true
+  grep -qv '^ERROR' "$raw" || missing+=("any container")
+  for want in "$@"; do grep -v '^ERROR' "$raw" | grep -qF -- "$want" || missing+=("$want"); done
+  (( ${#missing[@]} == 0 )) && return 0
+  echo "not observed running: ${missing[*]}; $(grep -c '^ERROR' "$raw" || true) failed samples"
+  return 1
+}
 
-# One suite: its own OUT subdirectory, the load before and after (a run under saturation is not evidence).
+# One suite: its own OUT subdirectory, the load before and after (a run under saturation is not evidence), and the
+# images it must be seen running ("a b c", then the command).
 suite() {
-  local name="$1" rc=0; shift
+  local name="$1" expected="$2" rc=0 evidence=""; shift 2
   mkdir -p "$OUT/$name"
   load "$name start"
+  : >"$OUT/$name/images-sampled.txt"
+  sampler "$OUT/$name/images-sampled.txt" & sampler_pid=$!
   env LAB_OUT="$OUT/$name" KONG_IMAGE="$KONG_IMAGE" PG_IMAGE="$PG_LOCAL" "$@" >"$OUT/$name/run.log" 2>&1 || rc=$?
-  if (( rc == 0 )); then echo "$name: pass" | tee -a "$OUT/summary.txt"
-  else echo "$name: FAIL (exit $rc; see $name/run.log)" | tee -a "$OUT/summary.txt"; failed=1; fi
-  ran "$name"
+  kill "$sampler_pid" 2>/dev/null || true; wait "$sampler_pid" 2>/dev/null || true; sampler_pid=""
+  sample >>"$OUT/$name/images-sampled.txt"
+  # shellcheck disable=SC2086 # the expected images are a word list
+  evidence="$(ran "$name" "$OUT/$name/images-sampled.txt" $expected)" || rc="${rc/#0/evidence}"
+  if [[ "$rc" == 0 ]]; then echo "$name: pass" | tee -a "$OUT/summary.txt"
+  elif [[ "$rc" == evidence ]]; then echo "$name: FAIL ($evidence)" | tee -a "$OUT/summary.txt"; failed=1
+  else echo "$name: FAIL (exit $rc; see $name/run.log${evidence:+; $evidence})" | tee -a "$OUT/summary.txt"; failed=1; fi
   load "$name end"
 }
 
+FIXTURE_DIGEST="${FIXTURE_IMAGE##*@}" CLICKHOUSE_DIGEST="${CLICKHOUSE_IMAGE##*@}" VECTOR_DIGEST="${VECTOR_IMAGE##*@}"
 for s in $SUITES; do
   case "$s" in
-    env) suite env node "$n2/run.mjs" ;;
-    components) suite components CP_IMAGE="$CP_admission" AGENT_IMAGE="$AGENT_admission" CP_REV="$REV_admission" AGENT_REV="$REV_admission" node "$n2/components/run.mjs" ;;
-    f3) suite f3 CP_IMAGE="$CP_admission" AGENT_IMAGE="$AGENT_admission" CP_REV="$REV_admission" AGENT_REV="$REV_admission" node "$n2/components/f3.mjs" ;;
-    f3-residual4) suite f3-residual4 RESIDUAL=4 LAB_STEPS=coldStart,secondPod,residualHeld CP_IMAGE="$CP_admission" AGENT_IMAGE="$AGENT_admission" node "$n2/components/f3.mjs" ;;
-    f3-neg) suite f3-neg LAB_PHASE=neg CP_IMAGE="$CP_admission" AGENT_IMAGE="$AGENT_neg" CP_REV="$REV_admission" AGENT_REV="$REV_neg" node "$n2/components/f3.mjs" ;;
+    env) suite env "$FIXTURE_DIGEST" node "$n2/run.mjs" ;;
+    components) suite components "$KONG_IMAGE $AGENT_admission" CP_IMAGE="$CP_admission" AGENT_IMAGE="$AGENT_admission" CP_REV="$REV_admission" AGENT_REV="$REV_admission" node "$n2/components/run.mjs" ;;
+    f3) suite f3 "$KONG_IMAGE $AGENT_admission" CP_IMAGE="$CP_admission" AGENT_IMAGE="$AGENT_admission" CP_REV="$REV_admission" AGENT_REV="$REV_admission" node "$n2/components/f3.mjs" ;;
+    f3-residual4) suite f3-residual4 "$KONG_IMAGE $AGENT_admission" RESIDUAL=4 LAB_STEPS=coldStart,secondPod,residualHeld CP_IMAGE="$CP_admission" AGENT_IMAGE="$AGENT_admission" node "$n2/components/f3.mjs" ;;
+    f3-neg) suite f3-neg "$KONG_IMAGE $AGENT_neg" LAB_PHASE=neg CP_IMAGE="$CP_admission" AGENT_IMAGE="$AGENT_neg" CP_REV="$REV_admission" AGENT_REV="$REV_neg" node "$n2/components/f3.mjs" ;;
     collector)
-      if [[ -f "$n2/collector.mjs" ]]; then suite collector AGENT_IMAGE="$AGENT_v2" node "$n2/collector.mjs"
+      if [[ -f "$n2/collector.mjs" ]]; then suite collector "$AGENT_v2" AGENT_IMAGE="$AGENT_v2" node "$n2/collector.mjs"
       else echo "collector: skipped (e2e/kind/n2/collector.mjs not in this tree)" | tee -a "$OUT/summary.txt"; fi ;;
-    v2) suite v2 CP_IMAGE="$CP_v2" AGENT_IMAGE="$AGENT_v2" CP_REV="$REV_v2" AGENT_REV="$REV_v2" node "$n2/components/v2.mjs" ;;
+    v2) suite v2 "$KONG_IMAGE $AGENT_v2 $CLICKHOUSE_DIGEST $VECTOR_DIGEST" CP_IMAGE="$CP_v2" AGENT_IMAGE="$AGENT_v2" CP_REV="$REV_v2" AGENT_REV="$REV_v2" node "$n2/components/v2.mjs" ;;
     *) echo "unknown suite $s" | tee -a "$OUT/summary.txt" >&2; failed=1 ;;
   esac
 done
