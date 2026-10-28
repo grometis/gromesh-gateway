@@ -26,7 +26,14 @@ spec:
       ports:
         - protocol: TCP
           port: {{ include "data-plane.urlPort" .Values.agent.controlPlaneUrl }}
-    {{- if include "data-plane.collectorEndpoint" . }}
+    {{- if and .Values.collector.enabled (eq .Values.collector.mode "sidecar") }}
+    # The sidecar collector listens on the pod's loopback (no policy applies there) and writes to ClickHouse.
+    - to:
+        {{- toYaml .Values.networkPolicy.clickhousePeers | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ include "data-plane.urlPort" .Values.collector.clickhouse.endpoint }}
+    {{- else if include "data-plane.collectorEndpoint" . }}
     - to:
         {{- if .Values.networkPolicy.collectorPeers }}
         {{- toYaml .Values.networkPolicy.collectorPeers | nindent 8 }}

@@ -68,7 +68,8 @@ async function until(fn, ok, timeoutMs) {
   }
 }
 
-const nginx = async (id) => Number((await docker("exec", id, "sh", "-c", "cat /proc/[0-9]*/comm 2>/dev/null | grep -c '^nginx$' || true")).stdout.trim());
+// Only the serving nginx (its master/worker titles): the image's HEALTHCHECK runs `kong health`, whose resty CLI is an nginx binary too.
+const nginx = async (id) => Number((await docker("exec", id, "sh", "-c", "for p in /proc/[0-9]*; do tr '\\0' ' ' < $p/cmdline 2>/dev/null; echo; done | grep -cE '^nginx: (master|worker) process' || true")).stdout.trim());
 const probeState = async (harness) => JSON.parse((await docker("run", "--rm", "-v", `${harness.leaseVolume}:/v:ro`, NODE_IMAGE, "cat", "/v/probe-state.json")).stdout);
 const ready = (probe) => docker("exec", probe, "/gromesh/bin/isolation-probe", "ready").then(() => true, () => false);
 
@@ -85,7 +86,10 @@ async function main() {
 
     // No admission: no lease, no nginx.
     await sleep(5000);
-    check((await nginx(kong)) === 0 && !(await ready(probe)), "nothing may start without an admission");
+    // Two checks, so a failure says which one broke.
+    const nginxWithoutAdmission = await nginx(kong);
+    check(nginxWithoutAdmission === 0, `no nginx may start without an admission (${nginxWithoutAdmission} nginx processes)`);
+    check(!(await ready(probe)), "the probe may not be Ready without an admission");
     // An admission for another pod is ignored.
     const probePublicKey = readFileSync(join(handoff, "probe.pub"), "utf8").trim();
     const bootId = (await docker("exec", kong, "cat", "/proc/sys/kernel/random/boot_id")).stdout.trim();

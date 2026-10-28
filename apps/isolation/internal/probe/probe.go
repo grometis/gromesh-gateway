@@ -59,6 +59,9 @@ type Probe struct {
 	WallClock func() time.Time
 	Logf      func(format string, args ...any)
 
+	// InstanceID is the pod's instance (chart workspaces.instanceId): an applied.json of another one counts as absent.
+	InstanceID string
+
 	key ed25519.PrivateKey
 	// mu guards State: the canary runs every second beside a round, which holds it only outside its network phase.
 	mu sync.Mutex
@@ -78,6 +81,8 @@ type Probe struct {
 	nextOrder    uint64
 	// exposed maps each outbox name to the queued report written there (names are seqs, reused across admissions).
 	exposed map[string]uint64
+	// served is the canary's last answer since the last round report: what the next report says Kong served.
+	served *servedCanary
 	// terminated: the final report is out; no round may report or serve after it.
 	terminated bool
 	State      Persisted
@@ -125,6 +130,8 @@ type Persisted struct {
 	// report moves Chain.ViolationSeq and no release ends the violation.
 	Detection         uint64 `json:"detection,omitempty"`
 	ReportedDetection uint64 `json:"reportedDetection,omitempty"`
+	// MismatchSinceNs: since when the canary serves a config hash other than the present applied.json's.
+	MismatchSinceNs uint64 `json:"mismatchSinceNs,omitempty"`
 }
 
 func (p *Probe) leaseFile() string     { return filepath.Join(p.Dir, "lease.json") }
@@ -570,6 +577,13 @@ func (p *Probe) conclude(verdict Verdict) (renew string, now uint64, ok bool) {
 	return "ok", now, true
 }
 
+// servedCanary is a canary answer with the current lease nonce: the Kong config hash it served, and the applied.json
+// present when it did.
+type servedCanary struct {
+	hash    string
+	applied *AppliedRevision
+}
+
 // verify starts a verification: NotReady until the canary answers with the lease about to be issued.
 func (p *Probe) verify() {
 	p.State.State, p.State.GuardVerified, p.State.PreviousSinceNs = "verifying", false, 0
@@ -603,6 +617,8 @@ func (p *Probe) CanaryStep(ctx context.Context) {
 	if err != nil {
 		return
 	}
+	// The report says what Kong served only from an answer of the guard holding the current lease.
+	p.served = nil
 	switch {
 	case r.Unreachable:
 		p.State.NotFoundSinceNs = 0
@@ -610,10 +626,36 @@ func (p *Probe) CanaryStep(ctx context.Context) {
 			p.State.State = "kong-unavailable"
 		}
 	case r.Status == 204 && r.Nonce != "" && r.Nonce == p.State.Nonce:
+		applied := p.readApplied()
+		p.served = &servedCanary{hash: r.ConfigHash, applied: applied}
+		// With an applied.json present, Kong must serve the config it names (its own hash, which no agent controls).
+		matches := applied == nil || applied.KongConfigHash == r.ConfigHash
+		if p.State.State == "ok" && (r.ConfigHash != p.State.ConfigHash || !matches) {
+			p.Logf("canary serves configuration %s: verifying", r.ConfigHash)
+			p.verify()
+			p.State.ConfigHash, p.State.NotFoundSinceNs, p.State.PreviousSinceNs = r.ConfigHash, 0, 0
+			p.save()
+			return
+		}
+		if !matches {
+			p.State.GuardVerified, p.State.ConfigHash, p.State.NotFoundSinceNs, p.State.PreviousSinceNs = false, r.ConfigHash, 0, 0
+			if p.State.MismatchSinceNs == 0 {
+				p.State.MismatchSinceNs = now
+			}
+			if now-p.State.MismatchSinceNs > uint64(CanaryNotFound) {
+				p.guardMissing(now, "canary config hash differs from applied.json for more than 60 s")
+				return
+			}
+			if p.State.State == "kong-unavailable" {
+				p.verify()
+			}
+			break
+		}
 		if r.ConfigHash != p.State.ConfigHash {
 			p.Logf("guard verified on configuration %s", r.ConfigHash)
 		}
 		p.State.GuardVerified, p.State.ConfigHash, p.State.NotFoundSinceNs, p.State.PreviousSinceNs, p.State.BackoffNs = true, r.ConfigHash, 0, 0, 0
+		p.State.MismatchSinceNs = 0
 		if p.State.State == "verifying" || p.State.State == "kong-unavailable" {
 			// The guard is there; the pod is ok only if the last round proved the capabilities too.
 			if p.State.LastRoundConclusive {
@@ -660,6 +702,7 @@ func (p *Probe) guardMissing(now uint64, why string) {
 	}
 	p.Logf("guard-missing (%s): lease withdrawn, new attempt in %s", why, time.Duration(backoff))
 	p.State.State, p.State.BackoffNs, p.State.RetryAtNs, p.State.NotFoundSinceNs, p.State.GuardVerified = "guard-missing", backoff, now+backoff, 0, false
+	p.State.MismatchSinceNs = 0
 	p.withdraw("guard-missing")
 }
 

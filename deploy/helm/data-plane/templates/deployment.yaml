@@ -18,6 +18,9 @@ spec:
         {{- include "data-plane.selectorLabels" . | nindent 8 }}
       annotations:
         checksum/kong-listeners: {{ .Files.Get "files/kong/listeners.conf" | sha256sum | trunc 16 }}
+        {{- if and .Values.collector.enabled (eq .Values.collector.mode "sidecar") }}
+        checksum/collector: {{ print (.Files.Get "files/vector/vector.yaml") (.Files.Get "files/vector/entrypoint.sh") | sha256sum | trunc 16 }}
+        {{- end }}
         {{- if .Values.metrics.enabled }}
         prometheus.io/scrape: "true"
         prometheus.io/port: "8100"
@@ -96,6 +99,8 @@ spec:
                   fieldPath: metadata.uid
             - name: GROMESH_CLUSTER_ID
               value: {{ .Values.workspaces.clusterId | quote }}
+            - name: GROMESH_INSTANCE_ID
+              value: {{ .Values.workspaces.instanceId | quote }}
             - name: GROMESH_INSTANCE_KEYS
               value: /etc/gromesh/instance-keys.json
             - name: GROMESH_PROBE_CONFIG
@@ -123,6 +128,75 @@ spec:
             - name: kong-state
               mountPath: /gromesh/kong-state
               readOnly: true
+        {{- if and .Values.collector.enabled (eq .Values.collector.mode "sidecar") }}
+        # Analytics collector (B §3.5.2): started after the probe and, as a native sidecar, signalled only after kong
+        # exited, so it receives every event and flushes in the rest of the grace. Only on 127.0.0.1 and no Service:
+        # nothing outside the pod can connect; inside it the token decides. No readiness: analytics never takes the
+        # gateway out of service.
+        - name: collector
+          image: {{ include "data-plane.image" .Values.collector.image | quote }}
+          imagePullPolicy: {{ .Values.collector.image.pullPolicy }}
+          restartPolicy: Always
+          command: [sh, /etc/vector/entrypoint.sh]
+          securityContext:
+            runAsUser: 65534
+            runAsGroup: 65534
+            {{- include "data-plane.containerSecurityContext" . | nindent 12 }}
+          env:
+            - name: GROMESH_COLLECTOR_ADDRESS
+              value: 127.0.0.1:8080
+            - name: GROMESH_COLLECTOR_METRICS_ADDRESS
+              value: 127.0.0.1:9598
+            # Row ids derive from (cluster, pod, request id): a repeated batch counts once.
+            - name: GROMESH_POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+            - name: GROMESH_CLUSTER_ID
+              value: {{ .Values.collector.clusterId | lower | quote }}
+            - name: GROMESH_ENVIRONMENT_ID
+              value: {{ .Values.collector.environmentId | lower | quote }}
+            - name: GROMESH_COLLECTOR_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "data-plane.collectorTokenSecret" . }}
+                  key: {{ .Values.collector.auth.existingSecretKey }}
+            - name: GROMESH_COLLECTOR_TOKEN_PREVIOUS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "data-plane.collectorTokenSecret" . }}
+                  key: previous-token
+                  optional: true
+            - name: GROMESH_KEY_NAMES
+              value: {{ .Values.collector.keyNames | toJson | quote }}
+            - name: CLICKHOUSE_ENDPOINT
+              value: {{ .Values.collector.clickhouse.endpoint | quote }}
+            - name: CLICKHOUSE_DATABASE
+              value: {{ .Values.collector.clickhouse.database | quote }}
+            # The writer password is only in this container.
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.collector.clickhouse.existingSecret }}
+                  key: {{ .Values.collector.clickhouse.existingSecretKey }}
+            - name: VECTOR_LOG
+              value: info
+          # The kubelet cannot reach a loopback listener: the check runs inside the container.
+          livenessProbe:
+            exec:
+              command: [wget, -q, -O, /dev/null, http://127.0.0.1:9598/metrics]
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 3
+          resources:
+            {{- toYaml .Values.collector.resources | nindent 12 }}
+          volumeMounts:
+            - name: collector-config
+              mountPath: /etc/vector
+              readOnly: true
+            - name: collector-data
+              mountPath: /var/lib/vector
+        {{- end }}
         {{- end }}
       containers:
         - name: kong
@@ -171,8 +245,10 @@ spec:
                 secretKeyRef:
                   name: {{ include "data-plane.collectorTokenSecret" . }}
                   key: {{ .Values.collector.auth.existingSecretKey }}
+            {{- if not .Values.workspaces.enabled }}
             - name: KONG_NGINX_MAIN_ENV
               value: GROMESH_COLLECTOR_TOKEN
+            {{- end }}
             {{- end }}
             # Not /usr/local/kong: an emptyDir there would hide the image's own lib/ (libada.so, ...).
             - name: KONG_PREFIX
@@ -191,8 +267,10 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.uid
+            # One variable per pod spec: a second KONG_NGINX_MAIN_ENV would replace the first, so both names go in
+            # this one (Kong renders "env <value>;").
             - name: KONG_NGINX_MAIN_ENV
-              value: GROMESH_POD_UID
+              value: {{ if or .Values.collector.enabled .Values.collector.auth.existingSecret }}"GROMESH_POD_UID; env GROMESH_COLLECTOR_TOKEN"{{ else }}GROMESH_POD_UID{{ end }}
             - name: GROMESH_KONG_STATE_FILE
               value: /gromesh/kong-state/kong-state.json
             {{- else }}
@@ -312,4 +390,13 @@ spec:
         - name: isolation-probe-config
           configMap:
             name: {{ include "data-plane.fullname" . }}-isolation-probe
+        {{- if and .Values.collector.enabled (eq .Values.collector.mode "sidecar") }}
+        - name: collector-config
+          configMap:
+            name: {{ include "data-plane.fullname" . }}-collector
+        # Vector's state only; events are buffered in memory (B §3.5.2).
+        - name: collector-data
+          emptyDir:
+            sizeLimit: 64Mi
+        {{- end }}
         {{- end }}

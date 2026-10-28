@@ -28,6 +28,9 @@ type Config struct {
 	PodName         string
 	NodeName        string
 	BootIDFile      string
+	// The instance whose deployments this pod applies (chart workspaces.instanceId): an envelope of another instance
+	// is refused.
+	InstanceID string
 }
 
 func ConfigFromEnv() (Config, error) {
@@ -50,7 +53,7 @@ func ConfigFromEnv() (Config, error) {
 		StateDir:      value("GROMESH_STATE_DIR", defaultStateDir),
 		HandoffDir:    os.Getenv("GROMESH_HANDOFF_DIR"), KongVersionFile: os.Getenv("GROMESH_KONG_VERSION_FILE"), PodUID: os.Getenv("GROMESH_POD_UID"),
 		PodName: os.Getenv("GROMESH_POD_NAME"), NodeName: os.Getenv("GROMESH_NODE_NAME"),
-		BootIDFile: value("GROMESH_BOOT_ID_FILE", "/proc/sys/kernel/random/boot_id"),
+		BootIDFile: value("GROMESH_BOOT_ID_FILE", "/proc/sys/kernel/random/boot_id"), InstanceID: os.Getenv("GROMESH_INSTANCE_ID"),
 	}
 	return c, c.validate()
 }
@@ -64,6 +67,9 @@ func (c Config) validate() error {
 	}
 	if c.HandoffDir != "" && (!uuidPattern.MatchString(c.PodUID) || c.PodName == "" || len(c.PodName) > 253 || c.NodeName == "" || len(c.NodeName) > 253 || c.BootIDFile == "") {
 		return fmt.Errorf("GROMESH_HANDOFF_DIR requires GROMESH_POD_UID (UUID), GROMESH_POD_NAME and GROMESH_NODE_NAME")
+	}
+	if c.HandoffDir != "" && !uuidPattern.MatchString(c.InstanceID) {
+		return fmt.Errorf("GROMESH_HANDOFF_DIR requires GROMESH_INSTANCE_ID (UUID): the instance whose deployments the pod applies")
 	}
 	if c.HandoffDir != "" && c.KongVersionFile == "" {
 		return fmt.Errorf("GROMESH_HANDOFF_DIR requires GROMESH_KONG_VERSION_FILE (the pinned Kong image's version)")
