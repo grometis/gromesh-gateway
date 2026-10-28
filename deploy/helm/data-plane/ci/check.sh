@@ -52,6 +52,8 @@ refuse_ws 'requires Kubernetes >= 1.33' --kube-version 1.32.9
 refuse_ws 'no forbidden target for CAP-3' --kube-version 1.33.0 --set 'workspaces.probe.checks[2].kind=tcp-open'
 refuse_ws 'must differ from kong.runAsUser' --kube-version 1.33.0 --set workspaces.probe.runAsUser=1001
 refuse_ws 'workspaces.clusterId' --kube-version 1.33.0 --set-string workspaces.clusterId=nope
+refuse_ws 'workspaces.instanceId' --kube-version 1.33.0 --set-string workspaces.instanceId=
+refuse_ws 'workspaces.instanceId' --kube-version 1.33.0 --set-string workspaces.instanceId=6A1F3C2E-0B7D-4C1A-9F10-0000000000A1
 refuse_ws 'positive control' --kube-version 1.33.0 --set 'workspaces.probe.checks[5].kind=tcp'
 refuse_ws 'must list 1 to 3 instance signing keys' --kube-version 1.33.0 --set-json 'workspaces.instanceSigningKeys=[]'
 refuse_ws 'instanceSigningKeys' --kube-version 1.33.0 --set-json 'workspaces.instanceSigningKeys=[{"kid":"a","publicKey":"b"}]'
@@ -110,6 +112,9 @@ assert.deepEqual(mount(probe, 'kong-state'), { name: 'kong-state', mountPath: '/
 assert.equal(mount(agent, 'isolation-probe-config'), undefined, 'the agent never sees the trust set it could swap');
 assert.equal(mount(agent, 'kong-state'), undefined);
 assert.equal(env(agent, 'GROMESH_HANDOFF_DIR').value, '/gromesh/handoff');
+// One instance id for both: the agent refuses another instance's deployment, the probe binds applied.json to it.
+assert.equal(env(agent, 'GROMESH_INSTANCE_ID').value, '6a1f3c2e-0b7d-4c1a-9f10-0000000000a1');
+assert.equal(env(probe, 'GROMESH_INSTANCE_ID').value, '6a1f3c2e-0b7d-4c1a-9f10-0000000000a1');
 // Registration cannot wait for Kong in this mode: seed-config (the Kong image) writes the version Kong reports, and
 // only the agent reads it; no chart value feeds it.
 const seed = pod.initContainers.find(c => c.name === 'seed-config');

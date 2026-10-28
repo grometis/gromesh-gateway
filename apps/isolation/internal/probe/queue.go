@@ -196,7 +196,24 @@ func (p *Probe) roundReport(now uint64) Report {
 		ms := (p.State.LeaseExpiresNs - now) / uint64(1e6)
 		r.LeaseRemainingMs = &ms
 	}
+	p.servedEvidence(&r)
 	return r
+}
+
+// servedEvidence puts in a round's report what the canary served since the last one, and the applied revision only
+// when the canary served the Kong hash of the applied.json present then: the agent's file alone proves nothing.
+func (p *Probe) servedEvidence(r *Report) {
+	served := p.served
+	p.served = nil
+	if served == nil || !kongHashRE.MatchString(served.hash) {
+		return
+	}
+	hash := served.hash
+	r.ServedKongConfigHash = &hash
+	if a := served.applied; a != nil && a.KongConfigHash == hash {
+		epoch, revision, digest, kong := a.Epoch, a.Revision, a.Hash, a.KongConfigHash
+		r.AppliedEpoch, r.AppliedRevision, r.AppliedHash, r.AppliedKongConfigHash = &epoch, &revision, &digest, &kong
+	}
 }
 
 func (p *Probe) failedCapabilities() []string {

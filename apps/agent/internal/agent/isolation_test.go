@@ -419,13 +419,20 @@ func TestWorkspacesModeRegistersBeforeKongExistsAndGetsTheAdmission(t *testing.T
 func TestWorkspacesModeRequiresTheKongVersionFile(t *testing.T) {
 	c := Config{RegistrationToken: "t", NodeID: "n", Hostname: "h", SnapshotPath: "/s", ControlPlaneURL: "http://cp",
 		KongAdminURL: "unix:///a", KongStatusURL: "unix:///s", StateDir: "/state",
-		HandoffDir: "/gromesh/handoff", PodUID: testPod, PodName: "dp-0", NodeName: "worker-1", BootIDFile: "/b"}
+		HandoffDir: "/gromesh/handoff", PodUID: testPod, PodName: "dp-0", NodeName: "worker-1", BootIDFile: "/b",
+		InstanceID: "00000000-0000-4000-8000-0000000000a1"}
 	if c.validate() == nil {
 		t.Fatal("Workspaces mode accepted no GROMESH_KONG_VERSION_FILE")
 	}
 	c.KongVersionFile = "/gromesh/kong-version/version"
 	if err := c.validate(); err != nil {
 		t.Fatalf("a version file was refused: %v", err)
+	}
+	for _, instance := range []string{"", "instance"} {
+		c.InstanceID = instance
+		if c.validate() == nil {
+			t.Fatalf("Workspaces mode accepted the instance %q", instance)
+		}
 	}
 }
 
@@ -475,5 +482,31 @@ func TestWorkspacesModeRefusesAMissingOrMalformedKongVersion(t *testing.T) {
 	c.config.KongVersionFile = target
 	if v, err := c.kongVersion(context.Background()); err != nil || v != "3.9.4" {
 		t.Fatalf("got %q, %v", v, err)
+	}
+}
+
+// N2-F3: the probe removes probe.pub at the pod's stop signal. A pending request is then neither polled nor asked again,
+// so a stopping pod is granted no admission that its probe could no longer close.
+func TestNoAdmissionIsPolledOrAskedOnceTheProbeRemovedItsKey(t *testing.T) {
+	w := newIsolationWorld(t)
+	w.write("probe.pub", testProbeKey)
+	w.cp.decide = func(int, int) string { return "pending" }
+	a := w.agent()
+	a.step(t.Context())
+	asks, polls, _ := w.cp.snapshot()
+	if len(asks) != 1 || polls != 1 {
+		t.Fatalf("asks %d polls %d", len(asks), polls)
+	}
+	if err := os.Remove(filepath.Join(w.handoff, "probe.pub")); err != nil {
+		t.Fatal(err)
+	}
+	w.cp.decide = func(int, int) string { return "granted" }
+	a.step(t.Context())
+	a.step(t.Context())
+	if asks, polls, _ := w.cp.snapshot(); len(asks) != 1 || polls != 1 {
+		t.Fatalf("after the probe's stop: asks %d polls %d", len(asks), polls)
+	}
+	if w.file("admission.jws") != "" {
+		t.Fatal("an admission handed over after the probe's stop")
 	}
 }

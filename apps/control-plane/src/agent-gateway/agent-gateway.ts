@@ -126,6 +126,12 @@ export class AgentGatewayService {
 
   async current(req: Request, res: Response) {
     const { cluster } = await this.node(this.db, bearer(req));
+    // One delivery flow per cluster (D5): a v1 publication never reaches a v2 or switching cluster, and an agent that
+    // speaks only v1 keeps what it applied.
+    if (cluster.deliveryProtocol !== "v1") {
+      const code = cluster.deliveryProtocol === "v2" ? "delivery-protocol-v2" : "delivery-protocol-switching";
+      throw new ProblemException(409, `This cluster's delivery protocol is ${cluster.deliveryProtocol}`, undefined, `https://gromesh.dev/problems/${code}`);
+    }
     const [snapshot] = await this.db
       .select({ snapshot: snapshots })
       .from(snapshots)
