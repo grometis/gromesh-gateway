@@ -333,9 +333,12 @@ function chainProblems(rows, probePublicKey, { wrongDigest = false } = {}) {
 }
 
 // --- main ---------------------------------------------------------------------------------------------------------
-const ctx = {};
+// instanceId: no v2 deployment in this suite, so any stable id of the run (the instance row arrives with the N3).
+const ctx = { instanceId: randomUUID() };
 const followers = [];
 
+// The chart's instanceId (agent and probe in Workspaces mode) exists from PR #187 on; a chart without it refuses the key.
+const CHART_INSTANCE_ID = "instanceId" in (JSON.parse(readFileSync(join(CHART, "values.schema.json"), "utf8")).properties.workspaces.properties ?? {});
 const values = (keys, replicas) => ({
   replicaCount: replicas,
   kong: { image: { repository: IMAGES.kong.split(":")[0], tag: IMAGES.kong.split(":")[1], digest: "", pullPolicy: "Never" } },
@@ -346,7 +349,7 @@ const values = (keys, replicas) => ({
     controlPlanePeers: [{ namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": NS.cp } }, podSelector: { matchLabels: { app: "cp-relay" } } }],
     upstreams: [{ cidr: `${ctx.topo.ext.backend.v4}/32`, ports: [8080] }, { cidr: `${ctx.topo.ext.backend.v6}/128`, ports: [8080] }],
   },
-  workspaces: { enabled: true, clusterId: ctx.clusterId, instanceSigningKeys: keys, probe: { checks: ctx.checks } },
+  workspaces: { enabled: true, clusterId: ctx.clusterId, ...(CHART_INSTANCE_ID ? { instanceId: ctx.instanceId } : {}), instanceSigningKeys: keys, probe: { checks: ctx.checks } },
 });
 // Values through stdin: nothing of the release is written to disk, and they hold no secret anyway.
 const release = (verb, keys, replicas) => helm([verb, "dp", CHART, "-n", NS.dp, "-f", "-"], { input: JSON.stringify(values(keys, replicas)) });
