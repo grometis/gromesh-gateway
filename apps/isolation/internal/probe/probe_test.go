@@ -59,7 +59,7 @@ func (n *fakeNet) Dial(ctx context.Context, address string) error {
 	}
 	return &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}
 }
-func (n *fakeNet) Get(ctx context.Context, url string) (int, bool, error) {
+func (n *fakeNet) Get(ctx context.Context, _ string, url string) (int, bool, error) {
 	n.mu.Lock()
 	hung := n.connectedNoAnswer[url]
 	n.mu.Unlock()

@@ -11,6 +11,7 @@ data:
 {{ .Files.Get "files/vector/vector.yaml" | indent 4 }}
   entrypoint.sh: |
 {{ .Files.Get "files/vector/entrypoint.sh" | indent 4 }}
+{{- if eq .Values.collector.mode "deployment" }}
 ---
 apiVersion: v1
 kind: Service
@@ -133,4 +134,5 @@ spec:
             name: {{ include "data-plane.fullname" . }}-collector
         - name: data
           emptyDir: {}
+{{- end }}
 {{- end }}
