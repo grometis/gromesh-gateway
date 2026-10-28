@@ -73,6 +73,9 @@ http://gromesh-collector:8080/kong
 {{- if not (regexMatch "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" .Values.workspaces.clusterId) -}}
 {{- fail "workspaces.clusterId must be the lowercase UUID of this cluster when workspaces.enabled is true" -}}
 {{- end -}}
+{{- if not (regexMatch "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" .Values.workspaces.instanceId) -}}
+{{- fail "workspaces.instanceId must be the lowercase UUID of this cluster's instance when workspaces.enabled is true" -}}
+{{- end -}}
 {{- /* The kid of each key is checked against its thumbprint by the probe itself (ci/check.sh runs it). */ -}}
 {{- $keys := .Values.workspaces.instanceSigningKeys -}}
 {{- if or (lt (len $keys) 1) (gt (len $keys) 3) -}}
