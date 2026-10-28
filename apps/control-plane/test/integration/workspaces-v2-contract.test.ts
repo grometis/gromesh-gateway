@@ -20,6 +20,7 @@ import { WorkspaceConfigTransferController } from "../../src/config-transfer/con
 import { InstanceController } from "../../src/instance/instance.js";
 import { SigningKeysController } from "../../src/instance/signing-keys.js";
 import { ClusterIsolationController } from "../../src/isolation/isolation.js";
+import { DeploymentsController, ReleasesController } from "../../src/releases/releases.js";
 import { startHarness, type Harness } from "./harness.js";
 
 // N0: the Workspaces contracts (v2) are planned; nothing here is implemented yet. These tests keep them coherent until
@@ -112,6 +113,8 @@ describe("planned operations", () => {
       InstanceController,
       SigningKeysController,
       ClusterIsolationController,
+      ReleasesController,
+      DeploymentsController,
     ]) {
       const base = (Reflect.getMetadata("path", controller) as string).replace(/^\/?/, "/");
       for (const name of Object.getOwnPropertyNames(controller.prototype)) {
@@ -881,7 +884,8 @@ describe("delivery protocol and convergence evidence (N3-K1)", () => {
   it("refuses with a typed code and switches the protocol only explicitly", () => {
     const refusal = (code: string) => ({ type: `https://gromesh.dev/problems/${code}`, title: "Conflict", status: 409, code });
     const deploy = v2Ops.find(({ op }) => op.operationId === "createDeployment")!.op;
-    expect([deploy["x-gromesh-planned"], deploy["x-scope"], deploy["x-required-permission"]]).toEqual([true, "instance", "release.publish"]);
+    // Implemented by N3-C3: the planned mark is the handler coverage test's concern.
+    expect([deploy["x-scope"], deploy["x-required-permission"]]).toEqual(["instance", "release.publish"]);
     expect(v2Ops.find(({ op }) => op.operationId === "publishRelease")!.op.description).toContain("Creating a release deploys nothing");
     for (const code of ["workspaces-mode-disabled", "delivery-protocol-v1", "delivery-protocol-v2", "delivery-protocol-switching", "epoch-outdated", "revision-regression", "unknown-deployment"]) {
       expect(validAgent("DeliveryProblem", refusal(code)), code).toBe(true);

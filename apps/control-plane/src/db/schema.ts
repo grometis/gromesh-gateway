@@ -830,6 +830,8 @@ export const deployments = pgTable(
     // The composed Kong config; stored sealed.
     config: jsonb("config").$type<SealedJson | KongDeclarativeConfig>().notNull(),
     configHash: text("config_hash").notNull(),
+    // md5 of the JCS bytes of config, what Kong reports for them (N3-K1); derived here, never learned from a node.
+    kongConfigHash: text("kong_config_hash"),
     reason: text("reason", { enum: ["publish", "promotion", "rollback", "reconcile", "mandatory-plugins", "values"] }).notNull(),
     promotionId: uuid("promotion_id"),
     createdBy: jsonb("created_by").$type<Actor>().notNull(),
@@ -839,6 +841,7 @@ export const deployments = pgTable(
     primaryKey({ columns: [t.epoch, t.revision] }),
     check("deployments_revision_ck", sql`${t.epoch} >= 1 and ${t.revision} >= 1`),
     check("deployments_config_hash_ck", digest(t.configHash)),
+    check("deployments_kong_config_hash_ck", sql`${t.kongConfigHash} ~ '^[0-9a-f]{32}$'`),
     check("deployments_reason_ck", sql`${t.reason} in ('publish', 'promotion', 'rollback', 'reconcile', 'mandatory-plugins', 'values')`),
   ],
 );
@@ -852,7 +855,8 @@ export const workspaceActiveRelease = pgTable(
       .primaryKey()
       .references(() => workspaces.id),
     version: integer("version").notNull(),
-    deploymentRevision: integer("deployment_revision").notNull(),
+    // The revision that last composed it; null between publishRelease and the next createDeployment (D4).
+    deploymentRevision: integer("deployment_revision"),
   },
   (t) => [foreignKey({ name: "workspace_active_release_release_fk", columns: [t.workspaceId, t.version], foreignColumns: [releases.workspaceId, releases.version] })],
 );
@@ -872,4 +876,43 @@ export const deploymentLease = pgTable(
     deadlineAt: timestamp("deadline_at", { withTimezone: true }),
   },
   (t) => [check("deployment_lease_single_ck", sql`${t.id}`)],
+);
+
+/**
+ * This control plane's instance (D1, anticipated from N4): one row, created on the first Workspaces deployment with
+ * the stage of the configuration, never changed nor removed afterwards (a trigger refuses both). Its signing keys are
+ * instance_signing_keys: the identity is this id plus those keys, with no second key pair of its own.
+ */
+export const instance = pgTable(
+  "instance",
+  {
+    singleton: boolean("singleton").primaryKey().default(true),
+    id: uuid("id").notNull().defaultRandom(),
+    stage: text("stage", { enum: ["dev", "hml", "prd"] }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("instance_id_uq").on(t.id), check("instance_singleton_ck", sql`${t.singleton}`), check("instance_stage_ck", sql`${t.stage} in ('dev', 'hml', 'prd')`)],
+);
+export type InstanceRow = typeof instance.$inferSelect;
+
+/**
+ * The DeploymentState machine of each deployment (contract: x-gromesh-transitions), one row per transition: deployments
+ * stay immutable and the history is append-only like them. The current state is the highest seq.
+ */
+export const deploymentStates = pgTable(
+  "deployment_states",
+  {
+    epoch: integer("epoch").notNull(),
+    revision: integer("revision").notNull(),
+    seq: integer("seq").notNull(),
+    state: text("state", { enum: ["composed", "rejected", "active", "converging", "converged", "degraded", "failed", "superseded"] }).notNull(),
+    reason: text("reason").notNull(),
+    at: timestamp("at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.epoch, t.revision, t.seq] }),
+    foreignKey({ name: "deployment_states_deployment_fk", columns: [t.epoch, t.revision], foreignColumns: [deployments.epoch, deployments.revision] }),
+    check("deployment_states_seq_ck", sql`${t.seq} >= 1`),
+    check("deployment_states_state_ck", sql`${t.state} in ('composed', 'rejected', 'active', 'converging', 'converged', 'degraded', 'failed', 'superseded')`),
+  ],
 );
