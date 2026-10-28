@@ -31,6 +31,9 @@ built=() trees=()
 kind_kc() { local f="$work/kind.kubeconfig"; kind get kubeconfig --name "$CLUSTER_NAME" >"$f" 2>/dev/null && echo "$f"; }
 marker() { local f; f="$(kind_kc)" || return 0
   kubectl --kubeconfig "$f" -n kube-system get configmap gromesh-lab-run -o jsonpath='{.data.runId}' 2>/dev/null || true; }
+# Defined before the EXIT trap: the image sampler (started per suite, further down) leads its own process group.
+stop_sampler() { [[ -n "$sampler_pid" ]] || return 0
+  kill -TERM -- "-$sampler_pid" 2>/dev/null || true; wait "$sampler_pid" 2>/dev/null || true; sampler_pid=""; }
 cleanup() {
   local code=$? t id
   trap - EXIT
@@ -120,11 +123,9 @@ sample() { local f="$work/sampler.kubeconfig"
   kubectl --kubeconfig "$f" --request-timeout=10s get pods -A -o jsonpath='{range .items[*]}{range .status.containerStatuses[*]}{.image}{" "}{.imageID}{"\n"}{end}{range .status.initContainerStatuses[*]}{.image}{" "}{.imageID}{"\n"}{end}{end}' 2>/dev/null \
     || echo "ERROR kubectl get pods"; }
 sampler() { while :; do sample >>"$1"; sleep 5; done; }
-# The sampler leads its own process group (setsid), so stopping it also stops its sleep, kind or kubectl.
+# setsid: stop_sampler then also stops the sampler's sleep, kind or kubectl.
 start_sampler() { export -f sample sampler; export work CLUSTER_NAME
   setsid bash -c 'sampler "$1"' _ "$1" & sampler_pid=$!; }
-stop_sampler() { [[ -n "$sampler_pid" ]] || return 0
-  kill -TERM -- "-$sampler_pid" 2>/dev/null || true; wait "$sampler_pid" 2>/dev/null || true; sampler_pid=""; }
 # A suite passes only with evidence that each expected image ran (a name the run built or a pinned digest), counted
 # only on lines that carry the resolved image id: a container not yet started has its image but no imageID.
 ran() {
