@@ -129,7 +129,8 @@ describe("N3-C2 releases and deployments persistence", () => {
     expect(v1Tables.filter((t) => NEW_TABLES.includes(t))).toEqual([]);
     const before = Object.fromEntries(await Promise.all(v1Tables.map(async (t) => [t, await describeTable(url, t)] as const)));
 
-    await runMigrations(url);
+    // This migration alone: later ones (0022 instance and deployment states, N3-C3) add their own tables.
+    await runMigrations(url, folderUpTo(N3));
 
     expect(await tablesOf(url)).toEqual([...v1Tables, ...NEW_TABLES].sort());
     for (const t of v1Tables) {

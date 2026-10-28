@@ -817,7 +817,6 @@ paths:
       x-scope: workspace
       x-gromesh-requirements: [ GW-PUB-06 ]
       x-required-permission: workspace.read
-      x-gromesh-planned: true
       responses:
         "200": { description: Releases, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Release" } } } } }
         "401":
@@ -832,7 +831,6 @@ paths:
       x-gromesh-requirements: [ GW-PUB-01, GW-PUB-03, GW-PUB-06, GW-ENV-07 ]
       security: [ { cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] } ]
       x-required-permission: release.publish
-      x-gromesh-planned: true
       description: |
         Freezes the workspace draft into an immutable, validated release (the draft must compose on its own; 422
         with the paths otherwise), which becomes the workspace's active release (the content a later deployment
@@ -901,7 +899,6 @@ paths:
       x-gromesh-requirements: [ GW-ENV-01, GW-DEP-02, GW-DEP-08 ]
       x-required-permission: platform.admin
       x-scope: instance
-      x-gromesh-planned: true
       description: |
         The only way to change a cluster's delivery flow (DeliveryProtocolState; decisions D2 and D5). protocol v2
         moves a v1 cluster to v2-pending: from then on the v1 endpoints answer 409 delivery-protocol-switching to its
@@ -1000,7 +997,6 @@ paths:
       x-gromesh-requirements: [ GW-DEP-01, GW-DEP-02, GW-DEP-04 ]
       security: [ { cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] } ]
       x-required-permission: release.publish
-      x-gromesh-planned: true
       description: |
         The explicit deployment of THIS instance (decision D4): composes every workspace's active release into a new
         deployment revision through the compiler, validates the whole configuration, fixes its configHash and
@@ -4995,6 +4991,24 @@ components:
       type: object
       required: [ id, name, permissions, builtin ]
       properties: { id: { type: string, format: uuid }, name: { type: string }, displayName: { type: string }, permissions: { type: array, items: { type: string } }, builtin: { type: boolean } }
+    AdmissionServedState:
+      description: |
+        Whether the pod's admission may have authorized traffic (decision F3-D2; agent protocol v2, "Served state"),
+        derived only from reports verified with the probe key bound to the admission. never-served-verified: the
+        chain's only report is its seq 1, a final report in state awaiting-admission with kongStopConfirmed true, and
+        no integrity conflict was ever raised on the admission. served: the chain holds any other report, or an
+        integrity conflict was raised (the probe adopted the admission, a closing did not confirm Kong's stop, or the
+        chain cannot be trusted: counted as served, never as never served). unknown: no verified report (requested, refused, granted and silent, or
+        released by an admin). unknown never counts as never-served-verified and never closes an admission
+        automatically.
+      enum: [ never-served-verified, served, unknown ]
+      x-gromesh-transitions:
+        initial: [ unknown ]
+        terminal: [ served ]
+        transitions:
+          - [ unknown, never-served-verified, "verified final report seq 1 in state awaiting-admission with kongStopConfirmed true" ]
+          - [ unknown, served, "verified report of the chain other than a seq 1 final in state awaiting-admission with kongStopConfirmed true (adoption, or a closing without a confirmed stop), or an integrity conflict" ]
+          - [ never-served-verified, served, "a later report of the chain or any integrity conflict (confirmed-violation)" ]
     ClusterIsolation:
       type: object
       required: [ clusterId, pods, pendencies ]
@@ -5014,6 +5028,7 @@ components:
               admissionId: { type: [ string, "null" ], format: uuid }
               state: { $ref: "./agent-protocol-v2.openapi.yaml#/components/schemas/PodIsolationState" }
               admission: { enum: [ requested, refused, open, closed, closed-without-proof ] }
+              servedState: { $ref: "#/components/schemas/AdmissionServedState", x-gromesh-planned: true, description: "Planned until the N2-F3 implementation, which removes the mark and makes it required (rule 11)" }
               reporting: { enum: [ reporting, communication-failure, unconfirmed-isolation, closed ] }
               kongStopConfirmed: { type: [ boolean, "null" ] }
               lastSeq: { type: integer, minimum: 0 }

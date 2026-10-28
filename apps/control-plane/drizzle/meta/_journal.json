@@ -155,6 +155,20 @@
       "when": 1793073871532,
       "tag": "0021_releases_deployments",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1793109731300,
+      "tag": "0022_instance_deployment_states",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1793112435257,
+      "tag": "0023_delivery_protocol",
+      "breakpoints": true
     }
   ]
 }
