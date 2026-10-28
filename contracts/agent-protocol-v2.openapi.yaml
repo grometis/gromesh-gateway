@@ -497,10 +497,12 @@ components:
         - if: { properties: { state: { const: degraded } } }
           then: { properties: { reasons: { minItems: 1 } } }
           else: { properties: { reasons: { maxItems: 0 } } }
+        - if: { properties: { state: { enum: [healthy, idle] } } }
+          then: { properties: { windowComplete: { const: true }, collectorReachable: { const: true }, kongRequests: { type: integer }, received: { type: integer }, delivered: { type: integer }, deliveryErrors: { type: integer }, authRefusals: { type: integer }, buffered: { type: integer }, bufferCapacity: { type: integer } } }
         - if: { properties: { state: { const: healthy } } }
-          then: { properties: { windowComplete: { const: true }, collectorReachable: { const: true }, received: { type: integer, minimum: 1 }, delivered: { type: integer, minimum: 1 } } }
+          then: { properties: { received: { minimum: 1 }, delivered: { minimum: 1 } } }
         - if: { properties: { state: { const: idle } } }
-          then: { properties: { windowComplete: { const: true }, collectorReachable: { const: true }, kongRequests: { const: 0 }, received: { const: 0 } } }
+          then: { properties: { kongRequests: { const: 0 }, received: { const: 0 } } }
     CollectorTokenFingerprints:
       type: object
       additionalProperties: false

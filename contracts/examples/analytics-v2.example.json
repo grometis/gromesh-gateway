@@ -1014,6 +1014,48 @@
         "patch": {
           "analytics": "analytics-healthy"
         }
+      },
+      {
+        "reason": "healthy with Kong's counter unread",
+        "patch": {
+          "analytics": "analytics-healthy",
+          "analyticsHealth": {
+            "state": "healthy",
+            "reasons": [],
+            "observedAt": "2026-10-28T12:00:00Z",
+            "windowSeconds": 300,
+            "windowComplete": true,
+            "collectorReachable": true,
+            "kongRequests": null,
+            "received": 598,
+            "delivered": 598,
+            "deliveryErrors": 0,
+            "authRefusals": 0,
+            "buffered": 3,
+            "bufferCapacity": 10000
+          }
+        }
+      },
+      {
+        "reason": "idle with the delivered counter unread",
+        "patch": {
+          "analytics": "analytics-healthy",
+          "analyticsHealth": {
+            "state": "idle",
+            "reasons": [],
+            "observedAt": "2026-10-28T12:00:00Z",
+            "windowSeconds": 300,
+            "windowComplete": true,
+            "collectorReachable": true,
+            "kongRequests": 0,
+            "received": 0,
+            "delivered": null,
+            "deliveryErrors": 0,
+            "authRefusals": 0,
+            "buffered": 3,
+            "bufferCapacity": 10000
+          }
+        }
       }
     ]
   }
