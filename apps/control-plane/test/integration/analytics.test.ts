@@ -269,6 +269,32 @@ describe("request explorer", () => {
   });
 });
 
+describe("a request stored more than once (at-least-once delivery)", () => {
+  it("counts each request id once in the summary, the ranking and the explorer, while the table keeps every copy", async () => {
+    const env = await h.api("POST", "/environments", { name: uniq("dedup") });
+    const envId = env.body.id as string;
+    const once = row(envId, 10_000, 200, 10);
+    const twice = row(envId, 20_000, 500, 100);
+    // A Kong queue retry or a collector restart delivers the same request again: same id, same content, other insert.
+    await admin.insert({ table: "requests", values: [once, twice], format: "JSONEachRow" });
+    await admin.insert({ table: "requests", values: [twice], format: "JSONEachRow" });
+    await admin.insert({ table: "requests", values: [twice], format: "JSONEachRow" });
+    // The control: the copies are really stored (no merge, no engine dedup is relied on).
+    const stored = await (await admin.query({ query: "SELECT count() AS n FROM requests WHERE environment_id = {env:UUID}", query_params: { env: envId }, format: "JSONEachRow" })).json<{ n: string }>();
+    expect(Number(stored[0]!.n)).toBe(4);
+
+    const summary = await h.api("GET", `/environments/${envId}/analytics/summary?${period()}&interval=5m`);
+    expect(summary.status, JSON.stringify(summary.body)).toBe(200);
+    expect(summary.body.totals).toMatchObject({ requests: 2, errors4xx: 0, errors5xx: 1, errorRate: 0.5 });
+    expect(summary.body.series.reduce((n: number, p: { requests: number }) => n + p.requests, 0)).toBe(2);
+    const top = await h.api("GET", `/environments/${envId}/analytics/top-routes?${period()}`);
+    expect(top.body.items).toEqual([expect.objectContaining({ routeId: once.route_id, requests: 2, errors5xx: 1 })]);
+    const explorer = await h.api("GET", `/environments/${envId}/requests?${period()}&limit=10`);
+    expect(explorer.body.items.map((r: { id: string }) => r.id).sort()).toEqual([once.id, twice.id].sort());
+    expect(explorer.body.nextCursor).toBeNull();
+  });
+});
+
 describe("maskClientIp", () => {
   it("zeroes the IPv4 host octet, truncates IPv6 to /48 and unwraps mapped IPv4", () => {
     expect(maskClientIp("203.0.113.10", "viewer")).toBe("203.0.113.0");
