@@ -46,6 +46,8 @@ refuse_ws 'requires Kubernetes >= 1.33' --kube-version 1.32.9
 refuse_ws 'no forbidden target for CAP-3' --kube-version 1.33.0 --set 'workspaces.probe.checks[2].kind=tcp-open'
 refuse_ws 'must differ from kong.runAsUser' --kube-version 1.33.0 --set workspaces.probe.runAsUser=1001
 refuse_ws 'workspaces.clusterId' --kube-version 1.33.0 --set-string workspaces.clusterId=nope
+refuse_ws 'workspaces.instanceId' --kube-version 1.33.0 --set-string workspaces.instanceId=
+refuse_ws 'workspaces.instanceId' --kube-version 1.33.0 --set-string workspaces.instanceId=6A1F3C2E-0B7D-4C1A-9F10-0000000000A1
 refuse_ws 'positive control' --kube-version 1.33.0 --set 'workspaces.probe.checks[5].kind=tcp'
 refuse_ws 'must list 1 to 3 instance signing keys' --kube-version 1.33.0 --set-json 'workspaces.instanceSigningKeys=[]'
 refuse_ws 'instanceSigningKeys' --kube-version 1.33.0 --set-json 'workspaces.instanceSigningKeys=[{"kid":"a","publicKey":"b"}]'
@@ -104,6 +106,9 @@ assert.deepEqual(mount(probe, 'kong-state'), { name: 'kong-state', mountPath: '/
 assert.equal(mount(agent, 'isolation-probe-config'), undefined, 'the agent never sees the trust set it could swap');
 assert.equal(mount(agent, 'kong-state'), undefined);
 assert.equal(env(agent, 'GROMESH_HANDOFF_DIR').value, '/gromesh/handoff');
+// One instance id for both: the agent refuses another instance's deployment, the probe binds applied.json to it.
+assert.equal(env(agent, 'GROMESH_INSTANCE_ID').value, '6a1f3c2e-0b7d-4c1a-9f10-0000000000a1');
+assert.equal(env(probe, 'GROMESH_INSTANCE_ID').value, '6a1f3c2e-0b7d-4c1a-9f10-0000000000a1');
 // Registration cannot wait for Kong in this mode: seed-config (the Kong image) writes the version Kong reports, and
 // only the agent reads it; no chart value feeds it.
 const seed = pod.initContainers.find(c => c.name === 'seed-config');
@@ -130,6 +135,56 @@ assert.deepEqual(JSON.parse(probeConfigMap.data['instance-keys.json']), { keys: 
 const config = JSON.parse(probeConfigMap.data['probe.json']);
 assert.equal(new Set(config.checks.filter(c => ['tcp', 'http'].includes(c.kind)).map(c => c.capability)).size, 7);
 console.log('Workspaces mode render passed: native sidecars before kong, supervisor and liveness, lease read-only in kong and absent from the agent, trust set from the chart only');
+JS
+# Workspaces mode with the analytics collector: only as the pod's own sidecar (N2-X4, B §3.5.2).
+collector_sidecar=(--kube-version 1.33.0 --set collector.enabled=true --set collector.mode=sidecar
+  --set-string collector.clusterId=6a1f3c2e-0b7d-4c1a-9f10-0000000000c1 --set-string collector.environmentId=6a1f3c2e-0b7d-4c1a-9f10-0000000000e1
+  --set-string collector.clickhouse.existingSecret=clickhouse-writer)
+helm lint "$chart" --strict -f "$chart/ci/values-workspaces.yaml" "${collector_sidecar[@]}"
+helm template dp "$chart" -f "$chart/ci/values-workspaces.yaml" "${collector_sidecar[@]}" > "$work/workspaces-collector.yaml"
+refuse_ws 'only as the pod' "${collector_sidecar[@]}" --set collector.mode=deployment
+refuse_ws 'must equal workspaces.clusterId' "${collector_sidecar[@]}" --set-string collector.clusterId=6a1f3c2e-0b7d-4c1a-9f10-0000000000c2
+refuse_ws 'clickhousePeers' "${collector_sidecar[@]}" --set networkPolicy.enabled=true --set-json 'networkPolicy.controlPlanePeers=[{"ipBlock":{"cidr":"10.0.0.0/8"}}]'
+refuse_ws '/collector/mode' "${collector_sidecar[@]}" --set collector.mode=daemonset
+refuse 'Workspaces-mode layout' -f "$chart/ci/values-full.yaml" --set collector.mode=sidecar
+pnpm --filter @gromesh/control-plane exec node --input-type=module - "$work/workspaces-collector.yaml" "$work/workspaces.yaml" "$work/full.yaml" "$work/default.yaml" <<'JS'
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { parseAllDocuments } from 'yaml';
+const read = path => parseAllDocuments(readFileSync(path, 'utf8')).map(doc => doc.toJSON()).filter(Boolean);
+const [docs, ...others] = process.argv.slice(2).map(read);
+const pod = docs.find(r => r.kind === 'Deployment').spec.template.spec;
+// Started last of the sidecars, so on deletion it is signalled only after kong exited and drains its events.
+assert.deepEqual(pod.initContainers.map(c => [c.name, c.restartPolicy ?? null]), [['seed-config', null], ['isolation-install', null], ['agent', 'Always'], ['isolation-probe', 'Always'], ['collector', 'Always']]);
+assert.deepEqual(docs.filter(r => ['Deployment', 'Service'].includes(r.kind)).map(r => r.metadata.name).sort(), ['dp-data-plane', 'dp-data-plane'], 'no collector Deployment nor gromesh-collector Service');
+const collector = pod.initContainers.find(c => c.name === 'collector');
+const kong = pod.containers[0];
+const env = (c, name) => (c.env ?? []).find(e => e.name === name);
+assert.equal(env(collector, 'GROMESH_COLLECTOR_ADDRESS').value, '127.0.0.1:8080');
+assert.equal(env(collector, 'GROMESH_COLLECTOR_METRICS_ADDRESS').value, '127.0.0.1:9598');
+assert.equal(env(collector, 'GROMESH_POD_UID').valueFrom.fieldRef.fieldPath, 'metadata.uid');
+assert.equal(env(collector, 'GROMESH_CLUSTER_ID').value, '6a1f3c2e-0b7d-4c1a-9f10-0000000000c1');
+assert.equal(collector.ports, undefined, 'nothing to publish: it listens on loopback only');
+assert.equal(collector.readinessProbe, undefined, 'analytics never takes the gateway out of service');
+assert.deepEqual(collector.livenessProbe.exec.command, ['wget', '-q', '-O', '/dev/null', 'http://127.0.0.1:9598/metrics']);
+assert.ok(![1001, 1002].includes(collector.securityContext.runAsUser), 'the collector shares no UID with kong, agent or probe');
+assert.equal(pod.shareProcessNamespace, undefined);
+// Credentials: the token only in kong and the collector, the ClickHouse writer password only in the collector.
+const holders = name => [...pod.initContainers, ...pod.containers].filter(c => env(c, name)).map(c => c.name).sort();
+assert.deepEqual(holders('GROMESH_COLLECTOR_TOKEN'), ['collector', 'kong']);
+assert.deepEqual(holders('CLICKHOUSE_PASSWORD'), ['collector']);
+// Kong's nginx workers see both the pod uid (route guard) and the token (http-log vault reference), in one variable.
+for (const [index, render] of [docs, ...others].entries()) {
+  const main = render.find(r => r.kind === 'Deployment' && r.spec.template.spec.containers[0].name === 'kong').spec.template.spec.containers[0].env.filter(e => e.name === 'KONG_NGINX_MAIN_ENV');
+  assert.ok(main.length <= 1, `render ${index}: at most one KONG_NGINX_MAIN_ENV (a second would replace the first)`);
+}
+assert.equal(env(kong, 'KONG_NGINX_MAIN_ENV').value, 'GROMESH_POD_UID; env GROMESH_COLLECTOR_TOKEN');
+const checks = JSON.parse(docs.find(r => r.kind === 'ConfigMap' && r.metadata.name.endsWith('-isolation-probe')).data['probe.json']).checks;
+assert.deepEqual(checks.find(c => c.capability === 'CAP-7'), { capability: 'CAP-7', kind: 'http', name: 'collector token', url: 'http://127.0.0.1:8080/kong', expectStatus: 401, method: 'POST' });
+const volume = name => pod.volumes.find(v => v.name === name);
+assert.equal(volume('collector-config').configMap.name, 'dp-data-plane-collector');
+assert.equal(volume('collector-data').emptyDir.sizeLimit, '64Mi');
+console.log('Collector sidecar render passed: last native sidecar, loopback only, no Service, token in kong and collector only, writer password in the collector only');
 JS
 pnpm --filter @gromesh/control-plane exec node --input-type=module - "$work/default.yaml" "$work/full.yaml" <<'JS'
 import assert from 'node:assert/strict';

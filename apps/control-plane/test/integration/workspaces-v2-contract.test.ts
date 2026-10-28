@@ -20,6 +20,8 @@ import { WorkspaceConfigTransferController } from "../../src/config-transfer/con
 import { InstanceController } from "../../src/instance/instance.js";
 import { SigningKeysController } from "../../src/instance/signing-keys.js";
 import { ClusterIsolationController } from "../../src/isolation/isolation.js";
+import { DeploymentsController, ReleasesController } from "../../src/releases/releases.js";
+import { DeliveryProtocolController } from "../../src/deployments/deployments.js";
 import { startHarness, type Harness } from "./harness.js";
 
 // N0: the Workspaces contracts (v2) are planned; nothing here is implemented yet. These tests keep them coherent until
@@ -112,6 +114,9 @@ describe("planned operations", () => {
       InstanceController,
       SigningKeysController,
       ClusterIsolationController,
+      ReleasesController,
+      DeploymentsController,
+      DeliveryProtocolController,
     ]) {
       const base = (Reflect.getMetadata("path", controller) as string).replace(/^\/?/, "/");
       for (const name of Object.getOwnPropertyNames(controller.prototype)) {
@@ -358,7 +363,7 @@ describe("state machines in the contracts", () => {
 
   it("finds the machines of the approved design", () => {
     expect(machines.map(([n]) => n.split("#")[1]).sort()).toEqual(
-      ["AdmissionOutcome", "AdmissionState", "ApprovalState", "DeploymentState", "EmergencyPostReviewStatus", "InstanceSigningKeyStatus", "IsolationPendencyLifecycle", "PodIsolationState", "PromotionStatus", "WorkspaceRequestStatus"].sort(),
+      ["AdmissionOutcome", "AdmissionServedState", "AdmissionState", "ApprovalState", "DeliveryProtocolState", "DeploymentState", "EmergencyPostReviewStatus", "InstanceSigningKeyStatus", "IsolationPendencyLifecycle", "PodIsolationState", "PromotionStatus", "WorkspaceRequestStatus"].sort(),
     );
   });
 
@@ -674,6 +679,9 @@ describe("agent protocol v2", () => {
     ["ProbeReport", { ...report, prevDigest: null }, false],
     ["ProbeReport", { ...report, final: true }, false],
     ["ProbeReport", { ...report, final: true, finalReason: "pod-terminated", kongStopConfirmed: true }, true],
+    // N2-F3: the probe closes an admission it never adopted with a final seq 1 (never served).
+    ["ProbeReport", { ...report, seq: 1, prevDigest: null, state: "awaiting-admission", final: true, finalReason: "pod-terminated", kongStopConfirmed: true }, true],
+    ["ProbeReport", { ...report, seq: 1, prevDigest: d, state: "awaiting-admission", final: true, finalReason: "pod-terminated", kongStopConfirmed: true }, false],
     ["ProbeReport", { ...report, finalReason: "pod-terminated" }, false],
     ["ProbeReport", { ...report, state: "violation" }, false],
     ["ProbeReport", { ...report, state: "violation", failedCapabilities: ["CAP-3"] }, true],
@@ -693,6 +701,48 @@ describe("agent protocol v2", () => {
     ["IsolationReleaseClaims", { clusterId: u, pendencyId: u, kind: "communication-failure", expiresAt: "2026-10-24T00:15:00Z" }, false],
   ])("%s %j -> %s", (name, value, expected) => {
     expect(validAgent(name, value)).toBe(expected);
+  });
+
+  it("closes an admission before adoption only with a final seq 1, and never erases evidence by closing (N2-F3)", () => {
+    const closing = agentV2.components.schemas.AdmissionState["x-gromesh-transitions"].transitions.find(([from, to]: string[]) => from === "open" && to === "closed");
+    expect(closing[2]).toContain("seq 1 when the probe closes it before adopting it");
+    const flat = (text: string) => text.replace(/\s+/g, " ");
+    const info = flat(agentV2.info.description);
+    expect(info).toContain("a chain whose seq 1 is final proves");
+    expect(info).toContain("the absence of a report proves nothing");
+    expect(info).toContain("a report numbered above the final one of its chain, or a report with other content for a seq already received (seq 1 included), is an integrity conflict (confirmed-violation), while an identical retransmission is idempotent");
+    expect(info).toContain("a closing report that cannot be produced, persisted, delivered or confirmed");
+    expect(info).toContain("a confirmed-violation pendency of an admission stays open after the admission closes");
+    expect(flat(agentV2.components.schemas.IsolationHandoff.description)).toContain("removed at the pod's stop signal, after which the agent neither asks for nor polls an admission");
+    expect(agentV2.components.schemas.ReportAcks.properties.rejected.items.properties.reason.enum).toContain("integrity-conflict");
+  });
+
+  it("exposes whether an admission ever served only from verified evidence (N2-F3, F3-D2)", () => {
+    const pod = { podUid: u, bootId: u, podName: "kong-0", nodeName: "n1", state: "ok", admission: "closed", servedState: "never-served-verified", reporting: "closed", lastSeq: 1 };
+    const isolation = (p: Record<string, unknown>) => ({ clusterId: u, pods: [p], pendencies: [] });
+    expect(valid("ClusterIsolation", isolation(pod)), JSON.stringify(validator("control-plane-v2.openapi.yaml", "ClusterIsolation").errors)).toBe(true);
+    for (const s of ["served", "unknown"]) expect(valid("ClusterIsolation", isolation({ ...pod, servedState: s })), s).toBe(true);
+    // Planned until the N2-F3 implementation makes it required (rule 11): declared, marked, not yet required.
+    const item = v2.components.schemas.ClusterIsolation.properties.pods.items;
+    expect([item.properties.servedState["x-gromesh-planned"], item.required.includes("servedState")]).toEqual([true, false]);
+    for (const s of ["never-served", "NEVER_SERVED_VERIFIED", null]) expect(valid("ClusterIsolation", isolation({ ...pod, servedState: s })), String(s)).toBe(false);
+    const machine = v2.components.schemas.AdmissionServedState["x-gromesh-transitions"];
+    expect([machine.initial, machine.terminal]).toEqual([["unknown"], ["served"]]);
+    // The whole machine is pinned: unknown reaches never-served-verified only by the verified seq 1 final with the
+    // stop confirmed, nothing ever goes back to unknown, and served is final.
+    expect(machine.transitions.map(([from, to]: string[]) => `${from}>${to}`).sort()).toEqual(["never-served-verified>served", "unknown>never-served-verified", "unknown>served"]);
+    const why = (from: string, to: string) => machine.transitions.find(([f, t]: string[]) => f === from && t === to)[2];
+    expect(why("unknown", "never-served-verified")).toBe("verified final report seq 1 in state awaiting-admission with kongStopConfirmed true");
+    expect(why("unknown", "served")).toContain("other than a seq 1 final in state awaiting-admission with kongStopConfirmed true");
+    expect(why("unknown", "served")).toContain("or an integrity conflict");
+    expect(why("unknown", "served")).toContain("a closing without a confirmed stop");
+    // A seq 1 final without a confirmed stop is a valid report, and it counts as served, never as never served.
+    const unconfirmed = { clusterId: u, podUid: u, bootId: u, admissionId: u, seq: 1, prevDigest: null, state: "awaiting-admission", failedCapabilities: [], challenge: null, final: true, finalReason: "pod-terminated", kongStopConfirmed: false };
+    expect(validAgent("ProbeReport", unconfirmed), JSON.stringify(validator("agent-protocol-v2.openapi.yaml", "ProbeReport").errors)).toBe(true);
+    const info = agentV2.info.description.replace(/\s+/g, " ");
+    expect(info).toContain("never from a declaration of the agent");
+    expect(info).toContain("the control plane never closes an admission automatically on unknown");
+    expect(info).toContain("accepted as fail-closed, decision F3-D1");
   });
 
   it("serves deployments that match the snapshot v2 schema, and refuses the v1 envelope", () => {
@@ -735,6 +785,136 @@ describe("agent protocol v2", () => {
     expect(isolation.length).toBe(1);
     expect(owner(isolation[0]!)).toBe("gromesh-platform");
     for (const scope of ["route", "service", "consumer"]) expect(isolation[0]![scope], scope).toBeUndefined();
+  });
+});
+
+describe("delivery protocol and convergence evidence (N3-K1)", () => {
+  const vector = JSON.parse(read("examples/delivery-v2.example.json"));
+  const jcs = (v: unknown): string =>
+    v === null || typeof v !== "object" ? JSON.stringify(v)
+    : Array.isArray(v) ? `[${v.map(jcs).join(",")}]`
+    : `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${jcs((v as Record<string, unknown>)[k])}`).join(",")}}`;
+  type Expected = { clusterId: string; nodeId: string; podUid: string; admissionId: string; epoch: number; revision: number; configHash: string; kongConfigHash: string; lastVerifiedRevision: number; revisionRecordedAt: string; now: string };
+  // The reference reading of "Applied revision and convergence evidence": only the agent's status and a fresh signed
+  // report of the node's own admission agreeing with the deployment and with the Kong hash the control plane derived.
+  const evidenceOf = (e: Expected, { status, probe, receivedAt }: Doc): string => {
+    if (!status || status.nodeId !== e.nodeId) return "awaiting-status";
+    if (status.epoch === e.epoch && status.appliedRevision !== null && status.appliedRevision < e.lastVerifiedRevision) return "revision-regression";
+    if (status.epoch !== e.epoch || status.appliedRevision !== e.revision || status.appliedHash !== e.configHash || !status.kongConfigHash) return "awaiting-status";
+    const at = Date.parse(receivedAt);
+    const own = probe && probe.clusterId === e.clusterId && probe.podUid === e.podUid && probe.admissionId === e.admissionId;
+    if (!own || at < Date.parse(e.revisionRecordedAt) || Date.parse(e.now) - at > 60_000) return "awaiting-probe-report";
+    if (probe.state !== "ok" || probe.appliedEpoch == null) {
+      return probe.servedKongConfigHash && probe.servedKongConfigHash !== status.kongConfigHash ? "served-config-divergence" : "awaiting-probe-report";
+    }
+    const same = probe.appliedEpoch === e.epoch && probe.appliedRevision === e.revision && probe.appliedHash === e.configHash &&
+      probe.appliedKongConfigHash === status.kongConfigHash && probe.servedKongConfigHash === probe.appliedKongConfigHash;
+    if (!same) return "revision-mismatch";
+    if (status.kongConfigHash !== e.kongConfigHash) return "kong-hash-divergence";
+    return "verified";
+  };
+
+  it("derives the expected Kong hash from the JCS bytes the agent posts as a string", () => {
+    const { config, jcs: bytes, kongConfigHash, postBody } = vector.kongConfigHashOf;
+    expect(jcs(config)).toBe(bytes);
+    expect(createHash("md5").update(bytes, "utf8").digest("hex")).toBe(kongConfigHash);
+    expect(JSON.parse(postBody)).toEqual({ config: bytes });
+    expect(vector.expected.kongConfigHash).toBe(kongConfigHash);
+    expect(valid("Deployment", { epoch: 1, revision: 4, state: "active", members: [], configHash: vector.expected.configHash, kongConfigHash, convergence: "converging" })).toBe(true);
+    expect(valid("Deployment", { epoch: 1, revision: 4, state: "active", members: [], configHash: vector.expected.configHash, kongConfigHash: vector.expected.configHash, convergence: "converging" })).toBe(false);
+  });
+
+  it("accepts applied.json and refuses every invalid one", () => {
+    expect(validAgent("AppliedRevision", vector.applied)).toBe(true);
+    for (const { reason, value } of vector.invalidApplied) expect(validAgent("AppliedRevision", value), reason).toBe(false);
+    expect(agentV2.components.schemas.IsolationHandoff.description).toContain("applied.json (agent)");
+  });
+
+  it("carries the applied revision in the signed report only as a whole, with the served hash", () => {
+    for (const value of vector.probeReports.valid) expect(validAgent("ProbeReport", value), JSON.stringify(validator("agent-protocol-v2.openapi.yaml", "ProbeReport").errors)).toBe(true);
+    for (const { reason, value } of vector.probeReports.invalid) expect(validAgent("ProbeReport", value), reason).toBe(false);
+    for (const c of vector.cases) {
+      if (c.status) expect(validAgent("StatusReport", c.status), c.name).toBe(true);
+      if (c.probe) expect(validAgent("ProbeReport", c.probe), c.name).toBe(true);
+    }
+  });
+
+  it("converges only with status and probe evidence agreeing with the deployment", () => {
+    const evidence = new Set(v2.components.schemas.ConvergenceEvidence.enum);
+    expect(new Set(vector.cases.map((c: Doc) => c.evidence))).toEqual(evidence);
+    for (const c of vector.cases) expect(evidenceOf(c.expected ?? vector.expected, c), c.name).toBe(c.evidence);
+    expect(vector.cases.filter((c: Doc) => c.evidence === "verified").every((c: Doc) => c.probe && c.status)).toBe(true);
+  });
+
+  it("publishes a release without deploying it, also with Workspaces mode disabled (D4)", () => {
+    // Structured: where the disabled mode refuses, and that only operations reaching a data plane do.
+    const mode = Object.fromEntries(v2Ops.filter(({ op }) => op["x-gromesh-workspaces-mode-disabled"]).map(({ op }) => [op.operationId, op["x-gromesh-workspaces-mode-disabled"]]));
+    expect(mode).toEqual({ publishRelease: "allowed", createDeployment: "refused", setClusterDeliveryProtocol: "refused-to-v2" });
+    const publish = v2Ops.find(({ op }) => op.operationId === "publishRelease")!.op;
+    // publishRelease never answers the delivery refusal: its 409 is the generic conflict (lease, expectedActiveVersion).
+    expect(publish.responses["409"]).toEqual({ $ref: "#/components/responses/Conflict" });
+    expect(publish.requestBody.content["application/json"].schema.properties).not.toHaveProperty("deploy");
+    const deploy409 = ajv.compile({ $ref: `${BASE}control-plane-v2.openapi.yaml#/paths/~1deployments/post/responses/409/content/application~1problem+json/schema` });
+    expect(deploy409({ type: "https://gromesh.dev/problems/workspaces-mode-disabled", title: "Conflict", status: 409, code: "workspaces-mode-disabled" })).toBe(true);
+    const states = v2.components.schemas.DeliveryProtocolState;
+    expect(states["x-gromesh-activation-gate"]).toEqual(["workspaces-mode-enabled", "every-expected-node-open-admission", "conclusive-passing-round", "failed-capabilities-empty", "no-v1-node-online", "no-open-pendency"]);
+    const t = states["x-gromesh-transitions"].transitions as [string, string, string][];
+    // Positive and negative transition vectors: only the gate reaches v2; nothing reaches v2 from v1 directly.
+    const allowed = new Set(t.map(([from, to]) => `${from}>${to}`));
+    for (const ok of ["v1>v2-pending", "v2-pending>v2", "v2-pending>v1", "v2>v1"]) expect(allowed.has(ok), ok).toBe(true);
+    for (const no of ["v1>v2", "v2>v2-pending"]) expect(allowed.has(no), no).toBe(false);
+    const gate = t.find(([from, to]) => from === "v2-pending" && to === "v2")![2];
+    for (const phrase of ["open admission", "conclusive passing round", "failedCapabilities empty", "no node without an open admission", "no pendency is open"]) expect(gate, phrase).toContain(phrase);
+  });
+
+  it("never converges an empty set of expected nodes and keeps md5 out of integrity decisions", () => {
+    const machine = v2.components.schemas.DeploymentState;
+    const t = machine["x-gromesh-transitions"].transitions as [string, string, string][];
+    const empty = machine["x-gromesh-empty-revision"] as { neverReaches: string[]; holdsLease: boolean; exits: string[] };
+    expect(empty).toEqual({ neverReaches: ["converged"], holdsLease: false, exits: ["converging", "superseded"] });
+    // An empty revision recorded as active can only leave by its declared exits, each one a real transition.
+    const fromActive = t.filter(([from]) => from === "active").map(([, to]) => to);
+    for (const exit of empty.exits) expect(fromActive, exit).toContain(exit);
+    expect(t.find(([from, to]) => from === "active" && to === "superseded")![2]).toContain("no expected node");
+    for (const [from, , why] of t.filter(([, to]) => empty.neverReaches.includes(to))) expect(why, from).toContain("(at least one)");
+    expect(v2.components.schemas.Deployment.description).toContain("without holding the deployment");
+    const info = agentV2.info.description.replace(/\s+/g, " ");
+    expect(info).toContain("never replaces the SHA-256 identities");
+    expect(info).toContain("no decision of integrity, provenance or authorization reads it");
+  });
+
+  it("refuses with a typed code and switches the protocol only explicitly", () => {
+    const refusal = (code: string) => ({ type: `https://gromesh.dev/problems/${code}`, title: "Conflict", status: 409, code });
+    const deploy = v2Ops.find(({ op }) => op.operationId === "createDeployment")!.op;
+    // Implemented by N3-C3: the planned mark is the handler coverage test's concern.
+    expect([deploy["x-scope"], deploy["x-required-permission"]]).toEqual(["instance", "release.publish"]);
+    expect(v2Ops.find(({ op }) => op.operationId === "publishRelease")!.op.description).toContain("Creating a release deploys nothing");
+    for (const code of ["workspaces-mode-disabled", "delivery-protocol-v1", "delivery-protocol-v2", "delivery-protocol-switching", "epoch-outdated", "revision-regression", "unknown-deployment"]) {
+      expect(validAgent("DeliveryProblem", refusal(code)), code).toBe(true);
+    }
+    expect(validAgent("DeliveryProblem", refusal("timeout"))).toBe(false);
+    const deploy409 = ajv.compile({ $ref: `${BASE}control-plane-v2.openapi.yaml#/paths/~1deployments/post/responses/409/content/application~1problem+json/schema` });
+    expect(deploy409(refusal("workspaces-mode-disabled"))).toBe(true);
+    expect(deploy409({ type: "https://gromesh.dev/problems/409", title: "Conflict", status: 409 })).toBe(true);
+    expect(validAgent("DeliveryProblem", { ...refusal("epoch-outdated"), status: 422 })).toBe(false);
+    expect(valid("DeliveryProblem", refusal("no-v1-snapshot"))).toBe(true);
+    for (const path of ["/agent/v2/deployments/current", "/agent/v2/status"]) {
+      const op = agentV2.paths[path].get ?? agentV2.paths[path].post;
+      expect(op.responses["409"].$ref, path).toBe("#/components/responses/DeliveryRefused");
+    }
+    expect(Object.keys(docs["agent-protocol.openapi.yaml"].paths["/agent/v1/snapshots/current"].get.responses)).toContain("409");
+    const set = v2Ops.find(({ op }) => op.operationId === "setClusterDeliveryProtocol")!;
+    // Implemented by N3-C4: the planned mark is the handler coverage test's concern.
+    expect(set.op.security).toEqual([{ cookieAuth: [], csrfToken: [] }]);
+    const body = bodyOf("/clusters/{clusterId}/delivery-protocol", "put");
+    expect(body({ protocol: "v2", reason: "lab N2 activation" })).toBe(true);
+    for (const bad of [{ protocol: "v2" }, { protocol: "v3", reason: "lab N2 activation" }, { protocol: "v2", reason: "lab N2 activation", force: true }]) expect(body(bad), JSON.stringify(bad)).toBe(false);
+    // Only the activation gate turns a cluster v2, and every switch back is explicit.
+    const t = v2.components.schemas.DeliveryProtocolState["x-gromesh-transitions"].transitions as [string, string, string][];
+    expect(t.filter(([, to]) => to === "v2").map(([from, , why]) => [from, why.startsWith("activation gate")])).toEqual([["v2-pending", true]]);
+    for (const [from, to, why] of t) if (to === "v1" || to === "v2-pending") expect(why, `${from} -> ${to}`).toContain("setClusterDeliveryProtocol");
+    expect(valid("InstanceCluster", { id: u, name: "edge", status: "no-nodes", nodes: [], createdAt: "2026-10-27T00:00:00Z" })).toBe(false);
+    expect(valid("InstanceCluster", { id: u, name: "edge", status: "no-nodes", nodes: [], createdAt: "2026-10-27T00:00:00Z", deliveryProtocol: "v2-pending", environmentId: null })).toBe(true);
   });
 });
 

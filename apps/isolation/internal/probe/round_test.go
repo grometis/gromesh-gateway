@@ -25,7 +25,7 @@ type scripted struct {
 }
 
 func (s scripted) Dial(context.Context, string) error { return s.dialErr }
-func (s scripted) Get(context.Context, string) (int, bool, error) {
+func (s scripted) Get(context.Context, string, string) (int, bool, error) {
 	return s.status, s.connected, s.getErr
 }
 func (s scripted) Resolve(context.Context, string) error { return s.dialErr }
