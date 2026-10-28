@@ -859,7 +859,7 @@ describe("delivery protocol and convergence evidence (N3-K1)", () => {
     const deploy409 = ajv.compile({ $ref: `${BASE}control-plane-v2.openapi.yaml#/paths/~1deployments/post/responses/409/content/application~1problem+json/schema` });
     expect(deploy409({ type: "https://gromesh.dev/problems/workspaces-mode-disabled", title: "Conflict", status: 409, code: "workspaces-mode-disabled" })).toBe(true);
     const states = v2.components.schemas.DeliveryProtocolState;
-    expect(states["x-gromesh-activation-gate"]).toEqual(["workspaces-mode-enabled", "every-expected-node-open-admission", "conclusive-passing-round", "failed-capabilities-empty", "no-v1-node-online", "no-open-pendency"]);
+    expect(states["x-gromesh-activation-gate"]).toEqual(["workspaces-mode-enabled", "every-expected-node-open-admission", "conclusive-passing-round", "failed-capabilities-empty", "no-v1-node-online", "no-open-pendency", "collector-token-exclusive"]);
     const t = states["x-gromesh-transitions"].transitions as [string, string, string][];
     // Positive and negative transition vectors: only the gate reaches v2; nothing reaches v2 from v1 directly.
     const allowed = new Set(t.map(([from, to]) => `${from}>${to}`));
@@ -1059,20 +1059,29 @@ describe("analytics guarantees (N3-A1)", () => {
     const reasons: string[] = [];
     if (!h.collectorReachable) reasons.push("collector-unreachable");
     else {
-      if (h.deliveryErrors > 0 && h.delivered < h.received) reasons.push("delivery-failing");
+      if (h.received !== null && h.delivered !== null && h.received > 0 && (h.delivered * 2 < h.received || (h.deliveryErrors > 0 && h.delivered < h.received))) reasons.push("delivery-failing");
       if (h.buffered !== null && h.bufferCapacity !== null && h.buffered * 2 >= h.bufferCapacity) reasons.push("backlog");
       if (h.kongRequests !== null && h.received !== null && h.kongRequests >= 20 && h.received * 2 < h.kongRequests) reasons.push("events-missing");
       if (h.authRefusals > 0) reasons.push("auth-refusals");
     }
-    const state = reasons.length > 0 ? "degraded" : !h.windowComplete ? "unknown" : h.kongRequests === 0 && h.received === 0 ? "idle" : "healthy";
+    const unread = ["kongRequests", "received", "delivered", "deliveryErrors", "authRefusals", "buffered", "bufferCapacity"].some((k) => h[k] === null);
+    const state = reasons.length > 0 ? "degraded"
+      : !h.windowComplete || unread ? "unknown"
+      : h.kongRequests === 0 && h.received === 0 ? "idle"
+      : h.received === 0 || h.delivered === 0 ? "unknown"
+      : "healthy";
     return { state, reasons, analytics: state === "healthy" || state === "idle" ? "analytics-healthy" : "analytics-degraded" };
   };
   const fingerprintOf = (token: string) => `sha256:${sha(`gromesh-collector-token/v1\n${token}`)}`;
-  const shareOf = (clusters: Record<string, { current: string; previous: string | null }[]>, id: string) => {
-    const others = Object.entries(clusters).filter(([k]) => k !== id).flatMap(([, nodes]) => nodes);
-    const shared = clusters[id]!.some((m) => others.some((t) => m.current === t.current));
-    const touched = clusters[id]!.some((m) => others.some((t) => [t.current, t.previous].includes(m.current) || (m.previous !== null && [t.current, t.previous].includes(m.previous))));
-    return { collectorTokenShared: shared, collectorTokenRotating: touched && !shared };
+  type Node = { online: boolean; fingerprints: { current: string; previous: string | null } | null };
+  const shareOf = (clusters: Record<string, Node[]>, id: string) => {
+    // Only online nodes count; one without fingerprints leaves its cluster unverified.
+    const counted = (nodes: Node[]) => nodes.filter((n) => n.online && n.fingerprints).map((n) => n.fingerprints!);
+    const mine = counted(clusters[id]!);
+    const others = Object.entries(clusters).filter(([k]) => k !== id).flatMap(([, nodes]) => counted(nodes));
+    const shared = mine.some((m) => others.some((t) => m.current === t.current));
+    const touched = mine.some((m) => others.some((t) => [t.current, t.previous].includes(m.current) || (m.previous !== null && [t.current, t.previous].includes(m.previous))));
+    return { collectorTokenShared: shared, collectorTokenUnverified: clusters[id]!.some((n) => n.online && !n.fingerprints), collectorTokenRotating: touched && !shared };
   };
 
   it("derives the event id the Vector sidecar already derives, per cluster, pod and Kong request id", () => {
@@ -1106,7 +1115,8 @@ describe("analytics guarantees (N3-A1)", () => {
     const reasons = new Set(vector.healthOf.cases.flatMap((c: Doc) => c.expected.reasons));
     expect([...reasons].sort()).toEqual([...agentV2.components.schemas.AnalyticsHealth.properties.reasons.items.enum].sort());
     expect(v2.components.schemas.ClusterAnalytics.properties.state.enum).toEqual(agentV2.components.schemas.AnalyticsHealth.properties.state.enum);
-    expect(info).toContain("A running container is never health by itself");
+    expect(info).toContain("Missing evidence is never health, and a running container is never health by itself");
+    expect(info).not.toContain("never hidden");
   });
 
   it("compares collector tokens by fingerprint only, blocking a current token on two clusters and not a rotation", () => {
@@ -1115,7 +1125,9 @@ describe("analytics guarantees (N3-A1)", () => {
       for (const id of Object.keys(c.clusters)) expect(shareOf(c.clusters, id), `${c.name} (${id})`).toEqual(c.expected[id]);
     }
     const gate = v2.components.schemas.DeliveryProtocolState["x-gromesh-transitions"].transitions.find(([from, to]: string[]) => from === "v2-pending" && to === "v2");
-    expect(gate[2]).toContain("no current collector token of the cluster is shared with another cluster");
+    expect(gate[2]).toContain("every online node reports its fingerprints and no current one is shared with another cluster");
+    expect(v2.components.schemas.DeliveryProtocolState["x-gromesh-activation-gate"]).toContain("collector-token-exclusive");
+    expect(info).toContain("a completed rotation clears the share");
   });
 
   it("validates the status report's analytics members and refuses a token in place of a fingerprint", () => {

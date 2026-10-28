@@ -3478,10 +3478,10 @@ paths:
       operationId: getTopRoutes
       description: |
         The routes with the most traffic, the most errors or the slowest p95 over the period, from the same
-        `requests` table as the summary (same 7-day limit). Traffic that matched no route is one row with null
-        `routeId` and `serviceId`. Ordered by the chosen criterion descending, ties by `requests` descending then
-        `routeId`. Rows: distinct request ids attributed to this workspace by agent-protocol-v2 "Analytics guarantees" (route_id against the deployment revisions, never the path); unattributed rows count only in getUnattributedAnalytics. Traffic that matched no route of this workspace is
-        unattributed, so the null-route row never appears here.
+        `requests` table as the summary (same 7-day limit). Ordered by the chosen criterion descending, ties by
+        `requests` descending then `routeId`. Rows: distinct request ids attributed to this workspace by agent-protocol-v2 "Analytics guarantees" (route_id against the deployment revisions, never the path); unattributed rows count only in getUnattributedAnalytics. Traffic that matched no route of this workspace is
+        unattributed (reason no-route or route-not-deployed), so every row here has a routeId of this
+        workspace.
       parameters:
         - $ref: ./control-plane.openapi.yaml#/components/parameters/AnalyticsFrom
         - $ref: ./control-plane.openapi.yaml#/components/parameters/AnalyticsTo
@@ -4347,13 +4347,13 @@ components:
         snapshots; v2: the instance's deployments; v2-pending: neither flow delivers anything new (each node keeps
         what it applied) until the activation gate holds.
       enum: [ v1, v2-pending, v2 ]
-      x-gromesh-activation-gate: [ workspaces-mode-enabled, every-expected-node-open-admission, conclusive-passing-round, failed-capabilities-empty, no-v1-node-online, no-open-pendency ]
+      x-gromesh-activation-gate: [ workspaces-mode-enabled, every-expected-node-open-admission, conclusive-passing-round, failed-capabilities-empty, no-v1-node-online, no-open-pendency, collector-token-exclusive ]
       x-gromesh-transitions:
         initial: [ v1, v2-pending ]
         terminal: []
         transitions:
           - [ v1, v2-pending, "setClusterDeliveryProtocol protocol v2 with Workspaces mode enabled (audited)" ]
-          - [ v2-pending, v2, "activation gate: every expected node has an open admission with a conclusive passing round (failedCapabilities empty), no node without an open admission is registered and online, no pendency is open in scope, and no current collector token of the cluster is shared with another cluster (agent-protocol-v2 \"Analytics guarantees\"; system transition, audited)" ]
+          - [ v2-pending, v2, "activation gate: every expected node has an open admission with a conclusive passing round (failedCapabilities empty), no node without an open admission is registered and online, no pendency is open in scope, and the collector token is exclusive: every online node reports its fingerprints and no current one is shared with another cluster (agent-protocol-v2 \"Analytics guarantees\"; system transition, audited)" ]
           - [ v2-pending, v1, "setClusterDeliveryProtocol protocol v1: switch cancelled (audited)" ]
           - [ v2, v1, "setClusterDeliveryProtocol protocol v1: controlled return to the environment's current v1 snapshot (audited)" ]
     DeliveryProblem:
@@ -5538,14 +5538,17 @@ components:
         The cluster's analytics as its agents report it (agent-protocol-v2 "Analytics guarantees"). state: degraded when
         a node's analyticsHealth is degraded in its latest status received within 60 s; unknown when a node has none
         that recent, or reports unknown; idle when every node is idle; healthy otherwise. Opening and clearing
-        degraded are audited (cluster.analytics.degraded / cluster.analytics.cleared). collectorTokenShared: a current
-        fingerprint of this cluster equals a current one of another cluster (blocks the activation gate only);
-        collectorTokenRotating: only a previous fingerprint matches. Never affects convergence, containment or
-        readiness.
-      required: [state, collectorTokenShared, collectorTokenRotating, nodes]
+        degraded are audited (cluster.analytics.degraded / cluster.analytics.cleared). Fingerprints count only from
+        online nodes (latest status within 45 s, not deregistered); a replaced or stopped pod stops counting.
+        collectorTokenShared: a current fingerprint of an online node of this cluster equals a current one of an
+        online node of another cluster; collectorTokenUnverified: an online node of this cluster reported no
+        fingerprints (both block the activation gate only); collectorTokenRotating: without a share, a match involves
+        a previous fingerprint. Never affects convergence, containment or readiness.
+      required: [state, collectorTokenShared, collectorTokenUnverified, collectorTokenRotating, nodes]
       properties:
         state: { enum: [healthy, idle, degraded, unknown] }
         collectorTokenShared: { type: boolean }
+        collectorTokenUnverified: { type: boolean }
         collectorTokenRotating: { type: boolean }
         nodes:
           type: array

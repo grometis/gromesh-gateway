@@ -443,7 +443,7 @@
         }
       },
       {
-        "name": "below 20 Kong requests a gap proves nothing",
+        "name": "below 20 Kong requests a gap proves nothing either way: unknown, never healthy",
         "input": {
           "windowSeconds": 300,
           "windowComplete": true,
@@ -457,9 +457,71 @@
           "bufferCapacity": 10000
         },
         "expected": {
-          "state": "healthy",
+          "state": "unknown",
           "reasons": [],
-          "analytics": "analytics-healthy"
+          "analytics": "analytics-degraded"
+        }
+      },
+      {
+        "name": "events received and none delivered, without any error counted: failing",
+        "input": {
+          "windowSeconds": 300,
+          "windowComplete": true,
+          "collectorReachable": true,
+          "kongRequests": 600,
+          "received": 600,
+          "delivered": 0,
+          "deliveryErrors": 0,
+          "authRefusals": 0,
+          "buffered": 3,
+          "bufferCapacity": 10000
+        },
+        "expected": {
+          "state": "degraded",
+          "reasons": [
+            "delivery-failing"
+          ],
+          "analytics": "analytics-degraded"
+        }
+      },
+      {
+        "name": "a complete window whose counters could not be read: unknown, never healthy",
+        "input": {
+          "windowSeconds": 300,
+          "windowComplete": true,
+          "collectorReachable": true,
+          "kongRequests": null,
+          "received": null,
+          "delivered": null,
+          "deliveryErrors": null,
+          "authRefusals": null,
+          "buffered": null,
+          "bufferCapacity": null
+        },
+        "expected": {
+          "state": "unknown",
+          "reasons": [],
+          "analytics": "analytics-degraded"
+        }
+      },
+      {
+        "name": "Kong counter unreadable, collector fine: unknown",
+        "input": {
+          "windowSeconds": 300,
+          "windowComplete": true,
+          "collectorReachable": true,
+          "kongRequests": null,
+          "received": 598,
+          "delivered": 598,
+          "deliveryErrors": 0,
+          "authRefusals": 0,
+          "buffered": 3,
+          "bufferCapacity": 10000
+        },
+        "expected": {
+          "state": "unknown",
+          "reasons": [],
+          "analytics": "analytics-degraded"
         }
       },
       {
@@ -551,24 +613,32 @@
         "clusters": {
           "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f": [
             {
-              "current": "sha256:0c3c574f064e4c550a2113bc6f2f5a4d6ef4d69d34c72e5c0191f15ab0d3ce89",
-              "previous": null
+              "online": true,
+              "fingerprints": {
+                "current": "sha256:0c3c574f064e4c550a2113bc6f2f5a4d6ef4d69d34c72e5c0191f15ab0d3ce89",
+                "previous": null
+              }
             }
           ],
           "00000000-0000-4000-8000-00000000c0c0": [
             {
-              "current": "sha256:1ef96d0250a08a5bc104f2538e04aa86151fcd9a68648f614b8cdb01a6389322",
-              "previous": null
+              "online": true,
+              "fingerprints": {
+                "current": "sha256:1ef96d0250a08a5bc104f2538e04aa86151fcd9a68648f614b8cdb01a6389322",
+                "previous": null
+              }
             }
           ]
         },
         "expected": {
           "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f": {
             "collectorTokenShared": false,
+            "collectorTokenUnverified": false,
             "collectorTokenRotating": false
           },
           "00000000-0000-4000-8000-00000000c0c0": {
             "collectorTokenShared": false,
+            "collectorTokenUnverified": false,
             "collectorTokenRotating": false
           }
         }
@@ -578,24 +648,32 @@
         "clusters": {
           "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f": [
             {
-              "current": "sha256:0c3c574f064e4c550a2113bc6f2f5a4d6ef4d69d34c72e5c0191f15ab0d3ce89",
-              "previous": null
+              "online": true,
+              "fingerprints": {
+                "current": "sha256:0c3c574f064e4c550a2113bc6f2f5a4d6ef4d69d34c72e5c0191f15ab0d3ce89",
+                "previous": null
+              }
             }
           ],
           "00000000-0000-4000-8000-00000000c0c0": [
             {
-              "current": "sha256:0c3c574f064e4c550a2113bc6f2f5a4d6ef4d69d34c72e5c0191f15ab0d3ce89",
-              "previous": null
+              "online": true,
+              "fingerprints": {
+                "current": "sha256:0c3c574f064e4c550a2113bc6f2f5a4d6ef4d69d34c72e5c0191f15ab0d3ce89",
+                "previous": null
+              }
             }
           ]
         },
         "expected": {
           "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f": {
             "collectorTokenShared": true,
+            "collectorTokenUnverified": false,
             "collectorTokenRotating": false
           },
           "00000000-0000-4000-8000-00000000c0c0": {
             "collectorTokenShared": true,
+            "collectorTokenUnverified": false,
             "collectorTokenRotating": false
           }
         }
@@ -605,55 +683,155 @@
         "clusters": {
           "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f": [
             {
-              "current": "sha256:0c3c574f064e4c550a2113bc6f2f5a4d6ef4d69d34c72e5c0191f15ab0d3ce89",
-              "previous": null
+              "online": true,
+              "fingerprints": {
+                "current": "sha256:0c3c574f064e4c550a2113bc6f2f5a4d6ef4d69d34c72e5c0191f15ab0d3ce89",
+                "previous": null
+              }
             }
           ],
           "00000000-0000-4000-8000-00000000c0c0": [
             {
-              "current": "sha256:db4385c17746f02fdbbfe38c6238c9e35f9293210cc9696cca9f41649dbdd136",
-              "previous": "sha256:0c3c574f064e4c550a2113bc6f2f5a4d6ef4d69d34c72e5c0191f15ab0d3ce89"
+              "online": true,
+              "fingerprints": {
+                "current": "sha256:db4385c17746f02fdbbfe38c6238c9e35f9293210cc9696cca9f41649dbdd136",
+                "previous": "sha256:0c3c574f064e4c550a2113bc6f2f5a4d6ef4d69d34c72e5c0191f15ab0d3ce89"
+              }
             }
           ]
         },
         "expected": {
           "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f": {
             "collectorTokenShared": false,
+            "collectorTokenUnverified": false,
             "collectorTokenRotating": true
           },
           "00000000-0000-4000-8000-00000000c0c0": {
             "collectorTokenShared": false,
+            "collectorTokenUnverified": false,
             "collectorTokenRotating": true
           }
         }
       },
       {
-        "name": "one node of cluster two still on the shared token: shared",
+        "name": "one online node of cluster two still on the shared token: shared",
         "clusters": {
           "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f": [
             {
-              "current": "sha256:0c3c574f064e4c550a2113bc6f2f5a4d6ef4d69d34c72e5c0191f15ab0d3ce89",
-              "previous": null
+              "online": true,
+              "fingerprints": {
+                "current": "sha256:0c3c574f064e4c550a2113bc6f2f5a4d6ef4d69d34c72e5c0191f15ab0d3ce89",
+                "previous": null
+              }
             }
           ],
           "00000000-0000-4000-8000-00000000c0c0": [
             {
-              "current": "sha256:db4385c17746f02fdbbfe38c6238c9e35f9293210cc9696cca9f41649dbdd136",
-              "previous": "sha256:0c3c574f064e4c550a2113bc6f2f5a4d6ef4d69d34c72e5c0191f15ab0d3ce89"
+              "online": true,
+              "fingerprints": {
+                "current": "sha256:db4385c17746f02fdbbfe38c6238c9e35f9293210cc9696cca9f41649dbdd136",
+                "previous": "sha256:0c3c574f064e4c550a2113bc6f2f5a4d6ef4d69d34c72e5c0191f15ab0d3ce89"
+              }
             },
             {
-              "current": "sha256:0c3c574f064e4c550a2113bc6f2f5a4d6ef4d69d34c72e5c0191f15ab0d3ce89",
-              "previous": null
+              "online": true,
+              "fingerprints": {
+                "current": "sha256:0c3c574f064e4c550a2113bc6f2f5a4d6ef4d69d34c72e5c0191f15ab0d3ce89",
+                "previous": null
+              }
             }
           ]
         },
         "expected": {
           "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f": {
             "collectorTokenShared": true,
+            "collectorTokenUnverified": false,
             "collectorTokenRotating": false
           },
           "00000000-0000-4000-8000-00000000c0c0": {
             "collectorTokenShared": true,
+            "collectorTokenUnverified": false,
+            "collectorTokenRotating": false
+          }
+        }
+      },
+      {
+        "name": "rotation completed: the replaced pod with the shared token is offline and no longer counts",
+        "clusters": {
+          "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f": [
+            {
+              "online": true,
+              "fingerprints": {
+                "current": "sha256:0c3c574f064e4c550a2113bc6f2f5a4d6ef4d69d34c72e5c0191f15ab0d3ce89",
+                "previous": null
+              }
+            }
+          ],
+          "00000000-0000-4000-8000-00000000c0c0": [
+            {
+              "online": true,
+              "fingerprints": {
+                "current": "sha256:db4385c17746f02fdbbfe38c6238c9e35f9293210cc9696cca9f41649dbdd136",
+                "previous": null
+              }
+            },
+            {
+              "online": false,
+              "fingerprints": {
+                "current": "sha256:0c3c574f064e4c550a2113bc6f2f5a4d6ef4d69d34c72e5c0191f15ab0d3ce89",
+                "previous": null
+              }
+            }
+          ]
+        },
+        "expected": {
+          "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f": {
+            "collectorTokenShared": false,
+            "collectorTokenUnverified": false,
+            "collectorTokenRotating": false
+          },
+          "00000000-0000-4000-8000-00000000c0c0": {
+            "collectorTokenShared": false,
+            "collectorTokenUnverified": false,
+            "collectorTokenRotating": false
+          }
+        }
+      },
+      {
+        "name": "an online node without fingerprints leaves its cluster unverified",
+        "clusters": {
+          "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f": [
+            {
+              "online": true,
+              "fingerprints": {
+                "current": "sha256:0c3c574f064e4c550a2113bc6f2f5a4d6ef4d69d34c72e5c0191f15ab0d3ce89",
+                "previous": null
+              }
+            }
+          ],
+          "00000000-0000-4000-8000-00000000c0c0": [
+            {
+              "online": true,
+              "fingerprints": {
+                "current": "sha256:db4385c17746f02fdbbfe38c6238c9e35f9293210cc9696cca9f41649dbdd136",
+                "previous": null
+              }
+            },
+            {
+              "online": true,
+              "fingerprints": null
+            }
+          ]
+        },
+        "expected": {
+          "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f": {
+            "collectorTokenShared": false,
+            "collectorTokenUnverified": false,
+            "collectorTokenRotating": false
+          },
+          "00000000-0000-4000-8000-00000000c0c0": {
+            "collectorTokenShared": false,
+            "collectorTokenUnverified": true,
             "collectorTokenRotating": false
           }
         }
@@ -728,6 +906,7 @@
       {
         "reason": "window outside 60..900 s",
         "patch": {
+          "analytics": "analytics-healthy",
           "analyticsHealth": {
             "state": "healthy",
             "reasons": [],
@@ -743,6 +922,97 @@
             "buffered": 3,
             "bufferCapacity": 10000
           }
+        }
+      },
+      {
+        "reason": "healthy with a reason",
+        "patch": {
+          "analytics": "analytics-healthy",
+          "analyticsHealth": {
+            "state": "healthy",
+            "reasons": [
+              "events-missing"
+            ],
+            "observedAt": "2026-10-28T12:00:00Z",
+            "windowSeconds": 300,
+            "windowComplete": true,
+            "collectorReachable": true,
+            "kongRequests": 600,
+            "received": 598,
+            "delivered": 598,
+            "deliveryErrors": 0,
+            "authRefusals": 0,
+            "buffered": 3,
+            "bufferCapacity": 10000
+          }
+        }
+      },
+      {
+        "reason": "degraded without a reason",
+        "patch": {
+          "analyticsHealth": {
+            "state": "degraded",
+            "reasons": [],
+            "observedAt": "2026-10-28T12:00:00Z",
+            "windowSeconds": 300,
+            "windowComplete": true,
+            "collectorReachable": true,
+            "kongRequests": 600,
+            "received": 598,
+            "delivered": 598,
+            "deliveryErrors": 0,
+            "authRefusals": 0,
+            "buffered": 3,
+            "bufferCapacity": 10000
+          }
+        }
+      },
+      {
+        "reason": "healthy without any event delivered",
+        "patch": {
+          "analytics": "analytics-healthy",
+          "analyticsHealth": {
+            "state": "healthy",
+            "reasons": [],
+            "observedAt": "2026-10-28T12:00:00Z",
+            "windowSeconds": 300,
+            "windowComplete": true,
+            "collectorReachable": true,
+            "kongRequests": 600,
+            "received": 598,
+            "delivered": 0,
+            "deliveryErrors": 0,
+            "authRefusals": 0,
+            "buffered": 3,
+            "bufferCapacity": 10000
+          }
+        }
+      },
+      {
+        "reason": "idle while Kong counted requests",
+        "patch": {
+          "analytics": "analytics-healthy",
+          "analyticsHealth": {
+            "state": "idle",
+            "reasons": [],
+            "observedAt": "2026-10-28T12:00:00Z",
+            "windowSeconds": 300,
+            "windowComplete": true,
+            "collectorReachable": true,
+            "kongRequests": 600,
+            "received": 0,
+            "delivered": 0,
+            "deliveryErrors": 0,
+            "authRefusals": 0,
+            "buffered": 3,
+            "bufferCapacity": 10000
+          }
+        }
+      },
+      {
+        "reason": "analytics disagrees with analyticsHealth",
+        "patch": {
+          "analytics": "analytics-healthy"
         }
       }
     ]

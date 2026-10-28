@@ -210,10 +210,13 @@ info:
         the collector's in-memory dedup is a load reduction only (lost on restart). The requests table keeps rows
         sorted by (environment_id, ts, id) in an engine that collapses equal ids in background merges
         (ReplacingMergeTree); merges are eventual, so every read the control plane serves counts DISTINCT ids and
-        never relies on a merge having run. Equal ids share ts (Kong's start time of the request) and so the same
-        partition and expiry: retention_days bounds the dedup window and the growth (a repeat lives at most as long
-        as the original). Loss stays possible (collector memory buffer at restart, Kong queue overflow) and is
-        reported by the health below, never hidden.
+        never relies on a merge having run, so a copy is never visible. Equal ids share ts (Kong's start time of the
+        request), hence the same partition and the same retention_days. Physical removal is asynchronous for copies
+        (merges) and expired rows (TTL): it has no hard time bound, and a replay arriving after its original was
+        removed is stored again until its own TTL removes it; reads only ever span the retention period. Storage of
+        copies is bounded by the retries, not by a deadline. Loss stays possible (collector memory buffer at restart,
+        Kong queue overflow): the health below reports it when the counters show it (degraded) or cannot show
+        anything (unknown); a loss below its thresholds can go unnoticed.
       - Attribution (attributionOf): a row counts for workspace W only when environment_id is this instance, cluster_id
         is a cluster of this instance, route_id is not null, and route_id is a route of W in the latest deployment
         revision recorded at or before ts or in the revision just before it (the window of a rollout or a rollback,
@@ -225,21 +228,25 @@ info:
         plane never holds it. The agent reports collectorTokenFingerprints: "sha256:" + lowercase hex SHA-256 of
         "gromesh-collector-token/v1" + LF + token, for the current token and the previous one kept during a
         rotation (fingerprintOf). Two clusters share a token when a current fingerprint of one equals a current
-        fingerprint of the other (any node of each): blocking (the activation gate v2-pending -> v2 waits; an active
-        cluster is never deactivated and no token is invalidated, the platform admin rotates one through the chart).
-        Without such a match, any match involving a previous fingerprint is a rotation in progress: shown, not
-        blocking. Opening and
+        fingerprint of the other. Only online nodes count (latest status within 45 s, not deregistered): a pod that
+        was replaced or stopped stops counting once offline, so a completed rotation clears the share. An online node
+        without fingerprints leaves its cluster unverified. A share or an unverified cluster blocks only the
+        activation gate v2-pending -> v2; an active cluster is never deactivated and no token is invalidated (the
+        platform admin rotates one through the chart). Without a share, any match involving a previous fingerprint is
+        a rotation in progress: shown, not blocking. Opening and
         clearing a share are audited (cluster.collector-token-shared), with keyHints (first 8 hex digits) only.
       - Health (analyticsHealth, healthOf): the agent reads, over a window (windowSeconds, default 300), Kong's own
         request counter (GET /status server.total_requests: every request is logged by the platform's global
         http-log, the probe's canary included) and the collector's loopback metrics (events received, events the
         ClickHouse sink acknowledged, delivery errors, refusals of the collector's token check, buffered events).
-        degraded reasons: collector-unreachable; delivery-failing (errors and fewer events delivered than received);
-        backlog (buffered >= half the buffer); events-missing (Kong counted >= 20 requests and the collector received
-        fewer than half); auth-refusals (any refusal: a wrong token or a foreign sender). idle: no reason, and Kong
-        and the collector both counted nothing (no traffic is not a failure). unknown: no reason yet and the window is
-        not complete (agent or collector just started). healthy otherwise. A running container is never health by
-        itself. StatusReport.analytics stays analytics-healthy for healthy and idle, analytics-degraded otherwise.
+        degraded reasons: collector-unreachable; delivery-failing (fewer than half the received events delivered, or
+        any delivery error with fewer delivered than received); backlog (buffered >= half the buffer); events-missing
+        (Kong counted >= 20 requests and the collector received fewer than half); auth-refusals (any refusal: a wrong
+        token or a foreign sender). Without a reason: unknown when the window is not complete (agent or collector just
+        started) or any counter could not be read; idle when Kong and the collector both counted nothing (no traffic
+        is not a failure); unknown when Kong counted requests but the collector received none (too few to tell);
+        healthy only with events received and delivered in the window. Missing evidence is never health, and a
+        running container is never health by itself. StatusReport.analytics stays analytics-healthy for healthy and idle, analytics-degraded otherwise.
         Health never affects convergence, containment, readiness or the activation gate.
 servers:
   - url: http://localhost:3000
@@ -444,6 +451,11 @@ components:
       type: object
       additionalProperties: false
       required: [nodeId, epoch, appliedRevision, appliedHash, kongHealthy]
+      allOf:
+        - if: { required: [analyticsHealth], properties: { analyticsHealth: { properties: { state: { enum: [healthy, idle] } } } } }
+          then: { required: [analytics], properties: { analytics: { const: analytics-healthy } } }
+        - if: { required: [analyticsHealth], properties: { analyticsHealth: { properties: { state: { enum: [degraded, unknown] } } } } }
+          then: { required: [analytics], properties: { analytics: { const: analytics-degraded } } }
       properties:
         nodeId: { type: string, minLength: 1, maxLength: 253 }
         epoch: { type: integer, minimum: 1 }
@@ -481,6 +493,14 @@ components:
         bufferCapacity: { type: [integer, "null"], minimum: 1 }
         lastReceivedAt: { type: [string, "null"], format: date-time }
         lastDeliveredAt: { type: [string, "null"], format: date-time }
+      allOf:
+        - if: { properties: { state: { const: degraded } } }
+          then: { properties: { reasons: { minItems: 1 } } }
+          else: { properties: { reasons: { maxItems: 0 } } }
+        - if: { properties: { state: { const: healthy } } }
+          then: { properties: { windowComplete: { const: true }, collectorReachable: { const: true }, received: { type: integer, minimum: 1 }, delivered: { type: integer, minimum: 1 } } }
+        - if: { properties: { state: { const: idle } } }
+          then: { properties: { windowComplete: { const: true }, collectorReachable: { const: true }, kongRequests: { const: 0 }, received: { const: 0 } } }
     CollectorTokenFingerprints:
       type: object
       additionalProperties: false
