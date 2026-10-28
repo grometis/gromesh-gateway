@@ -1,0 +1,750 @@
+{
+  "description": "Normative vector of agent protocol v2 'Analytics guarantees' (N3-A1): eventIdOf, attributionOf, healthOf, fingerprintOf and the token share reading. Tokens here are test values only.",
+  "eventIdOf": {
+    "cases": [
+      {
+        "name": "the Vector sidecar test vector (deploy/observability/vector/sidecar.tests.yaml)",
+        "clusterId": "00000000-0000-4000-8000-00000000c0c0",
+        "podUid": "6a1f3c2e-0b7d-4c1a-9f10-000000000001",
+        "requestId": "0123456789abcdef0123456789abcdef",
+        "id": "653b06fb-b7b4-685b-d4b9-b2109eeaf6c7"
+      },
+      {
+        "name": "the same request id in another pod is another event",
+        "clusterId": "00000000-0000-4000-8000-00000000c0c0",
+        "podUid": "2f1e0d9c-8b7a-4695-a483-72615f4e3d2c",
+        "requestId": "0123456789abcdef0123456789abcdef",
+        "id": "d76f4bb8-b4df-37c9-bdd6-e6c20011955f"
+      },
+      {
+        "name": "the same pod uid and request id in another cluster is another event",
+        "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+        "podUid": "6a1f3c2e-0b7d-4c1a-9f10-000000000001",
+        "requestId": "0123456789abcdef0123456789abcdef",
+        "id": "3d7d4a3a-e4e3-675f-801d-2f34a2801061"
+      },
+      {
+        "name": "the same request delivered again (retry, repeated batch, collector restart) keeps its id",
+        "clusterId": "00000000-0000-4000-8000-00000000c0c0",
+        "podUid": "6a1f3c2e-0b7d-4c1a-9f10-000000000001",
+        "requestId": "0123456789abcdef0123456789abcdef",
+        "id": "653b06fb-b7b4-685b-d4b9-b2109eeaf6c7"
+      },
+      {
+        "name": "uppercase request id: dropped",
+        "clusterId": "00000000-0000-4000-8000-00000000c0c0",
+        "podUid": "6a1f3c2e-0b7d-4c1a-9f10-000000000001",
+        "requestId": "0123456789ABCDEF0123456789ABCDEF",
+        "id": null
+      },
+      {
+        "name": "short request id: dropped",
+        "clusterId": "00000000-0000-4000-8000-00000000c0c0",
+        "podUid": "6a1f3c2e-0b7d-4c1a-9f10-000000000001",
+        "requestId": "0123456789abcdef0123456789abcde",
+        "id": null
+      },
+      {
+        "name": "no request id: dropped",
+        "clusterId": "00000000-0000-4000-8000-00000000c0c0",
+        "podUid": "6a1f3c2e-0b7d-4c1a-9f10-000000000001",
+        "requestId": null,
+        "id": null
+      }
+    ]
+  },
+  "attributionOf": {
+    "attribution": {
+      "instanceId": "7b0c9a52-3c1e-4f8e-9d2a-1c5b8e2f4a10",
+      "clusters": [
+        "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+        "00000000-0000-4000-8000-00000000c0c0"
+      ],
+      "revisions": [
+        {
+          "epoch": 1,
+          "revision": 1,
+          "recordedAt": "2026-10-28T10:00:00Z",
+          "routes": {
+            "a0000000-0000-4000-8000-00000000000a": [
+              "00000000-0000-4000-8000-000000000001"
+            ],
+            "b0000000-0000-4000-8000-00000000000b": [
+              "00000000-0000-4000-8000-000000000002"
+            ]
+          }
+        },
+        {
+          "epoch": 1,
+          "revision": 2,
+          "recordedAt": "2026-10-28T11:00:00Z",
+          "routes": {
+            "a0000000-0000-4000-8000-00000000000a": [
+              "00000000-0000-4000-8000-000000000001",
+              "00000000-0000-4000-8000-000000000003"
+            ],
+            "b0000000-0000-4000-8000-00000000000b": [
+              "00000000-0000-4000-8000-000000000002"
+            ]
+          }
+        },
+        {
+          "epoch": 1,
+          "revision": 3,
+          "recordedAt": "2026-10-28T12:00:00Z",
+          "routes": {
+            "a0000000-0000-4000-8000-00000000000a": [
+              "00000000-0000-4000-8000-000000000003"
+            ],
+            "b0000000-0000-4000-8000-00000000000b": [
+              "00000000-0000-4000-8000-000000000002",
+              "00000000-0000-4000-8000-000000000004"
+            ]
+          }
+        },
+        {
+          "epoch": 1,
+          "revision": 4,
+          "recordedAt": "2026-10-28T13:00:00Z",
+          "routes": {
+            "a0000000-0000-4000-8000-00000000000a": [
+              "00000000-0000-4000-8000-000000000001"
+            ],
+            "b0000000-0000-4000-8000-00000000000b": [
+              "00000000-0000-4000-8000-000000000002",
+              "00000000-0000-4000-8000-000000000004"
+            ]
+          }
+        },
+        {
+          "epoch": 2,
+          "revision": 1,
+          "recordedAt": "2026-10-28T13:30:00Z",
+          "routes": {
+            "a0000000-0000-4000-8000-00000000000a": [
+              "00000000-0000-4000-8000-000000000001",
+              "00000000-0000-4000-8000-000000000005"
+            ],
+            "b0000000-0000-4000-8000-00000000000b": [
+              "00000000-0000-4000-8000-000000000002",
+              "00000000-0000-4000-8000-000000000005"
+            ]
+          }
+        }
+      ]
+    },
+    "cases": [
+      {
+        "name": "a route of A in the current revision",
+        "event": {
+          "environmentId": "7b0c9a52-3c1e-4f8e-9d2a-1c5b8e2f4a10",
+          "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+          "routeId": "00000000-0000-4000-8000-000000000001",
+          "ts": "2026-10-28T10:30:00Z"
+        },
+        "expected": {
+          "workspace": "a0000000-0000-4000-8000-00000000000a",
+          "reason": null
+        }
+      },
+      {
+        "name": "a route of B is never A's, whatever else the event says",
+        "event": {
+          "environmentId": "7b0c9a52-3c1e-4f8e-9d2a-1c5b8e2f4a10",
+          "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+          "routeId": "00000000-0000-4000-8000-000000000002",
+          "ts": "2026-10-28T10:30:00Z"
+        },
+        "expected": {
+          "workspace": "b0000000-0000-4000-8000-00000000000b",
+          "reason": null
+        }
+      },
+      {
+        "name": "rollout: R(1) left A in revision 3, still A's in the previous revision's window",
+        "event": {
+          "environmentId": "7b0c9a52-3c1e-4f8e-9d2a-1c5b8e2f4a10",
+          "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+          "routeId": "00000000-0000-4000-8000-000000000001",
+          "ts": "2026-10-28T12:10:00Z"
+        },
+        "expected": {
+          "workspace": "a0000000-0000-4000-8000-00000000000a",
+          "reason": null
+        }
+      },
+      {
+        "name": "the previous revision still holds the route: attributed (revisions 2 and 3)",
+        "event": {
+          "environmentId": "7b0c9a52-3c1e-4f8e-9d2a-1c5b8e2f4a10",
+          "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+          "routeId": "00000000-0000-4000-8000-000000000001",
+          "ts": "2026-10-28T12:59:59Z"
+        },
+        "expected": {
+          "workspace": "a0000000-0000-4000-8000-00000000000a",
+          "reason": null
+        }
+      },
+      {
+        "name": "R(3) left A two revisions ago (window: revision 4 and epoch 2 revision 1): not deployed",
+        "event": {
+          "environmentId": "7b0c9a52-3c1e-4f8e-9d2a-1c5b8e2f4a10",
+          "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+          "routeId": "00000000-0000-4000-8000-000000000003",
+          "ts": "2026-10-28T13:45:00Z"
+        },
+        "expected": {
+          "workspace": null,
+          "reason": "route-not-deployed"
+        }
+      },
+      {
+        "name": "rollback (revision 4 restores R(1)): attributed again",
+        "event": {
+          "environmentId": "7b0c9a52-3c1e-4f8e-9d2a-1c5b8e2f4a10",
+          "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+          "routeId": "00000000-0000-4000-8000-000000000001",
+          "ts": "2026-10-28T13:00:00Z"
+        },
+        "expected": {
+          "workspace": "a0000000-0000-4000-8000-00000000000a",
+          "reason": null
+        }
+      },
+      {
+        "name": "a route not yet deployed when the event happened",
+        "event": {
+          "environmentId": "7b0c9a52-3c1e-4f8e-9d2a-1c5b8e2f4a10",
+          "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+          "routeId": "00000000-0000-4000-8000-000000000004",
+          "ts": "2026-10-28T10:30:00Z"
+        },
+        "expected": {
+          "workspace": null,
+          "reason": "route-not-deployed"
+        }
+      },
+      {
+        "name": "before the first revision",
+        "event": {
+          "environmentId": "7b0c9a52-3c1e-4f8e-9d2a-1c5b8e2f4a10",
+          "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+          "routeId": "00000000-0000-4000-8000-000000000001",
+          "ts": "2026-10-28T09:59:59Z"
+        },
+        "expected": {
+          "workspace": null,
+          "reason": "before-first-revision"
+        }
+      },
+      {
+        "name": "no route matched",
+        "event": {
+          "environmentId": "7b0c9a52-3c1e-4f8e-9d2a-1c5b8e2f4a10",
+          "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+          "routeId": null,
+          "ts": "2026-10-28T10:30:00Z"
+        },
+        "expected": {
+          "workspace": null,
+          "reason": "no-route"
+        }
+      },
+      {
+        "name": "another instance's event",
+        "event": {
+          "environmentId": "11111111-1111-4111-8111-111111111111",
+          "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+          "routeId": "00000000-0000-4000-8000-000000000001",
+          "ts": "2026-10-28T10:30:00Z"
+        },
+        "expected": {
+          "workspace": null,
+          "reason": "foreign-instance"
+        }
+      },
+      {
+        "name": "a cluster of no instance",
+        "event": {
+          "environmentId": "7b0c9a52-3c1e-4f8e-9d2a-1c5b8e2f4a10",
+          "clusterId": "22222222-2222-4222-8222-222222222222",
+          "routeId": "00000000-0000-4000-8000-000000000001",
+          "ts": "2026-10-28T10:30:00Z"
+        },
+        "expected": {
+          "workspace": null,
+          "reason": "unknown-cluster"
+        }
+      },
+      {
+        "name": "a route listed by two workspaces (a defect upstream): never guessed",
+        "event": {
+          "environmentId": "7b0c9a52-3c1e-4f8e-9d2a-1c5b8e2f4a10",
+          "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+          "routeId": "00000000-0000-4000-8000-000000000005",
+          "ts": "2026-10-28T14:00:00Z"
+        },
+        "expected": {
+          "workspace": null,
+          "reason": "ambiguous-route"
+        }
+      }
+    ]
+  },
+  "healthOf": {
+    "cases": [
+      {
+        "name": "traffic flowing and delivered",
+        "input": {
+          "windowSeconds": 300,
+          "windowComplete": true,
+          "collectorReachable": true,
+          "kongRequests": 600,
+          "received": 598,
+          "delivered": 598,
+          "deliveryErrors": 0,
+          "authRefusals": 0,
+          "buffered": 3,
+          "bufferCapacity": 10000
+        },
+        "expected": {
+          "state": "healthy",
+          "reasons": [],
+          "analytics": "analytics-healthy"
+        }
+      },
+      {
+        "name": "no traffic at all is idle, not a failure",
+        "input": {
+          "windowSeconds": 300,
+          "windowComplete": true,
+          "collectorReachable": true,
+          "kongRequests": 0,
+          "received": 0,
+          "delivered": 0,
+          "deliveryErrors": 0,
+          "authRefusals": 0,
+          "buffered": 0,
+          "bufferCapacity": 10000
+        },
+        "expected": {
+          "state": "idle",
+          "reasons": [],
+          "analytics": "analytics-healthy"
+        }
+      },
+      {
+        "name": "the collector container runs but its metrics do not answer",
+        "input": {
+          "windowSeconds": 300,
+          "windowComplete": true,
+          "collectorReachable": false,
+          "kongRequests": 600,
+          "received": null,
+          "delivered": null,
+          "deliveryErrors": null,
+          "authRefusals": null,
+          "buffered": null,
+          "bufferCapacity": null
+        },
+        "expected": {
+          "state": "degraded",
+          "reasons": [
+            "collector-unreachable"
+          ],
+          "analytics": "analytics-degraded"
+        }
+      },
+      {
+        "name": "ClickHouse refuses: errors and nothing delivered",
+        "input": {
+          "windowSeconds": 300,
+          "windowComplete": true,
+          "collectorReachable": true,
+          "kongRequests": 600,
+          "received": 598,
+          "delivered": 0,
+          "deliveryErrors": 12,
+          "authRefusals": 0,
+          "buffered": 3,
+          "bufferCapacity": 10000
+        },
+        "expected": {
+          "state": "degraded",
+          "reasons": [
+            "delivery-failing"
+          ],
+          "analytics": "analytics-degraded"
+        }
+      },
+      {
+        "name": "a retry that succeeded is not a failure",
+        "input": {
+          "windowSeconds": 300,
+          "windowComplete": true,
+          "collectorReachable": true,
+          "kongRequests": 600,
+          "received": 598,
+          "delivered": 598,
+          "deliveryErrors": 1,
+          "authRefusals": 0,
+          "buffered": 3,
+          "bufferCapacity": 10000
+        },
+        "expected": {
+          "state": "healthy",
+          "reasons": [],
+          "analytics": "analytics-healthy"
+        }
+      },
+      {
+        "name": "the buffer holds half its capacity",
+        "input": {
+          "windowSeconds": 300,
+          "windowComplete": true,
+          "collectorReachable": true,
+          "kongRequests": 600,
+          "received": 598,
+          "delivered": 598,
+          "deliveryErrors": 0,
+          "authRefusals": 0,
+          "buffered": 5000,
+          "bufferCapacity": 10000
+        },
+        "expected": {
+          "state": "degraded",
+          "reasons": [
+            "backlog"
+          ],
+          "analytics": "analytics-degraded"
+        }
+      },
+      {
+        "name": "Kong served traffic the collector never saw",
+        "input": {
+          "windowSeconds": 300,
+          "windowComplete": true,
+          "collectorReachable": true,
+          "kongRequests": 600,
+          "received": 10,
+          "delivered": 10,
+          "deliveryErrors": 0,
+          "authRefusals": 0,
+          "buffered": 3,
+          "bufferCapacity": 10000
+        },
+        "expected": {
+          "state": "degraded",
+          "reasons": [
+            "events-missing"
+          ],
+          "analytics": "analytics-degraded"
+        }
+      },
+      {
+        "name": "below 20 Kong requests a gap proves nothing",
+        "input": {
+          "windowSeconds": 300,
+          "windowComplete": true,
+          "collectorReachable": true,
+          "kongRequests": 19,
+          "received": 0,
+          "delivered": 0,
+          "deliveryErrors": 0,
+          "authRefusals": 0,
+          "buffered": 3,
+          "bufferCapacity": 10000
+        },
+        "expected": {
+          "state": "healthy",
+          "reasons": [],
+          "analytics": "analytics-healthy"
+        }
+      },
+      {
+        "name": "a refusal of the token check",
+        "input": {
+          "windowSeconds": 300,
+          "windowComplete": true,
+          "collectorReachable": true,
+          "kongRequests": 600,
+          "received": 598,
+          "delivered": 598,
+          "deliveryErrors": 0,
+          "authRefusals": 3,
+          "buffered": 3,
+          "bufferCapacity": 10000
+        },
+        "expected": {
+          "state": "degraded",
+          "reasons": [
+            "auth-refusals"
+          ],
+          "analytics": "analytics-degraded"
+        }
+      },
+      {
+        "name": "just started, nothing wrong yet",
+        "input": {
+          "windowSeconds": 300,
+          "windowComplete": false,
+          "collectorReachable": true,
+          "kongRequests": 600,
+          "received": 598,
+          "delivered": 598,
+          "deliveryErrors": 0,
+          "authRefusals": 0,
+          "buffered": 3,
+          "bufferCapacity": 10000
+        },
+        "expected": {
+          "state": "unknown",
+          "reasons": [],
+          "analytics": "analytics-degraded"
+        }
+      },
+      {
+        "name": "just started and already unreachable",
+        "input": {
+          "windowSeconds": 300,
+          "windowComplete": false,
+          "collectorReachable": false,
+          "kongRequests": 600,
+          "received": null,
+          "delivered": null,
+          "deliveryErrors": null,
+          "authRefusals": null,
+          "buffered": null,
+          "bufferCapacity": null
+        },
+        "expected": {
+          "state": "degraded",
+          "reasons": [
+            "collector-unreachable"
+          ],
+          "analytics": "analytics-degraded"
+        }
+      }
+    ]
+  },
+  "fingerprintOf": {
+    "cases": [
+      {
+        "token": "token-of-cluster-one-0123456789abcdef",
+        "fingerprint": "sha256:0c3c574f064e4c550a2113bc6f2f5a4d6ef4d69d34c72e5c0191f15ab0d3ce89"
+      },
+      {
+        "token": "token-of-cluster-two-0123456789abcdef",
+        "fingerprint": "sha256:1ef96d0250a08a5bc104f2538e04aa86151fcd9a68648f614b8cdb01a6389322"
+      },
+      {
+        "token": "rotated-token-cluster-two-0123456789ab",
+        "fingerprint": "sha256:db4385c17746f02fdbbfe38c6238c9e35f9293210cc9696cca9f41649dbdd136"
+      }
+    ]
+  },
+  "collectorTokenShare": {
+    "cases": [
+      {
+        "name": "each cluster its own token",
+        "clusters": {
+          "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f": [
+            {
+              "current": "sha256:0c3c574f064e4c550a2113bc6f2f5a4d6ef4d69d34c72e5c0191f15ab0d3ce89",
+              "previous": null
+            }
+          ],
+          "00000000-0000-4000-8000-00000000c0c0": [
+            {
+              "current": "sha256:1ef96d0250a08a5bc104f2538e04aa86151fcd9a68648f614b8cdb01a6389322",
+              "previous": null
+            }
+          ]
+        },
+        "expected": {
+          "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f": {
+            "collectorTokenShared": false,
+            "collectorTokenRotating": false
+          },
+          "00000000-0000-4000-8000-00000000c0c0": {
+            "collectorTokenShared": false,
+            "collectorTokenRotating": false
+          }
+        }
+      },
+      {
+        "name": "the same token on two clusters: shared on both",
+        "clusters": {
+          "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f": [
+            {
+              "current": "sha256:0c3c574f064e4c550a2113bc6f2f5a4d6ef4d69d34c72e5c0191f15ab0d3ce89",
+              "previous": null
+            }
+          ],
+          "00000000-0000-4000-8000-00000000c0c0": [
+            {
+              "current": "sha256:0c3c574f064e4c550a2113bc6f2f5a4d6ef4d69d34c72e5c0191f15ab0d3ce89",
+              "previous": null
+            }
+          ]
+        },
+        "expected": {
+          "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f": {
+            "collectorTokenShared": true,
+            "collectorTokenRotating": false
+          },
+          "00000000-0000-4000-8000-00000000c0c0": {
+            "collectorTokenShared": true,
+            "collectorTokenRotating": false
+          }
+        }
+      },
+      {
+        "name": "cluster two rotates away from the shared token: rotation in progress, not blocking",
+        "clusters": {
+          "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f": [
+            {
+              "current": "sha256:0c3c574f064e4c550a2113bc6f2f5a4d6ef4d69d34c72e5c0191f15ab0d3ce89",
+              "previous": null
+            }
+          ],
+          "00000000-0000-4000-8000-00000000c0c0": [
+            {
+              "current": "sha256:db4385c17746f02fdbbfe38c6238c9e35f9293210cc9696cca9f41649dbdd136",
+              "previous": "sha256:0c3c574f064e4c550a2113bc6f2f5a4d6ef4d69d34c72e5c0191f15ab0d3ce89"
+            }
+          ]
+        },
+        "expected": {
+          "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f": {
+            "collectorTokenShared": false,
+            "collectorTokenRotating": true
+          },
+          "00000000-0000-4000-8000-00000000c0c0": {
+            "collectorTokenShared": false,
+            "collectorTokenRotating": true
+          }
+        }
+      },
+      {
+        "name": "one node of cluster two still on the shared token: shared",
+        "clusters": {
+          "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f": [
+            {
+              "current": "sha256:0c3c574f064e4c550a2113bc6f2f5a4d6ef4d69d34c72e5c0191f15ab0d3ce89",
+              "previous": null
+            }
+          ],
+          "00000000-0000-4000-8000-00000000c0c0": [
+            {
+              "current": "sha256:db4385c17746f02fdbbfe38c6238c9e35f9293210cc9696cca9f41649dbdd136",
+              "previous": "sha256:0c3c574f064e4c550a2113bc6f2f5a4d6ef4d69d34c72e5c0191f15ab0d3ce89"
+            },
+            {
+              "current": "sha256:0c3c574f064e4c550a2113bc6f2f5a4d6ef4d69d34c72e5c0191f15ab0d3ce89",
+              "previous": null
+            }
+          ]
+        },
+        "expected": {
+          "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f": {
+            "collectorTokenShared": true,
+            "collectorTokenRotating": false
+          },
+          "00000000-0000-4000-8000-00000000c0c0": {
+            "collectorTokenShared": true,
+            "collectorTokenRotating": false
+          }
+        }
+      }
+    ]
+  },
+  "statusReport": {
+    "valid": {
+      "nodeId": "kong-7d9f-0",
+      "epoch": 1,
+      "appliedRevision": 4,
+      "appliedHash": "sha256:4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e",
+      "kongHealthy": true,
+      "analytics": "analytics-degraded",
+      "analyticsHealth": {
+        "state": "degraded",
+        "reasons": [
+          "events-missing"
+        ],
+        "observedAt": "2026-10-28T12:00:00Z",
+        "windowSeconds": 300,
+        "windowComplete": true,
+        "collectorReachable": true,
+        "kongRequests": 600,
+        "received": 10,
+        "delivered": 10,
+        "deliveryErrors": 0,
+        "authRefusals": 0,
+        "buffered": 3,
+        "bufferCapacity": 10000,
+        "collectorStartedAt": "2026-10-28T08:00:00Z",
+        "lastReceivedAt": "2026-10-28T11:59:58Z",
+        "lastDeliveredAt": "2026-10-28T11:59:59Z"
+      },
+      "collectorTokenFingerprints": {
+        "current": "sha256:db4385c17746f02fdbbfe38c6238c9e35f9293210cc9696cca9f41649dbdd136",
+        "previous": "sha256:0c3c574f064e4c550a2113bc6f2f5a4d6ef4d69d34c72e5c0191f15ab0d3ce89"
+      }
+    },
+    "invalid": [
+      {
+        "reason": "the token itself instead of a fingerprint",
+        "patch": {
+          "collectorTokenFingerprints": {
+            "current": "token-of-cluster-one-0123456789abcdef",
+            "previous": null
+          }
+        }
+      },
+      {
+        "reason": "unknown health reason",
+        "patch": {
+          "analyticsHealth": {
+            "state": "degraded",
+            "reasons": [
+              "slow"
+            ],
+            "observedAt": "2026-10-28T12:00:00Z",
+            "windowSeconds": 300,
+            "windowComplete": true,
+            "collectorReachable": true,
+            "kongRequests": 600,
+            "received": 598,
+            "delivered": 598,
+            "deliveryErrors": 0,
+            "authRefusals": 0,
+            "buffered": 3,
+            "bufferCapacity": 10000
+          }
+        }
+      },
+      {
+        "reason": "window outside 60..900 s",
+        "patch": {
+          "analyticsHealth": {
+            "state": "healthy",
+            "reasons": [],
+            "observedAt": "2026-10-28T12:00:00Z",
+            "windowSeconds": 30,
+            "windowComplete": true,
+            "collectorReachable": true,
+            "kongRequests": 600,
+            "received": 598,
+            "delivered": 598,
+            "deliveryErrors": 0,
+            "authRefusals": 0,
+            "buffered": 3,
+            "bufferCapacity": 10000
+          }
+        }
+      }
+    ]
+  }
+}
