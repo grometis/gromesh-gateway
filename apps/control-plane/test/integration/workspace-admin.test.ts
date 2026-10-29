@@ -191,6 +191,17 @@ describe("in a dev lab", () => {
     } while (cursor);
     expect(ids).toContain(shown);
     expect(ids).not.toContain(hidden);
+    // limit counts only what is returned, and no cursor ever names a workspace the caller may not read.
+    let next: string | null = null;
+    const seen: string[] = [];
+    do {
+      const page: ApiResponse = await v2(viewer.api, "GET", `/workspaces?limit=1${next ? `&cursor=${encodeURIComponent(next)}` : ""}`);
+      expect(page.body.items.length).toBe(1);
+      seen.push(page.body.items[0].id);
+      next = page.body.nextCursor;
+      if (next) expect(JSON.parse(Buffer.from(next, "base64url").toString("utf8")).id).toBe(page.body.items[0].id);
+    } while (next);
+    expect(seen).toEqual(ids);
     expect((await v2(viewer.api, "GET", `/workspaces/${hidden}`)).status).toBe(404);
     expect((await v2(viewer.api, "PATCH", `/workspaces/${hidden}`, { name: "x" })).status).toBe(404);
     // The same 404 as a workspace that does not exist.
@@ -228,6 +239,14 @@ describe("in a dev lab", () => {
     expect((await h.api("POST", `/environments/${published.id}/snapshots`, {})).status).toBe(201);
     expect((await v2(h.api, "POST", `/workspaces/${published.id}/archive`)).body.code).toBe("published-configuration");
     for (const id of [withCluster.id, published.id]) expect((await v2(h.api, "GET", `/workspaces/${id}`)).body.status).toBe("active");
+
+    // A release published and deployed is still served: refused while active, and while the latest revision has it.
+    const deployed = (await v2(h.api, "POST", "/workspaces", { name: uniq("Implantado") })).body;
+    expect((await v2(h.api, "POST", `/workspaces/${deployed.id}/releases`, { message: "r1" })).status).toBe(201);
+    expect((await v2(h.api, "POST", `/workspaces/${deployed.id}/archive`)).body.code).toBe("active-release");
+    expect((await v2(h.api, "POST", "/deployments", { expectedRevision: null, reason: "ws-m1" })).status).toBe(201);
+    await h.sql.query("delete from workspace_active_release where workspace_id = $1", [deployed.id]);
+    expect((await v2(h.api, "POST", `/workspaces/${deployed.id}/archive`)).body.code).toBe("deployed");
 
     expect((await v2(h.api, "POST", `/workspaces/${w.id}/archive`)).status).toBe(204);
     expect((await v2(h.api, "POST", `/workspaces/${w.id}/archive`)).status).toBe(204);

@@ -3,7 +3,7 @@ import { and, asc, eq, gt, not, or, sql } from "drizzle-orm";
 import { ArchivedAllowed, type AuthenticatedRequest, Ctx, RequiredPermission, type RequestContext, SessionOnly } from "../auth/auth.js";
 import { permissionsIn, tokenPermissions } from "../auth/permissions.js";
 import { contractBodyV2, inlineBody } from "../common/contract.js";
-import { decodeCursor, parseLimit, toPage } from "../common/pagination.js";
+import { decodeCursor, encodeCursor, parseLimit } from "../common/pagination.js";
 import { notFound } from "../common/problem.js";
 import { DB, type Db } from "../db/db.js";
 import { environmentRoles, environments, workspaces } from "../db/schema.js";
@@ -53,7 +53,8 @@ export class WorkspacesController {
   /**
    * Only the workspaces the caller may read there (a token: within its own role). The query leaves out the only
    * thing that hides a workspace from someone who reads the instance (an environment role none, for anyone but a
-   * global admin), so the work follows the page; permissionsIn still decides each one shown.
+   * global admin); permissionsIn still decides each one. limit counts only the workspaces returned and the cursor is
+   * the last one returned, so a page never carries one the caller may not read (WS-M0).
    */
   @Get()
   @RequiredPermission("workspace.read", "instance")
@@ -62,22 +63,35 @@ export class WorkspacesController {
     await this.db.transaction((tx) => backfillWorkspaces(tx));
     const user = req.user!;
     const limit = parseLimit(query.limit);
-    const c = decodeCursor(query.cursor);
+    let after = decodeCursor(query.cursor);
     const hidden = sql`exists (select 1 from ${environmentRoles} where ${environmentRoles.userId} = ${user.id} and ${environmentRoles.environmentId} = ${workspaces.id} and ${environmentRoles.role} = 'none')`;
-    const rows = await this.select()
-      .where(
-        and(
-          user.role === "admin" ? undefined : not(hidden),
-          c ? or(gt(environments.name, c.k), and(eq(environments.name, c.k), gt(workspaces.id, c.id))) : undefined,
-        ),
-      )
-      .orderBy(asc(environments.name), asc(workspaces.id))
-      .limit(limit + 1);
-    // The cursor follows the query; a row it let through but the decision hides only shortens the page.
-    const { items, nextCursor } = toPage(rows, limit, (w) => w.name, (w) => w);
     const shown: ReturnType<typeof toWorkspace>[] = [];
-    for (const row of items) if (await this.readable(req, row.id)) shown.push(toWorkspace(row));
-    return { items: shown, nextCursor };
+    let more = false;
+    for (;;) {
+      const c = after;
+      const rows = await this.select()
+        .where(
+          and(
+            user.role === "admin" ? undefined : not(hidden),
+            c ? or(gt(environments.name, c.k), and(eq(environments.name, c.k), gt(workspaces.id, c.id))) : undefined,
+          ),
+        )
+        .orderBy(asc(environments.name), asc(workspaces.id))
+        .limit(limit + 1);
+      for (const row of rows) {
+        if (!(await this.readable(req, row.id))) continue;
+        if (shown.length === limit) {
+          more = true;
+          break;
+        }
+        shown.push(toWorkspace(row));
+      }
+      if (more || rows.length <= limit) break;
+      const last = rows[rows.length - 1]!;
+      after = { k: last.name, id: last.id };
+    }
+    const last = shown[shown.length - 1];
+    return { items: shown, nextCursor: more && last ? encodeCursor({ k: last.name, id: last.id }) : null };
   }
 
   @Get(":workspaceId")

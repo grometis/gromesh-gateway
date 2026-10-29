@@ -1,12 +1,12 @@
 import { HttpException, HttpStatus, Inject, Injectable } from "@nestjs/common";
-import { and, eq, isNotNull, ne, sql } from "drizzle-orm";
+import { and, desc, eq, isNotNull, ne, sql } from "drizzle-orm";
 import { audit } from "../audit/audit.js";
 import type { RequestContext } from "../auth/auth.js";
 import type { Held } from "../auth/permissions.js";
 import { ProblemException, unprocessable } from "../common/problem.js";
 import { APP_CONFIG, type AppConfig } from "../config.js";
 import { DB, type Db, type Executor } from "../db/db.js";
-import { clusters, environments, instance, releases, roleBindings, workspaceActiveRelease, workspaceCreationPolicy, workspaces } from "../db/schema.js";
+import { clusters, deployments, environments, instance, releases, roleBindings, workspaceActiveRelease, workspaceCreationPolicy, workspaces } from "../db/schema.js";
 import { toRoleBinding } from "../access/access.js";
 import { normalizeSlug, proposeSlug, slugProblem } from "./slug.js";
 import { SLUG_LOCK_KEY } from "./workspaces.js";
@@ -77,9 +77,9 @@ export class WorkspaceAdminService {
       : DEFAULT_POLICY;
   }
 
-  /** Who may create under a policy: admin-only needs platform administration, the other modes workspace.create. */
+  /** Who may create under a policy: workspace.create (the guard's), and in admin-only also platform administration. */
   private static creates(mode: Mode, held: ReadonlySet<Held>): boolean {
-    return mode === "admin-only" ? held.has("platform.admin") : held.has("workspace.create");
+    return held.has("workspace.create") && (mode !== "admin-only" || held.has("platform.admin"));
   }
 
   async policyFor(held: ReadonlySet<Held>) {
@@ -207,6 +207,13 @@ export class WorkspaceAdminService {
         .innerJoin(releases, and(eq(releases.workspaceId, workspaceActiveRelease.workspaceId), eq(releases.version, workspaceActiveRelease.version)))
         .where(eq(workspaceActiveRelease.workspaceId, workspaceId));
       if (active && active.origin !== "tombstone") throw refused("active-release", "The workspace has an active release with entities; remove it with a tombstone promotion first");
+      // What the nodes serve is the latest revision, converged or not: a member there is still served.
+      const [latest] = await tx.select({ members: deployments.members }).from(deployments).orderBy(desc(deployments.epoch), desc(deployments.revision)).limit(1);
+      const member = latest?.members.find((m) => m.workspaceId === workspaceId);
+      if (member) {
+        const [release] = await tx.select({ origin: releases.origin }).from(releases).where(and(eq(releases.workspaceId, workspaceId), eq(releases.version, member.releaseVersion)));
+        if (release?.origin !== "tombstone") throw refused("deployed", "The workspace is a member of the latest deployment revision");
+      }
       const [env] = await tx.select({ currentVersion: environments.currentVersion }).from(environments).where(eq(environments.id, workspaceId));
       if (env!.currentVersion !== null) throw refused("published-configuration", "A configuration was published for this workspace (v1 snapshot)");
       const [cluster] = await tx.select({ id: clusters.id }).from(clusters).where(eq(clusters.environmentId, workspaceId)).limit(1);
