@@ -1,35 +1,47 @@
-import { Controller, Get, Inject, Module, Param, Query, Req } from "@nestjs/common";
+import { Body, Controller, Get, HttpCode, Inject, Module, Param, Patch, Post, Put, Query, Req } from "@nestjs/common";
 import { and, asc, eq, gt, not, or, sql } from "drizzle-orm";
-import { type AuthenticatedRequest, RequiredPermission } from "../auth/auth.js";
+import { ArchivedAllowed, type AuthenticatedRequest, Ctx, RequiredPermission, type RequestContext, SessionOnly } from "../auth/auth.js";
 import { permissionsIn, tokenPermissions } from "../auth/permissions.js";
+import { contractBodyV2, inlineBody } from "../common/contract.js";
 import { decodeCursor, parseLimit, toPage } from "../common/pagination.js";
 import { notFound } from "../common/problem.js";
 import { DB, type Db } from "../db/db.js";
 import { environmentRoles, environments, workspaces } from "../db/schema.js";
 import { uuidParam } from "../environments/environments.js";
+import { type CreationPolicyWrite, toWorkspace, WorkspaceAdminService, type WorkspaceUpdate, type WorkspaceWrite } from "./workspace-admin.js";
 import { backfillWorkspaces } from "./workspaces.js";
 
-type WorkspaceRow = { id: string; key: string; name: string; description: string | null; slug: string | null; status: "active" | "archived" };
-
-/** No release exists before the workspace composition (N2), and none was provisioned by a promotion. */
-const toWorkspace = (w: WorkspaceRow) => ({
-  id: w.id,
-  key: w.key,
-  name: w.name,
-  ...(w.description !== null ? { description: w.description } : {}),
-  slug: w.slug!,
-  status: w.status,
-  activeRelease: null,
-  provisionedByPromotion: null,
-});
 
 /**
- * Creating a workspace through v2 waits for N2 (it would join the instance's clusters); v1 keeps creating
- * environments, each its own workspace.
+ * Creating a workspace through v2 is refused while Workspaces mode is disabled (the N2 block, WS-M0: only disposable
+ * labs enable it); v1 keeps creating environments, each its own workspace.
  */
 @Controller("api/v2/workspaces")
 export class WorkspacesController {
-  constructor(@Inject(DB) private readonly db: Db) {}
+  constructor(
+    @Inject(DB) private readonly db: Db,
+    private readonly admin: WorkspaceAdminService,
+  ) {}
+
+  @Post()
+  @RequiredPermission("workspace.create", "instance")
+  create(@Ctx() ctx: RequestContext, @Req() req: AuthenticatedRequest, @Body(contractBodyV2("WorkspaceWrite")) body: WorkspaceWrite) {
+    return this.admin.create(ctx, req.auth!.permissions, body);
+  }
+
+  @Patch(":workspaceId")
+  @RequiredPermission("workspace.admin", "workspace")
+  update(@Ctx() ctx: RequestContext, @Param("workspaceId", uuidParam()) workspaceId: string, @Body(contractBodyV2(inlineBody("/workspaces/{workspaceId}", "patch"))) body: WorkspaceUpdate) {
+    return this.admin.update(ctx, workspaceId, body);
+  }
+
+  @Post(":workspaceId/archive")
+  @HttpCode(204)
+  @ArchivedAllowed()
+  @RequiredPermission("platform.admin", "workspace")
+  async archive(@Ctx() ctx: RequestContext, @Param("workspaceId", uuidParam()) workspaceId: string) {
+    await this.admin.archive(ctx, workspaceId);
+  }
 
   private select() {
     return this.db
@@ -84,5 +96,24 @@ export class WorkspacesController {
   }
 }
 
-@Module({ controllers: [WorkspacesController] })
+/** The instance's creation policy (WS-M0). */
+@Controller("api/v2/workspace-creation-policy")
+export class WorkspaceCreationPolicyController {
+  constructor(private readonly admin: WorkspaceAdminService) {}
+
+  @Get()
+  @RequiredPermission("workspace.read", "instance")
+  get(@Req() req: AuthenticatedRequest) {
+    return this.admin.policyFor(req.auth!.permissions);
+  }
+
+  @Put()
+  @RequiredPermission("platform.admin", "instance")
+  @SessionOnly()
+  set(@Ctx() ctx: RequestContext, @Req() req: AuthenticatedRequest, @Body(contractBodyV2("WorkspaceCreationPolicyWrite")) body: CreationPolicyWrite) {
+    return this.admin.setPolicy(ctx, req.auth!.permissions, body);
+  }
+}
+
+@Module({ controllers: [WorkspacesController, WorkspaceCreationPolicyController], providers: [WorkspaceAdminService] })
 export class WorkspacesApiModule {}

@@ -507,7 +507,6 @@ paths:
       x-gromesh-workspaces-mode-disabled: refused
       security: [ { cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] } ]
       x-required-permission: workspace.create
-      x-gromesh-planned: true
       description: |
         Creates an empty workspace of this instance (WS-M0). Checked in this order, each refusal audited by nothing
         and creating nothing:
@@ -547,7 +546,6 @@ paths:
       x-scope: instance
       x-gromesh-requirements: [ GW-ADMIN-01 ]
       x-required-permission: workspace.read
-      x-gromesh-planned: true
       description: |
         The instance's creation policy, with what it means for the caller (`caller`), so a client shows create,
         request or nothing; the server decides each call again. Never configured: mode restricted-request and
@@ -563,7 +561,6 @@ paths:
       x-scope: instance
       x-gromesh-requirements: [ GW-ADMIN-01 ]
       x-required-permission: platform.admin
-      x-gromesh-planned: true
       description: Replaces the policy. It changes no existing workspace, binding or pending request (a pending request is decided under the policy in force at the decision). Audited (workspace_creation_policy.update, before and after).
       security: [ { cookieAuth: [], csrfToken: [] } ]
       requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/WorkspaceCreationPolicyWrite" } } } }
@@ -593,7 +590,6 @@ paths:
       x-gromesh-requirements: [ GW-WS-01 ]
       security: [ { cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] } ]
       x-required-permission: workspace.admin
-      x-gromesh-planned: true
       description: |
         Name and description only: the id, the key and the slug never change here (the slug is immutable after the
         first release, and no operation of this phase changes it before). A name already used by another workspace
@@ -616,7 +612,6 @@ paths:
       x-gromesh-requirements: [ GW-WS-15, GW-ADMIN-07 ]
       security: [ { cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] } ]
       x-required-permission: platform.admin
-      x-gromesh-planned: true
       description: |
         Archives the workspace; nothing is deleted: its entities, credentials, releases, snapshots, bindings and audit
         stay as they are, readable. Refused with 409 (nothing changed) while anything it published may still be served

@@ -2,6 +2,7 @@ import {
   type CanActivate,
   createParamDecorator,
   type ExecutionContext,
+  HttpException,
   HttpStatus,
   Inject,
   Injectable,
@@ -18,7 +19,7 @@ import { effectiveRole, environmentOf, lower, RANK, type Role } from "./environm
 import { notFound } from "../common/problem.js";
 import { and, eq } from "drizzle-orm";
 import { environmentRoles, roleBindings } from "../db/schema.js";
-import { type Held, type Permission, permissionsIn, requiredPermission, type Scope, tokenPermissions, v1BindingById, workspaceExists } from "./permissions.js";
+import { type Held, type Permission, permissionsIn, requiredPermission, type Scope, tokenPermissions, v1BindingById, workspaceArchived, workspaceExists } from "./permissions.js";
 import { sessionCookie, SessionService } from "./sessions.js";
 
 /** `ggt_` plus 32 random bytes in unpadded base64url (43 characters), as the contract's pattern says. */
@@ -93,6 +94,9 @@ export const Public = () => SetMetadata(ROLE_KEY, "public");
 
 /** Operations an API token may not call (token and user management, the session itself): a session only. */
 export const SessionOnly = () => SetMetadata(SESSION_ONLY_KEY, true);
+const ARCHIVED_ALLOWED_KEY = "gromesh:archived-allowed";
+/** A mutation that stays allowed in an archived workspace (revoking access, archiving again). */
+export const ArchivedAllowed = () => SetMetadata(ARCHIVED_ALLOWED_KEY, true);
 
 /** v2: mirrors `x-required-permission` and `x-scope` (where the permission is checked) in control-plane-v2. */
 export type PermissionScope = "instance" | "workspace" | "binding";
@@ -145,7 +149,12 @@ export class AuthGuard implements CanActivate {
     } finally {
       if (call) this.usage.end(call);
     }
-    const decision = v2 ? await this.decideV2(caller, v2, req.params) : await this.decideV1(caller, required as Role, meta<Held[]>(V1_PERMISSION_KEY), req.params);
+    const { workspaceId, ...decision } = v2 ? await this.decideV2(caller, v2, req.params) : await this.decideV1(caller, required as Role, meta<Held[]>(V1_PERMISSION_KEY), req.params);
+    // An archived workspace is read-only for both APIs (WS-M0); revoking a grant there stays possible, and archiving
+    // again is the operation's own no-op.
+    if (workspaceId && !SAFE_METHODS.has(req.method) && meta<boolean>(ARCHIVED_ALLOWED_KEY) !== true && (await workspaceArchived(this.db, workspaceId))) {
+      throw new HttpException({ type: "https://gromesh.dev/problems/workspace-archived", title: "Conflict", status: HttpStatus.CONFLICT, code: "workspace-archived", detail: "The workspace is archived" }, HttpStatus.CONFLICT);
+    }
     req.user = caller.user;
     req.auth = caller.token ? { via: "token", tokenId: caller.token.id, tokenName: caller.token.name, tokenRole: caller.token.role, ...decision } : { via: "session", ...decision };
     if (caller.session) req.session = { idHash: caller.session.idHash, csrfToken: caller.session.csrfToken };
@@ -194,7 +203,7 @@ export class AuthGuard implements CanActivate {
     if (!needed.some((p) => permissions.has(p))) throw new ProblemException(HttpStatus.FORBIDDEN, `Requires role ${required}`);
     // The v1 role services still read (masking): the effective one there, capped by the token.
     const own = place ? await this.legacyRole(caller.user, place.environmentId) : caller.user.role;
-    return { role: caller.token ? lower(caller.token.role, own) : own, permissions };
+    return { role: caller.token ? lower(caller.token.role, own) : own, permissions, workspaceId: place?.environmentId };
   }
 
   /** v2: the permission in the operation's scope; a workspace (or binding) the caller may not see answers 404. */
@@ -217,7 +226,7 @@ export class AuthGuard implements CanActivate {
     const permissions = caller.token ? tokenPermissions(caller.token.role, owner) : owner;
     if (!permissions.has(permission)) throw new ProblemException(HttpStatus.FORBIDDEN, `Requires permission ${permission}`);
     const own = where.type === "workspace" ? await this.legacyRole(caller.user, where.workspaceId) : caller.user.role;
-    return { role: caller.token ? lower(caller.token.role, own) : own, permissions };
+    return { role: caller.token ? lower(caller.token.role, own) : own, permissions, workspaceId: where.type === "workspace" ? where.workspaceId : undefined };
   }
 
   /** The v1 role in a workspace: its override (none counts as viewer for masking: access came from a binding). */
