@@ -13,7 +13,9 @@ import { setTimeout as sleep } from "node:timers/promises";
 import {
   Api, apply, assertLab, CONTEXT, controlPlaneObjects, controlPlaneSecret, cpSecrets, createSecret, dbSkew, denyPolicies, docker, Forward, helm, here, json,
   kubeconfig, kubectl, NODES, NS, registrationSecret, relayObjects, removeSuiteObjects, root, run, sql,
+  scrubKong,
 } from "./lab.mjs";
+import { bootToWall, itemResult, kFromLiveness, ksFromDeletion, kxFromEvents, overall, runExitCode } from "./budgets.mjs";
 
 const out = process.env.LAB_OUT ?? mkdtempSync(join(tmpdir(), "gromesh-n2-comp-"));
 // Every image this suite pulls is pinned by digest in versions.env (a mutable tag would not reproduce the run).
@@ -54,12 +56,12 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const s = (ms) => `${ms / 1000} s`;
 
 const report = { startedAt: new Date().toISOString(), images: IMAGES, revisions: { cp: process.env.CP_REV, agent: process.env.AGENT_REV }, context: CONTEXT, budgets: BUDGET, items: [], blocked: [], findings: [], timeline: [] };
-const save = () => writeFileSync(join(out, "results.json"), JSON.stringify(report, null, 2));
+const save = () => writeFileSync(join(out, "results.json"), scrubKong(JSON.stringify(report, null, 2)));
 const log = (message) => console.log(`${new Date().toISOString()} ${message}`);
 const mark = (event, data = {}) => { report.timeline.push({ at: new Date().toISOString(), event, ...data }); log(`${event} ${JSON.stringify(data)}`); };
 
 function item(id, title, budget) {
-  const it = { id, title, budget, result: "pending", measures: {}, negative: [], failures: [], notes: [] };
+  const it = { id, title, budget, result: "pending", measures: {}, negative: [], failures: [], notes: [], open: [] };
   report.items.push(it);
   log(`--- item ${id}: ${title}`);
   return it;
@@ -69,7 +71,8 @@ const expect = (it, ok, message) => { if (!ok) it.failures.push(message); return
 const negative = (it, what, expected, observed, ok) => { it.negative.push({ what, expected, observed, ok }); if (!ok) it.failures.push(`negative control "${what}": expected ${expected}, observed ${observed}`); };
 /** Only at an item's normal end: an exception leaves it pending, and main records it as failed. */
 function done(it) {
-  it.result = it.failures.length ? "fail" : "pass";
+  // A measurement that did not happen leaves the item incomplete: never a pass, and the run says so (exit 2).
+  it.result = itemResult(it);
   save();
   log(`item ${it.id}: ${it.result.toUpperCase()} ${JSON.stringify(it.measures)}`);
   for (const f of it.failures) log(`  ${f}`);
@@ -267,6 +270,22 @@ async function thaw(target) {
   return "continued";
 }
 const thawAll = async () => Promise.all([...frozen].map(thaw));
+
+/**
+ * The frozen supervisor's last heartbeat on the VM clock: kong-state.json holds it in CLOCK_BOOTTIME nanoseconds;
+ * /proc/uptime bracketed by two `date` reads on the pod's node (same kernel) maps it to the VM's wall clock
+ * (bootToWall: the earliest possible instant and the whole uncertainty). Read after the freeze, so no later heartbeat
+ * exists. null when a read fails.
+ */
+async function lastHeartbeat(podName, node) {
+  const state = await kubectl(["-n", NS.dp, "exec", podName, "-c", "kong", "--", "cat", "/gromesh/kong-state/kong-state.json"], { allowFail: true });
+  const clock = await docker(["exec", node, "sh", "-c", "date +%s%3N; cat /proc/uptime; date +%s%3N"], { allowFail: true });
+  try {
+    const [before, uptime, after] = clock.stdout.trim().split("\n");
+    return bootToWall({ bootMs: Number(JSON.parse(state.stdout).heartbeatBoottimeNs) / 1e6, uptimeMs: Number(uptime.split(" ")[0]) * 1000,
+      wallBeforeMs: Number(before), wallAfterMs: Number(after) });
+  } catch { return null; }
+}
 
 /** crictl state of a pod's containers, polled on its node until all exited: finishedAt with nanoseconds, the exit codes. */
 function watchExits(node, ids, timeoutS) {
@@ -681,6 +700,21 @@ async function trafficV2() {
 }
 
 const first = (events, pred) => events.find(pred) ?? null;
+/**
+ * K, Ks and Kx (budgets.mjs) on an item: a FAIL or an INVALID reading fails it, a reading not exercised stays open in
+ * report.blocked. None of them is ever turned into a pass. `optional` readings belong to another item's acceptance
+ * (Kx is accepted on the drain, item p): not exercised there is recorded only, a FAIL or INVALID still fails.
+ */
+function budgetReadings(it, verdicts, { optional = false } = {}) {
+  it.measures.budgets = [...(it.measures.budgets ?? []), ...verdicts.map((v) => (optional ? { ...v, optional } : v))];
+  it.measures.budgetsOverall = overall(it.measures.budgets.filter((v) => !v.optional || v.result !== "NOT_EXERCISED"));
+  for (const v of verdicts) {
+    if (v.result === "FAIL" || v.result === "INVALID") it.failures.push(`${v.name} ${v.result}: ${v.reason} (${v.from} → ${v.to})`);
+    if (v.result === "NOT_EXERCISED" && optional) { it.notes.push(`${v.name} (optional here): ${v.reason}`); continue; }
+    if (v.result === "NOT_EXERCISED") it.open.push(`${v.name}: ${v.reason}`);
+    if (v.result === "NOT_EXERCISED") blocked({ id: `${it.id}:${v.name}`, item: it.id, missing: `${v.name} not exercised: ${v.reason}`, unblock: "a run in which the milestone happens" });
+  }
+}
 const rel = (t, t0) => (t == null ? null : t - t0);
 async function endpointsReady() {
   const list = (await json(["-n", NS.dp, "get", "endpointslices", "-l", `kubernetes.io/service-name=${ctx.proxy.name}`])).items;
@@ -750,7 +784,16 @@ async function containmentN({ frozenSupervisor = false } = {}) {
   expect(it, warm.some((e) => e.k === "new" && e.s === 200) && warm.some((e) => e.k === "ka" && e.s === 200), "no 200 before the loss");
   expect(it, client.events.some((e) => e.k === "ws" && e.ev === "pong"), "the WebSocket never echoed before the loss");
   const pods = await live();
-  if (frozenSupervisor) for (const p of pods) await freeze(p.name, "kong", "kong-supervisor");
+  // K needs the kong container's finishedAt in nanoseconds (crictl on its node; the pod status only has seconds), of
+  // the very container that gets frozen (id read before), and the supervisor's last heartbeat (read after the freeze).
+  const kongIds = frozenSupervisor ? await Promise.all(pods.map(async (p) => {
+    const pj = await json(["-n", NS.dp, "get", "pod", p.name]);
+    const kong = pj.status.containerStatuses.find((c) => c.name === "kong");
+    return { pod: p.name, node: pj.spec.nodeName, id: kong.containerID.replace(/^containerd:\/\//, "") };
+  })) : [];
+  const heartbeat = {};
+  if (frozenSupervisor) for (const p of pods) { await freeze(p.name, "kong", "kong-supervisor"); heartbeat[p.name] = await lastHeartbeat(p.name, kongIds.find((k) => k.pod === p.name).node); }
+  const kongExits = kongIds.map((k) => ({ pod: k.pod, exits: watchExits(k.node, { kong: k.id }, 60) }));
   const loadStart = await vmLoad(`${id} start`);
   await kubectl(["delete", "ciliumclusterwidenetworkpolicy", "n2c-deny-imds"]);
   const t0 = await vmNow();
@@ -778,6 +821,13 @@ async function containmentN({ frozenSupervisor = false } = {}) {
     wsCloseMs: rel(wsClose?.t, t0), wsLastPongMs: rel(wsLastPong?.t, t0), statuses: Object.entries(ev.reduce((a, e) => { const k = `${e.k}:${e.s ?? e.ev ?? e.e}`; a[k] = (a[k] ?? 0) + 1; return a; }, {})) });
   const worstDetect = Math.max(...per.map((p) => p.detectionMs ?? Infinity));
   if (!frozenSupervisor) {
+    // Kx where the supervisor's containment needed SIGKILL (SIGTERM usually suffices): optional here, accepted on p.
+    const kx = [];
+    for (const p of pods) {
+      const lines = [...(await vmLogs(p.name, "kong", ["--previous"]).catch(() => [])), ...(await vmLogs(p.name, "kong"))].filter((l) => l.at >= t0);
+      kx.push({ pod: p.name, ...kxFromEvents(lines.map((l) => l.text), "containment") });
+    }
+    budgetReadings(it, kx, { optional: true });
     expect(it, worstDetect <= V2_BUDGET.detection, `detection ${worstDetect} ms`);
     expect(it, first503 && first503.t - t0 <= V2_BUDGET.block503 + 0, `first 503 at ${it.measures.first503NewMs} ms`);
     expect(it, per.every((p) => (p.kongExitedLogMs ?? Infinity) <= V2_BUDGET.kongStopSupervisor), `Kong stopped (supervisor) ${JSON.stringify(per.map((p) => p.kongExitedLogMs))}`);
@@ -786,8 +836,15 @@ async function containmentN({ frozenSupervisor = false } = {}) {
   } else {
     expect(it, per.every((p) => (p.kongContainerFinishedMs ?? Infinity) <= V2_BUDGET.kongStopLiveness + 1000), `Kong stopped by the liveness ${JSON.stringify(per.map((p) => p.kongContainerFinishedMs))} (finishedAt has 1 s resolution)`);
     expect(it, wsClose && wsClose.t - t0 <= V2_BUDGET.kongStopLiveness, `WebSocket closed at ${it.measures.wsCloseMs} ms`);
-    // K: what the kubelet and runtime added beyond detection + Lp + Lt + G.
-    it.measures.K = per.map((p) => (p.kongContainerFinishedMs == null || p.detectionMs == null ? null : p.kongContainerFinishedMs - p.detectionMs - 1000 - 1000 - 2000));
+    // K per pod: an upper bound (budgets.mjs kFromLiveness), on the container's nanosecond finishedAt.
+    const readings = [];
+    for (const { pod, exits } of kongExits) {
+      const st = (await exits).states.kong;
+      const p = per.find((x) => x.pod === pod);
+      const kongFinishedMs = st.finishedAtNode && st.finishedAtNode.includes(".") ? rel(vmTime(st.finishedAtNode), t0) : null;
+      readings.push({ pod, ...kFromLiveness({ detectionMs: p?.detectionMs ?? null, heartbeatMs: rel(heartbeat[pod]?.earliestMs, t0), heartbeatResolutionMs: heartbeat[pod]?.spanMs, kongFinishedMs, finishedResolutionMs: 1 }) });
+    }
+    budgetReadings(it, readings);
   }
   if (loadEnd > 16) it.notes.push(`VM load ${loadEnd} > 16 during the measurement: repeat`);
   ctx.lastViolation = id;
@@ -967,11 +1024,16 @@ async function drainAndReplace() {
   await client.stop();
   const nodes = await nodesOf();
   const ws = client.since(t0).filter((e) => e.k === "ws");
-  Object.assign(it.measures, { vmLoad: { start: loadStart, end: loadEnd }, deleteCallMs: t0b - t0, KsUpperMs: rel(sig?.at, t0), sigkillMs: rel(kill?.at, t0), nginxExitedMs: rel(exited?.at, t0),
-    Kx: kill && exited ? exited.at - kill.at : null, containersFinishedMs: fin, kongBeforeSidecars: fin.kong != null && ["agent", "isolation-probe", "collector"].every((c) => fin[c] == null || fin[c] >= fin.kong),
+  Object.assign(it.measures, { vmLoad: { start: loadStart, end: loadEnd }, deleteCallMs: t0b - t0, signalReceivedMs: rel(sig?.at, t0), sigkillMs: rel(kill?.at, t0), nginxExitedMs: rel(exited?.at, t0),
+    containersFinishedMs: fin, kongBeforeSidecars: fin.kong != null && ["agent", "isolation-probe", "collector"].every((c) => fin[c] == null || fin[c] >= fin.kong),
     wsEvents: ws.map((e) => `${e.ev}@${e.t - t0}`).slice(0, 6), replacementGranted: Boolean(g), replacementReady: Boolean(ready),
     nodesAfter: nodes.map((n) => ({ node: n.node_id, evidence: n.evidence })), deploymentStates: (await deploymentState(ctx.dep1.revision)).map((s) => s.state).slice(-4) });
-  expect(it, sig && sig.at - t0 <= 1000 + (t0b - t0), `supervisor signal at ${it.measures.KsUpperMs} ms (Ks upper bound from the delete call)`);
+  // t0 is read before the delete call, so signal − t0 bounds Ks from above (the kubelet observes after the call starts).
+  budgetReadings(it, [
+    ksFromDeletion({ deleteCallStartMs: 0, signalReceivedMs: rel(sig?.at, t0) }),
+    // Kx from the supervisor's own milestones (CLOCK_BOOTTIME around kill(2) and Wait4, one run of nginx).
+    kxFromEvents(lines.filter((l) => l.at >= t0).map((l) => l.text), "drain"),
+  ]);
   expect(it, fin.kong != null && fin.kong <= V2_BUDGET.drainExit, `kong finished ${fin.kong} ms`);
   expect(it, it.measures.kongBeforeSidecars, `exit order ${JSON.stringify(fin)}`);
   expect(it, g && ready, "replacement not admitted/Ready");
@@ -1030,8 +1092,9 @@ async function mainV2() {
     }
   } finally { await finishV2(); }
   console.log(`results: ${join(out, "results.json")}`);
-  // A failed, pending or aborted item, a leaked secret or a failed cleanup fails the run (the runner reads the code).
-  const failed = report.items.filter((i) => i.result === "fail" || i.result === "pending");
-  if (failed.length || report.aborted || report.secretScan?.leaks?.length || report.cleanupFailed) process.exit(1);
+  // A failed, pending or aborted item, a leaked secret or a failed cleanup fails the run (exit 1); an item whose
+  // measurement was not exercised leaves it incomplete (exit 2). The runner reads the code: neither is a pass.
+  const code = runExitCode(report.items, Boolean(report.aborted || report.secretScan?.leaks?.length || report.cleanupFailed));
+  if (code !== 0) process.exit(code);
 }
 await mainV2();
