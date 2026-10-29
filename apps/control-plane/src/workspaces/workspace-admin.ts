@@ -115,8 +115,9 @@ export class WorkspaceAdminService {
       const before = await this.policy(tx);
       await tx
         .insert(workspaceCreationPolicy)
-        .values({ mode: body.mode, creatorBecomesAdmin: body.creatorBecomesAdmin, updatedBy: ctx.actor.id })
-        .onConflictDoUpdate({ target: workspaceCreationPolicy.singleton, set: { mode: body.mode, creatorBecomesAdmin: body.creatorBecomesAdmin, updatedBy: ctx.actor.id, updatedAt: sql`now()` } });
+        // The instant of the write (not of the transaction's start, which a waiting replacement shares with others).
+        .values({ mode: body.mode, creatorBecomesAdmin: body.creatorBecomesAdmin, updatedBy: ctx.actor.id, updatedAt: sql`clock_timestamp()` })
+        .onConflictDoUpdate({ target: workspaceCreationPolicy.singleton, set: { mode: body.mode, creatorBecomesAdmin: body.creatorBecomesAdmin, updatedBy: ctx.actor.id, updatedAt: sql`clock_timestamp()` } });
       const after = await this.policy(tx);
       await audit(tx, ctx, { action: "workspace_creation_policy.update", entityType: "workspace_creation_policy", before, after });
     });

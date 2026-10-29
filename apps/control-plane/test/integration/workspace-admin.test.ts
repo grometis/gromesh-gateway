@@ -1,6 +1,7 @@
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { runMigrations } from "../../src/db/migrate.js";
+import { SnapshotsService } from "../../src/snapshots/snapshots.js";
 import { type ApiClient, type ApiResponse, startHarness, uniq, type Harness } from "./harness.js";
 
 // WS-M0/WS-M1: workspace administration through v2. A second workspace in the instance is created only while a
@@ -319,6 +320,13 @@ describe("in a dev lab", () => {
       archiver.release();
     }
     expect((await h.sql.query("select count(*)::int as n from services where environment_id = $1", [racing])).rows[0].n).toBe(0);
+
+    // The v1 auto-publisher never publishes the pending draft of an archived workspace.
+    const auto = (await v2(h.api, "POST", "/workspaces", { name: uniq("Auto") })).body.id as string;
+    expect((await v2(h.api, "POST", `/workspaces/${auto}/archive`)).status).toBe(204);
+    await h.sql.query("update environments set publish_mode = 'auto', has_unpublished_changes = true, draft_changed_at = now() - interval '1 hour' where id = $1", [auto]);
+    await h.app.get(SnapshotsService).autoPublish(auto, 0);
+    expect((await h.sql.query("select count(*)::int as n from snapshots where environment_id = $1", [auto])).rows[0].n).toBe(0);
 
     // Revoking access stays possible there.
     const binding = await v2(h.api, "POST", `/workspaces/${withCluster.id}/role-bindings`, { subjectType: "user", subjectId: lead.id, role: "viewer" });
