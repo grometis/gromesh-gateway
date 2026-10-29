@@ -11,10 +11,10 @@ export const RESULTS = ["PASS", "FAIL", "NOT_EXERCISED", "INVALID"];
  * milestone stands in for the real start, so the true value is at most valueMs). `resolutionMs`: the coarsest clock or
  * sampling behind the two milestones; above a tenth of the limit the measurement cannot speak to the limit.
  */
-export function verdict(name, { exercised, valueMs = null, kind, resolutionMs = null, from, to, reason = null }) {
+export function verdict(name, { exercised, valueMs = null, kind, resolutionMs = null, from, to, reason = null, identity }) {
   const limitMs = LIMITS_MS[name];
   if (limitMs === undefined) throw new Error(`unknown budget ${name}`);
-  const base = { name, unit: "ms", limitMs, valueMs, kind, resolutionMs, from, to };
+  const base = { name, unit: "ms", limitMs, valueMs, kind, resolutionMs, from, to, ...(identity ? { identity } : {}) };
   if (!exercised) return { ...base, result: "NOT_EXERCISED", reason: reason ?? `${to} did not happen` };
   if (typeof valueMs !== "number" || !Number.isFinite(valueMs)) return { ...base, result: "INVALID", reason: reason ?? `exercised but ${from} → ${to} was not measured` };
   if (valueMs < 0) return { ...base, result: "INVALID", reason: `negative interval ${valueMs} ms: milestones on clocks that do not agree` };
@@ -75,18 +75,62 @@ export function ksFromDeletion({ deleteCallStartMs, signalReceivedMs, resolution
   return verdict("Ks", { exercised: true, valueMs, kind: "upperBound", resolutionMs, from: "delete call started (≤ kubelet observes the deletion)", to: "supervisor logged the stop signal" });
 }
 
-/**
- * Kx only exists when the supervisor sent SIGKILL (drain exceeded); with a graceful exit it is not exercised. The
- * supervisor logs "drain exceeded" before the SIGKILL syscall and "exited" after waitpid returned, so the interval
- * between the two lines bounds Kx from above: a pass below 0.5 s, never a failure above it.
- */
-export function kxFromDrain({ sigkillMs, exitedMs, resolutionMs = 1 }) {
-  return verdict("Kx", { exercised: sigkillMs != null, valueMs: sigkillMs != null && exitedMs != null ? exitedMs - sigkillMs : null, kind: "upperBound", resolutionMs,
-    from: "supervisor logged drain exceeded (≤ SIGKILL sent)", to: "supervisor logged nginx exited (≥ waitpid confirmed)", reason: sigkillMs == null ? "nginx drained before Dk: no SIGKILL, Kx not exercised" : null });
-}
-
 /** An item's result: a failure fails it; otherwise a reading not exercised leaves it incomplete, never a pass. */
 export const itemResult = ({ failures, open }) => (failures.length ? "fail" : open.length ? "incomplete" : "pass");
 /** The run's exit code read by the external runner: 1 for a failure, 2 for an incomplete item, 0 only when all passed. */
 export const runExitCode = (items, otherFailure = false) =>
   otherFailure || items.some((i) => i.result === "fail" || i.result === "pending") ? 1 : items.some((i) => i.result === "incomplete") ? 2 : 0;
+
+/** The supervisor's milestone lines ("kill-event …", "exit-event …", key=value; supervisor.go) as objects. */
+export function supervisorEvents(lines) {
+  const events = [];
+  for (const line of lines) {
+    const m = /\b(kill-event|exit-event|start-event) v=1 (.*)$/.exec(line);
+    if (!m) continue;
+    const e = { kind: m[1] };
+    for (const kv of m[2].trim().split(/\s+/)) { const i = kv.indexOf("="); if (i > 0) e[kv.slice(0, i)] = kv.slice(i + 1); }
+    events.push(e);
+  }
+  return events;
+}
+
+/**
+ * Kx of one stop path ("drain" or "containment") from the supervisor's own milestones: CLOCK_BOOTTIME read before
+ * kill(2) (attempt) and right after Wait4 reaped the same run of nginx (exit), so exit − attempt bounds Kx from above.
+ * Every attempt of the path is read and the worst reading stands (a good first SIGKILL never hides a later one).
+ * Only events with their whole identity (sup, run, pid, pgid) and a clock pair, and only a "sent" or "failed" result
+ * completes an attempt. Per attempt: refused because the group was already gone (ESRCH): not exercised; any other
+ * refusal, an attempt without its result, a sent SIGKILL without a confirmed exit of that run, or an attempt whose own
+ * identity or clock is missing: invalid. No attempt at all: not exercised.
+ */
+export function kxFromEvents(lines, path) {
+  const ID = ["sup", "run", "pid", "pgid"];
+  const complete = (e) => ID.every((k) => typeof e[k] === "string" && e[k] !== "") && /^\d+$/.test(e.boottimeNs ?? "");
+  const sameRun = (a, b) => ID.every((k) => a[k] === b[k]);
+  const ns = (e) => BigInt(e.boottimeNs);
+  const events = supervisorEvents(lines);
+  const base = { kind: "upperBound", resolutionMs: 1, from: `kill-event phase=attempt path=${path} (≤ SIGKILL sent)`, to: "exit-event of the same run (≥ waitpid confirmed)" };
+  const attempts = events.filter((e) => e.kind === "kill-event" && e.phase === "attempt" && e.path === path && e.signal === "SIGKILL");
+  if (attempts.length === 0) return verdict("Kx", { ...base, exercised: false, reason: `no SIGKILL on the ${path} path` });
+  // An attempt's result is the first sent/failed of its run after it and before that run's next attempt, in log order,
+  // and completes no other attempt.
+  const used = new Set();
+  const readings = attempts.map((attempt) => {
+    if (!complete(attempt)) return verdict("Kx", { ...base, exercised: true, valueMs: null, reason: "SIGKILL attempt without its identity or clock" });
+    const at = events.indexOf(attempt);
+    const next = events.findIndex((e, i) => i > at && e.kind === "kill-event" && e.phase === "attempt" && e.path === path && sameRun(e, attempt));
+    const window = events.slice(at + 1, next === -1 ? events.length : next);
+    const result = window.find((e) => !used.has(e) && e.kind === "kill-event" && (e.phase === "sent" || e.phase === "failed") && e.path === path && complete(e) && sameRun(e, attempt) && ns(e) >= ns(attempt));
+    if (result) used.add(result);
+    if (result?.phase === "failed" && result.error === "ESRCH") return verdict("Kx", { ...base, exercised: false, reason: "the process group was gone before SIGKILL (ESRCH)" });
+    if (result?.phase === "failed") return verdict("Kx", { ...base, exercised: true, valueMs: null, reason: `SIGKILL refused: ${result.error}` });
+    if (!result) return verdict("Kx", { ...base, exercised: true, valueMs: null, reason: "SIGKILL attempted without a recognised result of that run" });
+    const exit = events.find((e) => e.kind === "exit-event" && complete(e) && sameRun(e, attempt) && ns(e) >= ns(result));
+    if (!exit) return verdict("Kx", { ...base, exercised: true, valueMs: null, reason: "SIGKILL sent without a confirmed exit of that run" });
+    return verdict("Kx", { ...base, exercised: true, valueMs: Number(ns(exit) - ns(attempt)) / 1e6, identity: Object.fromEntries(ID.map((k) => [k, attempt[k]])) });
+  });
+  const exercised = readings.filter((r) => r.result !== "NOT_EXERCISED");
+  const worst = overall(exercised.length ? exercised : readings);
+  const chosen = (exercised.length ? exercised : readings).find((r) => r.result === worst);
+  return { ...chosen, attempts: readings.length, readings };
+}
