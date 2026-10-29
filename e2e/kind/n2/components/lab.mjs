@@ -14,6 +14,7 @@ export const root = fileURLToPath(new URL("../../../../", import.meta.url));
 export const CLUSTER = "gromesh-n2-lab";
 export const CONTEXT = `kind-${CLUSTER}`;
 export const NS = { cp: "gromesh-n2-cp", dp: "gromesh-n2-comp", fx: "gromesh-n2-fixtures" };
+export { scrubKong } from "./scrub.mjs";
 export const NODES = { cp: `${CLUSTER}-control-plane`, workers: [`${CLUSTER}-worker`, `${CLUSTER}-worker2`] };
 
 // One explicit file, never a list, never a link, never the user's kubeconfig (same inode also catches a hard link).
