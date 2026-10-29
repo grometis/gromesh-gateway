@@ -12,15 +12,18 @@ import { createSocket } from "node:dgram";
 import { promises as dns } from "node:dns";
 import { readFileSync } from "node:fs";
 import { createServer, connect, isIP } from "node:net";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 
 const [command, ...args] = process.argv.slice(2);
 
 /**
- * The connection log of a lab server: who reached it and when, never what was sent (byte counts only). One JSON line
- * per event: inst (random per process: a restart is another instance), seq (gapless per instance), boot (the kernel's
- * boot id: wallMs is only comparable with clocks of the same kernel), wallMs (Date.now), monoNs (process.hrtime).
+ * The connection log of a lab server: who reached it and when, never what was sent. One JSON line per event: inst
+ * (random per process: a restart is another instance), seq (gapless per instance), boot (the kernel's boot id: wallMs
+ * is only comparable with clocks of the same kernel), wallMs (Date.now) and monoNs (process.hrtime, to detect a step
+ * of the wall clock). A request is identified by the SHA-256 of its first line (never the line itself). A line
+ * "MARK <scenario> <start|end>" is the lab's own marker: it brackets a scenario in this log and proves the listener
+ * answers at both ends.
  */
 function serverLog(id) {
   const inst = randomBytes(4).toString("hex");
@@ -38,14 +41,19 @@ function serve(id, ports) {
   for (const port of ports) {
     const server = createServer((socket) => {
       const c = ++conn;
-      log("accept", { conn: c, port: Number(port), remote: socket.remoteAddress, remotePort: socket.remotePort });
+      let req = 0;
+      log("accept", { conn: c, local: socket.localAddress, localPort: socket.localPort, remote: socket.remoteAddress, remotePort: socket.remotePort });
       socket.setEncoding("utf8");
       let buffer = "";
       socket.on("data", (chunk) => {
-        log("data", { conn: c, bytes: Buffer.byteLength(chunk) });
         buffer += chunk;
         const end = buffer.indexOf("\n");
-        if (end >= 0) socket.end(`${id} ${buffer.slice(0, end)}\n`);
+        if (end < 0) return;
+        const line = buffer.slice(0, end).replace(/\r$/, "");
+        const mark = /^MARK ([A-Za-z0-9._-]{1,64}) (start|end)$/.exec(line);
+        if (mark) log("mark", { conn: c, scenario: mark[1], phase: mark[2] });
+        else log("req", { conn: c, req: ++req, lineSha256: createHash("sha256").update(line).digest("hex") });
+        socket.end(`${id} ${line}\n`);
       });
       socket.on("close", () => log("close", { conn: c }));
       socket.on("error", () => {});

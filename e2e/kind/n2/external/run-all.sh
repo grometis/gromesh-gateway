@@ -152,7 +152,9 @@ suite() {
   sample >>"$OUT/$name/images-sampled.txt"
   # The lab servers' own connection logs (fixtures.mjs serve): the privileged destination's evidence for this suite.
   for role in backend nodecidr denied imds; do
-    docker logs "${CLUSTER_NAME}-fx-$role" >"$OUT/$name/fixture-$role.log" 2>/dev/null || echo "fixture $role: no log" >>"$OUT/$name/fixture-missing.txt"
+    if ! docker logs "${CLUSTER_NAME}-fx-$role" >"$OUT/$name/fixture-$role.log" 2>/dev/null; then
+      echo "$name: FAIL (the $role server's log could not be kept)" | tee -a "$OUT/summary.txt"; failed=1
+    fi
   done
   # shellcheck disable=SC2086 # the expected images are a word list
   evidence="$(ran "$name" "$OUT/$name/images-sampled.txt" $expected)" || rc="${rc/#0/evidence}"
