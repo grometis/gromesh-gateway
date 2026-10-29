@@ -38,6 +38,19 @@ export function overall(verdicts) {
 
 /** kong-liveness fails on a supervisor heartbeat older than 3 s (CLOCK_BOOTTIME). */
 export const HEARTBEAT_MAX_AGE_MS = 3000;
+/** /proc/uptime (CLOCK_BOOTTIME) is truncated to hundredths of a second. */
+export const UPTIME_RESOLUTION_MS = 10;
+
+/**
+ * A CLOCK_BOOTTIME instant on the wall clock, from `date` read before and after /proc/uptime on the same kernel: the
+ * uptime was read at some wall instant t in [before, after] and the boot clock then was in [uptime, uptime + 10 ms).
+ * Returns the earliest wall instant the boot instant can be (the conservative side for an upper bound that subtracts
+ * it) and the width of the whole uncertainty, used as the reading's resolution.
+ */
+export function bootToWall({ bootMs, uptimeMs, wallBeforeMs, wallAfterMs }) {
+  if (![bootMs, uptimeMs, wallBeforeMs, wallAfterMs].every(Number.isFinite) || wallAfterMs < wallBeforeMs || bootMs > uptimeMs + UPTIME_RESOLUTION_MS) return null;
+  return { earliestMs: wallBeforeMs - (uptimeMs + UPTIME_RESOLUTION_MS - bootMs), spanMs: wallAfterMs - wallBeforeMs + UPTIME_RESOLUTION_MS };
+}
 
 /**
  * K through the liveness (supervisor frozen). The liveness failure itself is not observed. It cannot happen before the
@@ -48,7 +61,7 @@ export const HEARTBEAT_MAX_AGE_MS = 3000;
  * the ticker: without it the reading is invalid. The old finished − detection − Lp − Lt − G could understate K by up
  * to Lp + Lt and ignored that the heartbeat may fail first.
  */
-export function kFromLiveness({ detectionMs, heartbeatMs, kongFinishedMs, finishedResolutionMs, heartbeatResolutionMs = 10, graceMs = 2000 }) {
+export function kFromLiveness({ detectionMs, heartbeatMs, kongFinishedMs, finishedResolutionMs, heartbeatResolutionMs = UPTIME_RESOLUTION_MS, graceMs = 2000 }) {
   const base = { kind: "upperBound", resolutionMs: Math.max(finishedResolutionMs ?? Infinity, heartbeatResolutionMs),
     from: "earliest possible liveness failure: min(violation detected, last heartbeat + 3 s)", to: "kong container finished − G" };
   if (heartbeatMs == null) return verdict("K", { ...base, exercised: true, valueMs: null, reason: "the supervisor's last heartbeat was not read: its age is not proven" });

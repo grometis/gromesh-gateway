@@ -14,7 +14,7 @@ import {
   Api, apply, assertLab, CONTEXT, controlPlaneObjects, controlPlaneSecret, cpSecrets, createSecret, dbSkew, denyPolicies, docker, Forward, helm, here, json,
   kubeconfig, kubectl, NODES, NS, registrationSecret, relayObjects, removeSuiteObjects, root, run, sql,
 } from "./lab.mjs";
-import { itemResult, kFromLiveness, ksFromDeletion, kxFromDrain, overall, runExitCode } from "./budgets.mjs";
+import { bootToWall, itemResult, kFromLiveness, ksFromDeletion, kxFromDrain, overall, runExitCode } from "./budgets.mjs";
 
 const out = process.env.LAB_OUT ?? mkdtempSync(join(tmpdir(), "gromesh-n2-comp-"));
 // Every image this suite pulls is pinned by digest in versions.env (a mutable tag would not reproduce the run).
@@ -271,19 +271,18 @@ async function thaw(target) {
 const thawAll = async () => Promise.all([...frozen].map(thaw));
 
 /**
- * The frozen supervisor's last heartbeat on the VM clock: kong-state.json holds it in CLOCK_BOOTTIME nanoseconds, and
- * /proc/uptime with date, read together on the pod's node (same kernel), map it to the VM's wall clock (10 ms, the
- * resolution of /proc/uptime). Read after the freeze, so no later heartbeat exists. null when either read fails.
+ * The frozen supervisor's last heartbeat on the VM clock: kong-state.json holds it in CLOCK_BOOTTIME nanoseconds;
+ * /proc/uptime bracketed by two `date` reads on the pod's node (same kernel) maps it to the VM's wall clock
+ * (bootToWall: the earliest possible instant and the whole uncertainty). Read after the freeze, so no later heartbeat
+ * exists. null when a read fails.
  */
 async function lastHeartbeat(podName, node) {
   const state = await kubectl(["-n", NS.dp, "exec", podName, "-c", "kong", "--", "cat", "/gromesh/kong-state/kong-state.json"], { allowFail: true });
-  const clock = await docker(["exec", node, "sh", "-c", "cat /proc/uptime; date +%s%3N"], { allowFail: true });
+  const clock = await docker(["exec", node, "sh", "-c", "date +%s%3N; cat /proc/uptime; date +%s%3N"], { allowFail: true });
   try {
-    const heartbeatMs = Number(JSON.parse(state.stdout).heartbeatBoottimeNs) / 1e6;
-    const [uptime, wall] = clock.stdout.trim().split("\n");
-    const nowBootMs = Number(uptime.split(" ")[0]) * 1000;
-    if (!(heartbeatMs > 0) || !Number.isFinite(nowBootMs) || !Number.isFinite(Number(wall))) return null;
-    return Number(wall) - (nowBootMs - heartbeatMs);
+    const [before, uptime, after] = clock.stdout.trim().split("\n");
+    return bootToWall({ bootMs: Number(JSON.parse(state.stdout).heartbeatBoottimeNs) / 1e6, uptimeMs: Number(uptime.split(" ")[0]) * 1000,
+      wallBeforeMs: Number(before), wallAfterMs: Number(after) });
   } catch { return null; }
 }
 
@@ -833,7 +832,7 @@ async function containmentN({ frozenSupervisor = false } = {}) {
       const st = (await exits).states.kong;
       const p = per.find((x) => x.pod === pod);
       const kongFinishedMs = st.finishedAtNode && st.finishedAtNode.includes(".") ? rel(vmTime(st.finishedAtNode), t0) : null;
-      readings.push({ pod, ...kFromLiveness({ detectionMs: p?.detectionMs ?? null, heartbeatMs: rel(heartbeat[pod], t0), kongFinishedMs, finishedResolutionMs: 1 }) });
+      readings.push({ pod, ...kFromLiveness({ detectionMs: p?.detectionMs ?? null, heartbeatMs: rel(heartbeat[pod]?.earliestMs, t0), heartbeatResolutionMs: heartbeat[pod]?.spanMs, kongFinishedMs, finishedResolutionMs: 1 }) });
     }
     budgetReadings(it, readings);
   }

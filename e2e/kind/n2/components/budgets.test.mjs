@@ -2,7 +2,7 @@
 // the instrumentation, never the lab's real budgets.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { itemResult, kFromLiveness, ksFromDeletion, kxFromDrain, LIMITS_MS, overall, runExitCode, verdict } from "./budgets.mjs";
+import { bootToWall, itemResult, kFromLiveness, ksFromDeletion, kxFromDrain, LIMITS_MS, overall, runExitCode, verdict } from "./budgets.mjs";
 
 test("the limits are B §3.5.3's: K 2 s, Ks 1 s, Kx 0.5 s", () => {
   assert.deepEqual(LIMITS_MS, { K: 2000, Ks: 1000, Kx: 500 });
@@ -120,4 +120,23 @@ test("an item with a reading not exercised is incomplete, and the run exits 2, n
   assert.equal(runExitCode([{ result: "pending" }]), 1);
   assert.equal(runExitCode([{ result: "pass" }], true), 1);
   assert.equal(runExitCode([{ result: "pass" }]), 0);
+});
+
+test("the heartbeat's wall instant carries the whole uncertainty of the clock reads (review r3 counterexample)", () => {
+  // Boot and wall clocks equal here. Heartbeat at 500 ms; uptime read at 3000 ms; the second date 200 ms later.
+  // Converting with the later date alone put the heartbeat at 700 ms and K at 1910 ms (PASS) for a real K of 2100 ms.
+  const hb = bootToWall({ bootMs: 500, uptimeMs: 3000, wallBeforeMs: 3000, wallAfterMs: 3200 });
+  assert.deepEqual(hb, { earliestMs: 490, spanMs: 210 });
+  const k = kFromLiveness({ detectionMs: 7000, heartbeatMs: hb.earliestMs, heartbeatResolutionMs: hb.spanMs, kongFinishedMs: 7610, finishedResolutionMs: 1 });
+  assert.equal(k.result, "INVALID");
+  assert.ok(k.valueMs >= 2100);
+  // A tight bracket (2 ms) keeps the reading usable: earliest = 1000 − (3000 + 10 − 500) = −1510, span 12 ms; Kong
+  // finished at 4490 ms gives K ≤ 4490 − 2000 − 1490 = 1000 ms.
+  const tight = bootToWall({ bootMs: 500, uptimeMs: 3000, wallBeforeMs: 1000, wallAfterMs: 1002 });
+  assert.deepEqual(tight, { earliestMs: -1510, spanMs: 12 });
+  assert.equal(kFromLiveness({ detectionMs: 7000, heartbeatMs: tight.earliestMs, heartbeatResolutionMs: tight.spanMs, kongFinishedMs: 4490, finishedResolutionMs: 1 }).result, "PASS");
+  // Inconsistent reads are refused, never mapped.
+  assert.equal(bootToWall({ bootMs: 500, uptimeMs: 3000, wallBeforeMs: 3200, wallAfterMs: 3000 }), null);
+  assert.equal(bootToWall({ bootMs: 4000, uptimeMs: 3000, wallBeforeMs: 3000, wallAfterMs: 3001 }), null);
+  assert.equal(bootToWall({ bootMs: NaN, uptimeMs: 3000, wallBeforeMs: 3000, wallAfterMs: 3001 }), null);
 });
