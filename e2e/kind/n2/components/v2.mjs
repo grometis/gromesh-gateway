@@ -14,7 +14,7 @@ import {
   Api, apply, assertLab, CONTEXT, controlPlaneObjects, controlPlaneSecret, cpSecrets, createSecret, dbSkew, denyPolicies, docker, Forward, helm, here, json,
   kubeconfig, kubectl, NODES, NS, registrationSecret, relayObjects, removeSuiteObjects, root, run, sql,
 } from "./lab.mjs";
-import { bootToWall, groupFromEvents, itemResult, keepaliveBlocked, kFromLiveness, ksFromDeletion, kxFromEvents, overall, runExitCode } from "./budgets.mjs";
+import { bootToWall, groupFromEvents, itemResult, keepaliveBlocked, kFromLiveness, ksFromDeletion, kxFromEvents, overall, rfc3339CeilMs, runExitCode } from "./budgets.mjs";
 
 const out = process.env.LAB_OUT ?? mkdtempSync(join(tmpdir(), "gromesh-n2-comp-"));
 // Every image this suite pulls is pinned by digest in versions.env (a mutable tag would not reproduce the run).
@@ -826,7 +826,8 @@ async function containmentN({ frozenSupervisor = false } = {}) {
     for (const p of pods) {
       const lines = [...(await vmLogs(p.name, "kong", ["--previous"]).catch(() => [])), ...(await vmLogs(p.name, "kong"))].filter((l) => l.at >= t0);
       kx.push({ pod: p.name, ...kxFromEvents(lines.map((l) => l.text), "containment") });
-      groups.push({ pod: p.name, ...groupFromEvents(lines.map((l) => l.text)) });
+      // vmLogs truncates the runtime stamp to milliseconds: + 1 ms keeps it at or after the event.
+      groups.push({ pod: p.name, ...groupFromEvents(lines.map((l) => ({ atMs: l.at + 1 - t0, text: l.text })), V2_BUDGET.kongStopSupervisor) });
     }
     budgetReadings(it, kx, { optional: true });
     it.measures.groups = groups;
@@ -834,7 +835,8 @@ async function containmentN({ frozenSupervisor = false } = {}) {
     // Keepalive: blocked (503 or connection lost) and no 200 after the 503 limit (B §3.5.3, keepalive included).
     const ka = keepaliveBlocked(ev.map((e) => ({ ...e, t: e.t - t0 })).filter((e) => e.t >= 0), V2_BUDGET.block503);
     it.measures.keepalive = ka;
-    if (ka.result !== "PASS") it.failures.push(`keepalive ${ka.result}: ${ka.reason}`);
+    if (ka.result === "NOT_EXERCISED") it.open.push(`keepalive: ${ka.reason}`);
+    else if (ka.result !== "PASS") it.failures.push(`keepalive ${ka.result}: ${ka.reason}`);
     expect(it, worstDetect <= V2_BUDGET.detection, `detection ${worstDetect} ms`);
     expect(it, first503 && first503.t - t0 <= V2_BUDGET.block503 + 0, `first 503 at ${it.measures.first503NewMs} ms`);
     expect(it, per.every((p) => (p.kongExitedLogMs ?? Infinity) <= V2_BUDGET.kongStopSupervisor), `Kong stopped (supervisor) ${JSON.stringify(per.map((p) => p.kongExitedLogMs))}`);
@@ -848,7 +850,8 @@ async function containmentN({ frozenSupervisor = false } = {}) {
     for (const { pod, exits } of kongExits) {
       const st = (await exits).states.kong;
       const p = per.find((x) => x.pod === pod);
-      const kongFinishedMs = st.finishedAtNode && st.finishedAtNode.includes(".") ? rel(vmTime(st.finishedAtNode), t0) : null;
+      // Rounded up from the nanoseconds: a bound "≤ 24 s" is never met by dropping the sub-millisecond part.
+      const kongFinishedMs = st.finishedAtNode && st.finishedAtNode.includes(".") ? rel(rfc3339CeilMs(st.finishedAtNode), t0) : null;
       if (kongFinishedMs == null) it.failures.push(`Kong stop by the liveness on ${pod}: no nanosecond finishedAt (crictl ${st.state}), not measured`);
       else expect(it, kongFinishedMs <= V2_BUDGET.kongStopLiveness, `Kong stopped by the liveness on ${pod} at ${kongFinishedMs} ms > ${V2_BUDGET.kongStopLiveness} ms`);
       readings.push({ pod, ...kFromLiveness({ detectionMs: p?.detectionMs ?? null, heartbeatMs: rel(heartbeat[pod]?.earliestMs, t0), heartbeatResolutionMs: heartbeat[pod]?.spanMs, kongFinishedMs, finishedResolutionMs: 1 }) });

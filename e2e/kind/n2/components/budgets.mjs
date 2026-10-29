@@ -136,35 +136,53 @@ export function kxFromEvents(lines, path) {
 }
 
 /**
- * The whole process group after the master exited (the remnants' SIGKILL, supervisor.go confirmGroupGone): PASS when
- * the supervisor confirmed the group gone (kill(-pgid, 0) = ESRCH), FAIL when it reported processes remaining after
- * KillAfter, INVALID when no group-event of that stop was logged. Only events of a run that this stop exercised count.
+ * An RFC 3339 instant with up to nine fractional digits, in milliseconds rounded UP: a bound "≤ limit" read from it can
+ * never be met by dropping the sub-millisecond part (24.000999999 s is 24001 ms, not 24000).
  */
-export function groupFromEvents(lines) {
-  const groups = supervisorEvents(lines).filter((e) => e.kind === "group-event");
-  const base = { name: "group", from: "nginx master exited", to: "process group confirmed gone (ESRCH)" };
-  if (groups.some((g) => g.phase === "remaining")) {
-    const g = groups.find((x) => x.phase === "remaining");
-    return { ...base, result: "FAIL", reason: `processes remained in group ${g.pgid} after ${g.kills} SIGKILLs (${g.repeats})` };
-  }
-  const gone = groups.find((g) => g.phase === "gone");
-  if (!gone) return { ...base, result: "INVALID", reason: "no group-event: the group's end was not observed" };
-  return { ...base, result: "PASS", reason: null, kills: Number(gone.kills), repeats: gone.repeats, identity: { sup: gone.sup, run: gone.run, pgid: gone.pgid } };
+export function rfc3339CeilMs(text) {
+  const m = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?Z$/.exec(text ?? "");
+  if (!m) return null;
+  const whole = Date.parse(`${m[1]}Z`);
+  const ns = Number((m[2] ?? "").padEnd(9, "0"));
+  return whole + Math.ceil(ns / 1e6);
 }
 
 /**
- * Keepalive after the loss (B §3.5.3: 503 on a new request, keepalive included, ≤ 19 s): the first answer on the
- * keepalive connection that is not a 200 (503 or the connection lost) and the last 200 must both be within the limit.
- * events: [{ k: "ka", s?: status, e?: error, t }] relative to the loss; a keepalive that never ran is invalid.
+ * The whole process group after the master exited (supervisor.go confirmGroupGone), per pod. entries: the kong
+ * container's log lines after the loss as { atMs (runtime stamp, relative to the loss), text }. The group is gone only
+ * with a "group-event phase=gone" of the same supervisor, run and pgid as an "exit-event" of that stop, logged within
+ * deadlineMs (the line's stamp is taken after the event, so it bounds it from above). FAIL: a "phase=remaining", or
+ * "gone" logged after the deadline. INVALID: no matching, complete group-event.
+ */
+export function groupFromEvents(entries, deadlineMs) {
+  const parsed = entries.flatMap(({ atMs, text }) => supervisorEvents([text]).map((e) => ({ ...e, atMs })));
+  const exits = parsed.filter((e) => e.kind === "exit-event" && e.sup && e.run && e.pgid);
+  const ofThisStop = (g) => g.sup && g.run && g.pgid && /^\d+$/.test(g.boottimeNs ?? "") && exits.some((x) => x.sup === g.sup && x.run === g.run && x.pgid === g.pgid);
+  const groups = parsed.filter((e) => e.kind === "group-event" && ofThisStop(e));
+  const base = { name: "group", unit: "ms", limitMs: deadlineMs, from: "isolation lost", to: "process group confirmed gone (ESRCH), log stamp ≥ event" };
+  const remaining = groups.find((g) => g.phase === "remaining");
+  if (remaining) return { ...base, result: "FAIL", reason: `processes remained in group ${remaining.pgid} after ${remaining.kills} SIGKILLs (${remaining.repeats})` };
+  const gone = groups.find((g) => g.phase === "gone");
+  if (!gone) return { ...base, result: "INVALID", reason: "no complete group-event of this stop's run: the group's end was not observed" };
+  if (!(gone.atMs <= deadlineMs)) return { ...base, result: "FAIL", valueMs: gone.atMs, reason: `group confirmed gone at ${gone.atMs} ms > ${deadlineMs} ms` };
+  return { ...base, result: "PASS", reason: null, valueMs: gone.atMs, kills: Number(gone.kills), repeats: gone.repeats, identity: { sup: gone.sup, run: gone.run, pgid: gone.pgid } };
+}
+
+/**
+ * Keepalive after the loss (B §3.5.3: 503 on a new request, keepalive included, ≤ 19 s). events: [{ k: "ka", s?,
+ * e?, reused?, t }] relative to the loss. Only a 503 on a reused socket proves the guard blocked the keepalive
+ * connection. FAIL: a 200 after the limit, or the first reused 503 after it. NOT_EXERCISED: the connection was lost
+ * (Kong stopped) before any reused 503, so the milestone is not proven (never a pass). INVALID: no keepalive request.
  */
 export function keepaliveBlocked(events, limitMs) {
   const ka = events.filter((e) => e.k === "ka");
-  if (ka.length === 0) return { name: "keepalive", result: "INVALID", reason: "no keepalive request after the loss", limitMs };
+  const base = { name: "keepalive", unit: "ms", limitMs, from: "isolation lost", to: "503 on a reused keepalive socket" };
+  if (ka.length === 0) return { ...base, result: "INVALID", reason: "no keepalive request after the loss" };
   const lastOk = [...ka].reverse().find((e) => e.s === 200) ?? null;
-  const blocked = ka.find((e) => e.s !== 200) ?? null;
-  const base = { name: "keepalive", limitMs, last200Ms: lastOk?.t ?? null, firstBlockedMs: blocked?.t ?? null };
-  if (lastOk && lastOk.t > limitMs) return { ...base, result: "FAIL", reason: `200 on keepalive at ${lastOk.t} ms > ${limitMs} ms` };
-  if (!blocked) return { ...base, result: "INVALID", reason: "the keepalive connection was never blocked" };
-  if (blocked.t > limitMs) return { ...base, result: "FAIL", reason: `keepalive blocked at ${blocked.t} ms > ${limitMs} ms` };
-  return { ...base, result: "PASS", reason: null };
+  const blocked = ka.find((e) => e.s === 503 && e.reused === true) ?? null;
+  const measured = { ...base, last200Ms: lastOk?.t ?? null, firstReused503Ms: blocked?.t ?? null };
+  if (lastOk && lastOk.t > limitMs) return { ...measured, result: "FAIL", reason: `200 on keepalive at ${lastOk.t} ms > ${limitMs} ms` };
+  if (blocked && blocked.t > limitMs) return { ...measured, result: "FAIL", reason: `reused keepalive socket blocked at ${blocked.t} ms > ${limitMs} ms` };
+  if (blocked) return { ...measured, result: "PASS", reason: null };
+  return { ...measured, result: "NOT_EXERCISED", reason: "no 503 on a reused keepalive socket (the connection ended before the guard answered it)" };
 }
