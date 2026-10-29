@@ -195,7 +195,7 @@ export class SnapshotsService {
       // locked here, so the archive lock is only tried (an archive in flight skips this tick instead of deadlocking).
       const [{ got }] = (await tx.execute<{ got: boolean }>(sql`select pg_try_advisory_xact_lock_shared(${ARCHIVE_LOCK_CLASS}, ${archiveLockKey(envId)}) as got`)).rows as [{ got: boolean }];
       if (!got) return true;
-      const [ws] = await tx.select({ status: workspaces.status }).from(workspaces).where(eq(workspaces.id, envId)).for("share");
+      const [ws] = await tx.select({ status: workspaces.status }).from(workspaces).where(eq(workspaces.id, envId));
       if (ws?.status === "archived") return true;
 
       let prepared: PreparedPublish;

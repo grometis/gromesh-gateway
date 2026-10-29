@@ -339,6 +339,9 @@ describe("in a dev lab", () => {
         h.api("PUT", `/users/${someone.id}/environment-roles`, { items: [{ environmentId: target, role: "editor" }] }),
         v2(h.api, "POST", `/workspaces/${target}/role-bindings`, { subjectType: "user", subjectId: someone.id, role: "viewer" }),
         h.api("POST", `/environments/${target}/consumers`, { username: uniq("c") }),
+        // A publish (it locks the environment, then updates the workspace row) beside a cluster creation (review r5).
+        v2(h.api, "POST", `/workspaces/${target}/releases`, { message: "ciclo" }),
+        h.api("POST", `/environments/${target}/clusters`, { name: uniq("c") }),
         v2(h.api, "POST", `/workspaces/${target}/archive`),
       ]);
       for (const r of results) expect(r.status, JSON.stringify(r.body)).toBeLessThan(500);
