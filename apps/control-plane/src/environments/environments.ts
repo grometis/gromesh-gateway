@@ -55,12 +55,12 @@ export const archiveLockKey = (workspaceId: string) => sql`hashtext(${workspaceI
 export async function refuseArchived(tx: Executor, workspaceId: string): Promise<void> {
   await archiveLock(tx, workspaceId, "shared");
   // In READ COMMITTED this statement already sees an archive committed while the lock waited. A REPEATABLE READ or
-  // SERIALIZABLE transaction (an import) may hold a snapshot from before it: there the row is locked, so a change
-  // committed since is a serialization failure (nothing written). Only there: a share lock held to the end would
-  // deadlock a READ COMMITTED writer that later updates the workspace row (a publish locks its slug).
+  // SERIALIZABLE transaction (an import) may hold a snapshot from before it: there the environment row is locked (the
+  // first row every writer locks; archiveWorkspace updates it too), so an archive committed since is a serialization
+  // failure and nothing is written. Never a lock on the workspace row: a publish updates it after the environment's.
   const [{ iso }] = (await tx.execute<{ iso: string }>(sql`select current_setting('transaction_isolation') as iso`)).rows as [{ iso: string }];
-  const q = tx.select({ status: workspaces.status }).from(workspaces).where(eq(workspaces.id, workspaceId));
-  const [w] = iso === "read committed" ? await q : await q.for("share");
+  if (iso !== "read committed") await tx.select({ id: environments.id }).from(environments).where(eq(environments.id, workspaceId)).for("update");
+  const [w] = await tx.select({ status: workspaces.status }).from(workspaces).where(eq(workspaces.id, workspaceId));
   if (w?.status === "archived") throw workspaceArchived();
 }
 

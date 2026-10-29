@@ -250,6 +250,8 @@ export class WorkspaceAdminService {
       const [cluster] = await tx.select({ id: clusters.id }).from(clusters).where(eq(clusters.environmentId, workspaceId)).limit(1);
       if (cluster) throw refused("clusters", "A cluster is registered in this workspace");
       await tx.update(workspaces).set({ status: "archived", updatedAt: sql`now()` }).where(eq(workspaces.id, workspaceId));
+      // A new version of the environment row too: a snapshot transaction that locks it afterwards fails to serialize.
+      await tx.update(environments).set({ updatedAt: sql`now()` }).where(eq(environments.id, workspaceId));
       await audit(tx, ctx, { action: "workspace.archive", entityType: "workspace", entityId: workspaceId, environmentId: workspaceId, before: toWorkspace(current), after: toWorkspace({ ...current, status: "archived" }) });
     });
   }

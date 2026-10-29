@@ -341,6 +341,8 @@ describe("in a dev lab", () => {
         h.api("POST", `/environments/${target}/consumers`, { username: uniq("c") }),
         // A publish (it locks the environment, then updates the workspace row) beside a cluster creation (review r5).
         v2(h.api, "POST", `/workspaces/${target}/releases`, { message: "ciclo" }),
+        // An import (SERIALIZABLE) beside the publish (review r6).
+        h.api("GET", `/environments/${target}/export`).then((e) => h.api("POST", `/environments/${target}/import`, { document: e.body, mode: "merge", dryRun: false })),
         h.api("POST", `/environments/${target}/clusters`, { name: uniq("c") }),
         v2(h.api, "POST", `/workspaces/${target}/archive`),
       ]);
