@@ -9,6 +9,7 @@ import { APP_CONFIG, type AppConfig } from "../config.js";
 import { DB, type Db, type Executor } from "../db/db.js";
 import { clusters, deploymentStates, deployments, environments, instance, releases, roleBindings, workspaceActiveRelease, workspaceCreationPolicy, workspaces } from "../db/schema.js";
 import { toRoleBinding } from "../access/access.js";
+import { archiveLock } from "../environments/environments.js";
 import { normalizeSlug, proposeSlug, slugProblem } from "./slug.js";
 import { SLUG_LOCK_KEY } from "./workspaces.js";
 
@@ -187,7 +188,8 @@ export class WorkspaceAdminService {
       .from(environments)
       .innerJoin(workspaces, eq(workspaces.id, environments.id))
       .where(eq(environments.id, workspaceId));
-    const [row] = lock ? await q.for("update") : await q;
+    // NO KEY UPDATE: a writer's foreign key (KEY SHARE) on these rows never waits on it, nor it on that writer.
+    const [row] = lock ? await q.for("no key update") : await q;
     if (!row) throw new ProblemException(HttpStatus.NOT_FOUND, "Workspace not found");
     return row;
   }
@@ -221,6 +223,8 @@ export class WorkspaceAdminService {
    */
   async archive(ctx: RequestContext, workspaceId: string) {
     await this.db.transaction(async (tx) => {
+      // Exclusive before any row: every writer in the workspace holds the shared lock until it commits (refuseArchived).
+      await archiveLock(tx, workspaceId, "exclusive");
       const current = await this.row(tx, workspaceId, true);
       if (current.status === "archived") return;
       const [active] = await tx

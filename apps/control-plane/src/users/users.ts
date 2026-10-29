@@ -133,8 +133,6 @@ export class UsersService {
     const now = new Map(items.map((i) => [i.environmentId, i.role]));
     for (const id of new Set([...was.keys(), ...now.keys()])) {
       if (was.get(id) === now.get(id) || now.get(id) === "none") continue;
-      // Environment before workspace, the order archiveWorkspace locks them (the roles' foreign key reaches the former).
-      await tx.select({ id: environments.id }).from(environments).where(eq(environments.id, id)).for("share");
       await refuseArchived(tx, id);
     }
     await tx.delete(environmentRoles).where(eq(environmentRoles.userId, userId));

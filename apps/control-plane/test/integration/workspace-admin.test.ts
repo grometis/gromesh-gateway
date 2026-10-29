@@ -309,7 +309,9 @@ describe("in a dev lab", () => {
     const archiver = await h.sql.connect();
     try {
       await archiver.query("begin");
-      await archiver.query("select 1 from environments e join workspaces w on w.id = e.id where e.id = $1 for update", [racing]);
+      // What archiveWorkspace does: the exclusive archive lock, then its rows.
+      await archiver.query("select pg_advisory_xact_lock($1, hashtext($2))", [0x67727761, racing]);
+      await archiver.query("select 1 from environments e join workspaces w on w.id = e.id where e.id = $1 for no key update", [racing]);
       await archiver.query("update workspaces set status = 'archived' where id = $1", [racing]);
       const write = h.api("POST", `/environments/${racing}/services`, { name: "late", protocol: "http", host: "example.com", port: 80 });
       await new Promise((r) => setTimeout(r, 500));
@@ -327,6 +329,19 @@ describe("in a dev lab", () => {
     await h.sql.query("update environments set publish_mode = 'auto', has_unpublished_changes = true, draft_changed_at = now() - interval '1 hour' where id = $1", [auto]);
     await h.app.get(SnapshotsService).autoPublish(auto, 0);
     expect((await h.sql.query("select count(*)::int as n from snapshots where environment_id = $1", [auto])).rows[0].n).toBe(0);
+
+    // Archiving while v1 roles, v2 grants and draft edits race in the same workspace: never a 500 (no lock cycle).
+    for (let round = 0; round < 8; round++) {
+      const target = (await v2(h.api, "POST", "/workspaces", { name: uniq("Ciclo") })).body.id as string;
+      const someone = await h.as("viewer");
+      const results = await Promise.all([
+        h.api("PUT", `/users/${someone.id}/environment-roles`, { items: [{ environmentId: target, role: "editor" }] }),
+        v2(h.api, "POST", `/workspaces/${target}/role-bindings`, { subjectType: "user", subjectId: someone.id, role: "viewer" }),
+        h.api("POST", `/environments/${target}/consumers`, { username: uniq("c") }),
+        v2(h.api, "POST", `/workspaces/${target}/archive`),
+      ]);
+      for (const r of results) expect(r.status, JSON.stringify(r.body)).toBeLessThan(500);
+    }
 
     // Revoking access stays possible there.
     const binding = await v2(h.api, "POST", `/workspaces/${withCluster.id}/role-bindings`, { subjectType: "user", subjectId: lead.id, role: "viewer" });

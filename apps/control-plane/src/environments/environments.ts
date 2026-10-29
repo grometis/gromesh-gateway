@@ -29,29 +29,41 @@ export function toEnvironment(r: EnvironmentRow) {
 
 /** 404 unless the environment exists. With `lock`, holds a row lock until the transaction ends. */
 export async function requireEnvironment(tx: Executor, envId: string, lock = false): Promise<EnvironmentRow> {
+  // A writer that locks the environment is refused once its workspace is archived (the guard's check runs before the
+  // transaction; this one is serialized with archiveWorkspace), checked before the row lock.
+  if (lock) await refuseArchived(tx, envId);
   const q = tx.select().from(environments).where(eq(environments.id, envId));
   const [row] = lock ? await q.for("update") : await q;
   if (!row) throw notFound("Environment");
-  // A writer that locks the environment is refused once its workspace is archived (the guard's check runs before the
-  // transaction; this one serializes with archiveWorkspace, which locks the same rows).
-  if (lock) await refuseArchived(tx, envId);
   return row;
 }
 
-/** 409 workspace-archived when the workspace is archived, read under a share lock that waits for an archive in flight. */
+/** One lock per workspace between archiveWorkspace (exclusive) and the writers in it (shared). */
+export const ARCHIVE_LOCK_CLASS = 0x6772_7761; // "grwa"
+export const archiveLock = (tx: Executor, workspaceId: string, mode: "shared" | "exclusive") =>
+  tx.execute(mode === "shared"
+    ? sql`select pg_advisory_xact_lock_shared(${ARCHIVE_LOCK_CLASS}, hashtext(${workspaceId}))`
+    : sql`select pg_advisory_xact_lock(${ARCHIVE_LOCK_CLASS}, hashtext(${workspaceId}))`);
+
+/**
+ * 409 workspace-archived when the workspace is archived. The shared archive lock waits for an archive in flight and
+ * keeps the next one out until this transaction ends. A writer takes it before locking the environment or the
+ * workspace row, and archiveWorkspace takes the exclusive one before them, so the two never wait on each other.
+ */
 export async function refuseArchived(tx: Executor, workspaceId: string): Promise<void> {
-  const [w] = await tx.select({ status: workspaces.status }).from(workspaces).where(eq(workspaces.id, workspaceId)).for("share");
+  await archiveLock(tx, workspaceId, "shared");
+  const [w] = await tx.select({ status: workspaces.status }).from(workspaces).where(eq(workspaces.id, workspaceId));
   if (w?.status === "archived") throw workspaceArchived();
 }
 
 /** Every edit of gateway entities flags the draft as different from what is published. */
 export async function markDraftChanged(tx: Executor, envId: string): Promise<void> {
+  // Every edit of the draft ends here, in its own transaction: an archive committed meanwhile refuses it.
+  await refuseArchived(tx, envId);
   await tx
     .update(environments)
     .set({ hasUnpublishedChanges: true, draftChangedAt: sql`now()`, updatedAt: sql`now()` })
     .where(eq(environments.id, envId));
-  // Every edit of the draft ends here, in its own transaction: an archive committed meanwhile refuses it.
-  await refuseArchived(tx, envId);
 }
 
 @Injectable()
