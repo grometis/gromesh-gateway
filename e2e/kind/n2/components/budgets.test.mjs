@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
-import { bootToWall, itemResult, kxFromEvents, supervisorEvents, kFromLiveness, ksFromDeletion, LIMITS_MS, overall, runExitCode, verdict } from "./budgets.mjs";
+import { bootToWall, groupFromEvents, itemResult, keepaliveBlocked, kxFromEvents, rfc3339CeilMs, supervisorEvents, kFromLiveness, ksFromDeletion, LIMITS_MS, overall, runExitCode, verdict } from "./budgets.mjs";
 
 test("the limits are B §3.5.3's: K 2 s, Ks 1 s, Kx 0.5 s", () => {
   assert.deepEqual(LIMITS_MS, { K: 2000, Ks: 1000, Kx: 500 });
@@ -222,4 +222,60 @@ test("Kx events: a result completes only its own attempt, never one before anoth
   assert.equal(kxFromEvents(lines, "containment").result, "INVALID");
   // Preceded by another run's ESRCH: still invalid, never a pass.
   assert.equal(kxFromEvents([kill("attempt", 500n * MS, { run: 9 }), kill("failed", 501n * MS, { run: 9, extra: " error=ESRCH" }), ...lines], "containment").result, "INVALID");
+});
+
+const g = (atMs, phase, extra = "", id = "sup=a1b2c3d4 run=1 pid=0 pgid=42 boottimeNs=9") => ({ atMs, text: `group-event v=1 ${id} phase=${phase} kills=3 repeats=${extra || "sent:2"}` });
+const x = (atMs, id = "sup=a1b2c3d4 run=1 pid=42 pgid=42 boottimeNs=8") => ({ atMs, text: `exit-event v=1 ${id} status=signal-killed` });
+
+test("the whole group after the master: gone in time passes, remaining or late fails, unmatched is invalid (review r1)", () => {
+  const ok = groupFromEvents([x(19_000), g(19_500, "gone")], 20_000);
+  assert.equal(ok.result, "PASS");
+  assert.equal(ok.kills, 3);
+  // Master at 19.9 s, group only at 20.2 s: late.
+  assert.equal(groupFromEvents([x(19_900), g(20_200, "gone")], 20_000).result, "FAIL");
+  assert.equal(groupFromEvents([x(1_000), g(1_100, "remaining", "EPERM:2")], 20_000).result, "FAIL");
+  assert.equal(groupFromEvents([x(1_000), g(1_100, "remaining", "EPERM:2"), g(1_500, "gone")], 20_000).result, "FAIL");
+  // Without identity or clock, or of another run than the stop's exit: not this stop's group.
+  assert.equal(groupFromEvents([x(1_000), { atMs: 1_100, text: "group-event v=1 phase=gone kills=1 repeats=none" }], 20_000).result, "INVALID");
+  assert.equal(groupFromEvents([x(1_000), g(1_100, "gone", "", "sup=a1b2c3d4 run=2 pid=0 pgid=42 boottimeNs=9")], 20_000).result, "INVALID");
+  assert.equal(groupFromEvents([x(1_000), g(1_100, "gone", "", "sup=a1b2c3d4 run=1 pid=0 pgid=42 boottimeNs=unknown")], 20_000).result, "INVALID");
+  assert.equal(groupFromEvents([g(1_100, "gone")], 20_000).result, "INVALID");
+});
+
+test("the group: every run that stopped is read, an early one never hides a late or missing one (review r2)", () => {
+  const run2 = "sup=a1b2c3d4 run=2 pid=0 pgid=43 boottimeNs=9", exit2 = "sup=a1b2c3d4 run=2 pid=43 pgid=43 boottimeNs=8";
+  // Run 1 gone at 1.1 s; run 2's master exits at 19.9 s and its group only at 20.2 s.
+  assert.equal(groupFromEvents([x(1_000), g(1_100, "gone"), x(19_900, exit2), g(20_200, "gone", "", run2)], 20_000).result, "FAIL");
+  // Run 2's group never confirmed.
+  assert.equal(groupFromEvents([x(1_000), g(1_100, "gone"), x(19_900, exit2)], 20_000).result, "INVALID");
+  // Both in time.
+  const both = groupFromEvents([x(1_000), g(1_100, "gone"), x(5_000, exit2), g(5_100, "gone", "", run2)], 20_000);
+  assert.equal(both.result, "PASS");
+  assert.equal(both.runs.length, 2);
+});
+
+test("keepalive after the loss: only a 503 on a reused socket proves the block (review r1)", () => {
+  const ka = (t, s, reused = true) => ({ k: "ka", t, reused, ...(s === "err" ? { e: "ECONNRESET" } : { s }) });
+  assert.equal(keepaliveBlocked([ka(1_000, 200), ka(18_500, 503)], 19_000).result, "PASS");
+  // A 500, or a reset followed by a 200, is no block.
+  assert.equal(keepaliveBlocked([ka(1_000, 200), ka(18_000, 500)], 19_000).result, "NOT_EXERCISED");
+  assert.equal(keepaliveBlocked([ka(1_000, "err"), ka(1_300, 200, false), ka(2_000, 200)], 19_000).result, "NOT_EXERCISED");
+  // A 503 on a fresh socket is not the keepalive connection.
+  assert.equal(keepaliveBlocked([ka(1_000, 200), ka(18_500, 503, false)], 19_000).result, "NOT_EXERCISED");
+  // Kong stopped before the guard answered the keepalive socket: not proven, never a pass.
+  assert.equal(keepaliveBlocked([ka(1_000, 200), ka(19_800, "err")], 19_000).result, "NOT_EXERCISED");
+  // Negative controls: a 200 after 19 s, a reused 503 too late, no keepalive at all.
+  assert.equal(keepaliveBlocked([ka(19_500, 200), ka(19_600, 503)], 19_000).result, "FAIL");
+  assert.equal(keepaliveBlocked([ka(1_000, 200), ka(19_200, 503)], 19_000).result, "FAIL");
+  assert.equal(keepaliveBlocked([{ k: "new", t: 1_000, s: 503 }], 19_000).result, "INVALID");
+});
+
+test("an RFC 3339 instant with nanoseconds rounds up: 24.000999999 s is never within 24 s (review r1)", () => {
+  const base = Date.parse("2026-10-29T10:00:00Z");
+  assert.equal(rfc3339CeilMs("2026-10-29T10:00:24.000999999Z") - base, 24_001);
+  assert.equal(rfc3339CeilMs("2026-10-29T10:00:24.000000000Z") - base, 24_000);
+  assert.equal(rfc3339CeilMs("2026-10-29T10:00:24Z") - base, 24_000);
+  assert.equal(rfc3339CeilMs("2026-10-29T10:00:24.5Z") - base, 24_500);
+  assert.equal(rfc3339CeilMs("0001-01-01T00:00:00Z") < 0, true);
+  assert.equal(rfc3339CeilMs("not a time"), null);
 });
