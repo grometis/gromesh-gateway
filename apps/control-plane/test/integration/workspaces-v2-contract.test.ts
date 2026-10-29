@@ -851,7 +851,11 @@ describe("delivery protocol and convergence evidence (N3-K1)", () => {
   it("publishes a release without deploying it, also with Workspaces mode disabled (D4)", () => {
     // Structured: where the disabled mode refuses, and that only operations reaching a data plane do.
     const mode = Object.fromEntries(v2Ops.filter(({ op }) => op["x-gromesh-workspaces-mode-disabled"]).map(({ op }) => [op.operationId, op["x-gromesh-workspaces-mode-disabled"]]));
-    expect(mode).toEqual({ publishRelease: "allowed", createDeployment: "refused", setClusterDeliveryProtocol: "refused-to-v2" });
+    expect(mode).toEqual({
+      publishRelease: "allowed", createDeployment: "refused", setClusterDeliveryProtocol: "refused-to-v2",
+      // WS-M0: a second workspace in the instance waits for the N2 gates as a deployment does.
+      createWorkspace: "refused", requestWorkspace: "refused", decideWorkspaceRequest: "refused",
+    });
     const publish = v2Ops.find(({ op }) => op.operationId === "publishRelease")!.op;
     // publishRelease never answers the delivery refusal: its 409 is the generic conflict (lease, expectedActiveVersion).
     expect(publish.responses["409"]).toEqual({ $ref: "#/components/responses/Conflict" });
@@ -1178,5 +1182,50 @@ describe("analytics guarantees (N3-A1)", () => {
     const op = v2.paths["/instance/analytics/unattributed"].get;
     expect(op).toMatchObject({ operationId: "getUnattributedAnalytics", "x-scope": "instance", "x-required-permission": "platform.admin", "x-gromesh-planned": true });
     expect(Object.keys(v2.components.schemas.UnattributedAnalytics.properties).sort()).toEqual(["byReason", "from", "to", "total"]);
+  });
+});
+
+describe("workspace administration (WS-M0)", () => {
+  const op = (id: string) => v2Ops.find(({ op }) => op.operationId === id)!.op;
+  const schemas = v2.components.schemas;
+
+  it("refuses a creation while Workspaces mode is disabled, before the stage, the policy and the body", () => {
+    const create = op("createWorkspace");
+    expect([create["x-scope"], create["x-required-permission"], create["x-gromesh-workspaces-mode-disabled"]]).toEqual(["instance", "workspace.create", "refused"]);
+    const text = create.description as string;
+    const order = ["409 workspaces-mode-disabled", "only on dev", "admin-only needs platform.admin", "never adjusted"].map((p) => text.indexOf(p));
+    expect(order.every((i) => i >= 0), String(order)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    for (const phrase of ["Creating it grants nothing", "no deployment", "no cluster", "It reaches no data plane"]) expect(text, phrase).toContain(phrase);
+    const problem = ajv.compile({ $ref: `${BASE}control-plane-v2.openapi.yaml#/components/schemas/WorkspaceProblem` });
+    expect(problem({ type: "about:blank", title: "Conflict", status: 409, code: "slug-taken", suggestedSlug: "tvro-2" })).toBe(true);
+    expect(problem({ type: "about:blank", title: "Conflict", status: 409, code: "slug-taken", suggestedSlug: "API" })).toBe(false);
+    expect(problem({ type: "about:blank", title: "Conflict", status: 409 })).toBe(false);
+  });
+
+  it("has a restrictive default policy that only platform administration replaces", () => {
+    expect(schemas.WorkspaceCreationMode.enum).toEqual(["restricted-request", "autonomous", "admin-only"]);
+    expect(op("getWorkspaceCreationPolicy").description).toContain("mode restricted-request and\ncreatorBecomesAdmin false");
+    const set = op("setWorkspaceCreationPolicy");
+    expect([set["x-required-permission"], set["x-scope"], set.security]).toEqual(["platform.admin", "instance", [{ cookieAuth: [], csrfToken: [] }]]);
+    const write = ajv.compile({ $ref: `${BASE}control-plane-v2.openapi.yaml#/components/schemas/WorkspaceCreationPolicyWrite` });
+    expect(write({ mode: "autonomous", creatorBecomesAdmin: false })).toBe(true);
+    expect(write({ mode: "autonomous" })).toBe(false);
+    expect(write({ mode: "open", creatorBecomesAdmin: false })).toBe(false);
+  });
+
+  it("never changes identity on an update and keeps everything on an archive", () => {
+    const update = op("updateWorkspace");
+    expect(Object.keys(update.requestBody.content["application/json"].schema.properties)).toEqual(["name", "description"]);
+    const archive = op("archiveWorkspace");
+    expect(archive["x-required-permission"]).toBe("platform.admin");
+    for (const phrase of ["nothing is deleted", "active-release", "published-configuration", "409 workspace-archived"]) expect(archive.description, phrase).toContain(phrase);
+  });
+
+  it("lets a requester never decide its own request", () => {
+    const decide = op("decideWorkspaceRequest");
+    expect([decide["x-scope"], decide.security]).toEqual(["instance", [{ cookieAuth: [], csrfToken: [] }]]);
+    expect(decide.description).toContain("never its own requester (403)");
+    expect(op("cancelWorkspaceRequest").description).toContain("Only the requester");
   });
 });
