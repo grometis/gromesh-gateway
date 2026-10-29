@@ -11,10 +11,11 @@ import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
-  Api, apply, assertLab, CONTEXT, controlPlaneObjects, controlPlaneSecret, cpSecrets, createSecret, dbSkew, denyPolicies, docker, Forward, helm, here, json,
+  Api, apply, assertLab, CLUSTER, CONTEXT, controlPlaneObjects, controlPlaneSecret, cpSecrets, createSecret, dbSkew, denyPolicies, docker, Forward, helm, here, json,
   kubeconfig, kubectl, NODES, NS, registrationSecret, relayObjects, removeSuiteObjects, root, run, sql,
   scrubKong,
 } from "./lab.mjs";
+import { privilegedAfterLoss } from "./privileged.mjs";
 import { bootToWall, itemResult, kFromLiveness, ksFromDeletion, kxFromEvents, overall, runExitCode } from "./budgets.mjs";
 
 const out = process.env.LAB_OUT ?? mkdtempSync(join(tmpdir(), "gromesh-n2-comp-"));
@@ -847,6 +848,15 @@ async function containmentN({ frozenSupervisor = false } = {}) {
     budgetReadings(it, readings);
   }
   if (loadEnd > 16) it.notes.push(`VM load ${loadEnd} > 16 during the measurement: repeat`);
+  // No connection to the privileged destination after the containment limit (aceite n), from the IMDS server's own log
+  // (fixtures.mjs serve): its clock is the reference node's only if both report the same kernel boot id.
+  const imdsLog = (await docker(["logs", `${CLUSTER}-fx-imds`], { allowFail: true })).stdout.split("\n").filter(Boolean);
+  const refBoot = (await docker(["exec", NODES.workers[0], "cat", "/proc/sys/kernel/random/boot_id"], { allowFail: true })).stdout.trim();
+  const priv = privilegedAfterLoss(imdsLog, { lossMs: t0, limitMs: frozenSupervisor ? V2_BUDGET.kongStopLiveness : V2_BUDGET.kongStopSupervisor,
+    windowMs: frozenSupervisor ? 45_000 : 40_000, refBootId: refBoot });
+  it.measures.privileged = priv;
+  if (priv.result === "NOT_EXERCISED") it.open.push(`privileged destination: ${priv.reason}`);
+  else if (priv.result !== "PASS") it.failures.push(`privileged destination ${priv.result}: ${priv.reason}`);
   ctx.lastViolation = id;
   await recover(it, id);
   done(it);
