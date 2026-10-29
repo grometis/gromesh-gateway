@@ -25,7 +25,8 @@ export class WorkspacesController {
 
   @Post()
   @RequiredPermission("workspace.create", "instance")
-  create(@Ctx() ctx: RequestContext, @Req() req: AuthenticatedRequest, @Body(contractBodyV2("WorkspaceWrite")) body: WorkspaceWrite) {
+  // The body is validated by the service, after the mode, the stage and the policy (the contract's order).
+  create(@Ctx() ctx: RequestContext, @Req() req: AuthenticatedRequest, @Body() body: unknown) {
     return this.admin.create(ctx, req.auth!.permissions, body);
   }
 

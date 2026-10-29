@@ -44,11 +44,10 @@ describe("while Workspaces mode is disabled (the N2 block)", () => {
 
   it("refuses every creation with 409 workspaces-mode-disabled before anything else, creating nothing", async () => {
     const before = await count(h, "workspaces");
-    for (const body of [{ name: uniq("Off") }, { name: "x", slug: "api" }, { name: "x", slug: "INVALID" }]) {
+    // The mode before the body (the contract's order): even an invalid body answers the mode.
+    for (const body of [{ name: uniq("Off") }, { name: "x", slug: "api" }, { name: "x", slug: "INVALID" }, { nope: true }]) {
       const res = await v2(h.api, "POST", "/workspaces", body);
-      // The schema runs first (a pipe), so only a body that matches it reaches the mode check.
-      if (body.slug === "INVALID") expect(res.status).toBe(422);
-      else expect([res.status, res.body.code]).toEqual([409, "workspaces-mode-disabled"]);
+      expect([res.status, res.body.code], JSON.stringify(body)).toEqual([409, "workspaces-mode-disabled"]);
     }
     expect(await count(h, "workspaces")).toBe(before);
     expect((await h.sql.query("select count(*)::int as n from audit_events where action = 'workspace.create'")).rows[0].n).toBe(0);
@@ -138,10 +137,12 @@ describe("in a dev lab", () => {
     for (const mode of ["restricted-request", "autonomous"]) {
       await setPolicy(mode);
       expect((await v2(lead.api, "POST", "/workspaces", { name: uniq(mode) })).status, mode).toBe(201);
-      expect((await v2(lead.api, "GET", "/workspace-creation-policy")).body.caller.canCreate, mode).toBe(true);
+      expect((await v2(lead.api, "GET", "/workspace-creation-policy")).body.caller, mode).toEqual({ canCreate: true, canRequest: false, canDecide: false });
     }
     await setPolicy("admin-only");
     expect((await v2(lead.api, "POST", "/workspaces", { name: uniq("AdminOnly") })).status).toBe(403);
+    // The policy before the body: an invalid body from a caller the policy refuses is a 403, not a 422.
+    expect((await v2(lead.api, "POST", "/workspaces", { name: "x", slug: "api" })).status).toBe(403);
     expect((await v2(lead.api, "GET", "/workspace-creation-policy")).body.caller).toEqual({ canCreate: false, canRequest: false, canDecide: false });
     expect((await v2(dev.api, "POST", "/workspaces", { name: uniq("AdminOnly") })).status).toBe(201);
     await setPolicy("restricted-request");
@@ -167,11 +168,28 @@ describe("in a dev lab", () => {
     const lead = await h.as("viewer");
     await grant(lead.id, ["workspace.create"]);
     expect((await v2(lead.api, "PUT", "/workspace-creation-policy", { mode: "autonomous", creatorBecomesAdmin: true })).status).toBe(403);
-    const token = await h.api("POST", "/tokens", { name: uniq("t"), role: "admin" });
+    const token = await h.api("POST", "/users/me/tokens", { name: uniq("t"), role: "admin", expiresInDays: 1 });
+    expect(token.status).toBe(201);
     const bearer = { authorization: `Bearer ${token.body.token}` };
+    // The same token reads the policy: only the session-only replacement refuses it.
+    expect((await v2(h.anonymous, "GET", "/workspace-creation-policy", undefined, bearer)).status).toBe(200);
     expect((await v2(h.anonymous, "PUT", "/workspace-creation-policy", { mode: "autonomous", creatorBecomesAdmin: false }, bearer)).status).toBe(401);
     expect((await v2(h.api, "PUT", "/workspace-creation-policy", { mode: "open", creatorBecomesAdmin: false })).status).toBe(422);
-    const events = (await h.sql.query("select before, after from audit_events where action = 'workspace_creation_policy.update' order by at")).rows;
+    await Promise.all(["autonomous", "admin-only", "restricted-request", "autonomous"].map((mode) => v2(h.api, "PUT", "/workspace-creation-policy", { mode, creatorBecomesAdmin: false })));
+    await setPolicy("restricted-request");
+    const events = (await h.sql.query("select before, after from audit_events where action = 'workspace_creation_policy.update'")).rows;
+    // Serialized: the replacements form one chain, each before being exactly one other's after (`at` is when each
+    // transaction started, not the order they committed in).
+    const key = (p: { mode: string; updatedAt: string | null }) => `${p.mode}@${p.updatedAt}`;
+    const byBefore = new Map(events.map((e) => [key(e.before), e]));
+    expect(byBefore.size).toBe(events.length);
+    let step = events.find((e) => e.before.updatedAt === null);
+    let walked = 0;
+    while (step) {
+      walked++;
+      step = byBefore.get(key(step.after));
+    }
+    expect(walked).toBe(events.length);
     expect(events.length).toBeGreaterThan(0);
     expect(events.at(-1).after).toMatchObject({ mode: "restricted-request", creatorBecomesAdmin: false });
   });
@@ -219,6 +237,11 @@ describe("in a dev lab", () => {
     expect([clash.status, clash.body.code]).toEqual([409, "name-taken"]);
     const editor = await h.as("editor");
     expect((await v2(editor.api, "PATCH", `/workspaces/${w.id}`, { description: "x" })).status).toBe(403);
+    // Concurrent renames of different workspaces to one free name: one wins, every other gets name-taken.
+    const racers = await Promise.all([1, 2, 3].map(async (n) => (await v2(h.api, "POST", "/workspaces", { name: uniq(`Racer ${n}`) })).body.id as string));
+    const target = uniq("Disputado");
+    const renames = await Promise.all(racers.map((id) => v2(h.api, "PATCH", `/workspaces/${id}`, { name: target })));
+    expect(renames.map((r) => [r.status, r.body.code ?? null]).sort()).toEqual([[200, null], [409, "name-taken"], [409, "name-taken"]]);
     const [event] = (await h.sql.query("select before, after from audit_events where action = 'workspace.update' and entity_id = $1", [w.id])).rows;
     expect([event.before.name, event.after.name]).toEqual([w.name, res.body.name]);
   });
@@ -247,6 +270,21 @@ describe("in a dev lab", () => {
     expect((await v2(h.api, "POST", "/deployments", { expectedRevision: null, reason: "ws-m1" })).status).toBe(201);
     await h.sql.query("delete from workspace_active_release where workspace_id = $1", [deployed.id]);
     expect((await v2(h.api, "POST", `/workspaces/${deployed.id}/archive`)).body.code).toBe("deployed");
+    // Simulated node evidence: only a converged revision without it withdraws it (a failed apply keeps the one before).
+    const converge = async (revision: number) =>
+      h.sql.query("insert into deployment_states (epoch, revision, seq, state, reason) select epoch, revision, coalesce(max(seq), 0) + 1, 'converged', 'test' from deployment_states where revision = $1 group by epoch, revision", [revision]);
+    const r1 = Number((await h.sql.query("select max(revision)::int as r from deployments")).rows[0].r);
+    await converge(r1);
+    expect((await v2(h.api, "POST", `/workspaces/${deployed.id}/archive`)).body.code).toBe("deployed");
+    await h.sql.query("update deployment_lease set revision = null, operation = null, owner = null, started_at = null, deadline_at = null");
+    // The next revision composes another workspace's release, not this one.
+    const keeper = (await v2(h.api, "POST", "/workspaces", { name: uniq("Mantido") })).body.id as string;
+    expect((await v2(h.api, "POST", `/workspaces/${keeper}/releases`, { message: "k1" })).status).toBe(201);
+    const second = await v2(h.api, "POST", "/deployments", { expectedRevision: r1, reason: "without it" });
+    expect(second.status, JSON.stringify(second.body)).toBe(201);
+    expect((await v2(h.api, "POST", `/workspaces/${deployed.id}/archive`)).body.code).toBe("deployed");
+    await converge(r1 + 1);
+    expect((await v2(h.api, "POST", `/workspaces/${deployed.id}/archive`)).status).toBe(204);
 
     expect((await v2(h.api, "POST", `/workspaces/${w.id}/archive`)).status).toBe(204);
     expect((await v2(h.api, "POST", `/workspaces/${w.id}/archive`)).status).toBe(204);
@@ -260,6 +298,28 @@ describe("in a dev lab", () => {
       [await h.api("DELETE", `/environments/${w.id}/services/${service.body.id}`), "v1 delete"],
       [await h.api("DELETE", `/environments/${w.id}`), "v1 environment delete"],
     ] as const) expect([res.status, res.body?.code], what).toEqual([409, "workspace-archived"]);
+    // v1 roles in an archived workspace: no new access, only none (the deny).
+    expect((await h.api("PUT", `/users/${lead.id}/environment-roles`, { items: [{ environmentId: w.id, role: "editor" }] })).body.code).toBe("workspace-archived");
+    expect((await h.api("PUT", `/users/${lead.id}/environment-roles`, { items: [{ environmentId: w.id, role: "none" }] })).status).toBe(200);
+    expect((await v2(h.api, "POST", `/workspaces/${w.id}/role-bindings`, { subjectType: "user", subjectId: lead.id, role: "viewer" })).body.code).toBe("workspace-archived");
+
+    // A write the guard let through before an archive committed is refused in its own transaction.
+    const racing = (await v2(h.api, "POST", "/workspaces", { name: uniq("Corrida") })).body.id as string;
+    const archiver = await h.sql.connect();
+    try {
+      await archiver.query("begin");
+      await archiver.query("select 1 from environments e join workspaces w on w.id = e.id where e.id = $1 for update", [racing]);
+      await archiver.query("update workspaces set status = 'archived' where id = $1", [racing]);
+      const write = h.api("POST", `/environments/${racing}/services`, { name: "late", protocol: "http", host: "example.com", port: 80 });
+      await new Promise((r) => setTimeout(r, 500));
+      await archiver.query("commit");
+      const late = await write;
+      expect([late.status, late.body.code]).toEqual([409, "workspace-archived"]);
+    } finally {
+      archiver.release();
+    }
+    expect((await h.sql.query("select count(*)::int as n from services where environment_id = $1", [racing])).rows[0].n).toBe(0);
+
     // Revoking access stays possible there.
     const binding = await v2(h.api, "POST", `/workspaces/${withCluster.id}/role-bindings`, { subjectType: "user", subjectId: lead.id, role: "viewer" });
     expect(binding.status).toBe(201);

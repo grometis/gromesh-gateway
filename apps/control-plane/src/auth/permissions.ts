@@ -152,7 +152,7 @@ export async function workspaceExists(tx: Executor, workspaceId: string): Promis
 }
 
 /** The workspace is archived: read-only for every mutation in its scope (WS-M0). */
-export async function workspaceArchived(tx: Executor, workspaceId: string): Promise<boolean> {
+export async function isWorkspaceArchived(tx: Executor, workspaceId: string): Promise<boolean> {
   const [row] = await tx.select({ status: workspaces.status }).from(workspaces).where(eq(workspaces.id, workspaceId));
   return row?.status === "archived";
 }
