@@ -191,6 +191,10 @@ jobs:
       - name: "Data-plane chart: strict lint, render, rejection tests, Workspaces and collector sidecar renders"
         if: env.RUN_CHARTS == 'true'
         run: bash deploy/helm/data-plane/ci/check.sh
+      # The readings of the N2 lab's K, Ks and Kx (no cluster): the instrumentation, not the lab's budgets.
+      - name: "N2 lab: budget readings"
+        if: env.RUN_CODE == 'true'
+        run: node --test e2e/kind/n2/components/budgets.test.mjs
       # Plugin configs are validated by a real Kong (control-plane integration tests). A step, not a service: the
       # image is read from the compose default so image-digests never has to edit this workflow.
       - name: Start the Kong validator (compose default image)

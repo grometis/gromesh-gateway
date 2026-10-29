@@ -154,6 +154,7 @@ suite() {
   evidence="$(ran "$name" "$OUT/$name/images-sampled.txt" $expected)" || rc="${rc/#0/evidence}"
   if [[ "$rc" == 0 ]]; then echo "$name: pass" | tee -a "$OUT/summary.txt"
   elif [[ "$rc" == evidence ]]; then echo "$name: FAIL ($evidence)" | tee -a "$OUT/summary.txt"; failed=1
+  elif [[ "$rc" == 2 ]]; then echo "$name: INCOMPLETE (a measurement was not exercised; see $name/results.json blocked${evidence:+; $evidence})" | tee -a "$OUT/summary.txt"; failed=1
   else echo "$name: FAIL (exit $rc; see $name/run.log${evidence:+; $evidence})" | tee -a "$OUT/summary.txt"; failed=1; fi
   load "$name end"
 }
