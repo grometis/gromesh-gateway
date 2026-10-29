@@ -305,8 +305,10 @@ export interface paths {
          * @description Archives the workspace; nothing is deleted: its entities, credentials, releases, snapshots, bindings and audit
          *     stay as they are, readable. Refused with 409 (nothing changed) while anything it published may still be served
          *     or composed: active-release (its active release is not a tombstone; remove it with a tombstone promotion
-         *     first), deployed (it is a member of the instance's latest deployment revision with a release that is not a
-         *     tombstone, converged or not: what the nodes serve is that revision), published-configuration (the v1
+         *     first), deployed (it has a release that is not a tombstone in a revision a node may still serve: the latest
+         *     revision that ever reached converged, or any later one not rejected, or, while none ever converged, any
+         *     revision not rejected; a node that fails to apply a revision keeps the one before, so only a converged
+         *     revision without it, or with its tombstone, proves it withdrawn), published-configuration (the v1
          *     environment has a current snapshot; v1 has no unpublish, so a workspace that ever published through v1 is not
          *     archivable in this phase) or clusters (a cluster is registered in it). Already archived: 204, nothing
          *     recorded. Once archived the workspace is read-only: every mutation in its scope (v1 or v2) answers 409
