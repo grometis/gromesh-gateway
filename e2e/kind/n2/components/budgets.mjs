@@ -81,11 +81,11 @@ export const itemResult = ({ failures, open }) => (failures.length ? "fail" : op
 export const runExitCode = (items, otherFailure = false) =>
   otherFailure || items.some((i) => i.result === "fail" || i.result === "pending") ? 1 : items.some((i) => i.result === "incomplete") ? 2 : 0;
 
-/** The supervisor's milestone lines ("kill-event …", "exit-event …", key=value; supervisor.go) as objects. */
+/** The supervisor's milestone lines (kill-, exit-, start- and group-event, key=value; supervisor.go) as objects. */
 export function supervisorEvents(lines) {
   const events = [];
   for (const line of lines) {
-    const m = /\b(kill-event|exit-event|start-event) v=1 (.*)$/.exec(line);
+    const m = /\b(kill-event|exit-event|start-event|group-event) v=1 (.*)$/.exec(line);
     if (!m) continue;
     const e = { kind: m[1] };
     for (const kv of m[2].trim().split(/\s+/)) { const i = kv.indexOf("="); if (i > 0) e[kv.slice(0, i)] = kv.slice(i + 1); }
@@ -133,4 +133,38 @@ export function kxFromEvents(lines, path) {
   const worst = overall(exercised.length ? exercised : readings);
   const chosen = (exercised.length ? exercised : readings).find((r) => r.result === worst);
   return { ...chosen, attempts: readings.length, readings };
+}
+
+/**
+ * The whole process group after the master exited (the remnants' SIGKILL, supervisor.go confirmGroupGone): PASS when
+ * the supervisor confirmed the group gone (kill(-pgid, 0) = ESRCH), FAIL when it reported processes remaining after
+ * KillAfter, INVALID when no group-event of that stop was logged. Only events of a run that this stop exercised count.
+ */
+export function groupFromEvents(lines) {
+  const groups = supervisorEvents(lines).filter((e) => e.kind === "group-event");
+  const base = { name: "group", from: "nginx master exited", to: "process group confirmed gone (ESRCH)" };
+  if (groups.some((g) => g.phase === "remaining")) {
+    const g = groups.find((x) => x.phase === "remaining");
+    return { ...base, result: "FAIL", reason: `processes remained in group ${g.pgid} after ${g.kills} SIGKILLs (${g.repeats})` };
+  }
+  const gone = groups.find((g) => g.phase === "gone");
+  if (!gone) return { ...base, result: "INVALID", reason: "no group-event: the group's end was not observed" };
+  return { ...base, result: "PASS", reason: null, kills: Number(gone.kills), repeats: gone.repeats, identity: { sup: gone.sup, run: gone.run, pgid: gone.pgid } };
+}
+
+/**
+ * Keepalive after the loss (B §3.5.3: 503 on a new request, keepalive included, ≤ 19 s): the first answer on the
+ * keepalive connection that is not a 200 (503 or the connection lost) and the last 200 must both be within the limit.
+ * events: [{ k: "ka", s?: status, e?: error, t }] relative to the loss; a keepalive that never ran is invalid.
+ */
+export function keepaliveBlocked(events, limitMs) {
+  const ka = events.filter((e) => e.k === "ka");
+  if (ka.length === 0) return { name: "keepalive", result: "INVALID", reason: "no keepalive request after the loss", limitMs };
+  const lastOk = [...ka].reverse().find((e) => e.s === 200) ?? null;
+  const blocked = ka.find((e) => e.s !== 200) ?? null;
+  const base = { name: "keepalive", limitMs, last200Ms: lastOk?.t ?? null, firstBlockedMs: blocked?.t ?? null };
+  if (lastOk && lastOk.t > limitMs) return { ...base, result: "FAIL", reason: `200 on keepalive at ${lastOk.t} ms > ${limitMs} ms` };
+  if (!blocked) return { ...base, result: "INVALID", reason: "the keepalive connection was never blocked" };
+  if (blocked.t > limitMs) return { ...base, result: "FAIL", reason: `keepalive blocked at ${blocked.t} ms > ${limitMs} ms` };
+  return { ...base, result: "PASS", reason: null };
 }

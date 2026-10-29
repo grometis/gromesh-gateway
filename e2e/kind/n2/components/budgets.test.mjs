@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
-import { bootToWall, itemResult, kxFromEvents, supervisorEvents, kFromLiveness, ksFromDeletion, LIMITS_MS, overall, runExitCode, verdict } from "./budgets.mjs";
+import { bootToWall, groupFromEvents, itemResult, keepaliveBlocked, kxFromEvents, supervisorEvents, kFromLiveness, ksFromDeletion, LIMITS_MS, overall, runExitCode, verdict } from "./budgets.mjs";
 
 test("the limits are B §3.5.3's: K 2 s, Ks 1 s, Kx 0.5 s", () => {
   assert.deepEqual(LIMITS_MS, { K: 2000, Ks: 1000, Kx: 500 });
@@ -222,4 +222,29 @@ test("Kx events: a result completes only its own attempt, never one before anoth
   assert.equal(kxFromEvents(lines, "containment").result, "INVALID");
   // Preceded by another run's ESRCH: still invalid, never a pass.
   assert.equal(kxFromEvents([kill("attempt", 500n * MS, { run: 9 }), kill("failed", 501n * MS, { run: 9, extra: " error=ESRCH" }), ...lines], "containment").result, "INVALID");
+});
+
+const group = (phase, extra = "") => `group-event v=1 sup=a1b2c3d4 run=1 pid=0 pgid=42 boottimeNs=9 phase=${phase} kills=3 repeats=${extra || "sent:2"}`;
+
+test("the whole group after the master: gone passes, remaining fails, unobserved is invalid", () => {
+  const ok = groupFromEvents([exited(1n * MS), group("gone")]);
+  assert.equal(ok.result, "PASS");
+  assert.equal(ok.kills, 3);
+  assert.equal(groupFromEvents([exited(1n * MS), group("remaining", "EPERM:2")]).result, "FAIL");
+  // A gone after a remaining does not erase the failure.
+  assert.equal(groupFromEvents([group("remaining", "EPERM:2"), group("gone")]).result, "FAIL");
+  assert.equal(groupFromEvents([exited(1n * MS)]).result, "INVALID");
+  assert.equal(groupFromEvents([]).result, "INVALID");
+});
+
+test("keepalive after the loss: blocked and no later 200 within 19 s, never passed without being exercised", () => {
+  const ka = (t, s) => ({ k: "ka", t, ...(s === "err" ? { e: "ECONNRESET" } : { s }) });
+  assert.equal(keepaliveBlocked([ka(1_000, 200), ka(17_000, 200), ka(18_500, 503)], 19_000).result, "PASS");
+  // A connection error (Kong stopped) also blocks it.
+  assert.equal(keepaliveBlocked([ka(1_000, 200), ka(18_900, "err")], 19_000).result, "PASS");
+  // Negative controls: a 200 after 19 s, a block too late, never blocked, never run.
+  assert.equal(keepaliveBlocked([ka(19_500, 200), ka(19_600, 503)], 19_000).result, "FAIL");
+  assert.equal(keepaliveBlocked([ka(1_000, 200), ka(19_200, 503)], 19_000).result, "FAIL");
+  assert.equal(keepaliveBlocked([ka(1_000, 200), ka(2_000, 200)], 19_000).result, "INVALID");
+  assert.equal(keepaliveBlocked([{ k: "new", t: 1_000, s: 503 }], 19_000).result, "INVALID");
 });
