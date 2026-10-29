@@ -7,6 +7,7 @@ import { canonicalJson, jcs } from "@gromesh/compiler";
 import { contractsV2 } from "../../src/common/contract.js";
 import { deploymentContext, ENCRYPTOR, type Encryptor } from "../../src/crypto/crypto.js";
 import { runMigrations } from "../../src/db/migrate.js";
+import { DeliveryService } from "../../src/deployments/deployments.js";
 import type { Jws } from "../../src/instance/signing-keys.js";
 import { type ApiClient, startHarness, uniq, type Harness } from "./harness.js";
 
@@ -301,6 +302,33 @@ describe("v2 delivery and convergence in a laboratory", () => {
     // Activated once: the same content converging again later inserts nothing.
     await status(applied(dep));
     expect((await h.sql.query(`select count(*)::int as n from content_activations`)).rows[0].n).toBe(1);
+  });
+
+  it("reads a cluster's convergence from current evidence, never from what a node once proved (D-3)", async () => {
+    const dep = await latest();
+    const view = () => h.app.get(DeliveryService).clusterView(c.id);
+    const persisted = async () => (await h.sql.query(`select evidence, verified_revision from cluster_nodes where cluster_id = $1 and node_id = 'node-1'`, [c.id])).rows[0];
+    expect(await view()).toMatchObject({ status: "converged", nodes: [{ nodeId: "node-1", online: true, evidence: "verified" }] });
+    // The probe goes silent: its last report ages past the 60 s window. Nothing re-evaluates, so the columns still say
+    // verified; the reading does not: a node that proved this revision and lost its evidence degrades the cluster.
+    await h.sql.query(`update isolation_reports set received_at = received_at - interval '61 seconds' where admission_id = $1`, [admissionId]);
+    expect(await persisted()).toEqual({ evidence: "verified", verified_revision: dep.revision });
+    expect(await view()).toMatchObject({ status: "degraded", nodes: [{ nodeId: "node-1", online: true, evidence: "awaiting-probe-report" }] });
+    expect((await persisted()).verified_revision).toBe(dep.revision);
+    // The agent goes silent too: offline after 45 s, degraded whatever the columns hold.
+    await h.sql.query(`update cluster_nodes set last_seen_at = last_seen_at - interval '46 seconds' where cluster_id = $1`, [c.id]);
+    expect(await view()).toMatchObject({ status: "degraded", nodes: [{ nodeId: "node-1", online: false }] });
+    // A cluster waiting for its activation proved nothing in it yet, even with nodes verified at the current revision.
+    await report(signed(dep));
+    await status(applied(dep));
+    await h.sql.query(`update clusters set delivery_protocol = 'v2-pending' where id = $1`, [c.id]);
+    try {
+      expect(await view()).toMatchObject({ status: "converging", deliveryProtocol: "v2-pending" });
+    } finally {
+      await h.sql.query(`update clusters set delivery_protocol = 'v2' where id = $1`, [c.id]);
+    }
+    expect(await view()).toMatchObject({ status: "converged", nodes: [{ evidence: "verified" }] });
+    expect((await history(dep.revision)).at(-1)).toBe("converged");
   });
 
   it("degrades when Kong serves a config other than the declared one, and recovers when they agree again", async () => {
