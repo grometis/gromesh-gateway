@@ -1,7 +1,7 @@
 import { Body, Controller, Get, HttpCode, HttpStatus, Inject, Injectable, Module, Param, Post, Req } from "@nestjs/common";
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { audit } from "../audit/audit.js";
-import { type AuthenticatedRequest, Ctx, RequiredPermission, type RequestContext, SessionOnly } from "../auth/auth.js";
+import { ArchivedAllowed, type AuthenticatedRequest, Ctx, RequiredPermission, type RequestContext, SessionOnly } from "../auth/auth.js";
 import { BUILTIN_ROLES, builtinRoleId, type Held, isBuiltinRole, type Permission, type V1Binding, v1BindingById, v1Bindings } from "../auth/permissions.js";
 import { contractBodyV2 } from "../common/contract.js";
 import { notFound, ProblemException, unprocessable, type FieldError } from "../common/problem.js";
@@ -194,6 +194,7 @@ export class AccessController {
 
   @Post("role-bindings/:bindingId/revoke")
   @HttpCode(204)
+  @ArchivedAllowed()
   @RequiredPermission("members.manage", "binding")
   async revoke(@Ctx() ctx: RequestContext, @Req() req: AuthenticatedRequest, @Param("bindingId", uuidParam()) bindingId: string) {
     // The guard decided in the binding's own scope: these are the caller's permissions there (capped by a token).

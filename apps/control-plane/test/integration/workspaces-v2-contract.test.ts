@@ -9,7 +9,7 @@ import { Reflector } from "@nestjs/core";
 import { AccessController } from "../../src/access/access.js";
 import { deriveCoreProfile } from "../../src/common/contract.js";
 import { PathCompatibilityController } from "../../src/workspaces/path-compatibility.js";
-import { WorkspacesController } from "../../src/workspaces/workspaces-api.js";
+import { WorkspaceCreationPolicyController, WorkspacesController } from "../../src/workspaces/workspaces-api.js";
 import { WorkspaceRoutesController, WorkspaceServicesController } from "../../src/gateway/gateway.js";
 import { WorkspaceConsumersController } from "../../src/consumers/consumers.js";
 import { WorkspaceCredentialsController } from "../../src/consumers/credentials.js";
@@ -103,6 +103,7 @@ describe("planned operations", () => {
       AccessController,
       PathCompatibilityController,
       WorkspacesController,
+      WorkspaceCreationPolicyController,
       WorkspaceServicesController,
       WorkspaceRoutesController,
       WorkspaceConsumersController,

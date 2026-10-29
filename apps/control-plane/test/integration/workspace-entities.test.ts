@@ -301,7 +301,9 @@ describe("workspace entities through /api/v2", () => {
   it("exercised every implemented gateway-entity, export and workspace-reading operation", () => {
     const implemented = [...OPS.values()]
       .filter(({ path, op }) => !op["x-gromesh-planned"] && /^\/workspaces(\/\{workspaceId\})?(\/(services|routes|consumers|upstreams|certificates|plugins|export)(?!.*path-compatibility)|$)/.test(path))
-      .map(({ op }) => op.operationId as string);
+      .map(({ op }) => op.operationId as string)
+      // Workspace administration (WS-M1) is exercised by workspace-admin.test.ts.
+      .filter((id) => !["createWorkspace", "updateWorkspace"].includes(id));
     expect(implemented.length).toBe(44);
     expect(implemented.filter((id) => !called.has(id))).toEqual([]);
   });
