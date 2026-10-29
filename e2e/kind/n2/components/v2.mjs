@@ -16,7 +16,7 @@ import {
   scrubKong,
 } from "./lab.mjs";
 import { privilegedAfterLoss } from "./privileged.mjs";
-import { bootToWall, itemResult, kFromLiveness, ksFromDeletion, kxFromEvents, overall, runExitCode } from "./budgets.mjs";
+import { bootToWall, groupFromEvents, itemResult, keepaliveBlocked, kFromLiveness, ksFromDeletion, kxFromEvents, overall, rfc3339CeilMs, runExitCode } from "./budgets.mjs";
 
 const out = process.env.LAB_OUT ?? mkdtempSync(join(tmpdir(), "gromesh-n2-comp-"));
 // Every image this suite pulls is pinned by digest in versions.env (a mutable tag would not reproduce the run).
@@ -835,26 +835,39 @@ async function containmentN({ frozenSupervisor = false } = {}) {
   const worstDetect = Math.max(...per.map((p) => p.detectionMs ?? Infinity));
   if (!frozenSupervisor) {
     // Kx where the supervisor's containment needed SIGKILL (SIGTERM usually suffices): optional here, accepted on p.
-    const kx = [];
+    // The whole group, not only the master (the supervisor's group-event after the stop), per pod.
+    const kx = [], groups = [];
     for (const p of pods) {
       const lines = [...(await vmLogs(p.name, "kong", ["--previous"]).catch(() => [])), ...(await vmLogs(p.name, "kong"))].filter((l) => l.at >= t0);
       kx.push({ pod: p.name, ...kxFromEvents(lines.map((l) => l.text), "containment") });
+      // vmLogs truncates the runtime stamp to milliseconds: + 1 ms keeps it at or after the event.
+      groups.push({ pod: p.name, ...groupFromEvents(lines.map((l) => ({ atMs: l.at + 1 - t0, text: l.text })), V2_BUDGET.kongStopSupervisor) });
     }
     budgetReadings(it, kx, { optional: true });
+    it.measures.groups = groups;
+    for (const g of groups) if (g.result !== "PASS") it.failures.push(`group ${g.result} on ${g.pod}: ${g.reason}`);
+    // Keepalive: blocked (503 or connection lost) and no 200 after the 503 limit (B §3.5.3, keepalive included).
+    const ka = keepaliveBlocked(ev.map((e) => ({ ...e, t: e.t - t0 })).filter((e) => e.t >= 0), V2_BUDGET.block503);
+    it.measures.keepalive = ka;
+    if (ka.result === "NOT_EXERCISED") it.open.push(`keepalive: ${ka.reason}`);
+    else if (ka.result !== "PASS") it.failures.push(`keepalive ${ka.result}: ${ka.reason}`);
     expect(it, worstDetect <= V2_BUDGET.detection, `detection ${worstDetect} ms`);
     expect(it, first503 && first503.t - t0 <= V2_BUDGET.block503 + 0, `first 503 at ${it.measures.first503NewMs} ms`);
     expect(it, per.every((p) => (p.kongExitedLogMs ?? Infinity) <= V2_BUDGET.kongStopSupervisor), `Kong stopped (supervisor) ${JSON.stringify(per.map((p) => p.kongExitedLogMs))}`);
     expect(it, per.every((p) => (p.notReadyMs ?? Infinity) <= V2_BUDGET.notReady), `NotReady ${JSON.stringify(per.map((p) => p.notReadyMs))}`);
     expect(it, wsClose && wsClose.t - t0 <= V2_BUDGET.kongStopSupervisor, `WebSocket closed at ${it.measures.wsCloseMs} ms`);
   } else {
-    expect(it, per.every((p) => (p.kongContainerFinishedMs ?? Infinity) <= V2_BUDGET.kongStopLiveness + 1000), `Kong stopped by the liveness ${JSON.stringify(per.map((p) => p.kongContainerFinishedMs))} (finishedAt has 1 s resolution)`);
     expect(it, wsClose && wsClose.t - t0 <= V2_BUDGET.kongStopLiveness, `WebSocket closed at ${it.measures.wsCloseMs} ms`);
-    // K per pod: an upper bound (budgets.mjs kFromLiveness), on the container's nanosecond finishedAt.
+    // K per pod: an upper bound (budgets.mjs kFromLiveness), on the container's nanosecond finishedAt. The same instant
+    // proves Kong stopped by the liveness ≤ 24 s, without the 1 s tolerance the pod status's finishedAt needed.
     const readings = [];
     for (const { pod, exits } of kongExits) {
       const st = (await exits).states.kong;
       const p = per.find((x) => x.pod === pod);
-      const kongFinishedMs = st.finishedAtNode && st.finishedAtNode.includes(".") ? rel(vmTime(st.finishedAtNode), t0) : null;
+      // Rounded up from the nanoseconds: a bound "≤ 24 s" is never met by dropping the sub-millisecond part.
+      const kongFinishedMs = st.finishedAtNode && st.finishedAtNode.includes(".") ? rel(rfc3339CeilMs(st.finishedAtNode), t0) : null;
+      if (kongFinishedMs == null) it.failures.push(`Kong stop by the liveness on ${pod}: no nanosecond finishedAt (crictl ${st.state}), not measured`);
+      else expect(it, kongFinishedMs <= V2_BUDGET.kongStopLiveness, `Kong stopped by the liveness on ${pod} at ${kongFinishedMs} ms > ${V2_BUDGET.kongStopLiveness} ms`);
       readings.push({ pod, ...kFromLiveness({ detectionMs: p?.detectionMs ?? null, heartbeatMs: rel(heartbeat[pod]?.earliestMs, t0), heartbeatResolutionMs: heartbeat[pod]?.spanMs, kongFinishedMs, finishedResolutionMs: 1 }) });
     }
     budgetReadings(it, readings);

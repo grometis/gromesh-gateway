@@ -859,7 +859,7 @@ describe("delivery protocol and convergence evidence (N3-K1)", () => {
     const deploy409 = ajv.compile({ $ref: `${BASE}control-plane-v2.openapi.yaml#/paths/~1deployments/post/responses/409/content/application~1problem+json/schema` });
     expect(deploy409({ type: "https://gromesh.dev/problems/workspaces-mode-disabled", title: "Conflict", status: 409, code: "workspaces-mode-disabled" })).toBe(true);
     const states = v2.components.schemas.DeliveryProtocolState;
-    expect(states["x-gromesh-activation-gate"]).toEqual(["workspaces-mode-enabled", "every-expected-node-open-admission", "conclusive-passing-round", "failed-capabilities-empty", "no-v1-node-online", "no-open-pendency"]);
+    expect(states["x-gromesh-activation-gate"]).toEqual(["workspaces-mode-enabled", "every-expected-node-open-admission", "conclusive-passing-round", "failed-capabilities-empty", "no-v1-node-online", "no-open-pendency", "collector-token-exclusive"]);
     const t = states["x-gromesh-transitions"].transitions as [string, string, string][];
     // Positive and negative transition vectors: only the gate reaches v2; nothing reaches v2 from v1 directly.
     const allowed = new Set(t.map(([from, to]) => `${from}>${to}`));
@@ -1031,5 +1031,152 @@ describe("isolation signatures vector (N4-D3)", () => {
   it("refuses every trust set of invalidTrustSets as a whole", () => {
     expect(trustSetValid(vector.trustSet)).toBe(true);
     for (const { reason, set } of vector.invalidTrustSets) expect(trustSetValid(set), reason).toBe(false);
+  });
+});
+
+describe("analytics guarantees (N3-A1)", () => {
+  const vector = JSON.parse(read("examples/analytics-v2.example.json"));
+  const info = agentV2.info.description.replace(/\s+/g, " ");
+  const sha = (s: string) => createHash("sha256").update(s).digest("hex");
+  // The reference readings of agent-protocol-v2 "Analytics guarantees", written from the contract's text.
+  const eventIdOf = (c: Doc): string | null => {
+    if (typeof c.requestId !== "string" || !/^[0-9a-f]{32}$/.test(c.requestId)) return null;
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+    if (!uuid.test(c.clusterId ?? "") || !uuid.test(c.podUid ?? "")) return null;
+    const h = sha(`${c.clusterId}|${c.podUid}|${c.requestId}`);
+    return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
+  };
+  const attributionOf = (a: Doc, e: Doc, copies: Doc[] = [e]): { workspace: string | null; reason: string | null } => {
+    // Every stored row of the id: any difference between them is a conflict, attributed to nobody in any order.
+    const canonical = (r: Doc) => JSON.stringify(Object.keys(r).sort().map((k) => [k, r[k]]));
+    if (new Set(copies.map(canonical)).size > 1) return { workspace: null, reason: "conflicting-copies" };
+    if (e.environmentId !== a.instanceId) return { workspace: null, reason: "foreign-instance" };
+    if (!a.clusters.includes(e.clusterId)) return { workspace: null, reason: "unknown-cluster" };
+    if (e.routeId === null) return { workspace: null, reason: "no-route" };
+    const ordered = [...a.revisions].sort((x: Doc, y: Doc) => x.epoch - y.epoch || x.revision - y.revision);
+    const window = ordered.filter((r: Doc) => Date.parse(r.recordedAt) <= Date.parse(e.ts)).slice(-2);
+    if (window.length === 0) return { workspace: null, reason: "before-first-revision" };
+    const owners = new Set(window.flatMap((r: Doc) => Object.entries(r.routes as Record<string, string[]>).filter(([, routes]) => routes.includes(e.routeId)).map(([w]) => w)));
+    if (owners.size !== 1) return { workspace: null, reason: owners.size === 0 ? "route-not-deployed" : "ambiguous-route" };
+    return { workspace: [...owners][0] as string, reason: null };
+  };
+  const healthOf = (h: Doc) => {
+    const reasons: string[] = [];
+    if (!h.collectorReachable) reasons.push("collector-unreachable");
+    else {
+      if (h.received !== null && h.delivered !== null && h.received > 0 && (h.delivered * 2 < h.received || (h.deliveryErrors > 0 && h.delivered < h.received))) reasons.push("delivery-failing");
+      if (h.buffered !== null && h.bufferCapacity !== null && h.buffered * 2 >= h.bufferCapacity) reasons.push("backlog");
+      if (h.kongRequests !== null && h.received !== null && h.kongRequests >= 20 && h.received * 2 < h.kongRequests) reasons.push("events-missing");
+      if (h.authRefusals > 0) reasons.push("auth-refusals");
+    }
+    const unread = ["kongRequests", "received", "delivered", "deliveryErrors", "authRefusals", "buffered", "bufferCapacity"].some((k) => h[k] === null);
+    const state = reasons.length > 0 ? "degraded"
+      : !h.windowComplete || unread ? "unknown"
+      : h.kongRequests === 0 && h.received === 0 ? "idle"
+      : h.received === 0 || h.delivered === 0 ? "unknown"
+      : "healthy";
+    return { state, reasons, analytics: state === "healthy" || state === "idle" ? "analytics-healthy" : "analytics-degraded" };
+  };
+  const fingerprintOf = (token: string) => `sha256:${sha(`gromesh-collector-token/v1\n${token}`)}`;
+  type Node = { online: boolean; fingerprints: { current: string; previous: string | null } | null };
+  const shareOf = (clusters: Record<string, Node[]>, id: string) => {
+    // Only online nodes count; one without fingerprints leaves its cluster unverified.
+    const counted = (nodes: Node[]) => nodes.filter((n) => n.online && n.fingerprints).map((n) => n.fingerprints!);
+    const mine = counted(clusters[id]!);
+    const others = Object.entries(clusters).filter(([k]) => k !== id).flatMap(([, nodes]) => counted(nodes));
+    const shared = mine.some((m) => others.some((t) => m.current === t.current));
+    const touched = mine.some((m) => others.some((t) => [t.current, t.previous].includes(m.current) || (m.previous !== null && [t.current, t.previous].includes(m.previous))));
+    return { collectorTokenShared: shared, collectorTokenUnverified: clusters[id]!.some((n) => n.online && !n.fingerprints), collectorTokenRotating: touched && !shared };
+  };
+
+  it("derives the event id the Vector sidecar already derives, per cluster, pod and Kong request id", () => {
+    const sidecar = read("../deploy/observability/vector/sidecar.tests.yaml");
+    const [first] = vector.eventIdOf.cases;
+    expect(sidecar).toContain(`assert_eq!(.id, "${first.id}")`);
+    for (const c of vector.eventIdOf.cases) expect(eventIdOf(c), c.name).toBe(c.id);
+    const ids = vector.eventIdOf.cases.map((c: Doc) => c.id).filter(Boolean);
+    expect(new Set(ids).size).toBe(3);
+  });
+
+  it("promises no end-to-end delivery, reads each stored id once, never a merge or the dedup cache as a guarantee", () => {
+    for (const phrase of ["none of them can hold \"|\", so the concatenation is unambiguous", "Any other value is never normalised: the event is dropped", "Delivery is not guaranteed end to end: neither at least once nor exactly once is promised", "each stored id counts once", "A conflicted id is never attributed to any workspace", "no row of it is chosen", "truncated to its first 128 bits", "every read the control plane serves counts DISTINCT ids", "never relies on a merge having run", "load reduction only (lost on restart)", "Loss stays possible"]) expect(info).toContain(phrase);
+    for (const op of ["getAnalyticsSummary", "getTopRoutes", "listRequests"]) {
+      const [, path] = Object.entries(v2.paths).find(([, item]: [string, Doc]) => item.get?.operationId === op)!;
+      expect((path as Doc).get.description.replace(/\s+/g, " "), op).toContain("Rows: distinct request ids attributed to this workspace");
+    }
+  });
+
+  it("attributes a row only by route_id against the deployment revisions, through rollout and rollback", () => {
+    for (const c of vector.attributionOf.cases) expect(attributionOf(vector.attributionOf.attribution, c.event, c.copies), c.name).toEqual(c.expected);
+    // Order never changes the answer, and a conflict is never resolved for a workspace.
+    for (const c of vector.attributionOf.cases.filter((x: Doc) => x.copies)) {
+      expect(attributionOf(vector.attributionOf.attribution, c.event, [...c.copies].reverse()), `${c.name} (reversed)`).toEqual(c.expected);
+    }
+    expect(vector.attributionOf.cases.filter((x: Doc) => x.expected.reason === "conflicting-copies").length).toBeGreaterThanOrEqual(4);
+    const reasons = new Set(vector.attributionOf.cases.map((c: Doc) => c.expected.reason).filter(Boolean));
+    expect([...reasons].sort()).toEqual(Object.keys(v2.components.schemas.UnattributedAnalytics.properties.byReason.properties).sort());
+    expect(info).toContain("The path, its prefix or any field of the event never attribute a row");
+  });
+
+  it("counts every id once, leaves conflicted ids to the unattributed totals, and survives merges only on the content key", () => {
+    const canonical = (r: Doc) => JSON.stringify(Object.keys(r).sort().map((k) => [k, r[k]]));
+    const readsOf = (a: Doc, rows: Doc[], routeFilter: string | null) => {
+      const byId = new Map<string, Doc[]>();
+      for (const r of rows) byId.set(r.id, [...(byId.get(r.id) ?? []), r]);
+      const byWorkspace: Record<string, number> = {}, unattributed: Record<string, number> = {};
+      for (const copies of byId.values()) {
+        const strip = ({ id: _, ...e }: Doc) => e;
+        const res = attributionOf(a, strip(copies[0]), copies.map(strip));
+        if (res.workspace === null) unattributed[res.reason!] = (unattributed[res.reason!] ?? 0) + 1;
+        else if (routeFilter === null || copies[0].routeId === routeFilter) byWorkspace[res.workspace] = (byWorkspace[res.workspace] ?? 0) + 1;
+      }
+      return { distinctIds: byId.size, byWorkspace, unattributed };
+    };
+    for (const c of vector.readsOf.cases) expect(readsOf(vector.attributionOf.attribution, c.rows, c.routeFilter), c.name).toEqual(c.expected);
+    const [all] = vector.readsOf.cases;
+    expect(all.expected.unattributed["conflicting-copies"]).toBe(2);
+    // A merge on (environment_id, ts, id, content digest) only drops identical copies: every read is unchanged.
+    const mergeOn = (rows: Doc[], key: (r: Doc) => string) => [...new Map(rows.map((r) => [key(r), r])).values()];
+    const contentKey = (r: Doc) => `${r.environmentId}|${r.ts}|${r.id}|${canonical(r)}`;
+    expect(readsOf(vector.attributionOf.attribution, mergeOn(all.rows, contentKey), null)).toEqual(all.expected);
+    // Negative control: on (environment_id, ts, id) alone a merge keeps one copy of a conflict and attributes it.
+    const oldKey = (r: Doc) => `${r.environmentId}|${r.ts}|${r.id}`;
+    expect(readsOf(vector.attributionOf.attribution, mergeOn(all.rows, oldKey), null)).not.toEqual(all.expected);
+    expect(info).toContain("sorted by (environment_id, ts, id, content digest)");
+    expect(info).toContain("rows of one id that differ never do, so a conflict survives merges for the whole retention");
+  });
+
+  it("reads the collector's health from Kong's traffic and the collector's own counters, idle being no failure", () => {
+    for (const c of vector.healthOf.cases) expect(healthOf(c.input), c.name).toEqual(c.expected);
+    const states = new Set(vector.healthOf.cases.map((c: Doc) => c.expected.state));
+    expect([...states].sort()).toEqual([...agentV2.components.schemas.AnalyticsHealth.properties.state.enum].sort());
+    const reasons = new Set(vector.healthOf.cases.flatMap((c: Doc) => c.expected.reasons));
+    expect([...reasons].sort()).toEqual([...agentV2.components.schemas.AnalyticsHealth.properties.reasons.items.enum].sort());
+    expect(v2.components.schemas.ClusterAnalytics.properties.state.enum).toEqual(agentV2.components.schemas.AnalyticsHealth.properties.state.enum);
+    expect(info).toContain("Missing evidence is never health, and a running container is never health by itself");
+    expect(info).not.toContain("never hidden");
+  });
+
+  it("compares collector tokens by fingerprint only, blocking a current token on two clusters and not a rotation", () => {
+    for (const c of vector.fingerprintOf.cases) expect(fingerprintOf(c.token)).toBe(c.fingerprint);
+    for (const c of vector.collectorTokenShare.cases) {
+      for (const id of Object.keys(c.clusters)) expect(shareOf(c.clusters, id), `${c.name} (${id})`).toEqual(c.expected[id]);
+    }
+    const gate = v2.components.schemas.DeliveryProtocolState["x-gromesh-transitions"].transitions.find(([from, to]: string[]) => from === "v2-pending" && to === "v2");
+    expect(gate[2]).toContain("every online node reports its fingerprints and no current one is shared with another cluster");
+    expect(v2.components.schemas.DeliveryProtocolState["x-gromesh-activation-gate"]).toContain("collector-token-exclusive");
+    expect(info).toContain("a completed rotation clears the share");
+  });
+
+  it("validates the status report's analytics members and refuses a token in place of a fingerprint", () => {
+    expect(validAgent("StatusReport", vector.statusReport.valid), JSON.stringify(validator("agent-protocol-v2.openapi.yaml", "StatusReport").errors)).toBe(true);
+    for (const { reason, patch } of vector.statusReport.invalid) expect(validAgent("StatusReport", { ...vector.statusReport.valid, ...patch }), reason).toBe(false);
+    expect(healthOf(vector.statusReport.valid.analyticsHealth).analytics).toBe(vector.statusReport.valid.analytics);
+  });
+
+  it("plans the platform admin's unattributed totals as an instance operation without detail", () => {
+    const op = v2.paths["/instance/analytics/unattributed"].get;
+    expect(op).toMatchObject({ operationId: "getUnattributedAnalytics", "x-scope": "instance", "x-required-permission": "platform.admin", "x-gromesh-planned": true });
+    expect(Object.keys(v2.components.schemas.UnattributedAnalytics.properties).sort()).toEqual(["byReason", "from", "to", "total"]);
   });
 });

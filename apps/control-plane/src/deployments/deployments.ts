@@ -353,8 +353,21 @@ export class DeliveryService {
     return views;
   }
 
-  /** The node's evidence by evidenceOf: its status, the newest acknowledged report of its open admission and when it arrived. */
+  /** The node's evidence, recording the highest revision it was verified at (revision-regression is measured against it). */
   private async evidence(tx: Executor, dep: DeploymentRow, node: ClusterNodeRow, now: Date): Promise<Evidence> {
+    const evidence = await this.currentEvidence(tx, dep, node, now);
+    if (evidence === "verified" && (node.verifiedEpoch !== dep.epoch || node.verifiedRevision === null || node.verifiedRevision < dep.revision)) {
+      await tx.update(clusterNodes).set({ verifiedEpoch: dep.epoch, verifiedRevision: dep.revision }).where(and(eq(clusterNodes.clusterId, node.clusterId), eq(clusterNodes.nodeId, node.nodeId)));
+    }
+    return evidence;
+  }
+
+  /**
+   * The node's evidence now, by evidenceOf: its status, the newest acknowledged report of its open admission and when it
+   * arrived. Writes nothing. The only reading of current evidence: cluster_nodes.evidence and verified_revision are what
+   * the node once proved (audit and regression), never proof that it still does (D-3).
+   */
+  private async currentEvidence(tx: Executor, dep: DeploymentRow, node: ClusterNodeRow, now: Date): Promise<Evidence> {
     // A refused regression is not recorded: the node shows it until it reports the current revision.
     if (node.failureReason === "revision-regression") return "revision-regression";
     const [admission] = await tx
@@ -375,7 +388,7 @@ export class DeliveryService {
         receivedAt = report.receivedAt;
       }
     }
-    const evidence = evidenceOf(
+    return evidenceOf(
       {
         clusterId: node.clusterId,
         nodeId: node.nodeId,
@@ -393,10 +406,6 @@ export class DeliveryService {
       probe,
       receivedAt,
     );
-    if (evidence === "verified" && (node.verifiedEpoch !== dep.epoch || node.verifiedRevision === null || node.verifiedRevision < dep.revision)) {
-      await tx.update(clusterNodes).set({ verifiedEpoch: dep.epoch, verifiedRevision: dep.revision }).where(and(eq(clusterNodes.clusterId, node.clusterId), eq(clusterNodes.nodeId, node.nodeId)));
-    }
-    return evidence;
   }
 
   /** A divergence of evidence is audited once when it opens and once when it clears (agent protocol v2). */
@@ -497,18 +506,43 @@ export class DeliveryService {
     });
   }
 
+  /** A cluster as the instance sees it now (InstanceCluster): its status from current evidence only (D-3). */
+  async clusterView(clusterId: string) {
+    return this.db.transaction(async (tx) => {
+      const [cluster] = await tx.select().from(clusters).where(eq(clusters.id, clusterId));
+      if (!cluster) throw notFound("Cluster");
+      return this.toInstanceCluster(tx, cluster, []);
+    });
+  }
+
+  /**
+   * converged only while every node is online and its current evidence is verified for the latest deployment; degraded
+   * when a node is offline, failed, Kong unhealthy, its evidence diverges, or it lost the evidence of a revision it had
+   * proved; converging otherwise (also while the cluster waits for its activation: nothing proved in it yet).
+   */
   private async toInstanceCluster(tx: Executor, cluster: ClusterRow, views: NodeView[]) {
     const now = await clock(tx);
     const nodes = await tx.select().from(clusterNodes).where(eq(clusterNodes.clusterId, cluster.id)).orderBy(clusterNodes.nodeId);
     const online = (n: ClusterNodeRow) => now.getTime() - n.lastSeenAt.getTime() <= OFFLINE_SECONDS * 1000;
     const evidence = new Map(views.filter((v) => v.clusterId === cluster.id).map((v) => [v.nodeId, v.evidence]));
     const dep = cluster.deliveryProtocol === "v2" ? await latestDeployment(tx) : undefined;
+    if (dep) for (const n of nodes) if (!evidence.has(n.nodeId)) evidence.set(n.nodeId, await this.currentEvidence(tx, dep, n, now));
     let status: "no-nodes" | "converged" | "converging" | "degraded" = "no-nodes";
     if (nodes.length > 0) {
       if (cluster.deliveryProtocol === "v1") {
         status = nodes.some((n) => !online(n) || n.state === "failed") ? "degraded" : nodes.every((n) => n.state === "applied") ? "converged" : "converging";
+      } else if (nodes.some((n) => !online(n))) {
+        status = "degraded";
+      } else if (dep) {
+        const proved = (n: ClusterNodeRow) => n.verifiedEpoch === dep.epoch && n.verifiedRevision !== null && n.verifiedRevision >= dep.revision;
+        const lost = (n: ClusterNodeRow) => {
+          const e = evidence.get(n.nodeId)!;
+          const failed = n.epoch === dep.epoch && n.failedRevision === dep.revision && n.failedDeploymentHash === dep.configHash;
+          return failed || (n.epoch !== null && !n.kongHealthy) || DEGRADING.includes(e) || (e !== "verified" && proved(n));
+        };
+        status = nodes.some(lost) ? "degraded" : nodes.every((n) => evidence.get(n.nodeId) === "verified") ? "converged" : "converging";
       } else {
-        status = nodes.some((n) => !online(n)) ? "degraded" : dep && nodes.every((n) => n.verifiedRevision === dep.revision) ? "converged" : "converging";
+        status = "converging";
       }
     }
     return {

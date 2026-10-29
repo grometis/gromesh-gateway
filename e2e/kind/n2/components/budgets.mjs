@@ -81,11 +81,11 @@ export const itemResult = ({ failures, open }) => (failures.length ? "fail" : op
 export const runExitCode = (items, otherFailure = false) =>
   otherFailure || items.some((i) => i.result === "fail" || i.result === "pending") ? 1 : items.some((i) => i.result === "incomplete") ? 2 : 0;
 
-/** The supervisor's milestone lines ("kill-event …", "exit-event …", key=value; supervisor.go) as objects. */
+/** The supervisor's milestone lines (kill-, exit-, start- and group-event, key=value; supervisor.go) as objects. */
 export function supervisorEvents(lines) {
   const events = [];
   for (const line of lines) {
-    const m = /\b(kill-event|exit-event|start-event) v=1 (.*)$/.exec(line);
+    const m = /\b(kill-event|exit-event|start-event|group-event) v=1 (.*)$/.exec(line);
     if (!m) continue;
     const e = { kind: m[1] };
     for (const kv of m[2].trim().split(/\s+/)) { const i = kv.indexOf("="); if (i > 0) e[kv.slice(0, i)] = kv.slice(i + 1); }
@@ -133,4 +133,63 @@ export function kxFromEvents(lines, path) {
   const worst = overall(exercised.length ? exercised : readings);
   const chosen = (exercised.length ? exercised : readings).find((r) => r.result === worst);
   return { ...chosen, attempts: readings.length, readings };
+}
+
+/**
+ * An RFC 3339 instant with up to nine fractional digits, in milliseconds rounded UP: a bound "≤ limit" read from it can
+ * never be met by dropping the sub-millisecond part (24.000999999 s is 24001 ms, not 24000).
+ */
+export function rfc3339CeilMs(text) {
+  const m = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?Z$/.exec(text ?? "");
+  if (!m) return null;
+  const whole = Date.parse(`${m[1]}Z`);
+  const ns = Number((m[2] ?? "").padEnd(9, "0"));
+  return whole + Math.ceil(ns / 1e6);
+}
+
+/**
+ * The whole process group after the master exited (supervisor.go confirmGroupGone), per pod. entries: the kong
+ * container's log lines after the loss as { atMs (runtime stamp, relative to the loss), text }. Every run that stopped
+ * after the loss (a complete exit-event) is read, the worst stands: its group is gone only with a "group-event
+ * phase=gone" of the same supervisor, run and pgid logged within deadlineMs (the line's stamp is taken after the event,
+ * so it bounds it from above). FAIL: a "phase=remaining", or "gone" after the deadline. INVALID: a run without its
+ * group-event, or no stop at all.
+ */
+export function groupFromEvents(entries, deadlineMs) {
+  const parsed = entries.flatMap(({ atMs, text }) => supervisorEvents([text]).map((e) => ({ ...e, atMs })));
+  const id = (e) => (e.sup && e.run && e.pgid && /^\d+$/.test(e.boottimeNs ?? "") ? `${e.sup}/${e.run}/${e.pgid}` : null);
+  const base = { name: "group", unit: "ms", limitMs: deadlineMs, from: "isolation lost", to: "process group confirmed gone (ESRCH), log stamp ≥ event" };
+  // Every run that stopped here (an exit-event after the loss) must have its own group confirmed gone in time.
+  const stops = [...new Set(parsed.filter((e) => e.kind === "exit-event").map(id).filter(Boolean))];
+  if (stops.length === 0) return { ...base, result: "INVALID", reason: "no complete exit-event after the loss: no stop to read the group of" };
+  const readings = stops.map((run) => {
+    const groups = parsed.filter((e) => e.kind === "group-event" && id(e) === run);
+    const remaining = groups.find((g) => g.phase === "remaining");
+    if (remaining) return { run, result: "FAIL", reason: `processes remained in group ${remaining.pgid} after ${remaining.kills} SIGKILLs (${remaining.repeats})` };
+    const gone = groups.find((g) => g.phase === "gone");
+    if (!gone) return { run, result: "INVALID", reason: `run ${run}: the group's end was not observed` };
+    if (!(gone.atMs <= deadlineMs)) return { run, result: "FAIL", valueMs: gone.atMs, reason: `run ${run}: group confirmed gone at ${gone.atMs} ms > ${deadlineMs} ms` };
+    return { run, result: "PASS", reason: null, valueMs: gone.atMs, kills: Number(gone.kills), repeats: gone.repeats };
+  });
+  const worst = overall(readings);
+  return { ...base, ...readings.find((r) => r.result === worst), result: worst, runs: readings };
+}
+
+/**
+ * Keepalive after the loss (B §3.5.3: 503 on a new request, keepalive included, ≤ 19 s). events: [{ k: "ka", s?,
+ * e?, reused?, t }] relative to the loss. Only a 503 on a reused socket proves the guard blocked the keepalive
+ * connection. FAIL: a 200 after the limit, or the first reused 503 after it. NOT_EXERCISED: the connection was lost
+ * (Kong stopped) before any reused 503, so the milestone is not proven (never a pass). INVALID: no keepalive request.
+ */
+export function keepaliveBlocked(events, limitMs) {
+  const ka = events.filter((e) => e.k === "ka");
+  const base = { name: "keepalive", unit: "ms", limitMs, from: "isolation lost", to: "503 on a reused keepalive socket" };
+  if (ka.length === 0) return { ...base, result: "INVALID", reason: "no keepalive request after the loss" };
+  const lastOk = [...ka].reverse().find((e) => e.s === 200) ?? null;
+  const blocked = ka.find((e) => e.s === 503 && e.reused === true) ?? null;
+  const measured = { ...base, last200Ms: lastOk?.t ?? null, firstReused503Ms: blocked?.t ?? null };
+  if (lastOk && lastOk.t > limitMs) return { ...measured, result: "FAIL", reason: `200 on keepalive at ${lastOk.t} ms > ${limitMs} ms` };
+  if (blocked && blocked.t > limitMs) return { ...measured, result: "FAIL", reason: `reused keepalive socket blocked at ${blocked.t} ms > ${limitMs} ms` };
+  if (blocked) return { ...measured, result: "PASS", reason: null };
+  return { ...measured, result: "NOT_EXERCISED", reason: "no 503 on a reused keepalive socket (the connection ended before the guard answered it)" };
 }
