@@ -97,3 +97,18 @@ const plainAddress = (a) => String(a ?? "").toLowerCase().replace(/^::ffff:(\d+\
  * keepalive HTTP on /api, the WebSocket upgrade on /api/ws, and the route that targets the privileged destination.
  */
 export const scenarioRequestLines = (slug, privilegedPath) => [`GET /${slug}/api HTTP/1.1`, `GET /${slug}/api/ws HTTP/1.1`, `GET /${slug}${privilegedPath} HTTP/1.1`];
+
+/**
+ * How many scenario requests (from `sources`, with one of the `requests` hashes) the server logged between the
+ * scenario's start and end marks; null when the log does not hold exactly one of each, in order, of one instance.
+ */
+export function privilegedRequestsBetween(lines, { server, scenario, sources, requests }) {
+  const events = lines.map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter((e) => e && e.server === server);
+  const start = events.filter((e) => e.ev === "mark" && e.scenario === scenario && e.phase === "start");
+  const end = events.filter((e) => e.ev === "mark" && e.scenario === scenario && e.phase === "end");
+  if (start.length !== 1 || end.length !== 1 || start[0].inst !== end[0].inst || start[0].seq > end[0].seq) return null;
+  const inside = events.filter((e) => e.inst === start[0].inst && e.seq > start[0].seq && e.seq < end[0].seq);
+  const accepts = new Map(inside.filter((e) => e.ev === "accept").map((e) => [e.conn, e]));
+  const own = new Set(sources.map(plainAddress));
+  return inside.filter((e) => e.ev === "req" && requests.includes(e.lineSha256) && own.has(plainAddress(accepts.get(e.conn)?.remote))).length;
+}

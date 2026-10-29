@@ -15,7 +15,7 @@ import {
   kubeconfig, kubectl, NODES, NS, registrationSecret, relayObjects, removeSuiteObjects, root, run, sql,
   scrubKong,
 } from "./lab.mjs";
-import { privilegedAfterLoss, scenarioRequestLines } from "./privileged.mjs";
+import { privilegedAfterLoss, privilegedRequestsBetween, scenarioRequestLines } from "./privileged.mjs";
 import { bootToWall, groupFromEvents, itemResult, keepaliveBlocked, kFromLiveness, ksFromDeletion, kxFromEvents, overall, rfc3339CeilMs, runExitCode } from "./budgets.mjs";
 
 const out = process.env.LAB_OUT ?? mkdtempSync(join(tmpdir(), "gromesh-n2-comp-"));
@@ -800,7 +800,12 @@ async function containmentN({ frozenSupervisor = false } = {}) {
   const it = item(id, frozenSupervisor
     ? "Loss of isolation with the supervisor frozen (kill -STOP PID 1 of kong): Kong stopped by the liveness ≤ 24 s, WebSocket gone ≤ 24 s"
     : "Loss of isolation (cluster-wide IMDS deny removed) with continuous traffic, keepalive and WebSocket: detection ≤ 18 s, 503 ≤ 19 s, Kong stopped ≤ 20 s, NotReady ≤ 20 s, endpoints removal measured", V2_BUDGET);
-  const client = new Client(id, [ctx.proxy.host, String(ctx.proxy.port), `/${ctx.ws.A.slug}/api`, ctx.ws.A.key, `/${ctx.ws.A.slug}/api/ws`, `/${ctx.ws.A.slug}${PRIVILEGED_PATH}`]);
+  // The privileged destination's own log is bracketed by this scenario's marks, opened before the client's first request
+  // (warm-up included): a request that reaches it before the loss invalidates the reading.
+  const scenario = `${RUN_ID}-${id}`;
+  await markServer("imds", scenario, "start");
+  const clientArgs = [ctx.proxy.host, String(ctx.proxy.port), `/${ctx.ws.A.slug}/api`, ctx.ws.A.key, `/${ctx.ws.A.slug}/api/ws`, `/${ctx.ws.A.slug}${PRIVILEGED_PATH}`];
+  const client = new Client(id, clientArgs);
   await sleep(6000);
   const warm = client.events.slice(-40);
   it.measures.warmup = { ok: warm.filter((e) => e.s === 200).length, ws: client.events.filter((e) => e.k === "ws").map((e) => e.ev).slice(0, 4) };
@@ -818,9 +823,7 @@ async function containmentN({ frozenSupervisor = false } = {}) {
   if (frozenSupervisor) for (const p of pods) { await freeze(p.name, "kong", "kong-supervisor"); heartbeat[p.name] = await lastHeartbeat(p.name, kongIds.find((k) => k.pod === p.name).node); }
   const kongExits = kongIds.map((k) => ({ pod: k.pod, exits: watchExits(k.node, { kong: k.id }, 60) }));
   const loadStart = await vmLoad(`${id} start`);
-  // The privileged destination's own log is bracketed by this scenario's marks; the loss is taken at its earliest.
-  const scenario = `${RUN_ID}-${id}`;
-  await markServer("imds", scenario, "start");
+  // The loss is taken at its earliest.
   const lossEarliest = await vmNow();
   await kubectl(["delete", "ciliumclusterwidenetworkpolicy", "n2c-deny-imds"]);
   const t0 = await vmNow();
@@ -904,6 +907,21 @@ async function containmentN({ frozenSupervisor = false } = {}) {
   else if (priv.result !== "PASS") it.failures.push(`privileged destination ${priv.result}: ${priv.reason}`);
   ctx.lastViolation = id;
   await recover(it, id);
+  // Blocked → reachable → blocked: with the deny back, the recovered pods' requests on the route never reach it.
+  const recovered = `${scenario}-recovered`;
+  await markServer("imds", recovered, "start");
+  const after = new Client(`${id}-recovered`, clientArgs);
+  await sleep(5000);
+  await after.stop();
+  await markServer("imds", recovered, "end");
+  const recoveredLog = (await docker(["logs", `${CLUSTER}-fx-imds`], { allowFail: true })).stdout.split("\n").filter(Boolean);
+  const recoveredSources = (await Promise.all((await live()).map(async (p) => (await json(["-n", NS.dp, "get", "pod", p.name])).status.podIPs.map((x) => x.ip)))).flat();
+  const reachedAfter = privilegedRequestsBetween(recoveredLog, { server: "ext:imds", scenario: recovered, sources: recoveredSources, requests: lines.map((l) => createHash("sha256").update(l).digest("hex")) });
+  const answered = after.events.filter((e) => e.k === "priv" && e.s).length;
+  it.measures.privilegedAfterRecovery = { reached: reachedAfter, kongAnswered: answered };
+  if (reachedAfter === null) it.failures.push("privileged destination after recovery: its log does not bracket the check");
+  else if (reachedAfter > 0) it.failures.push(`privileged destination reached ${reachedAfter} times after recovery (the deny is back)`);
+  else if (answered === 0) it.open.push("privileged destination after recovery: Kong answered no request on the route, not exercised");
   done(it);
 }
 

@@ -5,7 +5,8 @@ import { createHash } from "node:crypto";
 import { connect } from "node:net";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { privilegedAfterLoss, scenarioRequestLines } from "./privileged.mjs";
+import { privilegedAfterLoss, privilegedRequestsBetween, scenarioRequestLines } from "./privileged.mjs";
+import { readFileSync } from "node:fs";
 
 const BOOT = "7d2c1e9a-0b4f-4f0e-9d3a-1c2b3a4d5e6f";
 const LOSS = 1_000_000;
@@ -148,4 +149,22 @@ test("reaching the destination before the loss invalidates the reading (review E
   const r = privilegedAfterLoss(log([...conn(1, -1_000), ...conn(2, 2_000)]), opts);
   assert.equal(r.result, "INVALID");
   assert.match(r.reason, /before the loss/);
+});
+
+test("after recovery: requests of the scenario inside the recovery marks are counted, others are not", () => {
+  const lines = log([...conn(1, 2_000), ...conn(2, 3_000, { remote: PROBE_ELSEWHERE })]);
+  assert.equal(privilegedRequestsBetween(lines, { server: "ext:imds", scenario: "run1-n", sources: [POD], requests: [sha(ROUTE)] }), 1);
+  assert.equal(privilegedRequestsBetween(log([]), { server: "ext:imds", scenario: "run1-n", sources: [POD], requests: [sha(ROUTE)] }), 0);
+  assert.equal(privilegedRequestsBetween(log([], { marks: false }), { server: "ext:imds", scenario: "run1-n", sources: [POD], requests: [sha(ROUTE)] }), null);
+});
+
+test("the containment scenario is wired: route created, marks before the client, client on the route, recovery checked", () => {
+  const src = readFileSync(fileURLToPath(new URL("./v2.mjs", import.meta.url)), "utf8");
+  const body = src.slice(src.indexOf("async function containmentN"), src.indexOf("/** Aceite o:"));
+  assert.match(src, /routes`, \{ session: ctx\.admin, body: \{ name: "meta", serviceId: meta\.id, paths: \[PRIVILEGED_PATH\]/);
+  assert.match(src, /PRIVILEGED_HOST = "imds\.lab\.gromesh\.test"/);
+  assert.ok(body.indexOf('markServer("imds", scenario, "start")') < body.indexOf("new Client(id, clientArgs)"), "the start mark precedes the client");
+  assert.match(body, /clientArgs = \[[^\]]*PRIVILEGED_PATH/);
+  assert.ok(body.indexOf("await recover(it, id)") < body.indexOf("privilegedRequestsBetween("), "the recovery check follows the recovery");
+  assert.match(src, /\.\.\.\["169\.254\.169\.254\/32", "169\.254\.170\.2\/32", "fd00:ec2::254\/128"\]\.map\(\(cidr\) => \(\{ cidr, ports: \[80\] \}\)\)/);
 });
