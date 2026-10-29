@@ -15,7 +15,7 @@ import {
   kubeconfig, kubectl, NODES, NS, registrationSecret, relayObjects, removeSuiteObjects, root, run, sql,
   scrubKong,
 } from "./lab.mjs";
-import { privilegedAfterLoss } from "./privileged.mjs";
+import { privilegedAfterLoss, scenarioRequestLines } from "./privileged.mjs";
 import { bootToWall, groupFromEvents, itemResult, keepaliveBlocked, kFromLiveness, ksFromDeletion, kxFromEvents, overall, rfc3339CeilMs, runExitCode } from "./budgets.mjs";
 
 const out = process.env.LAB_OUT ?? mkdtempSync(join(tmpdir(), "gromesh-n2-comp-"));
@@ -357,6 +357,9 @@ const ctx = {};
 const followers = [];
 const OBS = "gromesh-n2-obs";
 const BACKEND_PORT = 8081;
+/** The lab zone's IMDS name (A 169.254.169.254, 169.254.170.2; AAAA fd00:ec2::254) and the route of A that targets it. */
+const PRIVILEGED_HOST = "imds.lab.gromesh.test";
+const PRIVILEGED_PATH = "/meta";
 const CLICKHOUSE_IMAGE = VERSIONS.CLICKHOUSE_IMAGE;
 const [VECTOR_NAME, VECTOR_DIGEST] = VERSIONS.VECTOR_IMAGE.split("@");
 // Budgets for the workloads the suite adds next to the data plane, so they cannot starve the node it measures on.
@@ -424,7 +427,7 @@ s.listen(${BACKEND_PORT}, "::");`;
 // one WebSocket; every event is a JSON line stamped with the pod's (VM) clock.
 const CLIENT = String.raw`
 import http from "node:http"; import net from "node:net"; import crypto from "node:crypto";
-const [host, port, path, key, wsPath] = JSON.parse(globalThis.ARGS);
+const [host, port, path, key, wsPath, privPath] = JSON.parse(globalThis.ARGS);
 const log = (o) => console.log(JSON.stringify({ t: Date.now(), ...o }));
 const ka = new http.Agent({ keepAlive: true, maxSockets: 1 });
 function get(kind, agent) {
@@ -433,6 +436,8 @@ function get(kind, agent) {
 }
 setInterval(() => get("new", false), 250);
 setInterval(() => get("ka", ka), 250);
+// Traffic for the privileged destination's log only (its own kind, never read by a budget).
+if (privPath) setInterval(() => { const q = http.request({ host, port, path: privPath, agent: false, timeout: 3000 }, (r) => { r.resume(); r.on("end", () => log({ k: "priv", s: r.statusCode })); }); q.on("timeout", () => q.destroy(new Error("timeout"))); q.on("error", (e) => log({ k: "priv", e: e.code ?? e.message })); q.end(); }, 250);
 function ws() {
   const sock = net.connect(Number(port), host); let open = false, n = 0, buf = "";
   sock.on("connect", () => sock.write("GET " + wsPath + " HTTP/1.1\r\nHost: " + host + "\r\napikey: " + key + "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: " + crypto.randomBytes(16).toString("base64") + "\r\n\r\n"));
@@ -592,6 +597,12 @@ async function setupV2() {
     secretsSeen.push(cred.key);
     ctx.ws[label] = { id: env.id, key: cred.key, routeId: route.id, serviceId: svc.id };
   }
+  // Aceite n's privileged destination: a route whose name resolves to the IMDS. The control plane accepts a name (it
+  // resolves no DNS: forbidding what a name reaches is the data plane's job), so only the cluster-wide IMDS deny keeps
+  // Kong from it until a containment scenario removes that deny; from then on the route really reaches it.
+  const meta = await api.ok("POST", `/api/v1/environments/${envA.id}/services`, { session: ctx.admin, body: { name: "meta", protocol: "http", host: PRIVILEGED_HOST, port: 80 } });
+  const metaRoute = await api.ok("POST", `/api/v1/environments/${envA.id}/routes`, { session: ctx.admin, body: { name: "meta", serviceId: meta.id, paths: [PRIVILEGED_PATH], stripPath: false } });
+  Object.assign(ctx.ws.A, { privilegedServiceId: meta.id, privilegedRouteId: metaRoute.id });
   const list = await api.ok("GET", "/api/v2/workspaces", { session: ctx.admin });
   for (const w of Object.values(ctx.ws)) w.slug = (list.items ?? list).find((x) => x.id === w.id)?.slug;
   Object.assign(it.measures, { clusterId: ctx.clusterId, slugs: Object.fromEntries(Object.entries(ctx.ws).map(([k, v]) => [k, v.slug])) });
@@ -786,7 +797,7 @@ async function containmentN({ frozenSupervisor = false } = {}) {
   const it = item(id, frozenSupervisor
     ? "Loss of isolation with the supervisor frozen (kill -STOP PID 1 of kong): Kong stopped by the liveness ≤ 24 s, WebSocket gone ≤ 24 s"
     : "Loss of isolation (cluster-wide IMDS deny removed) with continuous traffic, keepalive and WebSocket: detection ≤ 18 s, 503 ≤ 19 s, Kong stopped ≤ 20 s, NotReady ≤ 20 s, endpoints removal measured", V2_BUDGET);
-  const client = new Client(id, [ctx.proxy.host, String(ctx.proxy.port), `/${ctx.ws.A.slug}/api`, ctx.ws.A.key, `/${ctx.ws.A.slug}/api/ws`]);
+  const client = new Client(id, [ctx.proxy.host, String(ctx.proxy.port), `/${ctx.ws.A.slug}/api`, ctx.ws.A.key, `/${ctx.ws.A.slug}/api/ws`, `/${ctx.ws.A.slug}${PRIVILEGED_PATH}`]);
   await sleep(6000);
   const warm = client.events.slice(-40);
   it.measures.warmup = { ok: warm.filter((e) => e.s === 200).length, ws: client.events.filter((e) => e.k === "ws").map((e) => e.ev).slice(0, 4) };
@@ -880,11 +891,12 @@ async function containmentN({ frozenSupervisor = false } = {}) {
   const imdsLog = (await docker(["logs", `${CLUSTER}-fx-imds`], { allowFail: true })).stdout.split("\n").filter(Boolean);
   const refBoot = (await docker(["exec", NODES.workers[0], "cat", "/proc/sys/kernel/random/boot_id"], { allowFail: true })).stdout.trim();
   const sources = (await Promise.all(pods.map(async (p) => (await json(["-n", NS.dp, "get", "pod", p.name])).status.podIPs.map((x) => x.ip)))).flat();
-  // Every flow of the scenario's client (new and keepalive HTTP, WebSocket upgrade) by the first line Kong forwards.
-  const lines = [`GET /${ctx.ws.A.slug}/api HTTP/1.1`, `GET /${ctx.ws.A.slug}/api/ws HTTP/1.1`];
+  // Every flow of the scenario's client (new and keepalive HTTP, WebSocket upgrade, the privileged route) by the first
+  // line Kong forwards (stripPath false: the full path reaches the upstream).
+  const lines = scenarioRequestLines(ctx.ws.A.slug, PRIVILEGED_PATH);
   const priv = privilegedAfterLoss(imdsLog, { server: "ext:imds", scenario, lossMs: lossEarliest, limitMs: frozenSupervisor ? V2_BUDGET.kongStopLiveness : V2_BUDGET.kongStopSupervisor,
     refBootId: refBoot, sources, requests: lines.map((l) => createHash("sha256").update(l).digest("hex")) });
-  it.measures.privileged = { ...priv, lossEarliestToT0Ms: t0 - lossEarliest };
+  it.measures.privileged = { ...priv, lossEarliestToT0Ms: t0 - lossEarliest, clientPrivileged: Object.entries(client.events.filter((e) => e.k === "priv").reduce((a, e) => { const k = String(e.s ?? e.e); a[k] = (a[k] ?? 0) + 1; return a; }, {})) };
   if (priv.result === "NOT_EXERCISED") it.open.push(`privileged destination: ${priv.reason}`);
   else if (priv.result !== "PASS") it.failures.push(`privileged destination ${priv.result}: ${priv.reason}`);
   ctx.lastViolation = id;

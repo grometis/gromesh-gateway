@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { connect } from "node:net";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { privilegedAfterLoss } from "./privileged.mjs";
+import { privilegedAfterLoss, scenarioRequestLines } from "./privileged.mjs";
 
 const BOOT = "7d2c1e9a-0b4f-4f0e-9d3a-1c2b3a4d5e6f";
 const LOSS = 1_000_000;
@@ -126,4 +126,14 @@ test("the real lab server logs accept (both ends), the request's hash and marks,
   const accept = events.find((e) => e.ev === "accept");
   assert.ok(accept.local && accept.localPort === port && accept.remote, JSON.stringify(accept));
   assert.deepEqual(events.map((e) => e.seq), events.map((_, i) => i + 1));
+});
+
+test("a containment scenario counts the route that targets the privileged destination, prefix included", () => {
+  const lines = scenarioRequestLines("ws-a", "/meta");
+  assert.deepEqual(lines, [ROUTE, WS, "GET /ws-a/meta HTTP/1.1"]);
+  const scenario = { ...opts, requests: lines.map(sha) };
+  // Reaching it before the limit exercises the reading; reaching it after fails; the old set never saw it.
+  assert.equal(privilegedAfterLoss(log(conn(1, 2_000, { line: lines[2] })), scenario).result, "PASS");
+  assert.equal(privilegedAfterLoss(log([...conn(1, 2_000, { line: lines[2] }), ...conn(2, 21_000, { line: lines[2] })]), scenario).result, "FAIL");
+  assert.equal(privilegedAfterLoss(log([...conn(1, 2_000, { line: lines[2] }), ...conn(2, 21_000, { line: lines[2] })]), opts).result, "NOT_EXERCISED");
 });

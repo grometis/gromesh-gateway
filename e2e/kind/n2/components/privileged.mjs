@@ -83,3 +83,9 @@ export function privilegedAfterLoss(lines, { server, scenario, lossMs, limitMs, 
   return { ...base, result: "PASS", reason: null, uncertaintyMs: uncertainty, valueMs: Math.max(...scenarioReqs.map((e) => e.wallMs)) - lossMs,
     connections: new Set(scenarioReqs.map((e) => e.conn)).size, instance: inst };
 }
+
+/**
+ * The first request line of every flow a containment scenario sends through Kong for workspace `slug`: new and
+ * keepalive HTTP on /api, the WebSocket upgrade on /api/ws, and the route that targets the privileged destination.
+ */
+export const scenarioRequestLines = (slug, privilegedPath) => [`GET /${slug}/api HTTP/1.1`, `GET /${slug}/api/ws HTTP/1.1`, `GET /${slug}${privilegedPath} HTTP/1.1`];
