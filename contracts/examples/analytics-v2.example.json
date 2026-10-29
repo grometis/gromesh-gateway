@@ -50,6 +50,27 @@
         "podUid": "6a1f3c2e-0b7d-4c1a-9f10-000000000001",
         "requestId": null,
         "id": null
+      },
+      {
+        "name": "uppercase cluster id: dropped, never normalised",
+        "clusterId": "00000000-0000-4000-8000-00000000C0C0",
+        "podUid": "6a1f3c2e-0b7d-4c1a-9f10-000000000001",
+        "requestId": "0123456789abcdef0123456789abcdef",
+        "id": null
+      },
+      {
+        "name": "a pod uid that is not a canonical UUID (here holding the separator): dropped",
+        "clusterId": "00000000-0000-4000-8000-00000000c0c0",
+        "podUid": "pod|x",
+        "requestId": "0123456789abcdef0123456789abcdef",
+        "id": null
+      },
+      {
+        "name": "separator ambiguity cannot arise: a cluster id carrying \"|\" and part of a pod uid is dropped",
+        "clusterId": "00000000-0000-4000-8000-00000000c0c0|6a1f3c2e",
+        "podUid": "0b7d-4c1a-9f10-000000000001",
+        "requestId": "0123456789abcdef0123456789abcdef",
+        "id": null
       }
     ]
   },

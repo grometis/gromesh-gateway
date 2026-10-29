@@ -1041,6 +1041,8 @@ describe("analytics guarantees (N3-A1)", () => {
   // The reference readings of agent-protocol-v2 "Analytics guarantees", written from the contract's text.
   const eventIdOf = (c: Doc): string | null => {
     if (typeof c.requestId !== "string" || !/^[0-9a-f]{32}$/.test(c.requestId)) return null;
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+    if (!uuid.test(c.clusterId ?? "") || !uuid.test(c.podUid ?? "")) return null;
     const h = sha(`${c.clusterId}|${c.podUid}|${c.requestId}`);
     return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
   };
@@ -1094,7 +1096,7 @@ describe("analytics guarantees (N3-A1)", () => {
   });
 
   it("states at-least-once delivery read as distinct ids, never a merge or the dedup cache as a guarantee", () => {
-    for (const phrase of ["Delivery is at least once, never exactly once", "every read the control plane serves counts DISTINCT ids", "never relies on a merge having run", "load reduction only (lost on restart)", "Loss stays possible"]) expect(info).toContain(phrase);
+    for (const phrase of ["none of them can hold \"|\", so the concatenation is unambiguous", "Any other value is never normalised: the event is dropped", "a conflict never multiplies a request", "Delivery is at least once, never exactly once", "every read the control plane serves counts DISTINCT ids", "never relies on a merge having run", "load reduction only (lost on restart)", "Loss stays possible"]) expect(info).toContain(phrase);
     for (const op of ["getAnalyticsSummary", "getTopRoutes", "listRequests"]) {
       const [, path] = Object.entries(v2.paths).find(([, item]: [string, Doc]) => item.get?.operationId === op)!;
       expect((path as Doc).get.description.replace(/\s+/g, " "), op).toContain("Rows: distinct request ids attributed to this workspace");
