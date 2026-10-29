@@ -301,7 +301,7 @@ func TestContainmentLogsTheSigkillAttemptItsResultAndTheConfirmedExit(t *testing
 	master := h.pid("master")
 	h.valid.Store(false)
 	eventually(t, 2*time.Second, "a confirmed exit", func() bool { return len(h.events("exit-event")) > 0 })
-	kills := h.events("kill-event")
+	kills := onPath(h.events("kill-event"), "containment")
 	if len(kills) != 2 || kills[0]["phase"] != "attempt" || kills[1]["phase"] != "sent" {
 		t.Fatalf("kill events %v", kills)
 	}
@@ -328,20 +328,37 @@ func TestADrainOverDkLogsItsSigkillOnTheDrainPath(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("did not stop")
 	}
-	kills := h.events("kill-event")
+	kills := onPath(h.events("kill-event"), "drain")
 	if len(kills) != 2 || kills[0]["path"] != "drain" || kills[1]["phase"] != "sent" || len(h.events("exit-event")) != 1 {
 		t.Fatalf("kill %v exit %v", kills, h.events("exit-event"))
 	}
 }
 
-// No SIGKILL happened: no event claims one (Kx not exercised).
+// kill events of one path (containment or drain: the Kx paths; group: the remnants after the master exited).
+func onPath(events []map[string]string, path string) []map[string]string {
+	var out []map[string]string
+	for _, e := range events {
+		if e["path"] == path {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// No SIGKILL to the master happened: no Kx path claims one (Kx not exercised). The remnants' SIGKILL is still logged.
 func TestAGracefulDrainAndATermThatSufficesLogNoSigkill(t *testing.T) {
 	drained := start(t, "drain", true)
 	eventually(t, time.Second, "nginx running", func() bool { return alive(drained.pid("master")) })
 	drained.stop <- syscall.SIGQUIT
 	<-drained.done
-	if k := drained.events("kill-event"); len(k) != 0 || len(drained.events("exit-event")) != 1 {
-		t.Fatalf("graceful drain: kill %v exit %v", k, drained.events("exit-event"))
+	kills := drained.events("kill-event")
+	if len(onPath(kills, "drain"))+len(onPath(kills, "containment")) != 0 || len(drained.events("exit-event")) != 1 {
+		t.Fatalf("graceful drain: kill %v exit %v", kills, drained.events("exit-event"))
+	}
+	// The worker left behind by the drained master is killed by the group cleanup, which logs it.
+	group := onPath(kills, "group")
+	if len(group) != 2 || group[0]["phase"] != "attempt" || group[1]["phase"] != "sent" || len(drained.events("group-event")) != 1 || drained.events("group-event")[0]["phase"] != "gone" {
+		t.Fatalf("group cleanup: kill %v group %v", group, drained.events("group-event"))
 	}
 	// "plain": the shell dies of SIGTERM before SIGKILL would be due.
 	termed := start(t, "plain", true)
@@ -349,8 +366,8 @@ func TestAGracefulDrainAndATermThatSufficesLogNoSigkill(t *testing.T) {
 	termed.valid.Store(false)
 	eventually(t, 2*time.Second, "exit", func() bool { return len(termed.events("exit-event")) > 0 })
 	time.Sleep(300 * time.Millisecond)
-	if k := termed.events("kill-event"); len(k) != 0 {
-		t.Fatalf("SIGTERM sufficed but kill events %v", k)
+	if k := termed.events("kill-event"); len(onPath(k, "containment")) != 0 {
+		t.Fatalf("SIGTERM sufficed but containment kill events %v", k)
 	}
 }
 

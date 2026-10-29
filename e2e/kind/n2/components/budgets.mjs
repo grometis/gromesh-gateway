@@ -97,23 +97,33 @@ export function supervisorEvents(lines) {
 /**
  * Kx of one stop path ("drain" or "containment") from the supervisor's own milestones: CLOCK_BOOTTIME read before
  * kill(2) (attempt) and right after Wait4 reaped the same run of nginx (exit), so exit − attempt bounds Kx from above.
- * Only events of one run (sup, run, pid) pair. No attempt: not exercised; a SIGKILL refused because the group was
- * already gone (ESRCH): not exercised either; any other refusal, an attempt without its result, a sent SIGKILL
- * without a confirmed exit of that run, or an unknown clock: invalid.
+ * Every attempt of the path is read and the worst reading stands (a good first SIGKILL never hides a later one).
+ * Only events with their whole identity (sup, run, pid, pgid) and a clock pair, and only a "sent" or "failed" result
+ * completes an attempt. Per attempt: refused because the group was already gone (ESRCH): not exercised; any other
+ * refusal, an attempt without its result, a sent SIGKILL without a confirmed exit of that run, or an attempt whose own
+ * identity or clock is missing: invalid. No attempt at all: not exercised.
  */
 export function kxFromEvents(lines, path) {
+  const ID = ["sup", "run", "pid", "pgid"];
+  const complete = (e) => ID.every((k) => typeof e[k] === "string" && e[k] !== "") && /^\d+$/.test(e.boottimeNs ?? "");
+  const sameRun = (a, b) => ID.every((k) => a[k] === b[k]);
+  const ns = (e) => BigInt(e.boottimeNs);
   const events = supervisorEvents(lines);
-  const sameRun = (a, b) => a.sup === b.sup && a.run === b.run && a.pid === b.pid;
-  const ns = (e) => (e && /^\d+$/.test(e.boottimeNs) ? BigInt(e.boottimeNs) : null);
   const base = { kind: "upperBound", resolutionMs: 1, from: `kill-event phase=attempt path=${path} (≤ SIGKILL sent)`, to: "exit-event of the same run (≥ waitpid confirmed)" };
   const attempts = events.filter((e) => e.kind === "kill-event" && e.phase === "attempt" && e.path === path && e.signal === "SIGKILL");
   if (attempts.length === 0) return verdict("Kx", { ...base, exercised: false, reason: `no SIGKILL on the ${path} path` });
-  const attempt = attempts[0];
-  const result = events.find((e) => e.kind === "kill-event" && e.phase !== "attempt" && e.path === path && sameRun(e, attempt) && ns(e) !== null && ns(attempt) !== null && ns(e) >= ns(attempt));
-  if (result?.phase === "failed" && result.error === "ESRCH") return verdict("Kx", { ...base, exercised: false, reason: "the process group was gone before SIGKILL (ESRCH)" });
-  if (result?.phase === "failed") return verdict("Kx", { ...base, exercised: true, valueMs: null, reason: `SIGKILL refused: ${result.error}` });
-  if (!result) return verdict("Kx", { ...base, exercised: true, valueMs: null, reason: "SIGKILL attempted without its result (or on an unknown clock)" });
-  const exit = events.find((e) => e.kind === "exit-event" && sameRun(e, attempt) && ns(e) !== null && ns(e) >= ns(result));
-  if (!exit) return verdict("Kx", { ...base, exercised: true, valueMs: null, reason: "SIGKILL sent without a confirmed exit of that run" });
-  return verdict("Kx", { ...base, exercised: true, valueMs: Number(ns(exit) - ns(attempt)) / 1e6, identity: { sup: attempt.sup, run: attempt.run, pid: attempt.pid } });
+  const readings = attempts.map((attempt) => {
+    if (!complete(attempt)) return verdict("Kx", { ...base, exercised: true, valueMs: null, reason: "SIGKILL attempt without its identity or clock" });
+    const result = events.find((e) => e.kind === "kill-event" && (e.phase === "sent" || e.phase === "failed") && e.path === path && complete(e) && sameRun(e, attempt) && ns(e) >= ns(attempt));
+    if (result?.phase === "failed" && result.error === "ESRCH") return verdict("Kx", { ...base, exercised: false, reason: "the process group was gone before SIGKILL (ESRCH)" });
+    if (result?.phase === "failed") return verdict("Kx", { ...base, exercised: true, valueMs: null, reason: `SIGKILL refused: ${result.error}` });
+    if (!result) return verdict("Kx", { ...base, exercised: true, valueMs: null, reason: "SIGKILL attempted without a recognised result of that run" });
+    const exit = events.find((e) => e.kind === "exit-event" && complete(e) && sameRun(e, attempt) && ns(e) >= ns(result));
+    if (!exit) return verdict("Kx", { ...base, exercised: true, valueMs: null, reason: "SIGKILL sent without a confirmed exit of that run" });
+    return verdict("Kx", { ...base, exercised: true, valueMs: Number(ns(exit) - ns(attempt)) / 1e6, identity: Object.fromEntries(ID.map((k) => [k, attempt[k]])) });
+  });
+  const exercised = readings.filter((r) => r.result !== "NOT_EXERCISED");
+  const worst = overall(exercised.length ? exercised : readings);
+  const chosen = (exercised.length ? exercised : readings).find((r) => r.result === worst);
+  return { ...chosen, attempts: readings.length, readings };
 }

@@ -150,7 +150,7 @@ test("Kx events: SIGKILL sent and the same run's exit confirmed bound Kx", () =>
   assert.equal(r.result, "PASS");
   assert.equal(r.valueMs, 120);
   assert.equal(r.kind, "upperBound");
-  assert.deepEqual(r.identity, { sup: "a1b2c3d4", run: "1", pid: "42" });
+  assert.deepEqual(r.identity, { sup: "a1b2c3d4", run: "1", pid: "42", pgid: "42" });
   // Above 0.5 s it is a bound above the limit: unknown, never a failure.
   assert.equal(kxFromEvents([kill("attempt", 1000n * MS), kill("sent", 1001n * MS), exited(1700n * MS)], "containment").result, "INVALID");
 });
@@ -188,4 +188,30 @@ test("Kx events: events of different runs never pair", () => {
   assert.equal(kxFromEvents([exited(900n * MS), attempt, sent], "containment").result, "INVALID");
   // A result of another run does not complete this attempt.
   assert.equal(kxFromEvents([attempt, kill("sent", 1001n * MS, { run: 2 }), exited(1100n * MS)], "containment").result, "INVALID");
+});
+
+test("Kx events: every attempt of the path is read, the worst stands (review r1)", () => {
+  const run = (n, at, exitAfterMs, extra = "") => [kill("attempt", at, { run: n }), kill(extra ? "failed" : "sent", at + 1n, { run: n, extra }), ...(exitAfterMs == null ? [] : [exited(at + BigInt(exitAfterMs) * MS, { run: n })])];
+  // 100 ms, then 700 ms: the second is above the limit, so not a pass.
+  assert.equal(kxFromEvents([...run(1, 1000n * MS, 100), ...run(2, 5000n * MS, 700)], "containment").result, "INVALID");
+  // 100 ms, then a refused SIGKILL: invalid.
+  assert.equal(kxFromEvents([...run(1, 1000n * MS, 100), ...run(2, 5000n * MS, null, " error=EPERM")], "containment").result, "INVALID");
+  // A group already gone first, then a real 120 ms kill: the real one is read.
+  const later = kxFromEvents([...run(1, 1000n * MS, null, " error=ESRCH"), ...run(2, 5000n * MS, 120)], "containment");
+  assert.equal(later.result, "PASS");
+  assert.equal(later.attempts, 2);
+  // Only ESRCH: not exercised.
+  assert.equal(kxFromEvents(run(1, 1000n * MS, null, " error=ESRCH"), "containment").result, "NOT_EXERCISED");
+});
+
+test("Kx events: an event without its whole identity, another pgid or an unknown phase never completes an attempt (review r1)", () => {
+  const strip = (line) => line.replace(/ sup=\S+ run=\S+ pid=\S+ pgid=\S+/, "");
+  // No identity at all on every line: nothing pairs.
+  assert.equal(kxFromEvents([kill("attempt", 1000n * MS), kill("sent", 1001n * MS), exited(1100n * MS)].map(strip), "containment").result, "INVALID");
+  // The exit of another process group.
+  assert.equal(kxFromEvents([kill("attempt", 1000n * MS), kill("sent", 1001n * MS), exited(1100n * MS).replace("pgid=42", "pgid=77")], "containment").result, "INVALID");
+  // A phase that is neither sent nor failed is no result.
+  assert.equal(kxFromEvents([kill("attempt", 1000n * MS), kill("queued", 1001n * MS), exited(1100n * MS)], "containment").result, "INVALID");
+  // The group cleanup's SIGKILL (path=group) is never a Kx milestone.
+  assert.equal(kxFromEvents([kill("attempt", 1000n * MS, { path: "group" }), kill("sent", 1001n * MS, { path: "group" }), exited(1100n * MS)], "containment").result, "NOT_EXERCISED");
 });

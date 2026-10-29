@@ -5,8 +5,9 @@
 // with SIGQUIT for at most Dk, still killing at once if the lease becomes invalid meanwhile.
 //
 // Kx milestones (B §3.5.3: SIGKILL → exit confirmed by waitpid, measured in N2). Every SIGKILL to nginx's group
-// logs "kill-event phase=attempt" before kill(2) and "phase=sent" or "phase=failed error=<errno>" after it returns;
-// the master reaped by Wait4 logs "exit-event". Each line carries the supervisor run (sup, random per process), the
+// logs "kill-event phase=attempt" before kill(2) and "phase=sent" or "phase=failed error=<errno>" after it returns,
+// with its path: containment, drain, or group (the remnants after the master exited, repeats counted in
+// "group-event"); the master reaped by Wait4 logs "exit-event". Each line carries the supervisor run (sup, random per process), the
 // start of nginx (run, counted from 1), pid and pgid, and boottimeNs: CLOCK_BOOTTIME (the liveness's clock) read at
 // that point, in nanoseconds. A value only lies before (attempt) or after (sent, exit) its event, so exit − attempt
 // bounds Kx from above; "unknown" when the clock could not be read. No lease, config or request content is logged.
@@ -257,18 +258,28 @@ func (s *supervisor) onExit(status string) {
 }
 
 // confirmGroupGone kills what is left of the group and reaps until none of its processes exists, for at most
-// KillAfter. Until then the state stays running and no new nginx starts.
+// KillAfter. Until then the state stays running and no new nginx starts. Its SIGKILLs are to the group's remnants
+// after the master exited (path=group, never a Kx milestone): the first is logged like any SIGKILL, the repeats of the
+// loop are counted, and "group-event" says how it ended (gone, or remaining after KillAfter).
 func (s *supervisor) confirmGroupGone() {
 	end := time.Now().Add(s.cfg.KillAfter)
+	kills := 0
 	for {
-		_ = syscall.Kill(-s.pgid, syscall.SIGKILL)
+		if kills == 0 {
+			s.sigkill("group")
+		} else {
+			_ = s.cfg.Kill(-s.pgid, syscall.SIGKILL)
+		}
+		kills++
 		s.reap()
 		if err := syscall.Kill(-s.pgid, 0); errors.Is(err, syscall.ESRCH) {
+			s.event("group-event", fmt.Sprintf("phase=gone kills=%d", kills))
 			s.pgid = 0
 			s.state.Nginx = "stopped"
 			return
 		}
 		if time.Now().After(end) {
+			s.event("group-event", fmt.Sprintf("phase=remaining kills=%d", kills))
 			s.cfg.Logf("process group %d still has processes after SIGKILL", s.pgid)
 			return
 		}
