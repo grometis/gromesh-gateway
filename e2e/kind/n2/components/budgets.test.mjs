@@ -242,6 +242,18 @@ test("the whole group after the master: gone in time passes, remaining or late f
   assert.equal(groupFromEvents([g(1_100, "gone")], 20_000).result, "INVALID");
 });
 
+test("the group: every run that stopped is read, an early one never hides a late or missing one (review r2)", () => {
+  const run2 = "sup=a1b2c3d4 run=2 pid=0 pgid=43 boottimeNs=9", exit2 = "sup=a1b2c3d4 run=2 pid=43 pgid=43 boottimeNs=8";
+  // Run 1 gone at 1.1 s; run 2's master exits at 19.9 s and its group only at 20.2 s.
+  assert.equal(groupFromEvents([x(1_000), g(1_100, "gone"), x(19_900, exit2), g(20_200, "gone", "", run2)], 20_000).result, "FAIL");
+  // Run 2's group never confirmed.
+  assert.equal(groupFromEvents([x(1_000), g(1_100, "gone"), x(19_900, exit2)], 20_000).result, "INVALID");
+  // Both in time.
+  const both = groupFromEvents([x(1_000), g(1_100, "gone"), x(5_000, exit2), g(5_100, "gone", "", run2)], 20_000);
+  assert.equal(both.result, "PASS");
+  assert.equal(both.runs.length, 2);
+});
+
 test("keepalive after the loss: only a 503 on a reused socket proves the block (review r1)", () => {
   const ka = (t, s, reused = true) => ({ k: "ka", t, reused, ...(s === "err" ? { e: "ECONNRESET" } : { s }) });
   assert.equal(keepaliveBlocked([ka(1_000, 200), ka(18_500, 503)], 19_000).result, "PASS");

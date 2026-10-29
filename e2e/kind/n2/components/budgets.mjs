@@ -149,23 +149,30 @@ export function rfc3339CeilMs(text) {
 
 /**
  * The whole process group after the master exited (supervisor.go confirmGroupGone), per pod. entries: the kong
- * container's log lines after the loss as { atMs (runtime stamp, relative to the loss), text }. The group is gone only
- * with a "group-event phase=gone" of the same supervisor, run and pgid as an "exit-event" of that stop, logged within
- * deadlineMs (the line's stamp is taken after the event, so it bounds it from above). FAIL: a "phase=remaining", or
- * "gone" logged after the deadline. INVALID: no matching, complete group-event.
+ * container's log lines after the loss as { atMs (runtime stamp, relative to the loss), text }. Every run that stopped
+ * after the loss (a complete exit-event) is read, the worst stands: its group is gone only with a "group-event
+ * phase=gone" of the same supervisor, run and pgid logged within deadlineMs (the line's stamp is taken after the event,
+ * so it bounds it from above). FAIL: a "phase=remaining", or "gone" after the deadline. INVALID: a run without its
+ * group-event, or no stop at all.
  */
 export function groupFromEvents(entries, deadlineMs) {
   const parsed = entries.flatMap(({ atMs, text }) => supervisorEvents([text]).map((e) => ({ ...e, atMs })));
-  const exits = parsed.filter((e) => e.kind === "exit-event" && e.sup && e.run && e.pgid);
-  const ofThisStop = (g) => g.sup && g.run && g.pgid && /^\d+$/.test(g.boottimeNs ?? "") && exits.some((x) => x.sup === g.sup && x.run === g.run && x.pgid === g.pgid);
-  const groups = parsed.filter((e) => e.kind === "group-event" && ofThisStop(e));
+  const id = (e) => (e.sup && e.run && e.pgid && /^\d+$/.test(e.boottimeNs ?? "") ? `${e.sup}/${e.run}/${e.pgid}` : null);
   const base = { name: "group", unit: "ms", limitMs: deadlineMs, from: "isolation lost", to: "process group confirmed gone (ESRCH), log stamp ≥ event" };
-  const remaining = groups.find((g) => g.phase === "remaining");
-  if (remaining) return { ...base, result: "FAIL", reason: `processes remained in group ${remaining.pgid} after ${remaining.kills} SIGKILLs (${remaining.repeats})` };
-  const gone = groups.find((g) => g.phase === "gone");
-  if (!gone) return { ...base, result: "INVALID", reason: "no complete group-event of this stop's run: the group's end was not observed" };
-  if (!(gone.atMs <= deadlineMs)) return { ...base, result: "FAIL", valueMs: gone.atMs, reason: `group confirmed gone at ${gone.atMs} ms > ${deadlineMs} ms` };
-  return { ...base, result: "PASS", reason: null, valueMs: gone.atMs, kills: Number(gone.kills), repeats: gone.repeats, identity: { sup: gone.sup, run: gone.run, pgid: gone.pgid } };
+  // Every run that stopped here (an exit-event after the loss) must have its own group confirmed gone in time.
+  const stops = [...new Set(parsed.filter((e) => e.kind === "exit-event").map(id).filter(Boolean))];
+  if (stops.length === 0) return { ...base, result: "INVALID", reason: "no complete exit-event after the loss: no stop to read the group of" };
+  const readings = stops.map((run) => {
+    const groups = parsed.filter((e) => e.kind === "group-event" && id(e) === run);
+    const remaining = groups.find((g) => g.phase === "remaining");
+    if (remaining) return { run, result: "FAIL", reason: `processes remained in group ${remaining.pgid} after ${remaining.kills} SIGKILLs (${remaining.repeats})` };
+    const gone = groups.find((g) => g.phase === "gone");
+    if (!gone) return { run, result: "INVALID", reason: `run ${run}: the group's end was not observed` };
+    if (!(gone.atMs <= deadlineMs)) return { run, result: "FAIL", valueMs: gone.atMs, reason: `run ${run}: group confirmed gone at ${gone.atMs} ms > ${deadlineMs} ms` };
+    return { run, result: "PASS", reason: null, valueMs: gone.atMs, kills: Number(gone.kills), repeats: gone.repeats };
+  });
+  const worst = overall(readings);
+  return { ...base, ...readings.find((r) => r.result === worst), result: worst, runs: readings };
 }
 
 /**
