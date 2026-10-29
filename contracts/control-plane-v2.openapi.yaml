@@ -132,7 +132,10 @@ info:
         that keep proving isolation.
       - Analytics collector in workspaces mode (B §3.5.2, decision P2): a sidecar listening only on 127.0.0.1, token per
         cluster (never repeated across clusters), cluster and instance pinned by the collector, dedup by
-        (cluster, pod, request.id), workspace attributed by route_id against the active deployment.
+        (cluster, pod, request.id), workspace attributed by route_id against the active deployment. Guarantees and
+        their limits (event identity, retried delivery that may duplicate or lose, stored ids read once, conflicting
+        copies left unattributed, attribution, token exclusivity,
+        collector health): agent-protocol-v2 "Analytics guarantees" (N3-A1).
       - Identity in the core (B §4.7): each instance authenticates only its own local accounts; one local login
         identity per person; deciding (confirm, approve, execute) requires a person verified by platform-admin with
         a corporateId unique in the instance. OIDC login and cross-instance correlation: x-gromesh-phase L5. The
@@ -340,6 +343,27 @@ paths:
         is outside what this report can see. Counted by day; never carries a token value, a path parameter or a body.
       responses:
         "200": { description: Usage, content: { application/json: { schema: { $ref: "#/components/schemas/ApiV1Usage" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /instance/analytics/unattributed:
+    get:
+      tags: [ instance ]
+      operationId: getUnattributedAnalytics
+      x-scope: instance
+      x-gromesh-requirements: [ GW-WS-12, GW-WS-16b ]
+      x-required-permission: platform.admin
+      x-gromesh-planned: true
+      description: |
+        Rows of the instance's analytics that the attribution rule (agent-protocol-v2 "Analytics guarantees") gives to
+        no workspace, counted as distinct request ids per reason over the period. Totals only: no path, client or
+        route detail, so a row nobody owns never shows another workspace's traffic.
+      parameters:
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/AnalyticsFrom
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/AnalyticsTo
+      responses:
+        "200": { description: Totals, content: { application/json: { schema: { $ref: "#/components/schemas/UnattributedAnalytics" } } } }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "502": { $ref: ./control-plane.openapi.yaml#/components/responses/AnalyticsUnavailable }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
   /instance/signing-keys:
@@ -3407,6 +3431,7 @@ paths:
         Traffic of the environment as seen by its gateways, from the `requests` table fed by the observability
         pipeline (7 days of retention). Totals for the period plus one point per `interval`; a bucket with no
         traffic is present with zero requests and null latencies. Latencies are total request time in ms.
+        Rows: distinct request ids attributed to this workspace by agent-protocol-v2 "Analytics guarantees" (route_id against the deployment revisions, never the path); unattributed rows count only in getUnattributedAnalytics.
       parameters:
         - $ref: ./control-plane.openapi.yaml#/components/parameters/AnalyticsFrom
         - $ref: ./control-plane.openapi.yaml#/components/parameters/AnalyticsTo
@@ -3454,9 +3479,10 @@ paths:
       operationId: getTopRoutes
       description: |
         The routes with the most traffic, the most errors or the slowest p95 over the period, from the same
-        `requests` table as the summary (same 7-day limit). Traffic that matched no route is one row with null
-        `routeId` and `serviceId`. Ordered by the chosen criterion descending, ties by `requests` descending then
-        `routeId`.
+        `requests` table as the summary (same 7-day limit). Ordered by the chosen criterion descending, ties by
+        `requests` descending then `routeId`. Rows: distinct request ids attributed to this workspace by agent-protocol-v2 "Analytics guarantees" (route_id against the deployment revisions, never the path); unattributed rows count only in getUnattributedAnalytics. Traffic that matched no route of this workspace is
+        unattributed (reason no-route or route-not-deployed), so every row here has a routeId of this
+        workspace.
       parameters:
         - $ref: ./control-plane.openapi.yaml#/components/parameters/AnalyticsFrom
         - $ref: ./control-plane.openapi.yaml#/components/parameters/AnalyticsTo
@@ -3510,7 +3536,7 @@ paths:
       description: |
         Request explorer over the same `requests` table, newest first. Credentials never reach the table (the
         pipeline strips them), so a record carries no header or query values: only the path. `clientIp` is
-        masked for every role but admin.
+        masked for every role but admin. Rows: distinct request ids attributed to this workspace by agent-protocol-v2 "Analytics guarantees" (route_id against the deployment revisions, never the path); unattributed rows count only in getUnattributedAnalytics.
       parameters:
         - $ref: ./control-plane.openapi.yaml#/components/parameters/AnalyticsFrom
         - $ref: ./control-plane.openapi.yaml#/components/parameters/AnalyticsTo
@@ -4322,13 +4348,13 @@ components:
         snapshots; v2: the instance's deployments; v2-pending: neither flow delivers anything new (each node keeps
         what it applied) until the activation gate holds.
       enum: [ v1, v2-pending, v2 ]
-      x-gromesh-activation-gate: [ workspaces-mode-enabled, every-expected-node-open-admission, conclusive-passing-round, failed-capabilities-empty, no-v1-node-online, no-open-pendency ]
+      x-gromesh-activation-gate: [ workspaces-mode-enabled, every-expected-node-open-admission, conclusive-passing-round, failed-capabilities-empty, no-v1-node-online, no-open-pendency, collector-token-exclusive ]
       x-gromesh-transitions:
         initial: [ v1, v2-pending ]
         terminal: []
         transitions:
           - [ v1, v2-pending, "setClusterDeliveryProtocol protocol v2 with Workspaces mode enabled (audited)" ]
-          - [ v2-pending, v2, "activation gate: every expected node has an open admission with a conclusive passing round (failedCapabilities empty), no node without an open admission is registered and online, and no pendency is open in scope (system transition, audited)" ]
+          - [ v2-pending, v2, "activation gate: every expected node has an open admission with a conclusive passing round (failedCapabilities empty), no node without an open admission is registered and online, no pendency is open in scope, and the collector token is exclusive: every online node reports its fingerprints and no current one is shared with another cluster (agent-protocol-v2 \"Analytics guarantees\"; system transition, audited)" ]
           - [ v2-pending, v1, "setClusterDeliveryProtocol protocol v1: switch cancelled (audited)" ]
           - [ v2, v1, "setClusterDeliveryProtocol protocol v1: controlled return to the environment's current v1 snapshot (audited)" ]
     DeliveryProblem:
@@ -5506,6 +5532,57 @@ components:
         tags:
           $ref: ./control-plane.openapi.yaml#/components/schemas/Tags
       description: A plugin that applies to every route of the workspace, emulated by the compiler (info, "Plugins").
+    ClusterAnalytics:
+      type: object
+      additionalProperties: false
+      description: |
+        The cluster's analytics as its agents report it (agent-protocol-v2 "Analytics guarantees"). state: degraded when
+        a node's analyticsHealth is degraded in its latest status received within 60 s; unknown when a node has none
+        that recent, or reports unknown; idle when every node is idle; healthy otherwise. Opening and clearing
+        degraded are audited (cluster.analytics.degraded / cluster.analytics.cleared). Fingerprints count only from
+        online nodes (latest status within 45 s, not deregistered); a replaced or stopped pod stops counting.
+        collectorTokenShared: a current fingerprint of an online node of this cluster equals a current one of an
+        online node of another cluster; collectorTokenUnverified: an online node of this cluster reported no
+        fingerprints (both block the activation gate only); collectorTokenRotating: without a share, a match involves
+        a previous fingerprint. Never affects convergence, containment or readiness.
+      required: [state, collectorTokenShared, collectorTokenUnverified, collectorTokenRotating, nodes]
+      properties:
+        state: { enum: [healthy, idle, degraded, unknown] }
+        collectorTokenShared: { type: boolean }
+        collectorTokenUnverified: { type: boolean }
+        collectorTokenRotating: { type: boolean }
+        nodes:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [nodeId, state, reasons, observedAt]
+            properties:
+              nodeId: { type: string }
+              state: { enum: [healthy, idle, degraded, unknown] }
+              reasons: { type: array, items: { enum: [collector-unreachable, delivery-failing, backlog, events-missing, auth-refusals] } }
+              observedAt: { type: [string, "null"], format: date-time }
+              collectorTokenKeyHint: { type: [string, "null"], pattern: "^[0-9a-f]{8}$", description: "First 8 hex digits of the current fingerprint; never the token" }
+    UnattributedAnalytics:
+      type: object
+      additionalProperties: false
+      required: [from, to, total, byReason]
+      properties:
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+        total: { type: integer, minimum: 0, description: Distinct request ids }
+        byReason:
+          type: object
+          additionalProperties: false
+          required: [conflicting-copies, foreign-instance, unknown-cluster, no-route, before-first-revision, route-not-deployed, ambiguous-route]
+          properties:
+            conflicting-copies: { type: integer, minimum: 0, description: "Ids whose stored copies differ; never attributed to a workspace" }
+            foreign-instance: { type: integer, minimum: 0 }
+            unknown-cluster: { type: integer, minimum: 0 }
+            no-route: { type: integer, minimum: 0 }
+            before-first-revision: { type: integer, minimum: 0 }
+            route-not-deployed: { type: integer, minimum: 0 }
+            ambiguous-route: { type: integer, minimum: 0 }
     InstanceCluster:
       type: object
       required:
@@ -5575,6 +5652,8 @@ components:
                 pattern: ^[0-9a-f]{32}$
               evidence:
                 $ref: "#/components/schemas/ConvergenceEvidence"
+        analytics:
+          $ref: "#/components/schemas/ClusterAnalytics"
         createdAt:
           type: string
           format: date-time
