@@ -316,7 +316,9 @@ export class AnalyticsService implements OnApplicationShutdown {
       password: this.config.clickhouse.password,
       database: this.config.clickhouse.database,
       request_timeout: 10_000,
-      clickhouse_settings: { output_format_json_quote_64bit_integers: 0 },
+      // A budget on the server too (the conflict lookup reads every stored copy of the candidate ids): exceeding it is
+      // an error (502), never a truncated set or aggregate that could hide a conflict.
+      clickhouse_settings: { output_format_json_quote_64bit_integers: 0, max_execution_time: 10, timeout_overflow_mode: "throw", max_memory_usage: "1000000000" },
     });
     try {
       const result = await this.client.query({ query, query_params: params, format: "JSONEachRow" });

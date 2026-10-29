@@ -359,6 +359,33 @@ describe("copies of one request id that disagree (agent protocol v2, Analytics g
     expect(await ids(e2)).not.toContain(shared.id);
   });
 
+  it("leaves out a conflict on any column, outside the period too, behind every filter, in series and cursor pages", async () => {
+    const envId = (await h.api("POST", "/environments", { name: uniq("conflict-cols") })).body.id as string;
+    const clean = row(envId, 10_000, 200, 10);
+    const cluster = row(envId, 20_000, 200, 10), byCluster = { ...cluster, cluster_id: "00000000-0000-4000-8000-0000000000c2" };
+    const nullable = row(envId, 30_000, 200, 10, { consumer_id: null }), toValue = { ...nullable, consumer_id: "00000000-0000-4000-8000-0000000000d1" };
+    const status = row(envId, 40_000, 200, 10), byStatus = { ...status, status: 500 };
+    // The other copy lies outside the queried period (another ts): still the same id, still a conflict.
+    const early = row(envId, 50_000, 200, 10), earlyCopy = { ...early, ts: at(-3 * 60 * 60_000) };
+    await admin.insert({ table: "requests", values: [clean, cluster, byCluster, nullable, toValue, status, byStatus, early, earlyCopy], format: "JSONEachRow" });
+    expect(await total(envId)).toBe(1);
+    const series = (await h.api("GET", `/environments/${envId}/analytics/summary?${period()}&interval=1m`)).body.series as { requests: number }[];
+    expect(series.reduce((n, p) => n + p.requests, 0)).toBe(1);
+    for (const filter of ["&status=200", "&status=500", "&consumerId=00000000-0000-4000-8000-0000000000d1", "&serviceId=00000000-0000-4000-8000-0000000000a1"]) {
+      const listed = await ids(envId, filter);
+      for (const conflicted of [cluster.id, nullable.id, status.id, early.id]) expect(listed, filter).not.toContain(conflicted);
+    }
+    // Pages of one through the explorer's cursor never surface a conflicted id.
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const page: ApiResponse = await h.api("GET", `/environments/${envId}/requests?${period()}&limit=1${cursor ? `&cursor=${cursor}` : ""}`);
+      seen.push(...page.body.items.map((r: { id: string }) => r.id));
+      cursor = page.body.nextCursor;
+    } while (cursor);
+    expect(seen).toEqual([clean.id]);
+  });
+
   it("still counts identical copies once and distinct ids separately", async () => {
     const envId = (await h.api("POST", "/environments", { name: uniq("legit") })).body.id as string;
     const one = row(envId, 10_000, 200, 10), two = row(envId, 10_000, 200, 10);
