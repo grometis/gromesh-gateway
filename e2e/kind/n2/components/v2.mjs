@@ -14,7 +14,7 @@ import {
   Api, apply, assertLab, CONTEXT, controlPlaneObjects, controlPlaneSecret, cpSecrets, createSecret, dbSkew, denyPolicies, docker, Forward, helm, here, json,
   kubeconfig, kubectl, NODES, NS, registrationSecret, relayObjects, removeSuiteObjects, root, run, sql,
 } from "./lab.mjs";
-import { kFromLiveness, ksFromDeletion, kxFromDrain, overall } from "./budgets.mjs";
+import { itemResult, kFromLiveness, ksFromDeletion, kxFromDrain, overall, runExitCode } from "./budgets.mjs";
 
 const out = process.env.LAB_OUT ?? mkdtempSync(join(tmpdir(), "gromesh-n2-comp-"));
 // Every image this suite pulls is pinned by digest in versions.env (a mutable tag would not reproduce the run).
@@ -60,7 +60,7 @@ const log = (message) => console.log(`${new Date().toISOString()} ${message}`);
 const mark = (event, data = {}) => { report.timeline.push({ at: new Date().toISOString(), event, ...data }); log(`${event} ${JSON.stringify(data)}`); };
 
 function item(id, title, budget) {
-  const it = { id, title, budget, result: "pending", measures: {}, negative: [], failures: [], notes: [] };
+  const it = { id, title, budget, result: "pending", measures: {}, negative: [], failures: [], notes: [], open: [] };
   report.items.push(it);
   log(`--- item ${id}: ${title}`);
   return it;
@@ -70,7 +70,8 @@ const expect = (it, ok, message) => { if (!ok) it.failures.push(message); return
 const negative = (it, what, expected, observed, ok) => { it.negative.push({ what, expected, observed, ok }); if (!ok) it.failures.push(`negative control "${what}": expected ${expected}, observed ${observed}`); };
 /** Only at an item's normal end: an exception leaves it pending, and main records it as failed. */
 function done(it) {
-  it.result = it.failures.length ? "fail" : "pass";
+  // A measurement that did not happen leaves the item incomplete: never a pass, and the run says so (exit 2).
+  it.result = itemResult(it);
   save();
   log(`item ${it.id}: ${it.result.toUpperCase()} ${JSON.stringify(it.measures)}`);
   for (const f of it.failures) log(`  ${f}`);
@@ -691,6 +692,7 @@ function budgetReadings(it, verdicts) {
   it.measures.budgetsOverall = overall(verdicts);
   for (const v of verdicts) {
     if (v.result === "FAIL" || v.result === "INVALID") it.failures.push(`${v.name} ${v.result}: ${v.reason} (${v.from} → ${v.to})`);
+    if (v.result === "NOT_EXERCISED") it.open.push(`${v.name}: ${v.reason}`);
     if (v.result === "NOT_EXERCISED") blocked({ id: `${it.id}:${v.name}`, item: it.id, missing: `${v.name} not exercised: ${v.reason}`, unblock: "a run in which the milestone happens" });
   }
 }
@@ -763,13 +765,16 @@ async function containmentN({ frozenSupervisor = false } = {}) {
   expect(it, warm.some((e) => e.k === "new" && e.s === 200) && warm.some((e) => e.k === "ka" && e.s === 200), "no 200 before the loss");
   expect(it, client.events.some((e) => e.k === "ws" && e.ev === "pong"), "the WebSocket never echoed before the loss");
   const pods = await live();
-  if (frozenSupervisor) for (const p of pods) await freeze(p.name, "kong", "kong-supervisor");
-  // K needs the kong container's finishedAt in nanoseconds (crictl on its node): the pod status only has seconds.
-  const kongExits = frozenSupervisor ? await Promise.all(pods.map(async (p) => {
+  // K needs the kong container's finishedAt in nanoseconds (crictl on its node; the pod status only has seconds), of
+  // the very container that gets frozen (id read before), and the freeze instant (the heartbeat stops there).
+  const kongIds = frozenSupervisor ? await Promise.all(pods.map(async (p) => {
     const pj = await json(["-n", NS.dp, "get", "pod", p.name]);
     const kong = pj.status.containerStatuses.find((c) => c.name === "kong");
-    return { pod: p.name, exits: watchExits(pj.spec.nodeName, { kong: kong.containerID.replace(/^containerd:\/\//, "") }, 60) };
+    return { pod: p.name, node: pj.spec.nodeName, id: kong.containerID.replace(/^containerd:\/\//, "") };
   })) : [];
+  const frozenAt = {};
+  if (frozenSupervisor) for (const p of pods) { frozenAt[p.name] = await vmNow(); await freeze(p.name, "kong", "kong-supervisor"); }
+  const kongExits = kongIds.map((k) => ({ pod: k.pod, exits: watchExits(k.node, { kong: k.id }, 60) }));
   const loadStart = await vmLoad(`${id} start`);
   await kubectl(["delete", "ciliumclusterwidenetworkpolicy", "n2c-deny-imds"]);
   const t0 = await vmNow();
@@ -811,7 +816,7 @@ async function containmentN({ frozenSupervisor = false } = {}) {
       const st = (await exits).states.kong;
       const p = per.find((x) => x.pod === pod);
       const kongFinishedMs = st.finishedAtNode && st.finishedAtNode.includes(".") ? rel(vmTime(st.finishedAtNode), t0) : null;
-      readings.push({ pod, ...kFromLiveness({ detectionMs: p?.detectionMs ?? null, kongFinishedMs, finishedResolutionMs: 1 }) });
+      readings.push({ pod, ...kFromLiveness({ detectionMs: p?.detectionMs ?? null, frozenMs: rel(frozenAt[pod], t0), kongFinishedMs, finishedResolutionMs: 1 }) });
     }
     budgetReadings(it, readings);
   }
@@ -1060,8 +1065,9 @@ async function mainV2() {
     }
   } finally { await finishV2(); }
   console.log(`results: ${join(out, "results.json")}`);
-  // A failed, pending or aborted item, a leaked secret or a failed cleanup fails the run (the runner reads the code).
-  const failed = report.items.filter((i) => i.result === "fail" || i.result === "pending");
-  if (failed.length || report.aborted || report.secretScan?.leaks?.length || report.cleanupFailed) process.exit(1);
+  // A failed, pending or aborted item, a leaked secret or a failed cleanup fails the run (exit 1); an item whose
+  // measurement was not exercised leaves it incomplete (exit 2). The runner reads the code: neither is a pass.
+  const code = runExitCode(report.items, Boolean(report.aborted || report.secretScan?.leaks?.length || report.cleanupFailed));
+  if (code !== 0) process.exit(code);
 }
 await mainV2();

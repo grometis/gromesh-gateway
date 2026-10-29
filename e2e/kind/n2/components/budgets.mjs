@@ -36,16 +36,25 @@ export function overall(verdicts) {
   return "PASS";
 }
 
+/** kong-liveness fails on a supervisor heartbeat older than 3 s; the supervisor renews it every S = 1 s. */
+export const HEARTBEAT_MAX_AGE_MS = 3000;
+export const SUPERVISOR_PERIOD_MS = 1000;
+
 /**
- * K through the liveness (supervisor frozen). The liveness failure itself is not observed: it happens at or after the
- * detection, and the container can only finish after the signal, the effective grace G and the exit. So
- * finished − detection − G is an upper bound of K, never a value; the old finished − detection − Lp − Lt − G could
- * understate K by up to Lp + Lt.
+ * K through the liveness (supervisor frozen). The liveness failure itself is not observed. It cannot happen before the
+ * earlier of two causes: nginx without a valid lease (at or after the violation's detection) and a stale heartbeat
+ * (at or after frozen − S + 3 s, the last heartbeat being at most S before the freeze). The container finishes only
+ * after the signal, the effective grace G and the exit. So finished − G − that earliest possible failure is an upper
+ * bound of K, never a value; the old finished − detection − Lp − Lt − G could understate K by up to Lp + Lt, and
+ * ignored that the heartbeat may fail first.
  */
-export function kFromLiveness({ detectionMs, kongFinishedMs, finishedResolutionMs, graceMs = 2000 }) {
-  const exercised = detectionMs != null;
-  const valueMs = exercised && kongFinishedMs != null ? kongFinishedMs - detectionMs - graceMs : null;
-  return verdict("K", { exercised, valueMs, kind: "upperBound", resolutionMs: finishedResolutionMs, from: "violation detected (≤ liveness failure)", to: "kong container finished − G" });
+export function kFromLiveness({ detectionMs, frozenMs, kongFinishedMs, finishedResolutionMs, graceMs = 2000 }) {
+  const exercised = detectionMs != null || frozenMs != null;
+  const causes = [detectionMs, frozenMs == null ? null : frozenMs - SUPERVISOR_PERIOD_MS + HEARTBEAT_MAX_AGE_MS].filter((v) => v != null);
+  const earliestFailure = causes.length ? Math.min(...causes) : null;
+  const valueMs = earliestFailure != null && kongFinishedMs != null ? kongFinishedMs - graceMs - earliestFailure : null;
+  return verdict("K", { exercised, valueMs, kind: "upperBound", resolutionMs: finishedResolutionMs,
+    from: "earliest possible liveness failure: min(violation detected, supervisor frozen − S + 3 s)", to: "kong container finished − G" });
 }
 
 /** Ks in a deletion: the delete call starts before the kubelet can observe it, so signal − call start bounds Ks. */
@@ -54,8 +63,18 @@ export function ksFromDeletion({ deleteCallStartMs, signalReceivedMs, resolution
   return verdict("Ks", { exercised: true, valueMs, kind: "upperBound", resolutionMs, from: "delete call started (≤ kubelet observes the deletion)", to: "supervisor logged the stop signal" });
 }
 
-/** Kx only exists when the supervisor sent SIGKILL (drain exceeded); with a graceful exit it is not exercised. */
+/**
+ * Kx only exists when the supervisor sent SIGKILL (drain exceeded); with a graceful exit it is not exercised. The
+ * supervisor logs "drain exceeded" before the SIGKILL syscall and "exited" after waitpid returned, so the interval
+ * between the two lines bounds Kx from above: a pass below 0.5 s, never a failure above it.
+ */
 export function kxFromDrain({ sigkillMs, exitedMs, resolutionMs = 1 }) {
-  return verdict("Kx", { exercised: sigkillMs != null, valueMs: sigkillMs != null && exitedMs != null ? exitedMs - sigkillMs : null, kind: "exact", resolutionMs,
-    from: "supervisor logged SIGKILL (drain exceeded)", to: "supervisor logged nginx exited (waitpid)", reason: sigkillMs == null ? "nginx drained before Dk: no SIGKILL, Kx not exercised" : null });
+  return verdict("Kx", { exercised: sigkillMs != null, valueMs: sigkillMs != null && exitedMs != null ? exitedMs - sigkillMs : null, kind: "upperBound", resolutionMs,
+    from: "supervisor logged drain exceeded (≤ SIGKILL sent)", to: "supervisor logged nginx exited (≥ waitpid confirmed)", reason: sigkillMs == null ? "nginx drained before Dk: no SIGKILL, Kx not exercised" : null });
 }
+
+/** An item's result: a failure fails it; otherwise a reading not exercised leaves it incomplete, never a pass. */
+export const itemResult = ({ failures, open }) => (failures.length ? "fail" : open.length ? "incomplete" : "pass");
+/** The run's exit code read by the external runner: 1 for a failure, 2 for an incomplete item, 0 only when all passed. */
+export const runExitCode = (items, otherFailure = false) =>
+  otherFailure || items.some((i) => i.result === "fail" || i.result === "pending") ? 1 : items.some((i) => i.result === "incomplete") ? 2 : 0;
