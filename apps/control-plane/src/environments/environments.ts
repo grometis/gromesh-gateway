@@ -42,8 +42,10 @@ export async function requireEnvironment(tx: Executor, envId: string, lock = fal
 export const ARCHIVE_LOCK_CLASS = 0x6772_7761; // "grwa"
 export const archiveLock = (tx: Executor, workspaceId: string, mode: "shared" | "exclusive") =>
   tx.execute(mode === "shared"
-    ? sql`select pg_advisory_xact_lock_shared(${ARCHIVE_LOCK_CLASS}, hashtext(${workspaceId}))`
-    : sql`select pg_advisory_xact_lock(${ARCHIVE_LOCK_CLASS}, hashtext(${workspaceId}))`);
+    ? sql`select pg_advisory_xact_lock_shared(${ARCHIVE_LOCK_CLASS}, ${archiveLockKey(workspaceId)})`
+    : sql`select pg_advisory_xact_lock(${ARCHIVE_LOCK_CLASS}, ${archiveLockKey(workspaceId)})`);
+/** The key of a workspace's archive lock, from its canonical UUID (an id in capitals is the same workspace). */
+export const archiveLockKey = (workspaceId: string) => sql`hashtext(${workspaceId}::uuid::text)`;
 
 /**
  * 409 workspace-archived when the workspace is archived. The shared archive lock waits for an archive in flight and
@@ -52,7 +54,13 @@ export const archiveLock = (tx: Executor, workspaceId: string, mode: "shared" | 
  */
 export async function refuseArchived(tx: Executor, workspaceId: string): Promise<void> {
   await archiveLock(tx, workspaceId, "shared");
-  const [w] = await tx.select({ status: workspaces.status }).from(workspaces).where(eq(workspaces.id, workspaceId));
+  // In READ COMMITTED this statement already sees an archive committed while the lock waited. A REPEATABLE READ or
+  // SERIALIZABLE transaction (an import) may hold a snapshot from before it: there the row is locked, so a change
+  // committed since is a serialization failure (nothing written). Only there: a share lock held to the end would
+  // deadlock a READ COMMITTED writer that later updates the workspace row (a publish locks its slug).
+  const [{ iso }] = (await tx.execute<{ iso: string }>(sql`select current_setting('transaction_isolation') as iso`)).rows as [{ iso: string }];
+  const q = tx.select({ status: workspaces.status }).from(workspaces).where(eq(workspaces.id, workspaceId));
+  const [w] = iso === "read committed" ? await q : await q.for("share");
   if (w?.status === "archived") throw workspaceArchived();
 }
 

@@ -310,10 +310,11 @@ describe("in a dev lab", () => {
     try {
       await archiver.query("begin");
       // What archiveWorkspace does: the exclusive archive lock, then its rows.
-      await archiver.query("select pg_advisory_xact_lock($1, hashtext($2))", [0x67727761, racing]);
+      await archiver.query("select pg_advisory_xact_lock($1, hashtext($2::uuid::text))", [0x67727761, racing]);
       await archiver.query("select 1 from environments e join workspaces w on w.id = e.id where e.id = $1 for no key update", [racing]);
       await archiver.query("update workspaces set status = 'archived' where id = $1", [racing]);
-      const write = h.api("POST", `/environments/${racing}/services`, { name: "late", protocol: "http", host: "example.com", port: 80 });
+      // The same workspace written in capitals: the same lock.
+      const write = h.api("POST", `/environments/${racing.toUpperCase()}/services`, { name: "late", protocol: "http", host: "example.com", port: 80 });
       await new Promise((r) => setTimeout(r, 500));
       await archiver.query("commit");
       const late = await write;
@@ -338,6 +339,9 @@ describe("in a dev lab", () => {
         h.api("PUT", `/users/${someone.id}/environment-roles`, { items: [{ environmentId: target, role: "editor" }] }),
         v2(h.api, "POST", `/workspaces/${target}/role-bindings`, { subjectType: "user", subjectId: someone.id, role: "viewer" }),
         h.api("POST", `/environments/${target}/consumers`, { username: uniq("c") }),
+        // A publish (it locks the environment, then updates the workspace row) beside a cluster creation (review r5).
+        v2(h.api, "POST", `/workspaces/${target}/releases`, { message: "ciclo" }),
+        h.api("POST", `/environments/${target}/clusters`, { name: uniq("c") }),
         v2(h.api, "POST", `/workspaces/${target}/archive`),
       ]);
       for (const r of results) expect(r.status, JSON.stringify(r.body)).toBeLessThan(500);
