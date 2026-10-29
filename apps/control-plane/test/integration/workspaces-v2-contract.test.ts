@@ -854,7 +854,7 @@ describe("delivery protocol and convergence evidence (N3-K1)", () => {
     expect(mode).toEqual({
       publishRelease: "allowed", createDeployment: "refused", setClusterDeliveryProtocol: "refused-to-v2",
       // WS-M0: a second workspace in the instance waits for the N2 gates as a deployment does.
-      createWorkspace: "refused", requestWorkspace: "refused", decideWorkspaceRequest: "refused",
+      createWorkspace: "refused", requestWorkspace: "refused", decideWorkspaceRequest: "refused", executePromotion: "refused-provisioning",
     });
     const publish = v2Ops.find(({ op }) => op.operationId === "publishRelease")!.op;
     // publishRelease never answers the delivery refusal: its 409 is the generic conflict (lease, expectedActiveVersion).
@@ -1188,15 +1188,19 @@ describe("analytics guarantees (N3-A1)", () => {
 describe("workspace administration (WS-M0)", () => {
   const op = (id: string) => v2Ops.find(({ op }) => op.operationId === id)!.op;
   const schemas = v2.components.schemas;
+  // Descriptions are wrapped YAML blocks: phrases are matched with the whitespace collapsed.
+  const flat = (text: string) => text.replace(/\s+/g, " ");
 
   it("refuses a creation while Workspaces mode is disabled, before the stage, the policy and the body", () => {
     const create = op("createWorkspace");
     expect([create["x-scope"], create["x-required-permission"], create["x-gromesh-workspaces-mode-disabled"]]).toEqual(["instance", "workspace.create", "refused"]);
-    const text = create.description as string;
-    const order = ["409 workspaces-mode-disabled", "only on dev", "admin-only needs platform.admin", "never adjusted"].map((p) => text.indexOf(p));
+    const text = flat(create.description as string);
+    const order = ["409 workspaces-mode-disabled", "only on dev", "admin-only additionally needs platform.admin", "never adjusted"].map((p) => text.indexOf(p));
     expect(order.every((i) => i >= 0), String(order)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
-    for (const phrase of ["Creating it grants nothing", "no deployment", "no cluster", "It reaches no data plane"]) expect(text, phrase).toContain(phrase);
+    for (const phrase of ["Creating it grants nothing", "no deployment", "no cluster", "It reaches no data plane", "never which workspace holds it"]) expect(text, phrase).toContain(phrase);
+    // Provisioning by promotion is the other path to a workspace: the same block.
+    expect(flat(v2.info.description)).toContain("refused with 409 workspaces-mode-disabled, creating nothing, while the target's Workspaces mode is disabled");
     const problem = ajv.compile({ $ref: `${BASE}control-plane-v2.openapi.yaml#/components/schemas/WorkspaceProblem` });
     expect(problem({ type: "about:blank", title: "Conflict", status: 409, code: "slug-taken", suggestedSlug: "tvro-2" })).toBe(true);
     expect(problem({ type: "about:blank", title: "Conflict", status: 409, code: "slug-taken", suggestedSlug: "API" })).toBe(false);
@@ -1205,7 +1209,7 @@ describe("workspace administration (WS-M0)", () => {
 
   it("has a restrictive default policy that only platform administration replaces", () => {
     expect(schemas.WorkspaceCreationMode.enum).toEqual(["restricted-request", "autonomous", "admin-only"]);
-    expect(op("getWorkspaceCreationPolicy").description).toContain("mode restricted-request and\ncreatorBecomesAdmin false");
+    expect(flat(op("getWorkspaceCreationPolicy").description)).toContain("mode restricted-request and creatorBecomesAdmin false");
     const set = op("setWorkspaceCreationPolicy");
     expect([set["x-required-permission"], set["x-scope"], set.security]).toEqual(["platform.admin", "instance", [{ cookieAuth: [], csrfToken: [] }]]);
     const write = ajv.compile({ $ref: `${BASE}control-plane-v2.openapi.yaml#/components/schemas/WorkspaceCreationPolicyWrite` });
@@ -1219,13 +1223,24 @@ describe("workspace administration (WS-M0)", () => {
     expect(Object.keys(update.requestBody.content["application/json"].schema.properties)).toEqual(["name", "description"]);
     const archive = op("archiveWorkspace");
     expect(archive["x-required-permission"]).toBe("platform.admin");
-    for (const phrase of ["nothing is deleted", "active-release", "published-configuration", "409 workspace-archived"]) expect(archive.description, phrase).toContain(phrase);
+    for (const phrase of ["nothing is deleted", "active-release", "deployed (it is a member of the instance's latest deployment", "published-configuration", "409 workspace-archived", "except revoking a role binding"]) expect(flat(archive.description), phrase).toContain(phrase);
+  });
+
+  it("states every slug rule the server applies (GW-WS-10)", async () => {
+    const { RESERVED_SLUGS, normalizeSlug, slugProblem } = await import("../../src/workspaces/slug.js");
+    const slug = schemas.WorkspaceWrite.properties.slug;
+    expect(new Set(slug["x-gromesh-reserved-slugs"])).toEqual(RESERVED_SLUGS);
+    for (const s of ["gromesh-x", "api"]) expect(slugProblem(s), s).toBe("reserved");
+    for (const s of ["ab-", "a--b"]) expect([new RegExp(slug.pattern).test(s), slugProblem(s)], s).toEqual([true, "invalid"]);
+    for (const [from, to] of [["Straße Øl", "strasse-ol"], ["Ação  Ágil!", "acao-agil"]]) expect(normalizeSlug(from!)).toBe(to);
+    for (const phrase of ["without a trailing hyphen or two hyphens in a row", "every slug starting with gromesh-", "ß→ss", "never prefixed, suffixed"]) expect(flat(slug.description), phrase).toContain(phrase);
   });
 
   it("lets a requester never decide its own request", () => {
     const decide = op("decideWorkspaceRequest");
     expect([decide["x-scope"], decide.security]).toEqual(["instance", [{ cookieAuth: [], csrfToken: [] }]]);
-    expect(decide.description).toContain("never its own requester (403)");
+    expect(flat(decide.description)).toContain("never its own requester (403)");
+    expect(flat(decide.description)).toContain("evaluated for the DECIDER (the requester needs no workspace.create");
     expect(op("cancelWorkspaceRequest").description).toContain("Only the requester");
   });
 });

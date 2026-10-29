@@ -235,7 +235,9 @@ info:
         grant that supports it; a temporary grant never includes members.manage. Revoking: a deny binding or one
         granted by the platform only by the platform; others by a holder of members.manage in that scope who holds
         the binding's permissions. Changing a custom role's permissions is platform-only.
-      - Provisioning (first promotion of a workspace to a target): inside `executing`, ONE transaction of the target
+      - Provisioning (first promotion of a workspace to a target): refused with 409 workspaces-mode-disabled, creating
+        nothing, while the target's Workspaces mode is disabled (WS-M0: no path creates a second workspace in an
+        instance before the N2 gates). Otherwise, inside `executing`, ONE transaction of the target
         creates the workspace (same key and slug, the target's mandatory policies, and none of the source's members,
         groups, permissions, values or credentials), moves the prepared values, and creates the release and the
         deployment. If the composition fails, everything rolls back: there is no partially active workspace.
@@ -488,7 +490,8 @@ paths:
       description: |
         Lists only workspaces where the caller has at least workspace.read (an explicit deny there hides it), ordered
         by name then id. A workspace outside the caller's scope is never revealed: not in a page, not by the cursor,
-        not by the count of a page (a page may come shorter than limit with a nextCursor) and not by an error.
+        not by the count of a page and not by an error: limit counts only items returned, and nextCursor carries only
+        the last item returned (never one the caller may not read).
         Archived workspaces are listed too, with their status.
       parameters: [ { $ref: "#/components/parameters/Cursor" }, { $ref: "#/components/parameters/Limit" } ]
       responses:
@@ -514,14 +517,17 @@ paths:
            is not lifted by any permission or policy.
         2. The stage: only on dev. hml, prd or an unknown stage (no GROMESH_INSTANCE_STAGE and no instance row)
            answer 403; hml and prd workspaces are provisioned by the first approved promotion (GW-PRV-01).
-        3. The creation policy (WorkspaceCreationPolicy): admin-only needs platform.admin; autonomous and
-           restricted-request need workspace.create in the instance scope (an explicit grant, never part of a
-           workspace role). Otherwise 403; in restricted-request mode a caller without it uses requestWorkspace.
-        4. The body: the slug is the one given, or the name normalized (lowercase, no accents, any other character
-           to a hyphen, collapsed and trimmed, at most 40) when absent. It is never adjusted: an invalid or reserved
-           slug answers 422 at `slug`, one already used by any workspace of the instance (archived included) 409
-           slug-taken, and a name already used 409 name-taken; both 409 carry `suggestedSlug` when a free valid one
-           exists (a proposal the caller may send, never applied).
+        3. The creation policy (WorkspaceCreationPolicy). Every mode needs workspace.create in the instance scope
+           (the guard's x-required-permission; an explicit instance grant, never part of a workspace role, and held
+           by the platform-admin role); admin-only additionally needs platform.admin. Otherwise 403; in
+           restricted-request mode a caller without it uses requestWorkspace.
+        4. The body: the slug is the one given, or the name normalized when absent (WorkspaceWrite.slug). It is never
+           adjusted: an invalid or reserved slug answers 422 at `slug`, one already used by any workspace of the
+           instance (archived included) 409 slug-taken, and a name already used 409 name-taken; both 409 carry
+           `suggestedSlug` when a free valid one exists (a proposal the caller may send, never applied). Slugs and
+           names are unique in the instance (the slug is the public path prefix of its data plane), so this 409 tells
+           only that the value is unavailable: never which workspace holds it, its id, status or anything else, and
+           listWorkspaces and getWorkspace keep hiding a workspace outside the caller's scope.
         The workspace gets a new id and a new key, status active, no release, no deployment, no cluster, no variable
         and no object of any other workspace. Creating it grants nothing: no binding is created, except the
         workspace-admin binding of the creator when the policy says creatorBecomesAdmin (never to a platform admin,
@@ -614,10 +620,14 @@ paths:
       description: |
         Archives the workspace; nothing is deleted: its entities, credentials, releases, snapshots, bindings and audit
         stay as they are, readable. Refused with 409 (nothing changed) while anything it published may still be served
-        or composed: active-release (an active release with entities; remove it with a tombstone promotion first),
-        published-configuration (a v1 snapshot was published for it) or clusters (a cluster is registered in it).
-        Already archived: 204, nothing recorded. Once archived the workspace is read-only: every mutation in its scope
-        (v1 or v2) answers 409 workspace-archived. Audited (workspace.archive) in the same transaction.
+        or composed: active-release (its active release is not a tombstone; remove it with a tombstone promotion
+        first), deployed (it is a member of the instance's latest deployment revision with a release that is not a
+        tombstone, converged or not: what the nodes serve is that revision), published-configuration (the v1
+        environment has a current snapshot; v1 has no unpublish, so a workspace that ever published through v1 is not
+        archivable in this phase) or clusters (a cluster is registered in it). Already archived: 204, nothing
+        recorded. Once archived the workspace is read-only: every mutation in its scope (v1 or v2) answers 409
+        workspace-archived, except revoking a role binding (revokeRoleBinding), so access can always be withdrawn.
+        Audited (workspace.archive) in the same transaction.
       responses:
         "204": { description: Archived }
         "409": { description: Refused, content: { application/problem+json: { schema: { $ref: "#/components/schemas/WorkspaceProblem" } } } }
@@ -680,11 +690,12 @@ paths:
       x-scope: instance
       x-gromesh-planned: true
       description: |
-        Session only. Someone with workspace.create in the instance scope (in admin-only mode: platform.admin)
-        decides a pending request; never its own requester (403). approve creates the workspace exactly as
-        createWorkspace would for the requester, in the same transaction as the decision (every createWorkspace check
-        applies at the decision, so a slug taken meanwhile answers 409 and leaves the request pending);
-        creatorBecomesAdmin grants workspace-admin to the requester. reject creates nothing. A decided or cancelled
+        Session only. Someone with workspace.create in the instance scope decides a pending request (in
+        restricted-request mode; admin-only also needs platform.admin; autonomous answers 409 creation-policy); never
+        its own requester (403). approve creates the workspace in the same transaction as the decision, with
+        createWorkspace's mode, stage, policy and body checks evaluated for the DECIDER (the requester needs no
+        workspace.create; a slug or name taken meanwhile answers 409 and leaves the request pending). The requester
+        is recorded as the workspace's creator, and creatorBecomesAdmin grants workspace-admin to the requester. reject creates nothing. A decided or cancelled
         request answers 409 request-decided. Audited (workspace_request.decide, and workspace.create on approve).
       requestBody: { required: true, content: { application/json: { schema: { type: object, required: [ decision ], properties: { decision: { enum: [ approve, reject ] }, comment: { type: string } }, additionalProperties: false } } } }
       responses:
@@ -1324,6 +1335,7 @@ paths:
     post:
       tags: [ promotions ]
       operationId: executePromotion
+      x-gromesh-workspaces-mode-disabled: refused-provisioning
       x-gromesh-requirements: [ GW-APR-06, GW-DEP-01, GW-DEP-02, GW-DEP-04, GW-PRV-01, GW-PRV-02, GW-PRV-03, GW-PRV-04, GW-ENV-03, GW-M2M-03, GW-M2M-05 ]
       x-required-permission: promotion.execute
       x-required-permission-alternatives:
@@ -4245,7 +4257,13 @@ components:
         slug:
           type: string
           pattern: ^[a-z][a-z0-9-]{1,39}$
-          description: Optional; derived from the name when absent (lowercase, no accents, spaces to hyphens). Reserved slugs rejected.
+          x-gromesh-reserved-slugs: [ api, admin, agent, status, metrics, health, healthz, ready, gromesh, kong, well-known, static, assets ]
+          description: |
+            GW-WS-10. Optional. Valid: the pattern, without a trailing hyphen or two hyphens in a row. Reserved (422):
+            the x-gromesh-reserved-slugs and every slug starting with gromesh-. Absent: the name normalized (NFKD,
+            combining marks removed, lowercase, the letters NFKD keeps whole transliterated ß→ss, æ→ae, œ→oe, ø→o,
+            đ→d, ð→d, ł→l, þ→th, ı→i, every other run of characters outside [a-z0-9] to one hyphen, hyphens trimmed,
+            at most 40 and trimmed again), then validated as given: never prefixed, suffixed or otherwise adjusted.
       additionalProperties: false
     Workspace:
       type: object
@@ -4350,7 +4368,7 @@ components:
         - type: object
           required: [ code ]
           properties:
-            code: { enum: [ workspaces-mode-disabled, creation-policy, slug-taken, name-taken, workspace-archived, active-release, published-configuration, clusters, request-decided ] }
+            code: { enum: [ workspaces-mode-disabled, creation-policy, slug-taken, name-taken, workspace-archived, active-release, deployed, published-configuration, clusters, request-decided ] }
             suggestedSlug: { type: string, pattern: "^[a-z][a-z0-9-]{1,39}$", description: "A free, valid slug the caller may send (slug-taken, name-taken); never applied" }
     WorkspaceVariable:
       type: object
