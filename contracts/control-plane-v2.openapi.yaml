@@ -133,7 +133,8 @@ info:
       - Analytics collector in workspaces mode (B §3.5.2, decision P2): a sidecar listening only on 127.0.0.1, token per
         cluster (never repeated across clusters), cluster and instance pinned by the collector, dedup by
         (cluster, pod, request.id), workspace attributed by route_id against the active deployment. Guarantees and
-        their limits (event identity, at-least-once delivery read as distinct ids, attribution, token exclusivity,
+        their limits (event identity, retried delivery that may duplicate or lose, stored ids read once, conflicting
+        copies left unattributed, attribution, token exclusivity,
         collector health): agent-protocol-v2 "Analytics guarantees" (N3-A1).
       - Identity in the core (B §4.7): each instance authenticates only its own local accounts; one local login
         identity per person; deciding (confirm, approve, execute) requires a person verified by platform-admin with

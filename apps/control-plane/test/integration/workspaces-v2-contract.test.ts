@@ -1098,7 +1098,7 @@ describe("analytics guarantees (N3-A1)", () => {
     expect(new Set(ids).size).toBe(3);
   });
 
-  it("states at-least-once delivery read as distinct ids, never a merge or the dedup cache as a guarantee", () => {
+  it("promises no end-to-end delivery, reads each stored id once, never a merge or the dedup cache as a guarantee", () => {
     for (const phrase of ["none of them can hold \"|\", so the concatenation is unambiguous", "Any other value is never normalised: the event is dropped", "Delivery is not guaranteed end to end: neither at least once nor exactly once is promised", "each stored id counts once", "A conflicted id is never attributed to any workspace", "no row of it is chosen", "truncated to its first 128 bits", "every read the control plane serves counts DISTINCT ids", "never relies on a merge having run", "load reduction only (lost on restart)", "Loss stays possible"]) expect(info).toContain(phrase);
     for (const op of ["getAnalyticsSummary", "getTopRoutes", "listRequests"]) {
       const [, path] = Object.entries(v2.paths).find(([, item]: [string, Doc]) => item.get?.operationId === op)!;
@@ -1116,6 +1116,34 @@ describe("analytics guarantees (N3-A1)", () => {
     const reasons = new Set(vector.attributionOf.cases.map((c: Doc) => c.expected.reason).filter(Boolean));
     expect([...reasons].sort()).toEqual(Object.keys(v2.components.schemas.UnattributedAnalytics.properties.byReason.properties).sort());
     expect(info).toContain("The path, its prefix or any field of the event never attribute a row");
+  });
+
+  it("counts every id once, leaves conflicted ids to the unattributed totals, and survives merges only on the content key", () => {
+    const canonical = (r: Doc) => JSON.stringify(Object.keys(r).sort().map((k) => [k, r[k]]));
+    const readsOf = (a: Doc, rows: Doc[], routeFilter: string | null) => {
+      const byId = new Map<string, Doc[]>();
+      for (const r of rows) byId.set(r.id, [...(byId.get(r.id) ?? []), r]);
+      const byWorkspace: Record<string, number> = {}, unattributed: Record<string, number> = {};
+      for (const copies of byId.values()) {
+        const strip = ({ id: _, ...e }: Doc) => e;
+        const res = attributionOf(a, strip(copies[0]), copies.map(strip));
+        if (res.workspace === null) unattributed[res.reason!] = (unattributed[res.reason!] ?? 0) + 1;
+        else if (routeFilter === null || copies[0].routeId === routeFilter) byWorkspace[res.workspace] = (byWorkspace[res.workspace] ?? 0) + 1;
+      }
+      return { distinctIds: byId.size, byWorkspace, unattributed };
+    };
+    for (const c of vector.readsOf.cases) expect(readsOf(vector.attributionOf.attribution, c.rows, c.routeFilter), c.name).toEqual(c.expected);
+    const [all] = vector.readsOf.cases;
+    expect(all.expected.unattributed["conflicting-copies"]).toBe(2);
+    // A merge on (environment_id, ts, id, content digest) only drops identical copies: every read is unchanged.
+    const mergeOn = (rows: Doc[], key: (r: Doc) => string) => [...new Map(rows.map((r) => [key(r), r])).values()];
+    const contentKey = (r: Doc) => `${r.environmentId}|${r.ts}|${r.id}|${canonical(r)}`;
+    expect(readsOf(vector.attributionOf.attribution, mergeOn(all.rows, contentKey), null)).toEqual(all.expected);
+    // Negative control: on (environment_id, ts, id) alone a merge keeps one copy of a conflict and attributes it.
+    const oldKey = (r: Doc) => `${r.environmentId}|${r.ts}|${r.id}`;
+    expect(readsOf(vector.attributionOf.attribution, mergeOn(all.rows, oldKey), null)).not.toEqual(all.expected);
+    expect(info).toContain("sorted by (environment_id, ts, id, content digest)");
+    expect(info).toContain("rows of one id that differ never do, so a conflict survives merges for the whole retention");
   });
 
   it("reads the collector's health from Kong's traffic and the collector's own counters, idle being no failure", () => {

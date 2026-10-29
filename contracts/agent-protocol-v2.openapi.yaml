@@ -221,9 +221,11 @@ info:
         the collector's in-memory dedup is a load reduction only (lost on restart). Delivery is not guaranteed end to
         end: neither at least once nor exactly once is promised, since an event can be lost for good (below). What is
         guaranteed is the reading of what was stored: each stored id counts once. The requests table keeps rows
-        sorted by (environment_id, ts, id) in an engine that collapses equal ids in background merges
-        (ReplacingMergeTree); merges are eventual, so every read the control plane serves counts DISTINCT ids and
-        never relies on a merge having run, so a copy is never visible. Equal ids share ts (Kong's start time of the
+        sorted by (environment_id, ts, id, content digest), the digest being of every stored column, in an engine that
+        collapses only rows equal on that key in background merges (ReplacingMergeTree): identical copies may merge,
+        rows of one id that differ never do, so a conflict survives merges for the whole retention. Merges are
+        eventual, so every read the control plane serves counts DISTINCT ids and never relies on a merge having run,
+        so a copy is never visible. Equal ids share ts (Kong's start time of the
         request), hence the same partition and the same retention_days. Physical removal is asynchronous for copies
         (merges) and expired rows (TTL): it has no hard time bound, and a replay arriving after its original was
         removed is stored again until its own TTL removes it; reads only ever span the retention period. Storage of
