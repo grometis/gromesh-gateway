@@ -38,7 +38,7 @@ import { pluginPrivilegedIssues, requirePlatformAdmin } from "../common/privileg
 import { stateVaultReferenceIssues } from "../common/vault-references.js";
 import { DB, type Db, type Executor, type Tx } from "../db/db.js";
 import { environments, snapshots, type EnvironmentRow, type SnapshotRow, workspaces } from "../db/schema.js";
-import { ARCHIVE_LOCK_CLASS, requireEnvironment, uuidParam } from "../environments/environments.js";
+import { ARCHIVE_LOCK_CLASS, archiveLockKey, requireEnvironment, uuidParam } from "../environments/environments.js";
 import { loadGatewayState, restoreGatewayState, workspaceDefaultRoutes } from "../gateway/gateway.js";
 import { AGENT_CHANNEL } from "../clusters/clusters.js";
 import { PluginCatalog, PluginCatalogModule } from "../plugin-catalog/catalog.js";
@@ -193,9 +193,9 @@ export class SnapshotsService {
       if (!env) return true;
       // An archived workspace publishes nothing (WS-M0): its pending draft stays a draft. The environment is already
       // locked here, so the archive lock is only tried (an archive in flight skips this tick instead of deadlocking).
-      const [{ got }] = (await tx.execute<{ got: boolean }>(sql`select pg_try_advisory_xact_lock_shared(${ARCHIVE_LOCK_CLASS}, hashtext(${envId})) as got`)).rows as [{ got: boolean }];
+      const [{ got }] = (await tx.execute<{ got: boolean }>(sql`select pg_try_advisory_xact_lock_shared(${ARCHIVE_LOCK_CLASS}, ${archiveLockKey(envId)}) as got`)).rows as [{ got: boolean }];
       if (!got) return true;
-      const [ws] = await tx.select({ status: workspaces.status }).from(workspaces).where(eq(workspaces.id, envId));
+      const [ws] = await tx.select({ status: workspaces.status }).from(workspaces).where(eq(workspaces.id, envId)).for("share");
       if (ws?.status === "archived") return true;
 
       let prepared: PreparedPublish;
