@@ -3,6 +3,7 @@ package supervisor
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -57,6 +58,14 @@ func start(t *testing.T, mode string, valid bool) *harness {
 }
 
 func startWith(t *testing.T, mode string, valid bool, period time.Duration) *harness {
+	return startFull(t, mode, valid, period, nil)
+}
+
+func startWithKill(t *testing.T, mode string, kill func(int, syscall.Signal) error) *harness {
+	return startFull(t, mode, true, 100*time.Millisecond, kill)
+}
+
+func startFull(t *testing.T, mode string, valid bool, period time.Duration, kill func(int, syscall.Signal) error) *harness {
 	h := &harness{t: t, dir: t.TempDir(), stop: make(chan os.Signal, 1), children: make(chan os.Signal, 16), done: make(chan int, 1), finished: make(chan struct{})}
 	h.valid.Store(valid)
 	signal.Notify(h.children, syscall.SIGCHLD)
@@ -74,9 +83,10 @@ func startWith(t *testing.T, mode string, valid bool, period time.Duration) *har
 		Period:    period,
 		KillAfter: 200 * time.Millisecond,
 		Drain:     time.Second,
+		Kill:      kill,
 		Logf: func(format string, args ...any) {
 			h.mu.Lock()
-			h.logs = append(h.logs, format)
+			h.logs = append(h.logs, fmt.Sprintf(format, args...))
 			h.mu.Unlock()
 		},
 	}
@@ -252,5 +262,141 @@ func TestDrainDeadlineDoesNotWaitForThePeriod(t *testing.T) {
 	}
 	if took := time.Since(began); took > time.Second+300*time.Millisecond {
 		t.Fatalf("drain took %s with Dk = 1 s and a 2 s period", took)
+	}
+}
+
+// events returns the kill and exit events logged so far, each as its key=value fields.
+func (h *harness) events(kind string) []map[string]string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out []map[string]string
+	for _, line := range h.logs {
+		if !strings.HasPrefix(line, kind+" ") {
+			continue
+		}
+		fields := map[string]string{}
+		for _, kv := range strings.Fields(line)[1:] {
+			if k, v, ok := strings.Cut(kv, "="); ok {
+				fields[k] = v
+			}
+		}
+		out = append(out, fields)
+	}
+	return out
+}
+
+func boottime(t *testing.T, e map[string]string) uint64 {
+	t.Helper()
+	n, err := strconv.ParseUint(e["boottimeNs"], 10, 64)
+	if err != nil {
+		t.Fatalf("event without a boottime: %v", e)
+	}
+	return n
+}
+
+// Kx (SIGKILL → confirmed exit) needs both milestones, of the same run of nginx, on one clock.
+func TestContainmentLogsTheSigkillAttemptItsResultAndTheConfirmedExit(t *testing.T) {
+	h := start(t, "stuck", true)
+	eventually(t, time.Second, "nginx running", func() bool { return alive(h.pid("worker")) && alive(h.pid("master")) })
+	master := h.pid("master")
+	h.valid.Store(false)
+	eventually(t, 2*time.Second, "a confirmed exit", func() bool { return len(h.events("exit-event")) > 0 })
+	kills := h.events("kill-event")
+	if len(kills) != 2 || kills[0]["phase"] != "attempt" || kills[1]["phase"] != "sent" {
+		t.Fatalf("kill events %v", kills)
+	}
+	exit := h.events("exit-event")[0]
+	for _, k := range kills {
+		if k["signal"] != "SIGKILL" || k["path"] != "containment" || k["pid"] != strconv.Itoa(master) || k["run"] != exit["run"] || k["sup"] != exit["sup"] {
+			t.Fatalf("kill event %v does not identify the run of exit %v", k, exit)
+		}
+	}
+	if exit["pid"] != strconv.Itoa(master) || !strings.Contains(exit["status"], "killed") {
+		t.Fatalf("exit event %v", exit)
+	}
+	if a, sent, e := boottime(t, kills[0]), boottime(t, kills[1]), boottime(t, exit); !(a <= sent && sent <= e) {
+		t.Fatalf("milestones out of order: attempt %d, sent %d, exit %d", a, sent, e)
+	}
+}
+
+func TestADrainOverDkLogsItsSigkillOnTheDrainPath(t *testing.T) {
+	h := start(t, "stuck", true)
+	eventually(t, time.Second, "nginx running", func() bool { return alive(h.pid("worker")) && alive(h.pid("master")) })
+	h.stop <- syscall.SIGQUIT
+	select {
+	case <-h.done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("did not stop")
+	}
+	kills := h.events("kill-event")
+	if len(kills) != 2 || kills[0]["path"] != "drain" || kills[1]["phase"] != "sent" || len(h.events("exit-event")) != 1 {
+		t.Fatalf("kill %v exit %v", kills, h.events("exit-event"))
+	}
+}
+
+// No SIGKILL happened: no event claims one (Kx not exercised).
+func TestAGracefulDrainAndATermThatSufficesLogNoSigkill(t *testing.T) {
+	drained := start(t, "drain", true)
+	eventually(t, time.Second, "nginx running", func() bool { return alive(drained.pid("master")) })
+	drained.stop <- syscall.SIGQUIT
+	<-drained.done
+	if k := drained.events("kill-event"); len(k) != 0 || len(drained.events("exit-event")) != 1 {
+		t.Fatalf("graceful drain: kill %v exit %v", k, drained.events("exit-event"))
+	}
+	// "plain": the shell dies of SIGTERM before SIGKILL would be due.
+	termed := start(t, "plain", true)
+	eventually(t, time.Second, "nginx running", func() bool { return alive(termed.pid("master")) })
+	termed.valid.Store(false)
+	eventually(t, 2*time.Second, "exit", func() bool { return len(termed.events("exit-event")) > 0 })
+	time.Sleep(300 * time.Millisecond)
+	if k := termed.events("kill-event"); len(k) != 0 {
+		t.Fatalf("SIGTERM sufficed but kill events %v", k)
+	}
+}
+
+// A refused SIGKILL is logged as failed with its errno, never as sent; the supervisor's behaviour is unchanged.
+func TestARefusedSigkillIsLoggedAsFailed(t *testing.T) {
+	h := startWithKill(t, "stuck", func(pid int, sig syscall.Signal) error {
+		if sig == syscall.SIGKILL && pid < 0 {
+			return syscall.EPERM
+		}
+		return syscall.Kill(pid, sig)
+	})
+	eventually(t, time.Second, "nginx running", func() bool { return alive(h.pid("master")) })
+	h.valid.Store(false)
+	eventually(t, 2*time.Second, "the failed SIGKILL", func() bool {
+		for _, k := range h.events("kill-event") {
+			if k["phase"] == "failed" {
+				return true
+			}
+		}
+		return false
+	})
+	for _, k := range h.events("kill-event") {
+		if k["phase"] == "sent" {
+			t.Fatalf("a refused SIGKILL logged as sent: %v", k)
+		}
+		if k["phase"] == "failed" && k["error"] != "EPERM" {
+			t.Fatalf("failed without its errno: %v", k)
+		}
+	}
+	// The refused SIGKILL left the stuck master running: the test ends it itself (the supervisor's behaviour after a
+	// failed kill(2) is unchanged by the events).
+	_ = syscall.Kill(-h.pid("master"), syscall.SIGKILL)
+}
+
+// Each start of nginx is its own run: events of two runs never share (sup, run).
+func TestEachStartOfNginxIsADistinctRun(t *testing.T) {
+	h := start(t, "stuck", true)
+	eventually(t, time.Second, "nginx running", func() bool { return alive(h.pid("master")) })
+	h.valid.Store(false)
+	eventually(t, 2*time.Second, "first exit", func() bool { return len(h.events("exit-event")) == 1 })
+	h.valid.Store(true)
+	eventually(t, 2*time.Second, "second nginx", func() bool { return len(h.events("start-event")) == 2 })
+	h.valid.Store(false)
+	eventually(t, 2*time.Second, "second exit", func() bool { return len(h.events("exit-event")) == 2 })
+	exits := h.events("exit-event")
+	if exits[0]["sup"] != exits[1]["sup"] || exits[0]["run"] == exits[1]["run"] {
+		t.Fatalf("runs not distinct: %v", exits)
 	}
 }

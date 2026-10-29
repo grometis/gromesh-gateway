@@ -2,7 +2,8 @@
 // the instrumentation, never the lab's real budgets.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { bootToWall, itemResult, kFromLiveness, ksFromDeletion, kxFromDrain, LIMITS_MS, overall, runExitCode, verdict } from "./budgets.mjs";
+import { readFileSync } from "node:fs";
+import { bootToWall, itemResult, kxFromEvents, supervisorEvents, kFromLiveness, ksFromDeletion, LIMITS_MS, overall, runExitCode, verdict } from "./budgets.mjs";
 
 test("the limits are B §3.5.3's: K 2 s, Ks 1 s, Kx 0.5 s", () => {
   assert.deepEqual(LIMITS_MS, { K: 2000, Ks: 1000, Kx: 500 });
@@ -39,16 +40,8 @@ test("an exact value within the resolution of the limit is neither pass nor fail
   assert.equal(verdict("Kx", { exercised: true, valueMs: 495, kind: "exact", resolutionMs: 10 }).result, "INVALID");
 });
 
-test("Kx between the supervisor's lines is an upper bound: it passes below 0.5 s and never fails above", () => {
-  // "drain exceeded" is logged before the SIGKILL syscall and "exited" after waitpid: the lines bracket Kx.
-  assert.equal(kxFromDrain({ sigkillMs: 18_000, exitedMs: 18_400 }).result, "PASS");
-  const slowLog = kxFromDrain({ sigkillMs: 18_000, exitedMs: 18_620 });
-  assert.equal(slowLog.kind, "upperBound");
-  assert.equal(slowLog.result, "INVALID");
-});
-
 test("milestones on disagreeing clocks are invalid, not fast", () => {
-  assert.equal(kxFromDrain({ sigkillMs: 18_000, exitedMs: 17_900 }).result, "INVALID");
+  assert.equal(verdict("Kx", { exercised: true, valueMs: -100, kind: "upperBound", resolutionMs: 1 }).result, "INVALID");
 });
 
 test("K: the heartbeat measured, not assumed, bounds the earliest liveness failure (review counterexamples)", () => {
@@ -78,11 +71,6 @@ test("K through the liveness is an upper bound that excludes only G, never Lp an
   assert.equal(kFromLiveness({ detectionMs: 10_000, heartbeatMs: 10_000, kongFinishedMs: 12_500, finishedResolutionMs: 1000 }).result, "INVALID");
 });
 
-test("a drain without SIGKILL leaves Kx not exercised; SIGKILL without a confirmed exit is invalid", () => {
-  assert.equal(kxFromDrain({ sigkillMs: null, exitedMs: 3_000 }).result, "NOT_EXERCISED");
-  assert.equal(kxFromDrain({ sigkillMs: 18_000, exitedMs: null }).result, "INVALID");
-});
-
 test("overall: FAIL dominates, then INVALID, then NOT_EXERCISED", () => {
   const pass = { result: "PASS" }, fail = { result: "FAIL" }, invalid = { result: "INVALID" }, idle = { result: "NOT_EXERCISED" };
   assert.equal(overall([pass, invalid, fail]), "FAIL");
@@ -101,8 +89,9 @@ test("regression: the readings v2.mjs used before let violations through", () =>
   const formerKx = (kill, exited) => (kill != null && exited != null ? exited - kill : null);
   assert.equal(formerKx(18_000, 18_700), 700);
   assert.equal(formerKx(null, 3_000), null);
-  assert.notEqual(kxFromDrain({ sigkillMs: 18_000, exitedMs: 18_700 }).result, "PASS");
-  assert.equal(kxFromDrain({ sigkillMs: null, exitedMs: 3_000 }).result, "NOT_EXERCISED");
+  const ev = (phase, ms) => `kill-event v=1 sup=s run=1 pid=9 pgid=9 boottimeNs=${ms * 1_000_000} phase=${phase} path=drain signal=SIGKILL`;
+  assert.notEqual(kxFromEvents([ev("attempt", 18_000), ev("sent", 18_001), "exit-event v=1 sup=s run=1 pid=9 pgid=9 boottimeNs=18700000000 status=signal-killed"], "drain").result, "PASS");
+  assert.equal(kxFromEvents(["exit-event v=1 sup=s run=1 pid=9 pgid=9 boottimeNs=3000000000 status=exit-0"], "drain").result, "NOT_EXERCISED");
   // K: `finished - detection - Lp - Lt - G` from the pod status (1 s finishedAt), recorded and never asserted: 3 s of
   // real slack read as 1 s.
   const formerK = (finishedMs, detectionMs) => finishedMs - detectionMs - 1000 - 1000 - 2000;
@@ -139,4 +128,64 @@ test("the heartbeat's wall instant carries the whole uncertainty of the clock re
   assert.equal(bootToWall({ bootMs: 500, uptimeMs: 3000, wallBeforeMs: 3200, wallAfterMs: 3000 }), null);
   assert.equal(bootToWall({ bootMs: 4000, uptimeMs: 3000, wallBeforeMs: 3000, wallAfterMs: 3001 }), null);
   assert.equal(bootToWall({ bootMs: NaN, uptimeMs: 3000, wallBeforeMs: 3000, wallAfterMs: 3001 }), null);
+});
+
+// Lines as kubectl logs --timestamps shows them (the runtime's own timestamp first; never used for Kx).
+const T = "2026-10-29T10:00:00.000000000Z ";
+const kill = (phase, ns, { sup = "a1b2c3d4", run = 1, pid = 42, path = "containment", extra = "" } = {}) =>
+  `${T}kill-event v=1 sup=${sup} run=${run} pid=${pid} pgid=${pid} boottimeNs=${ns} phase=${phase} path=${path} signal=SIGKILL${extra}`;
+const exited = (ns, { sup = "a1b2c3d4", run = 1, pid = 42 } = {}) => `${T}exit-event v=1 sup=${sup} run=${run} pid=${pid} pgid=${pid} boottimeNs=${ns} status=signal-killed`;
+const MS = 1_000_000n;
+
+test("Kx events: the line format is the supervisor's own", () => {
+  const go = readFileSync(new URL("../../../../apps/isolation/internal/supervisor/supervisor.go", import.meta.url), "utf8");
+  assert.ok(go.includes('"%s v=1 sup=%s run=%d pid=%d pgid=%d boottimeNs=%s %s"'));
+  assert.ok(go.includes('"exit-event v=1 sup=%s run=%d pid=%d pgid=%d boottimeNs=%s status=%s"'));
+  assert.ok(go.includes('"phase=attempt path="+path+" signal=SIGKILL"'));
+  assert.deepEqual(supervisorEvents([kill("attempt", 5)])[0], { kind: "kill-event", sup: "a1b2c3d4", run: "1", pid: "42", pgid: "42", boottimeNs: "5", phase: "attempt", path: "containment", signal: "SIGKILL" });
+});
+
+test("Kx events: SIGKILL sent and the same run's exit confirmed bound Kx", () => {
+  const r = kxFromEvents([kill("attempt", 1000n * MS), kill("sent", 1000n * MS + 50_000n), exited(1120n * MS)], "containment");
+  assert.equal(r.result, "PASS");
+  assert.equal(r.valueMs, 120);
+  assert.equal(r.kind, "upperBound");
+  assert.deepEqual(r.identity, { sup: "a1b2c3d4", run: "1", pid: "42" });
+  // Above 0.5 s it is a bound above the limit: unknown, never a failure.
+  assert.equal(kxFromEvents([kill("attempt", 1000n * MS), kill("sent", 1001n * MS), exited(1700n * MS)], "containment").result, "INVALID");
+});
+
+test("Kx events: no SIGKILL (graceful drain, or SIGTERM sufficed) is not exercised", () => {
+  assert.equal(kxFromEvents([`${T}stop signal: draining nginx for at most 18s`, exited(9n * MS)], "drain").result, "NOT_EXERCISED");
+  // A containment SIGKILL says nothing about the drain path, and the other way round.
+  assert.equal(kxFromEvents([kill("attempt", 1n * MS), kill("sent", 2n * MS), exited(3n * MS)], "drain").result, "NOT_EXERCISED");
+});
+
+test("Kx events: a group already gone (ESRCH) is not exercised; any other refusal is invalid", () => {
+  assert.equal(kxFromEvents([exited(900n * MS), kill("attempt", 1000n * MS), kill("failed", 1000n * MS + 1n, { extra: " error=ESRCH" })], "containment").result, "NOT_EXERCISED");
+  const eperm = kxFromEvents([kill("attempt", 1000n * MS), kill("failed", 1000n * MS + 1n, { extra: " error=EPERM" }), exited(1100n * MS)], "containment");
+  assert.equal(eperm.result, "INVALID");
+  assert.match(eperm.reason, /EPERM/);
+});
+
+test("Kx events: missing or incomplete evidence is invalid, never a pass", () => {
+  // Attempt without its result.
+  assert.equal(kxFromEvents([kill("attempt", 1000n * MS), exited(1100n * MS)], "containment").result, "INVALID");
+  // Sent without any confirmed exit.
+  assert.equal(kxFromEvents([kill("attempt", 1000n * MS), kill("sent", 1001n * MS)], "containment").result, "INVALID");
+  // The clock could not be read.
+  assert.equal(kxFromEvents([kill("attempt", "unknown"), kill("sent", 1001n * MS), exited(1100n * MS)], "containment").result, "INVALID");
+  assert.equal(kxFromEvents([kill("attempt", 1000n * MS), kill("sent", 1001n * MS), exited("unknown")], "containment").result, "INVALID");
+});
+
+test("Kx events: events of different runs never pair", () => {
+  const attempt = kill("attempt", 1000n * MS), sent = kill("sent", 1001n * MS);
+  // Another start of nginx (run 2), another supervisor process (sup), another pid: none confirms run 1's exit.
+  for (const other of [exited(1100n * MS, { run: 2 }), exited(1100n * MS, { sup: "ffffffff" }), exited(1100n * MS, { pid: 43 })]) {
+    assert.equal(kxFromEvents([attempt, sent, other], "containment").result, "INVALID");
+  }
+  // An earlier exit of the same run identity, before the SIGKILL, is not its confirmation.
+  assert.equal(kxFromEvents([exited(900n * MS), attempt, sent], "containment").result, "INVALID");
+  // A result of another run does not complete this attempt.
+  assert.equal(kxFromEvents([attempt, kill("sent", 1001n * MS, { run: 2 }), exited(1100n * MS)], "containment").result, "INVALID");
 });
