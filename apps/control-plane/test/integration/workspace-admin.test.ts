@@ -247,6 +247,21 @@ describe("in a dev lab", () => {
     expect((await v2(h.api, "POST", "/deployments", { expectedRevision: null, reason: "ws-m1" })).status).toBe(201);
     await h.sql.query("delete from workspace_active_release where workspace_id = $1", [deployed.id]);
     expect((await v2(h.api, "POST", `/workspaces/${deployed.id}/archive`)).body.code).toBe("deployed");
+    // Simulated node evidence: only a converged revision without it withdraws it (a failed apply keeps the one before).
+    const converge = async (revision: number) =>
+      h.sql.query("insert into deployment_states (epoch, revision, seq, state, reason) select epoch, revision, coalesce(max(seq), 0) + 1, 'converged', 'test' from deployment_states where revision = $1 group by epoch, revision", [revision]);
+    const r1 = Number((await h.sql.query("select max(revision)::int as r from deployments")).rows[0].r);
+    await converge(r1);
+    expect((await v2(h.api, "POST", `/workspaces/${deployed.id}/archive`)).body.code).toBe("deployed");
+    await h.sql.query("update deployment_lease set revision = null, operation = null, owner = null, started_at = null, deadline_at = null");
+    // The next revision composes another workspace's release, not this one.
+    const keeper = (await v2(h.api, "POST", "/workspaces", { name: uniq("Mantido") })).body.id as string;
+    expect((await v2(h.api, "POST", `/workspaces/${keeper}/releases`, { message: "k1" })).status).toBe(201);
+    const second = await v2(h.api, "POST", "/deployments", { expectedRevision: r1, reason: "without it" });
+    expect(second.status, JSON.stringify(second.body)).toBe(201);
+    expect((await v2(h.api, "POST", `/workspaces/${deployed.id}/archive`)).body.code).toBe("deployed");
+    await converge(r1 + 1);
+    expect((await v2(h.api, "POST", `/workspaces/${deployed.id}/archive`)).status).toBe(204);
 
     expect((await v2(h.api, "POST", `/workspaces/${w.id}/archive`)).status).toBe(204);
     expect((await v2(h.api, "POST", `/workspaces/${w.id}/archive`)).status).toBe(204);

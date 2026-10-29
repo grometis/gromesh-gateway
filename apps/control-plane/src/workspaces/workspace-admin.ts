@@ -1,12 +1,12 @@
 import { HttpException, HttpStatus, Inject, Injectable } from "@nestjs/common";
-import { and, desc, eq, isNotNull, ne, sql } from "drizzle-orm";
+import { and, asc, eq, isNotNull, ne, sql } from "drizzle-orm";
 import { audit } from "../audit/audit.js";
 import type { RequestContext } from "../auth/auth.js";
 import type { Held } from "../auth/permissions.js";
 import { ProblemException, unprocessable } from "../common/problem.js";
 import { APP_CONFIG, type AppConfig } from "../config.js";
 import { DB, type Db, type Executor } from "../db/db.js";
-import { clusters, deployments, environments, instance, releases, roleBindings, workspaceActiveRelease, workspaceCreationPolicy, workspaces } from "../db/schema.js";
+import { clusters, deploymentStates, deployments, environments, instance, releases, roleBindings, workspaceActiveRelease, workspaceCreationPolicy, workspaces } from "../db/schema.js";
 import { toRoleBinding } from "../access/access.js";
 import { normalizeSlug, proposeSlug, slugProblem } from "./slug.js";
 import { SLUG_LOCK_KEY } from "./workspaces.js";
@@ -207,12 +207,17 @@ export class WorkspaceAdminService {
         .innerJoin(releases, and(eq(releases.workspaceId, workspaceActiveRelease.workspaceId), eq(releases.version, workspaceActiveRelease.version)))
         .where(eq(workspaceActiveRelease.workspaceId, workspaceId));
       if (active && active.origin !== "tombstone") throw refused("active-release", "The workspace has an active release with entities; remove it with a tombstone promotion first");
-      // What the nodes serve is the latest revision, converged or not: a member there is still served.
-      const [latest] = await tx.select({ members: deployments.members }).from(deployments).orderBy(desc(deployments.epoch), desc(deployments.revision)).limit(1);
-      const member = latest?.members.find((m) => m.workspaceId === workspaceId);
-      if (member) {
+      // A node that fails to apply a revision keeps the one before: the workspace is withdrawn only once a revision
+      // without it (or with its tombstone) converged, so every revision from the last converged one on still counts.
+      const revisions = await tx.select({ epoch: deployments.epoch, revision: deployments.revision, members: deployments.members }).from(deployments).orderBy(asc(deployments.epoch), asc(deployments.revision));
+      const states = await tx.select({ epoch: deploymentStates.epoch, revision: deploymentStates.revision, state: deploymentStates.state }).from(deploymentStates);
+      const ever = (r: { epoch: number; revision: number }, state: string) => states.some((s) => s.epoch === r.epoch && s.revision === r.revision && s.state === state);
+      const converged = revisions.map((r, i) => (ever(r, "converged") ? i : -1)).filter((i) => i >= 0);
+      for (const r of revisions.slice(converged.at(-1) ?? 0)) {
+        const member = ever(r, "rejected") ? undefined : r.members.find((m) => m.workspaceId === workspaceId);
+        if (!member) continue;
         const [release] = await tx.select({ origin: releases.origin }).from(releases).where(and(eq(releases.workspaceId, workspaceId), eq(releases.version, member.releaseVersion)));
-        if (release?.origin !== "tombstone") throw refused("deployed", "The workspace is a member of the latest deployment revision");
+        if (release?.origin !== "tombstone") throw refused("deployed", "A deployment revision a node may still serve has this workspace");
       }
       const [env] = await tx.select({ currentVersion: environments.currentVersion }).from(environments).where(eq(environments.id, workspaceId));
       if (env!.currentVersion !== null) throw refused("published-configuration", "A configuration was published for this workspace (v1 snapshot)");
