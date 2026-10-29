@@ -386,6 +386,31 @@ describe("copies of one request id that disagree (agent protocol v2, Analytics g
     expect(seen).toEqual([clean.id]);
   });
 
+  it("keeps conflicts out across cursor pages and across services, querying either side", async () => {
+    const envId = (await h.api("POST", "/environments", { name: uniq("conflict-pages") })).body.id as string;
+    const S1 = "00000000-0000-4000-8000-0000000000a1", S2 = "00000000-0000-4000-8000-0000000000a2";
+    // Clean events at 10, 30 and 50 s; conflicts at 20 and 40 s, on both sides of every page boundary (pages of 1).
+    const clean = [10_000, 30_000, 50_000].map((t) => row(envId, t, 200, 10, { service_id: S1 }));
+    const c1 = row(envId, 20_000, 200, 10, { service_id: S1 }), c2 = row(envId, 40_000, 200, 10, { service_id: S1 });
+    await admin.insert({ table: "requests", values: [...clean, c1, { ...c1, service_id: S2 }, c2, { ...c2, status: 503 }], format: "JSONEachRow" });
+    const seen: string[] = [];
+    let cursor: string | null = null, calls = 0;
+    do {
+      const page: ApiResponse = await h.api("GET", `/environments/${envId}/requests?${period()}&limit=1${cursor ? `&cursor=${cursor}` : ""}`);
+      expect(page.status, JSON.stringify(page.body)).toBe(200);
+      seen.push(...page.body.items.map((r: { id: string }) => r.id));
+      cursor = page.body.nextCursor;
+      calls++;
+    } while (cursor);
+    expect(calls).toBeGreaterThanOrEqual(3);
+    expect(seen.sort()).toEqual(clean.map((r) => r.id).sort());
+    // The copies of c1 sit in two services: filtering on either one never reveals it, in the explorer or the summary.
+    for (const service of [S1, S2]) {
+      expect(await ids(envId, `&serviceId=${service}`), service).not.toContain(c1.id);
+      expect(await total(envId, `&serviceId=${service}`), service).toBe(service === S1 ? 3 : 0);
+    }
+  });
+
   it("still counts identical copies once and distinct ids separately", async () => {
     const envId = (await h.api("POST", "/environments", { name: uniq("legit") })).body.id as string;
     const one = row(envId, 10_000, 200, 10), two = row(envId, 10_000, 200, 10);
