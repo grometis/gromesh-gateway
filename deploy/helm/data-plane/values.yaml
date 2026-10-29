@@ -42,8 +42,8 @@ agent:
   image:
     # Published by the images workflow and pinned by digest through image-digests (scripts/bump-image-digests.mjs).
     repository: ghcr.io/grometis/gromesh-agent
-    tag: "132c6368ec9d91eea2de6711cc942c70bbd347bc"
-    digest: "sha256:18becf9775fa907a7f051e97a4feb4c5f811dcc5382daba67d146983f689b030"
+    tag: "0b3fb9662a4c506cb1d286d4d7f86883df073ff3"
+    digest: "sha256:b7f3b2160f3b44198a5c44290ab796c0ac2ecbed611b14b09c0a54e6233b902d"
     pullPolicy: IfNotPresent
   # The agent appends /agent/v1/... itself. Use the control plane origin/base URL,
   # e.g. http://control-plane:3000, WITHOUT /api/v1 or /agent/v1.

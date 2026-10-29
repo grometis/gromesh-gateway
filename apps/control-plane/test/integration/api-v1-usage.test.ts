@@ -1,9 +1,9 @@
 import pg from "pg";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Role } from "../../src/auth/environment-access.js";
 import { contractsV2 } from "../../src/common/contract.js";
 import { runMigrations } from "../../src/db/migrate.js";
-import { ApiV1UsageService } from "../../src/instance/instance.js";
+import { ApiV1UsageService, CONFIRM_MS } from "../../src/instance/instance.js";
 import { type ApiClient, type ApiResponse, startHarness, uniq, type Harness } from "./harness.js";
 
 // N1-X5: what still calls the v1 the controlled migration will cut (decision H-9), the migration report, and one
@@ -25,6 +25,15 @@ describe("the v1 calls the cut will remove, the migration report and one authori
     return res.body as { windowDays: number; since: string; completeThrough: string; silentReplicas: { replicaId: string }[]; sessionCalls: number; tokens: { tokenId: string; tokenName: string; ownerId: string; calls: number; lastCalledOn: string }[] };
   };
   const bearer = (token: string): ApiClient => (method, path, body) => h.anonymous(method, path, body, { authorization: `Bearer ${token}` });
+  /**
+   * Stops the database's clock at `moment` (SQL) until the test ends: the rows a test sets relative to today and the
+   * days it then expects fall on one UTC day, even when a midnight passes while it runs.
+   */
+  const stopClock = async (moment = "pg_catalog.now()") => {
+    await h.sql.query(`delete from test_clock`);
+    const [row] = (await h.sql.query(`insert into test_clock select ${moment} returning to_char(at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as at`)).rows;
+    return row.at as string;
+  };
 
   beforeAll(async () => {
     const admin = new pg.Client({ connectionString: ADMIN_URL });
@@ -35,6 +44,14 @@ describe("the v1 calls the cut will remove, the migration report and one authori
     url.pathname = `/${name}`;
     dbUrl = url.toString();
     await runMigrations(dbUrl);
+    // A clock the tests can stop: in this database now() is public.now() (found before pg_catalog's), the pinned
+    // moment if there is one, otherwise the real one. The UTC days are the database's, out of a fake timer's reach.
+    const db = new pg.Client({ connectionString: dbUrl });
+    await db.connect();
+    await db.query(`create table test_clock (at timestamptz not null)`);
+    await db.query(`create function public.now() returns timestamptz language sql stable as 'select coalesce((select at from public.test_clock), pg_catalog.now())'`);
+    await db.query(`alter database "${name}" set search_path = "$user", public, pg_catalog`);
+    await db.end();
     // No timer: the test flushes the session calls itself.
     h = await startHarness({ databaseUrl: url.toString(), apiV1UsageFlushMs: 0 });
     usage = h.app.get(ApiV1UsageService);
@@ -46,6 +63,9 @@ describe("the v1 calls the cut will remove, the migration report and one authori
     await admin.connect();
     await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
     await admin.end();
+  });
+  afterEach(async () => {
+    await h?.sql.query(`delete from test_clock`);
   });
 
   it("counts each token's calls to the operations the cut reaches, written with the confirmation, and nothing else", async () => {
@@ -110,6 +130,7 @@ describe("the v1 calls the cut will remove, the migration report and one authori
   });
 
   it("keeps 30 days: older days leave the window and the table", async () => {
+    await stopClock();
     const created = await h.api("POST", "/users/me/tokens", { name: uniq("old"), role: "viewer", expiresInDays: 1 });
     await h.sql.query(`insert into api_v1_usage (day, token_id, token_name, owner_id, calls) values ((now() at time zone 'utc')::date - 30, $1, $2, $3, 7), ((now() at time zone 'utc')::date - 29, $1, $2, $3, 2)`, [created.body.id, created.body.name, (await h.api("GET", "/me")).body.id]);
     const r = await read();
@@ -137,12 +158,21 @@ describe("the v1 calls the cut will remove, the migration report and one authori
   /** Midnight UTC n days ago, plus some hours. */
   const at = (n: number, hours = 0) => `((now() at time zone 'utc')::date - ${n})::timestamp at time zone 'utc' + interval '${hours} hours'`;
   const mine = () => usage["replicaId" as keyof ApiV1UsageService] as unknown as string;
+  /** Only this replica on record, counting from `startedAt` (SQL): what a test of the window starts from. */
+  const alone = async (startedAt: string) => {
+    await h.sql.query(`delete from api_v1_usage_replicas where replica_id <> $1`, [mine()]);
+    await h.sql.query(`update api_v1_usage_replicas set started_at = ${startedAt} where replica_id = $1`, [mine()]);
+  };
+  const dayAfter = (moment: string) => new Date(Date.parse(moment.slice(0, 10)) + 86_400_000).toISOString().slice(0, 10);
 
   it("starts the 30 days only once a replica counted a whole UTC day, and restarts them after a time nobody counted", async () => {
-    // Counting began today, after midnight: today is not complete, nothing before it is known.
-    expect((await read()).since).toBe(await day(-1));
-    await h.sql.query(`delete from api_v1_usage_replicas where replica_id <> $1`, [mine()]);
-    await h.sql.query(`update api_v1_usage_replicas set started_at = ${at(29)} where replica_id = $1`, [mine()]);
+    await stopClock();
+    // Counting began just now: no day is complete through the last confirmed moment, so since is the day after it
+    // (tomorrow; today in the two minutes after midnight UTC, when nothing of today is confirmed yet).
+    await alone("now()");
+    const fresh = await read();
+    expect(fresh.since).toBe(dayAfter(fresh.completeThrough));
+    await alone(at(29));
     const r = await read();
     expect(r.since).toBe(await day(29));
     expect(Date.parse(r.completeThrough)).toBeLessThan(Date.now() - 60_000);
@@ -157,11 +187,28 @@ describe("the v1 calls the cut will remove, the migration report and one authori
     expect((await read()).since).toBe(await day(29));
     await h.sql.query(`update api_v1_usage_replicas set started_at = ${at(5, 8)} + interval '3 minutes' where replica_id = $1`, [mine()]);
     expect((await read()).since).toBe(await day(4));
-    await h.sql.query(`delete from api_v1_usage_replicas where replica_id <> $1`, [mine()]);
-    await h.sql.query(`update api_v1_usage_replicas set started_at = ${at(29)} where replica_id = $1`, [mine()]);
+  });
+
+  it("starts the 30 days the same at any time of the UTC day, the two minutes after midnight included", async () => {
+    // Yesterday, so that this replica's confirmations (the real clock) are never behind the pinned one.
+    const midnight = `date_trunc('day', pg_catalog.now() at time zone 'utc') at time zone 'utc' - interval '1 day'`;
+    for (const [moment, nothingYet] of [[`${midnight} + interval '1 minute'`, 0], [`${midnight} + interval '12 hours'`, -1]] as const) {
+      const now = await stopClock(moment);
+      // Counting began just now. At 00:01 nothing of today is confirmed yet and yesterday is incomplete: since is
+      // today. At noon today is incomplete: since is tomorrow.
+      await alone("now()");
+      const fresh = await read();
+      expect(Date.parse(fresh.completeThrough)).toBe(Date.parse(now) - CONFIRM_MS);
+      expect(fresh.since).toBe(await day(nothingYet));
+      // Counted for 29 days: the whole window is complete, also while nothing of today is confirmed yet.
+      await alone(at(29));
+      expect((await read()).since).toBe(await day(29));
+    }
   });
 
   it("keeps the 30 days from completing while a replica that went silent without stopping cleanly is on record", async () => {
+    await stopClock();
+    await alone(at(29));
     // Silent: it may be up, taking calls it cannot count, so no day from its last confirmation on is complete.
     await h.sql.query(`insert into api_v1_usage_replicas (replica_id, started_at, seen_at) values (gen_random_uuid(), ${at(29)}, ${at(10)} - interval '1 second')`);
     expect((await read()).since).toBe(await day(-1));
@@ -240,7 +287,9 @@ describe("the v1 calls the cut will remove, the migration report and one authori
   });
 
   it("serves the calls while their counts cannot be written; the 30 days cannot complete while that replica is silent", async () => {
+    await stopClock();
     const created = await h.api("POST", "/users/me/tokens", { name: uniq("lost"), role: "viewer", expiresInDays: 1 });
+    await alone(at(29));
     const other = await startHarness({ databaseUrl: dbUrl, apiV1UsageFlushMs: 0 });
     const theirs = other.app.get(ApiV1UsageService);
     const id = theirs["replicaId" as keyof ApiV1UsageService] as unknown as string;
