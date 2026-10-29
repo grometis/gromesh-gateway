@@ -7,7 +7,7 @@ import { contractBodyV2 } from "../common/contract.js";
 import { notFound, ProblemException, unprocessable, type FieldError } from "../common/problem.js";
 import { DB, type Db } from "../db/db.js";
 import { roleBindings, users, type RoleBindingRow } from "../db/schema.js";
-import { uuidParam } from "../environments/environments.js";
+import { refuseArchived, uuidParam } from "../environments/environments.js";
 
 /** contracts/control-plane-v2.openapi.yaml#/components/schemas/RoleBindingWrite (the core profile of N1). */
 interface RoleBindingWrite {
@@ -110,6 +110,8 @@ export class AccessService {
     const missing = permissions.filter((p) => (p === "rollback.emergency" ? !held.has("platform.admin") : !held.has(p)));
     if (missing.length > 0) throw new ProblemException(HttpStatus.FORBIDDEN, `Cannot grant what you do not hold: ${missing.join(", ")}`);
     return this.db.transaction(async (tx) => {
+      // A grant in an archived workspace is refused here too (only revoking stays possible there).
+      if (scope.type === "workspace") await refuseArchived(tx, scope.workspaceId);
       const [row] = await tx
         .insert(roleBindings)
         .values({

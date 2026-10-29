@@ -2,7 +2,6 @@ import {
   type CanActivate,
   createParamDecorator,
   type ExecutionContext,
-  HttpException,
   HttpStatus,
   Inject,
   Injectable,
@@ -16,10 +15,10 @@ import { clientAddress } from "../common/client-address.js";
 import { ProblemException } from "../common/problem.js";
 import { DB, type Db } from "../db/db.js";
 import { effectiveRole, environmentOf, lower, RANK, type Role } from "./environment-access.js";
-import { notFound } from "../common/problem.js";
+import { notFound, workspaceArchived } from "../common/problem.js";
 import { and, eq } from "drizzle-orm";
 import { environmentRoles, roleBindings } from "../db/schema.js";
-import { type Held, type Permission, permissionsIn, requiredPermission, type Scope, tokenPermissions, v1BindingById, workspaceArchived, workspaceExists } from "./permissions.js";
+import { type Held, type Permission, permissionsIn, requiredPermission, type Scope, tokenPermissions, v1BindingById, isWorkspaceArchived, workspaceExists } from "./permissions.js";
 import { sessionCookie, SessionService } from "./sessions.js";
 
 /** `ggt_` plus 32 random bytes in unpadded base64url (43 characters), as the contract's pattern says. */
@@ -152,8 +151,8 @@ export class AuthGuard implements CanActivate {
     const { workspaceId, ...decision } = v2 ? await this.decideV2(caller, v2, req.params) : await this.decideV1(caller, required as Role, meta<Held[]>(V1_PERMISSION_KEY), req.params);
     // An archived workspace is read-only for both APIs (WS-M0); revoking a grant there stays possible, and archiving
     // again is the operation's own no-op.
-    if (workspaceId && !SAFE_METHODS.has(req.method) && meta<boolean>(ARCHIVED_ALLOWED_KEY) !== true && (await workspaceArchived(this.db, workspaceId))) {
-      throw new HttpException({ type: "https://gromesh.dev/problems/workspace-archived", title: "Conflict", status: HttpStatus.CONFLICT, code: "workspace-archived", detail: "The workspace is archived" }, HttpStatus.CONFLICT);
+    if (workspaceId && !SAFE_METHODS.has(req.method) && meta<boolean>(ARCHIVED_ALLOWED_KEY) !== true && (await isWorkspaceArchived(this.db, workspaceId))) {
+      throw workspaceArchived();
     }
     req.user = caller.user;
     req.auth = caller.token ? { via: "token", tokenId: caller.token.id, tokenName: caller.token.name, tokenRole: caller.token.role, ...decision } : { via: "session", ...decision };

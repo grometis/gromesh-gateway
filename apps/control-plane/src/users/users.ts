@@ -11,7 +11,7 @@ import { decodeCursor, parseLimit, toPage } from "../common/pagination.js";
 import { conflict, notFound, unprocessable } from "../common/problem.js";
 import { DB, type Db, type Executor } from "../db/db.js";
 import { environmentRoles, environments, users, type UserRow } from "../db/schema.js";
-import { uuidParam } from "../environments/environments.js";
+import { refuseArchived, uuidParam } from "../environments/environments.js";
 
 /** The contract's User: never the password hash. */
 export function toUser(r: UserRow) {
@@ -128,6 +128,10 @@ export class UsersService {
   private async writeEnvironmentRoles(tx: Executor, ctx: RequestContext, userId: string, items: EnvironmentRoles["items"]) {
     const before = await environmentRolesOf(tx, userId);
     if (before.length === 0 && items.length === 0) return before;
+    // An archived workspace takes no new access (WS-M0): there a role may only become none, the v1 deny.
+    const was = new Map(before.map((b) => [b.environmentId, b.role]));
+    const now = new Map(items.map((i) => [i.environmentId, i.role]));
+    for (const id of new Set([...was.keys(), ...now.keys()])) if (was.get(id) !== now.get(id) && now.get(id) !== "none") await refuseArchived(tx, id);
     await tx.delete(environmentRoles).where(eq(environmentRoles.userId, userId));
     if (items.length > 0) await tx.insert(environmentRoles).values(items.map((item) => ({ userId, environmentId: item.environmentId, role: item.role })));
     const after = await environmentRolesOf(tx, userId);
