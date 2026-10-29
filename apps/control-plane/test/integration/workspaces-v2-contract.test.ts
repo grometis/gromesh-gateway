@@ -1223,7 +1223,7 @@ describe("workspace administration (WS-M0)", () => {
     expect(Object.keys(update.requestBody.content["application/json"].schema.properties)).toEqual(["name", "description"]);
     const archive = op("archiveWorkspace");
     expect(archive["x-required-permission"]).toBe("platform.admin");
-    for (const phrase of ["nothing is deleted", "active-release", "deployed (it is a member of the instance's latest deployment", "published-configuration", "409 workspace-archived", "except revoking a role binding"]) expect(flat(archive.description), phrase).toContain(phrase);
+    for (const phrase of ["nothing is deleted", "active-release", "deployed (it has a release that is not a tombstone in a revision a node may still serve", "only a converged revision without it, or with its tombstone, proves it withdrawn", "published-configuration", "409 workspace-archived", "except revoking a role binding"]) expect(flat(archive.description), phrase).toContain(phrase);
   });
 
   it("states every slug rule the server applies (GW-WS-10)", async () => {
