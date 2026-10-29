@@ -198,6 +198,72 @@ info:
         supervisor drains for at most 18 s after receiving the signal (Kong stopped <= 20 s after the kubelet
         observes the deletion) and the independent ceiling is the pod grace (30 s); a kubelet, runtime or node
         failure with a stuck supervisor has no time bound.
+
+    Analytics guarantees (N3-A1; B §3.5.2, decision P2). The collector is the Kong pod's loopback sidecar; it pins the
+    instance (environment_id) and its own cluster (cluster_id), never trusted from an event. Normative vector:
+    examples/analytics-v2.example.json.
+      - Event identity: id = the SHA-256 of the UTF-8 bytes "<clusterId>|<podUid>|<requestId>", truncated to its first
+        128 bits (16 bytes, the first 32 lowercase hex digits; no other truncation) and laid out 8-4-4-4-12 as the
+        stored UUID (eventIdOf). Each part must already be canonical: clusterId and podUid lowercase UUIDs
+        (8-4-4-4-12 hex), requestId Kong's 32 lowercase hex; none of them can hold "|", so the concatenation is
+        unambiguous. Any other value is never normalised: the event is dropped (and a sidecar collector without a
+        canonical pod uid or cluster id drops every event). The same request delivered again, by a Kong queue retry,
+        a repeated batch or a collector restart, carries the same id; two pods or two clusters never share one.
+      - Conflicting copies: rows sharing an id are copies of one event by construction. Rows with one id whose stored
+        content differs in any column (instance, cluster, route, service, consumer, method, path, status, timings,
+        client, sizes, retention) are a conflict, which only a defect or a sender holding the cluster's token can
+        cause. A conflicted id is never attributed to any workspace, whatever the order of insertion or reading: no
+        row of it is chosen. It is counted once, only in the instance's unattributed totals (reason
+        conflicting-copies, no content of the rows), and since those totals span the whole instance, no workspace
+        filter hides it. Identical copies are one event; distinct ids stay distinct requests. Detecting a conflict
+        reads every stored row of the id and never relies on a merge.
+      - Delivery: Kong's queue and the collector's acknowledged sink retry, so an event may be stored more than once;
+        the collector's in-memory dedup is a load reduction only (lost on restart). Delivery is not guaranteed end to
+        end: neither at least once nor exactly once is promised, since an event can be lost for good (below). What is
+        guaranteed is the reading of what was stored: each stored id counts once. The requests table keeps rows
+        sorted by (environment_id, ts, id, content digest), the digest being of every stored column, in an engine that
+        collapses only rows equal on that key in background merges (ReplacingMergeTree): identical copies may merge,
+        rows of one id that differ never do, so a conflict survives merges for the whole retention. Merges are
+        eventual, so every read the control plane serves counts DISTINCT ids and never relies on a merge having run,
+        so a copy is never visible. Equal ids share ts (Kong's start time of the
+        request), hence the same partition and the same retention_days. Physical removal is asynchronous for copies
+        (merges) and expired rows (TTL): it has no hard time bound, and a replay arriving after its original was
+        removed is stored again until its own TTL removes it; reads only ever span the retention period. Storage of
+        copies is bounded by the retries, not by a deadline. Loss stays possible (collector memory buffer at restart,
+        Kong queue overflow): the health below reports it when the counters show it (degraded) or cannot show
+        anything (unknown); a loss below its thresholds can go unnoticed.
+      - Attribution (attributionOf): a row counts for workspace W only when environment_id is this instance, cluster_id
+        is a cluster of this instance, route_id is not null, and route_id is a route of W in the latest deployment
+        revision recorded at or before ts or in the revision just before it (the window of a rollout or a rollback,
+        which is a new revision), and its id has no conflicting copy. Any other row is unattributed with a reason
+        (conflicting-copies, foreign-instance, unknown-cluster, no-route, before-first-revision, route-not-deployed,
+        ambiguous-route): it counts for no workspace and only in
+        the platform admin's unattributed totals. The path, its prefix or any field of the event never attribute a
+        row. Workspace reads require workspace.read on W.
+      - Collector token exclusivity: each cluster has its own token (at least 32 random characters) and the control
+        plane never holds it. The agent reports collectorTokenFingerprints: "sha256:" + lowercase hex SHA-256 of
+        "gromesh-collector-token/v1" + LF + token, for the current token and the previous one kept during a
+        rotation (fingerprintOf). Two clusters share a token when a current fingerprint of one equals a current
+        fingerprint of the other. Only online nodes count (latest status within 45 s, not deregistered): a pod that
+        was replaced or stopped stops counting once offline, so a completed rotation clears the share. An online node
+        without fingerprints leaves its cluster unverified. A share or an unverified cluster blocks only the
+        activation gate v2-pending -> v2; an active cluster is never deactivated and no token is invalidated (the
+        platform admin rotates one through the chart). Without a share, any match involving a previous fingerprint is
+        a rotation in progress: shown, not blocking. Opening and
+        clearing a share are audited (cluster.collector-token-shared), with keyHints (first 8 hex digits) only.
+      - Health (analyticsHealth, healthOf): the agent reads, over a window (windowSeconds, default 300), Kong's own
+        request counter (GET /status server.total_requests: every request is logged by the platform's global
+        http-log, the probe's canary included) and the collector's loopback metrics (events received, events the
+        ClickHouse sink acknowledged, delivery errors, refusals of the collector's token check, buffered events).
+        degraded reasons: collector-unreachable; delivery-failing (fewer than half the received events delivered, or
+        any delivery error with fewer delivered than received); backlog (buffered >= half the buffer); events-missing
+        (Kong counted >= 20 requests and the collector received fewer than half); auth-refusals (any refusal: a wrong
+        token or a foreign sender). Without a reason: unknown when the window is not complete (agent or collector just
+        started) or any counter could not be read; idle when Kong and the collector both counted nothing (no traffic
+        is not a failure); unknown when Kong counted requests but the collector received none (too few to tell);
+        healthy only with events received and delivered in the window. Missing evidence is never health, and a
+        running container is never health by itself. StatusReport.analytics stays analytics-healthy for healthy and idle, analytics-degraded otherwise.
+        Health never affects convergence, containment, readiness or the activation gate.
 servers:
   - url: http://localhost:3000
 tags:
@@ -401,6 +467,11 @@ components:
       type: object
       additionalProperties: false
       required: [nodeId, epoch, appliedRevision, appliedHash, kongHealthy]
+      allOf:
+        - if: { required: [analyticsHealth], properties: { analyticsHealth: { properties: { state: { enum: [healthy, idle] } } } } }
+          then: { required: [analytics], properties: { analytics: { const: analytics-healthy } } }
+        - if: { required: [analyticsHealth], properties: { analyticsHealth: { properties: { state: { enum: [degraded, unknown] } } } } }
+          then: { required: [analytics], properties: { analytics: { const: analytics-degraded } } }
       properties:
         nodeId: { type: string, minLength: 1, maxLength: 253 }
         epoch: { type: integer, minimum: 1 }
@@ -412,8 +483,51 @@ components:
         failureReason: { enum: [kong-rejected, instance-mismatch, invalid-envelope], description: "Why failedRevision was not applied; kong-rejected goes with failureStatus" }
         kongConfigHash: { oneOf: [{ $ref: "#/components/schemas/KongConfigHash" }, { type: "null" }], description: "Kong's configuration_hash read after it confirmed appliedRevision (the md5 of the posted bytes); the same value the agent wrote to applied.json" }
         kongHealthy: { type: boolean }
-        analytics: { enum: [analytics-healthy, analytics-degraded], description: "Collector health; never affects convergence, containment or readiness" }
+        analytics: { enum: [analytics-healthy, analytics-degraded], description: "Collector health; never affects convergence, containment or readiness. With analyticsHealth, analytics-healthy exactly when its state is healthy or idle" }
+        analyticsHealth: { $ref: "#/components/schemas/AnalyticsHealth" }
+        collectorTokenFingerprints: { $ref: "#/components/schemas/CollectorTokenFingerprints" }
         isolationState: { $ref: "#/components/schemas/PodIsolationState" }
+    AnalyticsHealth:
+      type: object
+      additionalProperties: false
+      description: The collector of this pod over the last window ("Analytics guarantees", healthOf). Counts are deltas over the window; null when the source could not be read.
+      required: [state, reasons, observedAt, windowSeconds, windowComplete, collectorReachable, kongRequests, received, delivered, deliveryErrors, authRefusals, buffered, bufferCapacity]
+      properties:
+        state: { enum: [healthy, idle, degraded, unknown] }
+        reasons: { type: array, uniqueItems: true, items: { enum: [collector-unreachable, delivery-failing, backlog, events-missing, auth-refusals] }, description: "Empty unless state is degraded; never empty when it is" }
+        observedAt: { type: string, format: date-time }
+        windowSeconds: { type: integer, minimum: 60, maximum: 900 }
+        windowComplete: { type: boolean, description: "False while the agent or the collector has run for less than windowSeconds" }
+        collectorReachable: { type: boolean }
+        collectorStartedAt: { type: [string, "null"], format: date-time }
+        kongRequests: { type: [integer, "null"], minimum: 0 }
+        received: { type: [integer, "null"], minimum: 0 }
+        delivered: { type: [integer, "null"], minimum: 0 }
+        deliveryErrors: { type: [integer, "null"], minimum: 0 }
+        authRefusals: { type: [integer, "null"], minimum: 0 }
+        buffered: { type: [integer, "null"], minimum: 0 }
+        bufferCapacity: { type: [integer, "null"], minimum: 1 }
+        lastReceivedAt: { type: [string, "null"], format: date-time }
+        lastDeliveredAt: { type: [string, "null"], format: date-time }
+      allOf:
+        - if: { properties: { state: { const: degraded } } }
+          then: { properties: { reasons: { minItems: 1 } } }
+          else: { properties: { reasons: { maxItems: 0 } } }
+        - if: { properties: { state: { enum: [healthy, idle] } } }
+          then: { properties: { windowComplete: { const: true }, collectorReachable: { const: true }, kongRequests: { type: integer }, received: { type: integer }, delivered: { type: integer }, deliveryErrors: { type: integer }, authRefusals: { type: integer }, buffered: { type: integer }, bufferCapacity: { type: integer } } }
+        - if: { properties: { state: { const: healthy } } }
+          then: { properties: { received: { minimum: 1 }, delivered: { minimum: 1 } } }
+        - if: { properties: { state: { const: idle } } }
+          then: { properties: { kongRequests: { const: 0 }, received: { const: 0 } } }
+    CollectorTokenFingerprints:
+      type: object
+      additionalProperties: false
+      description: Fingerprints of the collector tokens this pod accepts ("Analytics guarantees", fingerprintOf); never the token.
+      required: [current, previous]
+      properties:
+        current: { $ref: "#/components/schemas/CollectorTokenFingerprint" }
+        previous: { oneOf: [{ $ref: "#/components/schemas/CollectorTokenFingerprint" }, { type: "null" }] }
+    CollectorTokenFingerprint: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
     PodIsolationState:
       description: State of the pod as decided by its isolation-probe, without agent or control plane.
       enum: [awaiting-admission, verifying, ok, inconclusive, kong-unavailable, guard-missing, no-proof, violation]
