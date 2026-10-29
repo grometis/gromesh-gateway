@@ -15,6 +15,7 @@ import {
   kubeconfig, kubectl, NODES, NS, registrationSecret, relayObjects, removeSuiteObjects, root, run, sql,
   scrubKong,
 } from "./lab.mjs";
+import { CLIENT } from "./client-script.mjs";
 import { privilegedAfterLoss, privilegedRequestsBetween, scenarioRequestLines } from "./privileged.mjs";
 import { bootToWall, groupFromEvents, itemResult, keepaliveBlocked, kFromLiveness, ksFromDeletion, kxFromEvents, overall, rfc3339CeilMs, runExitCode } from "./budgets.mjs";
 
@@ -426,31 +427,6 @@ s.on("upgrade", (q, sock) => {
 });
 s.listen(${BACKEND_PORT}, "::");`;
 
-// The traffic client, inside the unrestricted observer pod: one new connection per request, one keepalive socket,
-// one WebSocket; every event is a JSON line stamped with the pod's (VM) clock.
-const CLIENT = String.raw`
-import http from "node:http"; import net from "node:net"; import crypto from "node:crypto";
-const [host, port, path, key, wsPath, privPath] = JSON.parse(globalThis.ARGS);
-const log = (o) => console.log(JSON.stringify({ t: Date.now(), ...o }));
-const ka = new http.Agent({ keepAlive: true, maxSockets: 1 });
-function get(kind, agent) {
-  const q = http.request({ host, port, path, agent, headers: { apikey: key }, timeout: 3000 }, (r) => { r.resume(); r.on("end", () => log({ k: kind, s: r.statusCode, reused: q.reusedSocket })); });
-  q.on("timeout", () => q.destroy(new Error("timeout"))); q.on("error", (e) => log({ k: kind, e: e.code ?? e.message })); q.end();
-}
-setInterval(() => get("new", false), 250);
-setInterval(() => get("ka", ka), 250);
-// Traffic for the privileged destination's log only (its own kind, never read by a budget).
-if (privPath) setInterval(() => { const q = http.request({ host, port, path: privPath, agent: false, timeout: 3000 }, (r) => { r.resume(); r.on("end", () => log({ k: "priv", s: r.statusCode })); }); q.on("timeout", () => q.destroy(new Error("timeout"))); q.on("error", (e) => log({ k: "priv", e: e.code ?? e.message })); q.end(); }, 250);
-function ws() {
-  const sock = net.connect(Number(port), host); let open = false, n = 0, buf = "";
-  sock.on("connect", () => sock.write("GET " + wsPath + " HTTP/1.1\r\nHost: " + host + "\r\napikey: " + key + "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: " + crypto.randomBytes(16).toString("base64") + "\r\n\r\n"));
-  sock.on("data", (d) => { if (!open) { buf += d.toString("latin1"); if (buf.includes("\r\n\r\n")) { const st = buf.split(" ")[1]; open = st === "101"; log({ k: "ws", ev: open ? "open" : "refused", s: Number(st) }); if (!open) sock.destroy(); } return; }
-    if (d.toString().includes("pong")) log({ k: "ws", ev: "pong" }); });
-  const timer = setInterval(() => { if (!open) return; const p = Buffer.from("ping " + (++n)); const m = crypto.randomBytes(4); sock.write(Buffer.concat([Buffer.from([0x81, 0x80 | p.length]), m, p.map((b, i) => b ^ m[i % 4])])); }, 500);
-  sock.on("close", () => { clearInterval(timer); log({ k: "ws", ev: "close" }); setTimeout(ws, 1000); });
-  sock.on("error", (e) => log({ k: "ws", ev: "error", e: e.code }));
-}
-ws();`;
 
 let Client = class {
   constructor(label, args) {
@@ -917,11 +893,14 @@ async function containmentN({ frozenSupervisor = false } = {}) {
   const recoveredLog = (await docker(["logs", `${CLUSTER}-fx-imds`], { allowFail: true })).stdout.split("\n").filter(Boolean);
   const recoveredSources = (await Promise.all((await live()).map(async (p) => (await json(["-n", NS.dp, "get", "pod", p.name])).status.podIPs.map((x) => x.ip)))).flat();
   const reachedAfter = privilegedRequestsBetween(recoveredLog, { server: "ext:imds", scenario: recovered, sources: recoveredSources, requests: lines.map((l) => createHash("sha256").update(l).digest("hex")) });
-  const answered = after.events.filter((e) => e.k === "priv" && e.s).length;
-  it.measures.privilegedAfterRecovery = { reached: reachedAfter, kongAnswered: answered };
-  if (reachedAfter === null) it.failures.push("privileged destination after recovery: its log does not bracket the check");
+  // Exercised only when the recovered pods serve (200 on /api) and Kong tried the route's upstream and failed to reach
+  // it (502 refused/reset, 504 timeout); a 404 or a 503 never left Kong, so it proves nothing about the deny.
+  const served = after.events.filter((e) => e.k === "new" && e.s === 200).length;
+  const tried = after.events.filter((e) => e.k === "priv" && (e.s === 502 || e.s === 504)).length;
+  it.measures.privilegedAfterRecovery = { reached: reachedAfter, served, upstreamAttempts: tried };
+  if (reachedAfter === null) it.failures.push("privileged destination after recovery: its log is incomplete or does not bracket the check");
   else if (reachedAfter > 0) it.failures.push(`privileged destination reached ${reachedAfter} times after recovery (the deny is back)`);
-  else if (answered === 0) it.open.push("privileged destination after recovery: Kong answered no request on the route, not exercised");
+  else if (served === 0 || tried === 0) it.open.push(`privileged destination after recovery not exercised: ${served} 200 on /api, ${tried} upstream attempts on the route`);
   done(it);
 }
 

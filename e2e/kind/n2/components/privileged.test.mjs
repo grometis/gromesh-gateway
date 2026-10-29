@@ -156,6 +156,41 @@ test("after recovery: requests of the scenario inside the recovery marks are cou
   assert.equal(privilegedRequestsBetween(lines, { server: "ext:imds", scenario: "run1-n", sources: [POD], requests: [sha(ROUTE)] }), 1);
   assert.equal(privilegedRequestsBetween(log([]), { server: "ext:imds", scenario: "run1-n", sources: [POD], requests: [sha(ROUTE)] }), 0);
   assert.equal(privilegedRequestsBetween(log([], { marks: false }), { server: "ext:imds", scenario: "run1-n", sources: [POD], requests: [sha(ROUTE)] }), null);
+  // An incomplete log is no evidence of absence (review E9 r3): an orphan request, or a gap where one was.
+  const one = log(conn(1, 2_000));
+  const q = { server: "ext:imds", scenario: "run1-n", sources: [POD], requests: [sha(ROUTE)] };
+  assert.equal(privilegedRequestsBetween(one.filter((l) => !(l.includes('"ev":"accept"') && l.includes('"conn":1,'))), q), null);
+  assert.equal(privilegedRequestsBetween(one.filter((l) => !l.includes('"ev":"req"')), q), null);
+});
+
+test("the scenario client really requests the privileged route on fresh connections, without the API key", async () => {
+  const { CLIENT } = await import("./client-script.mjs");
+  const { createServer } = await import("node:http");
+  const seen = [];
+  const server = createServer((req, res) => { seen.push({ url: req.url, apikey: req.headers.apikey ?? null }); res.end("ok"); });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const args = JSON.stringify(["127.0.0.1", String(server.address().port), "/ws-a/api", "k", "/ws-a/api/ws", "/ws-a/meta"]);
+  const child = spawn(process.execPath, ["--input-type=module", "-"], { stdio: ["pipe", "pipe", "ignore"] });
+  child.stdin.end(`globalThis.ARGS = ${JSON.stringify(args)};\n${CLIENT}`);
+  const events = [];
+  child.stdout.on("data", (d) => { for (const l of String(d).split("\n").filter(Boolean)) { try { events.push(JSON.parse(l)); } catch {} } });
+  await new Promise((r) => setTimeout(r, 1200));
+  child.kill("SIGKILL");
+  server.close();
+  const meta = seen.filter((s) => s.url === "/ws-a/meta");
+  assert.ok(meta.length >= 2, `privileged route requests: ${meta.length}`);
+  assert.ok(meta.every((s) => s.apikey === null), "the privileged route is requested without the workspace key");
+  assert.ok(events.some((e) => e.k === "priv" && e.s === 200), "the client logs the route's own kind");
+  // Without the sixth argument (agent-down, drain) it never requests it.
+  seen.length = 0;
+  const server2 = createServer((req, res) => { seen.push({ url: req.url }); res.end("ok"); });
+  await new Promise((r) => server2.listen(0, "127.0.0.1", r));
+  const c2 = spawn(process.execPath, ["--input-type=module", "-"], { stdio: ["pipe", "ignore", "ignore"] });
+  c2.stdin.end(`globalThis.ARGS = ${JSON.stringify(JSON.stringify(["127.0.0.1", String(server2.address().port), "/ws-a/api", "k", "/ws-a/api/ws"]))};\n${CLIENT}`);
+  await new Promise((r) => setTimeout(r, 800));
+  c2.kill("SIGKILL");
+  server2.close();
+  assert.ok(seen.some((s) => s.url === "/ws-a/api") && !seen.some((s) => s.url === "/ws-a/meta"));
 });
 
 test("the containment scenario is wired: route created, marks before the client, client on the route, recovery checked", () => {

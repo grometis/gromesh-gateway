@@ -107,8 +107,13 @@ export function privilegedRequestsBetween(lines, { server, scenario, sources, re
   const start = events.filter((e) => e.ev === "mark" && e.scenario === scenario && e.phase === "start");
   const end = events.filter((e) => e.ev === "mark" && e.scenario === scenario && e.phase === "end");
   if (start.length !== 1 || end.length !== 1 || start[0].inst !== end[0].inst || start[0].seq > end[0].seq) return null;
-  const inside = events.filter((e) => e.inst === start[0].inst && e.seq > start[0].seq && e.seq < end[0].seq);
-  const accepts = new Map(inside.filter((e) => e.ev === "accept").map((e) => [e.conn, e]));
+  // Absence is evidence only on a complete log: every event of the instance, no gap, no orphan request.
+  const all = events.filter((e) => e.inst === start[0].inst);
+  const seqs = all.map((e) => e.seq).sort((a, b) => a - b);
+  if (new Set(seqs).size !== seqs.length || seqs[0] !== 1 || seqs.some((s, i) => i > 0 && s !== seqs[i - 1] + 1)) return null;
+  const inside = all.filter((e) => e.seq > start[0].seq && e.seq < end[0].seq);
+  const accepts = new Map(all.filter((e) => e.ev === "accept").map((e) => [e.conn, e]));
+  if (inside.some((e) => e.ev === "req" && !accepts.has(e.conn))) return null;
   const own = new Set(sources.map(plainAddress));
   return inside.filter((e) => e.ev === "req" && requests.includes(e.lineSha256) && own.has(plainAddress(accepts.get(e.conn)?.remote))).length;
 }
