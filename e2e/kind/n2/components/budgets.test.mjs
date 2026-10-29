@@ -215,3 +215,11 @@ test("Kx events: an event without its whole identity, another pgid or an unknown
   // The group cleanup's SIGKILL (path=group) is never a Kx milestone.
   assert.equal(kxFromEvents([kill("attempt", 1000n * MS, { path: "group" }), kill("sent", 1001n * MS, { path: "group" }), exited(1100n * MS)], "containment").result, "NOT_EXERCISED");
 });
+
+test("Kx events: a result completes only its own attempt, never one before another attempt of its run (review r2)", () => {
+  // attempt@1000, attempt@1100, sent@1101, exit@1120: the first attempt has no result of its own.
+  const lines = [kill("attempt", 1000n * MS), kill("attempt", 1100n * MS), kill("sent", 1101n * MS), exited(1120n * MS)];
+  assert.equal(kxFromEvents(lines, "containment").result, "INVALID");
+  // Preceded by another run's ESRCH: still invalid, never a pass.
+  assert.equal(kxFromEvents([kill("attempt", 500n * MS, { run: 9 }), kill("failed", 501n * MS, { run: 9, extra: " error=ESRCH" }), ...lines], "containment").result, "INVALID");
+});

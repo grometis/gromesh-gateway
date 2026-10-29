@@ -417,3 +417,28 @@ func TestEachStartOfNginxIsADistinctRun(t *testing.T) {
 		t.Fatalf("runs not distinct: %v", exits)
 	}
 }
+
+// The group cleanup's repeated SIGKILLs keep their results: a refusal after a first success is not lost.
+func TestTheGroupCleanupKeepsTheResultOfEveryRepeatedSigkill(t *testing.T) {
+	var groupKills atomic.Int32
+	h := startWithKill(t, "orphan", func(pid int, sig syscall.Signal) error {
+		// The master exits on its own; its worker stays. The first group SIGKILL passes, the repeats are refused, so
+		// the worker survives until KillAfter and the cleanup must report the refusals.
+		if sig == syscall.SIGKILL && pid < 0 && groupKills.Add(1) > 1 {
+			return syscall.EPERM
+		}
+		if sig == syscall.SIGKILL && pid < 0 {
+			return nil // the first one "succeeds" without killing, so the loop repeats
+		}
+		return syscall.Kill(pid, sig)
+	})
+	eventually(t, time.Second, "nginx running", func() bool { return alive(h.pid("worker")) })
+	worker := h.pid("worker")
+	eventually(t, 3*time.Second, "the cleanup's end", func() bool { return len(h.events("group-event")) > 0 })
+	g := h.events("group-event")[0]
+	if g["phase"] != "remaining" || !strings.Contains(g["repeats"], "EPERM:") || strings.Contains(g["repeats"], "sent:") {
+		t.Fatalf("group event %v", g)
+	}
+	_ = syscall.Kill(worker, syscall.SIGKILL)
+	_ = syscall.Kill(-h.pid("master"), syscall.SIGKILL)
+}

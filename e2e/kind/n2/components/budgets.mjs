@@ -112,9 +112,16 @@ export function kxFromEvents(lines, path) {
   const base = { kind: "upperBound", resolutionMs: 1, from: `kill-event phase=attempt path=${path} (≤ SIGKILL sent)`, to: "exit-event of the same run (≥ waitpid confirmed)" };
   const attempts = events.filter((e) => e.kind === "kill-event" && e.phase === "attempt" && e.path === path && e.signal === "SIGKILL");
   if (attempts.length === 0) return verdict("Kx", { ...base, exercised: false, reason: `no SIGKILL on the ${path} path` });
+  // An attempt's result is the first sent/failed of its run after it and before that run's next attempt, in log order,
+  // and completes no other attempt.
+  const used = new Set();
   const readings = attempts.map((attempt) => {
     if (!complete(attempt)) return verdict("Kx", { ...base, exercised: true, valueMs: null, reason: "SIGKILL attempt without its identity or clock" });
-    const result = events.find((e) => e.kind === "kill-event" && (e.phase === "sent" || e.phase === "failed") && e.path === path && complete(e) && sameRun(e, attempt) && ns(e) >= ns(attempt));
+    const at = events.indexOf(attempt);
+    const next = events.findIndex((e, i) => i > at && e.kind === "kill-event" && e.phase === "attempt" && e.path === path && sameRun(e, attempt));
+    const window = events.slice(at + 1, next === -1 ? events.length : next);
+    const result = window.find((e) => !used.has(e) && e.kind === "kill-event" && (e.phase === "sent" || e.phase === "failed") && e.path === path && complete(e) && sameRun(e, attempt) && ns(e) >= ns(attempt));
+    if (result) used.add(result);
     if (result?.phase === "failed" && result.error === "ESRCH") return verdict("Kx", { ...base, exercised: false, reason: "the process group was gone before SIGKILL (ESRCH)" });
     if (result?.phase === "failed") return verdict("Kx", { ...base, exercised: true, valueMs: null, reason: `SIGKILL refused: ${result.error}` });
     if (!result) return verdict("Kx", { ...base, exercised: true, valueMs: null, reason: "SIGKILL attempted without a recognised result of that run" });

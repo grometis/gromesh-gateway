@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -189,6 +190,23 @@ func supervisorID() string {
 	return hex.EncodeToString(b)
 }
 
+// summary renders outcome counts as "sent:3,EPERM:1" (sorted; "none" when empty).
+func summary(counts map[string]int) string {
+	if len(counts) == 0 {
+		return "none"
+	}
+	keys := make([]string, 0, len(counts))
+	for k := range counts {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, len(keys))
+	for i, k := range keys {
+		parts[i] = fmt.Sprintf("%s:%d", k, counts[k])
+	}
+	return strings.Join(parts, ",")
+}
+
 func errnoName(err error) string {
 	var errno syscall.Errno
 	if !errors.As(err, &errno) {
@@ -264,22 +282,26 @@ func (s *supervisor) onExit(status string) {
 func (s *supervisor) confirmGroupGone() {
 	end := time.Now().Add(s.cfg.KillAfter)
 	kills := 0
+	// The repeats' results, by outcome: "sent" or the errno name; never dropped.
+	results := map[string]int{}
 	for {
 		if kills == 0 {
 			s.sigkill("group")
+		} else if err := s.cfg.Kill(-s.pgid, syscall.SIGKILL); err != nil {
+			results[errnoName(err)]++
 		} else {
-			_ = s.cfg.Kill(-s.pgid, syscall.SIGKILL)
+			results["sent"]++
 		}
 		kills++
 		s.reap()
 		if err := syscall.Kill(-s.pgid, 0); errors.Is(err, syscall.ESRCH) {
-			s.event("group-event", fmt.Sprintf("phase=gone kills=%d", kills))
+			s.event("group-event", fmt.Sprintf("phase=gone kills=%d repeats=%s", kills, summary(results)))
 			s.pgid = 0
 			s.state.Nginx = "stopped"
 			return
 		}
 		if time.Now().After(end) {
-			s.event("group-event", fmt.Sprintf("phase=remaining kills=%d", kills))
+			s.event("group-event", fmt.Sprintf("phase=remaining kills=%d repeats=%s", kills, summary(results)))
 			s.cfg.Logf("process group %d still has processes after SIGKILL", s.pgid)
 			return
 		}
