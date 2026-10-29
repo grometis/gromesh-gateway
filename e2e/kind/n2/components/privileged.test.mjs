@@ -11,8 +11,8 @@ const BOOT = "7d2c1e9a-0b4f-4f0e-9d3a-1c2b3a4d5e6f";
 const LOSS = 1_000_000;
 const POD = "10.244.1.7", PROBE_ELSEWHERE = "10.244.2.9";
 const sha = (s) => createHash("sha256").update(s).digest("hex");
-const ROUTE = "GET /ws-a/api HTTP/1.1";
-const opts = { scenario: "run1-n", lossMs: LOSS, limitMs: 20_000, refBootId: BOOT, sources: [POD], requests: [sha(ROUTE)] };
+const ROUTE = "GET /ws-a/api HTTP/1.1", WS = "GET /ws-a/api/ws HTTP/1.1";
+const opts = { server: "ext:imds", scenario: "run1-n", lossMs: LOSS, limitMs: 20_000, refBootId: BOOT, sources: [POD], requests: [sha(ROUTE), sha(WS)] };
 
 /**
  * A server log: start, marks at −2 s and +25 s, heartbeats every second, then the given events (t relative to the
@@ -45,6 +45,14 @@ test("negative controls: a new connection after 20 s, or a request on a persiste
   const persistent = privilegedAfterLoss(log([...conn(1, 2_000, { reqAt: 22_000 })]), opts);
   assert.equal(persistent.result, "FAIL");
   assert.match(persistent.reason, /persistent connection/);
+});
+
+test("every flow of the scenario counts: a new WebSocket connection after the limit fails (review r2)", () => {
+  assert.equal(privilegedAfterLoss(log([...conn(1, 2_000), ...conn(2, 21_000, { line: WS })]), opts).result, "FAIL");
+});
+
+test("the log must be the expected server's: another server's events are invalid (review r2)", () => {
+  assert.equal(privilegedAfterLoss(log(conn(1, 2_000)).map((l) => l.replace('"server":"ext:imds"', '"server":"ext:backend"')), opts).result, "INVALID");
 });
 
 test("only the scenario counts: another source, another request or another server never exercises it (review P1)", () => {

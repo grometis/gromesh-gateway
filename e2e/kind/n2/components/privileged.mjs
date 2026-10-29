@@ -20,11 +20,12 @@ const wellFormed = (e) => SHAPES[e.ev] !== undefined && isText(e.server) && /^[0
   isText(e.boot) && Number.isFinite(e.wallMs) && /^\d+$/.test(e.monoNs ?? "") && SHAPES[e.ev](e);
 
 /**
- * lines: the server's stdout. scenario: the id the suite marked ("MARK <scenario> start" before the loss, "end" after
+ * lines: the server's stdout (every event must name `server`). scenario: the id the suite marked ("MARK <scenario> start" before the loss, "end" after
  * the window). lossMs: the earliest instant the isolation can have been lost (read before the policy was removed), on
  * the reference clock of a lab node whose boot id is refBootId. A connection is the scenario's only when it comes from
  * one of `sources` (the contained pods' addresses) and carries a request whose first line hashes to one of `requests`
- * (SHA-256 of e.g. "GET /<slug>/api HTTP/1.1"): a probe's or anyone else's connection never counts.
+ * (SHA-256 of each first line the scenario's clients send: HTTP, keepalive and WebSocket alike): a probe's or anyone
+ * else's connection never counts.
  *   INVALID        any malformed event, a request of a connection never accepted, a duplicated or missing seq, another
  *                  kernel (boot id), a wall clock that stepped (wall − mono spread > 5 ms), the scenario not bracketed
  *                  by its marks in one instance, a start mark after lossMs or an end mark before lossMs + limitMs, a
@@ -34,7 +35,7 @@ const wellFormed = (e) => SHAPES[e.ev] !== undefined && isText(e.server) && /^[0
  *   NOT_EXERCISED  no scenario request after the loss (the route never reached the destination): never a pass;
  *   PASS           scenario requests after the loss, none after the limit.
  */
-export function privilegedAfterLoss(lines, { scenario, lossMs, limitMs, refBootId, sources, requests, heartbeatMs = 1000 }) {
+export function privilegedAfterLoss(lines, { server, scenario, lossMs, limitMs, refBootId, sources, requests, heartbeatMs = 1000 }) {
   const base = { name: "privileged", unit: "ms", limitMs, from: "isolation lost (earliest)", to: "last scenario request at the privileged destination" };
   const invalid = (reason) => ({ ...base, result: "INVALID", reason });
   const events = [];
@@ -43,6 +44,7 @@ export function privilegedAfterLoss(lines, { scenario, lossMs, limitMs, refBootI
     try { e = JSON.parse(line); } catch { continue; }
     if (!e || typeof e !== "object" || Array.isArray(e)) continue;
     if (!wellFormed(e)) return invalid(`malformed server event: ${JSON.stringify(e).slice(0, 120)}`);
+    if (e.server !== server) return invalid(`an event of server ${e.server} in the log of ${server}`);
     events.push(e);
   }
   const marks = events.filter((e) => e.ev === "mark" && e.scenario === scenario);

@@ -867,8 +867,10 @@ async function containmentN({ frozenSupervisor = false } = {}) {
   const imdsLog = (await docker(["logs", `${CLUSTER}-fx-imds`], { allowFail: true })).stdout.split("\n").filter(Boolean);
   const refBoot = (await docker(["exec", NODES.workers[0], "cat", "/proc/sys/kernel/random/boot_id"], { allowFail: true })).stdout.trim();
   const sources = (await Promise.all(pods.map(async (p) => (await json(["-n", NS.dp, "get", "pod", p.name])).status.podIPs.map((x) => x.ip)))).flat();
-  const priv = privilegedAfterLoss(imdsLog, { scenario, lossMs: lossEarliest, limitMs: frozenSupervisor ? V2_BUDGET.kongStopLiveness : V2_BUDGET.kongStopSupervisor,
-    refBootId: refBoot, sources, requests: [createHash("sha256").update(`GET /${ctx.ws.A.slug}/api HTTP/1.1`).digest("hex")] });
+  // Every flow of the scenario's client (new and keepalive HTTP, WebSocket upgrade) by the first line Kong forwards.
+  const lines = [`GET /${ctx.ws.A.slug}/api HTTP/1.1`, `GET /${ctx.ws.A.slug}/api/ws HTTP/1.1`];
+  const priv = privilegedAfterLoss(imdsLog, { server: "ext:imds", scenario, lossMs: lossEarliest, limitMs: frozenSupervisor ? V2_BUDGET.kongStopLiveness : V2_BUDGET.kongStopSupervisor,
+    refBootId: refBoot, sources, requests: lines.map((l) => createHash("sha256").update(l).digest("hex")) });
   it.measures.privileged = { ...priv, lossEarliestToT0Ms: t0 - lossEarliest };
   if (priv.result === "NOT_EXERCISED") it.open.push(`privileged destination: ${priv.reason}`);
   else if (priv.result !== "PASS") it.failures.push(`privileged destination ${priv.result}: ${priv.reason}`);

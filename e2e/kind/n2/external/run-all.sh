@@ -142,7 +142,7 @@ ran() {
 # One suite: its own OUT subdirectory, the load before and after (a run under saturation is not evidence), and the
 # images it must be seen running ("a b c", then the command).
 suite() {
-  local name="$1" expected="$2" rc=0 evidence=""; shift 2
+  local name="$1" expected="$2" rc=0 evidence="" images=""; shift 2
   mkdir -p "$OUT/$name"
   load "$name start"
   : >"$OUT/$name/images-sampled.txt"
@@ -153,11 +153,14 @@ suite() {
   # The lab servers' own connection logs (fixtures.mjs serve): the privileged destination's evidence for this suite.
   for role in backend nodecidr denied imds; do
     if ! docker logs "${CLUSTER_NAME}-fx-$role" >"$OUT/$name/fixture-$role.log" 2>/dev/null; then
-      echo "$name: FAIL (the $role server's log could not be kept)" | tee -a "$OUT/summary.txt"; failed=1
+      # Without the server's own log the suite's evidence is incomplete: never a pass.
+      [[ "$rc" != 0 ]] || rc="fixture-log"
+      evidence="${evidence:+$evidence; }the $role server's log could not be kept"
     fi
   done
   # shellcheck disable=SC2086 # the expected images are a word list
-  evidence="$(ran "$name" "$OUT/$name/images-sampled.txt" $expected)" || rc="${rc/#0/evidence}"
+  images="$(ran "$name" "$OUT/$name/images-sampled.txt" $expected)" || { [[ "$rc" != 0 ]] || rc="evidence"; }
+  evidence="${evidence:+$evidence; }$images"; evidence="${evidence%; }"
   if [[ "$rc" == 0 ]]; then echo "$name: pass" | tee -a "$OUT/summary.txt"
   elif [[ "$rc" == evidence ]]; then echo "$name: FAIL ($evidence)" | tee -a "$OUT/summary.txt"; failed=1
   elif [[ "$rc" == 2 ]]; then echo "$name: INCOMPLETE (a measurement was not exercised; see $name/results.json blocked${evidence:+; $evidence})" | tee -a "$OUT/summary.txt"; failed=1
