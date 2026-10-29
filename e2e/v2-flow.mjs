@@ -44,7 +44,8 @@ function redact(text) {
   let s = String(text);
   for (const v of secrets) if (v && v.length >= 6) s = s.split(v).join("REDACTED");
   // Kong prints a fresh request-debug token at start; it would let anyone reaching that proxy turn on request debugging.
-  return s.replace(/(token for request debugging: )[0-9a-f-]{36}/g, "$1REDACTED");
+  // Any length after the prefix: a truncated text may hold only part of the token.
+  return s.replace(/(token for request debugging: ?)[0-9a-fA-F-]+/g, "$1REDACTED");
 }
 // What a pass of this run can and cannot stand for: Docker has no NetworkPolicy, CNI or pod lifecycle.
 const SCOPE = {
