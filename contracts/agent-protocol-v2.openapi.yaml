@@ -202,18 +202,25 @@ info:
     Analytics guarantees (N3-A1; B §3.5.2, decision P2). The collector is the Kong pod's loopback sidecar; it pins the
     instance (environment_id) and its own cluster (cluster_id), never trusted from an event. Normative vector:
     examples/analytics-v2.example.json.
-      - Event identity: id = the first 128 bits of the lowercase hex SHA-256 of "<clusterId>|<podUid>|<requestId>",
-        laid out 8-4-4-4-12 (eventIdOf). Each part must already be canonical: clusterId and podUid lowercase UUIDs
+      - Event identity: id = the SHA-256 of the UTF-8 bytes "<clusterId>|<podUid>|<requestId>", truncated to its first
+        128 bits (16 bytes, the first 32 lowercase hex digits; no other truncation) and laid out 8-4-4-4-12 as the
+        stored UUID (eventIdOf). Each part must already be canonical: clusterId and podUid lowercase UUIDs
         (8-4-4-4-12 hex), requestId Kong's 32 lowercase hex; none of them can hold "|", so the concatenation is
         unambiguous. Any other value is never normalised: the event is dropped (and a sidecar collector without a
         canonical pod uid or cluster id drops every event). The same request delivered again, by a Kong queue retry,
         a repeated batch or a collector restart, carries the same id; two pods or two clusters never share one.
-      - Conflicting copies: rows sharing an id are copies of one event by construction. Two rows with one id and a
-        different content can only come from a defect or from a sender holding the cluster's token; a read still
-        counts the id once and keeps any one of the rows, so a conflict never multiplies a request, and it is never
-        resolved in favour of a workspace (attribution reads the kept row like any other).
-      - Delivery is at least once, never exactly once: Kong's queue and the collector's acknowledged sink retry, and
-        the collector's in-memory dedup is a load reduction only (lost on restart). The requests table keeps rows
+      - Conflicting copies: rows sharing an id are copies of one event by construction. Rows with one id whose stored
+        content differs in any column (instance, cluster, route, service, consumer, method, path, status, timings,
+        client, sizes, retention) are a conflict, which only a defect or a sender holding the cluster's token can
+        cause. A conflicted id is never attributed to any workspace, whatever the order of insertion or reading: no
+        row of it is chosen. It is counted once, only in the instance's unattributed totals (reason
+        conflicting-copies, no content of the rows), and since those totals span the whole instance, no workspace
+        filter hides it. Identical copies are one event; distinct ids stay distinct requests. Detecting a conflict
+        reads every stored row of the id and never relies on a merge.
+      - Delivery: Kong's queue and the collector's acknowledged sink retry, so an event may be stored more than once;
+        the collector's in-memory dedup is a load reduction only (lost on restart). Delivery is not guaranteed end to
+        end: neither at least once nor exactly once is promised, since an event can be lost for good (below). What is
+        guaranteed is the reading of what was stored: each stored id counts once. The requests table keeps rows
         sorted by (environment_id, ts, id) in an engine that collapses equal ids in background merges
         (ReplacingMergeTree); merges are eventual, so every read the control plane serves counts DISTINCT ids and
         never relies on a merge having run, so a copy is never visible. Equal ids share ts (Kong's start time of the
@@ -226,8 +233,9 @@ info:
       - Attribution (attributionOf): a row counts for workspace W only when environment_id is this instance, cluster_id
         is a cluster of this instance, route_id is not null, and route_id is a route of W in the latest deployment
         revision recorded at or before ts or in the revision just before it (the window of a rollout or a rollback,
-        which is a new revision). Any other row is unattributed with a reason (foreign-instance, unknown-cluster,
-        no-route, before-first-revision, route-not-deployed, ambiguous-route): it counts for no workspace and only in
+        which is a new revision), and its id has no conflicting copy. Any other row is unattributed with a reason
+        (conflicting-copies, foreign-instance, unknown-cluster, no-route, before-first-revision, route-not-deployed,
+        ambiguous-route): it counts for no workspace and only in
         the platform admin's unattributed totals. The path, its prefix or any field of the event never attribute a
         row. Workspace reads require workspace.read on W.
       - Collector token exclusivity: each cluster has its own token (at least 32 random characters) and the control

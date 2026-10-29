@@ -1046,7 +1046,10 @@ describe("analytics guarantees (N3-A1)", () => {
     const h = sha(`${c.clusterId}|${c.podUid}|${c.requestId}`);
     return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
   };
-  const attributionOf = (a: Doc, e: Doc): { workspace: string | null; reason: string | null } => {
+  const attributionOf = (a: Doc, e: Doc, copies: Doc[] = [e]): { workspace: string | null; reason: string | null } => {
+    // Every stored row of the id: any difference between them is a conflict, attributed to nobody in any order.
+    const canonical = (r: Doc) => JSON.stringify(Object.keys(r).sort().map((k) => [k, r[k]]));
+    if (new Set(copies.map(canonical)).size > 1) return { workspace: null, reason: "conflicting-copies" };
     if (e.environmentId !== a.instanceId) return { workspace: null, reason: "foreign-instance" };
     if (!a.clusters.includes(e.clusterId)) return { workspace: null, reason: "unknown-cluster" };
     if (e.routeId === null) return { workspace: null, reason: "no-route" };
@@ -1096,7 +1099,7 @@ describe("analytics guarantees (N3-A1)", () => {
   });
 
   it("states at-least-once delivery read as distinct ids, never a merge or the dedup cache as a guarantee", () => {
-    for (const phrase of ["none of them can hold \"|\", so the concatenation is unambiguous", "Any other value is never normalised: the event is dropped", "a conflict never multiplies a request", "Delivery is at least once, never exactly once", "every read the control plane serves counts DISTINCT ids", "never relies on a merge having run", "load reduction only (lost on restart)", "Loss stays possible"]) expect(info).toContain(phrase);
+    for (const phrase of ["none of them can hold \"|\", so the concatenation is unambiguous", "Any other value is never normalised: the event is dropped", "Delivery is not guaranteed end to end: neither at least once nor exactly once is promised", "each stored id counts once", "A conflicted id is never attributed to any workspace", "no row of it is chosen", "truncated to its first 128 bits", "every read the control plane serves counts DISTINCT ids", "never relies on a merge having run", "load reduction only (lost on restart)", "Loss stays possible"]) expect(info).toContain(phrase);
     for (const op of ["getAnalyticsSummary", "getTopRoutes", "listRequests"]) {
       const [, path] = Object.entries(v2.paths).find(([, item]: [string, Doc]) => item.get?.operationId === op)!;
       expect((path as Doc).get.description.replace(/\s+/g, " "), op).toContain("Rows: distinct request ids attributed to this workspace");
@@ -1104,7 +1107,12 @@ describe("analytics guarantees (N3-A1)", () => {
   });
 
   it("attributes a row only by route_id against the deployment revisions, through rollout and rollback", () => {
-    for (const c of vector.attributionOf.cases) expect(attributionOf(vector.attributionOf.attribution, c.event), c.name).toEqual(c.expected);
+    for (const c of vector.attributionOf.cases) expect(attributionOf(vector.attributionOf.attribution, c.event, c.copies), c.name).toEqual(c.expected);
+    // Order never changes the answer, and a conflict is never resolved for a workspace.
+    for (const c of vector.attributionOf.cases.filter((x: Doc) => x.copies)) {
+      expect(attributionOf(vector.attributionOf.attribution, c.event, [...c.copies].reverse()), `${c.name} (reversed)`).toEqual(c.expected);
+    }
+    expect(vector.attributionOf.cases.filter((x: Doc) => x.expected.reason === "conflicting-copies").length).toBeGreaterThanOrEqual(4);
     const reasons = new Set(vector.attributionOf.cases.map((c: Doc) => c.expected.reason).filter(Boolean));
     expect([...reasons].sort()).toEqual(Object.keys(v2.components.schemas.UnattributedAnalytics.properties.byReason.properties).sort());
     expect(info).toContain("The path, its prefix or any field of the event never attribute a row");

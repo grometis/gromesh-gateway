@@ -310,6 +310,176 @@
           "workspace": null,
           "reason": "ambiguous-route"
         }
+      },
+      {
+        "name": "three identical copies are one event, attributed as one",
+        "event": {
+          "environmentId": "7b0c9a52-3c1e-4f8e-9d2a-1c5b8e2f4a10",
+          "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+          "routeId": "00000000-0000-4000-8000-000000000001",
+          "ts": "2026-10-28T10:30:00Z"
+        },
+        "copies": [
+          {
+            "environmentId": "7b0c9a52-3c1e-4f8e-9d2a-1c5b8e2f4a10",
+            "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+            "routeId": "00000000-0000-4000-8000-000000000001",
+            "ts": "2026-10-28T10:30:00Z"
+          },
+          {
+            "environmentId": "7b0c9a52-3c1e-4f8e-9d2a-1c5b8e2f4a10",
+            "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+            "routeId": "00000000-0000-4000-8000-000000000001",
+            "ts": "2026-10-28T10:30:00Z"
+          },
+          {
+            "environmentId": "7b0c9a52-3c1e-4f8e-9d2a-1c5b8e2f4a10",
+            "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+            "routeId": "00000000-0000-4000-8000-000000000001",
+            "ts": "2026-10-28T10:30:00Z"
+          }
+        ],
+        "expected": {
+          "workspace": "a0000000-0000-4000-8000-00000000000a",
+          "reason": null
+        }
+      },
+      {
+        "name": "one id with a route of A and a route of B: conflict, attributed to neither",
+        "event": {
+          "environmentId": "7b0c9a52-3c1e-4f8e-9d2a-1c5b8e2f4a10",
+          "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+          "routeId": "00000000-0000-4000-8000-000000000001",
+          "ts": "2026-10-28T10:30:00Z"
+        },
+        "copies": [
+          {
+            "environmentId": "7b0c9a52-3c1e-4f8e-9d2a-1c5b8e2f4a10",
+            "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+            "routeId": "00000000-0000-4000-8000-000000000001",
+            "ts": "2026-10-28T10:30:00Z"
+          },
+          {
+            "environmentId": "7b0c9a52-3c1e-4f8e-9d2a-1c5b8e2f4a10",
+            "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+            "routeId": "00000000-0000-4000-8000-000000000002",
+            "ts": "2026-10-28T10:30:00Z"
+          }
+        ],
+        "expected": {
+          "workspace": null,
+          "reason": "conflicting-copies"
+        }
+      },
+      {
+        "name": "the same conflict read in the other order: same answer",
+        "event": {
+          "environmentId": "7b0c9a52-3c1e-4f8e-9d2a-1c5b8e2f4a10",
+          "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+          "routeId": "00000000-0000-4000-8000-000000000002",
+          "ts": "2026-10-28T10:30:00Z"
+        },
+        "copies": [
+          {
+            "environmentId": "7b0c9a52-3c1e-4f8e-9d2a-1c5b8e2f4a10",
+            "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+            "routeId": "00000000-0000-4000-8000-000000000002",
+            "ts": "2026-10-28T10:30:00Z"
+          },
+          {
+            "environmentId": "7b0c9a52-3c1e-4f8e-9d2a-1c5b8e2f4a10",
+            "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+            "routeId": "00000000-0000-4000-8000-000000000001",
+            "ts": "2026-10-28T10:30:00Z"
+          }
+        ],
+        "expected": {
+          "workspace": null,
+          "reason": "conflicting-copies"
+        }
+      },
+      {
+        "name": "one id stored for this instance and for another: conflict, never mixed",
+        "event": {
+          "environmentId": "7b0c9a52-3c1e-4f8e-9d2a-1c5b8e2f4a10",
+          "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+          "routeId": "00000000-0000-4000-8000-000000000001",
+          "ts": "2026-10-28T10:30:00Z"
+        },
+        "copies": [
+          {
+            "environmentId": "7b0c9a52-3c1e-4f8e-9d2a-1c5b8e2f4a10",
+            "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+            "routeId": "00000000-0000-4000-8000-000000000001",
+            "ts": "2026-10-28T10:30:00Z"
+          },
+          {
+            "environmentId": "11111111-1111-4111-8111-111111111111",
+            "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+            "routeId": "00000000-0000-4000-8000-000000000001",
+            "ts": "2026-10-28T10:30:00Z"
+          }
+        ],
+        "expected": {
+          "workspace": null,
+          "reason": "conflicting-copies"
+        }
+      },
+      {
+        "name": "one id with another cluster: conflict",
+        "event": {
+          "environmentId": "7b0c9a52-3c1e-4f8e-9d2a-1c5b8e2f4a10",
+          "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+          "routeId": "00000000-0000-4000-8000-000000000001",
+          "ts": "2026-10-28T10:30:00Z"
+        },
+        "copies": [
+          {
+            "environmentId": "7b0c9a52-3c1e-4f8e-9d2a-1c5b8e2f4a10",
+            "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+            "routeId": "00000000-0000-4000-8000-000000000001",
+            "ts": "2026-10-28T10:30:00Z"
+          },
+          {
+            "environmentId": "7b0c9a52-3c1e-4f8e-9d2a-1c5b8e2f4a10",
+            "clusterId": "00000000-0000-4000-8000-00000000c0c0",
+            "routeId": "00000000-0000-4000-8000-000000000001",
+            "ts": "2026-10-28T10:30:00Z"
+          }
+        ],
+        "expected": {
+          "workspace": null,
+          "reason": "conflicting-copies"
+        }
+      },
+      {
+        "name": "one id differing only in status: still a conflict (any column)",
+        "event": {
+          "environmentId": "7b0c9a52-3c1e-4f8e-9d2a-1c5b8e2f4a10",
+          "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+          "routeId": "00000000-0000-4000-8000-000000000001",
+          "ts": "2026-10-28T10:30:00Z"
+        },
+        "copies": [
+          {
+            "environmentId": "7b0c9a52-3c1e-4f8e-9d2a-1c5b8e2f4a10",
+            "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+            "routeId": "00000000-0000-4000-8000-000000000001",
+            "ts": "2026-10-28T10:30:00Z",
+            "status": 200
+          },
+          {
+            "environmentId": "7b0c9a52-3c1e-4f8e-9d2a-1c5b8e2f4a10",
+            "clusterId": "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+            "routeId": "00000000-0000-4000-8000-000000000001",
+            "ts": "2026-10-28T10:30:00Z",
+            "status": 500
+          }
+        ],
+        "expected": {
+          "workspace": null,
+          "reason": "conflicting-copies"
+        }
       }
     ]
   },

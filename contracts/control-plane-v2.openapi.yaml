@@ -5573,8 +5573,9 @@ components:
         byReason:
           type: object
           additionalProperties: false
-          required: [foreign-instance, unknown-cluster, no-route, before-first-revision, route-not-deployed, ambiguous-route]
+          required: [conflicting-copies, foreign-instance, unknown-cluster, no-route, before-first-revision, route-not-deployed, ambiguous-route]
           properties:
+            conflicting-copies: { type: integer, minimum: 0, description: "Ids whose stored copies differ; never attributed to a workspace" }
             foreign-instance: { type: integer, minimum: 0 }
             unknown-cluster: { type: integer, minimum: 0 }
             no-route: { type: integer, minimum: 0 }
