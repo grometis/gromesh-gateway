@@ -70,8 +70,14 @@ export function privilegedAfterLoss(lines, { server, scenario, lossMs, limitMs, 
   const gap = Math.max(...beats.slice(1).map((t, i) => t - beats[i]));
   if (gap > 2 * heartbeatMs) return invalid(`heartbeat gap ${gap} ms > ${2 * heartbeatMs} ms between the marks: the observer was not proven alive`);
   const accepts = new Map(all.filter((e) => e.ev === "accept").map((e) => [e.conn, e]));
+  // A dual-stack listener reports an IPv4 peer as ::ffff:a.b.c.d: one form for both sides of the comparison.
+  const own = new Set(sources.map(plainAddress));
+  const fromScenario = (e) => e.ev === "req" && requests.includes(e.lineSha256) && own.has(plainAddress(accepts.get(e.conn).remote));
   for (const r of inside.filter((e) => e.ev === "req")) if (!accepts.has(r.conn)) return invalid(`request on connection ${r.conn} that was never accepted`);
-  const scenarioReqs = inside.filter((e) => e.ev === "req" && requests.includes(e.lineSha256) && sources.includes(accepts.get(e.conn).remote) && e.wallMs >= lossMs);
+  // Reached before the loss: the barrier was not in place, so nothing after it measures the containment.
+  const early = inside.find((e) => fromScenario(e) && e.wallMs < lossMs);
+  if (early) return invalid(`a scenario request reached the privileged destination ${lossMs - early.wallMs} ms before the loss`);
+  const scenarioReqs = inside.filter((e) => fromScenario(e) && e.wallMs >= lossMs);
   const late = scenarioReqs.filter((e) => e.wallMs > deadline + uncertainty);
   if (late.length) {
     const r = late[0], acceptedAt = accepts.get(r.conn).wallMs;
@@ -83,6 +89,8 @@ export function privilegedAfterLoss(lines, { server, scenario, lossMs, limitMs, 
   return { ...base, result: "PASS", reason: null, uncertaintyMs: uncertainty, valueMs: Math.max(...scenarioReqs.map((e) => e.wallMs)) - lossMs,
     connections: new Set(scenarioReqs.map((e) => e.conn)).size, instance: inst };
 }
+
+const plainAddress = (a) => String(a ?? "").toLowerCase().replace(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/, "$1");
 
 /**
  * The first request line of every flow a containment scenario sends through Kong for workspace `slug`: new and

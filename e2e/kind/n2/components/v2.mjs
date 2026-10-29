@@ -395,7 +395,10 @@ const valuesV2 = (keys, replicas, { clickhousePeers } = {}) => ({
   networkPolicy: {
     enabled: true,
     controlPlanePeers: [{ namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": NS.cp } }, podSelector: { matchLabels: { app: "cp-relay" } } }],
-    upstreams: [{ cidr: `${ctx.topo.ext.backend.v4}/32`, ports: [8080, BACKEND_PORT] }, { cidr: `${ctx.topo.ext.backend.v6}/128`, ports: [8080, BACKEND_PORT] }],
+    upstreams: [{ cidr: `${ctx.topo.ext.backend.v4}/32`, ports: [8080, BACKEND_PORT] }, { cidr: `${ctx.topo.ext.backend.v6}/128`, ports: [8080, BACKEND_PORT] },
+      // Lab only (aceite n): the IMDS aliases on TCP 80 as if a route's upstream, so the cluster-wide n2c-deny-imds is
+      // the one barrier between Kong and them; removing it is the loss of isolation the containment scenarios cause.
+      ...["169.254.169.254/32", "169.254.170.2/32", "fd00:ec2::254/128"].map((cidr) => ({ cidr, ports: [80] }))],
     clickhousePeers: clickhousePeers ?? [{ namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": OBS } }, podSelector: { matchLabels: { app: "clickhouse" } } }],
   },
   workspaces: { enabled: true, clusterId: ctx.clusterId, instanceId: ctx.instanceId, instanceSigningKeys: keys, probe: { checks: ctx.checks } },

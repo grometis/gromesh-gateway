@@ -137,3 +137,15 @@ test("a containment scenario counts the route that targets the privileged destin
   assert.equal(privilegedAfterLoss(log([...conn(1, 2_000, { line: lines[2] }), ...conn(2, 21_000, { line: lines[2] })]), scenario).result, "FAIL");
   assert.equal(privilegedAfterLoss(log([...conn(1, 2_000, { line: lines[2] }), ...conn(2, 21_000, { line: lines[2] })]), opts).result, "NOT_EXERCISED");
 });
+
+test("an IPv4 peer reported as IPv4-mapped IPv6 is the same source (review E9 P2)", () => {
+  const mapped = { remote: `::ffff:${POD}` };
+  assert.equal(privilegedAfterLoss(log([...conn(1, 2_000, mapped), ...conn(2, 21_000, mapped)]), opts).result, "FAIL");
+  assert.equal(privilegedAfterLoss(log(conn(1, 2_000, mapped)), opts).result, "PASS");
+});
+
+test("reaching the destination before the loss invalidates the reading (review E9 P3)", () => {
+  const r = privilegedAfterLoss(log([...conn(1, -1_000), ...conn(2, 2_000)]), opts);
+  assert.equal(r.result, "INVALID");
+  assert.match(r.reason, /before the loss/);
+});
