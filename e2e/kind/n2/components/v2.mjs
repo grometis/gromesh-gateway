@@ -14,6 +14,7 @@ import {
   Api, apply, assertLab, CONTEXT, controlPlaneObjects, controlPlaneSecret, cpSecrets, createSecret, dbSkew, denyPolicies, docker, Forward, helm, here, json,
   kubeconfig, kubectl, NODES, NS, registrationSecret, relayObjects, removeSuiteObjects, root, run, sql,
 } from "./lab.mjs";
+import { kFromLiveness, ksFromDeletion, kxFromDrain, overall } from "./budgets.mjs";
 
 const out = process.env.LAB_OUT ?? mkdtempSync(join(tmpdir(), "gromesh-n2-comp-"));
 // Every image this suite pulls is pinned by digest in versions.env (a mutable tag would not reproduce the run).
@@ -681,6 +682,18 @@ async function trafficV2() {
 }
 
 const first = (events, pred) => events.find(pred) ?? null;
+/**
+ * K, Ks and Kx (budgets.mjs) on an item: a FAIL or an INVALID reading fails it, a reading not exercised stays open in
+ * report.blocked. None of them is ever turned into a pass.
+ */
+function budgetReadings(it, verdicts) {
+  it.measures.budgets = verdicts;
+  it.measures.budgetsOverall = overall(verdicts);
+  for (const v of verdicts) {
+    if (v.result === "FAIL" || v.result === "INVALID") it.failures.push(`${v.name} ${v.result}: ${v.reason} (${v.from} → ${v.to})`);
+    if (v.result === "NOT_EXERCISED") blocked({ id: `${it.id}:${v.name}`, item: it.id, missing: `${v.name} not exercised: ${v.reason}`, unblock: "a run in which the milestone happens" });
+  }
+}
 const rel = (t, t0) => (t == null ? null : t - t0);
 async function endpointsReady() {
   const list = (await json(["-n", NS.dp, "get", "endpointslices", "-l", `kubernetes.io/service-name=${ctx.proxy.name}`])).items;
@@ -751,6 +764,12 @@ async function containmentN({ frozenSupervisor = false } = {}) {
   expect(it, client.events.some((e) => e.k === "ws" && e.ev === "pong"), "the WebSocket never echoed before the loss");
   const pods = await live();
   if (frozenSupervisor) for (const p of pods) await freeze(p.name, "kong", "kong-supervisor");
+  // K needs the kong container's finishedAt in nanoseconds (crictl on its node): the pod status only has seconds.
+  const kongExits = frozenSupervisor ? await Promise.all(pods.map(async (p) => {
+    const pj = await json(["-n", NS.dp, "get", "pod", p.name]);
+    const kong = pj.status.containerStatuses.find((c) => c.name === "kong");
+    return { pod: p.name, exits: watchExits(pj.spec.nodeName, { kong: kong.containerID.replace(/^containerd:\/\//, "") }, 60) };
+  })) : [];
   const loadStart = await vmLoad(`${id} start`);
   await kubectl(["delete", "ciliumclusterwidenetworkpolicy", "n2c-deny-imds"]);
   const t0 = await vmNow();
@@ -786,8 +805,15 @@ async function containmentN({ frozenSupervisor = false } = {}) {
   } else {
     expect(it, per.every((p) => (p.kongContainerFinishedMs ?? Infinity) <= V2_BUDGET.kongStopLiveness + 1000), `Kong stopped by the liveness ${JSON.stringify(per.map((p) => p.kongContainerFinishedMs))} (finishedAt has 1 s resolution)`);
     expect(it, wsClose && wsClose.t - t0 <= V2_BUDGET.kongStopLiveness, `WebSocket closed at ${it.measures.wsCloseMs} ms`);
-    // K: what the kubelet and runtime added beyond detection + Lp + Lt + G.
-    it.measures.K = per.map((p) => (p.kongContainerFinishedMs == null || p.detectionMs == null ? null : p.kongContainerFinishedMs - p.detectionMs - 1000 - 1000 - 2000));
+    // K per pod: an upper bound (budgets.mjs kFromLiveness), on the container's nanosecond finishedAt.
+    const readings = [];
+    for (const { pod, exits } of kongExits) {
+      const st = (await exits).states.kong;
+      const p = per.find((x) => x.pod === pod);
+      const kongFinishedMs = st.finishedAtNode && st.finishedAtNode.includes(".") ? rel(vmTime(st.finishedAtNode), t0) : null;
+      readings.push({ pod, ...kFromLiveness({ detectionMs: p?.detectionMs ?? null, kongFinishedMs, finishedResolutionMs: 1 }) });
+    }
+    budgetReadings(it, readings);
   }
   if (loadEnd > 16) it.notes.push(`VM load ${loadEnd} > 16 during the measurement: repeat`);
   ctx.lastViolation = id;
@@ -967,11 +993,15 @@ async function drainAndReplace() {
   await client.stop();
   const nodes = await nodesOf();
   const ws = client.since(t0).filter((e) => e.k === "ws");
-  Object.assign(it.measures, { vmLoad: { start: loadStart, end: loadEnd }, deleteCallMs: t0b - t0, KsUpperMs: rel(sig?.at, t0), sigkillMs: rel(kill?.at, t0), nginxExitedMs: rel(exited?.at, t0),
-    Kx: kill && exited ? exited.at - kill.at : null, containersFinishedMs: fin, kongBeforeSidecars: fin.kong != null && ["agent", "isolation-probe", "collector"].every((c) => fin[c] == null || fin[c] >= fin.kong),
+  Object.assign(it.measures, { vmLoad: { start: loadStart, end: loadEnd }, deleteCallMs: t0b - t0, signalReceivedMs: rel(sig?.at, t0), sigkillMs: rel(kill?.at, t0), nginxExitedMs: rel(exited?.at, t0),
+    containersFinishedMs: fin, kongBeforeSidecars: fin.kong != null && ["agent", "isolation-probe", "collector"].every((c) => fin[c] == null || fin[c] >= fin.kong),
     wsEvents: ws.map((e) => `${e.ev}@${e.t - t0}`).slice(0, 6), replacementGranted: Boolean(g), replacementReady: Boolean(ready),
     nodesAfter: nodes.map((n) => ({ node: n.node_id, evidence: n.evidence })), deploymentStates: (await deploymentState(ctx.dep1.revision)).map((s) => s.state).slice(-4) });
-  expect(it, sig && sig.at - t0 <= 1000 + (t0b - t0), `supervisor signal at ${it.measures.KsUpperMs} ms (Ks upper bound from the delete call)`);
+  // t0 is read before the delete call, so signal − t0 bounds Ks from above (the kubelet observes after the call starts).
+  budgetReadings(it, [
+    ksFromDeletion({ deleteCallStartMs: 0, signalReceivedMs: rel(sig?.at, t0) }),
+    kxFromDrain({ sigkillMs: rel(kill?.at, t0), exitedMs: kill ? rel(first(lines, (l) => l.at >= kill.at && /nginx \(pid \d+\) exited/.test(l.text))?.at, t0) : null }),
+  ]);
   expect(it, fin.kong != null && fin.kong <= V2_BUDGET.drainExit, `kong finished ${fin.kong} ms`);
   expect(it, it.measures.kongBeforeSidecars, `exit order ${JSON.stringify(fin)}`);
   expect(it, g && ready, "replacement not admitted/Ready");
