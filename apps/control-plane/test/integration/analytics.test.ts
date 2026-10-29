@@ -11,9 +11,12 @@ const admin = createClient({ url: CLICKHOUSE.url, username: CLICKHOUSE_ADMIN.use
 beforeAll(async () => {
   const ping = await admin.ping();
   if (!ping.success) throw new Error(`These tests read a real ClickHouse at ${CLICKHOUSE.url}: run the compose \`observability\` profile or set TEST_CLICKHOUSE_URL`);
-  // The compose ClickHouse applies this on first start; a bare CI service does not.
-  const ddl = readFileSync(new URL("../../../../deploy/observability/clickhouse/001-requests.sql", import.meta.url), "utf8");
-  for (const statement of ddl.split(";").map((s) => s.trim()).filter(Boolean)) await admin.command({ query: statement });
+  // The compose ClickHouse applies these on first start; a bare CI service does not. Both are idempotent, and the
+  // reads compare every column of a row, retention_days (002) included.
+  for (const file of ["001-requests.sql", "002-retention.sql"]) {
+    const ddl = readFileSync(new URL(`../../../../deploy/observability/clickhouse/${file}`, import.meta.url), "utf8");
+    for (const statement of ddl.split(";").map((s) => s.trim()).filter(Boolean)) await admin.command({ query: statement });
+  }
   h = await startHarness();
 });
 afterAll(async () => {
@@ -315,6 +318,53 @@ describe("a request stored more than once (at-least-once delivery)", () => {
     } while (cursor);
     expect(seen.length).toBe(10);
     expect(new Set(seen)).toEqual(new Set([...fast, slow].map((r) => r.id)));
+  });
+});
+
+describe("copies of one request id that disagree (agent protocol v2, Analytics guarantees: conflicting copies)", () => {
+  const R1 = "00000000-0000-4000-8000-0000000000b1", R2 = "00000000-0000-4000-8000-0000000000b2";
+  const total = async (envId: string, extra = "") => (await h.api("GET", `/environments/${envId}/analytics/summary?${period()}&interval=5m${extra}`)).body.totals.requests as number;
+  const ids = async (envId: string, extra = "") => (await h.api("GET", `/environments/${envId}/requests?${period()}&limit=50${extra}`)).body.items.map((r: { id: string }) => r.id) as string[];
+  const routes = async (envId: string) => (await h.api("GET", `/environments/${envId}/analytics/top-routes?${period()}`)).body.items.map((r: { routeId: string | null; requests: number }) => [r.routeId, r.requests]);
+
+  it("never attributes an id whose copies name different routes, in any insertion order, nor leaks it through a filter", async () => {
+    for (const order of ["R1 first", "R2 first"]) {
+      const envId = (await h.api("POST", "/environments", { name: uniq("conflict") })).body.id as string;
+      const clean = row(envId, 10_000, 200, 10, { route_id: R1 });
+      const a = row(envId, 20_000, 200, 10, { route_id: R1 });
+      const b = { ...a, route_id: R2 };
+      await admin.insert({ table: "requests", values: [clean], format: "JSONEachRow" });
+      for (const copy of order === "R1 first" ? [a, b] : [b, a]) await admin.insert({ table: "requests", values: [copy], format: "JSONEachRow" });
+      // Negative control: the former read (LIMIT 1 BY id) keeps one of the two copies and attributes it to a route.
+      const former = await (await admin.query({ query: "SELECT count() AS n FROM (SELECT * FROM requests WHERE environment_id = {env:UUID} LIMIT 1 BY id)", query_params: { env: envId }, format: "JSONEachRow" })).json<{ n: string }>();
+      expect(Number(former[0]!.n), order).toBe(2);
+      // Now: the conflicted id counts for this environment nowhere; the clean one stays.
+      expect(await total(envId), order).toBe(1);
+      expect(await ids(envId), order).toEqual([clean.id]);
+      expect(await routes(envId), order).toEqual([[R1, 1]]);
+      // A filter on either route never reveals the conflicted id.
+      expect(await total(envId, `&routeId=${R1}`), order).toBe(1);
+      expect(await total(envId, `&routeId=${R2}`), order).toBe(0);
+      expect(await ids(envId, `&routeId=${R2}`), order).toEqual([]);
+    }
+  });
+
+  it("never mixes environments: one id stored for two environments is attributed to neither", async () => {
+    const e1 = (await h.api("POST", "/environments", { name: uniq("cross-a") })).body.id as string;
+    const e2 = (await h.api("POST", "/environments", { name: uniq("cross-b") })).body.id as string;
+    const shared = row(e1, 20_000, 200, 10);
+    await admin.insert({ table: "requests", values: [shared, { ...shared, environment_id: e2 }, row(e2, 30_000, 200, 10)], format: "JSONEachRow" });
+    expect(await total(e1)).toBe(0);
+    expect(await total(e2)).toBe(1);
+    expect(await ids(e2)).not.toContain(shared.id);
+  });
+
+  it("still counts identical copies once and distinct ids separately", async () => {
+    const envId = (await h.api("POST", "/environments", { name: uniq("legit") })).body.id as string;
+    const one = row(envId, 10_000, 200, 10), two = row(envId, 10_000, 200, 10);
+    await admin.insert({ table: "requests", values: [one, one, one, two], format: "JSONEachRow" });
+    expect(await total(envId)).toBe(2);
+    expect((await ids(envId)).sort()).toEqual([one.id, two.id].sort());
   });
 });
 

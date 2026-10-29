@@ -158,12 +158,20 @@ interface RequestRow {
   response_size: number;
 }
 
+/** Every stored column of a row: two copies of one id that differ in any of them are a conflict. */
+const CONTENT = "tuple(ts, environment_id, cluster_id, service_id, route_id, consumer_id, method, path, status, latency_kong_ms, latency_upstream_ms, latency_total_ms, client_ip, request_size, response_size, retention_days)";
+
 /**
- * The rows of `where`, one per request id. Delivery is at least once (Kong's queue and the collector retry), so the
- * table may hold copies of a request; every read counts it once, without relying on a merge having run (agent
- * protocol v2 "Analytics guarantees"). Copies are the same event, so which one is kept does not matter.
+ * The rows of `where`, one per request id (agent protocol v2 "Analytics guarantees"). Kong's queue and the collector
+ * retry, so the table may hold copies of a request: identical copies count once, without relying on a merge having
+ * run. An id whose copies differ anywhere in the table (another route, environment, cluster or any other column) is a
+ * conflict and is left out before anything is counted or filtered, so no copy is ever chosen for this environment and
+ * no filter can reveal it; it belongs only to the instance's unattributed totals.
  */
-const deduped = (where: string) => `(SELECT * FROM requests WHERE ${where} LIMIT 1 BY id)`;
+const deduped = (where: string) =>
+  `(SELECT * FROM requests WHERE ${where} AND id NOT IN (` +
+  `SELECT id FROM requests WHERE id IN (SELECT id FROM requests WHERE ${where}) GROUP BY id HAVING uniqExact(${CONTENT}) > 1` +
+  `) LIMIT 1 BY id)`;
 
 /** ClickHouse renders DateTime64 as "YYYY-MM-DD hh:mm:ss.SSS" in UTC. */
 const isoFromClickHouse = (ts: string) => new Date(`${ts.replace(" ", "T")}Z`).toISOString();
