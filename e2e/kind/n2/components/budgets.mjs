@@ -36,25 +36,24 @@ export function overall(verdicts) {
   return "PASS";
 }
 
-/** kong-liveness fails on a supervisor heartbeat older than 3 s; the supervisor renews it every S = 1 s. */
+/** kong-liveness fails on a supervisor heartbeat older than 3 s (CLOCK_BOOTTIME). */
 export const HEARTBEAT_MAX_AGE_MS = 3000;
-export const SUPERVISOR_PERIOD_MS = 1000;
 
 /**
  * K through the liveness (supervisor frozen). The liveness failure itself is not observed. It cannot happen before the
- * earlier of two causes: nginx without a valid lease (at or after the violation's detection) and a stale heartbeat
- * (at or after frozen − S + 3 s, the last heartbeat being at most S before the freeze). The container finishes only
- * after the signal, the effective grace G and the exit. So finished − G − that earliest possible failure is an upper
- * bound of K, never a value; the old finished − detection − Lp − Lt − G could understate K by up to Lp + Lt, and
- * ignored that the heartbeat may fail first.
+ * earlier of two causes: nginx without a valid lease (after the violation's detection) and a stale heartbeat (more
+ * than 3 s after the supervisor's last heartbeat, read from kong-state.json after the freeze, so no later one exists).
+ * The container finishes only after the signal, the effective grace G and the exit, so finished − G − that earliest
+ * possible failure is an upper bound of K, never a value. The heartbeat is measured, never assumed from the freeze or
+ * the ticker: without it the reading is invalid. The old finished − detection − Lp − Lt − G could understate K by up
+ * to Lp + Lt and ignored that the heartbeat may fail first.
  */
-export function kFromLiveness({ detectionMs, frozenMs, kongFinishedMs, finishedResolutionMs, graceMs = 2000 }) {
-  const exercised = detectionMs != null || frozenMs != null;
-  const causes = [detectionMs, frozenMs == null ? null : frozenMs - SUPERVISOR_PERIOD_MS + HEARTBEAT_MAX_AGE_MS].filter((v) => v != null);
-  const earliestFailure = causes.length ? Math.min(...causes) : null;
-  const valueMs = earliestFailure != null && kongFinishedMs != null ? kongFinishedMs - graceMs - earliestFailure : null;
-  return verdict("K", { exercised, valueMs, kind: "upperBound", resolutionMs: finishedResolutionMs,
-    from: "earliest possible liveness failure: min(violation detected, supervisor frozen − S + 3 s)", to: "kong container finished − G" });
+export function kFromLiveness({ detectionMs, heartbeatMs, kongFinishedMs, finishedResolutionMs, heartbeatResolutionMs = 10, graceMs = 2000 }) {
+  const base = { kind: "upperBound", resolutionMs: Math.max(finishedResolutionMs ?? Infinity, heartbeatResolutionMs),
+    from: "earliest possible liveness failure: min(violation detected, last heartbeat + 3 s)", to: "kong container finished − G" };
+  if (heartbeatMs == null) return verdict("K", { ...base, exercised: true, valueMs: null, reason: "the supervisor's last heartbeat was not read: its age is not proven" });
+  const earliestFailure = Math.min(heartbeatMs + HEARTBEAT_MAX_AGE_MS, detectionMs ?? Infinity);
+  return verdict("K", { ...base, exercised: true, valueMs: kongFinishedMs == null ? null : kongFinishedMs - graceMs - earliestFailure });
 }
 
 /** Ks in a deletion: the delete call starts before the kubelet can observe it, so signal − call start bounds Ks. */

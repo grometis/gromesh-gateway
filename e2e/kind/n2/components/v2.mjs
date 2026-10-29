@@ -270,6 +270,23 @@ async function thaw(target) {
 }
 const thawAll = async () => Promise.all([...frozen].map(thaw));
 
+/**
+ * The frozen supervisor's last heartbeat on the VM clock: kong-state.json holds it in CLOCK_BOOTTIME nanoseconds, and
+ * /proc/uptime with date, read together on the pod's node (same kernel), map it to the VM's wall clock (10 ms, the
+ * resolution of /proc/uptime). Read after the freeze, so no later heartbeat exists. null when either read fails.
+ */
+async function lastHeartbeat(podName, node) {
+  const state = await kubectl(["-n", NS.dp, "exec", podName, "-c", "kong", "--", "cat", "/gromesh/kong-state/kong-state.json"], { allowFail: true });
+  const clock = await docker(["exec", node, "sh", "-c", "cat /proc/uptime; date +%s%3N"], { allowFail: true });
+  try {
+    const heartbeatMs = Number(JSON.parse(state.stdout).heartbeatBoottimeNs) / 1e6;
+    const [uptime, wall] = clock.stdout.trim().split("\n");
+    const nowBootMs = Number(uptime.split(" ")[0]) * 1000;
+    if (!(heartbeatMs > 0) || !Number.isFinite(nowBootMs) || !Number.isFinite(Number(wall))) return null;
+    return Number(wall) - (nowBootMs - heartbeatMs);
+  } catch { return null; }
+}
+
 /** crictl state of a pod's containers, polled on its node until all exited: finishedAt with nanoseconds, the exit codes. */
 function watchExits(node, ids, timeoutS) {
   const script = `end=$(( $(date +%s) + ${timeoutS} )); while [ "$(date +%s)" -lt "$end" ]; do all=1; for id in "$@"; do
@@ -766,14 +783,14 @@ async function containmentN({ frozenSupervisor = false } = {}) {
   expect(it, client.events.some((e) => e.k === "ws" && e.ev === "pong"), "the WebSocket never echoed before the loss");
   const pods = await live();
   // K needs the kong container's finishedAt in nanoseconds (crictl on its node; the pod status only has seconds), of
-  // the very container that gets frozen (id read before), and the freeze instant (the heartbeat stops there).
+  // the very container that gets frozen (id read before), and the supervisor's last heartbeat (read after the freeze).
   const kongIds = frozenSupervisor ? await Promise.all(pods.map(async (p) => {
     const pj = await json(["-n", NS.dp, "get", "pod", p.name]);
     const kong = pj.status.containerStatuses.find((c) => c.name === "kong");
     return { pod: p.name, node: pj.spec.nodeName, id: kong.containerID.replace(/^containerd:\/\//, "") };
   })) : [];
-  const frozenAt = {};
-  if (frozenSupervisor) for (const p of pods) { frozenAt[p.name] = await vmNow(); await freeze(p.name, "kong", "kong-supervisor"); }
+  const heartbeat = {};
+  if (frozenSupervisor) for (const p of pods) { await freeze(p.name, "kong", "kong-supervisor"); heartbeat[p.name] = await lastHeartbeat(p.name, kongIds.find((k) => k.pod === p.name).node); }
   const kongExits = kongIds.map((k) => ({ pod: k.pod, exits: watchExits(k.node, { kong: k.id }, 60) }));
   const loadStart = await vmLoad(`${id} start`);
   await kubectl(["delete", "ciliumclusterwidenetworkpolicy", "n2c-deny-imds"]);
@@ -816,7 +833,7 @@ async function containmentN({ frozenSupervisor = false } = {}) {
       const st = (await exits).states.kong;
       const p = per.find((x) => x.pod === pod);
       const kongFinishedMs = st.finishedAtNode && st.finishedAtNode.includes(".") ? rel(vmTime(st.finishedAtNode), t0) : null;
-      readings.push({ pod, ...kFromLiveness({ detectionMs: p?.detectionMs ?? null, frozenMs: rel(frozenAt[pod], t0), kongFinishedMs, finishedResolutionMs: 1 }) });
+      readings.push({ pod, ...kFromLiveness({ detectionMs: p?.detectionMs ?? null, heartbeatMs: rel(heartbeat[pod], t0), kongFinishedMs, finishedResolutionMs: 1 }) });
     }
     budgetReadings(it, readings);
   }

@@ -25,7 +25,7 @@ test("a second of resolution cannot prove 0.5 s, nor any of these limits", () =>
   const r = verdict("Kx", { exercised: true, valueMs: 0, kind: "exact", resolutionMs: 1000 });
   assert.equal(r.result, "INVALID");
   assert.match(r.reason, /too coarse/);
-  assert.equal(kFromLiveness({ detectionMs: 10_000, kongFinishedMs: 12_500, finishedResolutionMs: 1000 }).result, "INVALID");
+  assert.equal(kFromLiveness({ detectionMs: 10_000, heartbeatMs: 10_000, kongFinishedMs: 12_500, finishedResolutionMs: 1000 }).result, "INVALID");
 });
 
 test("an upper bound passes below the limit and is inconclusive above it, never a failure", () => {
@@ -51,28 +51,31 @@ test("milestones on disagreeing clocks are invalid, not fast", () => {
   assert.equal(kxFromDrain({ sigkillMs: 18_000, exitedMs: 17_900 }).result, "INVALID");
 });
 
-test("K: a heartbeat that fails before the detection is the earliest liveness failure (review counterexample)", () => {
-  // Frozen at 1 s: the heartbeat is stale from 1 − S + 3 = 3 s; detection at 5 s; signal at 6 s; finished at 8 s.
-  // Real K = 6 − 3 = 3 s. From the detection alone the bound would be 8 − 5 − 2 = 1 s (a false PASS).
-  assert.equal(kFromLiveness({ detectionMs: 5_000, kongFinishedMs: 8_000, finishedResolutionMs: 1 }).result, "PASS");
-  const r = kFromLiveness({ detectionMs: 5_000, frozenMs: 1_000, kongFinishedMs: 8_000, finishedResolutionMs: 1 });
-  assert.equal(r.valueMs, 3_000);
-  assert.equal(r.result, "INVALID");
-  // Frozen long before (heartbeat earliest at 3 s), finished 6.5 s: K ≤ 1.5 s whichever cause fired.
-  assert.equal(kFromLiveness({ detectionMs: 5_000, frozenMs: 1_000, kongFinishedMs: 6_500, finishedResolutionMs: 1 }).result, "PASS");
+test("K: the heartbeat measured, not assumed, bounds the earliest liveness failure (review counterexamples)", () => {
+  // r1: heartbeat stale from 3 s, detection 5 s, signal 6 s, finished 8 s; real K = 3 s. Detection alone said 1 s.
+  assert.equal(kFromLiveness({ detectionMs: 5_000, heartbeatMs: 0, kongFinishedMs: 8_000, finishedResolutionMs: 1 }).result, "INVALID");
+  // r2: last heartbeat 0.5 s (the freeze at 3 s says nothing about it), liveness fails 3.6 s, signal 6.1 s, finished
+  // 8.1 s, detection 7 s; real K = 2.5 s. Assuming freeze − S + 3 s gave 1.1 s (PASS); the measured heartbeat gives
+  // 8.1 − 2 − 3.5 = 2.6 s ≥ 2.5 s, above 2 s: not known.
+  const r2 = kFromLiveness({ detectionMs: 7_000, heartbeatMs: 500, kongFinishedMs: 8_100, finishedResolutionMs: 1 });
+  assert.equal(r2.valueMs, 2_600);
+  assert.equal(r2.result, "INVALID");
+  // Heartbeat at 0.5 s, finished 7.2 s: K ≤ 7.2 − 2 − 3.5 = 1.7 s whichever cause fired.
+  assert.equal(kFromLiveness({ detectionMs: 7_000, heartbeatMs: 500, kongFinishedMs: 7_200, finishedResolutionMs: 1 }).result, "PASS");
+  // The heartbeat not read: invalid, even with every other milestone.
+  assert.equal(kFromLiveness({ detectionMs: 7_000, heartbeatMs: null, kongFinishedMs: 8_100, finishedResolutionMs: 1 }).result, "INVALID");
 });
 
 test("K through the liveness is an upper bound that excludes only G, never Lp and Lt", () => {
-  // Detection at 10 s, Kong finished at 13.5 s (nanoseconds from crictl): K ≤ 1.5 s.
-  const ok = kFromLiveness({ detectionMs: 10_000, kongFinishedMs: 13_500, finishedResolutionMs: 1 });
+  // Heartbeat far back would allow anything: here the detection is the earlier cause (heartbeat + 3 s = 13 s > 10 s).
+  const ok = kFromLiveness({ detectionMs: 10_000, heartbeatMs: 10_000, kongFinishedMs: 13_500, finishedResolutionMs: 1 });
   assert.equal(ok.result, "PASS");
   assert.equal(ok.valueMs, 1500);
-  // The former reading (− Lp − Lt as well) gave 13.5 − 10 − 4 = −0.5 s here; this one says 1.5 s and is a bound.
   assert.equal(ok.kind, "upperBound");
-  // Finished 15 s: bound 3 s > 2 s, so K is not known; a frozen supervisor that never stopped Kong is invalid.
-  assert.equal(kFromLiveness({ detectionMs: 10_000, kongFinishedMs: 15_000, finishedResolutionMs: 1 }).result, "INVALID");
-  assert.equal(kFromLiveness({ detectionMs: 10_000, kongFinishedMs: null, finishedResolutionMs: 1 }).result, "INVALID");
-  assert.equal(kFromLiveness({ detectionMs: null, kongFinishedMs: null, finishedResolutionMs: 1 }).result, "NOT_EXERCISED");
+  assert.equal(kFromLiveness({ detectionMs: 10_000, heartbeatMs: 10_000, kongFinishedMs: 15_000, finishedResolutionMs: 1 }).result, "INVALID");
+  assert.equal(kFromLiveness({ detectionMs: 10_000, heartbeatMs: 10_000, kongFinishedMs: null, finishedResolutionMs: 1 }).result, "INVALID");
+  // 10 ms of /proc/uptime is fine for 2 s; a 1 s finishedAt is not.
+  assert.equal(kFromLiveness({ detectionMs: 10_000, heartbeatMs: 10_000, kongFinishedMs: 12_500, finishedResolutionMs: 1000 }).result, "INVALID");
 });
 
 test("a drain without SIGKILL leaves Kx not exercised; SIGKILL without a confirmed exit is invalid", () => {
@@ -104,8 +107,8 @@ test("regression: the readings v2.mjs used before let violations through", () =>
   // real slack read as 1 s.
   const formerK = (finishedMs, detectionMs) => finishedMs - detectionMs - 1000 - 1000 - 2000;
   assert.equal(formerK(15_000, 10_000), 1000);
-  assert.notEqual(kFromLiveness({ detectionMs: 10_000, kongFinishedMs: 15_000, finishedResolutionMs: 1 }).result, "PASS");
-  assert.equal(kFromLiveness({ detectionMs: 10_000, kongFinishedMs: 13_000, finishedResolutionMs: 1000 }).result, "INVALID");
+  assert.notEqual(kFromLiveness({ detectionMs: 10_000, heartbeatMs: 10_000, kongFinishedMs: 15_000, finishedResolutionMs: 1 }).result, "PASS");
+  assert.equal(kFromLiveness({ detectionMs: 10_000, heartbeatMs: 10_000, kongFinishedMs: 13_000, finishedResolutionMs: 1000 }).result, "INVALID");
 });
 
 test("an item with a reading not exercised is incomplete, and the run exits 2, never 0", () => {
