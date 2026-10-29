@@ -3,14 +3,26 @@
 // SIGTERM to nginx's process group and SIGKILL F/2 later (F = 1 s to the confirmed exit). It never restarts nginx
 // without a valid lease and never uses nginx's graceful stop for containment. On the pod's stop signal it drains
 // with SIGQUIT for at most Dk, still killing at once if the lease becomes invalid meanwhile.
+//
+// Kx milestones (B §3.5.3: SIGKILL → exit confirmed by waitpid, measured in N2). Every SIGKILL to nginx's group
+// logs "kill-event phase=attempt" before kill(2) and "phase=sent" or "phase=failed error=<errno>" after it returns,
+// with its path: containment, drain, or group (the remnants after the master exited, repeats counted in
+// "group-event"); the master reaped by Wait4 logs "exit-event". Each line carries the supervisor run (sup, random per process), the
+// start of nginx (run, counted from 1), pid and pgid, and boottimeNs: CLOCK_BOOTTIME (the liveness's clock) read at
+// that point, in nanoseconds. A value only lies before (attempt) or after (sent, exit) its event, so exit − attempt
+// bounds Kx from above; "unknown" when the clock could not be read. No lease, config or request content is logged.
 package supervisor
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -26,7 +38,9 @@ type Config struct {
 	Period    time.Duration // S
 	KillAfter time.Duration // SIGTERM → SIGKILL
 	Drain     time.Duration // Dk
-	Logf      func(format string, args ...any)
+	// Kill sends a signal (kill(2)); nil is syscall.Kill. Injectable only so tests can refuse a signal.
+	Kill func(pid int, sig syscall.Signal) error
+	Logf func(format string, args ...any)
 }
 
 // State is kong-state.json: read by the liveness and by the probe for its final report (kongStopConfirmed).
@@ -48,13 +62,20 @@ type supervisor struct {
 	state    State
 	stopping bool
 	drain    <-chan time.Time
+	// sup identifies this supervisor process and run each start of nginx, so events of two runs never pair.
+	sup      string
+	run      int
+	reapedAt string
 }
 
 // Run blocks until the pod is stopped (signal on stop) and nginx's whole process group has exited. children delivers
 // SIGCHLD.
 func Run(cfg Config, stop <-chan os.Signal, children <-chan os.Signal) int {
 	becomeSubreaper()
-	s := &supervisor{cfg: cfg, exited: make(chan string, 1)}
+	if cfg.Kill == nil {
+		cfg.Kill = syscall.Kill
+	}
+	s := &supervisor{cfg: cfg, exited: make(chan string, 1), sup: supervisorID()}
 	tick := time.NewTicker(cfg.Period)
 	defer tick.Stop()
 	s.evaluate()
@@ -72,7 +93,7 @@ func Run(cfg Config, stop <-chan os.Signal, children <-chan os.Signal) int {
 			}
 		case <-s.drain:
 			s.cfg.Logf("drain exceeded %s: killing nginx", s.cfg.Drain)
-			s.signal(syscall.SIGKILL)
+			s.sigkill("drain")
 			s.awaitExit(s.cfg.KillAfter)
 		case <-children:
 			s.reap()
@@ -117,8 +138,10 @@ func (s *supervisor) start() {
 		return
 	}
 	s.pid, s.pgid = proc.Pid, proc.Pid
+	s.run++
 	s.state.Nginx, s.state.Pid = "running", s.pid
 	s.cfg.Logf("lease valid: nginx started (pid %d)", s.pid)
+	s.event("start-event", "")
 }
 
 // kill is SIGTERM to the whole process group, then SIGKILL after KillAfter, then the confirmed exit.
@@ -127,15 +150,82 @@ func (s *supervisor) kill() {
 	if s.awaitExit(s.cfg.KillAfter) {
 		return
 	}
-	s.signal(syscall.SIGKILL)
+	s.sigkill("containment")
 	if !s.awaitExit(s.cfg.KillAfter) {
 		s.cfg.Logf("nginx (pid %d) did not exit after SIGKILL", s.pid)
 	}
 }
 
+// sigkill is SIGKILL to nginx's group with its Kx milestones: the attempt before kill(2), its result after it.
+func (s *supervisor) sigkill(path string) {
+	if s.pgid == 0 {
+		return
+	}
+	s.event("kill-event", "phase=attempt path="+path+" signal=SIGKILL")
+	if err := s.cfg.Kill(-s.pgid, syscall.SIGKILL); err != nil {
+		s.event("kill-event", "phase=failed path="+path+" signal=SIGKILL error="+errnoName(err))
+		return
+	}
+	s.event("kill-event", "phase=sent path="+path+" signal=SIGKILL")
+}
+
+// event logs one milestone line: kind, the identity of this run of nginx, CLOCK_BOOTTIME now, then fields.
+func (s *supervisor) event(kind, fields string) {
+	s.cfg.Logf("%s v=1 sup=%s run=%d pid=%d pgid=%d boottimeNs=%s %s", kind, s.sup, s.run, s.pid, s.pgid, s.boottime(), fields)
+}
+
+func (s *supervisor) boottime() string {
+	now, err := s.cfg.Boottime()
+	if err != nil {
+		return "unknown"
+	}
+	return fmt.Sprint(now)
+}
+
+func supervisorID() string {
+	b := make([]byte, 4)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("p%d", os.Getpid())
+	}
+	return hex.EncodeToString(b)
+}
+
+// summary renders outcome counts as "sent:3,EPERM:1" (sorted; "none" when empty).
+func summary(counts map[string]int) string {
+	if len(counts) == 0 {
+		return "none"
+	}
+	keys := make([]string, 0, len(counts))
+	for k := range counts {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, len(keys))
+	for i, k := range keys {
+		parts[i] = fmt.Sprintf("%s:%d", k, counts[k])
+	}
+	return strings.Join(parts, ",")
+}
+
+func errnoName(err error) string {
+	var errno syscall.Errno
+	if !errors.As(err, &errno) {
+		return "unknown"
+	}
+	switch errno {
+	case syscall.EPERM:
+		return "EPERM"
+	case syscall.ESRCH:
+		return "ESRCH"
+	case syscall.EINVAL:
+		return "EINVAL"
+	}
+	return fmt.Sprintf("errno%d", int(errno))
+}
+
 func (s *supervisor) signal(sig syscall.Signal) {
 	if s.pgid != 0 {
-		_ = syscall.Kill(-s.pgid, sig)
+		_ = s.cfg.Kill(-s.pgid, sig)
 	}
 }
 
@@ -167,6 +257,8 @@ func (s *supervisor) reap() {
 			return
 		}
 		if pid == s.pid {
+			// Read right after Wait4 returned the master: the confirmation milestone of Kx.
+			s.reapedAt = s.boottime()
 			select {
 			case s.exited <- describe(status):
 			default:
@@ -177,24 +269,39 @@ func (s *supervisor) reap() {
 
 func (s *supervisor) onExit(status string) {
 	s.cfg.Logf("nginx (pid %d) exited: %s", s.pid, status)
+	s.cfg.Logf("exit-event v=1 sup=%s run=%d pid=%d pgid=%d boottimeNs=%s status=%s", s.sup, s.run, s.pid, s.pgid, s.reapedAt, strings.ReplaceAll(status, " ", "-"))
 	s.pid = 0
 	s.state.Pid, s.state.LastExit = 0, status
 	s.confirmGroupGone()
 }
 
 // confirmGroupGone kills what is left of the group and reaps until none of its processes exists, for at most
-// KillAfter. Until then the state stays running and no new nginx starts.
+// KillAfter. Until then the state stays running and no new nginx starts. Its SIGKILLs are to the group's remnants
+// after the master exited (path=group, never a Kx milestone): the first is logged like any SIGKILL, the repeats of the
+// loop are counted, and "group-event" says how it ended (gone, or remaining after KillAfter).
 func (s *supervisor) confirmGroupGone() {
 	end := time.Now().Add(s.cfg.KillAfter)
+	kills := 0
+	// The repeats' results, by outcome: "sent" or the errno name; never dropped.
+	results := map[string]int{}
 	for {
-		_ = syscall.Kill(-s.pgid, syscall.SIGKILL)
+		if kills == 0 {
+			s.sigkill("group")
+		} else if err := s.cfg.Kill(-s.pgid, syscall.SIGKILL); err != nil {
+			results[errnoName(err)]++
+		} else {
+			results["sent"]++
+		}
+		kills++
 		s.reap()
 		if err := syscall.Kill(-s.pgid, 0); errors.Is(err, syscall.ESRCH) {
+			s.event("group-event", fmt.Sprintf("phase=gone kills=%d repeats=%s", kills, summary(results)))
 			s.pgid = 0
 			s.state.Nginx = "stopped"
 			return
 		}
 		if time.Now().After(end) {
+			s.event("group-event", fmt.Sprintf("phase=remaining kills=%d repeats=%s", kills, summary(results)))
 			s.cfg.Logf("process group %d still has processes after SIGKILL", s.pgid)
 			return
 		}

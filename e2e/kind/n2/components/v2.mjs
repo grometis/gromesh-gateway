@@ -13,8 +13,9 @@ import { setTimeout as sleep } from "node:timers/promises";
 import {
   Api, apply, assertLab, CONTEXT, controlPlaneObjects, controlPlaneSecret, cpSecrets, createSecret, dbSkew, denyPolicies, docker, Forward, helm, here, json,
   kubeconfig, kubectl, NODES, NS, registrationSecret, relayObjects, removeSuiteObjects, root, run, sql,
+  scrubKong,
 } from "./lab.mjs";
-import { bootToWall, itemResult, kFromLiveness, ksFromDeletion, kxFromDrain, overall, runExitCode } from "./budgets.mjs";
+import { bootToWall, itemResult, kFromLiveness, ksFromDeletion, kxFromEvents, overall, runExitCode } from "./budgets.mjs";
 
 const out = process.env.LAB_OUT ?? mkdtempSync(join(tmpdir(), "gromesh-n2-comp-"));
 // Every image this suite pulls is pinned by digest in versions.env (a mutable tag would not reproduce the run).
@@ -55,7 +56,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const s = (ms) => `${ms / 1000} s`;
 
 const report = { startedAt: new Date().toISOString(), images: IMAGES, revisions: { cp: process.env.CP_REV, agent: process.env.AGENT_REV }, context: CONTEXT, budgets: BUDGET, items: [], blocked: [], findings: [], timeline: [] };
-const save = () => writeFileSync(join(out, "results.json"), JSON.stringify(report, null, 2));
+const save = () => writeFileSync(join(out, "results.json"), scrubKong(JSON.stringify(report, null, 2)));
 const log = (message) => console.log(`${new Date().toISOString()} ${message}`);
 const mark = (event, data = {}) => { report.timeline.push({ at: new Date().toISOString(), event, ...data }); log(`${event} ${JSON.stringify(data)}`); };
 
@@ -701,13 +702,15 @@ async function trafficV2() {
 const first = (events, pred) => events.find(pred) ?? null;
 /**
  * K, Ks and Kx (budgets.mjs) on an item: a FAIL or an INVALID reading fails it, a reading not exercised stays open in
- * report.blocked. None of them is ever turned into a pass.
+ * report.blocked. None of them is ever turned into a pass. `optional` readings belong to another item's acceptance
+ * (Kx is accepted on the drain, item p): not exercised there is recorded only, a FAIL or INVALID still fails.
  */
-function budgetReadings(it, verdicts) {
-  it.measures.budgets = verdicts;
-  it.measures.budgetsOverall = overall(verdicts);
+function budgetReadings(it, verdicts, { optional = false } = {}) {
+  it.measures.budgets = [...(it.measures.budgets ?? []), ...verdicts.map((v) => (optional ? { ...v, optional } : v))];
+  it.measures.budgetsOverall = overall(it.measures.budgets.filter((v) => !v.optional || v.result !== "NOT_EXERCISED"));
   for (const v of verdicts) {
     if (v.result === "FAIL" || v.result === "INVALID") it.failures.push(`${v.name} ${v.result}: ${v.reason} (${v.from} → ${v.to})`);
+    if (v.result === "NOT_EXERCISED" && optional) { it.notes.push(`${v.name} (optional here): ${v.reason}`); continue; }
     if (v.result === "NOT_EXERCISED") it.open.push(`${v.name}: ${v.reason}`);
     if (v.result === "NOT_EXERCISED") blocked({ id: `${it.id}:${v.name}`, item: it.id, missing: `${v.name} not exercised: ${v.reason}`, unblock: "a run in which the milestone happens" });
   }
@@ -818,6 +821,13 @@ async function containmentN({ frozenSupervisor = false } = {}) {
     wsCloseMs: rel(wsClose?.t, t0), wsLastPongMs: rel(wsLastPong?.t, t0), statuses: Object.entries(ev.reduce((a, e) => { const k = `${e.k}:${e.s ?? e.ev ?? e.e}`; a[k] = (a[k] ?? 0) + 1; return a; }, {})) });
   const worstDetect = Math.max(...per.map((p) => p.detectionMs ?? Infinity));
   if (!frozenSupervisor) {
+    // Kx where the supervisor's containment needed SIGKILL (SIGTERM usually suffices): optional here, accepted on p.
+    const kx = [];
+    for (const p of pods) {
+      const lines = [...(await vmLogs(p.name, "kong", ["--previous"]).catch(() => [])), ...(await vmLogs(p.name, "kong"))].filter((l) => l.at >= t0);
+      kx.push({ pod: p.name, ...kxFromEvents(lines.map((l) => l.text), "containment") });
+    }
+    budgetReadings(it, kx, { optional: true });
     expect(it, worstDetect <= V2_BUDGET.detection, `detection ${worstDetect} ms`);
     expect(it, first503 && first503.t - t0 <= V2_BUDGET.block503 + 0, `first 503 at ${it.measures.first503NewMs} ms`);
     expect(it, per.every((p) => (p.kongExitedLogMs ?? Infinity) <= V2_BUDGET.kongStopSupervisor), `Kong stopped (supervisor) ${JSON.stringify(per.map((p) => p.kongExitedLogMs))}`);
@@ -1021,7 +1031,8 @@ async function drainAndReplace() {
   // t0 is read before the delete call, so signal − t0 bounds Ks from above (the kubelet observes after the call starts).
   budgetReadings(it, [
     ksFromDeletion({ deleteCallStartMs: 0, signalReceivedMs: rel(sig?.at, t0) }),
-    kxFromDrain({ sigkillMs: rel(kill?.at, t0), exitedMs: kill ? rel(first(lines, (l) => l.at >= kill.at && /nginx \(pid \d+\) exited/.test(l.text))?.at, t0) : null }),
+    // Kx from the supervisor's own milestones (CLOCK_BOOTTIME around kill(2) and Wait4, one run of nginx).
+    kxFromEvents(lines.filter((l) => l.at >= t0).map((l) => l.text), "drain"),
   ]);
   expect(it, fin.kong != null && fin.kong <= V2_BUDGET.drainExit, `kong finished ${fin.kong} ms`);
   expect(it, it.measures.kongBeforeSidecars, `exit order ${JSON.stringify(fin)}`);
