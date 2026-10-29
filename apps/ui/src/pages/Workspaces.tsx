@@ -3,7 +3,6 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type QueryClie
 import { unwrap } from "../api/client";
 import { apiV2, type Workspace, type WorkspaceCreationPolicy, type WorkspaceWrite } from "../api/client-v2";
 import { statusMessage } from "../api/errors";
-import { effectiveRole, useAuth } from "../auth";
 import { Badge } from "../components/Badge";
 import { Button } from "../components/Button";
 import { EmptyState } from "../components/EmptyState";
@@ -12,7 +11,7 @@ import { ConfirmDialog, Modal } from "../components/Modal";
 import { PageHeader } from "../components/PageHeader";
 import { RowMenu } from "../components/RowMenu";
 import { Table } from "../components/Table";
-import { workspaceErrorMessage, workspaceFormErrors, type WorkspaceFormErrors } from "./workspace-errors";
+import { FORBIDDEN, workspaceErrorMessage, workspaceFormErrors, type WorkspaceFormErrors } from "./workspace-errors";
 import { normalizeSlug, slugProblem } from "./workspace-slug";
 
 const NO_ERRORS: WorkspaceFormErrors = { fields: {}, form: [], suggestedSlug: null };
@@ -40,8 +39,28 @@ export function createWorkspaceMutation(queryClient: QueryClient, onCreated: (wo
   };
 }
 
+export function updateWorkspaceMutation(queryClient: QueryClient, workspace: Workspace, onSaved: (workspace: Workspace) => void) {
+  return {
+    mutationFn: (body: { name: string; description?: string }) =>
+      unwrap(apiV2.PATCH("/workspaces/{workspaceId}", { params: { path: { workspaceId: workspace.id } }, body })),
+    onSuccess: (saved: Workspace) => {
+      invalidateWorkspaceQueries(queryClient);
+      onSaved(saved);
+    },
+  };
+}
+
+export function archiveWorkspaceMutation(queryClient: QueryClient, workspace: Workspace, onArchived: () => void) {
+  return {
+    mutationFn: () => unwrap(apiV2.POST("/workspaces/{workspaceId}/archive", { params: { path: { workspaceId: workspace.id } } })),
+    onSuccess: () => {
+      invalidateWorkspaceQueries(queryClient);
+      onArchived();
+    },
+  };
+}
+
 export function WorkspacesPage() {
-  const { user } = useAuth();
   const workspaces = useInfiniteQuery({
     queryKey: ["workspaces"],
     queryFn: ({ pageParam }) => unwrap(apiV2.GET("/workspaces", { params: { query: pageParam ? { cursor: pageParam } : {} } })),
@@ -55,9 +74,9 @@ export function WorkspacesPage() {
   const [archiving, setArchiving] = useState<Workspace | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const items = workspaces.data?.pages.flatMap((page) => page.items) ?? [];
-  // Cosmetic: the server decides every call (workspace.admin to edit, platform.admin to archive).
-  const canEdit = (w: Workspace) => w.status === "active" && effectiveRole(user, w.id) === "admin";
-  const canArchive = (w: Workspace) => w.status === "active" && user?.role === "admin";
+  // No contract operation tells the caller's v2 permissions (a workspace-admin binding, platform.admin): every active
+  // workspace offers both actions and the server's 403 says who may (workspace.admin edits, platform.admin archives).
+  const active = (w: Workspace) => w.status === "active";
 
   return (
     <section className="final-page identity-page">
@@ -99,8 +118,8 @@ export function WorkspacesPage() {
                 <td className="actions">
                   <div className="identity-actions">
                     <Button variant="quiet" aria-label={`Detalhes de ${w.name}`} onClick={() => setViewing(w)}>Detalhes</Button>
-                    {canEdit(w) && <Button variant="quiet" aria-label={`Editar ${w.name}`} onClick={() => { setNotice(null); setEditing(w); }}>Editar</Button>}
-                    {canArchive(w) && (
+                    {active(w) && <Button variant="quiet" aria-label={`Editar ${w.name}`} onClick={() => { setNotice(null); setEditing(w); }}>Editar</Button>}
+                    {active(w) && (
                       <RowMenu label={`Mais ações para ${w.name}`} items={[{ label: "Arquivar", danger: true, onSelect: () => { setNotice(null); setArchiving(w); } }]} />
                     )}
                   </div>
@@ -217,22 +236,13 @@ function EditWorkspace({ workspace, onClose, onSaved }: { workspace: Workspace; 
   const [name, setName] = useState(workspace.name);
   const [description, setDescription] = useState(workspace.description ?? "");
   const [local, setLocal] = useState<string[]>([]);
-  const save = useMutation({
-    mutationFn: () => unwrap(apiV2.PATCH("/workspaces/{workspaceId}", {
-      params: { path: { workspaceId: workspace.id } },
-      body: { name: name.trim(), ...(description !== (workspace.description ?? "") ? { description } : {}) },
-    })),
-    onSuccess: (saved) => {
-      invalidateWorkspaceQueries(queryClient);
-      onSaved(saved);
-    },
-  });
-  const errors = save.isError ? workspaceFormErrors(save.error) : { fields: local.length ? { name: local } : {}, form: [], suggestedSlug: null };
+  const save = useMutation(updateWorkspaceMutation(queryClient, workspace, onSaved));
+  const errors = save.isError ? workspaceFormErrors(save.error, FORBIDDEN.edit) : { fields: local.length ? { name: local } : {}, form: [], suggestedSlug: null };
   const submit = (event: FormEvent) => {
     event.preventDefault();
     save.reset();
     setLocal(name.trim() ? [] : ["Informe o nome."]);
-    if (name.trim()) save.mutate();
+    if (name.trim()) save.mutate({ name: name.trim(), ...(description !== (workspace.description ?? "") ? { description } : {}) });
   };
 
   return (
@@ -299,20 +309,14 @@ function WorkspaceDetail({ workspace, onClose }: { workspace: Workspace; onClose
 
 function ArchiveWorkspace({ workspace, onClose, onArchived }: { workspace: Workspace; onClose: () => void; onArchived: () => void }) {
   const queryClient = useQueryClient();
-  const archive = useMutation({
-    mutationFn: () => unwrap(apiV2.POST("/workspaces/{workspaceId}/archive", { params: { path: { workspaceId: workspace.id } } })),
-    onSuccess: () => {
-      invalidateWorkspaceQueries(queryClient);
-      onArchived();
-    },
-  });
+  const archive = useMutation(archiveWorkspaceMutation(queryClient, workspace, onArchived));
   return (
     <ConfirmDialog
       title="Arquivar Workspace"
       message={<>Arquivar <strong>{workspace.name}</strong> (<span className="mono">{workspace.slug}</span>)? Nada é apagado, mas o Workspace passa a ser somente leitura e o slug continua reservado.</>}
       confirmLabel="Arquivar"
       busy={archive.isPending}
-      error={archive.isError ? workspaceErrorMessage(archive.error) : null}
+      error={archive.isError ? workspaceErrorMessage(archive.error, FORBIDDEN.archive) : null}
       onConfirm={() => archive.mutate()}
       onClose={onClose}
     />

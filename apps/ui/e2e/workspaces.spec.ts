@@ -28,12 +28,12 @@ interface Fake {
   requests: { method: string; path: string; body: unknown }[];
   /** Answers the next call of an operation instead of the fake (e.g. a 403 or a 409), once. */
   next: Partial<Record<"create" | "update" | "archive", Parameters<Route["fulfill"]>[0]>>;
-  /** Holds the create answer until released, to see the dialog while the request is in flight. */
-  holdCreate?: Promise<void>;
+  /** Holds an operation's answer until released, to see the screen while the request is in flight. */
+  hold: Partial<Record<"create" | "update" | "archive", Promise<void>>>;
 }
 
 async function fakeApi(page: Page, init: { workspaces: Workspace[]; policy?: WorkspaceCreationPolicy; pageSize?: number }): Promise<Fake> {
-  const fake: Fake = { workspaces: init.workspaces, policy: init.policy ?? policyOf(), requests: [], next: {} };
+  const fake: Fake = { workspaces: init.workspaces, policy: init.policy ?? policyOf(), requests: [], next: {}, hold: {} };
   const pageSize = init.pageSize ?? 50;
   const env = (w: Workspace) => ({ id: w.id, name: w.name, publishMode: "manual", currentVersion: null, hasUnpublishedChanges: false, createdAt: NOW, updatedAt: NOW });
   await page.route("**/api/v1/environments", (route) => route.fulfill({ json: { items: fake.workspaces.map(env), nextCursor: null } }));
@@ -64,7 +64,7 @@ async function fakeApi(page: Page, init: { workspaces: Workspace[]; policy?: Wor
     }
     if (method === "POST" && path === "/workspaces") {
       if (request.headers()["x-csrf-token"] === undefined) return route.fulfill(problem(403));
-      await fake.holdCreate;
+      await fake.hold.create;
       const answer = once("create");
       if (answer) return route.fulfill(answer);
       const { name, slug, description } = body as { name: string; slug: string; description?: string };
@@ -81,12 +81,14 @@ async function fakeApi(page: Page, init: { workspaces: Workspace[]; policy?: Wor
     if (!match || !target) return route.fulfill(problem(404));
     if (method === "GET" && !match[2]) return route.fulfill({ json: target });
     if (method === "PATCH") {
+      await fake.hold.update;
       const answer = once("update");
       if (answer) return route.fulfill(answer);
       Object.assign(target, body);
       return route.fulfill({ json: target });
     }
     if (method === "POST" && match[2]) {
+      await fake.hold.archive;
       const answer = once("archive");
       if (answer) return route.fulfill(answer);
       target.status = "archived";
@@ -148,7 +150,7 @@ test("lists workspaces page by page, marks the archived one and opens the detail
 test("an authorized caller creates a workspace: suggested slug, success only after the 201, selector refreshed", async ({ page }) => {
   const fake = await fakeApi(page, { workspaces: [pagamentos()] });
   let release!: () => void;
-  fake.holdCreate = new Promise((resolve) => (release = resolve));
+  fake.hold.create = new Promise((resolve) => (release = resolve));
   await openWorkspaces(page, admin);
   await page.getByRole("button", { name: "Criar Workspace" }).click();
   const dialog = page.getByRole("dialog", { name: "Criar Workspace" });
@@ -187,7 +189,8 @@ test("validation errors land on their field; a taken slug offers the suggestion 
   await dialog.getByLabel("Nome").fill("N".repeat(101));
   await dialog.getByLabel("Slug").fill("nome-longo");
   await dialog.getByRole("button", { name: "Criar", exact: true }).click();
-  await expect(dialog.getByText("must NOT have more than 100 characters")).toBeVisible();
+  await expect(dialog.getByText("Nome: use no máximo 100 caracteres.")).toBeVisible();
+  await expect(dialog).not.toContainText("must NOT");
   await expect(dialog.getByLabel("Nome")).toHaveAttribute("aria-invalid", "true");
 
   // The server's 409 slug-taken, with suggestedSlug.
@@ -207,27 +210,70 @@ test("validation errors land on their field; a taken slug offers the suggestion 
   await expect(row(page, "Pagamentos Novos")).toContainText("pagamentos-2");
 });
 
-test("without permission: no create, edit or archive action, and the server's 403 is shown when tried", async ({ page }) => {
+test("without permission: no create button; edit and archive are tried and the server's 403 is shown, nothing changes", async ({ page }) => {
   const fake = await fakeApi(page, {
     workspaces: [pagamentos(), recargas()],
     policy: policyOf({ caller: { canCreate: false, canRequest: true, canDecide: false } }),
   });
-  // Administers Recargas only: its edit is offered, and here the server refuses it.
-  await openWorkspaces(page, person("viewer", [{ environmentId: id(2), role: "admin" }]));
+  await openWorkspaces(page, person("viewer"));
   await expect(row(page, "Recargas")).toBeVisible();
   await expect(page.getByRole("button", { name: "Criar Workspace" })).toHaveCount(0);
   await expect(page.getByRole("note", { name: "Disponibilidade" })).toContainText("A solicitação de Workspaces ainda não está disponível nesta interface.");
-  await expect(row(page, "Pagamentos").getByRole("button", { name: "Editar Pagamentos" })).toHaveCount(0);
-  await expect(table(page).getByRole("button", { name: /^Mais ações/ })).toHaveCount(0);
 
   fake.next.update = problem(403, { title: "Forbidden", detail: "Requires permission workspace.admin" });
   await row(page, "Recargas").getByRole("button", { name: "Editar Recargas" }).click();
-  const dialog = page.getByRole("dialog", { name: "Editar Recargas" });
-  await dialog.getByLabel("Nome").fill("Recargas e Pacotes");
-  await dialog.getByRole("button", { name: "Salvar" }).click();
-  await expect(dialog.getByRole("alert")).toHaveText("Você não tem permissão para esta ação.");
-  await expect(dialog).toBeVisible();
-  await expect(row(page, "Recargas")).toBeVisible();
+  const edit = page.getByRole("dialog", { name: "Editar Recargas" });
+  await edit.getByLabel("Nome").fill("Recargas e Pacotes");
+  await edit.getByRole("button", { name: "Salvar" }).click();
+  await expect(edit.getByRole("alert")).toHaveText("Você não tem permissão para editar este Workspace.");
+  await expect(edit).toBeVisible();
+  await edit.getByRole("button", { name: "Cancelar" }).click();
+
+  fake.next.archive = problem(403, { title: "Forbidden", detail: "Requires permission platform.admin" });
+  await row(page, "Recargas").getByRole("button", { name: "Mais ações para Recargas" }).click();
+  await page.getByRole("menuitem", { name: "Arquivar" }).click();
+  const archive = page.getByRole("dialog", { name: "Arquivar Workspace" });
+  await archive.getByRole("button", { name: "Arquivar" }).click();
+  await expect(archive.getByRole("alert")).toHaveText("Só a administração da plataforma arquiva Workspaces.");
+  await archive.getByRole("button", { name: "Cancelar" }).click();
+
+  await expect(page.getByRole("status")).toHaveCount(0);
+  await expect(row(page, "Recargas")).toContainText("Ativo");
+  await expect(row(page, "Recargas e Pacotes")).toHaveCount(0);
+  await expect(selector(page).locator("option")).toHaveText(["Pagamentos", "Recargas"]);
+  expect(fake.workspaces.map((w) => [w.name, w.status])).toEqual([["Pagamentos", "active"], ["Recargas", "active"]]);
+});
+
+test("edit and archive report success only after the server's 200 and 204", async ({ page }) => {
+  const fake = await fakeApi(page, { workspaces: [pagamentos(), recargas()] });
+  await openWorkspaces(page, admin);
+  let releaseUpdate!: () => void;
+  fake.hold.update = new Promise((resolve) => (releaseUpdate = resolve));
+  await row(page, "Recargas").getByRole("button", { name: "Editar Recargas" }).click();
+  const edit = page.getByRole("dialog", { name: "Editar Recargas" });
+  await edit.getByLabel("Nome").fill("Recargas e Pacotes");
+  await edit.getByRole("button", { name: "Salvar" }).click();
+  await expect(edit.getByRole("button", { name: "Salvando…" })).toBeDisabled();
+  await expect(page.getByRole("status")).toHaveCount(0);
+  await expect(row(page, "Recargas e Pacotes")).toHaveCount(0);
+  releaseUpdate();
+  await expect(edit).toHaveCount(0);
+  await expect(page.getByRole("status")).toHaveText("Workspace “Recargas e Pacotes” atualizado.");
+
+  let releaseArchive!: () => void;
+  fake.hold.archive = new Promise((resolve) => (releaseArchive = resolve));
+  await row(page, "Pagamentos").getByRole("button", { name: "Mais ações para Pagamentos" }).click();
+  await page.getByRole("menuitem", { name: "Arquivar" }).click();
+  const archive = page.getByRole("dialog", { name: "Arquivar Workspace" });
+  await archive.getByRole("button", { name: "Arquivar" }).click();
+  await expect(archive.getByRole("button", { name: "Arquivar" })).toBeDisabled();
+  await expect(archive).toBeVisible();
+  await expect(page.getByRole("status")).toHaveCount(0);
+  await expect(row(page, "Pagamentos")).toContainText("Ativo");
+  releaseArchive();
+  await expect(archive).toHaveCount(0);
+  await expect(page.getByRole("status")).toHaveText("Workspace “Pagamentos” arquivado.");
+  await expect(row(page, "Pagamentos")).toContainText("Arquivado");
 });
 
 test("disabled Workspaces mode and HML/PRD stages say why creation is unavailable, with no way around it", async ({ page }) => {

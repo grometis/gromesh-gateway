@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ApiError, type Problem } from "../api/client";
-import { CONFLICTS, workspaceErrorMessage, workspaceFormErrors } from "./workspace-errors";
+import { CONFLICTS, FORBIDDEN, validationMessage, workspaceErrorMessage, workspaceFormErrors } from "./workspace-errors";
 
 const conflict = (code: string, extra: Record<string, unknown> = {}) => {
   const problem = { type: `https://gromesh.dev/problems/${code}`, title: "Conflict", status: 409, code, detail: "English detail", ...extra };
@@ -32,9 +32,38 @@ describe("workspaceFormErrors", () => {
   it("maps 422 errors[].path onto the fields, explaining slug refusals", () => {
     expect(workspaceFormErrors(invalid([{ path: "slug", message: "reserved slug" }])).fields).toEqual({ slug: ["Slug reservado pela plataforma. Escolha outro."] });
     expect(workspaceFormErrors(invalid([{ path: "slug", message: "must match ^[a-z][a-z0-9-]{1,39}$" }])).fields).toEqual({ slug: ["Slug inválido: confira a regra abaixo."] });
-    const out = workspaceFormErrors(invalid([{ path: "name", message: "must NOT have more than 100 characters" }, { path: "(body)", message: "unknown property" }]));
-    expect(out.fields).toEqual({ name: ["must NOT have more than 100 characters"] });
-    expect(out.form).toEqual(["unknown property"]);
+    const out = workspaceFormErrors(invalid([
+      { path: "name", message: "must NOT have more than 100 characters" },
+      { path: "description", message: "must be string" },
+      { path: "(body)", message: "must NOT have additional properties" },
+    ]));
+    expect(out.fields).toEqual({ name: ["Nome: use no máximo 100 caracteres."], description: ["Descrição: tipo de valor inválido."] });
+    expect(out.form).toEqual(["A requisição tem campos não aceitos."]);
+  });
+
+  it.each([
+    ["name", "is required", "Nome: campo obrigatório."],
+    ["name", "must NOT have fewer than 1 characters", "Nome: campo obrigatório."],
+    ["name", "must NOT have fewer than 3 characters", "Nome: use no mínimo 3 caracteres."],
+    ["name", "must NOT have more than 100 characters", "Nome: use no máximo 100 caracteres."],
+    ["description", "must match format \"x\"", "Descrição: formato inválido."],
+    ["description", "something new", "Descrição: valor inválido."],
+    ["slug", "must match pattern \"^[a-z]\"", "Slug inválido: confira a regra abaixo."],
+    ["(body)", "anything", "Requisição inválida."],
+  ])("translates %s: %s", (path, message, text) => {
+    expect(validationMessage(path, message)).toBe(text);
+  });
+
+  it("never shows the validator's English", () => {
+    for (const message of ["is required", "must NOT have more than 100 characters", "must be string", "must match pattern", "weird"]) {
+      expect(validationMessage("name", message)).not.toMatch(/must|required|weird/);
+    }
+  });
+
+  it("names a 403 with the action's own words when given", () => {
+    const forbidden = new ApiError(403, { type: "about:blank", title: "Forbidden", status: 403 });
+    expect(workspaceFormErrors(forbidden, FORBIDDEN.edit)).toEqual({ fields: {}, form: [FORBIDDEN.edit], suggestedSlug: null });
+    expect(workspaceErrorMessage(forbidden, FORBIDDEN.archive)).toBe(FORBIDDEN.archive);
   });
 
   it("keeps a 403 and a network failure on the form", () => {

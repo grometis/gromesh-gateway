@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { MutationObserver, QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import type { Workspace, WorkspaceCreationPolicy, WorkspaceWrite } from "../api/client-v2";
 
 const created: Workspace = {
@@ -92,6 +92,65 @@ describe("creating a workspace", () => {
     expect(html).not.toContain('role="status"');
     expect(html).not.toContain("criado");
     expect(SLUG_RULE).not.toMatch(/kong/i);
+  });
+});
+
+describe("editing and archiving", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const target: Workspace = { ...created, name: "Recargas", slug: "recargas" };
+
+  async function pending<T>(run: (mod: Awaited<ReturnType<typeof load>>, client: QueryClient, onDone: Mock<(workspace?: Workspace) => void>) => Promise<T>) {
+    const answer = deferred();
+    const sent: Request[] = [];
+    const mod = await load((request) => {
+      sent.push(request);
+      return answer.promise;
+    });
+    const client = new QueryClient();
+    client.setQueryData(["environments"], { items: [], nextCursor: null });
+    const onDone = vi.fn<(workspace?: Workspace) => void>();
+    const done = run(mod, client, onDone);
+    await tick();
+    return { answer, sent, client, onDone, done };
+  }
+
+  it("reports an edit only after the 200", async () => {
+    const { answer, sent, client, onDone, done } = await pending(({ updateWorkspaceMutation }, client, onDone) =>
+      new MutationObserver(client, updateWorkspaceMutation(client, target, onDone)).mutate({ name: "Recargas e Pacotes" }));
+    expect(onDone).not.toHaveBeenCalled();
+    expect(client.getQueryState(["environments"])?.isInvalidated).toBe(false);
+    expect(sent.map((r) => [r.method, new URL(r.url).pathname])).toEqual([["PATCH", `/api/v2/workspaces/${target.id}`]]);
+    answer.resolve(Response.json({ ...target, name: "Recargas e Pacotes" }));
+    await done;
+    expect(onDone).toHaveBeenCalledExactlyOnceWith({ ...target, name: "Recargas e Pacotes" });
+    expect(client.getQueryState(["environments"])?.isInvalidated).toBe(true);
+  });
+
+  it("reports an archive only after the 204", async () => {
+    const { answer, sent, client, onDone, done } = await pending(({ archiveWorkspaceMutation }, client, onDone) =>
+      new MutationObserver(client, archiveWorkspaceMutation(client, target, onDone)).mutate());
+    expect(onDone).not.toHaveBeenCalled();
+    expect(sent.map((r) => [r.method, new URL(r.url).pathname])).toEqual([["POST", `/api/v2/workspaces/${target.id}/archive`]]);
+    answer.resolve(new Response(null, { status: 204 }));
+    await done;
+    expect(onDone).toHaveBeenCalledOnce();
+    expect(client.getQueryState(["environments"])?.isInvalidated).toBe(true);
+  });
+
+  it.each([
+    ["edit", "Você não tem permissão para editar este Workspace."],
+    ["archive", "Só a administração da plataforma arquiva Workspaces."],
+  ] as const)("a 403 on %s changes nothing and says who may", async (action, text) => {
+    const { answer, client, onDone, done } = await pending(({ updateWorkspaceMutation, archiveWorkspaceMutation }, client, onDone) =>
+      action === "edit"
+        ? new MutationObserver(client, updateWorkspaceMutation(client, target, onDone)).mutate({ name: "Outro" })
+        : new MutationObserver(client, archiveWorkspaceMutation(client, target, onDone)).mutate());
+    answer.resolve(Response.json({ type: "about:blank", title: "Forbidden", status: 403 }, { status: 403, headers: { "Content-Type": "application/problem+json" } }));
+    const err = await done.catch((e: unknown) => e);
+    expect(onDone).not.toHaveBeenCalled();
+    expect(client.getQueryState(["environments"])?.isInvalidated).toBe(false);
+    const { FORBIDDEN, workspaceErrorMessage, workspaceFormErrors } = await import("./workspace-errors");
+    expect(action === "edit" ? workspaceFormErrors(err, FORBIDDEN.edit).form : [workspaceErrorMessage(err, FORBIDDEN.archive)]).toEqual([text]);
   });
 });
 
