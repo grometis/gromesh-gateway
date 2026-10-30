@@ -8,7 +8,7 @@ import { Field, FormErrorList } from "../components/Field";
 import { ConfirmDialog, Modal } from "../components/Modal";
 import { useEnvId } from "../components/Shell";
 import { ScopedPlugins } from "./Plugins";
-import { splitList, useEntityDraft, useInvalidateDraft, useServices } from "./Services";
+import { splitPaths, splitList, useEntityDraft, useInvalidateDraft, useServices } from "./Services";
 import { PageHeader } from "../components/PageHeader";
 import { EmptyState } from "../components/EmptyState";
 import { Table } from "../components/Table";
@@ -183,7 +183,7 @@ function RouteForm(props: { envId: string; route: Route | null; services: { id: 
         ...rest,
         name: form.name.trim(),
         serviceId: form.serviceId,
-        paths: splitList(form.paths),
+        paths: splitPaths(form.paths),
         hosts: splitList(form.hosts),
         methods: splitList(form.methods).map((m) => m.toUpperCase()),
         protocols: form.protocols,

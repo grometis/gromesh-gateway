@@ -1,6 +1,6 @@
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
-import { unwrap } from "../api/client";
-import { apiV2, type WorkspaceService } from "../api/client-v2";
+import { type Environment, unwrap } from "../api/client";
+import { apiV2, type Workspace, type WorkspaceService } from "../api/client-v2";
 import { statusMessage } from "../api/errors";
 import { useEnvironment } from "../components/Shell";
 
@@ -51,6 +51,31 @@ export function useWorkspace(workspaceId: string) {
     queryKey: ["workspace", workspaceId],
     queryFn: () => unwrap(apiV2.GET("/workspaces/{workspaceId}", { params: { path: { workspaceId } } })),
   });
+}
+
+/** v2 has status; publishMode remains on the v1 environment with the same id. Unknown data forbids writes. */
+export function workspaceGatewayAccess(workspace: Pick<Workspace, "status"> | undefined, environment: Pick<Environment, "publishMode"> | undefined) {
+  if (workspace?.status === "archived") return {
+    canWrite: false,
+    reason: "Somente leitura: este Workspace está arquivado. Não é possível criar, editar ou excluir itens do gateway.",
+  };
+  if (environment?.publishMode === "auto") return {
+    canWrite: false,
+    reason: "Somente leitura: este Workspace usa publicação automática. Mude o ambiente para publicação manual antes de criar, editar ou excluir itens nesta tela, para evitar publicação automática de exclusões.",
+  };
+  const canWrite = workspace?.status === "active" && environment?.publishMode === "manual";
+  return { canWrite, reason: canWrite ? null : "Somente leitura enquanto verificamos o estado e o modo de publicação do Workspace." };
+}
+
+/** Shared with the v2 Routes screen. Failed reads never authorize writes using old cached data. */
+export function useWorkspaceGatewayAccess(workspaceId: string) {
+  const workspace = useWorkspace(workspaceId);
+  const env = useEnvironment(workspaceId);
+  if (workspace.isError || env.isError) return {
+    canWrite: false,
+    reason: "Somente leitura: não foi possível verificar o estado ou o modo de publicação do Workspace. Tente novamente antes de alterar o gateway.",
+  };
+  return workspaceGatewayAccess(workspace.data, env.data);
 }
 
 export function useWorkspaceServices(workspaceId: string, q = "") {
@@ -112,8 +137,9 @@ export function useInvalidateWorkspaceGateway(workspaceId: string) {
 export function WorkspaceGatewayNote({ workspaceId }: { workspaceId: string }) {
   const workspace = useWorkspace(workspaceId);
   const env = useEnvironment(workspaceId);
-  if (workspace.isError) return <p className="error" role="alert">Não foi possível ler o Workspace: {statusMessage(workspace.error)}</p>;
-  if (!workspace.data) return null;
+  const access = useWorkspaceGatewayAccess(workspaceId);
+  if (workspace.isError) return <p className="error" role="alert">{access.reason} {statusMessage(workspace.error)}</p>;
+  if (!workspace.data) return <p className="muted" role="status">{access.reason}</p>;
   const w = workspace.data;
   return (
     <div className="note" role="note" aria-label="Estado do Workspace">
@@ -121,7 +147,7 @@ export function WorkspaceGatewayNote({ workspaceId }: { workspaceId: string }) {
         Prefixo público <span className="mono">/{w.slug}</span> · {w.activeRelease == null ? "nenhuma release ativa" : `release ativa v${w.activeRelease}`}
         {env.data && (env.data.hasUnpublishedChanges ? " · há alterações no rascunho ainda não publicadas" : " · rascunho sem alterações pendentes")}.
       </p>
-      <p>Deployment de Workspaces indisponível nesta fase: o que for criado ou editado aqui fica só no rascunho e não é implantado.</p>
+      {access.reason ? <p role="status">{access.reason}</p> : <p>Deployment de Workspaces indisponível nesta fase: o que for criado ou editado aqui fica só no rascunho e não é implantado.</p>}
     </div>
   );
 }

@@ -3,7 +3,7 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tansta
 import { api, unwrap } from "../api/client";
 import { apiV2, type WorkspaceService, type WorkspaceServiceWrite } from "../api/client-v2";
 import { statusMessage, type FormErrors } from "../api/errors";
-import { Field, FormErrorList } from "../components/Field";
+import { CheckboxField, Field, FormErrorList } from "../components/Field";
 import { ConfirmDialog, Modal } from "../components/Modal";
 import { Link, useNavigate, useParams } from "react-router";
 import { useEnvId, useEnvironment } from "../components/Shell";
@@ -17,7 +17,7 @@ import { ScopedPlugins } from "./Plugins";
 import { ScopedRoutes } from "./Routes";
 import { gatewayErrorMessage, gatewayFormErrors } from "./gateway-errors";
 import {
-  fieldText, serviceTargetV2, useInvalidateWorkspaceGateway, useWorkspaceServices, useWorkspaceUpstreams, WorkspaceGatewayNote,
+  fieldText, serviceTargetV2, useInvalidateWorkspaceGateway, useWorkspaceServices, useWorkspaceUpstreams, useWorkspaceGatewayAccess, WorkspaceGatewayNote,
 } from "./workspace-gateway";
 
 // Services of the selected workspace through API v2 (WS-S1); the v1 hooks below stay for the screens still on v1
@@ -79,6 +79,7 @@ export function ServiceDetailPage() {
 }
 
 function WorkspaceServices({ workspaceId }: { workspaceId: string }) {
+  const { canWrite } = useWorkspaceGatewayAccess(workspaceId);
   const [search, setSearch] = useState("");
   const [onlyChanged, setOnlyChanged] = useState(false);
   const q = useDeferredValue(search.trim());
@@ -97,11 +98,11 @@ function WorkspaceServices({ workspaceId }: { workspaceId: string }) {
         description="Os destinos para onde o gateway encaminha as requisições deste Workspace."
         // No contract operation tells the caller's v2 permissions (a binding may grant gateway.write): every signed-in
         // user is offered the actions and the server decides (its 403 is shown in Portuguese).
-        actions={
+        actions={canWrite && (
           <Button variant="primary" onClick={() => setEditing("new")}>
             Novo service
           </Button>
-        }
+        )}
       />
       <WorkspaceGatewayNote workspaceId={workspaceId} />
       <div className="pills" role="group" aria-label="Filtrar services">
@@ -118,7 +119,7 @@ function WorkspaceServices({ workspaceId }: { workspaceId: string }) {
       {services.isSuccess && items.length === 0 && (
         <EmptyState
           title={onlyChanged ? "Nenhum service com alterações não publicadas." : q ? "Nenhum service encontrado." : "Nenhum service ainda."}
-          text={!onlyChanged && !q ? "Crie o primeiro para começar a rotear tráfego." : undefined}
+          text={canWrite && !onlyChanged && !q ? "Crie o primeiro para começar a rotear tráfego." : undefined}
         />
       )}
       {items.length > 0 && (
@@ -151,10 +152,14 @@ function WorkspaceServices({ workspaceId }: { workspaceId: string }) {
                   </div>
                 </td>
                 <td className="actions">
-                  <Button variant="quiet" onClick={() => setEditing(s)}>
-                    Editar
-                  </Button>
-                  <RowMenu label={`Mais ações para ${s.name}`} items={[{ label: "Excluir", danger: true, onSelect: () => setDeleting(s) }]} />
+                  {canWrite && (
+                    <>
+                      <Button variant="quiet" onClick={() => setEditing(s)}>
+                        Editar
+                      </Button>
+                      <RowMenu label={`Mais ações para ${s.name}`} items={[{ label: "Excluir", danger: true, onSelect: () => setDeleting(s) }]} />
+                    </>
+                  )}
                 </td>
               </tr>
             ))}
@@ -166,14 +171,15 @@ function WorkspaceServices({ workspaceId }: { workspaceId: string }) {
           Carregar mais
         </Button>
       )}
-      {editing && <ServiceForm workspaceId={workspaceId} service={editing === "new" ? null : editing} onClose={() => setEditing(null)} />}
-      {deleting && <DeleteService workspaceId={workspaceId} service={deleting} onClose={() => setDeleting(null)} />}
+      {canWrite && editing && <ServiceForm workspaceId={workspaceId} service={editing === "new" ? null : editing} onClose={() => setEditing(null)} />}
+      {canWrite && deleting && <DeleteService workspaceId={workspaceId} service={deleting} onClose={() => setDeleting(null)} />}
     </section>
   );
 }
 
 function WorkspaceServiceDetail({ workspaceId, serviceId }: { workspaceId: string; serviceId: string }) {
   const navigate = useNavigate();
+  const { canWrite } = useWorkspaceGatewayAccess(workspaceId);
   const draft = useEntityDraft(workspaceId, "services");
   const upstreams = useWorkspaceUpstreams(workspaceId);
   const [editing, setEditing] = useState(false);
@@ -200,14 +206,14 @@ function WorkspaceServiceDetail({ workspaceId, serviceId }: { workspaceId: strin
           </span>
         }
         description={<span className="mono">{serviceTargetV2(s)}</span>}
-        actions={
+        actions={canWrite && (
           <div className="form-actions">
             <Button variant="primary" onClick={() => setEditing(true)}>
               Editar
             </Button>
             <RowMenu label={`Mais ações para ${s.name}`} items={[{ label: "Excluir", danger: true, onSelect: () => setDeleting(true) }]} />
           </div>
-        }
+        )}
       />
       <WorkspaceGatewayNote workspaceId={workspaceId} />
       <dl className="service-properties" aria-label="Propriedades do service">
@@ -228,8 +234,8 @@ function WorkspaceServiceDetail({ workspaceId, serviceId }: { workspaceId: strin
       <ScopedRoutes envId={workspaceId} service={s} readOnly />
       <p className="muted">Plugins por Workspace ainda não são editáveis aqui.</p>
       <ScopedPlugins envId={workspaceId} scope={{ kind: "service", id: s.id }} title="Plugins do service" readOnly />
-      {editing && <ServiceForm workspaceId={workspaceId} service={s} onClose={() => setEditing(false)} />}
-      {deleting && <DeleteService workspaceId={workspaceId} service={s} onClose={() => setDeleting(false)} onDeleted={() => navigate("..")} />}
+      {canWrite && editing && <ServiceForm workspaceId={workspaceId} service={s} onClose={() => setEditing(false)} />}
+      {canWrite && deleting && <DeleteService workspaceId={workspaceId} service={s} onClose={() => setDeleting(false)} onDeleted={() => navigate("..")} />}
     </section>
   );
 }
@@ -288,6 +294,7 @@ export function serviceBody(service: WorkspaceService | null, form: ReturnType<t
 
 export function ServiceForm({ workspaceId, service, onClose }: { workspaceId: string; service: WorkspaceService | null; onClose: () => void }) {
   const invalidate = useInvalidateWorkspaceGateway(workspaceId);
+  const access = useWorkspaceGatewayAccess(workspaceId);
   const upstreams = useWorkspaceUpstreams(workspaceId);
   const upstreamList = upstreams.data ?? [];
   const [form, setForm] = useState(() => initialServiceForm(service));
@@ -298,6 +305,7 @@ export function ServiceForm({ workspaceId, service, onClose }: { workspaceId: st
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
+    if (!access.canWrite) return;
     save.reset();
     const fields: Record<string, string[]> = {
       ...(form.name.trim() ? {} : { name: ["Nome: campo obrigatório."] }),
@@ -311,8 +319,10 @@ export function ServiceForm({ workspaceId, service, onClose }: { workspaceId: st
   };
   const set = <K extends keyof typeof form>(k: K, v: (typeof form)[K]) => setForm((f) => ({ ...f, [k]: v }));
 
+  const title = service ? `Editar ${service.name}` : "Novo service";
+  if (!access.canWrite) return <Modal title={title} onClose={onClose}><p role="status">{access.reason}</p></Modal>;
   return (
-    <Modal title={service ? `Editar ${service.name}` : "Novo service"} onClose={onClose}>
+    <Modal title={title} onClose={onClose}>
       <form onSubmit={submit} className="form" noValidate>
         <Field label="Nome" errors={errors.fields.name}>
           {(id, invalid) => <input id={id} aria-invalid={invalid} value={form.name} onChange={(e) => set("name", e.target.value)} />}
@@ -362,9 +372,7 @@ export function ServiceForm({ workspaceId, service, onClose }: { workspaceId: st
         <Field label="Tags" errors={errors.fields.tags} hint="Separadas por vírgula">
           {(id, invalid) => <input id={id} aria-invalid={invalid} value={form.tags} onChange={(e) => set("tags", e.target.value)} />}
         </Field>
-        <label className="check">
-          <input type="checkbox" checked={form.enabled} onChange={(e) => set("enabled", e.target.checked)} /> Ativo
-        </label>
+        <CheckboxField label="Ativo" checked={form.enabled} onChange={(checked) => set("enabled", checked)} errors={errors.fields.enabled} />
         <p className="muted">A alteração entra no rascunho do Workspace; nada é implantado.</p>
         <FormErrorList messages={errors.form} />
         <div className="form-actions">
@@ -407,9 +415,15 @@ function DeleteService({ workspaceId, service, onClose, onDeleted }: { workspace
   );
 }
 
+/** Comma/newline entry for arrays of tags, hosts and methods; path patterns need splitPaths instead. */
 export function splitList(v: string): string[] {
   return v
     .split(/[,\n]/)
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+/** Paths can contain commas (including regex quantifiers); only line breaks separate them. */
+export function splitPaths(v: string): string[] {
+  return v.split(/\r\n|[\r\n]/).map((s) => s.trim()).filter(Boolean);
 }
