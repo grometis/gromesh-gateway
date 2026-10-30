@@ -364,8 +364,12 @@ export class GatewayService {
   async createRoute<T = ReturnType<typeof toRoute>>(ctx: RequestContext, envId: string, body: RouteWrite, workspaceDefault = false, map: (r: RouteRow) => T = toRoute as (r: RouteRow) => T) {
     return retryingTransaction(() => this.db.transaction(async (tx) => {
       await requireEnvironment(tx, envId);
-      // v2 (workspace-default): the draft only, never where v1 auto-publishes (WS-R0), decided inside this write.
-      if (workspaceDefault) await this.refuseAutoPublish(tx, envId);
+      // Take the FK's KEY SHARE before the environment, as v1 does at INSERT: a service DELETE locks the
+      // service first. Keep validation after the mode check, including its error precedence in auto mode.
+      if (workspaceDefault) {
+        await this.lockRouteService(tx, envId, body.serviceId);
+        await this.refuseAutoPublish(tx, envId);
+      }
       await this.checkRoute(tx, envId, body);
       const [row] = await tx
         .insert(routes)
@@ -391,6 +395,7 @@ export class GatewayService {
   async replaceWorkspaceRoute(ctx: RequestContext, envId: string, routeId: string, body: Omit<RouteWrite, "stripPath"> & { stripPath?: boolean | undefined }) {
     workspaceRouteChecks(body);
     return this.replaceRoute(ctx, envId, routeId, body as RouteWrite, toWorkspaceRoute, async (tx, current) => {
+      await this.lockRouteService(tx, envId, body.serviceId);
       await this.refuseAutoPublish(tx, envId);
       if (current.pathCompatibility === "workspace-default") return { ...body, stripPath: body.stripPath ?? false };
       if (body.stripPath !== undefined && body.stripPath !== current.stripPath) {
@@ -424,7 +429,12 @@ export class GatewayService {
     await retryingTransaction(() => this.db.transaction(async (tx) => {
       // v2 takes the entity before the archive and environment locks, as replaceWorkspaceRoute does.
       const before = toRoute(await this.requireRoute(tx, envId, routeId, options.draftOnly));
-      if (options.draftOnly) await this.refuseAutoPublish(tx, envId);
+      if (options.draftOnly) {
+        // The cascade must not wait on a plugin while holding the environment: plugin writes take their row
+        // before markDraftChanged. The route lock excludes new scopes; plugin writers lock their scope first.
+        await tx.select({ id: plugins.id }).from(plugins).where(eq(plugins.routeId, routeId)).orderBy(asc(plugins.id)).for("update");
+        await this.refuseAutoPublish(tx, envId);
+      }
       await tx.delete(routes).where(eq(routes.id, routeId));
       await markDraftChanged(tx, envId);
       await audit(tx, ctx, { action: "route.delete", entityType: "route", entityId: routeId, environmentId: envId, before });
@@ -449,6 +459,11 @@ export class GatewayService {
   }
 
   /* helpers */
+
+  private async lockRouteService(tx: Executor, envId: string, serviceId: string): Promise<void> {
+    await tx.select({ id: services.id }).from(services)
+      .where(and(eq(services.id, serviceId), eq(services.environmentId, envId))).for("key share");
+  }
 
   private async requireService(tx: Executor, envId: string, serviceId: string, lock = false): Promise<ServiceRow> {
     const q = tx

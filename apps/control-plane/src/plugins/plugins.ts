@@ -184,8 +184,12 @@ export class PluginsService {
   private async checkScope(tx: Executor, envId: string, body: PluginWrite): Promise<void> {
     const s = body.scope ?? {};
     const errors: FieldError[] = [];
-    const exists = async (table: typeof services | typeof routes | typeof consumers, refId: string) =>
-      (await tx.select({ id: table.id }).from(table).where(and(eq(table.id, refId), eq(table.environmentId, envId)))).length > 0;
+    // Service/route DELETE locks its row before cascading to plugins: take those scope locks before UPDATE too,
+    // or a scope change can hold the plugin while waiting on its deleting parent. Consumer locking is unchanged.
+    const exists = async (table: typeof services | typeof routes | typeof consumers, refId: string) => {
+      const q = tx.select({ id: table.id }).from(table).where(and(eq(table.id, refId), eq(table.environmentId, envId)));
+      return (await (table === consumers ? q : q.for("key share"))).length > 0;
+    };
     if (s.serviceId && !(await exists(services, s.serviceId))) errors.push({ path: "scope.serviceId", message: "unknown service in this environment" });
     if (s.routeId && !(await exists(routes, s.routeId))) errors.push({ path: "scope.routeId", message: "unknown route in this environment" });
     if (s.consumerId && !(await exists(consumers, s.consumerId))) errors.push({ path: "scope.consumerId", message: "unknown consumer in this environment" });

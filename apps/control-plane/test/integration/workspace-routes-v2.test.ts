@@ -204,9 +204,9 @@ describe("routes through /api/v2 (WS-R2)", () => {
       [first === "route" ? svc.body.id : ws],
       async ({ pid, release, start }) => {
         if (first === "route") {
-          // The route holds the environment and waits on the service's FK KEY SHARE; DELETE queues behind it.
+          // The route takes its service KEY SHARE before the environment; DELETE queues behind it.
           const writing = start(write());
-          const writerPid = await waitForLock([pid], '(insert into|update) "routes"');
+          const writerPid = await waitForLock([pid], 'from "services".*for key share');
           const deleting = start(remove());
           await waitForLock([pid, writerPid], 'from "services".*for update');
           await release();
@@ -216,7 +216,7 @@ describe("routes through /api/v2 (WS-R2)", () => {
         const deleting = start(remove());
         const deletePid = await waitForLock([pid], deleteApi === "v2" ? 'from "environments".*for no key update' : 'update "environments"');
         const writing = start(write());
-        await waitForLock([pid, deletePid], 'from "environments".*for no key update', [deletePid]);
+        await waitForLock([deletePid], 'from "services".*for key share');
         await release();
         return Promise.all([writing, deleting]);
       });
