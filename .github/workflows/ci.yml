@@ -210,7 +210,7 @@ jobs:
         if: env.RUN_CODE == 'true'
         run: |
           pnpm --filter @gromesh/ui gen:api
-          git diff --exit-code -- apps/ui/src/api/schema.d.ts
+          git diff --exit-code -- apps/ui/src/api/schema.d.ts apps/ui/src/api/schema-v2.d.ts
       - run: pnpm lint:contracts
         if: env.RUN_CODE == 'true'
       - run: pnpm typecheck
