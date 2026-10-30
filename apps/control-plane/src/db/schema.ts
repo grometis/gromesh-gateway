@@ -197,6 +197,25 @@ export const roleBindings = pgTable(
 );
 export type RoleBindingRow = typeof roleBindings.$inferSelect;
 
+/**
+ * The instance's workspace creation policy (GW-ADMIN-01, WS-M0): one row once platform administration sets it. No row:
+ * restricted-request without creatorBecomesAdmin, the restrictive default.
+ */
+export const workspaceCreationPolicy = pgTable(
+  "workspace_creation_policy",
+  {
+    singleton: boolean("singleton").primaryKey().default(true),
+    mode: text("mode", { enum: ["restricted-request", "autonomous", "admin-only"] }).notNull(),
+    creatorBecomesAdmin: boolean("creator_becomes_admin").notNull(),
+    updatedBy: uuid("updated_by").references(() => users.id, { onDelete: "set null" }),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check("workspace_creation_policy_singleton_ck", sql`${t.singleton}`),
+    check("workspace_creation_policy_mode_ck", sql`${t.mode} in ('restricted-request', 'autonomous', 'admin-only')`),
+  ],
+);
+
 /** Data migrations that changed the meaning of existing rows, by name ("n1-workspaces"), with when they ran. */
 export const dataMigrations = pgTable("data_migrations", {
   name: text("name").primaryKey(),

@@ -9,7 +9,7 @@ import { Reflector } from "@nestjs/core";
 import { AccessController } from "../../src/access/access.js";
 import { deriveCoreProfile } from "../../src/common/contract.js";
 import { PathCompatibilityController } from "../../src/workspaces/path-compatibility.js";
-import { WorkspacesController } from "../../src/workspaces/workspaces-api.js";
+import { WorkspaceCreationPolicyController, WorkspacesController } from "../../src/workspaces/workspaces-api.js";
 import { WorkspaceRoutesController, WorkspaceServicesController } from "../../src/gateway/gateway.js";
 import { WorkspaceConsumersController } from "../../src/consumers/consumers.js";
 import { WorkspaceCredentialsController } from "../../src/consumers/credentials.js";
@@ -103,6 +103,7 @@ describe("planned operations", () => {
       AccessController,
       PathCompatibilityController,
       WorkspacesController,
+      WorkspaceCreationPolicyController,
       WorkspaceServicesController,
       WorkspaceRoutesController,
       WorkspaceConsumersController,
@@ -645,7 +646,8 @@ describe("v2 schemas", () => {
   });
 
   it("defaults stripPath to false: the full path with the prefix reaches the upstream (D1)", () => {
-    expect(v2.components.schemas.WorkspaceRouteWrite.properties.stripPath.default).toBe(false);
+    // The server applies the default (WS-R0: a legacy route keeps its own), stated where the schema had it.
+    expect(v2.components.schemas.WorkspaceRouteWrite.properties.stripPath.description).toContain("Absent: false on a workspace-default route");
   });
 
   it.each([
@@ -851,7 +853,11 @@ describe("delivery protocol and convergence evidence (N3-K1)", () => {
   it("publishes a release without deploying it, also with Workspaces mode disabled (D4)", () => {
     // Structured: where the disabled mode refuses, and that only operations reaching a data plane do.
     const mode = Object.fromEntries(v2Ops.filter(({ op }) => op["x-gromesh-workspaces-mode-disabled"]).map(({ op }) => [op.operationId, op["x-gromesh-workspaces-mode-disabled"]]));
-    expect(mode).toEqual({ publishRelease: "allowed", createDeployment: "refused", setClusterDeliveryProtocol: "refused-to-v2" });
+    expect(mode).toEqual({
+      publishRelease: "allowed", createDeployment: "refused", setClusterDeliveryProtocol: "refused-to-v2",
+      // WS-M0: a second workspace in the instance waits for the N2 gates as a deployment does.
+      createWorkspace: "refused", requestWorkspace: "refused", decideWorkspaceRequest: "refused", executePromotion: "refused-provisioning",
+    });
     const publish = v2Ops.find(({ op }) => op.operationId === "publishRelease")!.op;
     // publishRelease never answers the delivery refusal: its 409 is the generic conflict (lease, expectedActiveVersion).
     expect(publish.responses["409"]).toEqual({ $ref: "#/components/responses/Conflict" });
@@ -1178,5 +1184,88 @@ describe("analytics guarantees (N3-A1)", () => {
     const op = v2.paths["/instance/analytics/unattributed"].get;
     expect(op).toMatchObject({ operationId: "getUnattributedAnalytics", "x-scope": "instance", "x-required-permission": "platform.admin", "x-gromesh-planned": true });
     expect(Object.keys(v2.components.schemas.UnattributedAnalytics.properties).sort()).toEqual(["byReason", "from", "to", "total"]);
+  });
+});
+
+describe("workspace administration (WS-M0)", () => {
+  const op = (id: string) => v2Ops.find(({ op }) => op.operationId === id)!.op;
+  const schemas = v2.components.schemas;
+  // Descriptions are wrapped YAML blocks: phrases are matched with the whitespace collapsed.
+  const flat = (text: string) => text.replace(/\s+/g, " ");
+
+  it("refuses a creation while Workspaces mode is disabled, before the stage, the policy and the body", () => {
+    const create = op("createWorkspace");
+    expect([create["x-scope"], create["x-required-permission"], create["x-gromesh-workspaces-mode-disabled"]]).toEqual(["instance", "workspace.create", "refused"]);
+    const text = flat(create.description as string);
+    const order = ["409 workspaces-mode-disabled", "only on dev", "admin-only additionally needs platform.admin", "never adjusted"].map((p) => text.indexOf(p));
+    expect(order.every((i) => i >= 0), String(order)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    for (const phrase of ["Creating it grants nothing", "no deployment", "no cluster", "It reaches no data plane", "never which workspace holds it"]) expect(text, phrase).toContain(phrase);
+    // Provisioning by promotion is the other path to a workspace: the same block.
+    expect(flat(v2.info.description)).toContain("refused with 409 workspaces-mode-disabled, creating nothing, while the target's Workspaces mode is disabled");
+    const problem = ajv.compile({ $ref: `${BASE}control-plane-v2.openapi.yaml#/components/schemas/WorkspaceProblem` });
+    expect(problem({ type: "about:blank", title: "Conflict", status: 409, code: "slug-taken", suggestedSlug: "tvro-2" })).toBe(true);
+    expect(problem({ type: "about:blank", title: "Conflict", status: 409, code: "slug-taken", suggestedSlug: "API" })).toBe(false);
+    expect(problem({ type: "about:blank", title: "Conflict", status: 409 })).toBe(false);
+  });
+
+  it("has a restrictive default policy that only platform administration replaces", () => {
+    expect(schemas.WorkspaceCreationMode.enum).toEqual(["restricted-request", "autonomous", "admin-only"]);
+    expect(flat(op("getWorkspaceCreationPolicy").description)).toContain("mode restricted-request and creatorBecomesAdmin false");
+    const set = op("setWorkspaceCreationPolicy");
+    expect([set["x-required-permission"], set["x-scope"], set.security]).toEqual(["platform.admin", "instance", [{ cookieAuth: [], csrfToken: [] }]]);
+    const write = ajv.compile({ $ref: `${BASE}control-plane-v2.openapi.yaml#/components/schemas/WorkspaceCreationPolicyWrite` });
+    expect(write({ mode: "autonomous", creatorBecomesAdmin: false })).toBe(true);
+    expect(write({ mode: "autonomous" })).toBe(false);
+    expect(write({ mode: "open", creatorBecomesAdmin: false })).toBe(false);
+  });
+
+  it("never changes identity on an update and keeps everything on an archive", () => {
+    const update = op("updateWorkspace");
+    expect(Object.keys(update.requestBody.content["application/json"].schema.properties)).toEqual(["name", "description"]);
+    const archive = op("archiveWorkspace");
+    expect(archive["x-required-permission"]).toBe("platform.admin");
+    for (const phrase of ["nothing is deleted", "active-release", "deployed (it has a release that is not a tombstone in a revision a node may still serve", "only a converged revision without it, or with its tombstone, proves it withdrawn", "published-configuration", "409 workspace-archived", "except revoking a role binding"]) expect(flat(archive.description), phrase).toContain(phrase);
+  });
+
+  it("states every slug rule the server applies (GW-WS-10)", async () => {
+    const { RESERVED_SLUGS, normalizeSlug, slugProblem } = await import("../../src/workspaces/slug.js");
+    const slug = schemas.WorkspaceWrite.properties.slug;
+    expect(new Set(slug["x-gromesh-reserved-slugs"])).toEqual(RESERVED_SLUGS);
+    for (const s of ["gromesh-x", "api"]) expect(slugProblem(s), s).toBe("reserved");
+    for (const s of ["ab-", "a--b"]) expect([new RegExp(slug.pattern).test(s), slugProblem(s)], s).toEqual([true, "invalid"]);
+    for (const [from, to] of [["Straße Øl", "strasse-ol"], ["Ação  Ágil!", "acao-agil"]]) expect(normalizeSlug(from!)).toBe(to);
+    for (const phrase of ["without a trailing hyphen or two hyphens in a row", "every slug starting with gromesh-", "ß→ss", "never prefixed, suffixed"]) expect(flat(slug.description), phrase).toContain(phrase);
+  });
+
+  it("lets a requester never decide its own request", () => {
+    const decide = op("decideWorkspaceRequest");
+    expect([decide["x-scope"], decide.security]).toEqual(["instance", [{ cookieAuth: [], csrfToken: [] }]]);
+    expect(flat(decide.description)).toContain("never its own requester (403)");
+    expect(flat(decide.description)).toContain("evaluated for the DECIDER (the requester needs no workspace.create");
+    expect(op("cancelWorkspaceRequest").description).toContain("Only the requester");
+  });
+});
+
+describe("route writes (WS-R0)", () => {
+  const op = (id: string) => v2Ops.find(({ op }) => op.operationId === id)!.op;
+  const flat = (text: string) => text.replace(/\s+/g, " ");
+
+  it("creates workspace-default routes and never converts a legacy-preserved one on a replace", () => {
+    expect(flat(op("createRoute").description)).toContain("pathCompatibility workspace-default (decision D1)");
+    const replace = flat(op("replaceRoute").description);
+    for (const phrase of ["Keeps the route's pathCompatibility", "an omitted stripPath keeps the stored value", "409 with code path-compatibility", "Edits the draft only"]) expect(replace, phrase).toContain(phrase);
+    // No v2 write is published by the v1 auto-publisher: 409 auto-publish instead.
+    for (const id of ["createRoute", "replaceRoute", "createService", "replaceService"]) {
+      expect(flat(op(id).description), id).toContain("auto-publish");
+      expect(JSON.stringify(op(id).responses["409"]), id).toContain("RouteProblem");
+    }
+    expect(v2.components.schemas.RouteProblem.allOf[1].properties.code.enum).toEqual(["path-compatibility", "auto-publish"]);
+    // No schema default: whether stripPath was given decides a legacy route's, so the server applies the default.
+    expect(v2.components.schemas.WorkspaceRouteWrite.properties.stripPath).not.toHaveProperty("default");
+    expect(flat(v2.components.schemas.WorkspaceRouteWrite.properties.stripPath.description)).toContain("on a legacy-preserved route the stored value");
+    const problem = ajv.compile({ $ref: `${BASE}control-plane-v2.openapi.yaml#/components/schemas/RouteProblem` });
+    expect(problem(v2.components.schemas.RouteProblem.example)).toBe(true);
+    expect(problem({ type: "about:blank", title: "Conflict", status: 409 })).toBe(false);
   });
 });
