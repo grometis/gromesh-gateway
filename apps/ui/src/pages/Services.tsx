@@ -3,7 +3,6 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tansta
 import { api, unwrap } from "../api/client";
 import { apiV2, type WorkspaceService, type WorkspaceServiceWrite } from "../api/client-v2";
 import { statusMessage, type FormErrors } from "../api/errors";
-import { useCanEdit } from "../auth";
 import { Field, FormErrorList } from "../components/Field";
 import { ConfirmDialog, Modal } from "../components/Modal";
 import { Link, useNavigate, useParams } from "react-router";
@@ -26,6 +25,7 @@ import {
 const PROTOCOLS = ["http", "https", "grpc", "grpcs", "tcp", "tls"] as const;
 type Protocol = (typeof PROTOCOLS)[number];
 const NO_ERRORS: FormErrors = { fields: {}, form: [] };
+const KEPT = ["retries", "connectTimeoutMs", "readTimeoutMs", "writeTimeoutMs"] as const;
 
 /** Every edit changes the draft: refresh the lists and the "unpublished changes" bar. */
 export function useInvalidateDraft(envId: string) {
@@ -79,7 +79,6 @@ export function ServiceDetailPage() {
 }
 
 function WorkspaceServices({ workspaceId }: { workspaceId: string }) {
-  const canEdit = useCanEdit();
   const [search, setSearch] = useState("");
   const [onlyChanged, setOnlyChanged] = useState(false);
   const q = useDeferredValue(search.trim());
@@ -96,11 +95,13 @@ function WorkspaceServices({ workspaceId }: { workspaceId: string }) {
       <PageHeader
         title="Services"
         description="Os destinos para onde o gateway encaminha as requisições deste Workspace."
-        actions={canEdit && (
+        // No contract operation tells the caller's v2 permissions (a binding may grant gateway.write): every signed-in
+        // user is offered the actions and the server decides (its 403 is shown in Portuguese).
+        actions={
           <Button variant="primary" onClick={() => setEditing("new")}>
             Novo service
           </Button>
-        )}
+        }
       />
       <WorkspaceGatewayNote workspaceId={workspaceId} />
       <div className="pills" role="group" aria-label="Filtrar services">
@@ -150,14 +151,10 @@ function WorkspaceServices({ workspaceId }: { workspaceId: string }) {
                   </div>
                 </td>
                 <td className="actions">
-                  {canEdit && (
-                    <>
-                      <Button variant="quiet" onClick={() => setEditing(s)}>
-                        Editar
-                      </Button>
-                      <RowMenu label={`Mais ações para ${s.name}`} items={[{ label: "Excluir", danger: true, onSelect: () => setDeleting(s) }]} />
-                    </>
-                  )}
+                  <Button variant="quiet" onClick={() => setEditing(s)}>
+                    Editar
+                  </Button>
+                  <RowMenu label={`Mais ações para ${s.name}`} items={[{ label: "Excluir", danger: true, onSelect: () => setDeleting(s) }]} />
                 </td>
               </tr>
             ))}
@@ -176,7 +173,6 @@ function WorkspaceServices({ workspaceId }: { workspaceId: string }) {
 }
 
 function WorkspaceServiceDetail({ workspaceId, serviceId }: { workspaceId: string; serviceId: string }) {
-  const canEdit = useCanEdit();
   const navigate = useNavigate();
   const draft = useEntityDraft(workspaceId, "services");
   const upstreams = useWorkspaceUpstreams(workspaceId);
@@ -204,14 +200,14 @@ function WorkspaceServiceDetail({ workspaceId, serviceId }: { workspaceId: strin
           </span>
         }
         description={<span className="mono">{serviceTargetV2(s)}</span>}
-        actions={canEdit && (
+        actions={
           <div className="form-actions">
             <Button variant="primary" onClick={() => setEditing(true)}>
               Editar
             </Button>
             <RowMenu label={`Mais ações para ${s.name}`} items={[{ label: "Excluir", danger: true, onSelect: () => setDeleting(true) }]} />
           </div>
-        )}
+        }
       />
       <WorkspaceGatewayNote workspaceId={workspaceId} />
       <dl className="service-properties" aria-label="Propriedades do service">
@@ -284,10 +280,11 @@ function ServiceForm({ workspaceId, service, onClose }: { workspaceId: string; s
     };
     setLocal({ fields, form: [] });
     if (Object.keys(fields).length > 0) return;
-    // PUT replaces the whole service: keep what this form does not edit (retries, timeouts).
-    const { id: _id, workspaceId: _w, createdAt: _c, updatedAt: _u, ...rest } = service ?? ({} as Partial<WorkspaceService>);
+    // PUT replaces the whole service: keep what this form does not edit (retries, timeouts), and send only the
+    // fields WorkspaceServiceWrite declares (the response carries more: id, workspaceId, timestamps).
+    const kept = Object.fromEntries(KEPT.flatMap((k) => (service?.[k] === undefined ? [] : [[k, service[k]]])));
     const body: WorkspaceServiceWrite = {
-      ...rest,
+      ...kept,
       name: form.name.trim(),
       protocol: keep(service?.protocol, fieldText(service?.protocol), form.protocol, (v) => v as Protocol),
       // The upstream's name is the host the compiler resolves (and what the server checks against upstreamId).
