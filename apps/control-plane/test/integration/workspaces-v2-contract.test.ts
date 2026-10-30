@@ -1180,3 +1180,15 @@ describe("analytics guarantees (N3-A1)", () => {
     expect(Object.keys(v2.components.schemas.UnattributedAnalytics.properties).sort()).toEqual(["byReason", "from", "to", "total"]);
   });
 });
+
+describe("route writes (WS-R0)", () => {
+  const op = (id: string) => v2Ops.find(({ op }) => op.operationId === id)!.op;
+  const flat = (text: string) => text.replace(/\s+/g, " ");
+
+  it("creates workspace-default routes and never converts a legacy-preserved one on a replace", () => {
+    expect(flat(op("createRoute").description)).toContain("pathCompatibility workspace-default (decision D1)");
+    const replace = flat(op("replaceRoute").description);
+    for (const phrase of ["Keeps the route's pathCompatibility", "an omitted stripPath keeps the stored value", "409 with code path-compatibility", "Edits the draft only"]) expect(replace, phrase).toContain(phrase);
+    expect(v2.components.schemas.WorkspaceRouteWrite.properties.stripPath.default).toBe(false);
+  });
+});

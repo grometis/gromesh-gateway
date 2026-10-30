@@ -2029,6 +2029,11 @@ paths:
       tags:
         - routes
       operationId: createRoute
+      description: |
+        WS-R0. Creates a route of this workspace with pathCompatibility workspace-default (decision D1): paths required,
+        every path prefixed with /<slug> by the compiler, the full path to the upstream unless stripPath is true.
+        serviceId must be a service of this workspace (422 at serviceId). Edits the draft only (no publish, no
+        deployment); audited (route.create).
       security:
         - cookieAuth: []
           csrfToken: []
@@ -2093,6 +2098,13 @@ paths:
       tags:
         - routes
       operationId: replaceRoute
+      description: |
+        WS-R0. Keeps the route's pathCompatibility: only convertRoutePathCompatibility turns a legacy-preserved route
+        into workspace-default. For a legacy-preserved route an omitted stripPath keeps the stored value (never the
+        schema's default false), and a stripPath different from the stored one answers 409 with code
+        path-compatibility (convert it explicitly instead); paths stays optional there, as migrated. For a
+        workspace-default route the body applies as written (paths required, stripPath default false). serviceId
+        must be a service of this workspace (422). Edits the draft only; audited (route.update, before and after).
       security:
         - cookieAuth: []
           csrfToken: []
