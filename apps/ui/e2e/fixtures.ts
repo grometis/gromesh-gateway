@@ -1,5 +1,6 @@
 import { test as base, expect, type Page, type Route } from "@playwright/test";
 import { normalizeSlug } from "../src/pages/workspace-slug";
+import { invalidBody, v2BodyErrors } from "./v2-bodies";
 import type { Me } from "../src/api/client";
 
 const unauthorized = { title: "Unauthorized", status: 401 };
@@ -20,6 +21,10 @@ async function bridgeV2(route: Route) {
   if (!workspaceId || (rest && !kind)) return route.fulfill({ status: 404, json: { title: "Not Found", status: 404 } });
   const v1 = new URL(`/api/v1/environments/${workspaceId}${rest}${url.search}`, url);
   const body: unknown = request.postData() ? request.postDataJSON() : undefined;
+  if (kind && kind !== "upstreams" && body !== undefined) {
+    const errors = v2BodyErrors(kind as "services" | "routes", body);
+    if (errors.length > 0) return route.fulfill(invalidBody(errors));
+  }
   const { upstreamId: _upstreamId, ...v1Body } = (body ?? {}) as Record<string, unknown>;
   const response = await route.fetch({ url: v1.toString(), ...(body === undefined ? {} : { postData: JSON.stringify(v1Body) }) });
   if (!response.ok() || response.status() === 204) return route.fulfill({ response });

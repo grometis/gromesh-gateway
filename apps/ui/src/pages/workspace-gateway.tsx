@@ -18,13 +18,32 @@ export function publicPath(slug: string, path: string): string {
   return path.startsWith("~") ? `~/${slug}(?:${path.slice(1)})` : `/${slug}${path}`;
 }
 
-/** What the upstream receives for a request under the route's first path, in words (decision D1). */
-export function upstreamEffect(slug: string, path: string, stripPath: boolean): string {
+/**
+ * The path the gateway sends upstream (path_handling v0, its default): the service path and what is left of the
+ * request (all of it, or what follows the matched path when stripped) joined with one slash, the request's trailing
+ * slash kept. The control plane's kongUpstreamPath, checked against the same recorded samples.
+ */
+export function upstreamPath(servicePath: string | null | undefined, requestPath: string, stripped: string): string {
+  const base = servicePath || "/";
+  const postfix = requestPath.slice(stripped.length);
+  if (base === "/") return postfix.startsWith("/") ? postfix : `/${postfix}`;
+  // The root request leaves the service path as it is; a request stripped whole ends as the request does.
+  if (requestPath === "/") return base;
+  if (postfix === "") return `${base.replace(/\/+$/, "")}${requestPath.endsWith("/") ? "/" : ""}`;
+  if (postfix.startsWith("/")) return base.endsWith("/") ? base + postfix.slice(1) : base + postfix;
+  return base.endsWith("/") ? base + postfix : `${base}/${postfix}`;
+}
+
+/** What the upstream receives for a request under the route's first path, the service's path included (decision D1). */
+export function upstreamEffect(slug: string, path: string, stripPath: boolean, servicePath?: string | null): string {
+  const sp = servicePath && servicePath !== "/" ? servicePath : null;
   if (path.startsWith("~")) {
-    return stripPath ? "O upstream recebe só o que vier depois do trecho que a expressão casar." : "O upstream recebe o path completo, com o prefixo do Workspace.";
+    if (stripPath) return sp ? `O upstream recebe ${sp} seguido do que vier depois do trecho que a expressão casar.` : "O upstream recebe só o que vier depois do trecho que a expressão casar.";
+    return sp ? `O upstream recebe ${sp} seguido do path completo, com o prefixo do Workspace.` : "O upstream recebe o path completo, com o prefixo do Workspace.";
   }
-  const base = publicPath(slug, path).replace(/\/$/, "");
-  return stripPath ? `Uma requisição a ${base}/x chega ao upstream como /x.` : `Uma requisição a ${base}/x chega ao upstream como ${base}/x.`;
+  const matched = publicPath(slug, path);
+  const request = matched.endsWith("/") ? `${matched}x` : `${matched}/x`;
+  return `Uma requisição a ${request} chega ao upstream como ${upstreamPath(servicePath, request, stripPath ? matched : "")}.`;
 }
 
 export function useWorkspace(workspaceId: string) {
@@ -36,7 +55,7 @@ export function useWorkspace(workspaceId: string) {
 
 export function useWorkspaceServices(workspaceId: string, q = "") {
   return useInfiniteQuery({
-    queryKey: ["ws-services", workspaceId, q],
+    queryKey: workspaceServicesKey(workspaceId, q),
     queryFn: ({ pageParam }) => unwrap(apiV2.GET("/workspaces/{workspaceId}/services", {
       params: { path: { workspaceId }, query: { ...(q ? { q } : {}), ...(pageParam ? { cursor: pageParam } : {}) } },
     })),
@@ -57,9 +76,13 @@ async function allPages<T>(read: (cursor: string | undefined) => Promise<{ items
   return out;
 }
 
+// Two shapes of the same list, under different keys: a page cache ({ pages }) and the whole list (an array).
+export const workspaceServicesKey = (workspaceId: string, q: string) => ["ws-services", workspaceId, q] as const;
+export const allWorkspaceServicesKey = (workspaceId: string) => ["ws-services-all", workspaceId] as const;
+
 export function useAllWorkspaceServices(workspaceId: string) {
   return useQuery({
-    queryKey: ["ws-services", workspaceId, "all"],
+    queryKey: allWorkspaceServicesKey(workspaceId),
     queryFn: () => allPages((cursor) => unwrap(apiV2.GET("/workspaces/{workspaceId}/services", {
       params: { path: { workspaceId }, query: { limit: 200, ...(cursor ? { cursor } : {}) } },
     }))),
@@ -79,7 +102,7 @@ export function useWorkspaceUpstreams(workspaceId: string) {
 export function useInvalidateWorkspaceGateway(workspaceId: string) {
   const queryClient = useQueryClient();
   return () => {
-    for (const key of ["ws-services", "ws-service", "ws-routes", "ws-route", "services", "routes", "environment", "preview"]) {
+    for (const key of ["ws-services", "ws-services-all", "ws-service", "ws-routes", "ws-route", "services", "routes", "environment", "preview"]) {
       void queryClient.invalidateQueries({ queryKey: [key, workspaceId] });
     }
   };
