@@ -63,15 +63,17 @@ describe("VarRef resolution (WS-V2)", () => {
     // A referenced variable keeps its declaration: no delete, no type change.
     expect((await v2(h.api, "DELETE", `/workspaces/${a}/variables/ORDERS_HOST`)).status).toBe(409);
     expect((await v2(h.api, "PUT", `/workspaces/${a}/variables/ORDERS_HOST`, { type: "string", secret: false, required: true })).status).toBe(409);
-    // v1 never resolves a variable: its publish refuses the draft.
+    // v1 never resolves a variable: its publish refuses the draft; an export carries no instance value (422 there).
     expect((await h.api("POST", `/environments/${a}/snapshots`, {})).status).toBe(422);
+    const exported = await v2(h.api, "GET", `/workspaces/${a}/export`);
+    expect([exported.status, JSON.stringify(exported.body)]).toEqual([422, expect.stringContaining("names variable")]);
   });
 
   it("publishes a release that keeps the references, and refuses a deployment while a required value is missing", async () => {
     expect((await v2(h.api, "POST", `/workspaces/${a}/releases`, { message: "with variables" })).status).toBe(201);
     const refused = await deploy(null);
     expect(refused.status).toBe(422);
-    expect(JSON.stringify(refused.body)).toMatch(/has no value on this instance/);
+    expect(JSON.stringify(refused.body)).toMatch(/required variable without a value on this instance/);
     expect(await lastRevision()).toBeNull();
   });
 
@@ -84,7 +86,8 @@ describe("VarRef resolution (WS-V2)", () => {
     const r1 = (await lastRevision())!;
     const one = await config(r1);
     expect(one.config.services.find((s) => s.name.endsWith("~orders"))).toMatchObject({ host: "orders.internal.example", port: 8443, path: SECRET_PATH, protocol: "https" });
-    expect(one.valuesDigest).toMatch(/^hmac-sha256:/);
+    // The contract's Digest form, the one the agent accepts.
+    expect(one.valuesDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
     // No secret anywhere a user or an auditor reads.
     expect(JSON.stringify((await v2(h.api, "GET", `/workspaces/${a}/services`)).body)).not.toContain(SECRET_PATH);
     expect(JSON.stringify(first.body)).not.toContain(SECRET_PATH);
@@ -107,5 +110,34 @@ describe("VarRef resolution (WS-V2)", () => {
     await v2(h.api, "PUT", `/workspaces/${a}/variables/SCHEME/value`, { value: "ftp" });
     expect((await deploy(r1 + 1)).status).toBe(422);
     expect(await lastRevision()).toBe(r1 + 1);
+  });
+
+  it("checks every value against the declarations the release froze, requires required ones, never answers a secret", async () => {
+    await freeLease();
+    const before = await lastRevision();
+    // A secret host whose value is a forbidden destination: refused, and the answer never quotes it.
+    await v2(h.api, "PUT", `/workspaces/${a}/variables/SCHEME/value`, { value: "https" });
+    expect((await v2(h.api, "PUT", `/workspaces/${a}/variables/SECRET_HOST`, { type: "host", secret: true, required: false })).status).toBe(200);
+    await v2(h.api, "PUT", `/workspaces/${a}/variables/SECRET_HOST/value`, { value: "169.254.169.254" });
+    expect((await v2(h.api, "POST", `/workspaces/${a}/services`, svc({ name: "secret-host", host: { $var: "SECRET_HOST" } }))).status).toBe(201);
+    expect((await v2(h.api, "POST", `/workspaces/${a}/releases`, { message: "secret host" })).status).toBe(201);
+    const leak = await deploy(before);
+    expect(leak.status).toBe(422);
+    expect(JSON.stringify(leak.body)).not.toContain("169.254.169.254");
+    // A required declaration without a value, referenced or not, refuses the deployment.
+    await v2(h.api, "PUT", `/workspaces/${a}/variables/SECRET_HOST/value`, { value: "secret.internal.example" });
+    expect((await v2(h.api, "PUT", `/workspaces/${a}/variables/UNUSED_REQUIRED`, { type: "string", secret: false, required: true })).status).toBe(200);
+    expect((await v2(h.api, "POST", `/workspaces/${a}/releases`, { message: "unused required" })).status).toBe(201);
+    const missing = await deploy(before);
+    expect([missing.status, JSON.stringify(missing.body)]).toEqual([422, expect.stringContaining("variables.UNUSED_REQUIRED")]);
+    await v2(h.api, "PUT", `/workspaces/${a}/variables/UNUSED_REQUIRED/value`, { value: "x" });
+    // The frozen validation applies to a value set before it: minimum 9000 on a port that holds 8443.
+    expect((await v2(h.api, "PUT", `/workspaces/${a}/variables/ORDERS_PORT`, { type: "port", secret: false, required: true, validation: { minimum: 9000 } })).status).toBe(200);
+    await v2(h.api, "PUT", `/workspaces/${a}/variables/ORDERS_PORT/value`, { value: "9443" });
+    await h.sql.query("insert into workspace_variable_values (workspace_id, name, version, value, sealed) select workspace_id, name, version + 1, '8443', false from workspace_variable_values where workspace_id = $1 and name = 'ORDERS_PORT' order by version desc limit 1", [a]);
+    expect((await v2(h.api, "POST", `/workspaces/${a}/releases`, { message: "frozen minimum" })).status).toBe(201);
+    const frozen = await deploy(before);
+    expect([frozen.status, JSON.stringify(frozen.body)]).toEqual([422, expect.stringContaining("variables.ORDERS_PORT")]);
+    expect(await lastRevision()).toBe(before);
   });
 });

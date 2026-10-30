@@ -42,6 +42,7 @@ import {
 } from "../db/schema.js";
 import { v2ExpectedNodes } from "../deployments/deployments.js";
 import { requireEnvironment, uuidParam } from "../environments/environments.js";
+import { type Declaration, valueProblem } from "../workspaces/variables.js";
 import { loadGatewayState } from "../gateway/gateway.js";
 import { PluginCatalog, PluginCatalogModule } from "../plugin-catalog/catalog.js";
 
@@ -88,6 +89,10 @@ export function releaseContent(state: ReleaseState, enc: Encryptor, catalog: Plu
     variables: (state.variables ?? []).map(({ name, type, secret, required, validation }) => ({ name, type, secret, required, ...(validation ? { validation } : {}) })),
   };
 }
+
+/** An answer's issues with every secret value replaced (a message may quote a field's value). */
+const redacted = (issues: { path: string; message: string }[], secrets: readonly string[]) =>
+  issues.map((i) => ({ ...i, message: secrets.reduce((m, s) => (s ? m.split(s).join("REDACTED") : m), i.message) }));
 
 const withoutCredentials = (state: GatewayState): ReleaseState => ({ ...state, keyAuthCredentials: [], jwtCredentials: [], basicAuthCredentials: [] });
 
@@ -301,21 +306,35 @@ export class ReleasesService {
     // WS-V2: each release's variables resolved from this instance's current values, checked again as the fields they
     // fill (shape, forbidden destinations); a missing or refused value rejects the deployment before any node.
     const usedValues: { workspaceId: string; name: string; version: number; sha256: string }[] = [];
+    // Secret values substituted into the composition: never in an answer, whatever refuses it.
+    const secretValues: string[] = [];
     for (const m of memberRows) {
       const state = await this.openRelease(tx, m.workspaceId, m.version);
       const content = releaseContent(state, this.enc, this.catalog);
       let resolved: ReleaseState;
+      const where = `workspaces.${slugs.get(m.workspaceId)}`;
+      const values = await this.instanceValues(tx, m.workspaceId);
+      // Against the declarations the release froze: every required one has a value here, and each value fits its
+      // declaration (type, validation) as it stands in the release, not as the draft has it now.
+      const declared = state.variables ?? [];
+      const valueIssues = declared.flatMap((d) => {
+        const v = values.get(d.name);
+        if (!v) return d.required ? [{ path: `${where}.variables.${d.name}`, message: "required variable without a value on this instance" }] : [];
+        const problem = valueProblem({ type: d.type as Declaration["type"], secret: d.secret, validation: d.validation as Declaration["validation"] }, v.value);
+        return problem ? [{ path: `${where}.variables.${d.name}`, message: `the value ${problem}` }] : [];
+      });
+      if (valueIssues.length > 0) throw unprocessable("A variable of a release cannot be resolved on this instance", valueIssues);
+      for (const d of declared) if (d.secret && values.get(d.name)) secretValues.push(values.get(d.name)!.value);
       try {
-        const values = await this.instanceValues(tx, m.workspaceId);
-        const out = resolveVariables(state, new Set((state.variables ?? []).map((v) => v.name)), values);
+        const out = resolveVariables(state, new Set(declared.map((v) => v.name)), values);
         resolved = { ...out.state, variables: state.variables };
         for (const [name, v] of out.used) usedValues.push({ workspaceId: m.workspaceId, name, version: v.version, sha256: createHash("sha256").update(v.value).digest("hex") });
       } catch (err) {
-        if (err instanceof CompileError) throw unprocessable("A variable of a release cannot be resolved on this instance", err.issues.map((i) => ({ path: `workspaces.${slugs.get(m.workspaceId)}.${i.path}`, message: i.message })));
+        if (err instanceof CompileError) throw unprocessable("A variable of a release cannot be resolved on this instance", redacted(err.issues.map((i) => ({ path: `${where}.${i.path}`, message: i.message })), secretValues));
         throw err;
       }
       const forbidden = destinationIssues(resolved, this.destinations);
-      if (forbidden.length > 0) throw unprocessable("A variable's value is a forbidden destination", forbidden.map((i) => ({ ...i, path: `workspaces.${slugs.get(m.workspaceId)}.${i.path}` })));
+      if (forbidden.length > 0) throw unprocessable("A variable's value is a forbidden destination", redacted(forbidden.map((i) => ({ ...i, path: `${where}.${i.path}` })), secretValues));
       members.push({ id: m.workspaceId, slug: slugs.get(m.workspaceId)!, state: await this.withCredentials(tx, m.workspaceId, resolved), releaseVersion: m.version, content });
       recorded.push({ workspaceId: m.workspaceId, releaseVersion: m.version, contentDigest: contentDigest(content) });
     }
@@ -340,7 +359,7 @@ export class ReleasesService {
       kongConfigHash = createHash("md5").update(jcs(config), "utf8").digest("hex");
     } catch (err) {
       // Nothing is recorded and nothing is served (composed → rejected never persists).
-      if (err instanceof CompileError) throw unprocessable("The instance's composition refuses this deployment", err.issues);
+      if (err instanceof CompileError) throw unprocessable("The instance's composition refuses this deployment", redacted(err.issues, secretValues));
       throw err;
     }
     // D2: only the nodes of clusters explicitly in v2 are expected (agent protocol v2, "Delivery protocol per cluster").
@@ -354,7 +373,8 @@ export class ReleasesService {
       configHash,
       kongConfigHash,
       // The values this revision composed (names, versions and value hashes under the instance's key; never a value).
-      valuesDigest: usedValues.length > 0 ? `hmac-sha256:${this.enc.fingerprint(JSON.stringify(usedValues.sort((a, b) => (a.workspaceId + a.name < b.workspaceId + b.name ? -1 : 1))))}` : null,
+      // HMAC-SHA256 under the instance's key, written as the contract's Digest (sha256:<hex>).
+      valuesDigest: usedValues.length > 0 ? `sha256:${this.enc.fingerprint(JSON.stringify(usedValues.sort((a, b) => (a.workspaceId + a.name < b.workspaceId + b.name ? -1 : 1))))}` : null,
       reason: "publish",
       createdBy: ctx.actor,
       createdAt: now,

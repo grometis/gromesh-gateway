@@ -1,7 +1,7 @@
 import { createPrivateKey, X509Certificate } from "node:crypto";
-import { isIP } from "node:net";
 import { runInNewContext } from "node:vm";
 import { Body, Controller, Delete, Get, HttpCode, Inject, Injectable, Module, Param, Put } from "@nestjs/common";
+import { isHostValue } from "@gromesh/compiler";
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { audit } from "../audit/audit.js";
 import { Ctx, RequiredPermission, type RequestContext } from "../auth/auth.js";
@@ -13,7 +13,7 @@ import { services, workspaceVariables, workspaceVariableValues, type WorkspaceVa
 import { markDraftChanged, requireEnvironment, uuidParam } from "../environments/environments.js";
 
 /** contracts/control-plane-v2.openapi.yaml#/components/schemas/WorkspaceVariableDeclaration */
-interface Declaration {
+export interface Declaration {
   name?: string;
   type: WorkspaceVariableRow["type"];
   secret: boolean;
@@ -49,7 +49,7 @@ function patternProblem(pattern: string): string | null {
 }
 
 /** Why a value does not fit its declaration (its type, then the declared validation), or null. */
-function valueProblem(d: Pick<Declaration, "type" | "secret" | "validation">, value: string): string | null {
+export function valueProblem(d: Pick<Declaration, "type" | "secret" | "validation">, value: string): string | null {
   if (value.length > MAX_VALUE) return `must have at most ${MAX_VALUE} characters`;
   // An empty sealed value cannot be opened again (nor re-sealed by a key rotation): a secret has content.
   if (value.length === 0 && (d.type !== "string" || d.secret)) return "must not be empty";
@@ -58,12 +58,9 @@ function valueProblem(d: Pick<Declaration, "type" | "secret" | "validation">, va
       if (!/^[0-9]{1,5}$/.test(value) || Number(value) < 1 || Number(value) > 65535) return "must be a port, 1 to 65535";
       break;
     }
-    case "host": {
-      const bracketed = /^\[(.*)\]$/.exec(value)?.[1];
-      const ok = bracketed !== undefined ? isIP(bracketed) === 6 : isIP(value) !== 0 || (value.length <= 253 && /^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?$/.test(value));
-      if (!ok) return "must be a host name or an IP address";
+    case "host":
+      if (!isHostValue(value)) return "must be a host name or an IP address";
       break;
-    }
     case "url": {
       let url: URL | null = null;
       try {

@@ -41,6 +41,9 @@ export class ConfigTransferService {
     return this.db.transaction(async tx => {
       await requireEnvironment(tx, envId);
       const state = await loadGatewayState(tx, envId, this.enc, this.catalog);
+      // A field that names a variable has no portable value (contract: 422 at the referenced field).
+      const refs = state.services.flatMap((s, i) => Object.keys(s.varRefs ?? {}).map((field) => ({ path: `services.${i}.${field}`, message: `names variable ${s.varRefs![field as keyof typeof s.varRefs]}: an export carries no instance value` })));
+      if (refs.length > 0) throw unprocessable("The workspace cannot be exported", refs);
       return exportConfig(state, (name, config) => this.catalog.redactConfig(name, config));
     }, { isolationLevel: "repeatable read", accessMode: "read only" });
   }

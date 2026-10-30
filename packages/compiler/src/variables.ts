@@ -1,8 +1,16 @@
+import { isIP } from "node:net";
 import type { GatewayState, Service, VarField } from "./model.js";
 import { CompileError, type CompileIssue as Issue } from "./errors.js";
 
 const PROTOCOLS = new Set(["http", "https", "grpc", "grpcs", "tcp", "tls"]);
-const HOST = /^(\[[0-9a-fA-F:.]+\]|[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?)$/;
+const HOSTNAME = /^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?$/;
+
+/** A host name or an IP address (IPv6 bare or in brackets): the one rule for a host value, wherever it is checked. */
+export function isHostValue(value: string): boolean {
+  const bracketed = /^\[(.*)\]$/.exec(value)?.[1];
+  if (bracketed !== undefined) return isIP(bracketed) === 6;
+  return isIP(value) !== 0 || (value.length <= 253 && HOSTNAME.test(value));
+}
 
 /** What a field accepts from a variable's value (the field's own rules apply again to the value, contract). */
 function fieldValue(field: VarField, value: string): { ok: true; value: string | number } | { ok: false; message: string } {
@@ -16,7 +24,7 @@ function fieldValue(field: VarField, value: string): { ok: true; value: string |
     case "path":
       return value.startsWith("/") ? { ok: true, value } : { ok: false, message: "the variable's value is not a path (it must start with /)" };
     case "host":
-      return HOST.test(value) && value.length <= 253 ? { ok: true, value } : { ok: false, message: "the variable's value is not a host name or an IP address" };
+      return isHostValue(value) ? { ok: true, value } : { ok: false, message: "the variable's value is not a host name or an IP address" };
   }
 }
 

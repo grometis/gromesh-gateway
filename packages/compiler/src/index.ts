@@ -10,4 +10,4 @@ export { diffConfigs, ENTITY_KINDS, type EntityChange, type EntityKind } from ".
 export { exportConfig, credentialKeyHint, type ConfigDocument, type ConfigConsumer, type ConfigPlugin, type ConsumerRef, type CredentialStatus } from "./document.js";
 export { convertKongConfig, type ImportIdentity } from "./import.js";
 export { privilegedFingerprint, privilegedUses, type PrivilegedUse } from "./privileged.js";
-export { placeholderVariables, resolveVariables, type InstanceValue } from "./variables.js";
+export { isHostValue, placeholderVariables, resolveVariables, type InstanceValue } from "./variables.js";
