@@ -31,16 +31,17 @@ export function RoutesPage() {
   );
 }
 
-export function ScopedRoutes({ envId, service }: { envId: string; service: { id: string; name: string } }) {
+export function ScopedRoutes({ envId, service, readOnly = false }: { envId: string; service: { id: string; name: string }; readOnly?: boolean }) {
   return (
     <section aria-label="Routes do service">
-      <RouteList envId={envId} serviceId={service.id} service={service} />
+      <RouteList envId={envId} serviceId={service.id} service={service} readOnly={readOnly} />
     </section>
   );
 }
 
-function RouteList({ envId, serviceId, service, onServiceChange }: { envId: string; serviceId: string; service?: { id: string; name: string }; onServiceChange?: (id: string) => void }) {
-  const canEdit = useCanEdit();
+function RouteList({ envId, serviceId, service, onServiceChange, readOnly = false }: { envId: string; serviceId: string; service?: { id: string; name: string }; onServiceChange?: (id: string) => void; readOnly?: boolean }) {
+  const roleCanEdit = useCanEdit();
+  const canEdit = roleCanEdit && !readOnly;
   const draft = useEntityDraft(envId, "routes");
   const [search, setSearch] = useState("");
   const q = useDeferredValue(search.trim());
@@ -140,7 +141,7 @@ function RouteList({ envId, serviceId, service, onServiceChange }: { envId: stri
           Carregar mais
         </button>
       )}
-      {editing && (
+      {canEdit && editing && (
         <RouteForm
           envId={envId}
           route={editing === "new" ? null : editing}
@@ -149,10 +150,10 @@ function RouteList({ envId, serviceId, service, onServiceChange }: { envId: stri
           onClose={() => setEditing(null)}
         />
       )}
-      {deleting && <DeleteRoute envId={envId} route={deleting} onClose={() => setDeleting(null)} />}
+      {canEdit && deleting && <DeleteRoute envId={envId} route={deleting} onClose={() => setDeleting(null)} />}
       {plugins && (
         <Modal title={`Plugins de ${plugins.name}`} onClose={() => setPlugins(null)} wide>
-          <ScopedPlugins envId={envId} scope={{ kind: "route", id: plugins.id }} title="Plugins aplicados" />
+          <ScopedPlugins envId={envId} scope={{ kind: "route", id: plugins.id }} title="Plugins aplicados" readOnly={readOnly} />
         </Modal>
       )}
     </div>
