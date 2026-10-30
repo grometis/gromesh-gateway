@@ -63,6 +63,10 @@ describe("workspace variables (WS-V1)", () => {
     await v2(h.api, "PUT", `/workspaces/${a}/variables/AGAIN`, { type: "string", secret: true, required: false });
     expect((await h.sql.query("select sealed, value from workspace_variable_values where workspace_id = $1 and name = 'AGAIN'", [a])).rows.map((r) => [r.sealed, r.value.includes("plain-before")])).toEqual([[true, false]]);
     expect((await v2(h.api, "PUT", `/workspaces/${a}/variables/NOTE/value`, { value: "" })).status).toBe(422);
+    // An empty plain value kept when the variable turns secret stays unsealed (REDACTED) and never blocks a rotation.
+    await v2(h.api, "PUT", `/workspaces/${a}/variables/EMPTY`, { type: "string", secret: false, required: false });
+    expect((await v2(h.api, "PUT", `/workspaces/${a}/variables/EMPTY/value`, { value: "" })).status).toBe(204);
+    expect((await v2(h.api, "PUT", `/workspaces/${a}/variables/EMPTY`, { type: "string", secret: true, required: false })).body.value).toBe("REDACTED");
     expect((await h.sql.query("select count(*)::int as n from audit_events where (before::text like $1 or after::text like $1)", [`%${SECRET}%`])).rows[0].n).toBe(0);
   });
 
@@ -74,11 +78,17 @@ describe("workspace variables (WS-V1)", () => {
     await v2(h.api, "PUT", `/workspaces/${a}/variables/TLS_CERT`, { type: "certificate", secret: false, required: false });
     await v2(h.api, "PUT", `/workspaces/${a}/variables/EDGE`, { type: "host", secret: false, required: false });
     for (const [name, value] of [["ORDERS_PORT", "abc"], ["ORDERS_PORT", "70000"], ["BASE_URL", "ftp://x"], ["REGION", "BR"], ["POOL", "80"], ["POOL", "4000"], ["SHORT", "abcd"],
-      ["TLS_CERT", "-----BEGIN CERTIFICATE-----garbage"], ["EDGE", "[::::]"], ["EDGE", "-bad-.example"]] as const) {
+      ["TLS_CERT", "-----BEGIN CERTIFICATE-----garbage"], ["EDGE", "[::::]"], ["EDGE", "-bad-.example"], ["EDGE", "bad-.example"]] as const) {
       const res = await v2(h.api, "PUT", `/workspaces/${a}/variables/${name}/value`, { value });
       expect([res.status, res.body.errors?.[0]?.path], `${name}=${value}`).toEqual([422, "value"]);
     }
     expect((await v2(h.api, "PUT", `/workspaces/${a}/variables/REGION/value`, { value: "sa-east" })).status).toBe(204);
+    // A pattern the heuristic lets through still cannot hold the server: the match is cut at its deadline.
+    await v2(h.api, "PUT", `/workspaces/${a}/variables/SLOW`, { type: "string", secret: false, required: false, validation: { pattern: "a*a*a*a*a*a*a*a*c" } });
+    const started = Date.now();
+    const slow = await v2(h.api, "PUT", `/workspaces/${a}/variables/SLOW/value`, { value: `${"a".repeat(40)}b` });
+    expect([slow.status, slow.body.errors?.[0]?.message]).toEqual([422, "the declared pattern took too long on this value"]);
+    expect(Date.now() - started).toBeLessThan(2_000);
     expect((await v2(h.api, "PUT", `/workspaces/${a}/variables/TLS_CERT/value`, { value: selfSigned("api.example.com").cert })).status).toBe(204);
     for (const host of ["[2001:db8::1]", "10.0.0.1", "api.example.com"]) expect((await v2(h.api, "PUT", `/workspaces/${a}/variables/EDGE/value`, { value: host })).status, host).toBe(204);
     expect((await v2(h.api, "PUT", `/workspaces/${a}/variables/NOT_DECLARED/value`, { value: "x" })).status).toBe(404);

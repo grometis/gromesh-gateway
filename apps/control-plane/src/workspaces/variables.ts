@@ -1,5 +1,6 @@
 import { createPrivateKey, X509Certificate } from "node:crypto";
 import { isIP } from "node:net";
+import { runInNewContext } from "node:vm";
 import { Body, Controller, Delete, Get, HttpCode, Inject, Injectable, Module, Param, Put } from "@nestjs/common";
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { audit } from "../audit/audit.js";
@@ -30,6 +31,7 @@ const nameParam = () => ({
 });
 
 const MAX_VALUE = 16_384;
+const PATTERN_MS = 50;
 
 /**
  * A declared pattern runs on the server: no group that is itself quantified and holds a quantifier (the shape of
@@ -58,7 +60,7 @@ function valueProblem(d: Pick<Declaration, "type" | "secret" | "validation">, va
     }
     case "host": {
       const bracketed = /^\[(.*)\]$/.exec(value)?.[1];
-      const ok = bracketed !== undefined ? isIP(bracketed) === 6 : isIP(value) !== 0 || (value.length <= 253 && /^[A-Za-z0-9]([A-Za-z0-9-]{0,62})?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,62})?)*\.?$/.test(value));
+      const ok = bracketed !== undefined ? isIP(bracketed) === 6 : isIP(value) !== 0 || (value.length <= 253 && /^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?$/.test(value));
       if (!ok) return "must be a host name or an IP address";
       break;
     }
@@ -88,7 +90,17 @@ function valueProblem(d: Pick<Declaration, "type" | "secret" | "validation">, va
   if (d.validation?.maxLength !== undefined && [...value].length > d.validation.maxLength) return `must have at most ${d.validation.maxLength} characters`;
   if (d.validation?.minimum !== undefined && !(Number.isFinite(Number(value)) && Number(value) >= d.validation.minimum)) return `must be at least ${d.validation.minimum}`;
   if (d.validation?.maximum !== undefined && !(Number.isFinite(Number(value)) && Number(value) <= d.validation.maximum)) return `must be at most ${d.validation.maximum}`;
-  if (d.validation?.pattern !== undefined && !new RegExp(`^(?:${d.validation.pattern})$`, "u").test(value)) return "does not match the declared pattern";
+  if (d.validation?.pattern !== undefined) {
+    // Bounded in time whatever the pattern (a heuristic alone cannot rule out catastrophic backtracking): V8
+    // interrupts the match at the deadline, and a pattern that slow refuses the value.
+    let matched: boolean;
+    try {
+      matched = runInNewContext("new RegExp(p, 'u').test(v)", { p: `^(?:${d.validation.pattern})$`, v: value }, { timeout: PATTERN_MS }) as boolean;
+    } catch {
+      return "the declared pattern took too long on this value";
+    }
+    if (!matched) return "does not match the declared pattern";
+  }
   return null;
 }
 
@@ -163,6 +175,8 @@ export class WorkspaceVariablesService {
   private async sealStored(tx: Executor, workspaceId: string, name: string) {
     const rows = await tx.select().from(workspaceVariableValues).where(and(eq(workspaceVariableValues.workspaceId, workspaceId), eq(workspaceVariableValues.name, name), eq(workspaceVariableValues.sealed, false)));
     for (const r of rows) {
+      // An empty value cannot be sealed (an empty ciphertext never opens, nor rotates); it reads REDACTED anyway.
+      if (r.value === "") continue;
       const value = this.enc.seal(r.value, variableValueContext(workspaceId, name, r.version));
       await tx.update(workspaceVariableValues).set({ value, sealed: true }).where(and(eq(workspaceVariableValues.workspaceId, workspaceId), eq(workspaceVariableValues.name, name), eq(workspaceVariableValues.version, r.version)));
     }
