@@ -1894,8 +1894,7 @@ paths:
                 $ref: "#/components/schemas/WorkspaceService"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
+        "409": { description: "auto-publish (a v2 write where v1 auto-publishes), or a conflict", content: { application/problem+json: { schema: { anyOf: [ { $ref: "#/components/schemas/RouteProblem" }, { $ref: "#/components/schemas/Problem" } ] } } } }
         "422":
           $ref: "#/components/responses/ValidationError"
         "401": { $ref: "#/components/responses/Unauthorized" }
@@ -1957,8 +1956,7 @@ paths:
                 $ref: "#/components/schemas/WorkspaceService"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
+        "409": { description: "auto-publish (a v2 write where v1 auto-publishes), or a conflict", content: { application/problem+json: { schema: { anyOf: [ { $ref: "#/components/schemas/RouteProblem" }, { $ref: "#/components/schemas/Problem" } ] } } } }
         "422":
           $ref: "#/components/responses/ValidationError"
         "401": { $ref: "#/components/responses/Unauthorized" }
@@ -2058,8 +2056,7 @@ paths:
                 $ref: "#/components/schemas/WorkspaceRoute"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
+        "409": { description: "auto-publish (a v2 write where v1 auto-publishes), or a conflict", content: { application/problem+json: { schema: { anyOf: [ { $ref: "#/components/schemas/RouteProblem" }, { $ref: "#/components/schemas/Problem" } ] } } } }
         "422":
           $ref: "#/components/responses/ValidationError"
         "401": { $ref: "#/components/responses/Unauthorized" }
