@@ -1,6 +1,6 @@
-import { Body, Controller, Delete, Get, HttpCode, Inject, Injectable, Module, Param, Post, Put, Query } from "@nestjs/common";
+import { Body, Controller, Delete, Get, HttpCode, HttpException, Inject, Injectable, Module, Param, Post, Put, Query } from "@nestjs/common";
 import { hashIssues, type Target, type Upstream } from "@gromesh/compiler";
-import { and, asc, eq, gt, ilike, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, gt, ilike, isNull, or, sql, type SQL } from "drizzle-orm";
 import type { TargetWrite, UpstreamHealthchecks, UpstreamWrite } from "../api-types.js";
 import { audit } from "../audit/audit.js";
 import { Ctx, RequiredPermission, RequiredRole, type RequestContext } from "../auth/auth.js";
@@ -141,6 +141,7 @@ export class UpstreamsService {
     assertDestination("name", body.name, this.destinations, "upstream");
     return this.db.transaction(async (tx) => {
       await requireEnvironment(tx, envId);
+      await refuseCapture(tx, envId, body.name);
       const [row] = await tx.insert(upstreams).values({ environmentId: envId, ...upstreamValues(body) }).returning();
       const after = toUpstream(row!);
       await markDraftChanged(tx, envId);
@@ -154,7 +155,12 @@ export class UpstreamsService {
     assertDestination("name", body.name, this.destinations, "upstream");
     return this.db.transaction(async (tx) => {
       const current = await this.requireUpstream(tx, envId, upstreamId, true);
-      if (current.name !== body.name) await refuseWhileReferenced(tx, envId, current.name, "renamed");
+      if (current.name !== body.name) {
+        await refuseWhileReferenced(tx, envId, current.name, "renamed");
+        await refuseCapture(tx, envId, body.name);
+        // The services bound to it by upstreamId follow the new name (their host is always the upstream's name).
+        await tx.update(services).set({ host: body.name, updatedAt: sql`now()` }).where(and(eq(services.environmentId, envId), eq(services.upstreamId, upstreamId)));
+      }
       const before = toUpstream(current);
       const [row] = await tx
         .update(upstreams)
@@ -250,11 +256,38 @@ export class UpstreamsService {
 }
 
 /** Services of the environment that point at the upstream by name: it may not be renamed or deleted under them. */
+/**
+ * One lock per (workspace, upstream name), taken by every writer that decides whether a name binds (WS-U0): an
+ * upstream's creation or rename and a v2 service's write. Two of them never decide on the same name at once.
+ */
+export async function lockUpstreamName(tx: Executor, envId: string, name: string): Promise<void> {
+  await tx.execute(sql`select pg_advisory_xact_lock(${UPSTREAM_NAME_LOCK}, hashtext(${envId}::uuid::text || ':' || ${name}))`);
+}
+const UPSTREAM_NAME_LOCK = 0x6772_7775; // "grwu"
+
+/**
+ * WS-U0: a service written through v2 without upstreamId names its host as plain DNS; an upstream of that name would
+ * capture it in a v1 delivery (binding by name). 409, under the name's lock.
+ */
+async function refuseCapture(tx: Executor, envId: string, name: string): Promise<void> {
+  await lockUpstreamName(tx, envId, name);
+  const [captured] = await tx
+    .select({ name: services.name })
+    .from(services)
+    .where(and(eq(services.environmentId, envId), eq(services.host, name), eq(services.binding, "explicit"), isNull(services.upstreamId)))
+    .limit(1);
+  if (captured) {
+    throw new HttpException({ type: "https://gromesh.dev/problems/upstream-captures-service", title: "Conflict", status: 409, code: "upstream-captures-service",
+      detail: `Service "${captured.name}" uses "${name}" as its DNS host: an upstream of that name would capture it`, errors: [{ path: "name", message: "would capture a service's DNS host" }] }, 409);
+  }
+}
+
 async function refuseWhileReferenced(tx: Executor, envId: string, name: string, verb: "renamed" | "deleted"): Promise<void> {
+  // A rename keeps the services bound by upstreamId (their host follows); a v1 service bound by name blocks it.
   const users = await tx
     .select({ name: services.name })
     .from(services)
-    .where(and(eq(services.environmentId, envId), eq(services.host, name)))
+    .where(and(eq(services.environmentId, envId), eq(services.host, name), verb === "renamed" ? isNull(services.binding) : undefined))
     .orderBy(asc(services.name));
   if (users.length > 0) {
     throw conflict(`Upstream "${name}" cannot be ${verb} while services use it as host: ${users.map((s) => s.name).join(", ")}`);

@@ -220,3 +220,34 @@ for (const service of full.filter(resource => resource.kind === 'Service')) {
 }
 console.log('Data-plane lint/render passed: collector disabled has no hook; enabled collector blocks install/upgrade before resources change, using only its writer secret');
 JS
+# Privileged destinations (N2-E9, control 1): no shipped values and no rendered NetworkPolicy allow egress that
+# reaches the cloud metadata service or link-local (overlap computed, not a text prefix), nor any address; the lab's
+# IMDS exception lives only in the kind suite. The Workspaces render enables the policy and must contain it.
+privileged_overlap() {
+  node -e '
+    const { BlockList } = require("node:net");
+    // Two CIDRs overlap iff one contains the network address of the other.
+    const forbidden = ["169.254.0.0/16", "fe80::/10", "fd00:ec2::254/128"];
+    const parse = (cidr) => { const [addr, bits] = cidr.split("/"); const v6 = addr.includes(":"); return { addr, bits: Number(bits ?? (v6 ? 128 : 32)), type: v6 ? "ipv6" : "ipv4" }; };
+    const contains = (outer, inner) => { const list = new BlockList(); list.addSubnet(outer.addr, outer.bits, outer.type); return list.check(inner.addr, inner.type); };
+    const bad = [];
+    for (const cidr of process.argv.slice(1)) {
+      const c = parse(cidr);
+      if (c.bits === 0 || forbidden.map(parse).some((f) => f.type === c.type && (contains(f, c) || contains(c, f)))) bad.push(cidr);
+    }
+    if (bad.length) { console.error(bad.join(" ")); process.exit(1); }' -- "$@"
+}
+for values in "$chart"/values.yaml "$chart"/ci/*.yaml; do
+  allowed="$(docker run --rm -i mikefarah/yq:4.44.3 ea '[.networkPolicy | .. | select(has("cidr")) | .cidr] | join(" ")' < "$values")"
+  # shellcheck disable=SC2086
+  privileged_overlap $allowed || { echo "$values allows egress to a metadata, link-local or any address" >&2; exit 1; }
+done
+peers='[{"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"gromesh"}}}]'
+helm template dp "$chart" -f "$chart/ci/values-workspaces.yaml" --set networkPolicy.enabled=true --set-json "networkPolicy.controlPlanePeers=$peers" \
+  --set-json "networkPolicy.clickhousePeers=$peers" --set-json "networkPolicy.collectorPeers=$peers" --kube-version 1.33.0 > "$work/workspaces-np.yaml"
+[[ "$(docker run --rm -i mikefarah/yq:4.44.3 ea '[select(.kind == "NetworkPolicy")] | length' < "$work/workspaces-np.yaml")" -ge 1 ]] || { echo 'Workspaces render without a NetworkPolicy' >&2; exit 1; }
+for render in full homelab workspaces-np; do
+  cidrs="$(docker run --rm -i mikefarah/yq:4.44.3 ea '[select(.kind == "NetworkPolicy") | .spec.egress[]?.to[]?.ipBlock.cidr | select(. != null)] | join(" ")' < "$work/$render.yaml")"
+  # shellcheck disable=SC2086
+  privileged_overlap $cidrs || { echo "NetworkPolicy ($render) allows egress to a metadata, link-local or any address" >&2; exit 1; }
+done

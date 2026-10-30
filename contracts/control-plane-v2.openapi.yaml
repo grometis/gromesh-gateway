@@ -153,6 +153,11 @@ info:
         becomes `<name>.<slug>.gromesh.internal` (a service refers to its upstream only by upstreamId; the suffix
         `.gromesh.internal` is refused as a free host of a service, target or plugin URL). Entity ids are UUIDs
         generated on dev and preserved on hml and prd; nothing is created directly on hml or prd.
+      - Concurrent writes (WS-U0): PostgreSQL may abort a write that races another (a deadlock or a serialization
+        failure); the server runs such a transaction again a few times, only when every effect of it is inside the
+        transaction. If it still aborts, the answer is 409 with code concurrent-update and nothing was written: the
+        same request may be sent again. Any other database failure stays a 500, never a conflict. The same applies
+        to the v1 API.
       - Credential secrets (decision H-14, task N1-X6): only the server generates a key-auth key or an HS256 JWT
         secret (a CSPRNG, 32 bytes), on creation or rotation, shown once (a supplied value answers 422 at its field).
         An import never sets, generates or returns one: a new such credential is imported with its metadata only,
@@ -730,7 +735,6 @@ paths:
       x-scope: workspace
       x-gromesh-requirements: [ GW-ENV-05 ]
       x-required-permission: workspace.read
-      x-gromesh-planned: true
       description: Declarations plus whether this instance has a value. Secret values always read back as REDACTED.
       responses:
         "200": { description: Variables, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/WorkspaceVariable" } } } } }
@@ -747,7 +751,6 @@ paths:
       x-gromesh-requirements: [ GW-ENV-05 ]
       security: [ { cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] } ]
       x-required-permission: values.write
-      x-gromesh-planned: true
       description: Instance-local value (never travels in a package). Audited; secrets sealed and redacted.
       requestBody: { required: true, content: { application/json: { schema: { type: object, required: [ value ], properties: { value: { type: string } }, additionalProperties: false } } } }
       responses:
@@ -1841,7 +1844,10 @@ paths:
         and nested membership absent from it, subject only to retained ids and preserved secrets of matched
         entities. References in replace must resolve inside the document; in merge they may also resolve to
         existing draft entities. Unknown references are 422 with their source path. A service host matching
-        an upstream name keeps the existing upstream-resolution semantics; other hosts use DNS.
+        an upstream name keeps the existing upstream-resolution semantics (the v1 binding by name; a service the
+        import creates or replaces is a v1-written one, WS-U0); other hosts use DNS. An imported upstream whose name
+        is the DNS host of a service written through v2 without upstreamId is 422 at its path
+        (upstream-captures-service).
 
         A supplied `REDACTED`, or an omitted secret on a matched entity, keeps the current secret in either mode,
         as with certificate PUT. For a NEW credential/certificate/plugin secret, `REDACTED` or a missing value
@@ -2981,7 +2987,10 @@ paths:
       description: |
         A load-balancing pool of the workspace. A service balances across it only through `upstreamId` (its host
         is then generated as <name>.<slug>.gromesh.internal); a service host is always ordinary DNS. 409 on a
-        name already used in the workspace; 422 with `path` when `hashOn`/`hashFallback` are set without
+        name already used in the workspace, and 409 with code upstream-captures-service when a service written
+        through v2 without upstreamId uses the name as its DNS host (WS-U0: a v1 delivery resolves a host equal to
+        an upstream's name to that upstream, so the service would silently change destination; services written
+        only through v1 keep that v1 binding by name, unchanged); 422 with `path` when `hashOn`/`hashFallback` are set without
         `algorithm: consistent-hashing`, when `hashOnHeader`/`hashOnCookie`/`hashFallbackHeader` is missing for the
         chosen hash, or when `hashOn: cookie` has a fallback other than `none`; 422 at `name` when the name is a
         forbidden destination (see the description of this API).
@@ -3042,7 +3051,9 @@ paths:
         - bearerApiToken: []
       description: |
         Renaming keeps every service that refers to it by upstreamId (the generated host follows the new name in the
-        next publication). Same 409/422 rules as the creation otherwise.
+        next publication). Same 409/422 rules as the creation otherwise, upstream-captures-service included for the
+        new name. A rename stays refused (409) while a service written only through v1 uses the current name as
+        its host, as in v1: its binding by name would silently break.
       requestBody:
         required: true
         content:
@@ -3811,7 +3822,6 @@ paths:
           csrfToken: []
         - bearerApiToken: []
       x-required-permission: gateway.write
-      x-gromesh-planned: true
       description: Creates or replaces the declaration in the draft (audited; marks the draft changed). Changing type or secret of a variable referenced by the draft answers 409.
       requestBody:
         required: true
@@ -3844,7 +3854,6 @@ paths:
           csrfToken: []
         - bearerApiToken: []
       x-required-permission: gateway.write
-      x-gromesh-planned: true
       description: 409 while any draft field references it. The instance's value is kept until the next release without the declaration is active.
       responses:
         "204":
@@ -5446,7 +5455,7 @@ components:
         host:
           oneOf:
             - type: string
-              description: An upstream's name balances across its targets; any other host is resolved by DNS. 422 at `host` for a forbidden destination (see the description of this API).
+              description: "Written through createService/replaceService (v2), always ordinary DNS (WS-U0): the service refers to an upstream only by upstreamId, with host then that upstream's name (422 at host otherwise); a host equal to the name of an upstream of the workspace without upstreamId is 422 at upstreamId, so no binding is ever implicit. A service written only through v1 or by an import keeps the v1 binding: a host equal to an upstream's name balances across its targets. 422 at `host` for a forbidden destination (see the description of this API)."
               not:
                 pattern: (^|\.)gromesh\.internal\.?$
             - $ref: "#/components/schemas/VarRef"
