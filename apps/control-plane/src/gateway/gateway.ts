@@ -347,6 +347,8 @@ export class GatewayService {
   async createRoute<T = ReturnType<typeof toRoute>>(ctx: RequestContext, envId: string, body: RouteWrite, workspaceDefault = false, map: (r: RouteRow) => T = toRoute as (r: RouteRow) => T) {
     return this.db.transaction(async (tx) => {
       await requireEnvironment(tx, envId);
+      // v2 (workspace-default): the draft only, never where v1 auto-publishes (WS-R0), decided inside this write.
+      if (workspaceDefault) await this.refuseAutoPublish(tx, envId);
       await this.checkRoute(tx, envId, body);
       const [row] = await tx
         .insert(routes)
@@ -371,7 +373,8 @@ export class GatewayService {
    */
   async replaceWorkspaceRoute(ctx: RequestContext, envId: string, routeId: string, body: Omit<RouteWrite, "stripPath"> & { stripPath?: boolean | undefined }) {
     workspaceRouteChecks(body);
-    return this.replaceRoute(ctx, envId, routeId, body as RouteWrite, toWorkspaceRoute, (current) => {
+    return this.replaceRoute(ctx, envId, routeId, body as RouteWrite, toWorkspaceRoute, async (tx, current) => {
+      await this.refuseAutoPublish(tx, envId);
       if (current.pathCompatibility === "workspace-default") return { ...body, stripPath: body.stripPath ?? false };
       if (body.stripPath !== undefined && body.stripPath !== current.stripPath) {
         throw new HttpException({ type: "https://gromesh.dev/problems/path-compatibility", title: "Conflict", status: 409, code: "path-compatibility",
@@ -381,11 +384,11 @@ export class GatewayService {
     });
   }
 
-  async replaceRoute<T = ReturnType<typeof toRoute>>(ctx: RequestContext, envId: string, routeId: string, body: RouteWrite, map: (r: RouteRow) => T = toRoute as (r: RouteRow) => T, adjust?: (current: RouteRow) => RouteWrite) {
+  async replaceRoute<T = ReturnType<typeof toRoute>>(ctx: RequestContext, envId: string, routeId: string, body: RouteWrite, map: (r: RouteRow) => T = toRoute as (r: RouteRow) => T, adjust?: (tx: Executor, current: RouteRow) => Promise<RouteWrite>) {
     return this.db.transaction(async (tx) => {
       // Locked: what `adjust` decides from the stored row holds until this update (a v1 edit or a conversion waits).
       const current = await this.requireRoute(tx, envId, routeId, adjust !== undefined);
-      body = adjust ? adjust(current) : body;
+      body = adjust ? await adjust(tx, current) : body;
       const before = toRoute(current);
       await this.checkRoute(tx, envId, body);
       const [row] = await tx
@@ -661,7 +664,6 @@ export class WorkspaceRoutesController {
   @RequiredPermission("gateway.write", "workspace")
   async create(@Ctx() ctx: RequestContext, @Param("workspaceId", uuidParam()) workspaceId: string, @Body(contractBodyV2("WorkspaceRouteWrite")) body: RouteWrite) {
     workspaceRouteChecks(body);
-    await this.gw.refuseAutoPublish(workspaceId);
     return this.gw.createRoute(ctx, workspaceId, { ...body, stripPath: body.stripPath ?? false }, true, toWorkspaceRoute);
   }
 
@@ -674,7 +676,6 @@ export class WorkspaceRoutesController {
     // No schema default for stripPath (WS-R0): whether the caller gave one decides a legacy route's.
     @Body(contractBodyV2("WorkspaceRouteWrite")) body: RouteWrite,
   ) {
-    await this.gw.refuseAutoPublish(workspaceId);
     return this.gw.replaceWorkspaceRoute(ctx, workspaceId, routeId, body);
   }
 
