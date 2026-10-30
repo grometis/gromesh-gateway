@@ -39,6 +39,11 @@ export class ProblemFilter implements ExceptionFilter {
     if (pg?.code === "23505") {
       return { type: "https://gromesh.dev/problems/409", title: "Conflict", status: 409, detail: "An entity with the same unique field already exists" };
     }
+    if (pg?.code === "40P01" || pg?.code === "40001") {
+      // A concurrency abort that outlived its retries (or a path that does not retry): nothing was written; the same
+      // request may be sent again. Never a business conflict, never a 500.
+      return { type: "https://gromesh.dev/problems/concurrent-update", title: "Conflict", status: 409, code: "concurrent-update", detail: "A concurrent change aborted this request before anything was written; send it again" } as Problem;
+    }
     if (pg?.code === "23503") {
       return { type: "https://gromesh.dev/problems/409", title: "Conflict", status: 409, detail: "The entity is still referenced by other entities" };
     }
