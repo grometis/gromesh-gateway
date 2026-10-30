@@ -48,6 +48,10 @@ export const conflict = (detail: string, errors?: FieldError[]) => new ProblemEx
 export const unprocessable = (detail: string, errors: FieldError[]) =>
   new ProblemException(HttpStatus.UNPROCESSABLE_ENTITY, detail, errors);
 
+/** An archived workspace is read-only (WS-M0): every mutation in its scope answers this. */
+export const workspaceArchived = () =>
+  new HttpException({ type: "https://gromesh.dev/problems/workspace-archived", title: "Conflict", status: HttpStatus.CONFLICT, code: "workspace-archived", detail: "The workspace is archived" }, HttpStatus.CONFLICT);
+
 /** A refusal of the delivery rules (agent protocol v2, DeliveryProblem): a 409 whose `code` the caller acts on. */
 export const deliveryRefused = (code: string, detail: string) =>
   new HttpException({ type: `https://gromesh.dev/problems/${code}`, title: "Conflict", status: HttpStatus.CONFLICT, code, detail }, HttpStatus.CONFLICT);
