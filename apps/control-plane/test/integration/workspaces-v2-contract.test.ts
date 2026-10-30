@@ -1280,6 +1280,14 @@ describe("route writes (WS-R0)", () => {
   const op = (id: string) => v2Ops.find(({ op }) => op.operationId === id)!.op;
   const flat = (text: string) => text.replace(/\s+/g, " ");
 
+  it.each(["deleteService", "deleteRoute"])("documents %s as draft-only and refusing auto-publish (WS-R3)", (id) => {
+    const description = flat(op(id).description);
+    expect(description).toContain("Edits the draft only (no publish, no deployment)");
+    expect(description).toContain("auto-publish and writes nothing");
+    expect(op(id).responses["409"]).toEqual(op("createRoute").responses["409"]);
+    expect(op(id)["x-gromesh-planned"]).toBeUndefined();
+  });
+
   it("creates workspace-default routes and never converts a legacy-preserved one on a replace", () => {
     expect(flat(op("createRoute").description)).toContain("pathCompatibility workspace-default (decision D1)");
     const replace = flat(op("replaceRoute").description);
