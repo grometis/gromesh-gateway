@@ -1,3 +1,5 @@
+import { createPrivateKey, X509Certificate } from "node:crypto";
+import { isIP } from "node:net";
 import { Body, Controller, Delete, Get, HttpCode, Inject, Injectable, Module, Param, Put } from "@nestjs/common";
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { audit } from "../audit/audit.js";
@@ -27,17 +29,39 @@ const nameParam = () => ({
   },
 });
 
+const MAX_VALUE = 16_384;
+
+/**
+ * A declared pattern runs on the server: no group that is itself quantified and holds a quantifier (the shape of
+ * catastrophic backtracking, e.g. (a+)+), no backreference, and values of bounded length.
+ */
+function patternProblem(pattern: string): string | null {
+  try {
+    new RegExp(pattern, "u");
+  } catch {
+    return "is not a valid regular expression";
+  }
+  if (/\\[1-9k]/.test(pattern)) return "backreferences are not allowed";
+  if (/\([^()]*[+*{][^()]*\)\s*[+*{]/.test(pattern) || /\([^()]*\|[^()]*\)\s*[+*{]/.test(pattern)) return "a quantified group holding a quantifier or an alternative is not allowed";
+  return null;
+}
+
 /** Why a value does not fit its declaration (its type, then the declared validation), or null. */
-function valueProblem(d: Pick<Declaration, "type" | "validation">, value: string): string | null {
-  if (value.length === 0 && d.type !== "string") return "must not be empty";
+function valueProblem(d: Pick<Declaration, "type" | "secret" | "validation">, value: string): string | null {
+  if (value.length > MAX_VALUE) return `must have at most ${MAX_VALUE} characters`;
+  // An empty sealed value cannot be opened again (nor re-sealed by a key rotation): a secret has content.
+  if (value.length === 0 && (d.type !== "string" || d.secret)) return "must not be empty";
   switch (d.type) {
     case "port": {
       if (!/^[0-9]{1,5}$/.test(value) || Number(value) < 1 || Number(value) > 65535) return "must be a port, 1 to 65535";
       break;
     }
-    case "host":
-      if (!/^(\[[0-9a-fA-F:.]+\]|[A-Za-z0-9]([A-Za-z0-9-]{0,62})?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,62})?)*\.?)$/.test(value) || value.length > 253) return "must be a host name or an IP address";
+    case "host": {
+      const bracketed = /^\[(.*)\]$/.exec(value)?.[1];
+      const ok = bracketed !== undefined ? isIP(bracketed) === 6 : isIP(value) !== 0 || (value.length <= 253 && /^[A-Za-z0-9]([A-Za-z0-9-]{0,62})?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,62})?)*\.?$/.test(value));
+      if (!ok) return "must be a host name or an IP address";
       break;
+    }
     case "url": {
       let url: URL | null = null;
       try {
@@ -47,10 +71,18 @@ function valueProblem(d: Pick<Declaration, "type" | "validation">, value: string
       break;
     }
     case "certificate":
-      if (!/-----BEGIN CERTIFICATE-----/.test(value)) return "must be a PEM certificate";
+      try {
+        new X509Certificate(value);
+      } catch {
+        return "must be a PEM certificate";
+      }
       break;
     case "privateKey":
-      if (!/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(value)) return "must be a PEM private key";
+      try {
+        createPrivateKey(value);
+      } catch {
+        return "must be a PEM private key";
+      }
       break;
   }
   if (d.validation?.maxLength !== undefined && [...value].length > d.validation.maxLength) return `must have at most ${d.validation.maxLength} characters`;
@@ -88,8 +120,8 @@ export class WorkspaceVariablesService {
       secret: d.secret,
       required: d.required,
       hasValue: value !== undefined,
-      // A secret never reads back, whatever its state; a plain value does (it is instance configuration, not a key).
-      value: value === undefined ? null : d.secret ? REDACTED : value.value,
+      // A secret never reads back; nor does a value stored sealed (secret when set), even after the flag went off.
+      value: value === undefined ? null : d.secret || value.sealed ? REDACTED : value.value,
       ...(d.validation ? { validation: d.validation } : {}),
     };
   }
@@ -106,13 +138,8 @@ export class WorkspaceVariablesService {
    */
   async declare(ctx: RequestContext, workspaceId: string, name: string, body: Declaration) {
     if (body.name !== undefined && body.name !== name) throw unprocessable("Invalid declaration", [{ path: "name", message: "must equal the name in the path" }]);
-    if (body.validation?.pattern !== undefined) {
-      try {
-        new RegExp(body.validation.pattern, "u");
-      } catch {
-        throw unprocessable("Invalid declaration", [{ path: "validation.pattern", message: "is not a valid regular expression" }]);
-      }
-    }
+    const badPattern = body.validation?.pattern !== undefined ? patternProblem(body.validation.pattern) : null;
+    if (badPattern) throw unprocessable("Invalid declaration", [{ path: "validation.pattern", message: badPattern }]);
     return this.db.transaction(async (tx) => {
       await requireEnvironment(tx, workspaceId, true);
       const [before] = await tx.select().from(workspaceVariables).where(and(eq(workspaceVariables.workspaceId, workspaceId), eq(workspaceVariables.name, name))).for("update");
@@ -120,7 +147,8 @@ export class WorkspaceVariablesService {
       const [row] = before
         ? await tx.update(workspaceVariables).set({ ...values, updatedAt: sql`now()` }).where(and(eq(workspaceVariables.workspaceId, workspaceId), eq(workspaceVariables.name, name))).returning()
         : await tx.insert(workspaceVariables).values({ workspaceId, name, ...values }).returning();
-      if (before && before.secret !== body.secret) await this.restore(tx, workspaceId, name, body.secret);
+      // Values kept from before (a replaced or a deleted and declared again variable): a secret one seals them.
+      if (body.secret) await this.sealStored(tx, workspaceId, name);
       await markDraftChanged(tx, workspaceId);
       // A declaration's audit never carries a value: one that stops being secret would otherwise land there in clear.
       await audit(tx, ctx, { action: before ? "workspace_variable.update" : "workspace_variable.declare", entityType: "workspace_variable", entityId: name, environmentId: workspaceId, ...(before ? { before: declared(before) } : {}), after: declared(row!) });
@@ -128,14 +156,15 @@ export class WorkspaceVariablesService {
     });
   }
 
-  /** Every stored value of the variable, sealed or opened to match its new secret flag (same rows, same versions). */
-  private async restore(tx: Executor, workspaceId: string, name: string, secret: boolean) {
-    const rows = await tx.select().from(workspaceVariableValues).where(and(eq(workspaceVariableValues.workspaceId, workspaceId), eq(workspaceVariableValues.name, name)));
+  /**
+   * Seals every stored value of the variable still in clear (same rows, same versions). Never the reverse: turning
+   * secret off needs only gateway.write and must not reveal a value, so a sealed one stays sealed (and REDACTED).
+   */
+  private async sealStored(tx: Executor, workspaceId: string, name: string) {
+    const rows = await tx.select().from(workspaceVariableValues).where(and(eq(workspaceVariableValues.workspaceId, workspaceId), eq(workspaceVariableValues.name, name), eq(workspaceVariableValues.sealed, false)));
     for (const r of rows) {
-      if (r.sealed === secret) continue;
-      const ctx = variableValueContext(workspaceId, name, r.version);
-      const value = secret ? this.enc.seal(r.value, ctx) : this.enc.open(r.value, ctx);
-      await tx.update(workspaceVariableValues).set({ value, sealed: secret }).where(and(eq(workspaceVariableValues.workspaceId, workspaceId), eq(workspaceVariableValues.name, name), eq(workspaceVariableValues.version, r.version)));
+      const value = this.enc.seal(r.value, variableValueContext(workspaceId, name, r.version));
+      await tx.update(workspaceVariableValues).set({ value, sealed: true }).where(and(eq(workspaceVariableValues.workspaceId, workspaceId), eq(workspaceVariableValues.name, name), eq(workspaceVariableValues.version, r.version)));
     }
   }
 

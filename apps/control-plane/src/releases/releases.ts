@@ -31,6 +31,7 @@ import {
   releases,
   workspaceActiveRelease,
   workspaces,
+  workspaceVariables,
   type DeploymentMember,
   type InstanceRow,
   type ReleaseRow,
@@ -55,7 +56,9 @@ interface PublishBody {
 }
 
 /** A release's content opened: the workspace's draft without credentials, which are values of each instance. */
-type ReleaseState = GatewayState;
+/** The release keeps the draft's variable declarations (never a value: those stay on each instance, WS-V1). */
+type ReleaseVariable = { name: string; type: string; secret: boolean; required: boolean; validation?: Record<string, unknown> };
+type ReleaseState = GatewayState & { variables?: ReleaseVariable[] };
 
 /**
  * The release content in the contract's model (WorkspaceContent): every entity as {id, spec}. Plugin secrets and
@@ -77,7 +80,7 @@ export function releaseContent(state: ReleaseState, enc: Encryptor, catalog: Plu
     upstreams: (state.upstreams ?? []).map(spec),
     targets: (state.targets ?? []).map(({ id, upstreamId, ...rest }) => ({ id, upstreamId, spec: rest })),
     certificates: (state.certificates ?? []).map((c) => spec({ ...c, key: secret(c.id, "key", c.key) })),
-    variables: [],
+    variables: (state.variables ?? []).map(({ name, type, secret, required, validation }) => ({ name, type, secret, required, ...(validation ? { validation } : {}) })),
   };
 }
 
@@ -185,7 +188,8 @@ export class ReleasesService {
       const draft = await loadGatewayState(tx, workspaceId, this.enc, this.catalog);
       const forbiddenIssues = [...destinationIssues(draft, this.destinations), ...stateVaultReferenceIssues(draft)];
       if (forbiddenIssues.length > 0) throw unprocessable("The draft cannot be published", forbiddenIssues);
-      const state = withoutCredentials(draft);
+      const declared = await tx.select().from(workspaceVariables).where(eq(workspaceVariables.workspaceId, workspaceId)).orderBy(asc(workspaceVariables.name));
+      const state: ReleaseState = { ...withoutCredentials(draft), variables: declared.map((v) => ({ name: v.name, type: v.type, secret: v.secret, required: v.required, ...(v.validation ? { validation: v.validation } : {}) })) };
       const content = releaseContent(state, this.enc, this.catalog);
       const digest = contentDigest(content);
       // The release must compose on its own (prefix, guard, reserved names): what only fails against the other

@@ -1,4 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { releaseContent } from "../../src/releases/releases.js";
+import { selfSigned } from "./certs.js";
 import { type ApiClient, type ApiResponse, startHarness, uniq, type Harness } from "./harness.js";
 
 // WS-V1 (GW-ENV-05): variables of a workspace. Declarations belong to the draft (gateway.write); values belong to this
@@ -40,14 +42,27 @@ describe("workspace variables (WS-V1)", () => {
     expect(row.sealed).toBe(true);
     expect(row.value).not.toContain(SECRET);
     expect((await h.sql.query("select count(*)::int as n from audit_events where (before::text like $1 or after::text like $1)", [`%${SECRET}%`])).rows[0].n).toBe(0);
-    // A credential is always secret (422); a string turned secret off opens its stored value, on seals it again.
+    // A credential is always secret (422). Turning a secret string off never reveals what was set while secret (the
+    // declaration needs only gateway.write, the value values.write): the sealed value stays sealed and REDACTED.
     expect((await v2(h.api, "PUT", `/workspaces/${a}/variables/API_TOKEN`, { type: "credential", secret: false, required: false })).status).toBe(422);
     await v2(h.api, "PUT", `/workspaces/${a}/variables/NOTE`, { type: "string", secret: true, required: false });
     await v2(h.api, "PUT", `/workspaces/${a}/variables/NOTE/value`, { value: SECRET });
-    expect((await v2(h.api, "PUT", `/workspaces/${a}/variables/NOTE`, { type: "string", secret: false, required: false })).status).toBe(200);
-    expect((await v2(h.api, "GET", `/workspaces/${a}/variables`)).body.find((v: { name: string }) => v.name === "NOTE").value).toBe(SECRET);
-    expect((await v2(h.api, "PUT", `/workspaces/${a}/variables/NOTE`, { type: "string", secret: true, required: false })).status).toBe(200);
+    const off = await v2(h.api, "PUT", `/workspaces/${a}/variables/NOTE`, { type: "string", secret: false, required: false });
+    expect([off.status, off.body.value]).toEqual([200, "REDACTED"]);
+    expect((await v2(h.api, "GET", `/workspaces/${a}/variables`)).body.find((v: { name: string }) => v.name === "NOTE").value).toBe("REDACTED");
     expect((await h.sql.query("select value from workspace_variable_values where workspace_id = $1 and name = 'NOTE'", [a])).rows[0].value).not.toContain(SECRET);
+    // A value set while not secret reads back; turning secret on seals it.
+    await v2(h.api, "PUT", `/workspaces/${a}/variables/NOTE/value`, { value: "visible" });
+    expect((await v2(h.api, "GET", `/workspaces/${a}/variables`)).body.find((v: { name: string }) => v.name === "NOTE").value).toBe("visible");
+    await v2(h.api, "PUT", `/workspaces/${a}/variables/NOTE`, { type: "string", secret: true, required: false });
+    expect((await h.sql.query("select bool_and(sealed) as all_sealed from workspace_variable_values where workspace_id = $1 and name = 'NOTE'", [a])).rows[0].all_sealed).toBe(true);
+    // Deleted and declared again as secret: the values kept in clear are sealed too.
+    await v2(h.api, "PUT", `/workspaces/${a}/variables/AGAIN`, { type: "string", secret: false, required: false });
+    await v2(h.api, "PUT", `/workspaces/${a}/variables/AGAIN/value`, { value: "plain-before" });
+    await v2(h.api, "DELETE", `/workspaces/${a}/variables/AGAIN`);
+    await v2(h.api, "PUT", `/workspaces/${a}/variables/AGAIN`, { type: "string", secret: true, required: false });
+    expect((await h.sql.query("select sealed, value from workspace_variable_values where workspace_id = $1 and name = 'AGAIN'", [a])).rows.map((r) => [r.sealed, r.value.includes("plain-before")])).toEqual([[true, false]]);
+    expect((await v2(h.api, "PUT", `/workspaces/${a}/variables/NOTE/value`, { value: "" })).status).toBe(422);
     expect((await h.sql.query("select count(*)::int as n from audit_events where (before::text like $1 or after::text like $1)", [`%${SECRET}%`])).rows[0].n).toBe(0);
   });
 
@@ -56,17 +71,24 @@ describe("workspace variables (WS-V1)", () => {
     await v2(h.api, "PUT", `/workspaces/${a}/variables/REGION`, { type: "string", secret: false, required: false, validation: { pattern: "[a-z]{2}-[a-z]+" } });
     await v2(h.api, "PUT", `/workspaces/${a}/variables/POOL`, { type: "port", secret: false, required: false, validation: { minimum: 1024, maximum: 2048 } });
     await v2(h.api, "PUT", `/workspaces/${a}/variables/SHORT`, { type: "string", secret: false, required: false, validation: { maxLength: 3 } });
-    for (const [name, value] of [["ORDERS_PORT", "abc"], ["ORDERS_PORT", "70000"], ["BASE_URL", "ftp://x"], ["REGION", "BR"], ["POOL", "80"], ["POOL", "4000"], ["SHORT", "abcd"]] as const) {
+    await v2(h.api, "PUT", `/workspaces/${a}/variables/TLS_CERT`, { type: "certificate", secret: false, required: false });
+    await v2(h.api, "PUT", `/workspaces/${a}/variables/EDGE`, { type: "host", secret: false, required: false });
+    for (const [name, value] of [["ORDERS_PORT", "abc"], ["ORDERS_PORT", "70000"], ["BASE_URL", "ftp://x"], ["REGION", "BR"], ["POOL", "80"], ["POOL", "4000"], ["SHORT", "abcd"],
+      ["TLS_CERT", "-----BEGIN CERTIFICATE-----garbage"], ["EDGE", "[::::]"], ["EDGE", "-bad-.example"]] as const) {
       const res = await v2(h.api, "PUT", `/workspaces/${a}/variables/${name}/value`, { value });
       expect([res.status, res.body.errors?.[0]?.path], `${name}=${value}`).toEqual([422, "value"]);
     }
     expect((await v2(h.api, "PUT", `/workspaces/${a}/variables/REGION/value`, { value: "sa-east" })).status).toBe(204);
+    expect((await v2(h.api, "PUT", `/workspaces/${a}/variables/TLS_CERT/value`, { value: selfSigned("api.example.com").cert })).status).toBe(204);
+    for (const host of ["[2001:db8::1]", "10.0.0.1", "api.example.com"]) expect((await v2(h.api, "PUT", `/workspaces/${a}/variables/EDGE/value`, { value: host })).status, host).toBe(204);
     expect((await v2(h.api, "PUT", `/workspaces/${a}/variables/NOT_DECLARED/value`, { value: "x" })).status).toBe(404);
   });
 
   it("refuses a malformed declaration", async () => {
     expect((await v2(h.api, "PUT", `/workspaces/${a}/variables/X_ONE`, { name: "X_TWO", type: "string", secret: false, required: false })).body.errors[0].path).toBe("name");
-    expect((await v2(h.api, "PUT", `/workspaces/${a}/variables/X_ONE`, { type: "string", secret: false, required: false, validation: { pattern: "(" } })).body.errors[0].path).toBe("validation.pattern");
+    for (const pattern of ["(", "(a+)+$", "(a|aa)+", "(x)\\1"]) {
+      expect((await v2(h.api, "PUT", `/workspaces/${a}/variables/X_ONE`, { type: "string", secret: false, required: false, validation: { pattern } })).body.errors?.[0]?.path, pattern).toBe("validation.pattern");
+    }
     expect((await v2(h.api, "PUT", `/workspaces/${a}/variables/X_ONE`, { type: "number", secret: false, required: false })).status).toBe(422);
     expect((await v2(h.api, "PUT", `/workspaces/${a}/variables/lower`, { type: "string", secret: false, required: false })).status).toBe(404);
   });
@@ -96,5 +118,14 @@ describe("workspace variables (WS-V1)", () => {
     expect((await v2(h.api, "DELETE", `/workspaces/${a}/variables/GONE`)).status).toBe(404);
     expect((await v2(h.api, "GET", `/workspaces/${a}/variables`)).body.map((v: { name: string }) => v.name)).not.toContain("GONE");
     expect((await h.sql.query("select count(*)::int as n from workspace_variable_values where workspace_id = $1 and name = 'GONE'", [a])).rows[0].n).toBe(1);
+  });
+
+  it("carries the declarations (never a value) in the release content", () => {
+    const state = { services: [], routes: [], consumers: [], plugins: [], upstreams: [], targets: [], certificates: [], keyAuthCredentials: [], jwtCredentials: [], basicAuthCredentials: [],
+      variables: [{ name: "API_TOKEN", type: "credential", secret: true, required: true }, { name: "REGION", type: "string", secret: false, required: false, validation: { pattern: "[a-z]+" } }] };
+    const enc = { fingerprint: (s: string) => s } as never;
+    const content = releaseContent(state as never, enc, { mapSecrets: (_: string, c: unknown) => c } as never);
+    expect(content.variables).toEqual(state.variables);
+    expect(JSON.stringify(content)).not.toContain(SECRET);
   });
 });
