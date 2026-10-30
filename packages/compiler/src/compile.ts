@@ -67,6 +67,11 @@ export function diffGatewayStates(before: GatewayState, after: GatewayState) {
   // So are credentials pending reprovisioning (decision H-14), absent from the config: importing one is a change.
   const compared = (state: GatewayState, config: KongDeclarativeConfig) => ({
     ...config,
+    // So is a service's explicit binding (WS-U0): losing it on an import changes what may capture the service.
+    services: config.services.map((service) => {
+      const own = state.services.find((s) => s.id === service.id);
+      return { ...service, binding: own?.binding ?? null, upstreamId: own?.binding === "explicit" ? own.upstreamId ?? null : null };
+    }),
     routes: config.routes.map((route) => ({
       ...route, analyticsRetentionDays: state.routes.find((r) => r.id === route.id)?.analyticsRetentionDays ?? null,
     })),
