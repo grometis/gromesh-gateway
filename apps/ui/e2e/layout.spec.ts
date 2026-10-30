@@ -207,7 +207,7 @@ for (const width of [390, 1440]) {
       } else {
         await expect(page.getByRole("table", { name: "Top rotas" })).toBeVisible();
       }
-      if (isGlobal || /^(services|routes)(\/|$)/.test(path)) await expect(page.getByRole("region", { name: "Publicação" })).toHaveCount(0);
+      if (isGlobal) await expect(page.getByRole("region", { name: "Publicação" })).toHaveCount(0);
       else await expect(page.getByRole("region", { name: "Publicação" })).toBeVisible();
       await page.evaluate(() => document.fonts.ready);
       await testInfo.attach(`${screen}-${width}`, {

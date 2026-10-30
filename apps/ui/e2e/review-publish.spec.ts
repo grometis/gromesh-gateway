@@ -32,7 +32,6 @@ async function openReview(page: Page) {
   await page.getByLabel("Senha").fill("s3nha-de-teste");
   await page.getByRole("button", { name: "Entrar" }).click();
   await expect(page.getByRole("heading", { name: "Services" })).toBeVisible();
-  await page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Publicações", exact: true }).click();
   await page.getByRole("region", { name: "Publicação" }).getByRole("link", { name: "Ver diff" }).click();
   await expect(page.getByRole("heading", { name: "Revisar e publicar" })).toBeVisible();
   await page.evaluate(() => document.fonts.ready);

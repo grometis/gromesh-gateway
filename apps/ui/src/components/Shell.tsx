@@ -76,8 +76,6 @@ export function Shell() {
   const location = useLocation();
   const envs = useVisibleEnvironments();
   const envId = routeEnvId ?? envs.data?.[0]?.id ?? "";
-  // Workspace gateway screens must not offer the v1 snapshot publication flow.
-  const workspaceGateway = /^\/e\/[^/]+\/(?:services|routes)(?:\/|$)/.test(location.pathname);
   const signOut = useMutation({ mutationFn: logout });
 
   const switchEnv = (id: string) => {
@@ -124,7 +122,7 @@ export function Shell() {
         </div>
       </aside>
       <main className="content">
-        {routeEnvId && !workspaceGateway && <PublishStrip envId={routeEnvId} />}
+        {routeEnvId && <PublishStrip envId={routeEnvId} />}
         <Outlet />
       </main>
     </div>
