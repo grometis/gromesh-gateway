@@ -183,7 +183,9 @@ test("UI publication, key-auth traffic, viewer limits, audit and rollback on the
       action: "snapshot.publish", entityId: String(uiVersion.version), environmentId: env.id, actor: expect.objectContaining({ id: me.id, name: me.name }),
     }));
 
-    // A viewer sees no edit buttons and gets 403 when it forces a mutation, even with a valid CSRF token.
+    // A viewer gets 403 when it forces a mutation, even with a valid CSRF token. The v2 gateway screens offer their
+    // actions to everyone (no operation tells the caller's v2 permissions): what holds is the server's refusal, shown
+    // in Portuguese, with nothing changed. The v1 actions (publishing) stay hidden by the v1 role.
     const viewerPassword = `viewer-${randomUUID()}`;
     const viewerUser = await api<Entity>("POST", "/users", 201, { email: `${name}@viewer.test`, name: "Viewer", role: "viewer", password: viewerPassword });
     viewerId = viewerUser.id;
@@ -198,7 +200,28 @@ test("UI publication, key-auth traffic, viewer limits, audit and rollback on the
       await viewerPage.getByLabel("Workspace", { exact: true }).selectOption(env.id);
       await expect(viewerPage.getByRole("heading", { name: "Services", exact: true })).toBeVisible();
       await expect(viewerPage.getByRole("table", { name: "Services" }).getByText(name, { exact: true })).toBeVisible();
-      await expect(viewerPage.getByRole("button", { name: /Novo service|Editar|Excluir|Publicar/ })).toHaveCount(0);
+      await expect(viewerPage.getByRole("button", { name: /Publicar/ })).toHaveCount(0);
+      const servicesBefore = await api<{ items: unknown[] }>("GET", `/environments/${env.id}/services`, 200);
+      const refused = "Você não tem permissão para alterar o gateway deste Workspace.";
+      await viewerPage.getByRole("button", { name: "Novo service" }).click();
+      const viewerCreate = viewerPage.getByRole("dialog", { name: "Novo service" });
+      await viewerCreate.getByLabel("Nome").fill(`${name}-viewer`);
+      await viewerCreate.getByLabel("Host").fill("echo");
+      const createRefused = viewerPage.waitForResponse((r) => r.request().method() === "POST" && r.url().endsWith(`/api/v2/workspaces/${env.id}/services`));
+      await viewerCreate.getByRole("button", { name: "Salvar" }).click();
+      expect((await createRefused).status()).toBe(403);
+      await expect(viewerCreate.getByRole("alert")).toHaveText(refused);
+      await viewerCreate.getByRole("button", { name: "Cancelar" }).click();
+      const viewerRow = viewerPage.getByRole("table", { name: "Services" }).getByRole("row").filter({ hasText: name });
+      await viewerRow.getByRole("button", { name: "Editar", exact: true }).click();
+      const viewerEdit = viewerPage.getByRole("dialog", { name: `Editar ${name}` });
+      await viewerEdit.getByLabel("Porta").fill("81");
+      const editRefused = viewerPage.waitForResponse((r) => r.request().method() === "PUT" && r.url().includes(`/api/v2/workspaces/${env.id}/services/`));
+      await viewerEdit.getByRole("button", { name: "Salvar" }).click();
+      expect((await editRefused).status()).toBe(403);
+      await expect(viewerEdit.getByRole("alert")).toHaveText(refused);
+      await viewerEdit.getByRole("button", { name: "Cancelar" }).click();
+      expect(await api<{ items: unknown[] }>("GET", `/environments/${env.id}/services`, 200)).toEqual(servicesBefore);
       await expect(viewerPage.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: /Usuários|Auditoria/ })).toHaveCount(0);
       await viewerPage.context().close();
     } finally {
