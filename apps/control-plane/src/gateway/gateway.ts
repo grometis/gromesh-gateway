@@ -5,7 +5,7 @@ import type { PgColumn } from "drizzle-orm/pg-core";
 import type { RouteWrite, ServiceWrite } from "../api-types.js";
 import { audit } from "../audit/audit.js";
 import { Ctx, RequiredPermission, RequiredRole, type RequestContext } from "../auth/auth.js";
-import { contractBody } from "../common/contract.js";
+import { contractBody, contractBodyV2 } from "../common/contract.js";
 import { decodeCursor, parseLimit, toPage } from "../common/pagination.js";
 import { conflict, notFound, unprocessable } from "../common/problem.js";
 import { assertDestination, destinationPolicy, type DestinationPolicy } from "../common/destinations.js";
@@ -21,6 +21,7 @@ import { credentialContext, type Encryptor, pluginSecretContext } from "../crypt
 import type { PluginCatalog } from "../plugin-catalog/catalog.js";
 import { markDraftChanged, requireEnvironment, uuidParam } from "../environments/environments.js";
 import { anonymousOf, namesConsumer } from "../workspaces/anonymous.js";
+import { refuseReservedHost, refuseVarRefs, type WithVarRefs } from "../workspaces/var-refs.js";
 import { assertStateFree } from "../workspaces/instance-uniqueness.js";
 
 /* ---------------- mapping ---------------- */
@@ -496,25 +497,81 @@ export class RoutesController {
 
 /* ---------------- control-plane-v2: the same services, scoped to a workspace (decision H-9) ---------------- */
 
-/** The workspace is the environment with the same id (N1-X1); a service balances through its host until N2. */
-const toWorkspaceService = (envId: string, s: ReturnType<typeof toService>) => ({ ...s, workspaceId: envId, upstreamId: null });
+/** contracts/control-plane-v2.openapi.yaml#/components/schemas/WorkspaceServiceWrite */
+type WorkspaceServiceWrite = WithVarRefs<ServiceWrite, "protocol" | "host" | "port" | "path"> & { upstreamId?: string | null };
+
+/** The workspace's upstreams by name: a service whose host is one of them balances across it (its upstreamId). */
+async function upstreamsByName(db: Executor, workspaceId: string): Promise<Map<string, string>> {
+  const rows = await db.select({ id: upstreams.id, name: upstreams.name }).from(upstreams).where(eq(upstreams.environmentId, workspaceId));
+  return new Map(rows.map((u) => [u.name, u.id]));
+}
+
+/**
+ * The workspace is the environment with the same id (N1-X1). A service refers to its upstream by upstreamId; stored as
+ * the v1 model has it, the upstream's name as host (what the compiler resolves), so both APIs read the same row.
+ */
+const toWorkspaceService = (envId: string, s: ReturnType<typeof toService>, byName: Map<string, string>) => ({ ...s, workspaceId: envId, upstreamId: byName.get(s.host) ?? null });
+
+/**
+ * WorkspaceServiceWrite as the service layer stores it (WS-R1). A VarRef names a declared variable and none can be
+ * declared yet (422). With upstreamId, the upstream must be of this workspace and host its name; without it, host
+ * must not be the name of one of its upstreams (a service refers to an upstream only by upstreamId).
+ */
+async function workspaceServiceWrite(db: Executor, workspaceId: string, body: WorkspaceServiceWrite): Promise<ServiceWrite> {
+  const { upstreamId = null, ...rest } = body;
+  const plain = refuseVarRefs(rest, ["protocol", "host", "port", "path"]);
+  refuseReservedHost("host", plain.host);
+  const byName = await upstreamsByName(db, workspaceId);
+  if (upstreamId !== null) {
+    const name = [...byName].find(([, id]) => id === upstreamId.toLowerCase())?.[0];
+    if (name === undefined) throw unprocessable("Invalid service", [{ path: "upstreamId", message: "unknown upstream in this workspace" }]);
+    if (plain.host !== name) throw unprocessable("Invalid service", [{ path: "host", message: `must be the upstream's name (${name}) when upstreamId is set` }]);
+  } else if (byName.has(plain.host)) {
+    throw unprocessable("Invalid service", [{ path: "upstreamId", message: `host ${plain.host} is an upstream of this workspace: refer to it by upstreamId` }]);
+  }
+  return plain;
+}
 const toWorkspaceRoute = (r: RouteRow) => ({ ...toRoute(r), pathCompatibility: r.pathCompatibility });
 
 @Controller("api/v2/workspaces/:workspaceId/services")
 export class WorkspaceServicesController {
-  constructor(private readonly gw: GatewayService) {}
+  constructor(
+    private readonly gw: GatewayService,
+    @Inject(DB) private readonly db: Db,
+  ) {}
 
   @Get()
   @RequiredPermission("workspace.read", "workspace")
   async list(@Param("workspaceId", uuidParam()) workspaceId: string, @Query() query: Record<string, unknown>) {
     const page = await this.gw.listServices(workspaceId, query);
-    return { ...page, items: page.items.map((s) => toWorkspaceService(workspaceId, s)) };
+    const byName = await upstreamsByName(this.db, workspaceId);
+    return { ...page, items: page.items.map((s) => toWorkspaceService(workspaceId, s, byName)) };
   }
 
   @Get(":serviceId")
   @RequiredPermission("workspace.read", "workspace")
   async get(@Param("workspaceId", uuidParam()) workspaceId: string, @Param("serviceId", uuidParam()) serviceId: string) {
-    return toWorkspaceService(workspaceId, await this.gw.getService(workspaceId, serviceId));
+    return toWorkspaceService(workspaceId, await this.gw.getService(workspaceId, serviceId), await upstreamsByName(this.db, workspaceId));
+  }
+
+  /** createService (WS-R1): the v1 service layer in the workspace; it edits the draft and publishes nothing. */
+  @Post()
+  @RequiredPermission("gateway.write", "workspace")
+  async create(@Ctx() ctx: RequestContext, @Param("workspaceId", uuidParam()) workspaceId: string, @Body(contractBodyV2("WorkspaceServiceWrite")) body: WorkspaceServiceWrite) {
+    const created = await this.gw.createService(ctx, workspaceId, await workspaceServiceWrite(this.db, workspaceId, body));
+    return toWorkspaceService(workspaceId, created, await upstreamsByName(this.db, workspaceId));
+  }
+
+  @Put(":serviceId")
+  @RequiredPermission("gateway.write", "workspace")
+  async replace(
+    @Ctx() ctx: RequestContext,
+    @Param("workspaceId", uuidParam()) workspaceId: string,
+    @Param("serviceId", uuidParam()) serviceId: string,
+    @Body(contractBodyV2("WorkspaceServiceWrite")) body: WorkspaceServiceWrite,
+  ) {
+    const replaced = await this.gw.replaceService(ctx, workspaceId, serviceId, await workspaceServiceWrite(this.db, workspaceId, body));
+    return toWorkspaceService(workspaceId, replaced, await upstreamsByName(this.db, workspaceId));
   }
 
   @Delete(":serviceId")
