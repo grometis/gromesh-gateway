@@ -518,6 +518,23 @@ export class RoutesController {
 
 /* ---------------- control-plane-v2: the same services, scoped to a workspace (decision H-9) ---------------- */
 
+/**
+ * A v2 write runs again when PostgreSQL aborts its transaction for a deadlock or a serialization failure: v1 writers
+ * lock the environment and their entities in different orders (a rollback the environment first, a delete the entity
+ * first), so no single order of the v2 writer avoids every cycle; the aborted attempt wrote nothing.
+ */
+export async function retryingTransaction<T>(work: () => Promise<T>, attempts = 3): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await work();
+    } catch (err) {
+      const code = (err as { cause?: { code?: string } }).cause?.code ?? (err as { code?: string }).code;
+      if (attempt < attempts && (code === "40P01" || code === "40001")) continue;
+      throw err;
+    }
+  }
+}
+
 /** contracts/control-plane-v2.openapi.yaml#/components/schemas/WorkspaceServiceWrite */
 type WorkspaceServiceWrite = WithVarRefs<ServiceWrite, "protocol" | "host" | "port" | "path"> & { upstreamId?: string | null };
 
@@ -590,7 +607,7 @@ export class WorkspaceServicesController {
   @RequiredPermission("gateway.write", "workspace")
   async create(@Ctx() ctx: RequestContext, @Param("workspaceId", uuidParam()) workspaceId: string, @Body(contractBodyV2("WorkspaceServiceWrite")) body: WorkspaceServiceWrite) {
     const { plain, check } = workspaceServiceWrite(this.gw, workspaceId, body);
-    const created = await this.gw.createService(ctx, workspaceId, plain, check);
+    const created = await retryingTransaction(() => this.gw.createService(ctx, workspaceId, plain, check));
     return toWorkspaceService(workspaceId, created, await upstreamsByName(this.db, workspaceId));
   }
 
@@ -603,7 +620,7 @@ export class WorkspaceServicesController {
     @Body(contractBodyV2("WorkspaceServiceWrite")) body: WorkspaceServiceWrite,
   ) {
     const { plain, check } = workspaceServiceWrite(this.gw, workspaceId, body);
-    const replaced = await this.gw.replaceService(ctx, workspaceId, serviceId, plain, check);
+    const replaced = await retryingTransaction(() => this.gw.replaceService(ctx, workspaceId, serviceId, plain, check));
     return toWorkspaceService(workspaceId, replaced, await upstreamsByName(this.db, workspaceId));
   }
 
