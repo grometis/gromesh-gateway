@@ -209,3 +209,47 @@ describe("concurrency aborts (B1)", () => {
     expect(filter.toProblem(Object.assign(new Error("x"), { cause: { code: "57014" } })).status).toBe(500);
   });
 });
+
+describe("explicit upstream binding (WS-U0, B3)", () => {
+  let h: Harness;
+  let ws: string;
+  beforeAll(async () => {
+    h = await startHarness();
+    ws = (await h.api("POST", "/environments", { name: uniq("bind") })).body.id;
+  });
+  afterAll(async () => h?.close());
+
+  it("an upstream created or renamed later never captures a v2 service that names its host as DNS (v1 or v2 API)", async () => {
+    const direct = (await v2(h.api, "POST", `/workspaces/${ws}/services`, service({ host: "pool-dns" }))).body;
+    expect(direct.upstreamId).toBeNull();
+    const viaV2 = await v2(h.api, "POST", `/workspaces/${ws}/upstreams`, { name: "pool-dns" });
+    const viaV1 = await h.api("POST", `/environments/${ws}/upstreams`, { name: "pool-dns" });
+    for (const r of [viaV2, viaV1]) expect([r.status, r.body.code]).toEqual([409, "upstream-captures-service"]);
+    const other = (await v2(h.api, "POST", `/workspaces/${ws}/upstreams`, { name: uniq("other") })).body;
+    const rename = await v2(h.api, "PUT", `/workspaces/${ws}/upstreams/${other.id}`, { name: "pool-dns" });
+    expect([rename.status, rename.body.code]).toEqual([409, "upstream-captures-service"]);
+    expect((await v2(h.api, "GET", `/workspaces/${ws}/services/${direct.id}`)).body.upstreamId).toBeNull();
+  });
+
+  it("decides one name at a time: a v2 service and an upstream of the same name written together never both land", async () => {
+    for (let round = 0; round < 6; round++) {
+      const name = uniq("race");
+      const [svc, up] = await Promise.all([v2(h.api, "POST", `/workspaces/${ws}/services`, service({ host: name })), v2(h.api, "POST", `/workspaces/${ws}/upstreams`, { name })]);
+      expect([svc.status, up.status].filter((s) => s === 201).length, `${svc.status} ${up.status}`).toBe(1);
+    }
+  });
+
+  it("keeps v1 services bound by name, as before; a rename follows the services bound by upstreamId", async () => {
+    const legacyPool = (await h.api("POST", `/environments/${ws}/upstreams`, { name: uniq("legacy") })).body;
+    const legacy = (await h.api("POST", `/environments/${ws}/services`, service({ host: legacyPool.name }))).body;
+    expect((await v2(h.api, "GET", `/workspaces/${ws}/services/${legacy.id}`)).body.upstreamId).toBe(legacyPool.id);
+    expect((await v2(h.api, "PUT", `/workspaces/${ws}/upstreams/${legacyPool.id}`, { name: uniq("renamed") })).status).toBe(409);
+    const pool = (await v2(h.api, "POST", `/workspaces/${ws}/upstreams`, { name: uniq("bound") })).body;
+    const bound = (await v2(h.api, "POST", `/workspaces/${ws}/services`, service({ host: pool.name, upstreamId: pool.id }))).body;
+    const newName = uniq("moved");
+    expect((await v2(h.api, "PUT", `/workspaces/${ws}/upstreams/${pool.id}`, { name: newName })).status).toBe(200);
+    expect((await v2(h.api, "GET", `/workspaces/${ws}/services/${bound.id}`)).body).toMatchObject({ host: newName, upstreamId: pool.id });
+    const [row] = (await h.sql.query("select binding, upstream_id from services where id = $1", [legacy.id])).rows;
+    expect(row).toEqual({ binding: null, upstream_id: null });
+  });
+});

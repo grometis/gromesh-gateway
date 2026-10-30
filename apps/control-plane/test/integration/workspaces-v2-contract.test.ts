@@ -1269,6 +1269,8 @@ describe("route writes (WS-R0)", () => {
     const problem = ajv.compile({ $ref: `${BASE}control-plane-v2.openapi.yaml#/components/schemas/RouteProblem` });
     expect(problem(v2.components.schemas.RouteProblem.example)).toBe(true);
     expect(problem({ type: "about:blank", title: "Conflict", status: 409 })).toBe(false);
+  });
+});
 
 describe("explicit service-to-upstream binding (WS-U0)", () => {
   const op = (id: string) => v2Ops.find(({ op }) => op.operationId === id)!.op;
