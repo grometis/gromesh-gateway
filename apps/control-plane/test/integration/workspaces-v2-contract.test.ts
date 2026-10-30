@@ -1190,6 +1190,9 @@ describe("route writes (WS-R0)", () => {
     expect(flat(op("createRoute").description)).toContain("pathCompatibility workspace-default (decision D1)");
     const replace = flat(op("replaceRoute").description);
     for (const phrase of ["Keeps the route's pathCompatibility", "an omitted stripPath keeps the stored value", "409 with code path-compatibility", "Edits the draft only"]) expect(replace, phrase).toContain(phrase);
+    // No v2 write is published by the v1 auto-publisher: 409 auto-publish instead.
+    for (const id of ["createRoute", "replaceRoute", "createService", "replaceService"]) expect(flat(op(id).description), id).toContain("auto-publish");
+    expect(v2.components.schemas.RouteProblem.allOf[1].properties.code.enum).toEqual(["path-compatibility", "auto-publish"]);
     // No schema default: whether stripPath was given decides a legacy route's, so the server applies the default.
     expect(v2.components.schemas.WorkspaceRouteWrite.properties.stripPath).not.toHaveProperty("default");
     expect(flat(v2.components.schemas.WorkspaceRouteWrite.properties.stripPath.description)).toContain("on a legacy-preserved route the stored value");
