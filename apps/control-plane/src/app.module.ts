@@ -28,6 +28,7 @@ import { AccessModule } from "./access/access.js";
 import { PathCompatibilityModule } from "./workspaces/path-compatibility.js";
 import { WorkspacesModule } from "./workspaces/workspaces.js";
 import { WorkspacesApiModule } from "./workspaces/workspaces-api.js";
+import { WorkspaceVariablesModule } from "./workspaces/variables.js";
 import { InstanceModule } from "./instance/instance.js";
 import { SigningKeysModule } from "./instance/signing-keys.js";
 import { IsolationModule } from "./isolation/isolation.js";
@@ -65,6 +66,7 @@ export class AppModule {
         AccessModule,
         PathCompatibilityModule,
         WorkspacesApiModule,
+        WorkspaceVariablesModule,
         InstanceModule,
         SigningKeysModule,
         IsolationModule,

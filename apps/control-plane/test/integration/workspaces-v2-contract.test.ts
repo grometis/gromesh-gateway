@@ -9,6 +9,7 @@ import { Reflector } from "@nestjs/core";
 import { AccessController } from "../../src/access/access.js";
 import { deriveCoreProfile } from "../../src/common/contract.js";
 import { PathCompatibilityController } from "../../src/workspaces/path-compatibility.js";
+import { WorkspaceVariablesController } from "../../src/workspaces/variables.js";
 import { WorkspaceCreationPolicyController, WorkspacesController } from "../../src/workspaces/workspaces-api.js";
 import { WorkspaceRoutesController, WorkspaceServicesController } from "../../src/gateway/gateway.js";
 import { WorkspaceConsumersController } from "../../src/consumers/consumers.js";
@@ -103,6 +104,7 @@ describe("planned operations", () => {
       AccessController,
       PathCompatibilityController,
       WorkspacesController,
+      WorkspaceVariablesController,
       WorkspaceCreationPolicyController,
       WorkspaceServicesController,
       WorkspaceRoutesController,
@@ -646,7 +648,8 @@ describe("v2 schemas", () => {
   });
 
   it("defaults stripPath to false: the full path with the prefix reaches the upstream (D1)", () => {
-    expect(v2.components.schemas.WorkspaceRouteWrite.properties.stripPath.default).toBe(false);
+    // The server applies the default (WS-R0: a legacy route keeps its own), stated where the schema had it.
+    expect(v2.components.schemas.WorkspaceRouteWrite.properties.stripPath.description).toContain("Absent: false on a workspace-default route");
   });
 
   it.each([
@@ -1270,5 +1273,28 @@ describe("explicit service-to-upstream binding (WS-U0)", () => {
     const v1op = (id: string) => Object.values(v1.paths as Record<string, Record<string, Doc>>).flatMap((p) => Object.values(p)).find((o) => o?.operationId === id)!;
     expect(flat(v1op("createUpstream").description)).toContain("409 with code upstream-captures-service");
     expect(flat(v1op("replaceUpstream").description)).toContain("upstream-captures-service as on creation");
+  });
+});
+
+describe("route writes (WS-R0)", () => {
+  const op = (id: string) => v2Ops.find(({ op }) => op.operationId === id)!.op;
+  const flat = (text: string) => text.replace(/\s+/g, " ");
+
+  it("creates workspace-default routes and never converts a legacy-preserved one on a replace", () => {
+    expect(flat(op("createRoute").description)).toContain("pathCompatibility workspace-default (decision D1)");
+    const replace = flat(op("replaceRoute").description);
+    for (const phrase of ["Keeps the route's pathCompatibility", "an omitted stripPath keeps the stored value", "409 with code path-compatibility", "Edits the draft only"]) expect(replace, phrase).toContain(phrase);
+    // No v2 write is published by the v1 auto-publisher: 409 auto-publish instead.
+    for (const id of ["createRoute", "replaceRoute", "createService", "replaceService"]) {
+      expect(flat(op(id).description), id).toContain("auto-publish");
+      expect(JSON.stringify(op(id).responses["409"]), id).toContain("RouteProblem");
+    }
+    expect(v2.components.schemas.RouteProblem.allOf[1].properties.code.enum).toEqual(["path-compatibility", "auto-publish"]);
+    // No schema default: whether stripPath was given decides a legacy route's, so the server applies the default.
+    expect(v2.components.schemas.WorkspaceRouteWrite.properties.stripPath).not.toHaveProperty("default");
+    expect(flat(v2.components.schemas.WorkspaceRouteWrite.properties.stripPath.description)).toContain("on a legacy-preserved route the stored value");
+    const problem = ajv.compile({ $ref: `${BASE}control-plane-v2.openapi.yaml#/components/schemas/RouteProblem` });
+    expect(problem(v2.components.schemas.RouteProblem.example)).toBe(true);
+    expect(problem({ type: "about:blank", title: "Conflict", status: 409 })).toBe(false);
   });
 });

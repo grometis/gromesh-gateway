@@ -176,6 +176,13 @@
       "when": 1793307909532,
       "tag": "0024_workspace_creation_policy",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1793328808685,
+      "tag": "0025_workspace_variables",
+      "breakpoints": true
     }
   ]
 }
