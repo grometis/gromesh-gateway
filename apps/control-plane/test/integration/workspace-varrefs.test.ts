@@ -132,6 +132,16 @@ describe("VarRef resolution (WS-V2)", () => {
     const plainLeak = await deploy(before);
     expect(JSON.stringify(plainLeak.body)).not.toContain("169.254.169.253");
     await v2(h.api, "PUT", `/workspaces/${a}/variables/ORDERS_HOST/value`, { value: "orders.internal.example" });
+    // Overlapping values (one the prefix of the secret one) never let a refusal reveal the secret by parts.
+    await v2(h.api, "PUT", `/workspaces/${a}/variables/A_PREFIX`, { type: "string", secret: false, required: false });
+    await v2(h.api, "PUT", `/workspaces/${a}/variables/A_PREFIX/value`, { value: "api." });
+    await v2(h.api, "PUT", `/workspaces/${a}/variables/SECRET_HOST/value`, { value: "api.sensitive-example.com" });
+    const trap = (await v2(h.api, "POST", `/workspaces/${a}/upstreams`, { name: "api.sensitive-example.com" })).body;
+    expect((await v2(h.api, "POST", `/workspaces/${a}/releases`, { message: "overlap" })).status).toBe(201);
+    const overlap = await deploy(before);
+    expect(overlap.status).toBe(422);
+    expect(JSON.stringify(overlap.body)).not.toMatch(/sensitive-example|api\./);
+    expect((await v2(h.api, "DELETE", `/workspaces/${a}/upstreams/${trap.id}`)).status).toBe(204);
     // A required declaration without a value, referenced or not, refuses the deployment.
     await v2(h.api, "PUT", `/workspaces/${a}/variables/SECRET_HOST/value`, { value: "secret.internal.example" });
     expect((await v2(h.api, "PUT", `/workspaces/${a}/variables/UNUSED_REQUIRED`, { type: "string", secret: false, required: true })).status).toBe(200);

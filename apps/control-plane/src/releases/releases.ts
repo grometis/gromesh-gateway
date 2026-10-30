@@ -93,9 +93,19 @@ export function releaseContent(state: ReleaseState, enc: Encryptor, catalog: Plu
   };
 }
 
-/** An answer's issues with every secret value replaced (a message may quote a field's value). */
-const redacted = (issues: { path: string; message: string }[], secrets: readonly string[]) =>
-  issues.map((i) => ({ ...i, message: secrets.reduce((m, s) => (s ? m.split(s).join("REDACTED") : m), i.message) }));
+/**
+ * An answer's issues without any substituted value. A message about a field filled from a variable never quotes it
+ * (it is replaced by a fixed text: masking value by value fails when values overlap, a prefix hiding the rest of a
+ * longer one); any other message is masked longest value first, as a second line of defence.
+ */
+const redacted = (issues: { path: string; message: string }[], secrets: readonly string[], fromVariables: readonly string[] = []) => {
+  const longestFirst = [...new Set(secrets.filter((s) => s.length > 0))].sort((a, b) => b.length - a.length);
+  return issues.map((i) =>
+    fromVariables.some((p) => i.path === p || i.path.startsWith(`${p}.`) || i.path.startsWith(`${p}[`))
+      ? { ...i, message: "refused for a value that comes from a variable (not shown)" }
+      : { ...i, message: longestFirst.reduce((m, s) => m.split(s).join("REDACTED"), i.message) },
+  );
+};
 
 const withoutCredentials = (state: GatewayState): ReleaseState => ({ ...state, keyAuthCredentials: [], jwtCredentials: [], basicAuthCredentials: [] });
 
@@ -311,6 +321,8 @@ export class ReleasesService {
     const usedValues: { workspaceId: string; name: string; version: number; sha256: string }[] = [];
     // Secret values substituted into the composition: never in an answer, whatever refuses it.
     const secretValues: string[] = [];
+    // The paths of the services whose fields came from variables, in every form an issue may name them.
+    const fromVariables: string[] = [];
     for (const m of memberRows) {
       const state = await this.openRelease(tx, m.workspaceId, m.version);
       const content = releaseContent(state, this.enc, this.catalog);
@@ -330,16 +342,20 @@ export class ReleasesService {
       // Every substituted value is kept out of an answer: a value set as secret after the release froze its declaration
       // (or any other) never shows in a refusal.
       for (const d of declared) if (values.get(d.name)) secretValues.push(values.get(d.name)!.value);
+      const memberIndex = memberRows.indexOf(m);
+      state.services.forEach((svc, j) => {
+        if (svc.varRefs && Object.keys(svc.varRefs).length > 0) fromVariables.push(`${where}.services[${j}]`, `services[${j}]`, `workspaces[${memberIndex}].services[${j}]`);
+      });
       try {
         const out = resolveVariables(state, new Set(declared.map((v) => v.name)), values);
         resolved = { ...out.state, variables: state.variables };
         for (const [name, v] of out.used) usedValues.push({ workspaceId: m.workspaceId, name, version: v.version, sha256: createHash("sha256").update(v.value).digest("hex") });
       } catch (err) {
-        if (err instanceof CompileError) throw unprocessable("A variable of a release cannot be resolved on this instance", redacted(err.issues.map((i) => ({ path: `${where}.${i.path}`, message: i.message })), secretValues));
+        if (err instanceof CompileError) throw unprocessable("A variable of a release cannot be resolved on this instance", redacted(err.issues.map((i) => ({ path: `${where}.${i.path}`, message: i.message })), secretValues, fromVariables));
         throw err;
       }
       const forbidden = destinationIssues(resolved, this.destinations);
-      if (forbidden.length > 0) throw unprocessable("A variable's value is a forbidden destination", redacted(forbidden.map((i) => ({ ...i, path: `${where}.${i.path}` })), secretValues));
+      if (forbidden.length > 0) throw unprocessable("A variable's value is a forbidden destination", redacted(forbidden.map((i) => ({ ...i, path: `${where}.${i.path}` })), secretValues, fromVariables));
       members.push({ id: m.workspaceId, slug: slugs.get(m.workspaceId)!, state: await this.withCredentials(tx, m.workspaceId, resolved), releaseVersion: m.version, content });
       recorded.push({ workspaceId: m.workspaceId, releaseVersion: m.version, contentDigest: contentDigest(content) });
     }
@@ -364,7 +380,7 @@ export class ReleasesService {
       kongConfigHash = createHash("md5").update(jcs(config), "utf8").digest("hex");
     } catch (err) {
       // Nothing is recorded and nothing is served (composed → rejected never persists).
-      if (err instanceof CompileError) throw unprocessable("The instance's composition refuses this deployment", redacted(err.issues, secretValues));
+      if (err instanceof CompileError) throw unprocessable("The instance's composition refuses this deployment", redacted(err.issues, secretValues, fromVariables));
       throw err;
     }
     // D2: only the nodes of clusters explicitly in v2 are expected (agent protocol v2, "Delivery protocol per cluster").
