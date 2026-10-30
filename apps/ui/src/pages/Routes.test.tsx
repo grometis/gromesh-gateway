@@ -57,6 +57,37 @@ describe("saving a workspace route", () => {
     expect(body).not.toHaveProperty("pathCompatibility");
   });
 
+  it("sends only the fields the write schema declares, whatever the response carried", async () => {
+    const { routeBody } = await load(() => new Promise(() => {}));
+    const stored = { ...route(), workspaceId: W, extra: 1 } as WorkspaceRoute;
+    expect(Object.keys(routeBody(stored, values)).sort()).toEqual(
+      ["analyticsRetentionDays", "headers", "hosts", "methods", "name", "paths", "preserveHost", "protocols", "serviceId", "stripPath", "tags"],
+    );
+  });
+
+  it("edits a migrated route without paths through v1, keeping its stripPath (v2 requires paths)", async () => {
+    let resolve!: (r: Response) => void;
+    const sent: Request[] = [];
+    const { saveRouteMutation, routeBody, editedOverV1 } = await load((request) => {
+      sent.push(request);
+      return new Promise((r) => (resolve = r));
+    });
+    const hostOnly = route({ pathCompatibility: "legacy-preserved", paths: [], hosts: ["boletos.example"], stripPath: true });
+    expect(editedOverV1(hostOnly)).toBe(true);
+    expect(editedOverV1(route({ pathCompatibility: "legacy-preserved" }))).toBe(false);
+    expect(editedOverV1(route({ paths: [] }))).toBe(false);
+    const body = routeBody(hostOnly, { ...values, name: "boletos-host", paths: [], hosts: ["boletos.example"], stripPath: false });
+    expect(body).toMatchObject({ name: "boletos-host", paths: [], stripPath: true });
+    const onSaved = vi.fn();
+    const done = new MutationObserver(new QueryClient(), saveRouteMutation(W, hostOnly, vi.fn(), onSaved)).mutate(body);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(sent.map((r) => [r.method, new URL(r.url).pathname])).toEqual([["PUT", `/api/v1/environments/${W}/routes/${hostOnly.id}`]]);
+    expect(onSaved).not.toHaveBeenCalled();
+    resolve(Response.json({ ...hostOnly, name: "boletos-host" }));
+    await done;
+    expect(onSaved).toHaveBeenCalledOnce();
+  });
+
   it("reports success only after the 200, and a path-compatibility 409 lands on stripPath", async () => {
     let resolve!: (r: Response) => void;
     const sent: Request[] = [];

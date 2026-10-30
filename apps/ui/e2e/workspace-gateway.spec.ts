@@ -2,6 +2,7 @@ import AxeBuilder from "@axe-core/playwright";
 import type { Page } from "@playwright/test";
 import { expect, mockSession, test } from "./fixtures";
 import { checkLayout } from "./layout";
+import { invalidBody, v2BodyErrors } from "./v2-bodies";
 import type { Me } from "../src/api/client";
 import type { Workspace, WorkspaceRoute, WorkspaceService } from "../src/api/client-v2";
 
@@ -17,7 +18,9 @@ interface Upstream { id: string; name: string; workspaceId: string }
 interface Fake {
   workspaces: Workspace[];
   services: WorkspaceService[];
-  routes: (WorkspaceRoute & { workspaceId: string })[];
+  routes: WorkspaceRoute[];
+  /** Which workspace holds each route: kept beside the fake's routes, since a WorkspaceRoute carries no workspaceId. */
+  routeOwner: Map<string, string>;
   upstreams: Upstream[];
   dirty: Set<string>;
   requests: { method: string; path: string; body: unknown }[];
@@ -38,6 +41,20 @@ async function fakeApi(page: Page, fake: Fake) {
     if (!rest) return route.fulfill({ json: env(w) });
     if (rest === "/publish-preview") return route.fulfill({ json: { currentVersion: null, draftHash: `sha256:${"a".repeat(64)}`, hasChanges: true, changes: [] } });
     if (rest === "/clusters") return route.fulfill({ json: { items: [] } });
+    // v1 edits a migrated route without paths (WS-R0: WorkspaceRouteWrite requires paths); its body is RouteWrite.
+    const v1Route = /^\/routes\/([^/]+)$/.exec(rest ?? "");
+    if (v1Route && request.method() === "PUT") {
+      const body = request.postDataJSON() as Record<string, unknown>;
+      fake.requests[fake.requests.length - 1]!.body = body;
+      const current = fake.routes.find((r) => r.id === v1Route[1] && fake.routeOwner.get(r.id) === w.id);
+      if (!current) return route.fulfill(problem(404));
+      const errors = v2BodyErrors("routes", { paths: ["/"], ...body }).filter((e) => e.path !== "paths");
+      if (errors.length > 0) return route.fulfill(invalidBody(errors));
+      const { pathCompatibility: _p, ...v1 } = { ...current, ...body, updatedAt: NOW } as WorkspaceRoute;
+      Object.assign(current, v1);
+      fake.dirty.add(w.id);
+      return route.fulfill({ json: v1 });
+    }
     return route.fulfill({ json: { items: [], nextCursor: null } });
   });
   await page.route("**/api/v2/**", async (route) => {
@@ -61,6 +78,10 @@ async function fakeApi(page: Page, fake: Fake) {
     if (!w) return route.fulfill(problem(404));
     if (!kind) return route.fulfill({ json: w });
     if (kind === "upstreams") return route.fulfill({ json: { items: fake.upstreams.filter((u) => u.workspaceId === w.id), nextCursor: null } });
+    if (method !== "GET") {
+      const errors = v2BodyErrors(kind as "services" | "routes", body);
+      if (errors.length > 0) return route.fulfill(invalidBody(errors));
+    }
     if (kind === "services") {
       const own = fake.services.filter((s) => s.workspaceId === w.id);
       if (method === "GET" && !entityId) return route.fulfill({ json: { items: own, nextCursor: null } });
@@ -79,7 +100,7 @@ async function fakeApi(page: Page, fake: Fake) {
       fake.dirty.add(w.id);
       return route.fulfill({ status: current ? 200 : 201, json: saved });
     }
-    const own = fake.routes.filter((r) => r.workspaceId === w.id);
+    const own = fake.routes.filter((r) => fake.routeOwner.get(r.id) === w.id);
     if (method === "GET" && !entityId) {
       const serviceId = url.searchParams.get("serviceId");
       return route.fulfill({ json: { items: own.filter((r) => !serviceId || r.serviceId === serviceId), nextCursor: null } });
@@ -92,10 +113,11 @@ async function fakeApi(page: Page, fake: Fake) {
       return route.fulfill(problem(409, { code: "path-compatibility", errors: [{ path: "stripPath", message: "differs from the legacy route's" }] }));
     }
     const saved = {
-      ...(current ?? { id: uuid(), workspaceId: w.id, pathCompatibility: "workspace-default", createdAt: NOW }),
+      ...(current ?? { id: uuid(), pathCompatibility: "workspace-default", createdAt: NOW }),
       ...body, stripPath: body!.stripPath ?? current?.stripPath ?? false, updatedAt: NOW,
-    } as WorkspaceRoute & { workspaceId: string };
+    } as WorkspaceRoute;
     fake.routes = [...fake.routes.filter((r) => r.id !== saved.id), saved];
+    fake.routeOwner.set(saved.id, w.id);
     fake.dirty.add(w.id);
     return route.fulfill({ status: current ? 200 : 201, json: saved });
   });
@@ -104,12 +126,15 @@ async function fakeApi(page: Page, fake: Fake) {
 const legacyWs: Workspace = { id: uuid(), key: uuid(), name: "Legado", slug: "legado", status: "active", activeRelease: 7 };
 const legacyService: WorkspaceService = { id: uuid(), workspaceId: legacyWs.id, name: "boletos", protocol: "http", host: "boletos.internal", port: 80, enabled: true, upstreamId: null, createdAt: NOW, updatedAt: NOW };
 const legacyRoute = {
-  id: uuid(), workspaceId: legacyWs.id, name: "boletos-api", serviceId: legacyService.id, paths: ["/boletos"], protocols: ["http", "https"], stripPath: true,
+  id: uuid(), name: "boletos-api", serviceId: legacyService.id, paths: ["/boletos"], protocols: ["http", "https"], stripPath: true,
   preserveHost: false, pathCompatibility: "legacy-preserved", createdAt: NOW, updatedAt: NOW,
-} as WorkspaceRoute & { workspaceId: string };
+} as WorkspaceRoute;
 
 function newFake(): Fake {
-  return { workspaces: [{ ...legacyWs }], services: [{ ...legacyService }], routes: [{ ...legacyRoute }], upstreams: [], dirty: new Set(), requests: [] };
+  return {
+    workspaces: [{ ...legacyWs }], services: [{ ...legacyService }], routes: [{ ...legacyRoute }], routeOwner: new Map([[legacyRoute.id, legacyWs.id]]),
+    upstreams: [], dirty: new Set(), requests: [],
+  };
 }
 
 async function signIn(page: Page, fake: Fake) {
@@ -296,6 +321,52 @@ test("a service balances through an upstream of its workspace, or goes to a DNS 
   const services = page.getByRole("table", { name: "Services", exact: true });
   await expect(services.getByRole("row").filter({ hasText: "boletos-dns" })).toContainText("Upstream");
   expect(fake.services.find((s) => s.name === "boletos-dns")).toMatchObject({ host: "boletos.upstream", upstreamId: fake.upstreams[0]!.id });
+});
+
+test("searching services for \"all\" and then opening Routes keeps both lists apart in the cache", async ({ page }) => {
+  const fake = newFake();
+  fake.services.push({ ...legacyService, id: uuid(), name: "all-in-one", host: "all.internal", path: "/v1" });
+  await signIn(page, fake);
+  await page.getByLabel("Buscar services").fill("all");
+  await expect(page.getByRole("table", { name: "Services", exact: true })).toContainText("all-in-one");
+  await menu(page).getByRole("link", { name: "Routes", exact: true }).click();
+  await expect(page.getByLabel("Filtrar por service").locator("option")).toHaveText(["Todos os services", "boletos", "all-in-one"]);
+  await expect(page.getByRole("table", { name: "Routes", exact: true })).toContainText("Service boletos");
+  await page.getByRole("button", { name: "Nova route" }).click();
+  const dialog = page.getByRole("dialog", { name: "Nova route" });
+  await dialog.getByLabel("Service", { exact: true }).selectOption({ label: "all-in-one" });
+  await dialog.getByLabel("Paths", { exact: true }).fill("/orders");
+  // The service's path comes first in what the upstream receives.
+  const preview = dialog.getByRole("group", { name: "Path público" });
+  await expect(preview).toContainText("Uma requisição a /legado/orders/x chega ao upstream como /v1/legado/orders/x.");
+  await dialog.getByLabel("Remover o path da route ao encaminhar (stripPath)").check();
+  await expect(preview).toContainText("Uma requisição a /legado/orders/x chega ao upstream como /v1/x.");
+  await page.getByRole("button", { name: "Cancelar" }).click();
+  await menu(page).getByRole("link", { name: "Services", exact: true }).click();
+  await expect(page.getByRole("table", { name: "Services", exact: true })).toContainText("boletos");
+});
+
+test("a migrated route without paths is edited through v1, keeping its stripPath", async ({ page }) => {
+  const fake = newFake();
+  const hostOnly = { ...legacyRoute, id: uuid(), name: "boletos-host", paths: [], hosts: ["boletos.example"] } as WorkspaceRoute;
+  fake.routes.push(hostOnly);
+  fake.routeOwner.set(hostOnly.id, legacyWs.id);
+  await signIn(page, fake);
+  await menu(page).getByRole("link", { name: "Routes", exact: true }).click();
+  const row = page.getByRole("table", { name: "Routes", exact: true }).getByRole("row").filter({ hasText: "boletos-host" });
+  await expect(row).toContainText("editada pela API v1 até ganhar um");
+  await row.getByRole("button", { name: "Editar", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Editar boletos-host" });
+  await expect(dialog.getByRole("group", { name: "Path público" })).toContainText("Sem paths: a route casa por host, método ou cabeçalho.");
+  await expect(dialog.getByLabel(/stripPath/)).toHaveCount(0);
+  await dialog.getByLabel("Nome").fill("boletos-por-host");
+  await dialog.getByRole("button", { name: "Salvar" }).click();
+  await expect(dialog).toHaveCount(0);
+  const writes = fake.requests.filter((r) => r.method === "PUT");
+  expect(writes.map((r) => r.path)).toEqual([`/environments/${legacyWs.id}/routes/${hostOnly.id}`]);
+  expect(writes[0]!.body).toMatchObject({ name: "boletos-por-host", paths: [], hosts: ["boletos.example"], stripPath: true });
+  expect(fake.routes.find((r) => r.id === hostOnly.id)).toMatchObject({ name: "boletos-por-host", pathCompatibility: "legacy-preserved", stripPath: true });
+  await expect(page.getByRole("table", { name: "Routes", exact: true })).toContainText("boletos-por-host");
 });
 
 for (const width of [390, 1440]) {

@@ -1,10 +1,9 @@
 import { useDeferredValue, useState, type FormEvent } from "react";
 import { useInfiniteQuery, useMutation } from "@tanstack/react-query";
 import { useSearchParams } from "react-router";
-import { unwrap } from "../api/client";
 import { apiV2, type WorkspaceRoute, type WorkspaceRouteWrite } from "../api/client-v2";
+import { api, unwrap, type Route, type RouteWrite } from "../api/client";
 import { statusMessage, type FormErrors } from "../api/errors";
-import { useCanEdit } from "../auth";
 import { Field, FormErrorList } from "../components/Field";
 import { ConfirmDialog, Modal } from "../components/Modal";
 import { useEnvId } from "../components/Shell";
@@ -17,13 +16,14 @@ import { Badge, DraftBadge } from "../components/Badge";
 import { Button } from "../components/Button";
 import { RowMenu } from "../components/RowMenu";
 import { gatewayErrorMessage, gatewayFormErrors } from "./gateway-errors";
-import { publicPath, upstreamEffect, useAllWorkspaceServices, useInvalidateWorkspaceGateway, useWorkspace, WorkspaceGatewayNote } from "./workspace-gateway";
+import { fieldText, publicPath, upstreamEffect, useAllWorkspaceServices, useInvalidateWorkspaceGateway, useWorkspace, WorkspaceGatewayNote } from "./workspace-gateway";
 
 // Routes of the selected workspace through API v2 (WS-S1): every path is public under /<slug>; a migrated route
 // (legacy-preserved) keeps its stripPath, and converting it is a separate, explicit operation this screen never does.
 const PROTOCOLS = ["http", "https", "grpc", "grpcs"] as const;
 type Protocol = (typeof PROTOCOLS)[number];
 const NO_ERRORS: FormErrors = { fields: {}, form: [] };
+const OVER_V1 = "Sem paths, ela é editada pela API v1 até ganhar um (a v2 exige paths); o stripPath atual é mantido.";
 const LEGACY = "Route migrada de um environment: mantém o stripPath que tinha. A conversão para o padrão do Workspace é uma ação separada e nunca acontece ao salvar.";
 
 /** Keyed by the workspace: switching it remounts the screen, so no modal or form keeps the previous one's route. */
@@ -48,7 +48,6 @@ export function ScopedRoutes({ envId, service }: { envId: string; service: { id:
 }
 
 function RouteList({ workspaceId, serviceId, service, onServiceChange }: { workspaceId: string; serviceId: string; service?: { id: string; name: string }; onServiceChange?: (id: string) => void }) {
-  const canEdit = useCanEdit();
   const draft = useEntityDraft(workspaceId, "routes");
   const workspace = useWorkspace(workspaceId);
   const slug = workspace.data?.slug;
@@ -70,7 +69,9 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange }: { works
   const [deleting, setDeleting] = useState<WorkspaceRoute | null>(null);
   const [plugins, setPlugins] = useState<WorkspaceRoute | null>(null);
   const items = routes.data?.pages.flatMap((p) => p.items) ?? [];
-  const createAction = canEdit && (
+  // No contract operation tells the caller's v2 permissions (a binding may grant gateway.write): every signed-in user
+  // is offered the actions and the server decides (its 403 is shown in Portuguese).
+  const createAction = (
     <Button variant="primary" onClick={() => setEditing("new")} disabled={serviceList.length === 0 || !slug} title={serviceList.length === 0 ? "Crie um service primeiro" : undefined}>
       Nova route
     </Button>
@@ -124,20 +125,16 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange }: { works
                     <span className="muted">Hosts</span>
                     {r.hosts?.length ? r.hosts.map((h) => <span className="match-chip mono" key={h}>{h}</span>) : <span className="mono">—</span>}
                   </div>
-                  {r.pathCompatibility === "legacy-preserved" && <p className="muted"><small>{LEGACY}</small></p>}
+                  {r.pathCompatibility === "legacy-preserved" && <p className="muted"><small>{LEGACY}{editedOverV1(r) ? ` ${OVER_V1}` : ""}</small></p>}
                 </td>
                 <td className="actions">
                   <Button variant="quiet" onClick={() => setPlugins(r)}>
                     Plugins
                   </Button>
-                  {canEdit && (
-                    <>
-                      <Button variant="quiet" onClick={() => setEditing(r)}>
-                        Editar
-                      </Button>
-                      <RowMenu label={`Mais ações para ${r.name}`} items={[{ label: "Excluir", danger: true, onSelect: () => setDeleting(r) }]} />
-                    </>
-                  )}
+                  <Button variant="quiet" onClick={() => setEditing(r)}>
+                    Editar
+                  </Button>
+                  <RowMenu label={`Mais ações para ${r.name}`} items={[{ label: "Excluir", danger: true, onSelect: () => setDeleting(r) }]} />
                 </td>
               </tr>
             ))}
@@ -154,7 +151,7 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange }: { works
           workspaceId={workspaceId}
           slug={slug}
           route={editing === "new" ? null : editing}
-          services={serviceList.map((s) => ({ id: s.id, name: s.name }))}
+          services={serviceList.map((s) => ({ id: s.id, name: s.name, path: fieldText(s.path) || null }))}
           defaultServiceId={serviceId}
           onClose={() => setEditing(null)}
         />
@@ -169,13 +166,20 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange }: { works
   );
 }
 
+/** A migrated route without paths: WorkspaceRouteWrite requires paths, so it is edited through v1 until it has one (WS-R0). */
+export const editedOverV1 = (route: WorkspaceRoute | null): boolean =>
+  route?.pathCompatibility === "legacy-preserved" && (route.paths?.length ?? 0) === 0;
+
 /** Create (no route) or replace; the caller sees success only through `onSaved`, after the server's 201 or 200. */
-export function saveRouteMutation(workspaceId: string, route: WorkspaceRoute | null, invalidate: () => void, onSaved: (saved: WorkspaceRoute) => void) {
+export function saveRouteMutation(workspaceId: string, route: WorkspaceRoute | null, invalidate: () => void, onSaved: (saved: WorkspaceRoute | Route) => void) {
   return {
-    mutationFn: (body: WorkspaceRouteWrite) => route
-      ? unwrap(apiV2.PUT("/workspaces/{workspaceId}/routes/{routeId}", { params: { path: { workspaceId, routeId: route.id } }, body }))
-      : unwrap(apiV2.POST("/workspaces/{workspaceId}/routes", { params: { path: { workspaceId } }, body })),
-    onSuccess: (saved: WorkspaceRoute) => {
+    mutationFn: (body: WorkspaceRouteWrite | RouteWrite): Promise<WorkspaceRoute | Route> => {
+      if (route && editedOverV1(route)) return unwrap(api.PUT("/environments/{envId}/routes/{routeId}", { params: { path: { envId: workspaceId, routeId: route.id } }, body: body as RouteWrite }));
+      return route
+        ? unwrap(apiV2.PUT("/workspaces/{workspaceId}/routes/{routeId}", { params: { path: { workspaceId, routeId: route.id } }, body: body as WorkspaceRouteWrite }))
+        : unwrap(apiV2.POST("/workspaces/{workspaceId}/routes", { params: { path: { workspaceId } }, body: body as WorkspaceRouteWrite }));
+    },
+    onSuccess: (saved: WorkspaceRoute | Route) => {
       invalidate();
       onSaved(saved);
     },
@@ -194,21 +198,26 @@ export interface RouteFormValues {
   tags: string[];
 }
 
+// What this form does not edit but a PUT must keep; both RouteWrite (v1) and WorkspaceRouteWrite declare them.
+const KEPT = ["headers", "analyticsRetentionDays"] as const;
+
 /**
- * The body of a save. A legacy-preserved route never sends stripPath (the server keeps the stored one; another value
- * would be a 409 path-compatibility); a workspace-default route sends the user's choice (false unless chosen).
+ * The body of a save, with only the fields the write schema declares (a response carries more). A legacy-preserved
+ * route never sends stripPath through v2 (the server keeps the stored one; another value would be a 409
+ * path-compatibility); through v1 (no paths) it sends the stored one, since v1 would otherwise default it to true.
+ * A workspace-default route sends the user's choice (false unless chosen).
  */
-export function routeBody(route: WorkspaceRoute | null, form: RouteFormValues): WorkspaceRouteWrite {
-  // PUT replaces the whole route: keep what this form does not edit (headers, analytics retention).
-  const { id: _id, createdAt: _c, updatedAt: _u, pathCompatibility: _p, stripPath: _s, ...rest } = route ?? ({} as Partial<WorkspaceRoute>);
-  const legacy = route?.pathCompatibility === "legacy-preserved";
+export function routeBody(route: WorkspaceRoute | null, form: RouteFormValues): WorkspaceRouteWrite | RouteWrite {
+  const kept = Object.fromEntries(KEPT.flatMap((k) => (route?.[k] === undefined ? [] : [[k, route[k]]])));
   const { stripPath, ...fields } = form;
-  return legacy ? { ...rest, ...fields } : { ...rest, ...fields, stripPath };
+  if (route && editedOverV1(route)) return { ...kept, ...fields, stripPath: route.stripPath };
+  return route?.pathCompatibility === "legacy-preserved" ? { ...kept, ...fields } : { ...kept, ...fields, stripPath };
 }
 
-function RouteForm(props: { workspaceId: string; slug: string; route: WorkspaceRoute | null; services: { id: string; name: string }[]; defaultServiceId: string; onClose: () => void }) {
+function RouteForm(props: { workspaceId: string; slug: string; route: WorkspaceRoute | null; services: { id: string; name: string; path: string | null }[]; defaultServiceId: string; onClose: () => void }) {
   const { workspaceId, slug, route, services, onClose } = props;
   const legacy = route?.pathCompatibility === "legacy-preserved";
+  const overV1 = editedOverV1(route);
   const invalidate = useInvalidateWorkspaceGateway(workspaceId);
   const [form, setForm] = useState({
     name: route?.name ?? "",
@@ -233,7 +242,8 @@ function RouteForm(props: { workspaceId: string; slug: string; route: WorkspaceR
     const fields: Record<string, string[]> = {
       ...(form.name.trim() ? {} : { name: ["Nome: campo obrigatório."] }),
       ...(services.some((s) => s.id === form.serviceId) ? {} : { serviceId: ["Escolha um service deste Workspace."] }),
-      ...(paths.length > 0 ? {} : { paths: ["Informe ao menos um path."] }),
+      ...(paths.length > 0 || (overV1 && (splitList(form.hosts).length > 0 || splitList(form.methods).length > 0 || Object.keys(route?.headers ?? {}).length > 0))
+        ? {} : { paths: [overV1 ? "Informe ao menos um path, host ou método." : "Informe ao menos um path."] }),
     };
     setLocal({ fields, form: [] });
     if (Object.keys(fields).length > 0) return;
@@ -275,7 +285,8 @@ function RouteForm(props: { workspaceId: string; slug: string; route: WorkspaceR
         <div className="note" aria-label="Path público" role="group">
           <p>Prefixo do Workspace: <span className="mono">/{slug}</span></p>
           {paths.length > 0 && <p>Path público: <span className="mono">{paths.map((p) => publicPath(slug, p)).join(", ")}</span></p>}
-          {paths[0] && <p>{upstreamEffect(slug, paths[0], stripPath)}</p>}
+          {paths[0] && <p>{upstreamEffect(slug, paths[0], stripPath, services.find((x) => x.id === form.serviceId)?.path)}</p>}
+          {paths.length === 0 && overV1 && <p>Sem paths: a route casa por host, método ou cabeçalho. {OVER_V1}</p>}
         </div>
         <Field label="Hosts" errors={errors.fields.hosts} hint="Um por linha (opcional)">
           {(id, invalid) => <textarea id={id} aria-invalid={invalid} rows={2} value={form.hosts} onChange={(e) => set("hosts", e.target.value)} />}

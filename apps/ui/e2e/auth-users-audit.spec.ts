@@ -81,9 +81,9 @@ test("viewer não vê edição nem menus administrativos; acesso direto é recus
   await login(page, viewer);
   const menu = page.getByRole("navigation", { name: "Menu principal" });
   await expect(menu.getByRole("link", { name: /Usuários|Auditoria/ })).toHaveCount(0);
-  // Services go through v2, where no operation tells the caller's permissions: the actions are offered and the
+  // Services and Routes go through v2, where no operation tells the caller's permissions: the actions are offered and the
   // server's 403 decides (below). The v1 screens still hide what the v1 role cannot do.
-  for (const section of ["Routes", "Consumers", "Plugins", "Publicações", "Clusters"]) {
+  for (const section of ["Consumers", "Plugins", "Publicações", "Clusters"]) {
     await menu.getByRole("link", { name: section, exact: true }).click();
     await expect(page.getByRole("heading", { name: section, exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: /^(Novo |Nova |Editar|Excluir|Publicar$|Restaurar |Rotacionar |Gerar )/ })).toHaveCount(0);
@@ -114,6 +114,32 @@ test("viewer não vê edição nem menus administrativos; acesso direto é recus
   expect(writes).toEqual(["POST", "PUT"]);
   await expect(services.getByRole("row")).toHaveText(before);
   await page.unroute("**/api/v2/workspaces/*/services**");
+
+  await menu.getByRole("link", { name: "Routes", exact: true }).click();
+  const routes = page.getByRole("table", { name: "Routes", exact: true });
+  await expect(routes.getByRole("row")).not.toHaveCount(0);
+  const routesBefore = await routes.getByRole("row").allTextContents();
+  await page.route("**/api/v2/workspaces/*/routes**", (route) => {
+    if (route.request().method() === "GET") return route.fallback();
+    writes.push(route.request().method());
+    return route.fulfill({ status: 403, contentType: "application/problem+json", json: { type: "about:blank", title: "Forbidden", status: 403 } });
+  });
+  await page.getByRole("button", { name: "Nova route" }).click();
+  const newRoute = page.getByRole("dialog", { name: "Nova route" });
+  await newRoute.getByLabel("Nome").fill("forbidden");
+  await newRoute.getByLabel("Paths", { exact: true }).fill("/forbidden");
+  await newRoute.getByRole("button", { name: "Salvar" }).click();
+  await expect(newRoute.getByRole("alert")).toHaveText("Você não tem permissão para alterar o gateway deste Workspace.");
+  await newRoute.getByRole("button", { name: "Cancelar" }).click();
+  await routes.getByRole("button", { name: "Editar", exact: true }).first().click();
+  const editRoute = page.getByRole("dialog", { name: /^Editar / });
+  await editRoute.getByLabel("Métodos").fill("GET");
+  await editRoute.getByRole("button", { name: "Salvar" }).click();
+  await expect(editRoute.getByRole("alert")).toHaveText("Você não tem permissão para alterar o gateway deste Workspace.");
+  await editRoute.getByRole("button", { name: "Cancelar" }).click();
+  expect(writes).toEqual(["POST", "PUT", "POST", "PUT"]);
+  await expect(routes.getByRole("row")).toHaveText(routesBefore);
+  await page.unroute("**/api/v2/workspaces/*/routes**");
   // Prism cannot enforce RBAC; pin the contract's 403 for a forced mutation. Real enforcement is W5-C1's matrix.
   await page.route("**/api/v1/environments/*/services", (route) => route.request().method() === "POST"
     ? route.fulfill({ status: 403, json: { title: "Forbidden", status: 403 } })
