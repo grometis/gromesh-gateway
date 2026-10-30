@@ -76,6 +76,15 @@ describe("routes through /api/v2 (WS-R2)", () => {
     expect((await h.sql.query("select count(*)::int as n from routes where environment_id = $1", [auto])).rows[0].n).toBe(0);
   });
 
+  it("never deadlocks: concurrent route writes in one workspace all answer, none with a 500", async () => {
+    const routes = await Promise.all([1, 2, 3].map(async () => (await v2(h.api, "POST", `/workspaces/${a}/routes`, { name: uniq("c"), serviceId: svcA, paths: [`/${uniq("p")}`] })).body));
+    const results = await Promise.all([
+      ...routes.map((r) => v2(h.api, "PUT", `/workspaces/${a}/routes/${r.id}`, { name: r.name, serviceId: svcA, paths: [`/${uniq("q")}`] })),
+      ...[1, 2, 3].map(() => v2(h.api, "POST", `/workspaces/${a}/routes`, { name: uniq("c"), serviceId: svcA, paths: [`/${uniq("p")}`] })),
+    ]);
+    for (const r of results) expect(r.status, JSON.stringify(r.body)).toBeLessThan(300);
+  });
+
   it("needs gateway.write in the workspace", async () => {
     const viewer = await h.as("viewer");
     expect((await v2(viewer.api, "POST", `/workspaces/${a}/routes`, { name: uniq("r"), serviceId: svcA, paths: ["/v"] })).status).toBe(403);

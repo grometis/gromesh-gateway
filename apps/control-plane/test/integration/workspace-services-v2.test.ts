@@ -96,6 +96,19 @@ describe("services through /api/v2 (WS-R1)", () => {
     expect((await h.sql.query("select count(*)::int as n from services where environment_id = $1", [manual.id])).rows[0].n).toBe(0);
   });
 
+  it("never deadlocks: concurrent service writes, upstream deletes and renames in one workspace answer, none with a 500", async () => {
+    for (let round = 0; round < 6; round++) {
+      const pool = (await v2(h.api, "POST", `/workspaces/${a}/upstreams`, { name: uniq("race") })).body;
+      const results = await Promise.all([
+        v2(h.api, "POST", `/workspaces/${a}/services`, service({ host: pool.name, upstreamId: pool.id })),
+        v2(h.api, "POST", `/workspaces/${a}/services`, service()),
+        v2(h.api, "POST", `/workspaces/${a}/services`, service()),
+        v2(h.api, "DELETE", `/workspaces/${a}/upstreams/${pool.id}`),
+      ]);
+      for (const r of results) expect(r.status, JSON.stringify(r.body)).toBeLessThan(500);
+    }
+  });
+
   it("holds the named upstream until the write commits: a delete in between waits, then is refused", async () => {
     const pool = (await v2(h.api, "POST", `/workspaces/${a}/upstreams`, { name: uniq("held") })).body;
     const linked = await v2(h.api, "POST", `/workspaces/${a}/services`, service({ host: pool.name, upstreamId: pool.id }));

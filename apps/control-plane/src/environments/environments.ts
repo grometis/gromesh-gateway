@@ -4,10 +4,10 @@ import type { EnvironmentWrite } from "../api-types.js";
 import { audit } from "../audit/audit.js";
 import { type AuthenticatedRequest, Ctx, RequiredRole, type RequestContext, V1Permission } from "../auth/auth.js";
 import { contractBody } from "../common/contract.js";
-import { conflict, notFound } from "../common/problem.js";
+import { conflict, notFound, workspaceArchived } from "../common/problem.js";
 import { DB, type Db, type Executor } from "../db/db.js";
-import { clusters, environmentRoles, environments, type EnvironmentRow, type UserRow } from "../db/schema.js";
-import { assignSlug } from "../workspaces/workspaces.js";
+import { clusters, environmentRoles, environments, type EnvironmentRow, type UserRow, workspaces } from "../db/schema.js";
+import { assignSlug, SLUG_LOCK_KEY } from "../workspaces/workspaces.js";
 import { lockTablesForWrite, UNIQUE_KINDS } from "../workspaces/instance-uniqueness.js";
 
 export const uuidParam = () => new ParseUUIDPipe({ errorHttpStatusCode: 404 });
@@ -29,14 +29,45 @@ export function toEnvironment(r: EnvironmentRow) {
 
 /** 404 unless the environment exists. With `lock`, holds a row lock until the transaction ends. */
 export async function requireEnvironment(tx: Executor, envId: string, lock = false): Promise<EnvironmentRow> {
+  // A writer that locks the environment is refused once its workspace is archived (the guard's check runs before the
+  // transaction; this one is serialized with archiveWorkspace), checked before the row lock.
+  if (lock) await refuseArchived(tx, envId);
   const q = tx.select().from(environments).where(eq(environments.id, envId));
   const [row] = lock ? await q.for("update") : await q;
   if (!row) throw notFound("Environment");
   return row;
 }
 
+/** One lock per workspace between archiveWorkspace (exclusive) and the writers in it (shared). */
+export const ARCHIVE_LOCK_CLASS = 0x6772_7761; // "grwa"
+export const archiveLock = (tx: Executor, workspaceId: string, mode: "shared" | "exclusive") =>
+  tx.execute(mode === "shared"
+    ? sql`select pg_advisory_xact_lock_shared(${ARCHIVE_LOCK_CLASS}, ${archiveLockKey(workspaceId)})`
+    : sql`select pg_advisory_xact_lock(${ARCHIVE_LOCK_CLASS}, ${archiveLockKey(workspaceId)})`);
+/** The key of a workspace's archive lock, from its canonical UUID (an id in capitals is the same workspace). */
+export const archiveLockKey = (workspaceId: string) => sql`hashtext(${workspaceId}::uuid::text)`;
+
+/**
+ * 409 workspace-archived when the workspace is archived. The shared archive lock waits for an archive in flight and
+ * keeps the next one out until this transaction ends. A writer takes it before locking the environment or the
+ * workspace row, and archiveWorkspace takes the exclusive one before them, so the two never wait on each other.
+ */
+export async function refuseArchived(tx: Executor, workspaceId: string): Promise<void> {
+  await archiveLock(tx, workspaceId, "shared");
+  // In READ COMMITTED this statement already sees an archive committed while the lock waited. A REPEATABLE READ or
+  // SERIALIZABLE transaction (an import) may hold a snapshot from before it: there the environment row is locked (the
+  // first row every writer locks; archiveWorkspace updates it too), so an archive committed since is a serialization
+  // failure and nothing is written. Never a lock on the workspace row: a publish updates it after the environment's.
+  const [{ iso }] = (await tx.execute<{ iso: string }>(sql`select current_setting('transaction_isolation') as iso`)).rows as [{ iso: string }];
+  if (iso !== "read committed") await tx.select({ id: environments.id }).from(environments).where(eq(environments.id, workspaceId)).for("update");
+  const [w] = await tx.select({ status: workspaces.status }).from(workspaces).where(eq(workspaces.id, workspaceId));
+  if (w?.status === "archived") throw workspaceArchived();
+}
+
 /** Every edit of gateway entities flags the draft as different from what is published. */
 export async function markDraftChanged(tx: Executor, envId: string): Promise<void> {
+  // Every edit of the draft ends here, in its own transaction: an archive committed meanwhile refuses it.
+  await refuseArchived(tx, envId);
   await tx
     .update(environments)
     .set({ hasUnpublishedChanges: true, draftChangedAt: sql`now()`, updatedAt: sql`now()` })
@@ -63,6 +94,8 @@ export class EnvironmentsService {
 
   async create(ctx: RequestContext, body: EnvironmentWrite) {
     return this.db.transaction(async (tx) => {
+      // The slug lock before the insert, as createWorkspace takes them: the two creations never wait on each other.
+      await tx.execute(sql`select pg_advisory_xact_lock(${SLUG_LOCK_KEY})`);
       const [row] = await tx
         .insert(environments)
         .values({ name: body.name, description: body.description ?? null, publishMode: body.publishMode ?? "manual" })

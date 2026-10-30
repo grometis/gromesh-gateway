@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger, Module, type OnApplicationBootstrap, type OnModuleDestroy } from "@nestjs/common";
-import { asc, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import { APP_CONFIG, type AppConfig } from "../config.js";
 import { DB, type Db, type Executor } from "../db/db.js";
 import { dataMigrations, environments, workspaces } from "../db/schema.js";
@@ -41,10 +41,11 @@ export async function backfillWorkspaces(tx: Executor): Promise<number> {
   for (const w of pending) {
     const proposal = proposeSlug(w.name, taken);
     taken.add(proposal.slug);
+    // Never an archived one (WS-M0: read-only), also when an archive commits after the list above was read.
     await tx
       .update(workspaces)
       .set({ slug: proposal.slug, slugStatus: proposal.status, slugReason: proposal.reason ?? null, updatedAt: sql`now()` })
-      .where(eq(workspaces.id, w.id));
+      .where(and(eq(workspaces.id, w.id), eq(workspaces.status, "active")));
   }
   await tx.insert(dataMigrations).values({ name: "n1-workspaces" }).onConflictDoNothing();
   return pending.length;
