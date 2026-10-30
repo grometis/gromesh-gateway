@@ -1883,7 +1883,10 @@ export interface paths {
         /**
          * @description A load-balancing pool of the workspace. A service balances across it only through `upstreamId` (its host
          *     is then generated as <name>.<slug>.gromesh.internal); a service host is always ordinary DNS. 409 on a
-         *     name already used in the workspace; 422 with `path` when `hashOn`/`hashFallback` are set without
+         *     name already used in the workspace, and 409 with code upstream-captures-service when a service written
+         *     through v2 without upstreamId uses the name as its DNS host (WS-U0: a v1 delivery resolves a host equal to
+         *     an upstream's name to that upstream, so the service would silently change destination; services written
+         *     only through v1 keep that v1 binding by name, unchanged); 422 with `path` when `hashOn`/`hashFallback` are set without
          *     `algorithm: consistent-hashing`, when `hashOnHeader`/`hashOnCookie`/`hashFallbackHeader` is missing for the
          *     chosen hash, or when `hashOn: cookie` has a fallback other than `none`; 422 at `name` when the name is a
          *     forbidden destination (see the description of this API).
@@ -1908,7 +1911,8 @@ export interface paths {
         get: operations["getUpstream"];
         /**
          * @description Renaming keeps every service that refers to it by upstreamId (the generated host follows the new name in the
-         *     next publication). Same 409/422 rules as the creation otherwise.
+         *     next publication). Same 409/422 rules as the creation otherwise, upstream-captures-service included for the
+         *     new name.
          */
         put: operations["replaceUpstream"];
         post?: never;
