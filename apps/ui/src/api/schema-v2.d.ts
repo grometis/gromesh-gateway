@@ -1444,7 +1444,10 @@ export interface paths {
          *     and nested membership absent from it, subject only to retained ids and preserved secrets of matched
          *     entities. References in replace must resolve inside the document; in merge they may also resolve to
          *     existing draft entities. Unknown references are 422 with their source path. A service host matching
-         *     an upstream name keeps the existing upstream-resolution semantics; other hosts use DNS.
+         *     an upstream name keeps the existing upstream-resolution semantics (the v1 binding by name; a service the
+         *     import creates or replaces is a v1-written one, WS-U0); other hosts use DNS. An imported upstream whose name
+         *     is the DNS host of a service written through v2 without upstreamId is 422 at its path
+         *     (upstream-captures-service).
          *
          *     A supplied `REDACTED`, or an omitted secret on a matched entity, keeps the current secret in either mode,
          *     as with certificate PUT. For a NEW credential/certificate/plugin secret, `REDACTED` or a missing value
@@ -1912,7 +1915,8 @@ export interface paths {
         /**
          * @description Renaming keeps every service that refers to it by upstreamId (the generated host follows the new name in the
          *     next publication). Same 409/422 rules as the creation otherwise, upstream-captures-service included for the
-         *     new name.
+         *     new name. A rename stays refused (409) while a service written only through v1 uses the current name as
+         *     its host, as in v1: its binding by name would silently break.
          */
         put: operations["replaceUpstream"];
         post?: never;

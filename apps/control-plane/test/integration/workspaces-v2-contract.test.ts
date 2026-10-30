@@ -1254,5 +1254,17 @@ describe("explicit service-to-upstream binding (WS-U0)", () => {
     const create = flat(op("createUpstream").description);
     for (const phrase of ["A service balances across it only through `upstreamId`", "a service host is always ordinary DNS", "409 with code upstream-captures-service", "services written only through v1 keep that v1 binding by name, unchanged"]) expect(create, phrase).toContain(phrase);
     expect(flat(op("replaceUpstream").description)).toContain("upstream-captures-service included for the new name");
+    expect(flat(op("replaceUpstream").description)).toContain("A rename stays refused (409) while a service written only through v1 uses the current name");
+  });
+
+  it("states it wherever a service host is written: the v2 schema, the import and the v1 upstream operations", () => {
+    const host = flat(JSON.stringify(v2.components.schemas.WorkspaceServiceFields.properties.host));
+    for (const phrase of ["always ordinary DNS", "without upstreamId is 422 at upstreamId", "so no binding is ever implicit", "A service written only through v1 or by an import keeps the v1 binding"]) expect(host, phrase).toContain(phrase);
+    expect(host).not.toMatch(/^[^"]*"An upstream's name balances across its targets; any other host/);
+    expect(flat(op("importWorkspaceConfig").description)).toContain("a service the import creates or replaces is a v1-written one, WS-U0");
+    const v1 = parse(readFileSync(new URL("../../../../contracts/control-plane.openapi.yaml", import.meta.url), "utf8")) as Doc;
+    const v1op = (id: string) => Object.values(v1.paths as Record<string, Record<string, Doc>>).flatMap((p) => Object.values(p)).find((o) => o?.operationId === id)!;
+    expect(flat(v1op("createUpstream").description)).toContain("409 with code upstream-captures-service");
+    expect(flat(v1op("replaceUpstream").description)).toContain("upstream-captures-service as on creation");
   });
 });
