@@ -141,7 +141,7 @@ describe("services through /api/v2 (WS-R1)", () => {
 
 describe("retryingTransaction", () => {
   it("runs again after a deadlock or serialization abort, at most three times, and rethrows anything else", async () => {
-    const { retryingTransaction } = await import("../../src/gateway/gateway.js");
+    const { retryingTransaction } = await import("../../src/common/retry.js");
     let calls = 0;
     const abort = (code: string) => Object.assign(new Error("aborted"), { cause: { code } });
     expect(await retryingTransaction(async () => (++calls < 3 ? Promise.reject(abort("40P01")) : "ok"))).toBe("ok");
@@ -152,5 +152,60 @@ describe("retryingTransaction", () => {
     calls = 0;
     await expect(retryingTransaction(async () => { calls++; throw abort("23505"); })).rejects.toThrow("aborted");
     expect(calls).toBe(1);
+  });
+});
+
+describe("concurrency aborts (B1)", () => {
+  let h: Harness;
+  let ws: string;
+  beforeAll(async () => {
+    h = await startHarness();
+    ws = (await h.api("POST", "/environments", { name: uniq("abort") })).body.id;
+  });
+  afterAll(async () => h?.close());
+
+  it("a real deadlock aborts one side; the API write runs again and lands once, audited once", async () => {
+    const pool = (await v2(h.api, "POST", `/workspaces/${ws}/upstreams`, { name: uniq("dl") })).body;
+    const name = uniq("dl-svc");
+    const t = await h.sql.connect();
+    try {
+      await t.query("begin");
+      await t.query("select 1 from environments where id = $1 for update", [ws]);
+      // The write takes the upstream (KEY SHARE) and the archive lock, then waits on the environment held here.
+      const write = v2(h.api, "POST", `/workspaces/${ws}/services`, service({ name, host: pool.name, upstreamId: pool.id }));
+      await new Promise((r) => setTimeout(r, 400));
+      // Now this side wants the upstream the write holds: a cycle; PostgreSQL aborts one of the two.
+      const mine = await t.query("select 1 from upstreams where id = $1 for update", [pool.id]).then(() => "locked", (e: { code?: string }) => e.code);
+      await t.query("rollback").catch(() => undefined);
+      const res = await write;
+      expect([res.status, mine === "locked" || mine === "40P01"], JSON.stringify(res.body)).toEqual([201, true]);
+    } finally {
+      t.release();
+    }
+    expect((await h.sql.query("select count(*)::int as n from services where environment_id = $1 and name = $2", [ws, name])).rows[0].n).toBe(1);
+    expect((await h.sql.query("select count(*)::int as n from audit_events where action = 'service.create' and after->>'name' = $1", [name])).rows[0].n).toBe(1);
+  });
+
+  it("v1 deletes and rollbacks raced with v2 writes never answer 500, and v1 keeps its own answers", async () => {
+    for (let round = 0; round < 5; round++) {
+      const env = (await h.api("POST", "/environments", { name: uniq("v1race") })).body.id as string;
+      const svc = (await h.api("POST", `/environments/${env}/services`, service())).body.id as string;
+      expect((await h.api("POST", `/environments/${env}/snapshots`, {})).status).toBe(201);
+      await h.api("POST", `/environments/${env}/services`, service());
+      const results = await Promise.all([
+        h.api("DELETE", `/environments/${env}/services/${svc}`),
+        v2(h.api, "PUT", `/workspaces/${env}/services/${svc}`, service({ name: "renamed" })),
+        h.api("POST", `/environments/${env}/snapshots/1/rollback`, {}),
+        v2(h.api, "POST", `/workspaces/${env}/services`, service()),
+      ]);
+      for (const r of results) expect(r.status, JSON.stringify(r.body)).toBeLessThan(500);
+    }
+  });
+
+  it("an abort that outlives its retries answers 409 concurrent-update, never a 500", async () => {
+    const { ProblemFilter } = await import("../../src/common/problem.filter.js");
+    const filter = new ProblemFilter() as unknown as { toProblem: (e: unknown) => { status: number; code?: string } };
+    for (const code of ["40P01", "40001"]) expect(filter.toProblem(Object.assign(new Error("x"), { cause: { code } }))).toMatchObject({ status: 409, code: "concurrent-update" });
+    expect(filter.toProblem(Object.assign(new Error("x"), { cause: { code: "57014" } })).status).toBe(500);
   });
 });

@@ -7,6 +7,7 @@ import { audit } from "../audit/audit.js";
 import { Ctx, RequiredPermission, RequiredRole, type RequestContext } from "../auth/auth.js";
 import { contractBody, contractBodyV2 } from "../common/contract.js";
 import { decodeCursor, parseLimit, toPage } from "../common/pagination.js";
+import { retryingTransaction } from "../common/retry.js";
 import { conflict, notFound, unprocessable } from "../common/problem.js";
 import { assertDestination, destinationPolicy, type DestinationPolicy } from "../common/destinations.js";
 import { APP_CONFIG, type AppConfig } from "../config.js";
@@ -278,7 +279,7 @@ export class GatewayService {
   /** `check` runs inside the write's transaction (v2: the upstream it names, held until the commit). */
   async createService(ctx: RequestContext, envId: string, body: ServiceWrite, check?: (tx: Executor) => Promise<void>) {
     assertDestination("host", body.host, this.destinations, "service");
-    return this.db.transaction(async (tx) => {
+    return retryingTransaction(() => this.db.transaction(async (tx) => {
       await requireEnvironment(tx, envId);
       await check?.(tx);
       const [row] = await tx.insert(services).values({ environmentId: envId, ...serviceValues(body) }).returning();
@@ -286,12 +287,12 @@ export class GatewayService {
       await markDraftChanged(tx, envId);
       await audit(tx, ctx, { action: "service.create", entityType: "service", entityId: after.id, environmentId: envId, after });
       return after;
-    });
+    }));
   }
 
   async replaceService(ctx: RequestContext, envId: string, serviceId: string, body: ServiceWrite, check?: (tx: Executor) => Promise<void>) {
     assertDestination("host", body.host, this.destinations, "service");
-    return this.db.transaction(async (tx) => {
+    return retryingTransaction(() => this.db.transaction(async (tx) => {
       // v2: the service row before the environment's, the order a v1 replace or delete takes them.
       const before = toService(await this.requireService(tx, envId, serviceId, check !== undefined));
       await check?.(tx);
@@ -304,12 +305,12 @@ export class GatewayService {
       await markDraftChanged(tx, envId);
       await audit(tx, ctx, { action: "service.update", entityType: "service", entityId: serviceId, environmentId: envId, before, after });
       return after;
-    });
+    }));
   }
 
   /** v2 also refuses while plugins are scoped to the service (v1 deletes them with it). */
   async deleteService(ctx: RequestContext, envId: string, serviceId: string, options: { keepPlugins?: boolean } = {}) {
-    await this.db.transaction(async (tx) => {
+    await retryingTransaction(() => this.db.transaction(async (tx) => {
       // Locked first: a route or plugin created meanwhile (it takes the row's key share) waits, then is counted.
       const before = toService(await this.requireService(tx, envId, serviceId, true));
       const [ref] = await tx.select({ n: count() }).from(routes).where(eq(routes.serviceId, serviceId));
@@ -321,7 +322,7 @@ export class GatewayService {
       await tx.delete(services).where(eq(services.id, serviceId));
       await markDraftChanged(tx, envId);
       await audit(tx, ctx, { action: "service.delete", entityType: "service", entityId: serviceId, environmentId: envId, before });
-    });
+    }));
   }
 
   /* routes */
@@ -345,7 +346,7 @@ export class GatewayService {
   }
 
   async createRoute(ctx: RequestContext, envId: string, body: RouteWrite) {
-    return this.db.transaction(async (tx) => {
+    return retryingTransaction(() => this.db.transaction(async (tx) => {
       await requireEnvironment(tx, envId);
       await this.checkRoute(tx, envId, body);
       const [row] = await tx.insert(routes).values({ environmentId: envId, ...routeValues(body) }).returning();
@@ -353,11 +354,11 @@ export class GatewayService {
       await markDraftChanged(tx, envId);
       await audit(tx, ctx, { action: "route.create", entityType: "route", entityId: after.id, environmentId: envId, after });
       return after;
-    });
+    }));
   }
 
   async replaceRoute(ctx: RequestContext, envId: string, routeId: string, body: RouteWrite) {
-    return this.db.transaction(async (tx) => {
+    return retryingTransaction(() => this.db.transaction(async (tx) => {
       const before = toRoute(await this.requireRoute(tx, envId, routeId));
       await this.checkRoute(tx, envId, body);
       const [row] = await tx
@@ -369,16 +370,16 @@ export class GatewayService {
       await markDraftChanged(tx, envId);
       await audit(tx, ctx, { action: "route.update", entityType: "route", entityId: routeId, environmentId: envId, before, after });
       return after;
-    });
+    }));
   }
 
   async deleteRoute(ctx: RequestContext, envId: string, routeId: string) {
-    await this.db.transaction(async (tx) => {
+    await retryingTransaction(() => this.db.transaction(async (tx) => {
       const before = toRoute(await this.requireRoute(tx, envId, routeId));
       await tx.delete(routes).where(eq(routes.id, routeId));
       await markDraftChanged(tx, envId);
       await audit(tx, ctx, { action: "route.delete", entityType: "route", entityId: routeId, environmentId: envId, before });
-    });
+    }));
   }
 
   /**
@@ -518,23 +519,6 @@ export class RoutesController {
 
 /* ---------------- control-plane-v2: the same services, scoped to a workspace (decision H-9) ---------------- */
 
-/**
- * A v2 write runs again when PostgreSQL aborts its transaction for a deadlock or a serialization failure: v1 writers
- * lock the environment and their entities in different orders (a rollback the environment first, a delete the entity
- * first), so no single order of the v2 writer avoids every cycle; the aborted attempt wrote nothing.
- */
-export async function retryingTransaction<T>(work: () => Promise<T>, attempts = 3): Promise<T> {
-  for (let attempt = 1; ; attempt++) {
-    try {
-      return await work();
-    } catch (err) {
-      const code = (err as { cause?: { code?: string } }).cause?.code ?? (err as { code?: string }).code;
-      if (attempt < attempts && (code === "40P01" || code === "40001")) continue;
-      throw err;
-    }
-  }
-}
-
 /** contracts/control-plane-v2.openapi.yaml#/components/schemas/WorkspaceServiceWrite */
 type WorkspaceServiceWrite = WithVarRefs<ServiceWrite, "protocol" | "host" | "port" | "path"> & { upstreamId?: string | null };
 
@@ -607,7 +591,7 @@ export class WorkspaceServicesController {
   @RequiredPermission("gateway.write", "workspace")
   async create(@Ctx() ctx: RequestContext, @Param("workspaceId", uuidParam()) workspaceId: string, @Body(contractBodyV2("WorkspaceServiceWrite")) body: WorkspaceServiceWrite) {
     const { plain, check } = workspaceServiceWrite(this.gw, workspaceId, body);
-    const created = await retryingTransaction(() => this.gw.createService(ctx, workspaceId, plain, check));
+    const created = await this.gw.createService(ctx, workspaceId, plain, check);
     return toWorkspaceService(workspaceId, created, await upstreamsByName(this.db, workspaceId));
   }
 
@@ -620,7 +604,7 @@ export class WorkspaceServicesController {
     @Body(contractBodyV2("WorkspaceServiceWrite")) body: WorkspaceServiceWrite,
   ) {
     const { plain, check } = workspaceServiceWrite(this.gw, workspaceId, body);
-    const replaced = await retryingTransaction(() => this.gw.replaceService(ctx, workspaceId, serviceId, plain, check));
+    const replaced = await this.gw.replaceService(ctx, workspaceId, serviceId, plain, check);
     return toWorkspaceService(workspaceId, replaced, await upstreamsByName(this.db, workspaceId));
   }
 

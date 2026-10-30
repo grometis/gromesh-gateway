@@ -38,6 +38,7 @@ import { pluginPrivilegedIssues, requirePlatformAdmin } from "../common/privileg
 import { stateVaultReferenceIssues } from "../common/vault-references.js";
 import { DB, type Db, type Executor, type Tx } from "../db/db.js";
 import { environments, snapshots, type EnvironmentRow, type SnapshotRow, workspaces } from "../db/schema.js";
+import { retryingTransaction } from "../common/retry.js";
 import { ARCHIVE_LOCK_CLASS, archiveLockKey, requireEnvironment, uuidParam } from "../environments/environments.js";
 import { loadGatewayState, restoreGatewayState, workspaceDefaultRoutes } from "../gateway/gateway.js";
 import { AGENT_CHANNEL } from "../clusters/clusters.js";
@@ -131,7 +132,8 @@ export class SnapshotsService {
 
   /** Compiles the draft into version N+1. The environment row lock serialises concurrent publishes. */
   async publish(ctx: RequestContext, envId: string, body: PublishRequest) {
-    const { row, changeCount } = await this.db.transaction(async (tx) => {
+    // Runs again on a deadlock or serialization abort (its notify is delivered on commit only).
+    const { row, changeCount } = await retryingTransaction(() => this.db.transaction(async (tx) => {
       const env = await requireEnvironment(tx, envId, true);
       if (body.expectedCurrentVersion !== undefined && body.expectedCurrentVersion !== env.currentVersion) {
         throw conflict(`Current version is ${env.currentVersion ?? "none"}, expected ${body.expectedCurrentVersion ?? "none"}`);
@@ -140,7 +142,7 @@ export class SnapshotsService {
       if (prepared.current?.hash === prepared.envelope.hash) throw conflict("Nothing to publish: the draft equals the current version");
       requirePlatformAdmin(ctx, privilegedChange(prepared));
       return this.commit(tx, ctx, env, prepared, { message: body.message ?? null, rollbackOf: null });
-    });
+    }));
     return toSnapshotSummary(row, true, changeCount);
   }
 
@@ -150,7 +152,7 @@ export class SnapshotsService {
    * like a single write's, so an old version is no oracle either.
    */
   async rollback(ctx: RequestContext, envId: string, version: number) {
-    const { row, changeCount } = await guardedUniqueWrite(this.db, ctx, "rollback", conflictLimit(this.config), () => this.db.transaction(async (tx) => {
+    const { row, changeCount } = await guardedUniqueWrite(this.db, ctx, "rollback", conflictLimit(this.config), () => retryingTransaction(() => this.db.transaction(async (tx) => {
       await lockTablesForWrite(tx, UNIQUE_KINDS);
       const env = await requireEnvironment(tx, envId, true);
       const target = await this.requireSnapshot(tx, envId, version);
@@ -166,7 +168,7 @@ export class SnapshotsService {
       // An older version may hold privileged plugins written before the rule existed.
       requirePlatformAdmin(ctx, privilegedChange(prepared));
       return this.commit(tx, ctx, env, prepared, { message: `Rollback to version ${version}`, rollbackOf: version });
-    }));
+    })));
     return toSnapshotSummary(row, true, changeCount);
   }
 
