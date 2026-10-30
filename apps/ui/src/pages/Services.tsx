@@ -224,7 +224,7 @@ function WorkspaceServiceDetail({ workspaceId, serviceId }: { workspaceId: strin
         <dt>Tags</dt>
         <dd>{s.tags?.join(", ") || "—"}</dd>
       </dl>
-      <p className="muted">Gerencie as routes na tela de <Link to={`/e/${workspaceId}/routes?serviceId=${s.id}`}>Routes do Workspace</Link>.</p>
+      <p className="muted">Gerencie as routes na tela de <Link className="strip-link" to={`/e/${workspaceId}/routes?serviceId=${s.id}`}>Routes do Workspace</Link>.</p>
       <ScopedRoutes envId={workspaceId} service={s} readOnly />
       <p className="muted">Plugins por Workspace ainda não são editáveis aqui.</p>
       <ScopedPlugins envId={workspaceId} scope={{ kind: "service", id: s.id }} title="Plugins do service" readOnly />
