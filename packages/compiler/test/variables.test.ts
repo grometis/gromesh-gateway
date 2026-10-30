@@ -42,7 +42,7 @@ describe("resolveVariables (WS-V2)", () => {
   it("never lets a reference reach Kong unresolved: v1 refuses it, placeholders only check the structure", () => {
     expect(issues(() => compile(state({ host: "H" })))[0]!.path).toBe("services[0].host");
     const p = placeholderVariables(state({ host: "H", port: "P" }));
-    expect(p.services[0]).toMatchObject({ host: "variable.invalid", port: 1 });
+    expect(p.services[0]).toMatchObject({ host: "VARIABLE.INVALID", port: 1 });
     expect(p.services[0]).not.toHaveProperty("varRefs");
   });
 });

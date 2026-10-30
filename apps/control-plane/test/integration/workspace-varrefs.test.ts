@@ -60,6 +60,9 @@ describe("VarRef resolution (WS-V2)", () => {
       const res = await v2(h.api, "POST", `/workspaces/${a}/services`, body);
       expect([res.status, res.body.errors?.[0]?.path], JSON.stringify(body)).toEqual([422, path]);
     }
+    // An upstream whatever its name never makes a variable host invalid (the placeholder names none).
+    expect((await v2(h.api, "POST", `/workspaces/${a}/upstreams`, { name: "variable.invalid" })).status).toBe(201);
+    expect((await v2(h.api, "POST", `/workspaces/${a}/services`, svc({ name: uniq("with-upstream-around") }))).status).toBe(201);
     // A referenced variable keeps its declaration: no delete, no type change.
     expect((await v2(h.api, "DELETE", `/workspaces/${a}/variables/ORDERS_HOST`)).status).toBe(409);
     expect((await v2(h.api, "PUT", `/workspaces/${a}/variables/ORDERS_HOST`, { type: "string", secret: false, required: true })).status).toBe(409);
@@ -124,6 +127,11 @@ describe("VarRef resolution (WS-V2)", () => {
     const leak = await deploy(before);
     expect(leak.status).toBe(422);
     expect(JSON.stringify(leak.body)).not.toContain("169.254.169.254");
+    // A value that was not secret when the release froze it is not quoted either.
+    await v2(h.api, "PUT", `/workspaces/${a}/variables/ORDERS_HOST/value`, { value: "169.254.169.253" });
+    const plainLeak = await deploy(before);
+    expect(JSON.stringify(plainLeak.body)).not.toContain("169.254.169.253");
+    await v2(h.api, "PUT", `/workspaces/${a}/variables/ORDERS_HOST/value`, { value: "orders.internal.example" });
     // A required declaration without a value, referenced or not, refuses the deployment.
     await v2(h.api, "PUT", `/workspaces/${a}/variables/SECRET_HOST/value`, { value: "secret.internal.example" });
     expect((await v2(h.api, "PUT", `/workspaces/${a}/variables/UNUSED_REQUIRED`, { type: "string", secret: false, required: true })).status).toBe(200);

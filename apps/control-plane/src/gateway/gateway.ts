@@ -575,7 +575,8 @@ const toWorkspaceService = (envId: string, s: ReturnType<typeof toService>, upst
  */
 /** Which variable types a VarRef may name on each field (the value must fit the field, WS-V2). */
 const VAR_TYPES: Record<VarField, readonly string[]> = { protocol: ["string"], host: ["host", "string"], port: ["port", "string"], path: ["string"] };
-const PLACEHOLDERS: Record<VarField, string | number> = { protocol: "http", host: "variable.invalid", port: 1, path: "/" };
+// The compiler's placeholders: in capitals, the host never names an upstream (their names are lowercase).
+const PLACEHOLDERS: Record<VarField, string | number> = { protocol: "http", host: "VARIABLE.INVALID", port: 1, path: "/" };
 
 function workspaceServiceWrite(gw: GatewayService, workspaceId: string, body: WorkspaceServiceWrite): { plain: ServiceWrite; check: (tx: Executor) => Promise<void>; explicit: ExplicitService } {
   const { upstreamId = null, ...rest } = body;
@@ -603,6 +604,11 @@ function workspaceServiceWrite(gw: GatewayService, workspaceId: string, body: Wo
         return VAR_TYPES[field].includes(type) ? [] : [{ path: field, message: `variable ${name} is of type ${type}, which ${field} does not accept` }];
       });
       if (errors.length > 0) throw unprocessable("Invalid service", errors);
+    }
+    // A host that names a variable binds nothing: only a plain host is checked against the upstreams' names.
+    if (varRefs.host !== undefined) {
+      await gw.refuseAutoPublish(tx, workspaceId);
+      return;
     }
     // The name decides a binding: the same lock an upstream's creation or rename takes (WS-U0).
     await lockUpstreamName(tx, workspaceId, plain.host);

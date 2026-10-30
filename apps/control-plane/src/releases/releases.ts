@@ -327,7 +327,9 @@ export class ReleasesService {
         return problem ? [{ path: `${where}.variables.${d.name}`, message: `the value ${problem}` }] : [];
       });
       if (valueIssues.length > 0) throw unprocessable("A variable of a release cannot be resolved on this instance", valueIssues);
-      for (const d of declared) if (d.secret && values.get(d.name)) secretValues.push(values.get(d.name)!.value);
+      // Every substituted value is kept out of an answer: a value set as secret after the release froze its declaration
+      // (or any other) never shows in a refusal.
+      for (const d of declared) if (values.get(d.name)) secretValues.push(values.get(d.name)!.value);
       try {
         const out = resolveVariables(state, new Set(declared.map((v) => v.name)), values);
         resolved = { ...out.state, variables: state.variables };

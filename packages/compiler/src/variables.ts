@@ -29,7 +29,8 @@ function fieldValue(field: VarField, value: string): { ok: true; value: string |
 }
 
 /** A value of the right shape for each field, to check a draft's structure before any instance's value is known. */
-const PLACEHOLDER: Record<VarField, string | number> = { protocol: "http", host: "variable.invalid", port: 1, path: "/" };
+// In capitals: an upstream's name is always lowercase, so the placeholder host can never name (or be captured by) one.
+const PLACEHOLDER: Record<VarField, string | number> = { protocol: "http", host: "VARIABLE.INVALID", port: 1, path: "/" };
 
 /** The state with every VarRef replaced by a placeholder of the field's shape (publishRelease's composition check). */
 export function placeholderVariables(state: GatewayState): GatewayState {
