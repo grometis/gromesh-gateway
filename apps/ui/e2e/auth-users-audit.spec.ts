@@ -119,6 +119,7 @@ test("viewer não vê edição nem menus administrativos; acesso direto é recus
   await menu.getByRole("link", { name: "Routes", exact: true }).click();
   const routes = page.getByRole("table", { name: "Routes", exact: true });
   await expect(routes.getByRole("row")).not.toHaveCount(0);
+  await expect(routes.getByRole("button", { name: "Editar", exact: true }).first()).toBeVisible();
   const routesBefore = await routes.getByRole("row").allTextContents();
   await page.route("**/api/v2/workspaces/*/routes**", (route) => {
     if (route.request().method() === "GET") return route.fallback();

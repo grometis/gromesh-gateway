@@ -52,6 +52,8 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
   const workspace = useWorkspace(workspaceId);
   const access = useWorkspaceGatewayAccess(workspaceId);
   const canWrite = !readOnly && access.canWrite;
+  // A newly mounted dialog revalidates stale access; keep it mounted while submission stays blocked.
+  const keepDialogs = !readOnly && (access.canWrite || access.isRevalidating);
   const slug = workspace.data?.slug;
   const [search, setSearch] = useState("");
   const q = useDeferredValue(search.trim());
@@ -154,7 +156,7 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
           Carregar mais
         </button>
       )}
-      {canWrite && editing && slug && (
+      {keepDialogs && editing && slug && (
         <RouteForm
           workspaceId={workspaceId}
           slug={slug}
@@ -165,7 +167,7 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
         />
       )}
       {!readOnly && details && <RouteDetails route={details} serviceName={serviceName(details.serviceId)} onClose={() => setDetails(null)} />}
-      {canWrite && deleting && <DeleteRoute workspaceId={workspaceId} route={deleting} onClose={() => setDeleting(null)} />}
+      {keepDialogs && deleting && <DeleteRoute workspaceId={workspaceId} route={deleting} onClose={() => setDeleting(null)} />}
       {!readOnly && plugins && (
         <Modal title={`Plugins de ${plugins.name}`} onClose={() => setPlugins(null)} wide>
           <p className="note">Plugins por Workspace ainda não são editáveis aqui.</p>
@@ -347,12 +349,13 @@ function RouteForm(props: { workspaceId: string; slug: string; route: WorkspaceR
           {(id, invalid) => <input id={id} aria-invalid={invalid} value={form.tags} onChange={(e) => set("tags", e.target.value)} />}
         </Field>
         <p className="muted">A alteração entra no rascunho do Workspace; nada é implantado.</p>
+        {access.reason && <p role="status">{access.reason}</p>}
         <FormErrorList messages={errors.form} />
         <div className="form-actions">
           <button type="button" onClick={onClose}>
             Cancelar
           </button>
-          <button type="submit" className="primary" disabled={save.isPending}>
+          <button type="submit" className="primary" disabled={save.isPending || !access.canWrite}>
             {save.isPending ? "Salvando…" : "Salvar"}
           </button>
         </div>
@@ -380,10 +383,13 @@ function DeleteRoute({ workspaceId, route, onClose }: { workspaceId: string; rou
         </>
       }
       confirmLabel="Excluir"
+      confirmDisabled={!access.canWrite}
       busy={remove.isPending}
       error={remove.isError ? gatewayErrorMessage(remove.error) : null}
       onConfirm={() => { if (access.canWrite && !isPathlessLegacy(route)) remove.mutate(); }}
       onClose={onClose}
-    />
+    >
+      {access.reason && <p role="status">{access.reason}</p>}
+    </ConfirmDialog>
   );
 }

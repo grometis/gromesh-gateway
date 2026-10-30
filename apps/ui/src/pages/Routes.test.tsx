@@ -135,6 +135,8 @@ async function screen(stored: WorkspaceRoute[] = [], options: {
   status?: "active" | "archived";
   publishMode?: "manual" | "auto";
   pending?: "workspace" | "environment";
+  staleTime?: number;
+  accessResponse?: (query: "workspace" | "environment", response: Response) => Promise<Response>;
   writeResponse?: () => Response;
 } = {}) {
   const container = installTestDom();
@@ -157,13 +159,18 @@ async function screen(stored: WorkspaceRoute[] = [], options: {
     if (path.endsWith("/routes")) return Response.json({ items: workspaceId === W ? stored : [], nextCursor: null });
     if (path.endsWith("/plugins")) return Response.json({ items: [{ id: "plugin-1", name: "rate-limiting", enabled: true, scope: { routeId: route().id }, config: { minute: 5 }, createdAt: NOW, updatedAt: NOW }], nextCursor: null });
     if (path.endsWith("/consumers")) return Response.json({ items: [], nextCursor: null });
-    if (path.startsWith("/api/v2/workspaces/")) return Response.json({ id: workspaceId, name, slug: workspaceId === W ? "a" : "b", status: options.status ?? "active", activeRelease: null });
-    if (path.startsWith("/api/v1/environments/")) return Response.json({ id: workspaceId, name, publishMode: options.publishMode ?? "manual", hasUnpublishedChanges: false });
+    if (accessQuery) {
+      const response = Response.json(accessQuery === "workspace"
+        ? { id: workspaceId, name, slug: workspaceId === W ? "a" : "b", status: options.status ?? "active", activeRelease: null }
+        : { id: workspaceId, name, publishMode: options.publishMode ?? "manual", hasUnpublishedChanges: false });
+      return options.accessResponse ? options.accessResponse(accessQuery, response) : response;
+    }
+    if (path.startsWith("/api/v1/environments/")) return Response.json({ id: workspaceId, hasUnpublishedChanges: false });
     throw new Error(`Unexpected request: ${request.method} ${path}`);
   });
   const { createMemoryRouter, RouterProvider } = await import("react-router");
   const router = createMemoryRouter([{ path: "/e/:envId/routes", element: <RoutesPage /> }], { initialEntries: [`/e/${W}/routes`] });
-  client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: options.staleTime ?? Infinity } } });
   const { createRoot } = await import("react-dom/client");
   root = createRoot(container as unknown as HTMLElement);
   await act(async () => {
@@ -201,6 +208,62 @@ async function screen(stored: WorkspaceRoute[] = [], options: {
 const pathless = () => route({ pathCompatibility: "legacy-preserved", paths: [], hosts: ["boletos.example"], methods: ["GET"], tags: ["legado"] });
 
 describe("routes screen", () => {
+  it.each([
+    ["create", "workspace"], ["create", "environment"],
+    ["edit", "workspace"], ["edit", "environment"],
+    ["delete", "workspace"], ["delete", "environment"],
+  ] as const)("keeps the %s dialog mounted while stale %s access revalidates and blocks writes until confirmed", async (operation, query) => {
+    let hold = false;
+    let confirm!: () => void;
+    const view = await screen([route()], {
+      staleTime: 0,
+      accessResponse: async (key, response) => {
+        if (hold && key === query) await new Promise<void>((resolve) => { confirm = resolve; });
+        return response;
+      },
+    });
+    hold = true;
+    if (operation === "delete") {
+      const menu = view.container.findAll((n) => n.getAttribute("aria-haspopup") === "menu")[0]!;
+      await act(async () => { menu.dispatchEvent(new Event("click", { bubbles: true })); await tick(); });
+      await view.click("Excluir");
+    } else await view.click(operation === "create" ? "Nova route" : "Editar");
+    try {
+      expect(client!.getQueryState([query, W])).toMatchObject({ fetchStatus: "fetching", status: "success" });
+      const dialog = view.dialog();
+      expect(dialog).toBeDefined();
+      expect(dialog!.textContent).toContain("Somente leitura enquanto");
+      const label = operation === "delete" ? "Excluir" : "Salvar";
+      expect(view.buttons(label, dialog!)[0]!.getAttribute("disabled")).not.toBeNull();
+      if (operation === "delete") await view.click("Excluir");
+      else {
+        await view.input("Nome", "kept-during-check");
+        await view.input("Paths", "/kept");
+        await view.submit();
+      }
+      expect(sent.every((r) => r.method === "GET")).toBe(true);
+      hold = false;
+      await act(async () => { confirm(); await tick(); });
+      await act(async () => { await tick(); });
+      expect(view.dialog()).toBe(dialog);
+      expect(view.buttons(label, dialog!)[0]!.getAttribute("disabled")).toBeNull();
+      if (operation === "delete") await view.click("Excluir");
+      else {
+        expect(view.field("Nome").value).toBe("kept-during-check");
+        expect(view.field("Paths").value).toBe("/kept");
+        await view.submit();
+      }
+      await act(async () => { await tick(); });
+      expect(view.dialog()).toBeUndefined();
+      expect(sent.filter((r) => r.method !== "GET").map((r) => r.method)).toEqual([
+        operation === "create" ? "POST" : operation === "edit" ? "PUT" : "DELETE",
+      ]);
+    } finally {
+      hold = false;
+      confirm?.();
+    }
+  });
+
   it.each(["create", "edit"])("preserves commas in literal and regex paths on %s", async (operation) => {
     const paths = ["~/items/[0-9]{1,3}", "/a,/b"];
     const view = await screen([route({ paths })]);
