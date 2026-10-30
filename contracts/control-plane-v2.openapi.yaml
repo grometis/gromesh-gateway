@@ -235,7 +235,9 @@ info:
         grant that supports it; a temporary grant never includes members.manage. Revoking: a deny binding or one
         granted by the platform only by the platform; others by a holder of members.manage in that scope who holds
         the binding's permissions. Changing a custom role's permissions is platform-only.
-      - Provisioning (first promotion of a workspace to a target): inside `executing`, ONE transaction of the target
+      - Provisioning (first promotion of a workspace to a target): refused with 409 workspaces-mode-disabled, creating
+        nothing, while the target's Workspaces mode is disabled (WS-M0: no path creates a second workspace in an
+        instance before the N2 gates). Otherwise, inside `executing`, ONE transaction of the target
         creates the workspace (same key and slug, the target's mandatory policies, and none of the source's members,
         groups, permissions, values or credentials), moves the prepared values, and creates the release and the
         deployment. If the composition fails, everything rolls back: there is no partially active workspace.
@@ -485,7 +487,12 @@ paths:
       x-scope: instance
       x-gromesh-requirements: [ GW-WS-01, GW-RBAC-02 ]
       x-required-permission: workspace.read
-      description: Lists only workspaces where the caller has at least workspace.read.
+      description: |
+        Lists only workspaces where the caller has at least workspace.read (an explicit deny there hides it), ordered
+        by name then id. A workspace outside the caller's scope is never revealed: not in a page, not by the cursor,
+        not by the count of a page and not by an error: limit counts only items returned, and nextCursor carries only
+        the last item returned (never one the caller may not read).
+        Archived workspaces are listed too, with their status.
       parameters: [ { $ref: "#/components/parameters/Cursor" }, { $ref: "#/components/parameters/Limit" } ]
       responses:
         "200": { description: Page, content: { application/json: { schema: { $ref: "#/components/schemas/WorkspacePage" } } } }
@@ -497,20 +504,72 @@ paths:
       operationId: createWorkspace
       x-scope: instance
       x-gromesh-requirements: [ GW-WS-01, GW-WS-10, GW-ADMIN-01 ]
+      x-gromesh-workspaces-mode-disabled: refused
       security: [ { cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] } ]
       x-required-permission: workspace.create
-      x-gromesh-planned: true
       description: |
-        Allowed according to the instance creation policy (admin-only, autonomous with explicit permission). In
-        restricted-request mode callers without workspace.create use POST /workspace-requests instead. Only in the
-        lowest stage (dev); hml and prd workspaces are provisioned by the first approved promotion.
+        Creates an empty workspace of this instance (WS-M0). Checked in this order, each refusal audited by nothing
+        and creating nothing:
+        1. The server's Workspaces mode (decision D4): while it is disabled (the default; only disposable labs set
+           GROMESH_EXPERIMENTAL_WORKSPACES=lab while the N2 gates are open) the answer is 409 workspaces-mode-disabled,
+           before anything else is read. This is the N2 block on a second workspace in the instance's data plane; it
+           is not lifted by any permission or policy.
+        2. The stage: only on dev. hml, prd or an unknown stage (no GROMESH_INSTANCE_STAGE and no instance row)
+           answer 403; hml and prd workspaces are provisioned by the first approved promotion (GW-PRV-01).
+        3. The creation policy (WorkspaceCreationPolicy). Every mode needs workspace.create in the instance scope
+           (the guard's x-required-permission; an explicit instance grant, never part of a workspace role, and held
+           by the platform-admin role); admin-only additionally needs platform.admin. Otherwise 403; in
+           restricted-request mode a caller without it uses requestWorkspace.
+        4. The body: the slug is the one given, or the name normalized when absent (WorkspaceWrite.slug). It is never
+           adjusted: an invalid or reserved slug answers 422 at `slug`, one already used by any workspace of the
+           instance (archived included) 409 slug-taken, and a name already used 409 name-taken; both 409 carry
+           `suggestedSlug` when a free valid one exists (a proposal the caller may send, never applied). Slugs and
+           names are unique in the instance (the slug is the public path prefix of its data plane), so this 409 tells
+           only that the value is unavailable: never which workspace holds it, its id, status or anything else, and
+           listWorkspaces and getWorkspace keep hiding a workspace outside the caller's scope.
+        The workspace gets a new id and a new key, status active, no release, no deployment, no cluster, no variable
+        and no object of any other workspace. Creating it grants nothing: no binding is created, except the
+        workspace-admin binding of the creator when the policy says creatorBecomesAdmin (never to a platform admin,
+        who already administers it), recorded with the creation. It reaches no data plane: only a deployment does
+        (createDeployment). Audited (workspace.create) in the same transaction.
       requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/WorkspaceWrite" } } } }
       responses:
         "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/Workspace" } } } }
-        "409": { $ref: "#/components/responses/Conflict" }
+        "409": { description: "Workspaces mode disabled, slug or name taken", content: { application/problem+json: { schema: { $ref: "#/components/schemas/WorkspaceProblem" } } } }
         "422": { $ref: "#/components/responses/ValidationError" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+  /workspace-creation-policy:
+    get:
+      tags: [ workspaces ]
+      operationId: getWorkspaceCreationPolicy
+      x-scope: instance
+      x-gromesh-requirements: [ GW-ADMIN-01 ]
+      x-required-permission: workspace.read
+      description: |
+        The instance's creation policy, with what it means for the caller (`caller`), so a client shows create,
+        request or nothing; the server decides each call again. Never configured: mode restricted-request and
+        creatorBecomesAdmin false (GW-ADMIN-01, the restrictive default).
+      responses:
+        "200": { description: Policy, content: { application/json: { schema: { $ref: "#/components/schemas/WorkspaceCreationPolicy" } } } }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403": { $ref: "#/components/responses/Forbidden" }
+    put:
+      tags: [ workspaces ]
+      operationId: setWorkspaceCreationPolicy
+      x-scope: instance
+      x-gromesh-requirements: [ GW-ADMIN-01 ]
+      x-required-permission: platform.admin
+      description: Replaces the policy. It changes no existing workspace, binding or pending request (a pending request is decided under the policy in force at the decision). Audited (workspace_creation_policy.update, before and after).
+      security: [ { cookieAuth: [], csrfToken: [] } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/WorkspaceCreationPolicyWrite" } } } }
+      responses:
+        "200": { description: Replaced, content: { application/json: { schema: { $ref: "#/components/schemas/WorkspaceCreationPolicy" } } } }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /workspaces/{workspaceId}:
     parameters: [ { $ref: "#/components/parameters/WorkspaceId" } ]
     get:
@@ -531,12 +590,16 @@ paths:
       x-gromesh-requirements: [ GW-WS-01 ]
       security: [ { cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] } ]
       x-required-permission: workspace.admin
-      x-gromesh-planned: true
-      description: Name and description only. The slug is immutable after the first release.
-      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { name: { type: string }, description: { type: string } }, additionalProperties: false } } } }
+      description: |
+        Name and description only: the id, the key and the slug never change here (the slug is immutable after the
+        first release, and no operation of this phase changes it before). A name already used by another workspace
+        answers 409 name-taken; an archived workspace 409 workspace-archived. Audited (workspace.update, before and
+        after) in the same transaction.
+      requestBody: { required: true, content: { application/json: { schema: { type: object, minProperties: 1, properties: { name: { type: string, minLength: 1, maxLength: 100 }, description: { type: string } }, additionalProperties: false } } } }
       responses:
         "200": { description: Updated, content: { application/json: { schema: { $ref: "#/components/schemas/Workspace" } } } }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: "Name taken or workspace archived", content: { application/problem+json: { schema: { $ref: "#/components/schemas/WorkspaceProblem" } } } }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/ValidationError" }
@@ -549,27 +612,62 @@ paths:
       x-gromesh-requirements: [ GW-WS-15, GW-ADMIN-07 ]
       security: [ { cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] } ]
       x-required-permission: platform.admin
-      x-gromesh-planned: true
-      description: 409 while the workspace has an active release with entities (remove it with a tombstone promotion first).
+      description: |
+        Archives the workspace; nothing is deleted: its entities, credentials, releases, snapshots, bindings and audit
+        stay as they are, readable. Refused with 409 (nothing changed) while anything it published may still be served
+        or composed: active-release (its active release is not a tombstone; remove it with a tombstone promotion
+        first), deployed (it has a release that is not a tombstone in a revision a node may still serve: the latest
+        revision that ever reached converged, or any later one not rejected, or, while none ever converged, any
+        revision not rejected; a node that fails to apply a revision keeps the one before, so only a converged
+        revision without it, or with its tombstone, proves it withdrawn), published-configuration (the v1
+        environment has a current snapshot; v1 has no unpublish, so a workspace that ever published through v1 is not
+        archivable in this phase) or clusters (a cluster is registered in it). Already archived: 204, nothing
+        recorded. Once archived the workspace is read-only: every mutation in its scope (v1 or v2) answers 409
+        workspace-archived, except revoking a role binding (revokeRoleBinding), so access can always be withdrawn.
+        Audited (workspace.archive) in the same transaction.
       responses:
         "204": { description: Archived }
-        "409": { $ref: "#/components/responses/Conflict" }
+        "409": { description: Refused, content: { application/problem+json: { schema: { $ref: "#/components/schemas/WorkspaceProblem" } } } }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
   /workspace-requests:
+    get:
+      tags: [ workspaces ]
+      operationId: listWorkspaceRequests
+      x-scope: instance
+      x-gromesh-requirements: [ GW-ADMIN-01, GW-ADMIN-02 ]
+      x-gromesh-phase: L8
+      x-required-permission: workspace.read
+      x-gromesh-planned: true
+      description: Newest first. A caller with workspace.create in the instance scope sees every request; anyone else only its own.
+      parameters: [ { $ref: "#/components/parameters/Cursor" }, { $ref: "#/components/parameters/Limit" }, { name: status, in: query, required: false, schema: { $ref: "#/components/schemas/WorkspaceRequestStatus" } } ]
+      responses:
+        "200": { description: Page, content: { application/json: { schema: { type: object, required: [ items, nextCursor ], properties: { items: { type: array, items: { $ref: "#/components/schemas/WorkspaceRequest" } }, nextCursor: { type: [ string, "null" ] } } } } } }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
     post:
       tags: [ workspaces ]
       operationId: requestWorkspace
       x-scope: instance
       x-gromesh-requirements: [ GW-ADMIN-01, GW-ADMIN-02 ]
       x-gromesh-phase: L8
+      x-gromesh-workspaces-mode-disabled: refused
       security: [ { cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] } ]
       x-required-permission: workspace.request
       x-gromesh-planned: true
+      description: |
+        Only in restricted-request mode (409 creation-policy otherwise) and under the same Workspaces-mode and stage
+        checks as createWorkspace (409 workspaces-mode-disabled; 403 outside dev). The body is validated as
+        createWorkspace validates it (422 at `slug`), and a slug or name already used by a workspace or by another
+        pending request answers 409 slug-taken or name-taken. Creates nothing but the request. Audited
+        (workspace_request.create).
       requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/WorkspaceWrite" } } } }
       responses:
         "201": { description: Requested, content: { application/json: { schema: { $ref: "#/components/schemas/WorkspaceRequest" } } } }
+        "409": { description: "Policy, Workspaces mode, slug or name", content: { application/problem+json: { schema: { $ref: "#/components/schemas/WorkspaceProblem" } } } }
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403": { $ref: "#/components/responses/Forbidden" }
@@ -581,20 +679,49 @@ paths:
       operationId: decideWorkspaceRequest
       x-gromesh-requirements: [ GW-ADMIN-01, GW-ADMIN-02 ]
       x-gromesh-phase: L8
+      x-gromesh-workspaces-mode-disabled: refused
       security:
         - cookieAuth: []
           csrfToken: []
       x-required-permission: workspace.create
-      x-scope: request
+      x-scope: instance
       x-gromesh-planned: true
+      description: |
+        Session only. Someone with workspace.create in the instance scope decides a pending request (in
+        restricted-request mode; admin-only also needs platform.admin; autonomous answers 409 creation-policy); never
+        its own requester (403). approve creates the workspace in the same transaction as the decision, with
+        createWorkspace's mode, stage, policy and body checks evaluated for the DECIDER (the requester needs no
+        workspace.create; a slug or name taken meanwhile answers 409 and leaves the request pending). The requester
+        is recorded as the workspace's creator, and creatorBecomesAdmin grants workspace-admin to the requester. reject creates nothing. A decided or cancelled
+        request answers 409 request-decided. Audited (workspace_request.decide, and workspace.create on approve).
       requestBody: { required: true, content: { application/json: { schema: { type: object, required: [ decision ], properties: { decision: { enum: [ approve, reject ] }, comment: { type: string } }, additionalProperties: false } } } }
       responses:
         "200": { description: Decided, content: { application/json: { schema: { $ref: "#/components/schemas/WorkspaceRequest" } } } }
+        "409": { description: "Decided, Workspaces mode, slug or name", content: { application/problem+json: { schema: { $ref: "#/components/schemas/WorkspaceProblem" } } } }
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationError" }
+  /workspace-requests/{requestId}/cancel:
+    parameters: [ { name: requestId, in: path, required: true, schema: { type: string, format: uuid } } ]
+    post:
+      tags: [ workspaces ]
+      operationId: cancelWorkspaceRequest
+      x-gromesh-requirements: [ GW-ADMIN-02 ]
+      x-gromesh-phase: L8
+      security: [ { cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] } ]
+      x-required-permission: workspace.request
+      x-scope: instance
+      x-gromesh-planned: true
+      description: Only the requester, while pending (someone else's request answers 404; a decided one 409 request-decided). Audited (workspace_request.cancel).
+      responses:
+        "200": { description: Cancelled, content: { application/json: { schema: { $ref: "#/components/schemas/WorkspaceRequest" } } } }
+        "409": { description: Already decided, content: { application/problem+json: { schema: { $ref: "#/components/schemas/WorkspaceProblem" } } } }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
   /workspaces/{workspaceId}/variables:
     parameters: [ { $ref: "#/components/parameters/WorkspaceId" } ]
     get:
@@ -1205,6 +1332,7 @@ paths:
     post:
       tags: [ promotions ]
       operationId: executePromotion
+      x-gromesh-workspaces-mode-disabled: refused-provisioning
       x-gromesh-requirements: [ GW-APR-06, GW-DEP-01, GW-DEP-02, GW-DEP-04, GW-PRV-01, GW-PRV-02, GW-PRV-03, GW-PRV-04, GW-ENV-03, GW-M2M-03, GW-M2M-05 ]
       x-required-permission: promotion.execute
       x-required-permission-alternatives:
@@ -4150,7 +4278,13 @@ components:
         slug:
           type: string
           pattern: ^[a-z][a-z0-9-]{1,39}$
-          description: Optional; derived from the name when absent (lowercase, no accents, spaces to hyphens). Reserved slugs rejected.
+          x-gromesh-reserved-slugs: [ api, admin, agent, status, metrics, health, healthz, ready, gromesh, kong, well-known, static, assets ]
+          description: |
+            GW-WS-10. Optional. Valid: the pattern, without a trailing hyphen or two hyphens in a row. Reserved (422):
+            the x-gromesh-reserved-slugs and every slug starting with gromesh-. Absent: the name normalized (NFKD,
+            combining marks removed, lowercase, the letters NFKD keeps whole transliterated ß→ss, æ→ae, œ→oe, ø→o,
+            đ→d, ð→d, ł→l, þ→th, ı→i, every other run of characters outside [a-z0-9] to one hyphen, hyphens trimmed,
+            at most 40 and trimmed again), then validated as given: never prefixed, suffixed or otherwise adjusted.
       additionalProperties: false
     Workspace:
       type: object
@@ -4204,8 +4338,59 @@ components:
           - [ pending, cancelled, "the requester cancels" ]
     WorkspaceRequest:
       type: object
-      required: [ id, status ]
-      properties: { id: { type: string, format: uuid }, name: { type: string }, status: { $ref: "#/components/schemas/WorkspaceRequestStatus" }, requestedBy: { type: string }, decidedBy: { type: [ string, "null" ] } }
+      required: [ id, name, slug, status, requestedBy, decidedBy, createdAt, decidedAt, workspaceId ]
+      additionalProperties: false
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string }
+        slug: { type: string, description: "The slug requested, or the one derived from the name; never adjusted" }
+        status: { $ref: "#/components/schemas/WorkspaceRequestStatus" }
+        requestedBy: { type: string, format: uuid }
+        decidedBy: { type: [ string, "null" ], format: uuid }
+        comment: { type: [ string, "null" ] }
+        createdAt: { type: string, format: date-time }
+        decidedAt: { type: [ string, "null" ], format: date-time }
+        workspaceId: { type: [ string, "null" ], format: uuid, description: The workspace an approval created }
+    WorkspaceCreationMode:
+      enum: [ restricted-request, autonomous, admin-only ]
+      description: |
+        GW-ADMIN-01. restricted-request (the default): holders of workspace.create (an explicit instance grant, the
+        corporate policy's TL, CL or admin) create and decide requests; holders of workspace.request only request.
+        autonomous: holders of workspace.create create; no requests. admin-only: only platform.admin creates; no
+        requests.
+    WorkspaceCreationPolicyWrite:
+      type: object
+      additionalProperties: false
+      required: [ mode, creatorBecomesAdmin ]
+      properties:
+        mode: { $ref: "#/components/schemas/WorkspaceCreationMode" }
+        creatorBecomesAdmin: { type: boolean, description: "true: the creator (the requester, on an approval) gets a workspace-admin binding of the new workspace. false (the default): creating grants nothing." }
+    WorkspaceCreationPolicy:
+      type: object
+      additionalProperties: false
+      required: [ mode, creatorBecomesAdmin, updatedAt, updatedBy, workspacesMode, stage, caller ]
+      properties:
+        mode: { $ref: "#/components/schemas/WorkspaceCreationMode" }
+        creatorBecomesAdmin: { type: boolean }
+        updatedAt: { type: [ string, "null" ], format: date-time, description: null while never configured }
+        updatedBy: { type: [ string, "null" ], format: uuid }
+        workspacesMode: { enum: [ disabled, lab ], description: "The server's Workspaces mode (decision D4): disabled refuses every creation and request with 409 workspaces-mode-disabled" }
+        stage: { type: [ string, "null" ], enum: [ dev, hml, prd, null ], description: "The instance stage; creation only on dev (null: unknown, refused)" }
+        caller:
+          type: object
+          additionalProperties: false
+          required: [ canCreate, canRequest, canDecide ]
+          description: What the policy, the mode, the stage and the caller's permissions allow now (advisory; every call is decided again).
+          properties: { canCreate: { type: boolean }, canRequest: { type: boolean }, canDecide: { type: boolean } }
+    WorkspaceProblem:
+      allOf:
+        - $ref: "#/components/schemas/Problem"
+        - type: object
+          required: [ code ]
+          properties:
+            code: { enum: [ workspaces-mode-disabled, creation-policy, slug-taken, name-taken, workspace-archived, active-release, deployed, published-configuration, clusters, request-decided ] }
+            suggestedSlug: { type: string, pattern: "^[a-z][a-z0-9-]{1,39}$", description: "A free, valid slug the caller may send (slug-taken, name-taken); never applied" }
     WorkspaceVariable:
       type: object
       required: [ name, type, secret, required, hasValue ]

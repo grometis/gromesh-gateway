@@ -1,13 +1,13 @@
 import { Body, Controller, Get, HttpCode, HttpStatus, Inject, Injectable, Module, Param, Post, Req } from "@nestjs/common";
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { audit } from "../audit/audit.js";
-import { type AuthenticatedRequest, Ctx, RequiredPermission, type RequestContext, SessionOnly } from "../auth/auth.js";
+import { ArchivedAllowed, type AuthenticatedRequest, Ctx, RequiredPermission, type RequestContext, SessionOnly } from "../auth/auth.js";
 import { BUILTIN_ROLES, builtinRoleId, type Held, isBuiltinRole, type Permission, type V1Binding, v1BindingById, v1Bindings } from "../auth/permissions.js";
 import { contractBodyV2 } from "../common/contract.js";
 import { notFound, ProblemException, unprocessable, type FieldError } from "../common/problem.js";
 import { DB, type Db } from "../db/db.js";
 import { roleBindings, users, type RoleBindingRow } from "../db/schema.js";
-import { uuidParam } from "../environments/environments.js";
+import { refuseArchived, uuidParam } from "../environments/environments.js";
 
 /** contracts/control-plane-v2.openapi.yaml#/components/schemas/RoleBindingWrite (the core profile of N1). */
 interface RoleBindingWrite {
@@ -110,6 +110,8 @@ export class AccessService {
     const missing = permissions.filter((p) => (p === "rollback.emergency" ? !held.has("platform.admin") : !held.has(p)));
     if (missing.length > 0) throw new ProblemException(HttpStatus.FORBIDDEN, `Cannot grant what you do not hold: ${missing.join(", ")}`);
     return this.db.transaction(async (tx) => {
+      // A grant in an archived workspace is refused here too (only revoking stays possible there).
+      if (scope.type === "workspace") await refuseArchived(tx, scope.workspaceId);
       const [row] = await tx
         .insert(roleBindings)
         .values({
@@ -194,6 +196,7 @@ export class AccessController {
 
   @Post("role-bindings/:bindingId/revoke")
   @HttpCode(204)
+  @ArchivedAllowed()
   @RequiredPermission("members.manage", "binding")
   async revoke(@Ctx() ctx: RequestContext, @Req() req: AuthenticatedRequest, @Param("bindingId", uuidParam()) bindingId: string) {
     // The guard decided in the binding's own scope: these are the caller's permissions there (capped by a token).
