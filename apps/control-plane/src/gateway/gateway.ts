@@ -1,11 +1,11 @@
-import { Body, Controller, Delete, Get, HttpCode, Inject, Injectable, Module, Param, Post, Put, Query } from "@nestjs/common";
-import type { GatewayState, Route, Service } from "@gromesh/compiler";
+import { Body, Controller, Delete, Get, HttpCode, HttpException, Inject, Injectable, Module, Param, Post, Put, Query } from "@nestjs/common";
+import { type GatewayState, regexIssue, type Route, type Service } from "@gromesh/compiler";
 import { and, asc, count, eq, gt, ilike, or, sql, type SQL } from "drizzle-orm";
 import type { PgColumn } from "drizzle-orm/pg-core";
 import type { RouteWrite, ServiceWrite } from "../api-types.js";
 import { audit } from "../audit/audit.js";
 import { Ctx, RequiredPermission, RequiredRole, type RequestContext } from "../auth/auth.js";
-import { contractBody } from "../common/contract.js";
+import { contractBody, contractBodyV2 } from "../common/contract.js";
 import { decodeCursor, parseLimit, toPage } from "../common/pagination.js";
 import { conflict, notFound, unprocessable } from "../common/problem.js";
 import { assertDestination, destinationPolicy, type DestinationPolicy } from "../common/destinations.js";
@@ -339,21 +339,47 @@ export class GatewayService {
     return map(await this.requireRoute(this.db, envId, routeId));
   }
 
-  async createRoute(ctx: RequestContext, envId: string, body: RouteWrite) {
+  /** v1 creates legacy-preserved routes (the column's default); v2 creates workspace-default ones (WS-R0). */
+  async createRoute<T = ReturnType<typeof toRoute>>(ctx: RequestContext, envId: string, body: RouteWrite, workspaceDefault = false, map: (r: RouteRow) => T = toRoute as (r: RouteRow) => T) {
     return this.db.transaction(async (tx) => {
       await requireEnvironment(tx, envId);
       await this.checkRoute(tx, envId, body);
-      const [row] = await tx.insert(routes).values({ environmentId: envId, ...routeValues(body) }).returning();
+      const [row] = await tx
+        .insert(routes)
+        .values({ environmentId: envId, ...routeValues(body), ...(workspaceDefault ? { pathCompatibility: "workspace-default" as const } : {}) })
+        .returning();
       const after = toRoute(row!);
       await markDraftChanged(tx, envId);
       await audit(tx, ctx, { action: "route.create", entityType: "route", entityId: after.id, environmentId: envId, after });
-      return after;
+      return map(row!);
     });
   }
 
-  async replaceRoute(ctx: RequestContext, envId: string, routeId: string, body: RouteWrite) {
+  /**
+   * replaceRoute through v2 (WS-R0): the route keeps its pathCompatibility. A legacy-preserved one keeps its stored
+   * stripPath when none is given, and refuses another one (409 path-compatibility: convert it explicitly); a
+   * workspace-default one takes the body as written, with the v2 defaults.
+   */
+  async replaceWorkspaceRoute(ctx: RequestContext, envId: string, routeId: string, body: RouteWrite & { stripPath?: boolean }) {
+    const [current] = await this.db.select({ pathCompatibility: routes.pathCompatibility, stripPath: routes.stripPath }).from(routes).where(and(eq(routes.id, routeId), eq(routes.environmentId, envId)));
+    if (!current) throw notFound("Route");
+    if (current.pathCompatibility === "legacy-preserved") {
+      if (body.stripPath !== undefined && body.stripPath !== current.stripPath) {
+        throw new HttpException({ type: "https://gromesh.dev/problems/path-compatibility", title: "Conflict", status: 409, code: "path-compatibility",
+          detail: "A legacy-preserved route keeps its stripPath: convert it with convertRoutePathCompatibility", errors: [{ path: "stripPath", message: "differs from the legacy route's" }] }, 409);
+      }
+      return this.replaceRoute(ctx, envId, routeId, { ...body, stripPath: current.stripPath }, toWorkspaceRoute, "legacy-preserved");
+    }
+    workspaceRouteChecks(body);
+    return this.replaceRoute(ctx, envId, routeId, { ...body, stripPath: body.stripPath ?? false }, toWorkspaceRoute, "workspace-default");
+  }
+
+  async replaceRoute<T = ReturnType<typeof toRoute>>(ctx: RequestContext, envId: string, routeId: string, body: RouteWrite, map: (r: RouteRow) => T = toRoute as (r: RouteRow) => T, expected?: RouteRow["pathCompatibility"]) {
     return this.db.transaction(async (tx) => {
-      const before = toRoute(await this.requireRoute(tx, envId, routeId));
+      const current = await this.requireRoute(tx, envId, routeId);
+      // The classification read before this transaction still holds (a conversion in between answers 409).
+      if (expected !== undefined && current.pathCompatibility !== expected) throw conflict("The route's path compatibility changed meanwhile; retry");
+      const before = toRoute(current);
       await this.checkRoute(tx, envId, body);
       const [row] = await tx
         .update(routes)
@@ -363,7 +389,7 @@ export class GatewayService {
       const after = toRoute(row!);
       await markDraftChanged(tx, envId);
       await audit(tx, ctx, { action: "route.update", entityType: "route", entityId: routeId, environmentId: envId, before, after });
-      return after;
+      return map(row!);
     });
   }
 
@@ -541,12 +567,40 @@ export class WorkspaceRoutesController {
     return this.gw.getRoute(workspaceId, routeId, toWorkspaceRoute);
   }
 
+  /** createRoute (WS-R0): a workspace-default route, the full path to the upstream unless stripPath is true. */
+  @Post()
+  @RequiredPermission("gateway.write", "workspace")
+  create(@Ctx() ctx: RequestContext, @Param("workspaceId", uuidParam()) workspaceId: string, @Body(contractBodyV2("WorkspaceRouteWrite")) body: RouteWrite) {
+    workspaceRouteChecks(body);
+    return this.gw.createRoute(ctx, workspaceId, { ...body, stripPath: body.stripPath ?? false }, true, toWorkspaceRoute);
+  }
+
+  @Put(":routeId")
+  @RequiredPermission("gateway.write", "workspace")
+  replace(
+    @Ctx() ctx: RequestContext,
+    @Param("workspaceId", uuidParam()) workspaceId: string,
+    @Param("routeId", uuidParam()) routeId: string,
+    @Body(contractBodyV2("WorkspaceRouteWrite")) body: RouteWrite,
+  ) {
+    return this.gw.replaceWorkspaceRoute(ctx, workspaceId, routeId, body);
+  }
+
   @Delete(":routeId")
   @HttpCode(204)
   @RequiredPermission("gateway.write", "workspace")
   async remove(@Ctx() ctx: RequestContext, @Param("workspaceId", uuidParam()) workspaceId: string, @Param("routeId", uuidParam()) routeId: string) {
     await this.gw.deleteRoute(ctx, workspaceId, routeId);
   }
+}
+
+/** What the composition would refuse in a workspace-default route, answered at write time (422 at the path). */
+function workspaceRouteChecks(body: RouteWrite): void {
+  const errors = (body.paths ?? []).flatMap((p, i) => {
+    const issue = p.startsWith("~") ? regexIssue(p.slice(1)) : null;
+    return issue ? [{ path: `paths.${i}`, message: issue }] : [];
+  });
+  if (errors.length > 0) throw unprocessable("Invalid route", errors);
 }
 
 @Module({ controllers: [ServicesController, RoutesController, WorkspaceServicesController, WorkspaceRoutesController], providers: [GatewayService] })

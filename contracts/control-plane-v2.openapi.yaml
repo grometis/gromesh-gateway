@@ -2061,7 +2061,6 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
       x-required-permission: gateway.write
       x-scope: workspace
-      x-gromesh-planned: true
       x-gromesh-requirements:
         - GW-WS-02
         - GW-WS-03
@@ -2132,7 +2131,6 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
       x-required-permission: gateway.write
       x-scope: workspace
-      x-gromesh-planned: true
       x-gromesh-requirements:
         - GW-WS-02
         - GW-WS-03
