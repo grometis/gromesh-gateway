@@ -278,6 +278,9 @@ describe("v1 writes, export and import of a v2 service (WS-U0, r7)", () => {
     const exported = await h.api("GET", `/environments/${ws}/export`);
     expect(exported.status).toBe(200);
     expect(JSON.stringify(exported.body)).not.toMatch(/"binding"|"upstreamId"/);
+    // The dry run already announces the change of binding (same attributes otherwise).
+    const preview = await h.api("POST", `/environments/${ws}/import`, { document: exported.body, mode: "merge", dryRun: true });
+    expect(JSON.stringify(preview.body.modified ?? preview.body)).toContain(svc.id);
     const imported = await h.api("POST", `/environments/${ws}/import`, { document: exported.body, mode: "merge", dryRun: false });
     expect(imported.status, JSON.stringify(imported.body)).toBeLessThan(300);
     expect((await binding(svc.id)).binding).toBeNull();
