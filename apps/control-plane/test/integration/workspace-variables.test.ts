@@ -1,4 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import pg from "pg";
+import { runMigrations } from "../../src/db/migrate.js";
 import { releaseContent } from "../../src/releases/releases.js";
 import { selfSigned } from "./certs.js";
 import { type ApiClient, type ApiResponse, startHarness, uniq, type Harness } from "./harness.js";
@@ -137,5 +139,47 @@ describe("workspace variables (WS-V1)", () => {
     const content = releaseContent(state as never, enc, { mapSecrets: (_: string, c: unknown) => c } as never);
     expect(content.variables).toEqual(state.variables);
     expect(JSON.stringify(content)).not.toContain(SECRET);
+  });
+});
+
+describe("values of a deleted declaration end with the next release (WS-V1)", () => {
+  const ADMIN_URL = process.env.TEST_DATABASE_URL ?? "postgres://gromesh:gromesh@127.0.0.1:5432/gromesh";
+  const name = `gromesh_wsv1_${Date.now()}_${process.pid}`;
+  let h: Harness;
+  beforeAll(async () => {
+    const admin = new pg.Client({ connectionString: ADMIN_URL });
+    await admin.connect();
+    await admin.query(`CREATE DATABASE "${name}"`);
+    await admin.end();
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${name}`;
+    await runMigrations(url.toString());
+    // Publishing a release needs only the stage (decision D4); it deploys nothing.
+    h = await startHarness({ databaseUrl: url.toString(), instanceStage: "dev" });
+  });
+  afterAll(async () => {
+    await h?.close();
+    const admin = new pg.Client({ connectionString: ADMIN_URL });
+    await admin.connect();
+    await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
+    await admin.end();
+  });
+
+  it("keeps a deleted variable's values until a release without it is published, then purges them (names audited)", async () => {
+    const ws = (await h.api("POST", "/environments", { name: uniq("purge") })).body.id as string;
+    await v2(h.api, "PUT", `/workspaces/${ws}/variables/KEEP`, { type: "string", secret: false, required: false });
+    await v2(h.api, "PUT", `/workspaces/${ws}/variables/KEEP/value`, { value: "k" });
+    await v2(h.api, "PUT", `/workspaces/${ws}/variables/DROP_ME`, { type: "string", secret: true, required: false });
+    await v2(h.api, "PUT", `/workspaces/${ws}/variables/DROP_ME/value`, { value: SECRET });
+    const first = await v2(h.api, "POST", `/workspaces/${ws}/releases`, { message: "with both" });
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    expect((await v2(h.api, "DELETE", `/workspaces/${ws}/variables/DROP_ME`)).status).toBe(204);
+    const count = async (n: string) => (await h.sql.query("select count(*)::int as n from workspace_variable_values where workspace_id = $1 and name = $2", [ws, n])).rows[0].n;
+    expect(await count("DROP_ME")).toBe(1);
+    expect((await v2(h.api, "POST", `/workspaces/${ws}/releases`, { message: "without DROP_ME" })).status).toBe(201);
+    expect([await count("DROP_ME"), await count("KEEP")]).toEqual([0, 1]);
+    const [event] = (await h.sql.query("select after from audit_events where action = 'workspace_variable.value.purge' and environment_id = $1", [ws])).rows;
+    expect(event.after.names).toEqual(["DROP_ME"]);
+    expect(JSON.stringify(event.after)).not.toContain(SECRET);
   });
 });

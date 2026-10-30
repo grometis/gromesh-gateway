@@ -11,7 +11,7 @@ import {
   platformPlugins,
   type WorkspaceContent,
 } from "@gromesh/compiler";
-import { and, asc, desc, eq, inArray, max, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, max, notInArray, sql } from "drizzle-orm";
 import { audit } from "../audit/audit.js";
 import { Ctx, RequiredPermission, type RequestContext } from "../auth/auth.js";
 import { contractBodyV2, inlineBody } from "../common/contract.js";
@@ -32,6 +32,7 @@ import {
   workspaceActiveRelease,
   workspaces,
   workspaceVariables,
+  workspaceVariableValues,
   type DeploymentMember,
   type InstanceRow,
   type ReleaseRow,
@@ -232,6 +233,16 @@ export class ReleasesService {
         .insert(workspaceActiveRelease)
         .values({ workspaceId, version, deploymentRevision: null })
         .onConflictDoUpdate({ target: workspaceActiveRelease.workspaceId, set: { version, deploymentRevision: null } });
+      // The values of variables this release no longer declares end with it (contract: kept until a release without
+      // the declaration is active). Only the names are audited.
+      const kept = (state.variables ?? []).map((v) => v.name);
+      const purged = await tx
+        .delete(workspaceVariableValues)
+        .where(and(eq(workspaceVariableValues.workspaceId, workspaceId), kept.length > 0 ? notInArray(workspaceVariableValues.name, kept) : undefined))
+        .returning({ name: workspaceVariableValues.name });
+      if (purged.length > 0) {
+        await audit(tx, ctx, { action: "workspace_variable.value.purge", entityType: "workspace_variable", environmentId: workspaceId, after: { names: [...new Set(purged.map((p) => p.name))].sort(), release: version } });
+      }
       await audit(tx, ctx, {
         action: "release.publish",
         entityType: "release",
