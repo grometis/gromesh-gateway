@@ -83,6 +83,19 @@ describe("routes through /api/v2 (WS-R2)", () => {
       ...[1, 2, 3].map(() => v2(h.api, "POST", `/workspaces/${a}/routes`, { name: uniq("c"), serviceId: svcA, paths: [`/${uniq("p")}`] })),
     ]);
     for (const r of results) expect(r.status, JSON.stringify(r.body)).toBeLessThan(300);
+    // With a v1 edit of the same route and an archive of the workspace in the same instant: never a 500.
+    for (let round = 0; round < 6; round++) {
+      const ws = (await h.api("POST", "/environments", { name: uniq("ws-race") })).body.id as string;
+      const svc = (await h.api("POST", `/environments/${ws}/services`, { name: "svc", protocol: "http", host: "r.example.com", port: 80 })).body.id as string;
+      const r = (await v2(h.api, "POST", `/workspaces/${ws}/routes`, { name: uniq("r"), serviceId: svc, paths: ["/a"] })).body;
+      const raced = await Promise.all([
+        v2(h.api, "PUT", `/workspaces/${ws}/routes/${r.id}`, { name: r.name, serviceId: svc, paths: ["/b"] }),
+        h.api("PUT", `/environments/${ws}/routes/${r.id}`, { name: r.name, serviceId: svc, paths: ["/c"], stripPath: false }),
+        v2(h.api, "POST", `/workspaces/${ws}/routes`, { name: uniq("r"), serviceId: svc, paths: ["/d"] }),
+        v2(h.api, "POST", `/workspaces/${ws}/archive`),
+      ]);
+      for (const x of raced) expect(x.status, JSON.stringify(x.body)).toBeLessThan(500);
+    }
   });
 
   it("needs gateway.write in the workspace", async () => {
