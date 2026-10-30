@@ -180,11 +180,28 @@ export function v1SaveBlocked(route: WorkspaceRoute | null, publishMode: "manual
   return editedOverV1(route) && publishMode !== "manual";
 }
 
+/** The v1 save refused because the environment publishes automatically (read from the server at submit). */
+export class AutoPublishV1Error extends Error {
+  constructor() {
+    super(V1_AUTO_PUBLISH);
+  }
+}
+
+/**
+ * The v1 PUT of a pathless legacy route, only after the server says the environment publishes manually: the mode on
+ * screen comes from a cache that may be stale, and in auto mode the v1 write would publish the edit by itself.
+ */
+async function saveOverV1(envId: string, routeId: string, body: RouteWrite): Promise<Route> {
+  const env = await unwrap(api.GET("/environments/{envId}", { params: { path: { envId } }, cache: "no-store" }));
+  if (env.publishMode !== "manual") throw new AutoPublishV1Error();
+  return unwrap(api.PUT("/environments/{envId}/routes/{routeId}", { params: { path: { envId, routeId } }, body }));
+}
+
 /** Create (no route) or replace; the caller sees success only through `onSaved`, after the server's 201 or 200. */
 export function saveRouteMutation(workspaceId: string, route: WorkspaceRoute | null, invalidate: () => void, onSaved: (saved: WorkspaceRoute | Route) => void) {
   return {
     mutationFn: (body: WorkspaceRouteWrite | RouteWrite): Promise<WorkspaceRoute | Route> => {
-      if (route && editedOverV1(route)) return unwrap(api.PUT("/environments/{envId}/routes/{routeId}", { params: { path: { envId: workspaceId, routeId: route.id } }, body: body as RouteWrite }));
+      if (route && editedOverV1(route)) return saveOverV1(workspaceId, route.id, body as RouteWrite);
       return route
         ? unwrap(apiV2.PUT("/workspaces/{workspaceId}/routes/{routeId}", { params: { path: { workspaceId, routeId: route.id } }, body: body as WorkspaceRouteWrite }))
         : unwrap(apiV2.POST("/workspaces/{workspaceId}/routes", { params: { path: { workspaceId } }, body: body as WorkspaceRouteWrite }));
@@ -192,6 +209,10 @@ export function saveRouteMutation(workspaceId: string, route: WorkspaceRoute | n
     onSuccess: (saved: WorkspaceRoute | Route) => {
       invalidate();
       onSaved(saved);
+    },
+    // The cached environment was stale: refresh it, so the form holds the save from now on.
+    onError: (err: unknown) => {
+      if (err instanceof AutoPublishV1Error) invalidate();
     },
   };
 }
@@ -244,7 +265,9 @@ function RouteForm(props: { workspaceId: string; slug: string; route: WorkspaceR
   });
   const [local, setLocal] = useState<FormErrors>(NO_ERRORS);
   const save = useMutation(saveRouteMutation(workspaceId, route, invalidate, onClose));
-  const errors = save.isError ? gatewayFormErrors(save.error, "route") : local;
+  // Once the refreshed environment holds the save, its own notice says the same: one message, not two.
+  const errors = save.error instanceof AutoPublishV1Error ? { fields: {}, form: blocked && env.data?.publishMode === "auto" ? [] : [V1_AUTO_PUBLISH] }
+    : save.isError ? gatewayFormErrors(save.error, "route") : local;
   const paths = splitList(form.paths);
   const stripPath = legacy ? route.stripPath ?? false : form.stripPath;
 

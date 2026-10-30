@@ -70,6 +70,8 @@ describe("saving a workspace route", () => {
     const sent: Request[] = [];
     const { saveRouteMutation, routeBody, editedOverV1 } = await load((request) => {
       sent.push(request);
+      // The environment is read again at submit: manual here.
+      if (request.method === "GET") return Promise.resolve(Response.json({ id: W, name: "Legado", publishMode: "manual", currentVersion: 1, hasUnpublishedChanges: false }));
       return new Promise((r) => (resolve = r));
     });
     const hostOnly = route({ pathCompatibility: "legacy-preserved", paths: [], hosts: ["boletos.example"], stripPath: true });
@@ -81,11 +83,33 @@ describe("saving a workspace route", () => {
     const onSaved = vi.fn();
     const done = new MutationObserver(new QueryClient(), saveRouteMutation(W, hostOnly, vi.fn(), onSaved)).mutate(body);
     await new Promise((r) => setTimeout(r, 0));
-    expect(sent.map((r) => [r.method, new URL(r.url).pathname])).toEqual([["PUT", `/api/v1/environments/${W}/routes/${hostOnly.id}`]]);
+    expect(sent.map((r) => [r.method, new URL(r.url).pathname, r.cache])).toEqual([
+      ["GET", `/api/v1/environments/${W}`, "no-store"],
+      ["PUT", `/api/v1/environments/${W}/routes/${hostOnly.id}`, "default"],
+    ]);
     expect(onSaved).not.toHaveBeenCalled();
     resolve(Response.json({ ...hostOnly, name: "boletos-host" }));
     await done;
     expect(onSaved).toHaveBeenCalledOnce();
+  });
+
+  it("writes nothing over v1 when the server says auto, whatever the screen's cache said", async () => {
+    const sent: Request[] = [];
+    const { saveRouteMutation, AutoPublishV1Error, V1_AUTO_PUBLISH } = await load((request) => {
+      sent.push(request);
+      return Promise.resolve(Response.json({ id: W, name: "Legado", publishMode: "auto", currentVersion: 1, hasUnpublishedChanges: false }));
+    });
+    const hostOnly = route({ pathCompatibility: "legacy-preserved", paths: [], hosts: ["boletos.example"] });
+    const onSaved = vi.fn();
+    const invalidate = vi.fn();
+    const observer = new MutationObserver(new QueryClient(), saveRouteMutation(W, hostOnly, invalidate, onSaved));
+    const err = await observer.mutate({ ...values, paths: [], hosts: ["boletos.example"] }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AutoPublishV1Error);
+    expect((err as Error).message).toBe(V1_AUTO_PUBLISH);
+    expect(sent.map((r) => r.method)).toEqual(["GET"]);
+    expect(onSaved).not.toHaveBeenCalled();
+    // The stale environment is refreshed, so the form holds the save from then on.
+    expect(invalidate).toHaveBeenCalledOnce();
   });
 
   it("never saves a pathless legacy route over v1 where v1 publishes automatically (nor before the mode is known)", async () => {

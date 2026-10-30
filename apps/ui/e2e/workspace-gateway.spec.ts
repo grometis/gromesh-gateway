@@ -395,6 +395,27 @@ test("a pathless legacy route is not saved over v1 where the workspace publishes
   expect(fake.routes.find((r) => r.id === hostOnly.id)!.name).toBe("boletos-host");
 });
 
+test("the v1 save reads the publish mode from the server: a stale manual on screen writes nothing when it is auto", async ({ page }) => {
+  const fake = newFake();
+  const hostOnly = { ...legacyRoute, id: uuid(), name: "boletos-host", paths: [], hosts: ["boletos.example"] } as WorkspaceRoute;
+  fake.routes.push(hostOnly);
+  fake.routeOwner.set(hostOnly.id, legacyWs.id);
+  await signIn(page, fake);
+  await menu(page).getByRole("link", { name: "Routes", exact: true }).click();
+  await page.getByRole("table", { name: "Routes", exact: true }).getByRole("row").filter({ hasText: "boletos-host" }).getByRole("button", { name: "Editar", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Editar boletos-host" });
+  await expect(dialog.getByRole("button", { name: "Salvar" })).toBeEnabled();
+  // Someone switches the environment to auto after this screen read it.
+  fake.autoPublish = new Set([legacyWs.id]);
+  await dialog.getByLabel("Nome").fill("boletos-por-host");
+  await dialog.getByRole("button", { name: "Salvar" }).click();
+  await expect(dialog.getByRole("alert")).toHaveText("Este Workspace publica automaticamente pela v1: mude para publicação manual antes de editar esta route.");
+  await expect(dialog.getByRole("button", { name: "Salvar" })).toBeDisabled();
+  await expect(dialog).toBeVisible();
+  expect(fake.requests.filter((r) => r.method !== "GET")).toEqual([]);
+  expect(fake.routes.find((r) => r.id === hostOnly.id)!.name).toBe("boletos-host");
+});
+
 for (const width of [390, 1440]) {
   test(`workspace routes: layout and axe at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
