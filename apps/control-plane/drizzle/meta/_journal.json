@@ -169,6 +169,13 @@
       "when": 1793112435257,
       "tag": "0023_delivery_protocol",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1793326223987,
+      "tag": "0024_workspace_variables",
+      "breakpoints": true
     }
   ]
 }

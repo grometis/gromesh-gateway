@@ -2,9 +2,9 @@ import { Inject, Injectable, Logger } from "@nestjs/common";
 import { and, eq, isNull, or, sql } from "drizzle-orm";
 import type pg from "pg";
 import { DB, PG_POOL, type Db } from "../db/db.js";
-import { basicAuthCredentials, certificates, deployments, instanceSigningKeys, jwtCredentials, keyAuthCredentials, plugins, releases, snapshots } from "../db/schema.js";
+import { basicAuthCredentials, certificates, deployments, instanceSigningKeys, jwtCredentials, keyAuthCredentials, plugins, releases, snapshots, workspaceVariableValues } from "../db/schema.js";
 import { PluginCatalog } from "../plugin-catalog/catalog.js";
-import { basicAuthHashContext, certificateKeyContext, credentialContext, deploymentContext, ENCRYPTOR, Encryptor, instanceSigningKeyContext, isLegacySealed, isSealed, isSealedJson, jwtSecretContext, pluginSecretContext, releaseContext, snapshotContext } from "./crypto.js";
+import { basicAuthHashContext, certificateKeyContext, credentialContext, deploymentContext, ENCRYPTOR, Encryptor, instanceSigningKeyContext, isLegacySealed, isSealed, isSealedJson, jwtSecretContext, pluginSecretContext, releaseContext, snapshotContext, variableValueContext } from "./crypto.js";
 
 export interface AtRestReport {
   credentials: number;
@@ -16,13 +16,14 @@ export interface AtRestReport {
   signingKeys: number;
   releases: number;
   deployments: number;
+  variableValues: number;
   /** Another replica held the lock: nothing was done here. */
   skipped: boolean;
 }
 
 /** Test hook: runs before each row is written back, so a concurrent edit can be interposed deterministically. */
 export interface AtRestHooks {
-  beforeWrite?: (table: "credentials" | "plugins" | "snapshots" | "certificates" | "jwtSecrets" | "basicAuthHashes" | "signingKeys" | "releases" | "deployments", id: string) => Promise<void>;
+  beforeWrite?: (table: "credentials" | "plugins" | "snapshots" | "certificates" | "jwtSecrets" | "basicAuthHashes" | "signingKeys" | "releases" | "deployments" | "variableValues", id: string) => Promise<void>;
 }
 
 /** One replica re-seals at a time: the others skip. */
@@ -71,7 +72,7 @@ export class AtRestService {
     const client = await this.created.pool.connect();
     try {
       const { rows } = await client.query<{ locked: boolean }>("select pg_try_advisory_lock($1) as locked", [LOCK_KEY]);
-      if (!rows[0]?.locked) return { credentials: 0, plugins: 0, snapshots: 0, certificates: 0, jwtSecrets: 0, basicAuthHashes: 0, signingKeys: 0, releases: 0, deployments: 0, skipped: true };
+      if (!rows[0]?.locked) return { credentials: 0, plugins: 0, snapshots: 0, certificates: 0, jwtSecrets: 0, basicAuthHashes: 0, signingKeys: 0, releases: 0, deployments: 0, variableValues: 0, skipped: true };
       try {
         return { ...(await work()), skipped: false };
       } finally {
@@ -83,7 +84,7 @@ export class AtRestService {
   }
 
   private async reseal(needsText: (stored: string) => boolean, needsDoc: (doc: unknown) => boolean, hooks: AtRestHooks): Promise<Omit<AtRestReport, "skipped">> {
-    const report = { credentials: 0, plugins: 0, snapshots: 0, certificates: 0, jwtSecrets: 0, basicAuthHashes: 0, signingKeys: 0, releases: 0, deployments: 0 };
+    const report = { credentials: 0, plugins: 0, snapshots: 0, certificates: 0, jwtSecrets: 0, basicAuthHashes: 0, signingKeys: 0, releases: 0, deployments: 0, variableValues: 0 };
 
     for (const { id } of await this.db.select({ id: keyAuthCredentials.id }).from(keyAuthCredentials).where(or(isNull(keyAuthCredentials.keyHash), sql`true`))) {
       await this.retry("credentials", id, async () => {
@@ -200,6 +201,23 @@ export class AtRestService {
           .returning({ id: basicAuthCredentials.id });
         if (written.length === 0) return false;
         report.basicAuthHashes++;
+        return true;
+      });
+    }
+
+    // Secret workspace variable values (WS-V1), sealed per version.
+    for (const v of await this.db.select({ workspaceId: workspaceVariableValues.workspaceId, name: workspaceVariableValues.name, version: workspaceVariableValues.version }).from(workspaceVariableValues).where(eq(workspaceVariableValues.sealed, true))) {
+      const id = `${v.workspaceId}:${v.name}:${v.version}`;
+      await this.retry("variableValues", id, async () => {
+        const where = and(eq(workspaceVariableValues.workspaceId, v.workspaceId), eq(workspaceVariableValues.name, v.name), eq(workspaceVariableValues.version, v.version));
+        const [row] = await this.db.select({ value: workspaceVariableValues.value, sealed: workspaceVariableValues.sealed }).from(workspaceVariableValues).where(where);
+        if (!row || !row.sealed || !needsText(row.value)) return true;
+        const ctx = variableValueContext(v.workspaceId, v.name, v.version);
+        const plain = this.enc.open(row.value, ctx);
+        await hooks.beforeWrite?.("variableValues", id);
+        const written = await this.db.update(workspaceVariableValues).set({ value: this.enc.seal(plain, ctx) }).where(and(where, eq(workspaceVariableValues.value, row.value))).returning({ version: workspaceVariableValues.version });
+        if (written.length === 0) return false;
+        report.variableValues++;
         return true;
       });
     }
