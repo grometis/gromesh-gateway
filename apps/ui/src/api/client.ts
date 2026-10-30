@@ -58,7 +58,8 @@ export const setUnauthorizedHandler = (fn: () => void) => {
   };
 };
 
-const auth: Middleware = {
+/** Cookie session and CSRF for every Gromesh API client (v1 and v2 share the session). */
+export const sessionMiddleware: Middleware = {
   async onRequest({ request }) {
     // Login starts the session and is the contract's sole unauthenticated mutation.
     if (!["GET", "HEAD", "OPTIONS"].includes(request.method) && !request.url.endsWith("/auth/login")) {
@@ -78,7 +79,7 @@ const auth: Middleware = {
 };
 
 export const api = createClient<paths>({ baseUrl: "/api/v1", credentials: "include" });
-api.use(auth);
+api.use(sessionMiddleware);
 
 /** Thrown by `unwrap` so TanStack Query sees a failed request with its problem details. */
 /**

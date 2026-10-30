@@ -114,11 +114,11 @@ test("UI publication, key-auth traffic, viewer limits, audit and rollback on the
     await page.getByLabel("E-mail").fill(ADMIN.email);
     await page.getByLabel("Senha").fill(ADMIN.password);
     await page.getByRole("button", { name: "Entrar" }).click();
-    await page.getByLabel("Environment", { exact: true }).selectOption(env.id);
+    await page.getByLabel("Workspace", { exact: true }).selectOption(env.id);
     await expect(page.getByRole("heading", { name: "Services", exact: true })).toBeVisible();
     // Also exercise /me with the cookie and SPA fallback against the production static server.
     await page.reload();
-    await expect(page.getByLabel("Environment", { exact: true })).toHaveValue(env.id);
+    await expect(page.getByLabel("Workspace", { exact: true })).toHaveValue(env.id);
 
     await page.getByRole("button", { name: "Novo service" }).click();
     const service = page.getByRole("dialog", { name: "Novo service" });
@@ -195,7 +195,7 @@ test("UI publication, key-auth traffic, viewer limits, audit and rollback on the
       await viewerPage.getByLabel("E-mail").fill(`${name}@viewer.test`);
       await viewerPage.getByLabel("Senha").fill(viewerPassword);
       await viewerPage.getByRole("button", { name: "Entrar" }).click();
-      await viewerPage.getByLabel("Environment", { exact: true }).selectOption(env.id);
+      await viewerPage.getByLabel("Workspace", { exact: true }).selectOption(env.id);
       await expect(viewerPage.getByRole("heading", { name: "Services", exact: true })).toBeVisible();
       await expect(viewerPage.getByRole("table", { name: "Services" }).getByText(name, { exact: true })).toBeVisible();
       await expect(viewerPage.getByRole("button", { name: /Novo service|Editar|Excluir|Publicar/ })).toHaveCount(0);
