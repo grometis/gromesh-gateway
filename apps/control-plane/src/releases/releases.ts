@@ -77,8 +77,11 @@ export function releaseContent(state: ReleaseState, enc: Encryptor, catalog: Plu
     return { id, spec: rest };
   };
   return {
-    // A field that names a variable is the VarRef in the content (the value lives on each instance, WS-V2).
-    services: state.services.map(({ varRefs, ...s }) => spec({ ...s, ...Object.fromEntries(Object.entries(varRefs ?? {}).map(([field, name]) => [field, { $var: name }])) })),
+    // The contract's service fields only: upstreamId for a v2 service bound to one, never the internal binding flag; a
+    // field that names a variable is the VarRef (the value lives on each instance, WS-V2).
+    services: state.services.map(({ binding, upstreamId, varRefs, ...s }) =>
+      spec({ ...s, ...(binding === "explicit" && upstreamId ? { upstreamId } : {}), ...Object.fromEntries(Object.entries(varRefs ?? {}).map(([field, name]) => [field, { $var: name }])) }),
+    ),
     routes: state.routes.map(spec),
     consumers: state.consumers.map(({ id, aclGroups, ...rest }) => ({ id, aclGroups: aclGroups ?? [], spec: rest })),
     credentials: [],

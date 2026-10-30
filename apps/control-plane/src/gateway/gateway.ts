@@ -89,8 +89,9 @@ export function serviceValues(body: ServiceWrite | Service) {
     writeTimeoutMs: body.writeTimeoutMs ?? null,
     enabled: body.enabled ?? true,
     tags: body.tags ?? [],
-    // A restored or imported state keeps each service's binding as it was (WS-U0).
-    ...("binding" in body && body.binding === "explicit" ? { binding: "explicit" as const, upstreamId: body.upstreamId ?? null } : {}),
+    // A restored state keeps each service's binding as it was (WS-U0); a v1 write or an import (no binding) gives the
+    // service the v1 semantics, its host bound by name, so a v1 edit never leaves an explicit binding behind.
+    ...("binding" in body && body.binding === "explicit" ? { binding: "explicit" as const, upstreamId: body.upstreamId ?? null } : { binding: null, upstreamId: null }),
     // Its variables too (WS-V2); a v1 write (no varRefs) writes plain values only.
     varRefs: "varRefs" in body && body.varRefs && Object.keys(body.varRefs).length > 0 ? body.varRefs : null,
   };

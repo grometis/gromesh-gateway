@@ -34,7 +34,8 @@ export function exportConfig(state: GatewayState, redact: (name: string, config:
   };
   return {
     apiVersion: "gromesh/v1",
-    services: state.services.map(({ id: _id, ...s }) => s),
+    // The v1 document's attributes only: an explicit binding (WS-U0) is v2 metadata, never part of the format.
+    services: state.services.map(({ id: _id, binding: _b, upstreamId: _u, varRefs: _v, ...s }) => s),
     routes: state.routes.map(({ id: _id, serviceId, ...r }) => ({ ...r, service: state.services.find(s => s.id === serviceId)!.name })),
     consumers: state.consumers.map(c => ({
       ...consumerRef(c.id), tags: c.tags ?? [], aclGroups: c.aclGroups ?? [],

@@ -253,3 +253,33 @@ describe("explicit upstream binding (WS-U0, B3)", () => {
     expect(row).toEqual({ binding: null, upstream_id: null });
   });
 });
+
+describe("v1 writes, export and import of a v2 service (WS-U0, r7)", () => {
+  let h: Harness;
+  let ws: string;
+  beforeAll(async () => {
+    h = await startHarness();
+    ws = (await h.api("POST", "/environments", { name: uniq("v1io") })).body.id;
+  });
+  afterAll(async () => h?.close());
+  const binding = async (id: string) => (await h.sql.query("select binding, upstream_id from services where id = $1", [id])).rows[0];
+
+  it("a v1 edit gives the service the v1 semantics instead of leaving an explicit binding behind", async () => {
+    const pool = (await v2(h.api, "POST", `/workspaces/${ws}/upstreams`, { name: uniq("p") })).body;
+    const svc = (await v2(h.api, "POST", `/workspaces/${ws}/services`, service({ host: pool.name, upstreamId: pool.id }))).body;
+    expect(await binding(svc.id)).toEqual({ binding: "explicit", upstream_id: pool.id });
+    expect((await h.api("PUT", `/environments/${ws}/services/${svc.id}`, service({ name: svc.name, host: "api.example.com" }))).status).toBe(200);
+    expect(await binding(svc.id)).toEqual({ binding: null, upstream_id: null });
+  });
+
+  it("exports a v2 service in the v1 format and imports it back, which gives it the v1 binding", async () => {
+    const svc = (await v2(h.api, "POST", `/workspaces/${ws}/services`, service({ host: "dns.example.com" }))).body;
+    expect((await binding(svc.id)).binding).toBe("explicit");
+    const exported = await h.api("GET", `/environments/${ws}/export`);
+    expect(exported.status).toBe(200);
+    expect(JSON.stringify(exported.body)).not.toMatch(/"binding"|"upstreamId"/);
+    const imported = await h.api("POST", `/environments/${ws}/import`, { document: exported.body, mode: "merge", dryRun: false });
+    expect(imported.status, JSON.stringify(imported.body)).toBeLessThan(300);
+    expect((await binding(svc.id)).binding).toBeNull();
+  });
+});
