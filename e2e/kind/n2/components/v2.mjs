@@ -15,7 +15,8 @@ import {
   kubeconfig, kubectl, NODES, NS, registrationSecret, relayObjects, removeSuiteObjects, root, run, sql,
   scrubKong,
 } from "./lab.mjs";
-import { privilegedAfterLoss } from "./privileged.mjs";
+import { CLIENT } from "./client-script.mjs";
+import { privilegedAfterLoss, privilegedRequestsBetween, scenarioRequestLines } from "./privileged.mjs";
 import { bootToWall, groupFromEvents, itemResult, keepaliveBlocked, kFromLiveness, ksFromDeletion, kxFromEvents, overall, rfc3339CeilMs, runExitCode } from "./budgets.mjs";
 
 const out = process.env.LAB_OUT ?? mkdtempSync(join(tmpdir(), "gromesh-n2-comp-"));
@@ -357,6 +358,9 @@ const ctx = {};
 const followers = [];
 const OBS = "gromesh-n2-obs";
 const BACKEND_PORT = 8081;
+/** The lab zone's IMDS name (A 169.254.169.254, 169.254.170.2; AAAA fd00:ec2::254) and the route of A that targets it. */
+const PRIVILEGED_HOST = "imds.lab.gromesh.test";
+const PRIVILEGED_PATH = "/meta";
 const CLICKHOUSE_IMAGE = VERSIONS.CLICKHOUSE_IMAGE;
 const [VECTOR_NAME, VECTOR_DIGEST] = VERSIONS.VECTOR_IMAGE.split("@");
 // Budgets for the workloads the suite adds next to the data plane, so they cannot starve the node it measures on.
@@ -420,29 +424,6 @@ s.on("upgrade", (q, sock) => {
 });
 s.listen(${BACKEND_PORT}, "::");`;
 
-// The traffic client, inside the unrestricted observer pod: one new connection per request, one keepalive socket,
-// one WebSocket; every event is a JSON line stamped with the pod's (VM) clock.
-const CLIENT = String.raw`
-import http from "node:http"; import net from "node:net"; import crypto from "node:crypto";
-const [host, port, path, key, wsPath] = JSON.parse(globalThis.ARGS);
-const log = (o) => console.log(JSON.stringify({ t: Date.now(), ...o }));
-const ka = new http.Agent({ keepAlive: true, maxSockets: 1 });
-function get(kind, agent) {
-  const q = http.request({ host, port, path, agent, headers: { apikey: key }, timeout: 3000 }, (r) => { r.resume(); r.on("end", () => log({ k: kind, s: r.statusCode, reused: q.reusedSocket })); });
-  q.on("timeout", () => q.destroy(new Error("timeout"))); q.on("error", (e) => log({ k: kind, e: e.code ?? e.message })); q.end();
-}
-setInterval(() => get("new", false), 250);
-setInterval(() => get("ka", ka), 250);
-function ws() {
-  const sock = net.connect(Number(port), host); let open = false, n = 0, buf = "";
-  sock.on("connect", () => sock.write("GET " + wsPath + " HTTP/1.1\r\nHost: " + host + "\r\napikey: " + key + "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: " + crypto.randomBytes(16).toString("base64") + "\r\n\r\n"));
-  sock.on("data", (d) => { if (!open) { buf += d.toString("latin1"); if (buf.includes("\r\n\r\n")) { const st = buf.split(" ")[1]; open = st === "101"; log({ k: "ws", ev: open ? "open" : "refused", s: Number(st) }); if (!open) sock.destroy(); } return; }
-    if (d.toString().includes("pong")) log({ k: "ws", ev: "pong" }); });
-  const timer = setInterval(() => { if (!open) return; const p = Buffer.from("ping " + (++n)); const m = crypto.randomBytes(4); sock.write(Buffer.concat([Buffer.from([0x81, 0x80 | p.length]), m, p.map((b, i) => b ^ m[i % 4])])); }, 500);
-  sock.on("close", () => { clearInterval(timer); log({ k: "ws", ev: "close" }); setTimeout(ws, 1000); });
-  sock.on("error", (e) => log({ k: "ws", ev: "error", e: e.code }));
-}
-ws();`;
 
 let Client = class {
   constructor(label, args) {
@@ -592,6 +573,14 @@ async function setupV2() {
     secretsSeen.push(cred.key);
     ctx.ws[label] = { id: env.id, key: cred.key, routeId: route.id, serviceId: svc.id };
   }
+  // Aceite n's privileged destination: a route whose name resolves to the IMDS. The control plane accepts a name (it
+  // resolves no DNS: forbidding what a name reaches is the data plane's job), so only the cluster-wide IMDS deny keeps
+  // Kong from it until a containment scenario removes that deny; from then on the route really reaches it.
+  const meta = await api.ok("POST", `/api/v1/environments/${envA.id}/services`, { session: ctx.admin, body: { name: "meta", protocol: "http", host: PRIVILEGED_HOST, port: 80,
+    // A silent drop must answer inside the client's 3 s: Kong's 504 proves it tried (never 60 s, never a retry).
+    connectTimeoutMs: 1000, readTimeoutMs: 1000, writeTimeoutMs: 1000, retries: 0 } });
+  const metaRoute = await api.ok("POST", `/api/v1/environments/${envA.id}/routes`, { session: ctx.admin, body: { name: "meta", serviceId: meta.id, paths: [PRIVILEGED_PATH], stripPath: false } });
+  Object.assign(ctx.ws.A, { privilegedServiceId: meta.id, privilegedRouteId: metaRoute.id });
   const list = await api.ok("GET", "/api/v2/workspaces", { session: ctx.admin });
   for (const w of Object.values(ctx.ws)) w.slug = (list.items ?? list).find((x) => x.id === w.id)?.slug;
   Object.assign(it.measures, { clusterId: ctx.clusterId, slugs: Object.fromEntries(Object.entries(ctx.ws).map(([k, v]) => [k, v.slug])) });
@@ -780,13 +769,73 @@ async function recover(it, why) {
   }
 }
 
+/** The lab's IMDS aliases: on every kind node routed to the imds fixture container (run.mjs), never a real metadata service. */
+const IMDS_CIDRS = ["169.254.169.254/32", "169.254.170.2/32", "fd00:ec2::254/128"];
+
+/**
+ * Lab only (aceite n): a NetworkPolicy of its own, beside the chart's (policies add up), allowing the dp pods TCP 80 to
+ * the IMDS aliases, so that the cluster-wide n2c-deny-imds becomes the one barrier and removing it is a real loss of
+ * isolation. Never in the chart's values; created only after chartBlocksImds proved the chart's policy alone blocks.
+ */
+async function labImdsException() {
+  const chartPolicy = (await json(["-n", NS.dp, "get", "networkpolicy"])).items.find((p) => p.spec.policyTypes?.includes("Egress"));
+  if (!chartPolicy) throw new Error("the chart's NetworkPolicy is missing");
+  await apply([{ apiVersion: "networking.k8s.io/v1", kind: "NetworkPolicy", metadata: { name: "n2-lab-imds-egress", namespace: NS.dp },
+    spec: { podSelector: chartPolicy.spec.podSelector, policyTypes: ["Egress"], egress: [{ to: IMDS_CIDRS.map((cidr) => ({ ipBlock: { cidr } })), ports: [{ protocol: "TCP", port: 80 }] }] } }]);
+}
+
+/**
+ * Control 1 of the privileged destination: with the cluster-wide IMDS deny removed and no lab exception, the chart's
+ * own NetworkPolicy keeps Kong from the IMDS. The route that targets it is tried (502/504: Kong reached for the
+ * upstream) and the IMDS server logs no request of the dp pods; the probe raises no containment. Then the lab exception.
+ */
+async function chartBlocksImds() {
+  const it = item("V2-chart-imds", "The chart's NetworkPolicy alone blocks the IMDS: cluster-wide deny removed, no lab exception, the route targeting it tried and never reaching it", {
+    rule: "the product's policy does not depend on the lab's cluster-wide deny" });
+  // Control 2: every node routes the IMDS aliases to the lab's imds fixture (run.mjs), never to a real metadata service.
+  for (const node of [NODES.cp, ...NODES.workers]) {
+    for (const [ip, via] of [["169.254.169.254", ctx.topo.ext.imds.v4], ["169.254.170.2", ctx.topo.ext.imds.v4], ["fd00:ec2::254", ctx.topo.ext.imds.v6]]) {
+      const route = (await docker(["exec", node, "ip", ...(ip.includes(":") ? ["-6"] : []), "route", "get", ip], { allowFail: true })).stdout;
+      expect(it, route.includes(`via ${via}`), `${node}: ${ip} is not routed to the lab's imds fixture (${route.trim()})`);
+    }
+  }
+  const scenario = `${RUN_ID}-chart-imds`;
+  await markServer("imds", scenario, "start");
+  const client = new Client("chart-imds", [ctx.proxy.host, String(ctx.proxy.port), `/${ctx.ws.A.slug}/api`, ctx.ws.A.key, `/${ctx.ws.A.slug}/api/ws`, `/${ctx.ws.A.slug}${PRIVILEGED_PATH}`]);
+  const t0 = await vmNow();
+  await kubectl(["delete", "ciliumclusterwidenetworkpolicy", "n2c-deny-imds"]);
+  await sleep(12_000);
+  await client.stop();
+  await apply(denyPolicies(ctx.topo.net));
+  await markServer("imds", scenario, "end");
+  const imdsLog = (await docker(["logs", `${CLUSTER}-fx-imds`], { allowFail: true })).stdout.split("\n").filter(Boolean);
+  const sources = (await Promise.all((await live()).map(async (p) => (await json(["-n", NS.dp, "get", "pod", p.name])).status.podIPs.map((x) => x.ip)))).flat();
+  const reached = privilegedRequestsBetween(imdsLog, { server: "ext:imds", scenario, sources, requests: scenarioRequestLines(ctx.ws.A.slug, PRIVILEGED_PATH).map((l) => createHash("sha256").update(l).digest("hex")) });
+  const ev = client.since(t0);
+  const tried = ev.filter((e) => e.k === "priv" && (e.s === 502 || e.s === 504)).length;
+  const served = ev.filter((e) => e.k === "new" && e.s === 200).length;
+  const violations = (await pendencies(ctx.clusterId)).filter((p) => ["confirmed-violation", "unconfirmed-isolation"].includes(p.lifecycle));
+  it.measures = { ...it.measures, reached, upstreamAttempts: tried, served200: served, pendencies: violations.length };
+  if (reached === null) it.failures.push("IMDS log incomplete or not bracketing the check");
+  else if (reached > 0) it.failures.push(`the chart's NetworkPolicy let ${reached} requests reach the IMDS without the cluster-wide deny`);
+  else if (tried === 0 || served === 0) it.open.push(`not exercised: ${tried} upstream attempts on the route, ${served} 200 on /api`);
+  expect(it, violations.length === 0, `the probe raised ${violations.length} containment pendencies with only the chart's policy`);
+  await labImdsException();
+  done(it);
+}
+
 /** Aceite n: fail-closed by a real loss of isolation with the pod serving, keepalive and WebSocket open. */
 async function containmentN({ frozenSupervisor = false } = {}) {
   const id = frozenSupervisor ? "V2-n-frozen-supervisor" : "V2-n";
   const it = item(id, frozenSupervisor
     ? "Loss of isolation with the supervisor frozen (kill -STOP PID 1 of kong): Kong stopped by the liveness ≤ 24 s, WebSocket gone ≤ 24 s"
     : "Loss of isolation (cluster-wide IMDS deny removed) with continuous traffic, keepalive and WebSocket: detection ≤ 18 s, 503 ≤ 19 s, Kong stopped ≤ 20 s, NotReady ≤ 20 s, endpoints removal measured", V2_BUDGET);
-  const client = new Client(id, [ctx.proxy.host, String(ctx.proxy.port), `/${ctx.ws.A.slug}/api`, ctx.ws.A.key, `/${ctx.ws.A.slug}/api/ws`]);
+  // The privileged destination's own log is bracketed by this scenario's marks, opened before the client's first request
+  // (warm-up included): a request that reaches it before the loss invalidates the reading.
+  const scenario = `${RUN_ID}-${id}`;
+  await markServer("imds", scenario, "start");
+  const clientArgs = [ctx.proxy.host, String(ctx.proxy.port), `/${ctx.ws.A.slug}/api`, ctx.ws.A.key, `/${ctx.ws.A.slug}/api/ws`, `/${ctx.ws.A.slug}${PRIVILEGED_PATH}`];
+  const client = new Client(id, clientArgs);
   await sleep(6000);
   const warm = client.events.slice(-40);
   it.measures.warmup = { ok: warm.filter((e) => e.s === 200).length, ws: client.events.filter((e) => e.k === "ws").map((e) => e.ev).slice(0, 4) };
@@ -804,9 +853,7 @@ async function containmentN({ frozenSupervisor = false } = {}) {
   if (frozenSupervisor) for (const p of pods) { await freeze(p.name, "kong", "kong-supervisor"); heartbeat[p.name] = await lastHeartbeat(p.name, kongIds.find((k) => k.pod === p.name).node); }
   const kongExits = kongIds.map((k) => ({ pod: k.pod, exits: watchExits(k.node, { kong: k.id }, 60) }));
   const loadStart = await vmLoad(`${id} start`);
-  // The privileged destination's own log is bracketed by this scenario's marks; the loss is taken at its earliest.
-  const scenario = `${RUN_ID}-${id}`;
-  await markServer("imds", scenario, "start");
+  // The loss is taken at its earliest.
   const lossEarliest = await vmNow();
   await kubectl(["delete", "ciliumclusterwidenetworkpolicy", "n2c-deny-imds"]);
   const t0 = await vmNow();
@@ -880,15 +927,34 @@ async function containmentN({ frozenSupervisor = false } = {}) {
   const imdsLog = (await docker(["logs", `${CLUSTER}-fx-imds`], { allowFail: true })).stdout.split("\n").filter(Boolean);
   const refBoot = (await docker(["exec", NODES.workers[0], "cat", "/proc/sys/kernel/random/boot_id"], { allowFail: true })).stdout.trim();
   const sources = (await Promise.all(pods.map(async (p) => (await json(["-n", NS.dp, "get", "pod", p.name])).status.podIPs.map((x) => x.ip)))).flat();
-  // Every flow of the scenario's client (new and keepalive HTTP, WebSocket upgrade) by the first line Kong forwards.
-  const lines = [`GET /${ctx.ws.A.slug}/api HTTP/1.1`, `GET /${ctx.ws.A.slug}/api/ws HTTP/1.1`];
+  // Every flow of the scenario's client (new and keepalive HTTP, WebSocket upgrade, the privileged route) by the first
+  // line Kong forwards (stripPath false: the full path reaches the upstream).
+  const lines = scenarioRequestLines(ctx.ws.A.slug, PRIVILEGED_PATH);
   const priv = privilegedAfterLoss(imdsLog, { server: "ext:imds", scenario, lossMs: lossEarliest, limitMs: frozenSupervisor ? V2_BUDGET.kongStopLiveness : V2_BUDGET.kongStopSupervisor,
     refBootId: refBoot, sources, requests: lines.map((l) => createHash("sha256").update(l).digest("hex")) });
-  it.measures.privileged = { ...priv, lossEarliestToT0Ms: t0 - lossEarliest };
+  it.measures.privileged = { ...priv, lossEarliestToT0Ms: t0 - lossEarliest, clientPrivileged: Object.entries(client.events.filter((e) => e.k === "priv").reduce((a, e) => { const k = String(e.s ?? e.e); a[k] = (a[k] ?? 0) + 1; return a; }, {})) };
   if (priv.result === "NOT_EXERCISED") it.open.push(`privileged destination: ${priv.reason}`);
   else if (priv.result !== "PASS") it.failures.push(`privileged destination ${priv.result}: ${priv.reason}`);
   ctx.lastViolation = id;
   await recover(it, id);
+  // Blocked → reachable → blocked: with the deny back, the recovered pods' requests on the route never reach it.
+  const recovered = `${scenario}-recovered`;
+  await markServer("imds", recovered, "start");
+  const after = new Client(`${id}-recovered`, clientArgs);
+  await sleep(5000);
+  await after.stop();
+  await markServer("imds", recovered, "end");
+  const recoveredLog = (await docker(["logs", `${CLUSTER}-fx-imds`], { allowFail: true })).stdout.split("\n").filter(Boolean);
+  const recoveredSources = (await Promise.all((await live()).map(async (p) => (await json(["-n", NS.dp, "get", "pod", p.name])).status.podIPs.map((x) => x.ip)))).flat();
+  const reachedAfter = privilegedRequestsBetween(recoveredLog, { server: "ext:imds", scenario: recovered, sources: recoveredSources, requests: lines.map((l) => createHash("sha256").update(l).digest("hex")) });
+  // Exercised only when the recovered pods serve (200 on /api) and Kong tried the route's upstream and failed to reach
+  // it (502 refused/reset, 504 timeout); a 404 or a 503 never left Kong, so it proves nothing about the deny.
+  const served = after.events.filter((e) => e.k === "new" && e.s === 200).length;
+  const tried = after.events.filter((e) => e.k === "priv" && (e.s === 502 || e.s === 504)).length;
+  it.measures.privilegedAfterRecovery = { reached: reachedAfter, served, upstreamAttempts: tried };
+  if (reachedAfter === null) it.failures.push("privileged destination after recovery: its log is incomplete or does not bracket the check");
+  else if (reachedAfter > 0) it.failures.push(`privileged destination reached ${reachedAfter} times after recovery (the deny is back)`);
+  else if (served === 0 || tried === 0) it.open.push(`privileged destination after recovery not exercised: ${served} 200 on /api, ${tried} upstream attempts on the route`);
   done(it);
 }
 
@@ -1118,8 +1184,10 @@ const clients = [];
 
 async function mainV2() {
   for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => { report.aborted = { signal }; finishV2().finally(() => process.exit(130)); });
-  const all = [setupV2, d4Disabled, convergeV2, trafficV2, hashDivergence, revisionMismatch, rollbackV2, agentDown, probeDown, drainAndReplace, containmentN, function containmentFrozen() { return containmentN({ frozenSupervisor: true }); }];
+  const all = [setupV2, d4Disabled, convergeV2, trafficV2, hashDivergence, revisionMismatch, rollbackV2, agentDown, probeDown, drainAndReplace, chartBlocksImds, containmentN, function containmentFrozen() { return containmentN({ frozenSupervisor: true }); }];
   const only = (process.env.LAB_STEPS ?? "").split(",").filter(Boolean);
+  // A containment scenario needs the chart-only proof first: it is the step that adds the lab's IMDS exception.
+  if (only.some((name) => ["containmentN", "containmentFrozen"].includes(name))) only.push("chartBlocksImds");
   const chosen = only.length ? all.filter((s, i) => i < 4 || only.includes(s.name)) : all;
   report.steps = chosen.map((s) => s.name);
   try {
