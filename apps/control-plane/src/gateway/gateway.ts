@@ -686,7 +686,7 @@ export class WorkspaceRoutesController {
   @RequiredPermission("gateway.write", "workspace")
   async create(@Ctx() ctx: RequestContext, @Param("workspaceId", uuidParam()) workspaceId: string, @Body(contractBodyV2("WorkspaceRouteWrite")) body: RouteWrite) {
     workspaceRouteChecks(body);
-    return this.gw.createRoute(ctx, workspaceId, { ...body, stripPath: body.stripPath ?? false }, true, toWorkspaceRoute);
+    return retryingTransaction(() => this.gw.createRoute(ctx, workspaceId, { ...body, stripPath: body.stripPath ?? false }, true, toWorkspaceRoute));
   }
 
   @Put(":routeId")
@@ -698,7 +698,7 @@ export class WorkspaceRoutesController {
     // No schema default for stripPath (WS-R0): whether the caller gave one decides a legacy route's.
     @Body(contractBodyV2("WorkspaceRouteWrite")) body: RouteWrite,
   ) {
-    return this.gw.replaceWorkspaceRoute(ctx, workspaceId, routeId, body);
+    return retryingTransaction(() => this.gw.replaceWorkspaceRoute(ctx, workspaceId, routeId, body));
   }
 
   @Delete(":routeId")
