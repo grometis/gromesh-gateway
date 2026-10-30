@@ -2,11 +2,11 @@ import { useDeferredValue, useState, type FormEvent } from "react";
 import { useInfiniteQuery, useMutation } from "@tanstack/react-query";
 import { useSearchParams } from "react-router";
 import { apiV2, type WorkspaceRoute, type WorkspaceRouteWrite } from "../api/client-v2";
-import { api, unwrap, type Route, type RouteWrite } from "../api/client";
+import { unwrap } from "../api/client";
 import { statusMessage, type FormErrors } from "../api/errors";
 import { Field, FormErrorList } from "../components/Field";
 import { ConfirmDialog, Modal } from "../components/Modal";
-import { useEnvId, useEnvironment } from "../components/Shell";
+import { useEnvId } from "../components/Shell";
 import { ScopedPlugins } from "./Plugins";
 import { splitList, useEntityDraft } from "./Services";
 import { PageHeader } from "../components/PageHeader";
@@ -23,7 +23,7 @@ import { fieldText, publicPath, upstreamEffect, useAllWorkspaceServices, useInva
 const PROTOCOLS = ["http", "https", "grpc", "grpcs"] as const;
 type Protocol = (typeof PROTOCOLS)[number];
 const NO_ERRORS: FormErrors = { fields: {}, form: [] };
-const OVER_V1 = "Sem paths, ela é editada pela API v1 até ganhar um (a v2 exige paths); o stripPath atual é mantido.";
+const PATHLESS_LEGACY = "Esta route legada sem paths é somente leitura. Ela exige o fluxo legado apropriado ou uma conversão explícita e auditada; a tela v2 não a edita.";
 const LEGACY = "Route migrada de um environment: mantém o stripPath que tinha. A conversão para o padrão do Workspace é uma ação separada e nunca acontece ao salvar.";
 
 /** Keyed by the workspace: switching it remounts the screen, so no modal or form keeps the previous one's route. */
@@ -66,6 +66,7 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange }: { works
     getNextPageParam: (page) => page.nextCursor ?? undefined,
   });
   const [editing, setEditing] = useState<WorkspaceRoute | "new" | null>(null);
+  const [details, setDetails] = useState<WorkspaceRoute | null>(null);
   const [deleting, setDeleting] = useState<WorkspaceRoute | null>(null);
   const [plugins, setPlugins] = useState<WorkspaceRoute | null>(null);
   const items = routes.data?.pages.flatMap((p) => p.items) ?? [];
@@ -125,16 +126,18 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange }: { works
                     <span className="muted">Hosts</span>
                     {r.hosts?.length ? r.hosts.map((h) => <span className="match-chip mono" key={h}>{h}</span>) : <span className="mono">—</span>}
                   </div>
-                  {r.pathCompatibility === "legacy-preserved" && <p className="muted"><small>{LEGACY}{editedOverV1(r) ? ` ${OVER_V1}` : ""}</small></p>}
+                  {r.pathCompatibility === "legacy-preserved" && <p className="muted"><small>{isPathlessLegacy(r) ? PATHLESS_LEGACY : LEGACY}</small></p>}
                 </td>
                 <td className="actions">
-                  <Button variant="quiet" onClick={() => setPlugins(r)}>
-                    Plugins
-                  </Button>
-                  <Button variant="quiet" onClick={() => setEditing(r)}>
-                    Editar
-                  </Button>
-                  <RowMenu label={`Mais ações para ${r.name}`} items={[{ label: "Excluir", danger: true, onSelect: () => setDeleting(r) }]} />
+                  {isPathlessLegacy(r) ? (
+                    <Button variant="quiet" onClick={() => setDetails(r)}>Ver detalhes</Button>
+                  ) : (
+                    <>
+                      <Button variant="quiet" onClick={() => setPlugins(r)}>Plugins</Button>
+                      <Button variant="quiet" onClick={() => setEditing(r)}>Editar</Button>
+                      <RowMenu label={`Mais ações para ${r.name}`} items={[{ label: "Excluir", danger: true, onSelect: () => setDeleting(r) }]} />
+                    </>
+                  )}
                 </td>
               </tr>
             ))}
@@ -156,6 +159,7 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange }: { works
           onClose={() => setEditing(null)}
         />
       )}
+      {details && <RouteDetails route={details} serviceName={serviceName(details.serviceId)} onClose={() => setDetails(null)} />}
       {deleting && <DeleteRoute workspaceId={workspaceId} route={deleting} onClose={() => setDeleting(null)} />}
       {plugins && (
         <Modal title={`Plugins de ${plugins.name}`} onClose={() => setPlugins(null)} wide>
@@ -166,53 +170,45 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange }: { works
   );
 }
 
-/** A migrated route without paths: WorkspaceRouteWrite requires paths, so it is edited through v1 until it has one (WS-R0). */
-export const editedOverV1 = (route: WorkspaceRoute | null): boolean =>
+const isPathlessLegacy = (route: WorkspaceRoute | null): boolean =>
   route?.pathCompatibility === "legacy-preserved" && (route.paths?.length ?? 0) === 0;
 
-export const V1_AUTO_PUBLISH = "Este Workspace publica automaticamente pela v1: mude para publicação manual antes de editar esta route.";
-
-/**
- * Whether the v1 save of a pathless legacy route must wait: a v1 write in an environment that publishes
- * automatically would publish it by itself, and this screen only edits the draft. Unknown (still loading) waits too.
- */
-export function v1SaveBlocked(route: WorkspaceRoute | null, publishMode: "manual" | "auto" | undefined): boolean {
-  return editedOverV1(route) && publishMode !== "manual";
-}
-
-/** The v1 save refused because the environment publishes automatically (read from the server at submit). */
-export class AutoPublishV1Error extends Error {
-  constructor() {
-    super(V1_AUTO_PUBLISH);
-  }
-}
-
-/**
- * The v1 PUT of a pathless legacy route, only after the server says the environment publishes manually: the mode on
- * screen comes from a cache that may be stale, and in auto mode the v1 write would publish the edit by itself.
- */
-async function saveOverV1(envId: string, routeId: string, body: RouteWrite): Promise<Route> {
-  const env = await unwrap(api.GET("/environments/{envId}", { params: { path: { envId } }, cache: "no-store" }));
-  if (env.publishMode !== "manual") throw new AutoPublishV1Error();
-  return unwrap(api.PUT("/environments/{envId}/routes/{routeId}", { params: { path: { envId, routeId } }, body }));
+function RouteDetails({ route, serviceName, onClose }: { route: WorkspaceRoute; serviceName: string; onClose: () => void }) {
+  const fields = [
+    ["Nome", route.name],
+    ["Service", serviceName],
+    ["Paths", route.paths?.join(", ") || "—"],
+    ["Hosts", route.hosts?.join(", ") || "—"],
+    ["Métodos", route.methods?.join(", ") || "todos"],
+    ["Cabeçalhos", JSON.stringify(route.headers ?? {})],
+    ["Protocolos", route.protocols.join(", ")],
+    ["stripPath atual", route.stripPath ? "sim" : "não"],
+    ["Preservar o host original", route.preserveHost ? "sim" : "não"],
+    ["Retenção de análises", `${route.analyticsRetentionDays ?? 7} dias`],
+    ["Tags", route.tags?.join(", ") || "—"],
+  ];
+  return (
+    <Modal title={`Detalhes de ${route.name}`} onClose={onClose} footer={<Button onClick={onClose}>Fechar</Button>}>
+      <p className="warn"><Badge tone="warning">Legada</Badge> {PATHLESS_LEGACY}</p>
+      <dl>
+        {fields.map(([label, value]) => <div key={label}><dt>{label}</dt><dd className="mono">{value}</dd></div>)}
+      </dl>
+    </Modal>
+  );
 }
 
 /** Create (no route) or replace; the caller sees success only through `onSaved`, after the server's 201 or 200. */
-export function saveRouteMutation(workspaceId: string, route: WorkspaceRoute | null, invalidate: () => void, onSaved: (saved: WorkspaceRoute | Route) => void) {
+export function saveRouteMutation(workspaceId: string, route: WorkspaceRoute | null, invalidate: () => void, onSaved: (saved: WorkspaceRoute) => void) {
   return {
-    mutationFn: (body: WorkspaceRouteWrite | RouteWrite): Promise<WorkspaceRoute | Route> => {
-      if (route && editedOverV1(route)) return saveOverV1(workspaceId, route.id, body as RouteWrite);
+    mutationFn: (body: WorkspaceRouteWrite): Promise<WorkspaceRoute> => {
+      if (isPathlessLegacy(route)) throw new Error("Pathless legacy routes are read-only.");
       return route
-        ? unwrap(apiV2.PUT("/workspaces/{workspaceId}/routes/{routeId}", { params: { path: { workspaceId, routeId: route.id } }, body: body as WorkspaceRouteWrite }))
-        : unwrap(apiV2.POST("/workspaces/{workspaceId}/routes", { params: { path: { workspaceId } }, body: body as WorkspaceRouteWrite }));
+        ? unwrap(apiV2.PUT("/workspaces/{workspaceId}/routes/{routeId}", { params: { path: { workspaceId, routeId: route.id } }, body }))
+        : unwrap(apiV2.POST("/workspaces/{workspaceId}/routes", { params: { path: { workspaceId } }, body }));
     },
-    onSuccess: (saved: WorkspaceRoute | Route) => {
+    onSuccess: (saved: WorkspaceRoute) => {
       invalidate();
       onSaved(saved);
-    },
-    // The cached environment was stale: refresh it, so the form holds the save from now on.
-    onError: (err: unknown) => {
-      if (err instanceof AutoPublishV1Error) invalidate();
     },
   };
 }
@@ -229,28 +225,18 @@ export interface RouteFormValues {
   tags: string[];
 }
 
-// What this form does not edit but a PUT must keep; both RouteWrite (v1) and WorkspaceRouteWrite declare them.
+// What this form does not edit but a v2 PUT must keep.
 const KEPT = ["headers", "analyticsRetentionDays"] as const;
 
-/**
- * The body of a save, with only the fields the write schema declares (a response carries more). A legacy-preserved
- * route never sends stripPath through v2 (the server keeps the stored one; another value would be a 409
- * path-compatibility); through v1 (no paths) it sends the stored one, since v1 would otherwise default it to true.
- * A workspace-default route sends the user's choice (false unless chosen).
- */
-export function routeBody(route: WorkspaceRoute | null, form: RouteFormValues): WorkspaceRouteWrite | RouteWrite {
+/** A legacy route keeps its stored stripPath; conversion is a separate, explicit operation. */
+export function routeBody(route: WorkspaceRoute | null, form: RouteFormValues): WorkspaceRouteWrite {
   const kept = Object.fromEntries(KEPT.flatMap((k) => (route?.[k] === undefined ? [] : [[k, route[k]]])));
-  const { stripPath, ...fields } = form;
-  if (route && editedOverV1(route)) return { ...kept, ...fields, stripPath: route.stripPath };
-  return route?.pathCompatibility === "legacy-preserved" ? { ...kept, ...fields } : { ...kept, ...fields, stripPath };
+  return { ...kept, ...form, stripPath: route?.pathCompatibility === "legacy-preserved" ? route.stripPath : form.stripPath };
 }
 
 function RouteForm(props: { workspaceId: string; slug: string; route: WorkspaceRoute | null; services: { id: string; name: string; path: string | null }[]; defaultServiceId: string; onClose: () => void }) {
   const { workspaceId, slug, route, services, onClose } = props;
   const legacy = route?.pathCompatibility === "legacy-preserved";
-  const overV1 = editedOverV1(route);
-  const env = useEnvironment(workspaceId);
-  const blocked = v1SaveBlocked(route, env.data?.publishMode);
   const invalidate = useInvalidateWorkspaceGateway(workspaceId);
   const [form, setForm] = useState({
     name: route?.name ?? "",
@@ -265,23 +251,21 @@ function RouteForm(props: { workspaceId: string; slug: string; route: WorkspaceR
   });
   const [local, setLocal] = useState<FormErrors>(NO_ERRORS);
   const save = useMutation(saveRouteMutation(workspaceId, route, invalidate, onClose));
-  // Once the refreshed environment holds the save, its own notice says the same: one message, not two.
-  const errors = save.error instanceof AutoPublishV1Error ? { fields: {}, form: blocked && env.data?.publishMode === "auto" ? [] : [V1_AUTO_PUBLISH] }
-    : save.isError ? gatewayFormErrors(save.error, "route") : local;
+  const errors = save.isError ? gatewayFormErrors(save.error, "route") : local;
   const paths = splitList(form.paths);
   const stripPath = legacy ? route.stripPath ?? false : form.stripPath;
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
+    if (isPathlessLegacy(route)) return;
     save.reset();
     const fields: Record<string, string[]> = {
       ...(form.name.trim() ? {} : { name: ["Nome: campo obrigatório."] }),
       ...(services.some((s) => s.id === form.serviceId) ? {} : { serviceId: ["Escolha um service deste Workspace."] }),
-      ...(paths.length > 0 || (overV1 && (splitList(form.hosts).length > 0 || splitList(form.methods).length > 0 || Object.keys(route?.headers ?? {}).length > 0))
-        ? {} : { paths: [overV1 ? "Informe ao menos um path, host ou método." : "Informe ao menos um path."] }),
+      ...(paths.length > 0 ? {} : { paths: ["Informe ao menos um path."] }),
     };
     setLocal({ fields, form: [] });
-    if (Object.keys(fields).length > 0 || blocked) return;
+    if (Object.keys(fields).length > 0) return;
     save.mutate(routeBody(route, {
       name: form.name.trim(),
       serviceId: form.serviceId,
@@ -321,7 +305,6 @@ function RouteForm(props: { workspaceId: string; slug: string; route: WorkspaceR
           <p>Prefixo do Workspace: <span className="mono">/{slug}</span></p>
           {paths.length > 0 && <p>Path público: <span className="mono">{paths.map((p) => publicPath(slug, p)).join(", ")}</span></p>}
           {paths[0] && <p>{upstreamEffect(slug, paths[0], stripPath, services.find((x) => x.id === form.serviceId)?.path)}</p>}
-          {paths.length === 0 && overV1 && <p>Sem paths: a route casa por host, método ou cabeçalho. {OVER_V1}</p>}
         </div>
         <Field label="Hosts" errors={errors.fields.hosts} hint="Um por linha (opcional)">
           {(id, invalid) => <textarea id={id} aria-invalid={invalid} rows={2} value={form.hosts} onChange={(e) => set("hosts", e.target.value)} />}
@@ -359,13 +342,12 @@ function RouteForm(props: { workspaceId: string; slug: string; route: WorkspaceR
           {(id, invalid) => <input id={id} aria-invalid={invalid} value={form.tags} onChange={(e) => set("tags", e.target.value)} />}
         </Field>
         <p className="muted">A alteração entra no rascunho do Workspace; nada é implantado.</p>
-        {blocked && env.data?.publishMode === "auto" && <p className="warn" role="alert">{V1_AUTO_PUBLISH}</p>}
         <FormErrorList messages={errors.form} />
         <div className="form-actions">
           <button type="button" onClick={onClose}>
             Cancelar
           </button>
-          <button type="submit" className="primary" disabled={save.isPending || blocked}>
+          <button type="submit" className="primary" disabled={save.isPending}>
             {save.isPending ? "Salvando…" : "Salvar"}
           </button>
         </div>
