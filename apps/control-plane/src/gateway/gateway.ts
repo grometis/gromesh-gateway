@@ -431,7 +431,7 @@ export class GatewayService {
       const before = toRoute(await this.requireRoute(tx, envId, routeId, options.draftOnly));
       if (options.draftOnly) {
         // The cascade must not wait on a plugin while holding the environment: plugin writes take their row
-        // before markDraftChanged. The route lock excludes new scopes; plugin writers lock their scope first.
+        // before markDraftChanged. The route lock blocks new scopes at their FK check, before markDraftChanged too.
         await tx.select({ id: plugins.id }).from(plugins).where(eq(plugins.routeId, routeId)).orderBy(asc(plugins.id)).for("update");
         await this.refuseAutoPublish(tx, envId);
       }
