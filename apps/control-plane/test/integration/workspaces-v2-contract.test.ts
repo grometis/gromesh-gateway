@@ -646,7 +646,8 @@ describe("v2 schemas", () => {
   });
 
   it("defaults stripPath to false: the full path with the prefix reaches the upstream (D1)", () => {
-    expect(v2.components.schemas.WorkspaceRouteWrite.properties.stripPath.default).toBe(false);
+    // The server applies the default (WS-R0: a legacy route keeps its own), stated where the schema had it.
+    expect(v2.components.schemas.WorkspaceRouteWrite.properties.stripPath.description).toContain("Absent: false on a workspace-default route");
   });
 
   it.each([
@@ -1243,5 +1244,28 @@ describe("workspace administration (WS-M0)", () => {
     expect(flat(decide.description)).toContain("never its own requester (403)");
     expect(flat(decide.description)).toContain("evaluated for the DECIDER (the requester needs no workspace.create");
     expect(op("cancelWorkspaceRequest").description).toContain("Only the requester");
+  });
+});
+
+describe("route writes (WS-R0)", () => {
+  const op = (id: string) => v2Ops.find(({ op }) => op.operationId === id)!.op;
+  const flat = (text: string) => text.replace(/\s+/g, " ");
+
+  it("creates workspace-default routes and never converts a legacy-preserved one on a replace", () => {
+    expect(flat(op("createRoute").description)).toContain("pathCompatibility workspace-default (decision D1)");
+    const replace = flat(op("replaceRoute").description);
+    for (const phrase of ["Keeps the route's pathCompatibility", "an omitted stripPath keeps the stored value", "409 with code path-compatibility", "Edits the draft only"]) expect(replace, phrase).toContain(phrase);
+    // No v2 write is published by the v1 auto-publisher: 409 auto-publish instead.
+    for (const id of ["createRoute", "replaceRoute", "createService", "replaceService"]) {
+      expect(flat(op(id).description), id).toContain("auto-publish");
+      expect(JSON.stringify(op(id).responses["409"]), id).toContain("RouteProblem");
+    }
+    expect(v2.components.schemas.RouteProblem.allOf[1].properties.code.enum).toEqual(["path-compatibility", "auto-publish"]);
+    // No schema default: whether stripPath was given decides a legacy route's, so the server applies the default.
+    expect(v2.components.schemas.WorkspaceRouteWrite.properties.stripPath).not.toHaveProperty("default");
+    expect(flat(v2.components.schemas.WorkspaceRouteWrite.properties.stripPath.description)).toContain("on a legacy-preserved route the stored value");
+    const problem = ajv.compile({ $ref: `${BASE}control-plane-v2.openapi.yaml#/components/schemas/RouteProblem` });
+    expect(problem(v2.components.schemas.RouteProblem.example)).toBe(true);
+    expect(problem({ type: "about:blank", title: "Conflict", status: 409 })).toBe(false);
   });
 });
