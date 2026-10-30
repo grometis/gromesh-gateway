@@ -1245,3 +1245,14 @@ describe("workspace administration (WS-M0)", () => {
     expect(op("cancelWorkspaceRequest").description).toContain("Only the requester");
   });
 });
+
+describe("explicit service-to-upstream binding (WS-U0)", () => {
+  const op = (id: string) => v2Ops.find(({ op }) => op.operationId === id)!.op;
+  const flat = (text: string) => text.replace(/\s+/g, " ");
+
+  it("never lets a new or renamed upstream capture a v2 service that names its host as plain DNS", () => {
+    const create = flat(op("createUpstream").description);
+    for (const phrase of ["A service balances across it only through `upstreamId`", "a service host is always ordinary DNS", "409 with code upstream-captures-service", "services written only through v1 keep that v1 binding by name, unchanged"]) expect(create, phrase).toContain(phrase);
+    expect(flat(op("replaceUpstream").description)).toContain("upstream-captures-service included for the new name");
+  });
+});
