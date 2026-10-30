@@ -43,7 +43,7 @@ async function fakeApi(page: Page, fake: Fake) {
     if (!rest) return route.fulfill({ json: env(w) });
     if (rest === "/publish-preview") return route.fulfill({ json: { currentVersion: null, draftHash: `sha256:${"a".repeat(64)}`, hasChanges: true, changes: [] } });
     if (rest === "/clusters") return route.fulfill({ json: { items: [] } });
-    // v1 edits a migrated route without paths (WS-R0: WorkspaceRouteWrite requires paths); its body is RouteWrite.
+    // Keep the old fallback observable: read-only legacy scenarios must never call it.
     const v1Route = /^\/routes\/([^/]+)$/.exec(rest ?? "");
     if (v1Route && request.method() === "PUT") {
       const body = request.postDataJSON() as Record<string, unknown>;
@@ -151,6 +151,35 @@ async function signIn(page: Page, fake: Fake) {
 
 const menu = (page: Page) => page.getByRole("navigation", { name: "Menu principal" });
 const selector = (page: Page) => page.getByLabel("Workspace", { exact: true });
+
+function trackRouteWrites(page: Page) {
+  const writes: string[] = [];
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (["PUT", "POST", "DELETE"].includes(request.method()) && /^\/api\/v[12]\/.*\/routes(?:\/|$)/.test(path)) {
+      writes.push(`${request.method()} ${path}`);
+    }
+  });
+  return writes;
+}
+
+async function expectPathlessReadOnly(page: Page) {
+  const explanation = "Esta route legada sem paths é somente leitura. Ela exige o fluxo legado apropriado ou uma conversão explícita e auditada; a tela v2 não a edita.";
+  const row = page.getByRole("table", { name: "Routes", exact: true }).getByRole("row").filter({ hasText: "boletos-host" });
+  await expect(row).toContainText("Legada");
+  await expect(row).toContainText(explanation);
+  await expect(row.getByRole("button")).toHaveCount(1);
+  await expect(row.getByRole("button", { name: "Ver detalhes", exact: true })).toBeVisible();
+  const dialog = page.getByRole("dialog", { name: "Detalhes de boletos-host" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText(explanation);
+  await expect(dialog.locator("dl")).toContainText("boletos-host");
+  await expect(dialog.locator("dl")).toContainText("boletos.example");
+  await expect(dialog.locator("form, input, textarea, select, [contenteditable=true]")).toHaveCount(0);
+  await expect(dialog.getByRole("button")).toHaveCount(2);
+  await expect(dialog.getByRole("button", { name: "Fechar", exact: true })).toHaveCount(2);
+  return dialog;
+}
 
 async function createWorkspace(page: Page, name: string) {
   await menu(page).getByRole("link", { name: "Workspaces", exact: true }).click();
@@ -282,28 +311,34 @@ test("switching workspace with a form open closes it: no form keeps the previous
   await expect(selector(page)).toHaveValue(other.id);
 });
 
-test("a legacy route is marked, has no stripPath toggle, and saving never converts it", async ({ page }) => {
-  const fake = newFake();
-  await signIn(page, fake);
-  await menu(page).getByRole("link", { name: "Routes", exact: true }).click();
-  const routes = page.getByRole("table", { name: "Routes", exact: true });
-  await expect(routes).toContainText("Legada");
-  await expect(routes).toContainText("mantém o stripPath que tinha");
-  await expect(routes).toContainText("/legado/boletos");
-  await expect(page.getByRole("note", { name: "Estado do Workspace" })).toContainText("release ativa v7");
-  await routes.getByRole("button", { name: "Editar", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "Editar boletos-api" });
-  await expect(dialog.getByLabel(/stripPath/)).toHaveCount(0);
-  await expect(dialog).toContainText("stripPath atual: sim");
-  await expect(dialog.getByRole("group", { name: "Path público" })).toContainText("Uma requisição a /legado/boletos/x chega ao upstream como /x.");
-  await dialog.getByLabel("Métodos").fill("GET");
-  await dialog.getByRole("button", { name: "Salvar" }).click();
-  await expect(dialog).toHaveCount(0);
-  const put = fake.requests.find((r) => r.method === "PUT")!;
-  expect(put.body).not.toHaveProperty("stripPath");
-  expect(fake.routes[0]).toMatchObject({ pathCompatibility: "legacy-preserved", stripPath: true, methods: ["GET"] });
-  expect(fake.requests.some((r) => r.path.includes("path-compatibility"))).toBe(false);
-});
+for (const stripPath of [true, false]) {
+  test(`a legacy route with paths keeps its stored stripPath=${stripPath} in the v2 PUT without conversion`, async ({ page }) => {
+    const fake = newFake();
+    fake.routes[0] = { ...legacyRoute, stripPath };
+    const original = { ...fake.routes[0] };
+    const writes = trackRouteWrites(page);
+    await signIn(page, fake);
+    await menu(page).getByRole("link", { name: "Routes", exact: true }).click();
+    const routes = page.getByRole("table", { name: "Routes", exact: true });
+    await expect(routes).toContainText("Legada");
+    await expect(routes).toContainText("mantém o stripPath que tinha");
+    await expect(routes).toContainText("/legado/boletos");
+    await expect(page.getByRole("note", { name: "Estado do Workspace" })).toContainText("release ativa v7");
+    await routes.getByRole("button", { name: "Editar", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Editar boletos-api" });
+    await expect(dialog.getByLabel(/stripPath/)).toHaveCount(0);
+    await expect(dialog).toContainText(`stripPath atual: ${stripPath ? "sim" : "não"}`);
+    await expect(dialog.getByRole("group", { name: "Path público" })).toContainText(`Uma requisição a /legado/boletos/x chega ao upstream como ${stripPath ? "/x" : "/legado/boletos/x"}.`);
+    await dialog.getByLabel("Métodos").fill("GET");
+    await dialog.getByRole("button", { name: "Salvar" }).click();
+    await expect(dialog).toHaveCount(0);
+    expect(writes).toEqual([`PUT /api/v2/workspaces/${legacyWs.id}/routes/${legacyRoute.id}`]);
+    const put = fake.requests.find((r) => r.method === "PUT" && r.path === `/workspaces/${legacyWs.id}/routes/${legacyRoute.id}`)!;
+    expect(put.body).toMatchObject({ stripPath: original.stripPath, methods: ["GET"] });
+    expect(fake.routes[0]).toMatchObject({ pathCompatibility: original.pathCompatibility, stripPath: original.stripPath, methods: ["GET"] });
+    expect(fake.requests.some((r) => r.path.includes("path-compatibility"))).toBe(false);
+  });
+}
 
 test("a service balances through an upstream of its workspace, or goes to a DNS host that is not one", async ({ page }) => {
   const fake = newFake();
@@ -348,72 +383,90 @@ test("searching services for \"all\" and then opening Routes keeps both lists ap
   await expect(page.getByRole("table", { name: "Services", exact: true })).toContainText("boletos");
 });
 
-test("a migrated route without paths is edited through v1, keeping its stripPath", async ({ page }) => {
+test("a migrated route without paths has read-only details and never writes through v1 or v2", async ({ page }) => {
   const fake = newFake();
+  const writes = trackRouteWrites(page);
   const hostOnly = { ...legacyRoute, id: uuid(), name: "boletos-host", paths: [], hosts: ["boletos.example"] } as WorkspaceRoute;
+  const original = structuredClone(hostOnly);
   fake.routes.push(hostOnly);
   fake.routeOwner.set(hostOnly.id, legacyWs.id);
   await signIn(page, fake);
   await menu(page).getByRole("link", { name: "Routes", exact: true }).click();
   const row = page.getByRole("table", { name: "Routes", exact: true }).getByRole("row").filter({ hasText: "boletos-host" });
-  await expect(row).toContainText("editada pela API v1 até ganhar um");
-  await row.getByRole("button", { name: "Editar", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "Editar boletos-host" });
-  await expect(dialog.getByRole("group", { name: "Path público" })).toContainText("Sem paths: a route casa por host, método ou cabeçalho.");
-  await expect(dialog.getByLabel(/stripPath/)).toHaveCount(0);
-  await dialog.getByLabel("Nome").fill("boletos-por-host");
-  await dialog.getByRole("button", { name: "Salvar" }).click();
+  await row.getByRole("button", { name: "Ver detalhes", exact: true }).click();
+  const dialog = await expectPathlessReadOnly(page);
+  await dialog.getByRole("button", { name: "Fechar", exact: true }).last().click();
   await expect(dialog).toHaveCount(0);
-  const writes = fake.requests.filter((r) => r.method === "PUT");
-  expect(writes.map((r) => r.path)).toEqual([`/environments/${legacyWs.id}/routes/${hostOnly.id}`]);
-  expect(writes[0]!.body).toMatchObject({ name: "boletos-por-host", paths: [], hosts: ["boletos.example"], stripPath: true });
-  expect(fake.routes.find((r) => r.id === hostOnly.id)).toMatchObject({ name: "boletos-por-host", pathCompatibility: "legacy-preserved", stripPath: true });
-  await expect(page.getByRole("table", { name: "Routes", exact: true })).toContainText("boletos-por-host");
+  expect(writes).toEqual([]);
+  expect(fake.requests.filter((r) => r.method !== "GET")).toEqual([]);
+  expect(fake.routes.find((r) => r.id === hostOnly.id)).toEqual(original);
 });
 
-test("a pathless legacy route is not saved over v1 where the workspace publishes automatically", async ({ page }) => {
+test("a pathless legacy route stays read-only with auto publishing and keyboard interaction", async ({ page }) => {
   const fake = newFake();
+  const writes = trackRouteWrites(page);
   fake.autoPublish = new Set([legacyWs.id]);
   const hostOnly = { ...legacyRoute, id: uuid(), name: "boletos-host", paths: [], hosts: ["boletos.example"] } as WorkspaceRoute;
+  const original = structuredClone(hostOnly);
   fake.routes.push(hostOnly);
   fake.routeOwner.set(hostOnly.id, legacyWs.id);
   await signIn(page, fake);
   await menu(page).getByRole("link", { name: "Routes", exact: true }).click();
   const routes = page.getByRole("table", { name: "Routes", exact: true });
-  await routes.getByRole("row").filter({ hasText: "boletos-host" }).getByRole("button", { name: "Editar", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "Editar boletos-host" });
-  await expect(dialog.getByRole("alert")).toHaveText("Este Workspace publica automaticamente pela v1: mude para publicação manual antes de editar esta route.");
-  await dialog.getByLabel("Nome").fill("boletos-por-host");
-  await expect(dialog.getByRole("button", { name: "Salvar" })).toBeDisabled();
-  await dialog.getByLabel("Nome").press("Enter");
-  await expect(dialog).toBeVisible();
-  expect(fake.requests.filter((r) => r.method !== "GET")).toEqual([]);
-  await dialog.getByRole("button", { name: "Cancelar" }).click();
-  // A route with paths still goes through v2, which answers auto-publish itself; only the v1 fallback is held here.
+  await routes.getByRole("row").filter({ hasText: "boletos-host" }).getByRole("button", { name: "Ver detalhes", exact: true }).press("Enter");
+  const dialog = await expectPathlessReadOnly(page);
+  await dialog.getByRole("heading").click();
+  await page.keyboard.press("Enter");
+  await expectPathlessReadOnly(page);
+  expect(writes).toEqual([]);
+  // The scrollable modal body can receive focus between the header and footer.
+  const close = dialog.locator("footer").getByRole("button", { name: "Fechar", exact: true });
+  await close.focus();
+  await expect(close).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(dialog).toHaveCount(0);
+  // Auto publishing does not remove v2 editing for a legacy route that has paths.
   await routes.getByRole("row").filter({ hasText: "boletos-api" }).getByRole("button", { name: "Editar", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Editar boletos-api" }).getByRole("button", { name: "Salvar" })).toBeEnabled();
-  expect(fake.routes.find((r) => r.id === hostOnly.id)!.name).toBe("boletos-host");
+  expect(writes).toEqual([]);
+  expect(fake.requests.filter((r) => r.method !== "GET")).toEqual([]);
+  expect(fake.routes.find((r) => r.id === hostOnly.id)).toEqual(original);
 });
 
-test("the v1 save reads the publish mode from the server: a stale manual on screen writes nothing when it is auto", async ({ page }) => {
+test("pathless legacy details stay read-only when publishing changes from manual to auto", async ({ page }) => {
   const fake = newFake();
+  const writes = trackRouteWrites(page);
   const hostOnly = { ...legacyRoute, id: uuid(), name: "boletos-host", paths: [], hosts: ["boletos.example"] } as WorkspaceRoute;
+  const original = structuredClone(hostOnly);
   fake.routes.push(hostOnly);
   fake.routeOwner.set(hostOnly.id, legacyWs.id);
   await signIn(page, fake);
   await menu(page).getByRole("link", { name: "Routes", exact: true }).click();
-  await page.getByRole("table", { name: "Routes", exact: true }).getByRole("row").filter({ hasText: "boletos-host" }).getByRole("button", { name: "Editar", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "Editar boletos-host" });
-  await expect(dialog.getByRole("button", { name: "Salvar" })).toBeEnabled();
+  const details = page.getByRole("table", { name: "Routes", exact: true }).getByRole("row").filter({ hasText: "boletos-host" }).getByRole("button", { name: "Ver detalhes", exact: true });
+  await details.click();
+  const dialog = await expectPathlessReadOnly(page);
   // Someone switches the environment to auto after this screen read it.
   fake.autoPublish = new Set([legacyWs.id]);
-  await dialog.getByLabel("Nome").fill("boletos-por-host");
-  await dialog.getByRole("button", { name: "Salvar" }).click();
-  await expect(dialog.getByRole("alert")).toHaveText("Este Workspace publica automaticamente pela v1: mude para publicação manual antes de editar esta route.");
-  await expect(dialog.getByRole("button", { name: "Salvar" })).toBeDisabled();
-  await expect(dialog).toBeVisible();
+  await dialog.getByRole("heading").click();
+  await page.keyboard.press("Enter");
+  await expectPathlessReadOnly(page);
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await details.press("Space");
+  await expectPathlessReadOnly(page);
+  await dialog.getByRole("button", { name: "Fechar", exact: true }).last().press("Enter");
+  await expect(dialog).toHaveCount(0);
+  // The refreshed screen also sees auto, rather than retaining the earlier manual mode.
+  const autoMode = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/environments/${legacyWs.id}` && response.request().method() === "GET");
+  await page.reload();
+  expect(await (await autoMode).json()).toMatchObject({ publishMode: "auto" });
+  await details.press("Enter");
+  await expectPathlessReadOnly(page);
+  await dialog.getByRole("button", { name: "Fechar", exact: true }).last().press("Enter");
+  await expect(dialog).toHaveCount(0);
+  expect(writes).toEqual([]);
   expect(fake.requests.filter((r) => r.method !== "GET")).toEqual([]);
-  expect(fake.routes.find((r) => r.id === hostOnly.id)!.name).toBe("boletos-host");
+  expect(fake.routes.find((r) => r.id === hostOnly.id)).toEqual(original);
 });
 
 for (const width of [390, 1440]) {
