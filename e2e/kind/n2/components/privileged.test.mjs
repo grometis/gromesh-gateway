@@ -5,7 +5,8 @@ import { createHash } from "node:crypto";
 import { connect } from "node:net";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { privilegedAfterLoss } from "./privileged.mjs";
+import { privilegedAfterLoss, privilegedRequestsBetween, scenarioRequestLines } from "./privileged.mjs";
+import { readFileSync } from "node:fs";
 
 const BOOT = "7d2c1e9a-0b4f-4f0e-9d3a-1c2b3a4d5e6f";
 const LOSS = 1_000_000;
@@ -126,4 +127,88 @@ test("the real lab server logs accept (both ends), the request's hash and marks,
   const accept = events.find((e) => e.ev === "accept");
   assert.ok(accept.local && accept.localPort === port && accept.remote, JSON.stringify(accept));
   assert.deepEqual(events.map((e) => e.seq), events.map((_, i) => i + 1));
+});
+
+test("a containment scenario counts the route that targets the privileged destination, prefix included", () => {
+  const lines = scenarioRequestLines("ws-a", "/meta");
+  assert.deepEqual(lines, [ROUTE, WS, "GET /ws-a/meta HTTP/1.1"]);
+  const scenario = { ...opts, requests: lines.map(sha) };
+  // Reaching it before the limit exercises the reading; reaching it after fails; the old set never saw it.
+  assert.equal(privilegedAfterLoss(log(conn(1, 2_000, { line: lines[2] })), scenario).result, "PASS");
+  assert.equal(privilegedAfterLoss(log([...conn(1, 2_000, { line: lines[2] }), ...conn(2, 21_000, { line: lines[2] })]), scenario).result, "FAIL");
+  assert.equal(privilegedAfterLoss(log([...conn(1, 2_000, { line: lines[2] }), ...conn(2, 21_000, { line: lines[2] })]), opts).result, "NOT_EXERCISED");
+});
+
+test("an IPv4 peer reported as IPv4-mapped IPv6 is the same source (review E9 P2)", () => {
+  const mapped = { remote: `::ffff:${POD}` };
+  assert.equal(privilegedAfterLoss(log([...conn(1, 2_000, mapped), ...conn(2, 21_000, mapped)]), opts).result, "FAIL");
+  assert.equal(privilegedAfterLoss(log(conn(1, 2_000, mapped)), opts).result, "PASS");
+});
+
+test("reaching the destination before the loss invalidates the reading (review E9 P3)", () => {
+  const r = privilegedAfterLoss(log([...conn(1, -1_000), ...conn(2, 2_000)]), opts);
+  assert.equal(r.result, "INVALID");
+  assert.match(r.reason, /before the loss/);
+});
+
+test("after recovery: requests of the scenario inside the recovery marks are counted, others are not", () => {
+  const lines = log([...conn(1, 2_000), ...conn(2, 3_000, { remote: PROBE_ELSEWHERE })]);
+  assert.equal(privilegedRequestsBetween(lines, { server: "ext:imds", scenario: "run1-n", sources: [POD], requests: [sha(ROUTE)] }), 1);
+  assert.equal(privilegedRequestsBetween(log([]), { server: "ext:imds", scenario: "run1-n", sources: [POD], requests: [sha(ROUTE)] }), 0);
+  assert.equal(privilegedRequestsBetween(log([], { marks: false }), { server: "ext:imds", scenario: "run1-n", sources: [POD], requests: [sha(ROUTE)] }), null);
+  // An incomplete log is no evidence of absence (review E9 r3): an orphan request, or a gap where one was.
+  const one = log(conn(1, 2_000));
+  const q = { server: "ext:imds", scenario: "run1-n", sources: [POD], requests: [sha(ROUTE)] };
+  assert.equal(privilegedRequestsBetween(one.filter((l) => !(l.includes('"ev":"accept"') && l.includes('"conn":1,'))), q), null);
+  assert.equal(privilegedRequestsBetween(one.filter((l) => !l.includes('"ev":"req"')), q), null);
+  // A silent observer between the marks is no evidence either (review E9 r5).
+  assert.equal(privilegedRequestsBetween(log([], { skipBeats: [5_000, 6_000, 7_000] }), q), null);
+});
+
+test("the scenario client really requests the privileged route on fresh connections, without the API key", async () => {
+  const { CLIENT } = await import("./client-script.mjs");
+  const { createServer } = await import("node:http");
+  const seen = [];
+  const server = createServer((req, res) => { seen.push({ url: req.url, apikey: req.headers.apikey ?? null }); res.end("ok"); });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const args = JSON.stringify(["127.0.0.1", String(server.address().port), "/ws-a/api", "k", "/ws-a/api/ws", "/ws-a/meta"]);
+  const child = spawn(process.execPath, ["--input-type=module", "-"], { stdio: ["pipe", "pipe", "ignore"] });
+  child.stdin.end(`globalThis.ARGS = ${JSON.stringify(args)};\n${CLIENT}`);
+  const events = [];
+  child.stdout.on("data", (d) => { for (const l of String(d).split("\n").filter(Boolean)) { try { events.push(JSON.parse(l)); } catch {} } });
+  await new Promise((r) => setTimeout(r, 1200));
+  child.kill("SIGKILL");
+  server.close();
+  const meta = seen.filter((s) => s.url === "/ws-a/meta");
+  assert.ok(meta.length >= 2, `privileged route requests: ${meta.length}`);
+  assert.ok(meta.every((s) => s.apikey === null), "the privileged route is requested without the workspace key");
+  assert.ok(events.some((e) => e.k === "priv" && e.s === 200), "the client logs the route's own kind");
+  // Without the sixth argument (agent-down, drain) it never requests it.
+  seen.length = 0;
+  const server2 = createServer((req, res) => { seen.push({ url: req.url }); res.end("ok"); });
+  await new Promise((r) => server2.listen(0, "127.0.0.1", r));
+  const c2 = spawn(process.execPath, ["--input-type=module", "-"], { stdio: ["pipe", "ignore", "ignore"] });
+  c2.stdin.end(`globalThis.ARGS = ${JSON.stringify(JSON.stringify(["127.0.0.1", String(server2.address().port), "/ws-a/api", "k", "/ws-a/api/ws"]))};\n${CLIENT}`);
+  await new Promise((r) => setTimeout(r, 800));
+  c2.kill("SIGKILL");
+  server2.close();
+  assert.ok(seen.some((s) => s.url === "/ws-a/api") && !seen.some((s) => s.url === "/ws-a/meta"));
+});
+
+test("the containment scenario is wired: route created, marks before the client, client on the route, recovery checked", () => {
+  const src = readFileSync(fileURLToPath(new URL("./v2.mjs", import.meta.url)), "utf8");
+  const body = src.slice(src.indexOf("async function containmentN"), src.indexOf("/** Aceite o:"));
+  assert.match(src, /routes`, \{ session: ctx\.admin, body: \{ name: "meta", serviceId: meta\.id, paths: \[PRIVILEGED_PATH\]/);
+  assert.match(src, /PRIVILEGED_HOST = "imds\.lab\.gromesh\.test"/);
+  assert.ok(body.indexOf('markServer("imds", scenario, "start")') < body.indexOf("new Client(id, clientArgs)"), "the start mark precedes the client");
+  assert.match(body, /clientArgs = \[[^\]]*PRIVILEGED_PATH/);
+  assert.ok(body.indexOf("await recover(it, id)") < body.indexOf("privilegedRequestsBetween("), "the recovery check follows the recovery");
+  // The lab exception is its own NetworkPolicy, never the chart's values, created only after the chart-only proof.
+  const values = src.slice(src.indexOf("const valuesV2 ="), src.indexOf("const releaseV2 ="));
+  assert.doesNotMatch(values, /169\.254|fd00:ec2/);
+  const chart = src.slice(src.indexOf("async function chartBlocksImds"), src.indexOf("/** Aceite n: fail-closed"));
+  assert.ok(chart.indexOf('"n2c-deny-imds"]') < chart.indexOf("await labImdsException()"), "the exception follows the chart-only check");
+  const order = src.slice(src.indexOf("const all = [setupV2"), src.indexOf("];", src.indexOf("const all = [setupV2")));
+  assert.ok(order.indexOf("chartBlocksImds") > 0 && order.indexOf("chartBlocksImds") < order.indexOf("containmentN"), "the chart-only check runs before the containment scenarios");
+  assert.match(src, /if \(only\.some\(\(name\) => \["containmentN", "containmentFrozen"\]\.includes\(name\)\)\) only\.push\("chartBlocksImds"\);/);
 });
