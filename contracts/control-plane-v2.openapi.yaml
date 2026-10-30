@@ -2102,9 +2102,10 @@ paths:
         WS-R0. Keeps the route's pathCompatibility: only convertRoutePathCompatibility turns a legacy-preserved route
         into workspace-default. For a legacy-preserved route an omitted stripPath keeps the stored value (never the
         schema's default false), and a stripPath different from the stored one answers 409 with code
-        path-compatibility (convert it explicitly instead); paths stays optional there, as migrated. For a
-        workspace-default route the body applies as written (paths required, stripPath default false). serviceId
-        must be a service of this workspace (422). Edits the draft only; audited (route.update, before and after).
+        path-compatibility (convert it explicitly instead). For a workspace-default route the body applies as written
+        (stripPath default false). The body is WorkspaceRouteWrite in both cases (paths required: a migrated route
+        without paths is edited through v1 until it has some). serviceId must be a service of this workspace (422).
+        Edits the draft only; audited (route.update, before and after).
       security:
         - cookieAuth: []
           csrfToken: []
