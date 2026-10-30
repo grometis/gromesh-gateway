@@ -576,7 +576,9 @@ async function setupV2() {
   // Aceite n's privileged destination: a route whose name resolves to the IMDS. The control plane accepts a name (it
   // resolves no DNS: forbidding what a name reaches is the data plane's job), so only the cluster-wide IMDS deny keeps
   // Kong from it until a containment scenario removes that deny; from then on the route really reaches it.
-  const meta = await api.ok("POST", `/api/v1/environments/${envA.id}/services`, { session: ctx.admin, body: { name: "meta", protocol: "http", host: PRIVILEGED_HOST, port: 80 } });
+  const meta = await api.ok("POST", `/api/v1/environments/${envA.id}/services`, { session: ctx.admin, body: { name: "meta", protocol: "http", host: PRIVILEGED_HOST, port: 80,
+    // A silent drop must answer inside the client's 3 s: Kong's 504 proves it tried (never 60 s, never a retry).
+    connectTimeoutMs: 1000, readTimeoutMs: 1000, writeTimeoutMs: 1000, retries: 0 } });
   const metaRoute = await api.ok("POST", `/api/v1/environments/${envA.id}/routes`, { session: ctx.admin, body: { name: "meta", serviceId: meta.id, paths: [PRIVILEGED_PATH], stripPath: false } });
   Object.assign(ctx.ws.A, { privilegedServiceId: meta.id, privilegedRouteId: metaRoute.id });
   const list = await api.ok("GET", "/api/v2/workspaces", { session: ctx.admin });

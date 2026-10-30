@@ -161,6 +161,8 @@ test("after recovery: requests of the scenario inside the recovery marks are cou
   const q = { server: "ext:imds", scenario: "run1-n", sources: [POD], requests: [sha(ROUTE)] };
   assert.equal(privilegedRequestsBetween(one.filter((l) => !(l.includes('"ev":"accept"') && l.includes('"conn":1,'))), q), null);
   assert.equal(privilegedRequestsBetween(one.filter((l) => !l.includes('"ev":"req"')), q), null);
+  // A silent observer between the marks is no evidence either (review E9 r5).
+  assert.equal(privilegedRequestsBetween(log([], { skipBeats: [5_000, 6_000, 7_000] }), q), null);
 });
 
 test("the scenario client really requests the privileged route on fresh connections, without the API key", async () => {

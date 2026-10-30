@@ -102,7 +102,7 @@ export const scenarioRequestLines = (slug, privilegedPath) => [`GET /${slug}/api
  * How many scenario requests (from `sources`, with one of the `requests` hashes) the server logged between the
  * scenario's start and end marks; null when the log does not hold exactly one of each, in order, of one instance.
  */
-export function privilegedRequestsBetween(lines, { server, scenario, sources, requests }) {
+export function privilegedRequestsBetween(lines, { server, scenario, sources, requests, heartbeatMs = 1000 }) {
   const events = lines.map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter((e) => e && e.server === server);
   const start = events.filter((e) => e.ev === "mark" && e.scenario === scenario && e.phase === "start");
   const end = events.filter((e) => e.ev === "mark" && e.scenario === scenario && e.phase === "end");
@@ -114,6 +114,9 @@ export function privilegedRequestsBetween(lines, { server, scenario, sources, re
   const inside = all.filter((e) => e.seq > start[0].seq && e.seq < end[0].seq);
   const accepts = new Map(all.filter((e) => e.ev === "accept").map((e) => [e.conn, e]));
   if (inside.some((e) => e.ev === "req" && !accepts.has(e.conn))) return null;
+  // And the observer alive throughout: heartbeats at most two periods apart between the marks.
+  const beats = [start[0], ...inside.filter((e) => e.ev === "heartbeat"), end[0]].map((e) => e.wallMs).sort((x, y) => x - y);
+  if (beats.slice(1).some((t, i) => t - beats[i] > 2 * heartbeatMs)) return null;
   const own = new Set(sources.map(plainAddress));
   return inside.filter((e) => e.ev === "req" && requests.includes(e.lineSha256) && own.has(plainAddress(accepts.get(e.conn)?.remote))).length;
 }
