@@ -1,4 +1,4 @@
-FROM node:24.22.0-alpine AS build
+FROM node:24.22.1-alpine AS build
 RUN corepack enable
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
