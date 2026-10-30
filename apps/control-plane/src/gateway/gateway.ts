@@ -385,9 +385,10 @@ export class GatewayService {
    * publisher would serve it without an explicit publish (409; switch the environment to manual first).
    */
   async refuseAutoPublish(tx: Executor, envId: string): Promise<void> {
-    // Inside the write's transaction, the environment row shared until the commit: a switch to auto (which updates
-    // it) waits for this write, and the write sees a switch that committed first.
-    const [env] = await tx.select({ publishMode: environments.publishMode }).from(environments).where(eq(environments.id, envId)).for("share");
+    // Inside the write's transaction, the environment row locked as markDraftChanged will update it (NO KEY UPDATE, so
+    // two writers queue instead of upgrading a shared lock into a deadlock): a switch to auto waits for this write,
+    // and the write sees a switch that committed first.
+    const [env] = await tx.select({ publishMode: environments.publishMode }).from(environments).where(eq(environments.id, envId)).for("no key update");
     if (env?.publishMode === "auto") {
       throw new HttpException({ type: "https://gromesh.dev/problems/auto-publish", title: "Conflict", status: 409, code: "auto-publish",
         detail: "This workspace auto-publishes its draft through v1: switch it to manual publishing before writing through v2" }, 409);
@@ -540,8 +541,8 @@ function workspaceServiceWrite(gw: GatewayService, workspaceId: string, body: Wo
   refuseReservedHost("host", plain.host);
   // Inside the write's transaction: the upstream it names is locked (KEY SHARE) until the commit, so it cannot be
   // deleted or renamed between this check and the write.
+  // The upstream before the environment: the order an upstream's delete or rename takes them (its row, then the draft).
   const check = async (tx: Executor) => {
-    await gw.refuseAutoPublish(tx, workspaceId);
     const rows = await tx
       .select({ id: upstreams.id, name: upstreams.name })
       .from(upstreams)
@@ -554,6 +555,7 @@ function workspaceServiceWrite(gw: GatewayService, workspaceId: string, body: Wo
     } else if (rows.some((u) => u.name === plain.host)) {
       throw unprocessable("Invalid service", [{ path: "upstreamId", message: `host ${plain.host} is an upstream of this workspace: refer to it by upstreamId` }]);
     }
+    await gw.refuseAutoPublish(tx, workspaceId);
   };
   return { plain, check };
 }
