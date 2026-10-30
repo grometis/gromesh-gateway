@@ -138,3 +138,19 @@ describe("services through /api/v2 (WS-R1)", () => {
     expect((await v2(editor.api, "POST", `/workspaces/${b}/services`, service())).status).toBe(404);
   });
 });
+
+describe("retryingTransaction", () => {
+  it("runs again after a deadlock or serialization abort, at most three times, and rethrows anything else", async () => {
+    const { retryingTransaction } = await import("../../src/gateway/gateway.js");
+    let calls = 0;
+    const abort = (code: string) => Object.assign(new Error("aborted"), { cause: { code } });
+    expect(await retryingTransaction(async () => (++calls < 3 ? Promise.reject(abort("40P01")) : "ok"))).toBe("ok");
+    expect(calls).toBe(3);
+    calls = 0;
+    await expect(retryingTransaction(async () => { calls++; throw abort("40001"); })).rejects.toThrow("aborted");
+    expect(calls).toBe(3);
+    calls = 0;
+    await expect(retryingTransaction(async () => { calls++; throw abort("23505"); })).rejects.toThrow("aborted");
+    expect(calls).toBe(1);
+  });
+});
