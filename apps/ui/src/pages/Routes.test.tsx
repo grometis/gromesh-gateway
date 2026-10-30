@@ -88,6 +88,18 @@ describe("saving a workspace route", () => {
     expect(onSaved).toHaveBeenCalledOnce();
   });
 
+  it("never saves a pathless legacy route over v1 where v1 publishes automatically (nor before the mode is known)", async () => {
+    const { v1SaveBlocked } = await load(() => new Promise(() => {}));
+    const hostOnly = route({ pathCompatibility: "legacy-preserved", paths: [], hosts: ["boletos.example"] });
+    expect(v1SaveBlocked(hostOnly, "auto")).toBe(true);
+    expect(v1SaveBlocked(hostOnly, undefined)).toBe(true);
+    expect(v1SaveBlocked(hostOnly, "manual")).toBe(false);
+    // Everything else goes through v2, which refuses an auto-publishing workspace itself (409 auto-publish).
+    expect(v1SaveBlocked(route({ pathCompatibility: "legacy-preserved" }), "auto")).toBe(false);
+    expect(v1SaveBlocked(route(), "auto")).toBe(false);
+    expect(v1SaveBlocked(null, "auto")).toBe(false);
+  });
+
   it("reports success only after the 200, and a path-compatibility 409 lands on stripPath", async () => {
     let resolve!: (r: Response) => void;
     const sent: Request[] = [];

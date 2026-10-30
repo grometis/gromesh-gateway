@@ -23,11 +23,13 @@ interface Fake {
   routeOwner: Map<string, string>;
   upstreams: Upstream[];
   dirty: Set<string>;
+  /** Workspaces whose v1 environment publishes automatically. */
+  autoPublish?: Set<string>;
   requests: { method: string; path: string; body: unknown }[];
 }
 
 async function fakeApi(page: Page, fake: Fake) {
-  const env = (w: Workspace) => ({ id: w.id, name: w.name, publishMode: "manual", currentVersion: null, hasUnpublishedChanges: fake.dirty.has(w.id), createdAt: NOW, updatedAt: NOW });
+  const env = (w: Workspace) => ({ id: w.id, name: w.name, publishMode: fake.autoPublish?.has(w.id) ? "auto" : "manual", currentVersion: null, hasUnpublishedChanges: fake.dirty.has(w.id), createdAt: NOW, updatedAt: NOW });
   const record = (method: string, path: string, body: unknown) => fake.requests.push({ method, path, body });
   // Everything the v1 screens around the gateway read for these workspaces; publishing or deploying is recorded.
   await page.route("**/api/v1/environments**", async (route) => {
@@ -367,6 +369,30 @@ test("a migrated route without paths is edited through v1, keeping its stripPath
   expect(writes[0]!.body).toMatchObject({ name: "boletos-por-host", paths: [], hosts: ["boletos.example"], stripPath: true });
   expect(fake.routes.find((r) => r.id === hostOnly.id)).toMatchObject({ name: "boletos-por-host", pathCompatibility: "legacy-preserved", stripPath: true });
   await expect(page.getByRole("table", { name: "Routes", exact: true })).toContainText("boletos-por-host");
+});
+
+test("a pathless legacy route is not saved over v1 where the workspace publishes automatically", async ({ page }) => {
+  const fake = newFake();
+  fake.autoPublish = new Set([legacyWs.id]);
+  const hostOnly = { ...legacyRoute, id: uuid(), name: "boletos-host", paths: [], hosts: ["boletos.example"] } as WorkspaceRoute;
+  fake.routes.push(hostOnly);
+  fake.routeOwner.set(hostOnly.id, legacyWs.id);
+  await signIn(page, fake);
+  await menu(page).getByRole("link", { name: "Routes", exact: true }).click();
+  const routes = page.getByRole("table", { name: "Routes", exact: true });
+  await routes.getByRole("row").filter({ hasText: "boletos-host" }).getByRole("button", { name: "Editar", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Editar boletos-host" });
+  await expect(dialog.getByRole("alert")).toHaveText("Este Workspace publica automaticamente pela v1: mude para publicação manual antes de editar esta route.");
+  await dialog.getByLabel("Nome").fill("boletos-por-host");
+  await expect(dialog.getByRole("button", { name: "Salvar" })).toBeDisabled();
+  await dialog.getByLabel("Nome").press("Enter");
+  await expect(dialog).toBeVisible();
+  expect(fake.requests.filter((r) => r.method !== "GET")).toEqual([]);
+  await dialog.getByRole("button", { name: "Cancelar" }).click();
+  // A route with paths still goes through v2, which answers auto-publish itself; only the v1 fallback is held here.
+  await routes.getByRole("row").filter({ hasText: "boletos-api" }).getByRole("button", { name: "Editar", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Editar boletos-api" }).getByRole("button", { name: "Salvar" })).toBeEnabled();
+  expect(fake.routes.find((r) => r.id === hostOnly.id)!.name).toBe("boletos-host");
 });
 
 for (const width of [390, 1440]) {

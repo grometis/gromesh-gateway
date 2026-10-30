@@ -6,7 +6,7 @@ import { api, unwrap, type Route, type RouteWrite } from "../api/client";
 import { statusMessage, type FormErrors } from "../api/errors";
 import { Field, FormErrorList } from "../components/Field";
 import { ConfirmDialog, Modal } from "../components/Modal";
-import { useEnvId } from "../components/Shell";
+import { useEnvId, useEnvironment } from "../components/Shell";
 import { ScopedPlugins } from "./Plugins";
 import { splitList, useEntityDraft } from "./Services";
 import { PageHeader } from "../components/PageHeader";
@@ -170,6 +170,16 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange }: { works
 export const editedOverV1 = (route: WorkspaceRoute | null): boolean =>
   route?.pathCompatibility === "legacy-preserved" && (route.paths?.length ?? 0) === 0;
 
+export const V1_AUTO_PUBLISH = "Este Workspace publica automaticamente pela v1: mude para publicação manual antes de editar esta route.";
+
+/**
+ * Whether the v1 save of a pathless legacy route must wait: a v1 write in an environment that publishes
+ * automatically would publish it by itself, and this screen only edits the draft. Unknown (still loading) waits too.
+ */
+export function v1SaveBlocked(route: WorkspaceRoute | null, publishMode: "manual" | "auto" | undefined): boolean {
+  return editedOverV1(route) && publishMode !== "manual";
+}
+
 /** Create (no route) or replace; the caller sees success only through `onSaved`, after the server's 201 or 200. */
 export function saveRouteMutation(workspaceId: string, route: WorkspaceRoute | null, invalidate: () => void, onSaved: (saved: WorkspaceRoute | Route) => void) {
   return {
@@ -218,6 +228,8 @@ function RouteForm(props: { workspaceId: string; slug: string; route: WorkspaceR
   const { workspaceId, slug, route, services, onClose } = props;
   const legacy = route?.pathCompatibility === "legacy-preserved";
   const overV1 = editedOverV1(route);
+  const env = useEnvironment(workspaceId);
+  const blocked = v1SaveBlocked(route, env.data?.publishMode);
   const invalidate = useInvalidateWorkspaceGateway(workspaceId);
   const [form, setForm] = useState({
     name: route?.name ?? "",
@@ -246,7 +258,7 @@ function RouteForm(props: { workspaceId: string; slug: string; route: WorkspaceR
         ? {} : { paths: [overV1 ? "Informe ao menos um path, host ou método." : "Informe ao menos um path."] }),
     };
     setLocal({ fields, form: [] });
-    if (Object.keys(fields).length > 0) return;
+    if (Object.keys(fields).length > 0 || blocked) return;
     save.mutate(routeBody(route, {
       name: form.name.trim(),
       serviceId: form.serviceId,
@@ -324,12 +336,13 @@ function RouteForm(props: { workspaceId: string; slug: string; route: WorkspaceR
           {(id, invalid) => <input id={id} aria-invalid={invalid} value={form.tags} onChange={(e) => set("tags", e.target.value)} />}
         </Field>
         <p className="muted">A alteração entra no rascunho do Workspace; nada é implantado.</p>
+        {blocked && env.data?.publishMode === "auto" && <p className="warn" role="alert">{V1_AUTO_PUBLISH}</p>}
         <FormErrorList messages={errors.form} />
         <div className="form-actions">
           <button type="button" onClick={onClose}>
             Cancelar
           </button>
-          <button type="submit" className="primary" disabled={save.isPending}>
+          <button type="submit" className="primary" disabled={save.isPending || blocked}>
             {save.isPending ? "Salvando…" : "Salvar"}
           </button>
         </div>
