@@ -125,7 +125,7 @@ test("UI publication, key-auth traffic, viewer limits, audit and rollback on the
     await service.getByLabel("Nome").fill(name);
     await service.getByLabel("Host").fill("echo");
     await service.getByLabel("Porta").fill("80");
-    const serviceCreated = page.waitForResponse((r) => r.request().method() === "POST" && r.url().endsWith(`/environments/${env.id}/services`));
+    const serviceCreated = page.waitForResponse((r) => r.request().method() === "POST" && r.url().endsWith(`/api/v2/workspaces/${env.id}/services`));
     await service.getByRole("button", { name: "Salvar" }).click();
     expect((await serviceCreated).status()).toBe(201);
     await expect(service).toBeHidden();
