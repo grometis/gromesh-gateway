@@ -70,8 +70,14 @@ export function privilegedAfterLoss(lines, { server, scenario, lossMs, limitMs, 
   const gap = Math.max(...beats.slice(1).map((t, i) => t - beats[i]));
   if (gap > 2 * heartbeatMs) return invalid(`heartbeat gap ${gap} ms > ${2 * heartbeatMs} ms between the marks: the observer was not proven alive`);
   const accepts = new Map(all.filter((e) => e.ev === "accept").map((e) => [e.conn, e]));
+  // A dual-stack listener reports an IPv4 peer as ::ffff:a.b.c.d: one form for both sides of the comparison.
+  const own = new Set(sources.map(plainAddress));
+  const fromScenario = (e) => e.ev === "req" && requests.includes(e.lineSha256) && own.has(plainAddress(accepts.get(e.conn).remote));
   for (const r of inside.filter((e) => e.ev === "req")) if (!accepts.has(r.conn)) return invalid(`request on connection ${r.conn} that was never accepted`);
-  const scenarioReqs = inside.filter((e) => e.ev === "req" && requests.includes(e.lineSha256) && sources.includes(accepts.get(e.conn).remote) && e.wallMs >= lossMs);
+  // Reached before the loss: the barrier was not in place, so nothing after it measures the containment.
+  const early = inside.find((e) => fromScenario(e) && e.wallMs < lossMs);
+  if (early) return invalid(`a scenario request reached the privileged destination ${lossMs - early.wallMs} ms before the loss`);
+  const scenarioReqs = inside.filter((e) => fromScenario(e) && e.wallMs >= lossMs);
   const late = scenarioReqs.filter((e) => e.wallMs > deadline + uncertainty);
   if (late.length) {
     const r = late[0], acceptedAt = accepts.get(r.conn).wallMs;
@@ -82,4 +88,35 @@ export function privilegedAfterLoss(lines, { server, scenario, lossMs, limitMs, 
   if (scenarioReqs.length === 0) return { ...base, result: "NOT_EXERCISED", uncertaintyMs: uncertainty, reason: "no scenario request reached the privileged destination after the loss" };
   return { ...base, result: "PASS", reason: null, uncertaintyMs: uncertainty, valueMs: Math.max(...scenarioReqs.map((e) => e.wallMs)) - lossMs,
     connections: new Set(scenarioReqs.map((e) => e.conn)).size, instance: inst };
+}
+
+const plainAddress = (a) => String(a ?? "").toLowerCase().replace(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/, "$1");
+
+/**
+ * The first request line of every flow a containment scenario sends through Kong for workspace `slug`: new and
+ * keepalive HTTP on /api, the WebSocket upgrade on /api/ws, and the route that targets the privileged destination.
+ */
+export const scenarioRequestLines = (slug, privilegedPath) => [`GET /${slug}/api HTTP/1.1`, `GET /${slug}/api/ws HTTP/1.1`, `GET /${slug}${privilegedPath} HTTP/1.1`];
+
+/**
+ * How many scenario requests (from `sources`, with one of the `requests` hashes) the server logged between the
+ * scenario's start and end marks; null when the log does not hold exactly one of each, in order, of one instance.
+ */
+export function privilegedRequestsBetween(lines, { server, scenario, sources, requests, heartbeatMs = 1000 }) {
+  const events = lines.map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter((e) => e && e.server === server);
+  const start = events.filter((e) => e.ev === "mark" && e.scenario === scenario && e.phase === "start");
+  const end = events.filter((e) => e.ev === "mark" && e.scenario === scenario && e.phase === "end");
+  if (start.length !== 1 || end.length !== 1 || start[0].inst !== end[0].inst || start[0].seq > end[0].seq) return null;
+  // Absence is evidence only on a complete log: every event of the instance, no gap, no orphan request.
+  const all = events.filter((e) => e.inst === start[0].inst);
+  const seqs = all.map((e) => e.seq).sort((a, b) => a - b);
+  if (new Set(seqs).size !== seqs.length || seqs[0] !== 1 || seqs.some((s, i) => i > 0 && s !== seqs[i - 1] + 1)) return null;
+  const inside = all.filter((e) => e.seq > start[0].seq && e.seq < end[0].seq);
+  const accepts = new Map(all.filter((e) => e.ev === "accept").map((e) => [e.conn, e]));
+  if (inside.some((e) => e.ev === "req" && !accepts.has(e.conn))) return null;
+  // And the observer alive throughout: heartbeats at most two periods apart between the marks.
+  const beats = [start[0], ...inside.filter((e) => e.ev === "heartbeat"), end[0]].map((e) => e.wallMs).sort((x, y) => x - y);
+  if (beats.slice(1).some((t, i) => t - beats[i] > 2 * heartbeatMs)) return null;
+  const own = new Set(sources.map(plainAddress));
+  return inside.filter((e) => e.ev === "req" && requests.includes(e.lineSha256) && own.has(plainAddress(accepts.get(e.conn)?.remote))).length;
 }

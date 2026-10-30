@@ -153,6 +153,11 @@ info:
         becomes `<name>.<slug>.gromesh.internal` (a service refers to its upstream only by upstreamId; the suffix
         `.gromesh.internal` is refused as a free host of a service, target or plugin URL). Entity ids are UUIDs
         generated on dev and preserved on hml and prd; nothing is created directly on hml or prd.
+      - Concurrent writes (WS-U0): PostgreSQL may abort a write that races another (a deadlock or a serialization
+        failure); the server runs such a transaction again a few times, only when every effect of it is inside the
+        transaction. If it still aborts, the answer is 409 with code concurrent-update and nothing was written: the
+        same request may be sent again. Any other database failure stays a 500, never a conflict. The same applies
+        to the v1 API.
       - Credential secrets (decision H-14, task N1-X6): only the server generates a key-auth key or an HS256 JWT
         secret (a CSPRNG, 32 bytes), on creation or rotation, shown once (a supplied value answers 422 at its field).
         An import never sets, generates or returns one: a new such credential is imported with its metadata only,
