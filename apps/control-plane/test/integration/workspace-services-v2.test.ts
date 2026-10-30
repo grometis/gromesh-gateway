@@ -80,6 +80,20 @@ describe("services through /api/v2 (WS-R1)", () => {
     const res = await v2(h.api, "POST", `/workspaces/${auto}/services`, service());
     expect([res.status, res.body.code]).toEqual([409, "auto-publish"]);
     expect((await h.sql.query("select count(*)::int as n from services where environment_id = $1", [auto])).rows[0].n).toBe(0);
+    // A switch to auto committed while the write waits on the environment: the write sees it and refuses.
+    const manual = (await h.api("POST", "/environments", { name: uniq("manual") })).body;
+    const holder = await h.sql.connect();
+    try {
+      await holder.query("begin");
+      await holder.query("update environments set publish_mode = 'auto' where id = $1", [manual.id]);
+      const write = v2(h.api, "POST", `/workspaces/${manual.id}/services`, service());
+      await new Promise((r) => setTimeout(r, 400));
+      await holder.query("commit");
+      expect((await write).body.code).toBe("auto-publish");
+    } finally {
+      holder.release();
+    }
+    expect((await h.sql.query("select count(*)::int as n from services where environment_id = $1", [manual.id])).rows[0].n).toBe(0);
   });
 
   it("holds the named upstream until the write commits: a delete in between waits, then is refused", async () => {

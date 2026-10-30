@@ -384,8 +384,10 @@ export class GatewayService {
    * A v2 write edits the draft only (WS-R0): never in an environment that auto-publishes its draft through v1, whose
    * publisher would serve it without an explicit publish (409; switch the environment to manual first).
    */
-  async refuseAutoPublish(envId: string): Promise<void> {
-    const [env] = await this.db.select({ publishMode: environments.publishMode }).from(environments).where(eq(environments.id, envId));
+  async refuseAutoPublish(tx: Executor, envId: string): Promise<void> {
+    // Inside the write's transaction, the environment row shared until the commit: a switch to auto (which updates
+    // it) waits for this write, and the write sees a switch that committed first.
+    const [env] = await tx.select({ publishMode: environments.publishMode }).from(environments).where(eq(environments.id, envId)).for("share");
     if (env?.publishMode === "auto") {
       throw new HttpException({ type: "https://gromesh.dev/problems/auto-publish", title: "Conflict", status: 409, code: "auto-publish",
         detail: "This workspace auto-publishes its draft through v1: switch it to manual publishing before writing through v2" }, 409);
@@ -532,13 +534,14 @@ const toWorkspaceService = (envId: string, s: ReturnType<typeof toService>, byNa
  * declared yet (422). With upstreamId, the upstream must be of this workspace and host its name; without it, host
  * must not be the name of one of its upstreams (a service refers to an upstream only by upstreamId).
  */
-function workspaceServiceWrite(workspaceId: string, body: WorkspaceServiceWrite): { plain: ServiceWrite; check: (tx: Executor) => Promise<void> } {
+function workspaceServiceWrite(gw: GatewayService, workspaceId: string, body: WorkspaceServiceWrite): { plain: ServiceWrite; check: (tx: Executor) => Promise<void> } {
   const { upstreamId = null, ...rest } = body;
   const plain = refuseVarRefs(rest, ["protocol", "host", "port", "path"]);
   refuseReservedHost("host", plain.host);
   // Inside the write's transaction: the upstream it names is locked (KEY SHARE) until the commit, so it cannot be
   // deleted or renamed between this check and the write.
   const check = async (tx: Executor) => {
+    await gw.refuseAutoPublish(tx, workspaceId);
     const rows = await tx
       .select({ id: upstreams.id, name: upstreams.name })
       .from(upstreams)
@@ -581,8 +584,7 @@ export class WorkspaceServicesController {
   @Post()
   @RequiredPermission("gateway.write", "workspace")
   async create(@Ctx() ctx: RequestContext, @Param("workspaceId", uuidParam()) workspaceId: string, @Body(contractBodyV2("WorkspaceServiceWrite")) body: WorkspaceServiceWrite) {
-    const { plain, check } = workspaceServiceWrite(workspaceId, body);
-    await this.gw.refuseAutoPublish(workspaceId);
+    const { plain, check } = workspaceServiceWrite(this.gw, workspaceId, body);
     const created = await this.gw.createService(ctx, workspaceId, plain, check);
     return toWorkspaceService(workspaceId, created, await upstreamsByName(this.db, workspaceId));
   }
@@ -595,8 +597,7 @@ export class WorkspaceServicesController {
     @Param("serviceId", uuidParam()) serviceId: string,
     @Body(contractBodyV2("WorkspaceServiceWrite")) body: WorkspaceServiceWrite,
   ) {
-    const { plain, check } = workspaceServiceWrite(workspaceId, body);
-    await this.gw.refuseAutoPublish(workspaceId);
+    const { plain, check } = workspaceServiceWrite(this.gw, workspaceId, body);
     const replaced = await this.gw.replaceService(ctx, workspaceId, serviceId, plain, check);
     return toWorkspaceService(workspaceId, replaced, await upstreamsByName(this.db, workspaceId));
   }
