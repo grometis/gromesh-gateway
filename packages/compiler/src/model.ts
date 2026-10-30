@@ -20,6 +20,12 @@ export interface Service {
   writeTimeoutMs?: number;
   enabled?: boolean;
   tags?: string[];
+  /**
+   * WS-U0: "explicit" for a service written through v2, which balances across an upstream only by upstreamId (its
+   * host is otherwise ordinary DNS, never captured by an upstream of the same name). Absent: the v1 binding by name.
+   */
+  binding?: "explicit";
+  upstreamId?: string | null;
 }
 
 export interface Route {

@@ -420,6 +420,15 @@ export function validate(state: GatewayState): CompileIssue[] {
     issues.push(...hashIssues(u, p));
     upstreamIds.add(u.id);
   });
+  // WS-U0: a service written through v2 is never bound by its host's name. In this (v1) configuration an upstream of
+  // the same name would capture it; one bound by upstreamId must keep the upstream's name as host.
+  state.services.forEach((s, i) => {
+    if (s.binding !== "explicit") return;
+    const bound = (state.upstreams ?? []).find((u) => u.id === s.upstreamId);
+    if (s.upstreamId && !bound) add(`services[${i}].upstreamId`, `unknown upstream ${s.upstreamId}`);
+    else if (bound && s.host !== bound.name) add(`services[${i}].host`, `must be the name of its upstream ${bound.name}`);
+    else if (!s.upstreamId && upstreamNames.has(s.host)) add(`services[${i}].host`, `an upstream named "${s.host}" would capture this service (upstream-captures-service)`);
+  });
 
   const targetKeys = new Set<string>();
   (state.targets ?? []).forEach((t, i) => {
