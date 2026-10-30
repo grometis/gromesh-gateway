@@ -6,9 +6,12 @@ import {
   contentDigest,
   type DeploymentMember as ComposedMember,
   type GatewayState,
+  type InstanceValue,
   jcs,
   type KongDeclarativeConfig,
+  placeholderVariables,
   platformPlugins,
+  resolveVariables,
   type WorkspaceContent,
 } from "@gromesh/compiler";
 import { and, asc, desc, eq, inArray, max, notInArray, sql } from "drizzle-orm";
@@ -19,7 +22,7 @@ import { destinationIssues, destinationPolicy, type DestinationPolicy } from "..
 import { conflict, deliveryRefused, notFound, ProblemException, unprocessable } from "../common/problem.js";
 import { stateVaultReferenceIssues } from "../common/vault-references.js";
 import { APP_CONFIG, type AppConfig } from "../config.js";
-import { deploymentContext, ENCRYPTOR, Encryptor, releaseContext } from "../crypto/crypto.js";
+import { deploymentContext, ENCRYPTOR, Encryptor, releaseContext, variableValueContext } from "../crypto/crypto.js";
 import { DB, type Db, type Executor, type Tx } from "../db/db.js";
 import {
   contentActivations,
@@ -73,7 +76,8 @@ export function releaseContent(state: ReleaseState, enc: Encryptor, catalog: Plu
     return { id, spec: rest };
   };
   return {
-    services: state.services.map(spec),
+    // A field that names a variable is the VarRef in the content (the value lives on each instance, WS-V2).
+    services: state.services.map(({ varRefs, ...s }) => spec({ ...s, ...Object.fromEntries(Object.entries(varRefs ?? {}).map(([field, name]) => [field, { $var: name }])) })),
     routes: state.routes.map(spec),
     consumers: state.consumers.map(({ id, aclGroups, ...rest }) => ({ id, aclGroups: aclGroups ?? [], spec: rest })),
     credentials: [],
@@ -196,7 +200,8 @@ export class ReleasesService {
       // The release must compose on its own (prefix, guard, reserved names): what only fails against the other
       // workspaces surfaces at createDeployment.
       try {
-        buildSnapshotV2([{ id: workspaceId, slug: ws.slug, state: await this.withCredentials(tx, workspaceId, state), releaseVersion: 1, content }], { instanceId: self.id, epoch: FIRST_EPOCH, revision: 1 });
+        // Variables keep their place until a deployment resolves them: the structure is checked with placeholders.
+        buildSnapshotV2([{ id: workspaceId, slug: ws.slug, state: placeholderVariables(await this.withCredentials(tx, workspaceId, state)), releaseVersion: 1, content }], { instanceId: self.id, epoch: FIRST_EPOCH, revision: 1 });
       } catch (err) {
         if (err instanceof CompileError) throw unprocessable("The draft cannot be published", err.issues);
         throw err;
@@ -293,10 +298,25 @@ export class ReleasesService {
     const slugs = new Map((await tx.select({ id: workspaces.id, slug: workspaces.slug }).from(workspaces).where(inArray(workspaces.id, memberRows.map((m) => m.workspaceId)))).map((w) => [w.id, w.slug]));
     const members: ComposedMember[] = [];
     const recorded: DeploymentMember[] = [];
+    // WS-V2: each release's variables resolved from this instance's current values, checked again as the fields they
+    // fill (shape, forbidden destinations); a missing or refused value rejects the deployment before any node.
+    const usedValues: { workspaceId: string; name: string; version: number; sha256: string }[] = [];
     for (const m of memberRows) {
       const state = await this.openRelease(tx, m.workspaceId, m.version);
       const content = releaseContent(state, this.enc, this.catalog);
-      members.push({ id: m.workspaceId, slug: slugs.get(m.workspaceId)!, state: await this.withCredentials(tx, m.workspaceId, state), releaseVersion: m.version, content });
+      let resolved: ReleaseState;
+      try {
+        const values = await this.instanceValues(tx, m.workspaceId);
+        const out = resolveVariables(state, new Set((state.variables ?? []).map((v) => v.name)), values);
+        resolved = { ...out.state, variables: state.variables };
+        for (const [name, v] of out.used) usedValues.push({ workspaceId: m.workspaceId, name, version: v.version, sha256: createHash("sha256").update(v.value).digest("hex") });
+      } catch (err) {
+        if (err instanceof CompileError) throw unprocessable("A variable of a release cannot be resolved on this instance", err.issues.map((i) => ({ path: `workspaces.${slugs.get(m.workspaceId)}.${i.path}`, message: i.message })));
+        throw err;
+      }
+      const forbidden = destinationIssues(resolved, this.destinations);
+      if (forbidden.length > 0) throw unprocessable("A variable's value is a forbidden destination", forbidden.map((i) => ({ ...i, path: `workspaces.${slugs.get(m.workspaceId)}.${i.path}` })));
+      members.push({ id: m.workspaceId, slug: slugs.get(m.workspaceId)!, state: await this.withCredentials(tx, m.workspaceId, resolved), releaseVersion: m.version, content });
       recorded.push({ workspaceId: m.workspaceId, releaseVersion: m.version, contentDigest: contentDigest(content) });
     }
     recorded.sort((a, b) => (a.workspaceId < b.workspaceId ? -1 : 1));
@@ -333,6 +353,8 @@ export class ReleasesService {
       config: this.enc.sealJson(config, deploymentContext(FIRST_EPOCH, revision)),
       configHash,
       kongConfigHash,
+      // The values this revision composed (names, versions and value hashes under the instance's key; never a value).
+      valuesDigest: usedValues.length > 0 ? `hmac-sha256:${this.enc.fingerprint(JSON.stringify(usedValues.sort((a, b) => (a.workspaceId + a.name < b.workspaceId + b.name ? -1 : 1))))}` : null,
       reason: "publish",
       createdBy: ctx.actor,
       createdAt: now,
@@ -397,6 +419,16 @@ export class ReleasesService {
     if (!row) throw forbidden("The instance stage is not configured (GROMESH_INSTANCE_STAGE); local publishing exists only on dev");
     if (stage !== null && row.stage !== stage) throw conflict(`The instance stage is ${row.stage}; it never changes (configured: ${stage})`);
     return row;
+  }
+
+  /** This instance's current value of every variable of the workspace, opened when sealed (never logged). */
+  private async instanceValues(tx: Executor, workspaceId: string): Promise<Map<string, InstanceValue>> {
+    const rows = await tx
+      .selectDistinctOn([workspaceVariableValues.name])
+      .from(workspaceVariableValues)
+      .where(eq(workspaceVariableValues.workspaceId, workspaceId))
+      .orderBy(workspaceVariableValues.name, desc(workspaceVariableValues.version));
+    return new Map(rows.map((r) => [r.name, { version: r.version, value: r.sealed ? this.enc.open(r.value, variableValueContext(workspaceId, r.name, r.version)) : r.value }]));
   }
 
   /** The credentials of the workspace now (values of this instance), for the consumers the release carries. */

@@ -6,10 +6,10 @@ import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { audit } from "../audit/audit.js";
 import { Ctx, RequiredPermission, type RequestContext } from "../auth/auth.js";
 import { contractBodyV2, inlineBody } from "../common/contract.js";
-import { notFound, unprocessable } from "../common/problem.js";
+import { conflict, notFound, unprocessable } from "../common/problem.js";
 import { ENCRYPTOR, Encryptor, variableValueContext } from "../crypto/crypto.js";
 import { DB, type Db, type Executor } from "../db/db.js";
-import { workspaceVariables, workspaceVariableValues, type WorkspaceVariableRow } from "../db/schema.js";
+import { services, workspaceVariables, workspaceVariableValues, type WorkspaceVariableRow } from "../db/schema.js";
 import { markDraftChanged, requireEnvironment, uuidParam } from "../environments/environments.js";
 
 /** contracts/control-plane-v2.openapi.yaml#/components/schemas/WorkspaceVariableDeclaration */
@@ -104,6 +104,15 @@ function valueProblem(d: Pick<Declaration, "type" | "secret" | "validation">, va
   return null;
 }
 
+/** The draft's services whose fields name the variable (WS-V2). */
+async function referencedBy(tx: Executor, workspaceId: string, name: string): Promise<string[]> {
+  const rows = await tx
+    .select({ name: services.name })
+    .from(services)
+    .where(and(eq(services.environmentId, workspaceId), sql`exists (select 1 from jsonb_each_text(${services.varRefs}) as r(field, variable) where r.variable = ${name})`));
+  return rows.map((r) => `services.${r.name}`);
+}
+
 /** A declaration as audited: never its value. */
 const declared = (d: WorkspaceVariableRow) => ({ name: d.name, type: d.type, secret: d.secret, required: d.required, ...(d.validation ? { validation: d.validation } : {}) });
 
@@ -155,6 +164,10 @@ export class WorkspaceVariablesService {
     return this.db.transaction(async (tx) => {
       await requireEnvironment(tx, workspaceId, true);
       const [before] = await tx.select().from(workspaceVariables).where(and(eq(workspaceVariables.workspaceId, workspaceId), eq(workspaceVariables.name, name))).for("update");
+      // Changing type or secret of a variable the draft references answers 409 (contract).
+      if (before && (before.type !== body.type || before.secret !== body.secret) && (await referencedBy(tx, workspaceId, name)).length > 0) {
+        throw conflict(`Variable ${name} is referenced by the draft: its type and secret flag cannot change`);
+      }
       const values = { type: body.type, secret: body.secret, required: body.required, validation: body.validation ?? null };
       const [row] = before
         ? await tx.update(workspaceVariables).set({ ...values, updatedAt: sql`now()` }).where(and(eq(workspaceVariables.workspaceId, workspaceId), eq(workspaceVariables.name, name))).returning()
@@ -186,6 +199,8 @@ export class WorkspaceVariablesService {
   async remove(ctx: RequestContext, workspaceId: string, name: string) {
     await this.db.transaction(async (tx) => {
       await requireEnvironment(tx, workspaceId, true);
+      const users = await referencedBy(tx, workspaceId, name);
+      if (users.length > 0) throw conflict(`Variable ${name} is referenced by the draft: ${users.join(", ")}`);
       const [before] = await tx.delete(workspaceVariables).where(and(eq(workspaceVariables.workspaceId, workspaceId), eq(workspaceVariables.name, name))).returning();
       if (!before) throw notFound("Variable");
       await markDraftChanged(tx, workspaceId);

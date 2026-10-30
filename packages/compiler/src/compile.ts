@@ -420,6 +420,10 @@ export function validate(state: GatewayState): CompileIssue[] {
     issues.push(...hashIssues(u, p));
     upstreamIds.add(u.id);
   });
+  // WS-V2: variables are an instance's values, resolved only by a v2 deployment: never in a v1 configuration.
+  state.services.forEach((s, i) => {
+    for (const field of Object.keys(s.varRefs ?? {})) add(`services[${i}].${field}`, "a variable is resolved only by a v2 deployment (WS-V2)");
+  });
   // WS-U0: a service written through v2 is never bound by its host's name. In this (v1) configuration an upstream of
   // the same name would capture it; one bound by upstreamId must keep the upstream's name as host.
   state.services.forEach((s, i) => {

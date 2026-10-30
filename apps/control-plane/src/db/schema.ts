@@ -309,6 +309,8 @@ export const services = pgTable(
     // plain DNS); null for v1, whose host binds to an upstream of the same name.
     binding: text("binding", { enum: ["explicit"] }),
     upstreamId: uuid("upstream_id"),
+    // WS-V2: fields that name a workspace variable (field → variable); the field's column then holds a placeholder.
+    varRefs: jsonb("var_refs").$type<Partial<Record<"protocol" | "host" | "port" | "path", string>>>(),
     ...timestamps,
   },
   // Referenced with the workspace (composite foreign keys): nothing can point at an entity of another workspace.
