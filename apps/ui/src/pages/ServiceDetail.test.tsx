@@ -36,10 +36,11 @@ async function load(status = "active", publishMode = "manual") {
     if (path.endsWith("/upstreams") || path.endsWith("/consumers")) return Response.json(page([]));
     throw new Error(`Unexpected query: ${path}`);
   });
-  const [services, routes, plugins, { MemoryRouter, Route, Routes }] = await Promise.all([
-    import("./Services"), import("./Routes"), import("./Plugins"), import("react-router"),
+  const [services, routes, plugins, gateway, { MemoryRouter, Route, Routes }] = await Promise.all([
+    import("./Services"), import("./Routes"), import("./Plugins"), import("./workspace-gateway"), import("react-router"),
   ]);
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  // Static renders do not mount observers: keep settled reads fresh unless the test explicitly revalidates them.
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   const render = (element: ReactElement) => renderToStaticMarkup(
     <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={[`/e/${W}/services/${service.id}`]}>
@@ -59,7 +60,7 @@ async function load(status = "active", publishMode = "manual") {
     }
     throw new Error("Queries did not settle");
   };
-  return { ...services, ...routes, ...plugins, loaded, render, sent, client };
+  return { ...services, ...routes, ...plugins, ...gateway, loaded, render, sent, client };
 }
 
 describe("service detail route and plugin access", () => {
@@ -117,6 +118,61 @@ describe("service detail route and plugin access", () => {
 describe("workspace service write access", () => {
   afterEach(() => vi.unstubAllGlobals());
 
+  it.each([
+    ["Services", "workspace"], ["Services", "environment"],
+    ["hook", "workspace"], ["hook", "environment"],
+  ] as const)("blocks %s writes while cached %s access is revalidating, then enables confirmed active/manual access", async (view, key) => {
+    const { ServicesPage, ServiceDetailPage, ServiceForm, useWorkspaceGatewayAccess, loaded, render, client } = await load();
+    function AccessProbe() {
+      const access = useWorkspaceGatewayAccess(W);
+      return <output>{access.canWrite ? "writable" : "blocked"}</output>;
+    }
+    const elements = view === "hook" ? [<AccessProbe />] : [
+      <ServicesPage />, <ServiceDetailPage />,
+      <ServiceForm workspaceId={W} service={null} onClose={() => {}} />,
+      <ServiceForm workspaceId={W} service={service} onClose={() => {}} />,
+    ];
+    for (const element of elements) await loaded(element);
+    const queryKey = [key, W];
+    const confirmed = client.getQueryData(queryKey);
+    let confirm!: (data: unknown) => void;
+    const pending = client.fetchQuery({ queryKey, staleTime: 0, queryFn: () => new Promise((resolve) => { confirm = resolve; }) });
+    try {
+      expect(client.getQueryState(queryKey)).toMatchObject({ status: "success", fetchStatus: "fetching", data: confirmed });
+      for (const [index, element] of elements.entries()) {
+        const html = render(element);
+        if (view === "hook") expect(html).toContain(">blocked</output>");
+        else {
+          expect(html).not.toMatch(/>Novo service<\/button>|>Editar<|Mais ações para cobranca/);
+          expect(html).toContain("Somente leitura enquanto");
+          if (index >= 2) {
+            expect(html).toMatch(/<input[^>]*value="(?:cobranca)?"/);
+            expect(html).toContain('<option value="dns" selected="">');
+            expect(html).toMatch(/type="submit"[^>]*disabled=""/);
+            expect(html).not.toMatch(/<(input|select)[^>]*disabled/);
+          } else expect(html).not.toContain('type="submit"');
+        }
+      }
+    } finally {
+      confirm(confirmed);
+      await pending;
+    }
+    expect(client.getQueryState(queryKey)).toMatchObject({ status: "success", fetchStatus: "idle" });
+    if (view === "hook") expect(render(<AccessProbe />)).toContain(">writable</output>");
+    else {
+      const html = render(<ServicesPage />);
+      expect(html).toContain("Novo service");
+      expect(html).toContain(">Editar</button>");
+      expect(html).toContain("Mais ações para cobranca");
+      for (const element of elements.slice(2)) {
+        const form = render(element);
+        expect(form).toContain('type="submit"');
+        expect(form).not.toMatch(/type="submit"[^>]*disabled/);
+      }
+    }
+    client.clear();
+  });
+
   it.each([["archived", "manual", "arquivado"], ["active", "auto", "publicação automática"], ["archived", "auto", "arquivado"]])(
     "offers only reading for %s / %s in both list and detail", async (status, publishMode, reason) => {
       const { ServicesPage, ServiceDetailPage, ServiceForm, loaded, sent } = await load(status, publishMode);
@@ -140,11 +196,18 @@ describe("workspace service write access", () => {
     for (const key of ["workspace", "environment"]) {
       const html = render(<ServicesPage />);
       expect(html).not.toMatch(/Novo service|>Editar<|Mais ações para cobranca/);
+      expect(html).toContain("Somente leitura enquanto");
       // Even if the other read succeeds, a failed read must not enable writes.
       client.setQueryData([key, W], key === "workspace" ? { id: W, status: "active" } : { id: W, publishMode: "manual" });
     }
-    client.getQueryCache().find({ queryKey: ["workspace", W] })!.setState({ status: "error", error: new Error("offline") });
-    expect(render(<ServicesPage />)).not.toMatch(/Novo service|>Editar<|Mais ações para cobranca/);
+    for (const key of ["workspace", "environment"]) {
+      const data = client.getQueryData([key, W]);
+      client.getQueryCache().find({ queryKey: [key, W] })!.setState({ status: "error", error: new Error("offline") });
+      const html = render(<ServicesPage />);
+      expect(html).not.toMatch(/Novo service|>Editar<|Mais ações para cobranca/);
+      expect(html).toContain("Somente leitura: não foi possível verificar");
+      client.setQueryData([key, W], data);
+    }
   });
 
   it("offers service writes in an active workspace with manual publication", async () => {

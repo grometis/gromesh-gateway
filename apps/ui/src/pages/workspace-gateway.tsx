@@ -67,15 +67,23 @@ export function workspaceGatewayAccess(workspace: Pick<Workspace, "status"> | un
   return { canWrite, reason: canWrite ? null : "Somente leitura enquanto verificamos o estado e o modo de publicação do Workspace." };
 }
 
-/** Shared with the v2 Routes screen. Failed reads never authorize writes using old cached data. */
+/** Shared with the v2 Routes screen. Cached access cannot authorize writes while its current state is unconfirmed. */
 export function useWorkspaceGatewayAccess(workspaceId: string) {
   const workspace = useWorkspace(workspaceId);
   const env = useEnvironment(workspaceId);
   if (workspace.isError || env.isError) return {
     canWrite: false,
+    isRevalidating: false,
     reason: "Somente leitura: não foi possível verificar o estado ou o modo de publicação do Workspace. Tente novamente antes de alterar o gateway.",
   };
-  return workspaceGatewayAccess(workspace.data, env.data);
+  const access = workspaceGatewayAccess(workspace.data, env.data);
+  if (workspace.fetchStatus !== "idle" || env.fetchStatus !== "idle" || !workspace.data || !env.data) return {
+    canWrite: false,
+    // Cached permission keeps an open form editable, but cannot authorize its submission.
+    isRevalidating: access.canWrite,
+    reason: access.reason ?? "Somente leitura enquanto verificamos o estado e o modo de publicação do Workspace.",
+  };
+  return { ...access, isRevalidating: false };
 }
 
 export function useWorkspaceServices(workspaceId: string, q = "") {

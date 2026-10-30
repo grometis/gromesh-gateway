@@ -171,8 +171,9 @@ function WorkspaceServices({ workspaceId }: { workspaceId: string }) {
           Carregar mais
         </Button>
       )}
-      {canWrite && editing && <ServiceForm workspaceId={workspaceId} service={editing === "new" ? null : editing} onClose={() => setEditing(null)} />}
-      {canWrite && deleting && <DeleteService workspaceId={workspaceId} service={deleting} onClose={() => setDeleting(null)} />}
+      {/* Mounting a stale access observer refetches: keep open dialogs mounted until the user closes them. */}
+      {editing && <ServiceForm workspaceId={workspaceId} service={editing === "new" ? null : editing} onClose={() => setEditing(null)} />}
+      {deleting && <DeleteService workspaceId={workspaceId} service={deleting} onClose={() => setDeleting(null)} />}
     </section>
   );
 }
@@ -234,8 +235,8 @@ function WorkspaceServiceDetail({ workspaceId, serviceId }: { workspaceId: strin
       <ScopedRoutes envId={workspaceId} service={s} readOnly />
       <p className="muted">Plugins por Workspace ainda não são editáveis aqui.</p>
       <ScopedPlugins envId={workspaceId} scope={{ kind: "service", id: s.id }} title="Plugins do service" readOnly />
-      {canWrite && editing && <ServiceForm workspaceId={workspaceId} service={s} onClose={() => setEditing(false)} />}
-      {canWrite && deleting && <DeleteService workspaceId={workspaceId} service={s} onClose={() => setDeleting(false)} onDeleted={() => navigate("..")} />}
+      {editing && <ServiceForm workspaceId={workspaceId} service={s} onClose={() => setEditing(false)} />}
+      {deleting && <DeleteService workspaceId={workspaceId} service={s} onClose={() => setDeleting(false)} onDeleted={() => navigate("..")} />}
     </section>
   );
 }
@@ -320,7 +321,7 @@ export function ServiceForm({ workspaceId, service, onClose }: { workspaceId: st
   const set = <K extends keyof typeof form>(k: K, v: (typeof form)[K]) => setForm((f) => ({ ...f, [k]: v }));
 
   const title = service ? `Editar ${service.name}` : "Novo service";
-  if (!access.canWrite) return <Modal title={title} onClose={onClose}><p role="status">{access.reason}</p></Modal>;
+  if (!access.canWrite && !access.isRevalidating) return <Modal title={title} onClose={onClose}><p role="status">{access.reason}</p></Modal>;
   return (
     <Modal title={title} onClose={onClose}>
       <form onSubmit={submit} className="form" noValidate>
@@ -374,12 +375,13 @@ export function ServiceForm({ workspaceId, service, onClose }: { workspaceId: st
         </Field>
         <CheckboxField label="Ativo" checked={form.enabled} onChange={(checked) => set("enabled", checked)} errors={errors.fields.enabled} />
         <p className="muted">A alteração entra no rascunho do Workspace; nada é implantado.</p>
+        {access.reason && <p role="status">{access.reason}</p>}
         <FormErrorList messages={errors.form} />
         <div className="form-actions">
           <button type="button" onClick={onClose}>
             Cancelar
           </button>
-          <button type="submit" className="primary" disabled={save.isPending}>
+          <button type="submit" className="primary" disabled={save.isPending || !access.canWrite}>
             {save.isPending ? "Salvando…" : "Salvar"}
           </button>
         </div>
@@ -390,6 +392,7 @@ export function ServiceForm({ workspaceId, service, onClose }: { workspaceId: st
 
 function DeleteService({ workspaceId, service, onClose, onDeleted }: { workspaceId: string; service: WorkspaceService; onClose: () => void; onDeleted?: () => void }) {
   const invalidate = useInvalidateWorkspaceGateway(workspaceId);
+  const access = useWorkspaceGatewayAccess(workspaceId);
   const remove = useMutation({
     mutationFn: () => unwrap(apiV2.DELETE("/workspaces/{workspaceId}/services/{serviceId}", { params: { path: { workspaceId, serviceId: service.id } } })),
     onSuccess: () => {
@@ -407,11 +410,14 @@ function DeleteService({ workspaceId, service, onClose, onDeleted }: { workspace
         </>
       }
       confirmLabel="Excluir"
+      confirmDisabled={!access.canWrite}
       busy={remove.isPending}
       error={remove.isError ? gatewayErrorMessage(remove.error) : null}
-      onConfirm={() => remove.mutate()}
+      onConfirm={() => { if (access.canWrite) remove.mutate(); }}
       onClose={onClose}
-    />
+    >
+      {access.reason && <p role="status">{access.reason}</p>}
+    </ConfirmDialog>
   );
 }
 

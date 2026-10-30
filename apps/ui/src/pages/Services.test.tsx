@@ -103,7 +103,7 @@ describe("saving a workspace service", () => {
 
   it("shows the existing protocol reference as the selected option", async () => {
     const { ServiceForm } = await load(() => new Promise(() => {}));
-    const client = new QueryClient();
+    const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity } } });
     client.setQueryData(["workspace", W], { status: "active" });
     client.setQueryData(["environment", W], { publishMode: "manual" });
     const html = renderToStaticMarkup(
