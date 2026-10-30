@@ -1186,6 +1186,8 @@ async function mainV2() {
   for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => { report.aborted = { signal }; finishV2().finally(() => process.exit(130)); });
   const all = [setupV2, d4Disabled, convergeV2, trafficV2, hashDivergence, revisionMismatch, rollbackV2, agentDown, probeDown, drainAndReplace, chartBlocksImds, containmentN, function containmentFrozen() { return containmentN({ frozenSupervisor: true }); }];
   const only = (process.env.LAB_STEPS ?? "").split(",").filter(Boolean);
+  // A containment scenario needs the chart-only proof first: it is the step that adds the lab's IMDS exception.
+  if (only.some((name) => ["containmentN", "containmentFrozen"].includes(name))) only.push("chartBlocksImds");
   const chosen = only.length ? all.filter((s, i) => i < 4 || only.includes(s.name)) : all;
   report.steps = chosen.map((s) => s.name);
   try {

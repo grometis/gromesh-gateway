@@ -210,4 +210,5 @@ test("the containment scenario is wired: route created, marks before the client,
   assert.ok(chart.indexOf('"n2c-deny-imds"]') < chart.indexOf("await labImdsException()"), "the exception follows the chart-only check");
   const order = src.slice(src.indexOf("const all = [setupV2"), src.indexOf("];", src.indexOf("const all = [setupV2")));
   assert.ok(order.indexOf("chartBlocksImds") > 0 && order.indexOf("chartBlocksImds") < order.indexOf("containmentN"), "the chart-only check runs before the containment scenarios");
+  assert.match(src, /if \(only\.some\(\(name\) => \["containmentN", "containmentFrozen"\]\.includes\(name\)\)\) only\.push\("chartBlocksImds"\);/);
 });

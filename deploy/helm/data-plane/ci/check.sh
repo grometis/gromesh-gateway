@@ -226,14 +226,14 @@ JS
 privileged_overlap() {
   node -e '
     const { BlockList } = require("node:net");
-    const imds = ["169.254.169.254", "169.254.170.2", "fd00:ec2::254", "fe80::1"];
+    // Two CIDRs overlap iff one contains the network address of the other.
+    const forbidden = ["169.254.0.0/16", "fe80::/10", "fd00:ec2::254/128"];
+    const parse = (cidr) => { const [addr, bits] = cidr.split("/"); const v6 = addr.includes(":"); return { addr, bits: Number(bits ?? (v6 ? 128 : 32)), type: v6 ? "ipv6" : "ipv4" }; };
+    const contains = (outer, inner) => { const list = new BlockList(); list.addSubnet(outer.addr, outer.bits, outer.type); return list.check(inner.addr, inner.type); };
     const bad = [];
     for (const cidr of process.argv.slice(1)) {
-      const [addr, bits] = cidr.split("/");
-      const v6 = addr.includes(":");
-      const list = new BlockList();
-      list.addSubnet(addr, Number(bits ?? (v6 ? 128 : 32)), v6 ? "ipv6" : "ipv4");
-      if (Number(bits) === 0 || imds.some((ip) => ip.includes(":") === v6 && list.check(ip, v6 ? "ipv6" : "ipv4"))) bad.push(cidr);
+      const c = parse(cidr);
+      if (c.bits === 0 || forbidden.map(parse).some((f) => f.type === c.type && (contains(f, c) || contains(c, f)))) bad.push(cidr);
     }
     if (bad.length) { console.error(bad.join(" ")); process.exit(1); }' -- "$@"
 }
