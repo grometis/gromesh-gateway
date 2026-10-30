@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // N2 lab fixtures, run inside the lab's pods and containers (Node >= 24, no dependencies):
-//   serve <id> <port>...     TCP server: answers each line with "<id> <line>" (the client's random token).
+//   serve <id> <port>...     TCP server: answers each line with "<id> <line>" (the client's random token), and logs
+//                            on stdout one JSON line per connection event and a heartbeat per second
+//                            (components/privileged.mjs reads them).
 //   dns <zone.json> <port>   authoritative UDP DNS for the lab zone, TTL 0, zone re-read on every query.
 //   probe                    reads targets (JSON) on stdin, prints one result per target (JSON) on stdout.
 //   watch <ip> <port> <reach|blocked> <deadline ms> [server]   once the opposite state is confirmed prints "ready",
@@ -10,21 +12,50 @@ import { createSocket } from "node:dgram";
 import { promises as dns } from "node:dns";
 import { readFileSync } from "node:fs";
 import { createServer, connect, isIP } from "node:net";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 
 const [command, ...args] = process.argv.slice(2);
 
+/**
+ * The connection log of a lab server: who reached it and when, never what was sent. One JSON line per event: inst
+ * (random per process: a restart is another instance), seq (gapless per instance), boot (the kernel's boot id: wallMs
+ * is only comparable with clocks of the same kernel), wallMs (Date.now) and monoNs (process.hrtime, to detect a step
+ * of the wall clock). A request is identified by the SHA-256 of its first line (never the line itself). A line
+ * "MARK <scenario> <start|end>" is the lab's own marker: it brackets a scenario in this log and proves the listener
+ * answers at both ends.
+ */
+function serverLog(id) {
+  const inst = randomBytes(4).toString("hex");
+  let boot = "unknown";
+  try { boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(); } catch { /* not Linux */ }
+  let seq = 0;
+  return (ev, fields = {}) => console.log(JSON.stringify({ ev, server: id, inst, seq: ++seq, boot, wallMs: Date.now(), monoNs: process.hrtime.bigint().toString(), ...fields }));
+}
+
 function serve(id, ports) {
+  const log = serverLog(id);
+  let conn = 0;
+  log("start", { ports: ports.map(Number) });
+  setInterval(() => log("heartbeat"), 1000);
   for (const port of ports) {
     const server = createServer((socket) => {
+      const c = ++conn;
+      let req = 0;
+      log("accept", { conn: c, local: socket.localAddress, localPort: socket.localPort, remote: socket.remoteAddress, remotePort: socket.remotePort });
       socket.setEncoding("utf8");
       let buffer = "";
       socket.on("data", (chunk) => {
         buffer += chunk;
         const end = buffer.indexOf("\n");
-        if (end >= 0) socket.end(`${id} ${buffer.slice(0, end)}\n`);
+        if (end < 0) return;
+        const line = buffer.slice(0, end).replace(/\r$/, "");
+        const mark = /^MARK ([A-Za-z0-9._-]{1,64}) (start|end)$/.exec(line);
+        if (mark) log("mark", { conn: c, scenario: mark[1], phase: mark[2] });
+        else log("req", { conn: c, req: ++req, lineSha256: createHash("sha256").update(line).digest("hex") });
+        socket.end(`${id} ${line}\n`);
       });
+      socket.on("close", () => log("close", { conn: c }));
       socket.on("error", () => {});
       socket.setTimeout(5000, () => socket.destroy());
     });

@@ -11,10 +11,11 @@ import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
-  Api, apply, assertLab, CONTEXT, controlPlaneObjects, controlPlaneSecret, cpSecrets, createSecret, dbSkew, denyPolicies, docker, Forward, helm, here, json,
+  Api, apply, assertLab, CLUSTER, CONTEXT, controlPlaneObjects, controlPlaneSecret, cpSecrets, createSecret, dbSkew, denyPolicies, docker, Forward, helm, here, json,
   kubeconfig, kubectl, NODES, NS, registrationSecret, relayObjects, removeSuiteObjects, root, run, sql,
   scrubKong,
 } from "./lab.mjs";
+import { privilegedAfterLoss } from "./privileged.mjs";
 import { bootToWall, groupFromEvents, itemResult, keepaliveBlocked, kFromLiveness, ksFromDeletion, kxFromEvents, overall, rfc3339CeilMs, runExitCode } from "./budgets.mjs";
 
 const out = process.env.LAB_OUT ?? mkdtempSync(join(tmpdir(), "gromesh-n2-comp-"));
@@ -55,6 +56,8 @@ const BUDGET = {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const s = (ms) => `${ms / 1000} s`;
 
+/** This suite run's id: it names the scenarios marked in the lab servers' logs, so two runs never mix. */
+const RUN_ID = `v2-${randomUUID().slice(0, 8)}`;
 const report = { startedAt: new Date().toISOString(), images: IMAGES, revisions: { cp: process.env.CP_REV, agent: process.env.AGENT_REV }, context: CONTEXT, budgets: BUDGET, items: [], blocked: [], findings: [], timeline: [] };
 const save = () => writeFileSync(join(out, "results.json"), scrubKong(JSON.stringify(report, null, 2)));
 const log = (message) => console.log(`${new Date().toISOString()} ${message}`);
@@ -285,6 +288,12 @@ async function lastHeartbeat(podName, node) {
     return bootToWall({ bootMs: Number(JSON.parse(state.stdout).heartbeatBoottimeNs) / 1e6, uptimeMs: Number(uptime.split(" ")[0]) * 1000,
       wallBeforeMs: Number(before), wallAfterMs: Number(after) });
   } catch { return null; }
+}
+
+/** A scenario marker in a lab server's own log, sent from inside its container (also proves its listener answers). */
+async function markServer(role, scenario, phase) {
+  const script = `const s=require("net").connect(80,"127.0.0.1",()=>s.write("MARK ${scenario} ${phase}\\n"));s.on("data",()=>s.end());s.on("error",(e)=>{console.error(e.message);process.exit(1)});`;
+  await docker(["exec", `${CLUSTER}-fx-${role}`, "node", "-e", script]);
 }
 
 /** crictl state of a pod's containers, polled on its node until all exited: finishedAt with nanoseconds, the exit codes. */
@@ -795,6 +804,10 @@ async function containmentN({ frozenSupervisor = false } = {}) {
   if (frozenSupervisor) for (const p of pods) { await freeze(p.name, "kong", "kong-supervisor"); heartbeat[p.name] = await lastHeartbeat(p.name, kongIds.find((k) => k.pod === p.name).node); }
   const kongExits = kongIds.map((k) => ({ pod: k.pod, exits: watchExits(k.node, { kong: k.id }, 60) }));
   const loadStart = await vmLoad(`${id} start`);
+  // The privileged destination's own log is bracketed by this scenario's marks; the loss is taken at its earliest.
+  const scenario = `${RUN_ID}-${id}`;
+  await markServer("imds", scenario, "start");
+  const lossEarliest = await vmNow();
   await kubectl(["delete", "ciliumclusterwidenetworkpolicy", "n2c-deny-imds"]);
   const t0 = await vmNow();
   mark("isolation lost", { at: t0, policy: "n2c-deny-imds" });
@@ -860,6 +873,20 @@ async function containmentN({ frozenSupervisor = false } = {}) {
     budgetReadings(it, readings);
   }
   if (loadEnd > 16) it.notes.push(`VM load ${loadEnd} > 16 during the measurement: repeat`);
+  // No connection to the privileged destination after the containment limit (aceite n), from the IMDS server's own log
+  // (fixtures.mjs serve): only requests of the contained pods for the route under test count, inside this scenario's
+  // marks, on the reference node's kernel (same boot id), from the earliest possible loss.
+  await markServer("imds", scenario, "end");
+  const imdsLog = (await docker(["logs", `${CLUSTER}-fx-imds`], { allowFail: true })).stdout.split("\n").filter(Boolean);
+  const refBoot = (await docker(["exec", NODES.workers[0], "cat", "/proc/sys/kernel/random/boot_id"], { allowFail: true })).stdout.trim();
+  const sources = (await Promise.all(pods.map(async (p) => (await json(["-n", NS.dp, "get", "pod", p.name])).status.podIPs.map((x) => x.ip)))).flat();
+  // Every flow of the scenario's client (new and keepalive HTTP, WebSocket upgrade) by the first line Kong forwards.
+  const lines = [`GET /${ctx.ws.A.slug}/api HTTP/1.1`, `GET /${ctx.ws.A.slug}/api/ws HTTP/1.1`];
+  const priv = privilegedAfterLoss(imdsLog, { server: "ext:imds", scenario, lossMs: lossEarliest, limitMs: frozenSupervisor ? V2_BUDGET.kongStopLiveness : V2_BUDGET.kongStopSupervisor,
+    refBootId: refBoot, sources, requests: lines.map((l) => createHash("sha256").update(l).digest("hex")) });
+  it.measures.privileged = { ...priv, lossEarliestToT0Ms: t0 - lossEarliest };
+  if (priv.result === "NOT_EXERCISED") it.open.push(`privileged destination: ${priv.reason}`);
+  else if (priv.result !== "PASS") it.failures.push(`privileged destination ${priv.result}: ${priv.reason}`);
   ctx.lastViolation = id;
   await recover(it, id);
   done(it);
