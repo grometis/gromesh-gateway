@@ -16,6 +16,7 @@ import { AnalyticsPage, AnalyticsRedirect } from "./pages/Analytics";
 import { RequestsPage } from "./pages/Requests";
 import { OverviewPage } from "./pages/Overview";
 import { ReviewPublishPage } from "./pages/ReviewPublish";
+import { WorkspacesPage } from "./pages/Workspaces";
 
 export const router = createBrowserRouter([
   { path: "/login", element: <LoginPage /> },
@@ -27,6 +28,7 @@ export const router = createBrowserRouter([
         element: <Shell />,
         children: [
           { path: "tokens", element: <TokensPage /> },
+          { path: "workspaces", element: <WorkspacesPage /> },
           {
             element: <RequireAdmin />,
             children: [
