@@ -577,11 +577,14 @@ export class WorkspaceRoutesController {
 
   @Put(":routeId")
   @RequiredPermission("gateway.write", "workspace")
-  replace(@Ctx() ctx: RequestContext, @Param("workspaceId", uuidParam()) workspaceId: string, @Param("routeId", uuidParam()) routeId: string, @Body() raw: unknown) {
-    // The schema fills stripPath's default (false): whether the caller gave one decides a legacy route's (WS-R0).
-    const given = typeof raw === "object" && raw !== null && "stripPath" in raw;
-    const body = ROUTE_WRITE.transform(structuredClone(raw)) as RouteWrite;
-    return this.gw.replaceWorkspaceRoute(ctx, workspaceId, routeId, given ? body : { ...body, stripPath: undefined });
+  replace(
+    @Ctx() ctx: RequestContext,
+    @Param("workspaceId", uuidParam()) workspaceId: string,
+    @Param("routeId", uuidParam()) routeId: string,
+    // No schema default for stripPath (WS-R0): whether the caller gave one decides a legacy route's.
+    @Body(contractBodyV2("WorkspaceRouteWrite")) body: RouteWrite,
+  ) {
+    return this.gw.replaceWorkspaceRoute(ctx, workspaceId, routeId, body);
   }
 
   @Delete(":routeId")
@@ -591,8 +594,6 @@ export class WorkspaceRoutesController {
     await this.gw.deleteRoute(ctx, workspaceId, routeId);
   }
 }
-
-const ROUTE_WRITE = contractBodyV2("WorkspaceRouteWrite");
 
 /** What the composition would refuse in a workspace-default route, answered at write time (422 at the path). */
 function workspaceRouteChecks(body: RouteWrite): void {
