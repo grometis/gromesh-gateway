@@ -136,7 +136,7 @@ test("UI publication, key-auth traffic, viewer limits, audit and rollback on the
     await route.getByLabel("Nome").fill(name);
     await route.getByLabel("Service", { exact: true }).selectOption({ label: name });
     await route.getByLabel("Paths").fill(path);
-    const routeCreated = page.waitForResponse((r) => r.request().method() === "POST" && r.url().endsWith(`/environments/${env.id}/routes`));
+    const routeCreated = page.waitForResponse((r) => r.request().method() === "POST" && r.url().endsWith(`/api/v2/workspaces/${env.id}/routes`));
     await route.getByRole("button", { name: "Salvar" }).click();
     const routeResponse = await routeCreated;
     expect(routeResponse.status()).toBe(201);

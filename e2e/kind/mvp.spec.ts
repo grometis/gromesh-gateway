@@ -103,7 +103,7 @@ test("MVP: install → publish → converge → traffic in the dashboard → rol
     await route.getByLabel("Nome").fill(name);
     await route.getByLabel("Service", { exact: true }).selectOption({ label: name });
     await route.getByLabel("Paths").fill(path);
-    const routeCreated = page.waitForResponse((r) => r.request().method() === "POST" && r.url().endsWith(`/environments/${envId}/routes`));
+    const routeCreated = page.waitForResponse((r) => r.request().method() === "POST" && r.url().endsWith(`/api/v2/workspaces/${envId}/routes`));
     await route.getByRole("button", { name: "Salvar" }).click();
     const createdRoute = (await (await routeCreated).json()) as Entity;
     await expect(route).toBeHidden();
