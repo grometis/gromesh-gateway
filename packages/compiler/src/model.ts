@@ -26,7 +26,15 @@ export interface Service {
    */
   binding?: "explicit";
   upstreamId?: string | null;
+  /**
+   * WS-V2: fields that name a workspace variable instead of a value (field → variable). The field itself then holds
+   * a placeholder; resolveVariables substitutes this instance's value before a v2 composition.
+   */
+  varRefs?: Partial<Record<VarField, string>>;
 }
+
+/** The service fields a VarRef may stand for (contract, "Environment values"). */
+export type VarField = "protocol" | "host" | "port" | "path";
 
 export interface Route {
   id: string;
