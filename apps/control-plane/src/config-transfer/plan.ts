@@ -58,7 +58,7 @@ export async function planImport(document: ConfigDocument, current: GatewayState
   for (const [i, s] of document.services.entries()) {
     const old = current.services.find(c => c.name === s.name);
     const values = serviceValues(s);
-    const value: Service = { ...s, ...values, id: old?.id ?? randomUUID(), retries: values.retries ?? undefined, connectTimeoutMs: values.connectTimeoutMs ?? undefined, readTimeoutMs: values.readTimeoutMs ?? undefined, writeTimeoutMs: values.writeTimeoutMs ?? undefined, binding: values.binding ?? undefined, upstreamId: values.upstreamId ?? undefined };
+    const value: Service = { ...s, ...values, id: old?.id ?? randomUUID(), retries: values.retries ?? undefined, connectTimeoutMs: values.connectTimeoutMs ?? undefined, readTimeoutMs: values.readTimeoutMs ?? undefined, writeTimeoutMs: values.writeTimeoutMs ?? undefined, binding: values.binding ?? undefined, upstreamId: values.upstreamId ?? undefined, varRefs: values.varRefs ?? undefined };
     upsert(result.services, value, `document.services.${i}`);
   }
   retain(result.services, current.services);

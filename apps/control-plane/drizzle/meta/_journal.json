@@ -190,6 +190,13 @@
       "when": 1793361888307,
       "tag": "0026_service_upstream_binding",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1793362382073,
+      "tag": "0027_service_var_refs",
+      "breakpoints": true
     }
   ]
 }

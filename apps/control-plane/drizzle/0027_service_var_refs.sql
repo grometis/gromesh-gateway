@@ -1,0 +1,1 @@
+ALTER TABLE "services" ADD COLUMN "var_refs" jsonb;
