@@ -65,6 +65,17 @@ describe("routes through /api/v2 (WS-R2)", () => {
     expect((await v2(h.api, "PUT", `/workspaces/${b}/routes/${legacy.id}`, { name: legacy.name, serviceId: svcB, paths: ["/x"] })).status).toBe(404);
   });
 
+  it("checks a legacy route's regex paths too, and never writes through v2 where v1 auto-publishes", async () => {
+    const legacy = (await h.api("POST", `/environments/${a}/routes`, { name: uniq("legacy"), serviceId: svcA, paths: ["/old"] })).body;
+    const bad = await v2(h.api, "PUT", `/workspaces/${a}/routes/${legacy.id}`, { name: legacy.name, serviceId: svcA, paths: ["~/a|b"] });
+    expect([bad.status, bad.body.errors?.[0]?.path]).toEqual([422, "paths.0"]);
+    const auto = (await h.api("POST", "/environments", { name: uniq("auto"), publishMode: "auto" })).body.id as string;
+    const svc = (await h.api("POST", `/environments/${auto}/services`, { name: "svc", protocol: "http", host: "c.example.com", port: 80 })).body.id as string;
+    const refused = await v2(h.api, "POST", `/workspaces/${auto}/routes`, { name: uniq("r"), serviceId: svc, paths: ["/x"] });
+    expect([refused.status, refused.body.code]).toEqual([409, "auto-publish"]);
+    expect((await h.sql.query("select count(*)::int as n from routes where environment_id = $1", [auto])).rows[0].n).toBe(0);
+  });
+
   it("needs gateway.write in the workspace", async () => {
     const viewer = await h.as("viewer");
     expect((await v2(viewer.api, "POST", `/workspaces/${a}/routes`, { name: uniq("r"), serviceId: svcA, paths: ["/v"] })).status).toBe(403);
