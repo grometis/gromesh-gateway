@@ -19,7 +19,7 @@ import { targetState, targetValues, upstreamState, upstreamValues } from "../ups
 import { pluginValues } from "../plugins/plugins.js";
 import { credentialContext, type Encryptor, pluginSecretContext } from "../crypto/crypto.js";
 import type { PluginCatalog } from "../plugin-catalog/catalog.js";
-import { markDraftChanged, requireEnvironment, uuidParam } from "../environments/environments.js";
+import { markDraftChanged, refuseArchived, requireEnvironment, uuidParam } from "../environments/environments.js";
 import { anonymousOf, namesConsumer } from "../workspaces/anonymous.js";
 import { refuseReservedHost, refuseVarRefs, type WithVarRefs } from "../workspaces/var-refs.js";
 import { assertStateFree } from "../workspaces/instance-uniqueness.js";
@@ -292,7 +292,8 @@ export class GatewayService {
   async replaceService(ctx: RequestContext, envId: string, serviceId: string, body: ServiceWrite, check?: (tx: Executor) => Promise<void>) {
     assertDestination("host", body.host, this.destinations, "service");
     return this.db.transaction(async (tx) => {
-      const before = toService(await this.requireService(tx, envId, serviceId));
+      // v2: the service row before the environment's, the order a v1 replace or delete takes them.
+      const before = toService(await this.requireService(tx, envId, serviceId, check !== undefined));
       await check?.(tx);
       const [row] = await tx
         .update(services)
@@ -385,6 +386,8 @@ export class GatewayService {
    * publisher would serve it without an explicit publish (409; switch the environment to manual first).
    */
   async refuseAutoPublish(tx: Executor, envId: string): Promise<void> {
+    // The archive lock first (shared), as every writer of the workspace takes it before the environment's row.
+    await refuseArchived(tx, envId);
     // Inside the write's transaction, the environment row locked as markDraftChanged will update it (NO KEY UPDATE, so
     // two writers queue instead of upgrading a shared lock into a deadlock): a switch to auto waits for this write,
     // and the write sees a switch that committed first.

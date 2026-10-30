@@ -107,6 +107,18 @@ describe("services through /api/v2 (WS-R1)", () => {
       ]);
       for (const r of results) expect(r.status, JSON.stringify(r.body)).toBeLessThan(500);
     }
+    // And with v1 edits and an archive of the workspace in the same instant.
+    for (let round = 0; round < 6; round++) {
+      const ws = (await h.api("POST", "/environments", { name: uniq("ws-race") })).body.id as string;
+      const svc = (await v2(h.api, "POST", `/workspaces/${ws}/services`, service())).body;
+      const results = await Promise.all([
+        v2(h.api, "PUT", `/workspaces/${ws}/services/${svc.id}`, service({ name: svc.name, port: 81 })),
+        h.api("PUT", `/environments/${ws}/services/${svc.id}`, service({ name: svc.name, port: 82 })),
+        v2(h.api, "POST", `/workspaces/${ws}/services`, service()),
+        v2(h.api, "POST", `/workspaces/${ws}/archive`),
+      ]);
+      for (const r of results) expect(r.status, JSON.stringify(r.body)).toBeLessThan(500);
+    }
   });
 
   it("holds the named upstream until the write commits: a delete in between waits, then is refused", async () => {
