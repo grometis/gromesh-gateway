@@ -4,11 +4,11 @@ import { useSearchParams } from "react-router";
 import { apiV2, type WorkspaceRoute, type WorkspaceRouteWrite } from "../api/client-v2";
 import { unwrap } from "../api/client";
 import { statusMessage, type FormErrors } from "../api/errors";
-import { Field, FormErrorList } from "../components/Field";
+import { CheckboxField, Field, FormErrorList } from "../components/Field";
 import { ConfirmDialog, Modal } from "../components/Modal";
 import { useEnvId } from "../components/Shell";
 import { ScopedPlugins } from "./Plugins";
-import { splitList, useEntityDraft } from "./Services";
+import { splitPaths, splitList, useEntityDraft } from "./Services";
 import { PageHeader } from "../components/PageHeader";
 import { EmptyState } from "../components/EmptyState";
 import { Table } from "../components/Table";
@@ -16,7 +16,7 @@ import { Badge, DraftBadge } from "../components/Badge";
 import { Button } from "../components/Button";
 import { RowMenu } from "../components/RowMenu";
 import { gatewayErrorMessage, gatewayFormErrors } from "./gateway-errors";
-import { fieldText, publicPath, upstreamEffect, useAllWorkspaceServices, useInvalidateWorkspaceGateway, useWorkspace, WorkspaceGatewayNote } from "./workspace-gateway";
+import { fieldText, publicPath, upstreamEffect, useAllWorkspaceServices, useInvalidateWorkspaceGateway, useWorkspace, useWorkspaceGatewayAccess, WorkspaceGatewayNote } from "./workspace-gateway";
 
 // Routes of the selected workspace through API v2 (WS-S1): every path is public under /<slug>; a migrated route
 // (legacy-preserved) keeps its stripPath, and converting it is a separate, explicit operation this screen never does.
@@ -50,6 +50,8 @@ export function ScopedRoutes({ envId, service, readOnly = false }: { envId: stri
 function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly = false }: { workspaceId: string; serviceId: string; service?: { id: string; name: string }; onServiceChange?: (id: string) => void; readOnly?: boolean }) {
   const draft = useEntityDraft(workspaceId, "routes");
   const workspace = useWorkspace(workspaceId);
+  const access = useWorkspaceGatewayAccess(workspaceId);
+  const canWrite = !readOnly && access.canWrite;
   const slug = workspace.data?.slug;
   const [search, setSearch] = useState("");
   const q = useDeferredValue(search.trim());
@@ -71,8 +73,8 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
   const [plugins, setPlugins] = useState<WorkspaceRoute | null>(null);
   const items = routes.data?.pages.flatMap((p) => p.items) ?? [];
   // No contract operation tells the caller's v2 permissions (a binding may grant gateway.write): every signed-in user
-  // is offered the actions outside read-only service details and the server decides (its 403 is shown in Portuguese).
-  const createAction = !readOnly && (
+  // is offered actions when this workspace allows writes and the server decides (its 403 is shown in Portuguese).
+  const createAction = canWrite && (
     <Button variant="primary" onClick={() => setEditing("new")} disabled={serviceList.length === 0 || !slug} title={serviceList.length === 0 ? "Crie um service primeiro" : undefined}>
       Nova route
     </Button>
@@ -86,6 +88,7 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
           <WorkspaceGatewayNote workspaceId={workspaceId} />
         </>
       )}
+      {service && !readOnly && access.reason && <p role="status">{access.reason}</p>}
       <div className="gateway-filters">
         <input type="search" className="search" placeholder="Buscar por nome, path ou host" aria-label="Buscar routes" value={search} onChange={(e) => setSearch(e.target.value)} />
         {onServiceChange && <select aria-label="Filtrar por service" value={serviceId} onChange={(e) => onServiceChange(e.target.value)}>
@@ -134,8 +137,10 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
                   ) : (
                     <>
                       <Button variant="quiet" onClick={() => setPlugins(r)}>Plugins</Button>
-                      <Button variant="quiet" onClick={() => setEditing(r)}>Editar</Button>
-                      <RowMenu label={`Mais ações para ${r.name}`} items={[{ label: "Excluir", danger: true, onSelect: () => setDeleting(r) }]} />
+                      {canWrite && <>
+                        <Button variant="quiet" onClick={() => setEditing(r)}>Editar</Button>
+                        <RowMenu label={`Mais ações para ${r.name}`} items={[{ label: "Excluir", danger: true, onSelect: () => setDeleting(r) }]} />
+                      </>}
                     </>
                   )}
                 </td>}
@@ -149,7 +154,7 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
           Carregar mais
         </button>
       )}
-      {!readOnly && editing && slug && (
+      {canWrite && editing && slug && (
         <RouteForm
           workspaceId={workspaceId}
           slug={slug}
@@ -160,10 +165,11 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
         />
       )}
       {!readOnly && details && <RouteDetails route={details} serviceName={serviceName(details.serviceId)} onClose={() => setDetails(null)} />}
-      {!readOnly && deleting && <DeleteRoute workspaceId={workspaceId} route={deleting} onClose={() => setDeleting(null)} />}
+      {canWrite && deleting && <DeleteRoute workspaceId={workspaceId} route={deleting} onClose={() => setDeleting(null)} />}
       {!readOnly && plugins && (
         <Modal title={`Plugins de ${plugins.name}`} onClose={() => setPlugins(null)} wide>
-          <ScopedPlugins envId={workspaceId} scope={{ kind: "route", id: plugins.id }} title="Plugins aplicados" readOnly={readOnly} />
+          <p className="note">Plugins por Workspace ainda não são editáveis aqui.</p>
+          <ScopedPlugins envId={workspaceId} scope={{ kind: "route", id: plugins.id }} title="Plugins aplicados" readOnly />
         </Modal>
       )}
     </div>
@@ -238,6 +244,7 @@ function RouteForm(props: { workspaceId: string; slug: string; route: WorkspaceR
   const { workspaceId, slug, route, services, onClose } = props;
   const legacy = route?.pathCompatibility === "legacy-preserved";
   const invalidate = useInvalidateWorkspaceGateway(workspaceId);
+  const access = useWorkspaceGatewayAccess(workspaceId);
   const [form, setForm] = useState({
     name: route?.name ?? "",
     serviceId: route?.serviceId ?? (props.defaultServiceId || services[0]?.id || ""),
@@ -252,12 +259,12 @@ function RouteForm(props: { workspaceId: string; slug: string; route: WorkspaceR
   const [local, setLocal] = useState<FormErrors>(NO_ERRORS);
   const save = useMutation(saveRouteMutation(workspaceId, route, invalidate, onClose));
   const errors = save.isError ? gatewayFormErrors(save.error, "route") : local;
-  const paths = splitList(form.paths);
+  const paths = splitPaths(form.paths);
   const stripPath = legacy ? route.stripPath ?? false : form.stripPath;
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    if (isPathlessLegacy(route)) return;
+    if (!access.canWrite || isPathlessLegacy(route)) return;
     save.reset();
     const fields: Record<string, string[]> = {
       ...(form.name.trim() ? {} : { name: ["Nome: campo obrigatório."] }),
@@ -335,9 +342,7 @@ function RouteForm(props: { workspaceId: string; slug: string; route: WorkspaceR
         {errors.fields.stripPath?.map((m) => (
           <p key={m} className="error" role="alert">{m}</p>
         ))}
-        <label className="check">
-          <input type="checkbox" checked={form.preserveHost} onChange={(e) => set("preserveHost", e.target.checked)} /> Preservar o host original
-        </label>
+        <CheckboxField label="Preservar o host original" errors={errors.fields.preserveHost} checked={form.preserveHost} onChange={(checked) => set("preserveHost", checked)} />
         <Field label="Tags" errors={errors.fields.tags} hint="Separadas por vírgula">
           {(id, invalid) => <input id={id} aria-invalid={invalid} value={form.tags} onChange={(e) => set("tags", e.target.value)} />}
         </Field>
@@ -358,6 +363,7 @@ function RouteForm(props: { workspaceId: string; slug: string; route: WorkspaceR
 
 function DeleteRoute({ workspaceId, route, onClose }: { workspaceId: string; route: WorkspaceRoute; onClose: () => void }) {
   const invalidate = useInvalidateWorkspaceGateway(workspaceId);
+  const access = useWorkspaceGatewayAccess(workspaceId);
   const remove = useMutation({
     mutationFn: () => unwrap(apiV2.DELETE("/workspaces/{workspaceId}/routes/{routeId}", { params: { path: { workspaceId, routeId: route.id } } })),
     onSuccess: () => {
@@ -376,7 +382,7 @@ function DeleteRoute({ workspaceId, route, onClose }: { workspaceId: string; rou
       confirmLabel="Excluir"
       busy={remove.isPending}
       error={remove.isError ? gatewayErrorMessage(remove.error) : null}
-      onConfirm={() => remove.mutate()}
+      onConfirm={() => { if (access.canWrite && !isPathlessLegacy(route)) remove.mutate(); }}
       onClose={onClose}
     />
   );

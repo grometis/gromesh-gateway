@@ -67,6 +67,7 @@ async function load() {
         <MemoryRouter initialEntries={[path]}>
           <Routes>
             <Route element={<Shell />}>
+              <Route path="e/:envId/services/:serviceId" element={<services.ServiceDetailPage />} />
               {Object.entries(SECTIONS).map(([section, element]) => <Route key={section} path={`e/:envId/${section}`} element={element()} />)}
             </Route>
           </Routes>
@@ -116,5 +117,27 @@ describe("switching workspaces", () => {
     expect(after).toContain("Carregando");
     // The selector already shows B, and its list (instance-wide) is the only data reused.
     expect(after).toMatch(new RegExp(`<option value="${B}" selected="">Recargas</option>`));
+  });
+});
+
+
+describe("v1 publication strip on workspace gateway screens", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it.each(["services", "services/service-1", "routes"])("omits the strip on %s even with pending changes", async (section) => {
+    const { render } = await load();
+    const client = newClient();
+    client.setQueryData(["environment", A], { ...env(A, "Pagamentos"), hasUnpublishedChanges: true });
+    const html = render(client, `/e/${A}/${section}`);
+    expect(html).not.toContain('aria-label="Publicação"');
+    expect(html).not.toContain(`/e/${A}/publish`);
+    expect(client.getQueryCache().find({ queryKey: ["clusters", A] })).toBeUndefined();
+  });
+
+  it("retains the strip on v1 screens", async () => {
+    const { render } = await load();
+    const client = newClient();
+    client.setQueryData(["environment", A], { ...env(A, "Pagamentos"), hasUnpublishedChanges: true });
+    expect(render(client, `/e/${A}/plugins`)).toContain('aria-label="Publicação"');
   });
 });

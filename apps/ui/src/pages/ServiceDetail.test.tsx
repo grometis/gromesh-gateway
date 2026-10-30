@@ -1,20 +1,20 @@
 import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { WorkspaceRoute, WorkspaceService } from "../api/client-v2";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { WorkspaceRoute } from "../api/client-v2";
 
 // Exercise readOnly with full editing permission, so RBAC cannot hide a regression.
 vi.mock("../auth", () => ({ useCanEdit: () => true }));
 
 const W = "6d3e8b20-4c5e-4d6f-9a70-00000000000a";
 const NOW = "2026-10-30T12:00:00Z";
-const service = { id: "service-1", workspaceId: W, name: "cobranca", protocol: "http", host: "billing.internal", port: 80, createdAt: NOW, updatedAt: NOW };
+const service: WorkspaceService = { id: "service-1", workspaceId: W, name: "cobranca", protocol: "http", host: "billing.internal", port: 80, enabled: true, tags: [], upstreamId: null, path: null, createdAt: NOW, updatedAt: NOW };
 const route: WorkspaceRoute = { id: "route-1", name: "billing-api", serviceId: service.id, paths: ["/billing"], methods: ["GET"], protocols: ["http", "https"], stripPath: true, preserveHost: false, pathCompatibility: "workspace-default", createdAt: NOW, updatedAt: NOW };
 const plugin = { id: "plugin-1", name: "rate-limiting", enabled: false, scope: { serviceId: service.id }, config: { minute: 5 }, createdAt: NOW, updatedAt: NOW };
 const page = (items: unknown[]) => ({ items, nextCursor: null });
 
-async function load(storedRoutes: WorkspaceRoute[] = [route]) {
+async function load(status = "active", publishMode = "manual", storedRoutes: WorkspaceRoute[] = [route]) {
   vi.resetModules();
   const sent: Request[] = [];
   const NativeRequest = Request;
@@ -31,8 +31,8 @@ async function load(storedRoutes: WorkspaceRoute[] = [route]) {
     if (path.endsWith("/services")) return Response.json(page([service]));
     if (path.endsWith("/routes")) return Response.json(page(storedRoutes));
     if (path.endsWith("/plugins")) return Response.json(page([plugin]));
-    if (path === `/api/v1/environments/${W}`) return Response.json({ id: W, hasUnpublishedChanges: false });
-    if (path === `/api/v2/workspaces/${W}`) return Response.json({ id: W, slug: "billing", activeRelease: null });
+    if (path === `/api/v1/environments/${W}`) return Response.json({ id: W, publishMode, hasUnpublishedChanges: false });
+    if (path === `/api/v2/workspaces/${W}`) return Response.json({ id: W, slug: "billing", status, activeRelease: null });
     if (path.endsWith("/upstreams") || path.endsWith("/consumers")) return Response.json(page([]));
     throw new Error(`Unexpected query: ${path}`);
   });
@@ -59,7 +59,7 @@ async function load(storedRoutes: WorkspaceRoute[] = [route]) {
     }
     throw new Error("Queries did not settle");
   };
-  return { ...services, ...routes, ...plugins, loaded, sent, client };
+  return { ...services, ...routes, ...plugins, loaded, render, sent, client };
 }
 
 describe("service detail route and plugin access", () => {
@@ -90,7 +90,7 @@ describe("service detail route and plugin access", () => {
     { ...route, pathCompatibility: "legacy-preserved" as const },
     { ...route, pathCompatibility: "legacy-preserved" as const, paths: [], hosts: ["billing.example"] },
   ])("shows a scoped route without any actions when readOnly (compatibility $pathCompatibility, paths $paths)", async (stored) => {
-    const { ScopedRoutes, loaded, sent, client } = await load([stored]);
+    const { ScopedRoutes, loaded, sent, client } = await load("active", "manual", [stored]);
     const html = await loaded(<ScopedRoutes envId={W} service={service} readOnly />);
     expect(html).toContain(route.name);
     expect(html).toContain(service.name);
@@ -131,5 +131,48 @@ describe("service detail route and plugin access", () => {
       expect(html).toContain(">Editar</button>");
       expect(html).toContain(`Mais ações para ${plugin.name}`);
     }
+  });
+});
+
+
+describe("workspace service write access", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it.each([["archived", "manual", "arquivado"], ["active", "auto", "publicação automática"], ["archived", "auto", "arquivado"]])(
+    "offers only reading for %s / %s in both list and detail", async (status, publishMode, reason) => {
+      const { ServicesPage, ServiceDetailPage, ServiceForm, loaded, sent } = await load(status, publishMode);
+      for (const element of [<ServicesPage />, <ServiceDetailPage />]) {
+        const html = await loaded(element);
+        expect(html).toContain(service.name);
+        expect(html).toContain("Somente leitura");
+        expect(html).toContain(reason);
+        expect(html).not.toMatch(/Novo service|>Editar<|Mais ações para cobranca/);
+      }
+      const form = await loaded(<ServiceForm workspaceId={W} service={service} onClose={() => {}} />);
+      expect(form).toContain("Somente leitura");
+      expect(form).not.toMatch(/<form|>Salvar<|type="submit"/);
+      expect(sent.every((r) => r.method === "GET")).toBe(true);
+    },
+  );
+
+  it("does not offer writes while workspace or environment access is unknown or failed", async () => {
+    const { ServicesPage, render, client } = await load();
+    client.setQueryData(["ws-services", W, ""], { pages: [page([service])], pageParams: [""] });
+    for (const key of ["workspace", "environment"]) {
+      const html = render(<ServicesPage />);
+      expect(html).not.toMatch(/Novo service|>Editar<|Mais ações para cobranca/);
+      // Even if the other read succeeds, a failed read must not enable writes.
+      client.setQueryData([key, W], key === "workspace" ? { id: W, status: "active" } : { id: W, publishMode: "manual" });
+    }
+    client.getQueryCache().find({ queryKey: ["workspace", W] })!.setState({ status: "error", error: new Error("offline") });
+    expect(render(<ServicesPage />)).not.toMatch(/Novo service|>Editar<|Mais ações para cobranca/);
+  });
+
+  it("offers service writes in an active workspace with manual publication", async () => {
+    const { ServicesPage, loaded } = await load();
+    const html = await loaded(<ServicesPage />);
+    expect(html).toContain("Novo service");
+    expect(html).toContain(">Editar</button>");
+    expect(html).toContain("Mais ações para cobranca");
   });
 });

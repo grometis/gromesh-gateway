@@ -76,7 +76,11 @@ test("route cards retain matches, filters and actions, with draft badges and a c
   await page.getByLabel("Buscar routes").fill("/orders");
   await searched;
   await row.getByRole("button", { name: "Plugins", exact: true }).click();
-  await expect(page.getByRole("dialog", { name: "Plugins de orders-api" }).getByRole("table", { name: "Plugins" })).toHaveClass("cards");
+  const plugins = page.getByRole("dialog", { name: "Plugins de orders-api" });
+  await expect(plugins.getByRole("table", { name: "Plugins" })).toHaveClass("cards");
+  await expect(plugins).toContainText("Plugins por Workspace ainda não são editáveis aqui.");
+  await expect(plugins.getByRole("button", { name: /Adicionar plugin|Novo plugin|Editar|Mais ações/ })).toHaveCount(0);
+  await expect(plugins.getByRole("checkbox")).toHaveCount(0);
   await page.getByRole("dialog", { name: "Plugins de orders-api" }).getByRole("button", { name: "Fechar", exact: true }).click();
   await row.getByRole("button", { name: "Editar", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Editar orders-api" }).getByLabel("Paths", { exact: true })).toHaveValue("/orders");

@@ -103,11 +103,31 @@ describe("saving a workspace service", () => {
 
   it("shows the existing protocol reference as the selected option", async () => {
     const { ServiceForm } = await load(() => new Promise(() => {}));
+    const client = new QueryClient();
+    client.setQueryData(["workspace", W], { status: "active" });
+    client.setQueryData(["environment", W], { publishMode: "manual" });
     const html = renderToStaticMarkup(
-      <QueryClientProvider client={new QueryClient()}>
+      <QueryClientProvider client={client}>
         <ServiceForm workspaceId={W} service={{ ...saved, protocol: { $var: "SERVICE_PROTOCOL" } }} onClose={() => {}} />
       </QueryClientProvider>,
     );
     expect(html).toContain('<option value="${SERVICE_PROTOCOL}" selected="">${SERVICE_PROTOCOL}</option>');
+  });
+});
+
+
+describe("route list input", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it.each(["~/items/[0-9]{1,3}", "/a,/b"])("keeps commas inside the path %s", async (path) => {
+    const { splitPaths } = await load(() => new Promise(() => {}));
+    expect(splitPaths(`  ${path}\r\n\n /next  \n`)).toEqual([path, "/next"]);
+  });
+
+  it("keeps comma and newline separators for hosts, methods and tags", async () => {
+    const { splitList } = await load(() => new Promise(() => {}));
+    expect(splitList("api.example, other.example\nthird.example")).toEqual(["api.example", "other.example", "third.example"]);
+    expect(splitList("GET, POST\nPATCH")).toEqual(["GET", "POST", "PATCH"]);
+    expect(splitList("one, two")).toEqual(["one", "two"]);
   });
 });

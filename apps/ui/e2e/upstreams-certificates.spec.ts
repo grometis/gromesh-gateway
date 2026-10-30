@@ -219,7 +219,7 @@ test("upstream targets are fetched only for the opened panel", async ({ page }) 
   }));
   await page.route("**/api/v1/environments/*/upstreams", (route) => route.fulfill({ json: { items: upstreams, nextCursor: null } }));
   await login(page);
-  // Finish the shell's initial requests before observing what opening the list adds.
+  // Finish the initial screen's requests before observing what opening the list adds.
   await page.waitForLoadState("networkidle");
   const requests: URL[] = [];
   page.on("request", (request) => {
@@ -231,8 +231,12 @@ test("upstream targets are fetched only for the opened panel", async ({ page }) 
   await expect(table.getByRole("columnheader", { name: "Upstream → algoritmo", exact: true })).toBeAttached();
   // This negative network assertion needs the list's request cycle to settle, including React Query effects.
   await page.waitForLoadState("networkidle");
-  expect(requests.filter((url) => url.pathname.includes("/api/v1/"))).toHaveLength(1);
-  expect(requests.find((url) => url.pathname.includes("/api/v1/"))?.pathname).toMatch(/\/environments\/[^/]+\/upstreams$/);
+  // Leaving Services mounts the publication strip, which has its own legitimate v1 queries.
+  // The upstream list must still fetch once, with no eager targets or per-row queries.
+  const upstreamRequests = requests.filter((url) => /^\/api\/v1\/environments\/[^/]+\/upstreams(?:\/|$)/.test(url.pathname));
+  expect(upstreamRequests).toHaveLength(1);
+  expect(upstreamRequests[0]!.pathname).toMatch(/\/environments\/[^/]+\/upstreams$/);
+  expect(requests.filter((url) => /\/upstreams\/[^/]+\/targets$/.test(url.pathname))).toEqual([]);
 
   const selected = upstreams[1]!;
   const fetched = page.waitForResponse((response) => response.request().method() === "GET"

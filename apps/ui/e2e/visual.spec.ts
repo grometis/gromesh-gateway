@@ -44,12 +44,7 @@ for (const viewport of [{ name: "desktop-1440", width: 1440, height: 900 }, { na
   test(`Services and the publish strip, ${viewport.name}`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     await openServices(page);
-    const strip = page.getByRole("region", { name: "Publicação" });
-    await expect(strip).toContainText("3 alterações");
-    await expect(strip.getByRole("button", { name: "Publicar v4" })).toBeEnabled();
-    await expect(strip).toContainText("v3");
-    await expect(strip).toContainText("2/3");
-    await expect(strip).toContainText("convergindo");
+    await expect(page.getByRole("region", { name: "Publicação" })).toHaveCount(0);
     const rows = page.getByRole("table", { name: "Services" }).getByRole("row");
     await expect(rows.filter({ hasText: "payments" })).toContainText("Novo");
     await expect(rows.filter({ hasText: "orders" })).toContainText("Alterado");
@@ -57,17 +52,24 @@ for (const viewport of [{ name: "desktop-1440", width: 1440, height: 900 }, { na
     await expect(rows.filter({ hasText: "legacy-reports" })).toContainText("Desativado");
     // The accent is only for publishing: the screen's main action is the ink outline.
     await expect(page.getByRole("button", { name: "Novo service" })).toHaveCSS("background-color", "rgb(255, 255, 255)");
-    await expect(strip.getByRole("button", { name: "Publicar v4" })).toHaveCSS("background-color", "rgb(201, 58, 30)");
 
     // No horizontal page scroll: only wide tables scroll, inside their own container.
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(viewport.width);
     const dir = testInfo.config.rootDir.replace(/\/e2e$/, "") + "/test-results/screenshots";
     await page.screenshot({ path: `${dir}/services-${viewport.name}.png`, fullPage: true });
-    await strip.screenshot({ path: `${dir}/publish-strip-${viewport.name}.png` });
 
     await page.getByRole("button", { name: "Com alterações 2" }).click();
     await expect(rows).toHaveCount(3);
     await expect(page.getByRole("button", { name: "Com alterações 2" })).toHaveAttribute("aria-pressed", "true");
+    await page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Publicações", exact: true }).click();
+    const strip = page.getByRole("region", { name: "Publicação" });
+    await expect(strip).toContainText("3 alterações");
+    await expect(strip.getByRole("button", { name: "Publicar v4" })).toBeEnabled();
+    await expect(strip).toContainText("v3");
+    await expect(strip).toContainText("2/3");
+    await expect(strip).toContainText("convergindo");
+    await expect(strip.getByRole("button", { name: "Publicar v4" })).toHaveCSS("background-color", "rgb(201, 58, 30)");
+    await strip.screenshot({ path: `${dir}/publish-strip-${viewport.name}.png` });
   });
 }
 
@@ -75,6 +77,7 @@ test("a degraded rollout is written in the strip, not only coloured", async ({ p
   await page.setViewportSize({ width: 1440, height: 900 });
   const failed = { ...node(3, 2), state: "failed", error: "invalid configuration" };
   await openServices(page, [{ ...converging[0]!, status: "degraded", nodes: [node(1, 3), node(2, 3), failed] }]);
+  await page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Publicações", exact: true }).click();
   const strip = page.getByRole("region", { name: "Publicação" });
   await expect(strip).toContainText("2/3 nós");
   await expect(strip.getByText("degradado", { exact: true })).toBeVisible();
@@ -119,6 +122,7 @@ for (const { label, nodes, status, color, words } of [
 ]) {
   test(`the strip's dot and words for ${label}`, async ({ page }) => {
     await openServices(page, [{ ...converging[0]!, status, nodes }]);
+    await page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Publicações", exact: true }).click();
     const strip = page.getByRole("region", { name: "Publicação" });
     await expect(strip.locator(".dot")).toHaveCSS("background-color", color);
     if (words) await expect(strip.getByText(words, { exact: true })).toBeVisible();
@@ -128,6 +132,7 @@ for (const { label, nodes, status, color, words } of [
 
 test("an auto environment paused by an import says so in the strip, and only then", async ({ page }) => {
   await openServices(page);
+  await page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Publicações", exact: true }).click();
   const strip = page.getByRole("region", { name: "Publicação" });
   await expect(strip.getByRole("note")).toHaveCount(0);
   await page.route(`**/api/v1/environments/${envId}`, (route) => route.fulfill({ json: { ...environment, publishMode: "auto", autoPublishPausedReason: "import" } }));

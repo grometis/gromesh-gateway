@@ -25,14 +25,19 @@ interface Fake {
   dirty: Set<string>;
   /** Workspaces whose v1 environment publishes automatically. */
   autoPublish?: Set<string>;
+  paused?: "import";
+  hold?: { kind: "workspace" | "environment"; ready: Promise<void> };
+  failed?: "workspace" | "environment";
+  routeErrors?: { path: string; message: string }[];
   requests: { method: string; path: string; body: unknown }[];
 }
 
 async function fakeApi(page: Page, fake: Fake) {
-  const env = (w: Workspace) => ({ id: w.id, name: w.name, publishMode: fake.autoPublish?.has(w.id) ? "auto" : "manual", currentVersion: null, hasUnpublishedChanges: fake.dirty.has(w.id), createdAt: NOW, updatedAt: NOW });
+  const env = (w: Workspace) => ({ id: w.id, name: w.name, publishMode: fake.autoPublish?.has(w.id) ? "auto" : "manual", ...(fake.paused ? { autoPublishPausedReason: fake.paused } : {}), currentVersion: null, hasUnpublishedChanges: fake.dirty.has(w.id), createdAt: NOW, updatedAt: NOW });
   const record = (method: string, path: string, body: unknown) => fake.requests.push({ method, path, body });
   // Everything the v1 screens around the gateway read for these workspaces; publishing or deploying is recorded.
-  await page.route("**/api/v1/environments**", async (route) => {
+  // Match APIs at the origin root, never Vite modules such as /src/api/client.ts.
+  await page.route(/^https?:\/\/[^/]+\/api\/v1\/environments(?:\/|\?|$)/, async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname.replace(/^\/api\/v1/, "");
     record(request.method(), path, null);
@@ -40,7 +45,12 @@ async function fakeApi(page: Page, fake: Fake) {
     const [, wsId, rest] = /^\/environments\/([^/]+)(\/.*)?$/.exec(path) ?? [];
     const w = fake.workspaces.find((x) => x.id === wsId);
     if (!w) return route.fulfill(problem(404));
-    if (!rest) return route.fulfill({ json: env(w) });
+    if (!rest) {
+      if (fake.hold?.kind === "environment") await fake.hold.ready;
+      if (fake.failed === "environment") return route.fulfill(problem(503));
+      return route.fulfill({ json: env(w) });
+    }
+    if (rest === "/plugins") return route.fulfill({ json: { items: [{ id: "route-plugin", name: "rate-limiting", enabled: true, scope: { routeId: legacyRoute.id }, config: { minute: 5 }, createdAt: NOW, updatedAt: NOW }], nextCursor: null } });
     if (rest === "/publish-preview") return route.fulfill({ json: { currentVersion: null, draftHash: `sha256:${"a".repeat(64)}`, hasChanges: true, changes: [] } });
     if (rest === "/clusters") return route.fulfill({ json: { items: [] } });
     // Keep the old fallback observable: read-only legacy scenarios must never call it.
@@ -59,7 +69,7 @@ async function fakeApi(page: Page, fake: Fake) {
     }
     return route.fulfill({ json: { items: [], nextCursor: null } });
   });
-  await page.route("**/api/v2/**", async (route) => {
+  await page.route(/^https?:\/\/[^/]+\/api\/v2\//, async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     const path = url.pathname.replace(/^\/api\/v2/, "");
@@ -78,8 +88,18 @@ async function fakeApi(page: Page, fake: Fake) {
     const [, wsId, kind, entityId] = /^\/workspaces\/([^/]+)(?:\/(services|routes|upstreams)(?:\/([^/]+))?)?$/.exec(path) ?? [];
     const w = fake.workspaces.find((x) => x.id === wsId);
     if (!w) return route.fulfill(problem(404));
-    if (!kind) return route.fulfill({ json: w });
+    if (!kind) {
+      if (fake.hold?.kind === "workspace") await fake.hold.ready;
+      if (fake.failed === "workspace") return route.fulfill(problem(503));
+      return route.fulfill({ json: w });
+    }
     if (kind === "upstreams") return route.fulfill({ json: { items: fake.upstreams.filter((u) => u.workspaceId === w.id), nextCursor: null } });
+    if (method === "DELETE" && kind === "routes") {
+      fake.routes = fake.routes.filter((r) => r.id !== entityId || fake.routeOwner.get(r.id) !== w.id);
+      fake.routeOwner.delete(entityId!);
+      fake.dirty.add(w.id);
+      return route.fulfill({ status: 204 });
+    }
     if (method !== "GET") {
       const errors = v2BodyErrors(kind as "services" | "routes", body);
       if (errors.length > 0) return route.fulfill(invalidBody(errors));
@@ -108,6 +128,7 @@ async function fakeApi(page: Page, fake: Fake) {
       return route.fulfill({ json: { items: own.filter((r) => !serviceId || r.serviceId === serviceId), nextCursor: null } });
     }
     const current = own.find((r) => r.id === entityId);
+    if (fake.routeErrors) return route.fulfill(problem(422, { errors: fake.routeErrors }));
     if (!fake.services.some((s) => s.workspaceId === w.id && s.id === body!.serviceId)) {
       return route.fulfill(problem(422, { errors: [{ path: "serviceId", message: "unknown service in this environment" }] }));
     }
@@ -425,9 +446,10 @@ test("a pathless legacy route stays read-only with auto publishing and keyboard 
   await expect(close).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(dialog).toHaveCount(0);
-  // Auto publishing does not remove v2 editing for a legacy route that has paths.
-  await routes.getByRole("row").filter({ hasText: "boletos-api" }).getByRole("button", { name: "Editar", exact: true }).click();
-  await expect(page.getByRole("dialog", { name: "Editar boletos-api" }).getByRole("button", { name: "Salvar" })).toBeEnabled();
+  // Auto publication makes routes with paths read-only too, including legacy routes.
+  await expect(routes.getByRole("button", { name: "Editar", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Nova route" })).toHaveCount(0);
+  await expect(page.getByRole("note", { name: "Estado do Workspace" })).toContainText("publicação automática");
   expect(writes).toEqual([]);
   expect(fake.requests.filter((r) => r.method !== "GET")).toEqual([]);
   expect(fake.routes.find((r) => r.id === hostOnly.id)).toEqual(original);
@@ -467,6 +489,129 @@ test("pathless legacy details stay read-only when publishing changes from manual
   expect(writes).toEqual([]);
   expect(fake.requests.filter((r) => r.method !== "GET")).toEqual([]);
   expect(fake.routes.find((r) => r.id === hostOnly.id)).toEqual(original);
+});
+
+for (const options of [
+  { status: "archived", publishMode: "manual", reason: "arquivado" },
+  { status: "active", publishMode: "auto", reason: "publicação automática" },
+  { status: "active", publishMode: "auto", paused: "import", reason: "publicação automática" },
+  { status: "archived", publishMode: "auto", reason: "arquivado" },
+] as const) {
+  test(`routes are read-only: ${options.status}, ${options.publishMode}, ${"paused" in options ? options.paused : "unpaused"}`, async ({ page }) => {
+    const fake = newFake();
+    fake.workspaces[0]!.status = options.status;
+    if (options.publishMode === "auto") fake.autoPublish = new Set([legacyWs.id]);
+    if ("paused" in options) fake.paused = options.paused;
+    await signIn(page, fake);
+    await menu(page).getByRole("link", { name: "Routes", exact: true }).click();
+    await expect(page.getByRole("table", { name: "Routes", exact: true })).toContainText("boletos-api");
+    await expect(page.getByRole("note", { name: "Estado do Workspace" })).toContainText(options.reason);
+    await expect(page.getByRole("button", { name: /Nova route|^Editar$|Mais ações para/ })).toHaveCount(0);
+    await expect(page.getByRole("region", { name: "Publicação", exact: true })).toHaveCount(0);
+    await page.getByRole("button", { name: "Plugins", exact: true }).click();
+    const plugins = page.getByRole("dialog", { name: "Plugins de boletos-api" });
+    await expect(plugins).toContainText("rate-limiting");
+    await expect(plugins).toContainText("Plugins por Workspace ainda não são editáveis aqui.");
+    await expect(plugins.getByRole("button", { name: /Adicionar plugin|Novo plugin|Editar|Mais ações/ })).toHaveCount(0);
+    await expect(plugins.getByRole("checkbox")).toHaveCount(0);
+    expect(fake.requests.filter((r) => r.method !== "GET")).toEqual([]);
+  });
+}
+
+for (const kind of ["workspace", "environment"] as const) {
+  test(`routes have no write controls before ${kind} is known`, async ({ page }) => {
+    const fake = newFake();
+    let release!: () => void;
+    fake.hold = { kind, ready: new Promise<void>((resolve) => { release = resolve; }) };
+    try {
+      await signIn(page, fake);
+      await menu(page).getByRole("link", { name: "Routes", exact: true }).click();
+      await expect(page.getByRole("table", { name: "Routes", exact: true })).toContainText("boletos-api");
+      await expect(page.getByText(/Somente leitura enquanto/)).toBeVisible();
+      await expect(page.getByRole("button", { name: /Nova route|^Editar$|Mais ações para/ })).toHaveCount(0);
+      expect(fake.requests.filter((r) => r.method !== "GET")).toEqual([]);
+    } finally { release(); }
+    await expect(page.getByRole("button", { name: "Nova route" })).toBeEnabled();
+  });
+
+  test(`routes stay read-only when ${kind} fails`, async ({ page }) => {
+    const fake = newFake();
+    fake.failed = kind;
+    await signIn(page, fake);
+    await menu(page).getByRole("link", { name: "Routes", exact: true }).click();
+    await expect(page.getByRole("table", { name: "Routes", exact: true })).toContainText("boletos-api");
+    await expect(page.getByText(/não foi possível verificar/)).toBeVisible();
+    await expect(page.getByRole("button", { name: /Nova route|^Editar$|Mais ações para/ })).toHaveCount(0);
+    expect(fake.requests.filter((r) => r.method !== "GET")).toEqual([]);
+  });
+}
+
+for (const operation of ["create", "edit"] as const) {
+  test(`route ${operation} preserves literal and regex commas in preview and v2 payload`, async ({ page }) => {
+    const fake = newFake();
+    const paths = ["~/items/[0-9]{1,3}", "/a,/b"];
+    fake.routes[0]!.paths = paths;
+    await signIn(page, fake);
+    await menu(page).getByRole("link", { name: "Routes", exact: true }).click();
+    await expect(page.getByRole("region", { name: "Publicação", exact: true })).toHaveCount(0);
+    await page.getByRole("button", { name: operation === "create" ? "Nova route" : "Editar", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: operation === "create" ? "Nova route" : "Editar boletos-api" });
+    await dialog.getByLabel("Nome", { exact: true }).fill("comma-paths");
+    if (operation === "create") await dialog.getByLabel("Paths", { exact: true }).fill(paths.join("\n"));
+    await expect(dialog.getByRole("group", { name: "Path público" })).toContainText("~/legado(?:/items/[0-9]{1,3}), /legado/a,/b");
+    await dialog.getByRole("button", { name: "Salvar" }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(page.getByRole("table", { name: "Routes", exact: true })).toContainText("comma-paths");
+    const writes = fake.requests.filter((r) => r.method !== "GET");
+    expect(writes).toEqual([expect.objectContaining({ method: operation === "create" ? "POST" : "PUT", body: expect.objectContaining({ paths, stripPath: operation === "edit" }) })]);
+    expect(fake.routes.find((r) => r.name === "comma-paths")!.paths).toEqual(paths);
+  });
+}
+
+test("preserveHost validation is visible beside the checkbox and describes it accessibly", async ({ page }) => {
+  const fake = newFake();
+  fake.routeErrors = [{ path: "preserveHost", message: "must be boolean" }];
+  await signIn(page, fake);
+  await menu(page).getByRole("link", { name: "Routes", exact: true }).click();
+  await page.getByRole("button", { name: "Editar", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Editar boletos-api" });
+  await dialog.getByRole("button", { name: "Salvar" }).click();
+  const checkbox = dialog.getByRole("checkbox", { name: "Preservar o host original" });
+  await expect(checkbox).toHaveAttribute("aria-invalid", "true");
+  const description = await checkbox.getAttribute("aria-describedby");
+  expect(description).toBeTruthy();
+  const error = dialog.locator(`[id="${description}"]`);
+  await expect(error).toHaveAttribute("role", "alert");
+  await expect(error).toContainText("Preservar o host");
+  await expect(checkbox).toHaveAccessibleDescription(await error.innerText());
+  expect(fake.requests.filter((r) => r.method !== "GET").map((r) => [r.method, r.path])).toEqual([["PUT", `/workspaces/${legacyWs.id}/routes/${legacyRoute.id}`]]);
+});
+
+test("manual publication permits deleting a route through v2 without a publish request", async ({ page }) => {
+  const fake = newFake();
+  await signIn(page, fake);
+  await menu(page).getByRole("link", { name: "Routes", exact: true }).click();
+  await page.getByRole("button", { name: "Mais ações para boletos-api" }).click();
+  await page.getByRole("menuitem", { name: "Excluir" }).click();
+  const dialog = page.getByRole("dialog", { name: "Excluir route" });
+  await dialog.getByRole("button", { name: "Excluir", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByText("Nenhuma route encontrada.", { exact: true })).toBeVisible();
+  expect(fake.requests.filter((r) => r.method !== "GET").map((r) => [r.method, r.path])).toEqual([["DELETE", `/workspaces/${legacyWs.id}/routes/${legacyRoute.id}`]]);
+  expect(fake.routes).toEqual([]);
+});
+
+test("manual routes expose v1 plugins only for reading", async ({ page }) => {
+  const fake = newFake();
+  await signIn(page, fake);
+  await menu(page).getByRole("link", { name: "Routes", exact: true }).click();
+  await page.getByRole("button", { name: "Plugins", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Plugins de boletos-api" });
+  await expect(dialog).toContainText("rate-limiting");
+  await expect(dialog).toContainText("Plugins por Workspace ainda não são editáveis aqui.");
+  await expect(dialog.getByRole("button", { name: /Adicionar plugin|Novo plugin|Editar|Mais ações/ })).toHaveCount(0);
+  await expect(dialog.getByRole("checkbox")).toHaveCount(0);
+  expect(fake.requests.filter((r) => r.method !== "GET")).toEqual([]);
 });
 
 for (const width of [390, 1440]) {

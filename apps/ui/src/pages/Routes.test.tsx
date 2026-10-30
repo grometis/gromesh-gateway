@@ -6,6 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceRoute } from "../api/client-v2";
 import { publicPath, upstreamEffect } from "./workspace-gateway";
 
+// Exercise the v2 plugin boundary even for users allowed to edit v1 plugins.
+vi.mock("../auth", () => ({ useCanEdit: () => true }));
+
 const W = "6d3e8b20-4c5e-4d6f-9a70-00000000000a";
 const B = "6d3e8b20-4c5e-4d6f-9a70-00000000000b";
 const NOW = "2026-10-30T12:00:00Z";
@@ -128,24 +131,34 @@ describe("saving a workspace route", () => {
 });
 
 // Mount the real page and router: workspace changes must discard React form state.
-async function screen(stored: WorkspaceRoute[] = []) {
+async function screen(stored: WorkspaceRoute[] = [], options: {
+  status?: "active" | "archived";
+  publishMode?: "manual" | "auto";
+  pending?: "workspace" | "environment";
+  writeResponse?: () => Response;
+} = {}) {
   const container = installTestDom();
   const { RoutesPage } = await load(async (request) => {
     const path = new URL(request.url).pathname;
     if (request.method === "DELETE") return new Response(null, { status: 204 });
     if (["POST", "PUT"].includes(request.method)) {
+      if (options.writeResponse) return options.writeResponse();
       const current = stored.find((r) => path.endsWith(`/${r.id}`)) ?? route();
       return Response.json({ ...current, ...await request.clone().json() });
     }
     const workspaceId = path.includes(B) ? B : W;
     const name = workspaceId === W ? "service-a" : "service-b";
+    const accessQuery = path === `/api/v2/workspaces/${workspaceId}` ? "workspace" : path === `/api/v1/environments/${workspaceId}` ? "environment" : null;
+    if (accessQuery && options.pending === accessQuery) return new Promise<Response>(() => {});
     if (path.endsWith("/services")) return Response.json({ items: [{
       id: workspaceId === W ? values.serviceId : "service-b-id", workspaceId, name, path: null,
       protocol: "http", host: `${name}.internal`, port: 80, enabled: true, createdAt: NOW, updatedAt: NOW,
     }], nextCursor: null });
     if (path.endsWith("/routes")) return Response.json({ items: workspaceId === W ? stored : [], nextCursor: null });
-    if (path.startsWith("/api/v2/workspaces/")) return Response.json({ id: workspaceId, name, slug: workspaceId === W ? "a" : "b", activeRelease: null });
-    if (path.startsWith("/api/v1/environments/")) return Response.json({ id: workspaceId, name, publishMode: "manual", hasUnpublishedChanges: false });
+    if (path.endsWith("/plugins")) return Response.json({ items: [{ id: "plugin-1", name: "rate-limiting", enabled: true, scope: { routeId: route().id }, config: { minute: 5 }, createdAt: NOW, updatedAt: NOW }], nextCursor: null });
+    if (path.endsWith("/consumers")) return Response.json({ items: [], nextCursor: null });
+    if (path.startsWith("/api/v2/workspaces/")) return Response.json({ id: workspaceId, name, slug: workspaceId === W ? "a" : "b", status: options.status ?? "active", activeRelease: null });
+    if (path.startsWith("/api/v1/environments/")) return Response.json({ id: workspaceId, name, publishMode: options.publishMode ?? "manual", hasUnpublishedChanges: false });
     throw new Error(`Unexpected request: ${request.method} ${path}`);
   });
   const { createMemoryRouter, RouterProvider } = await import("react-router");
@@ -188,6 +201,101 @@ async function screen(stored: WorkspaceRoute[] = []) {
 const pathless = () => route({ pathCompatibility: "legacy-preserved", paths: [], hosts: ["boletos.example"], methods: ["GET"], tags: ["legado"] });
 
 describe("routes screen", () => {
+  it.each(["create", "edit"])("preserves commas in literal and regex paths on %s", async (operation) => {
+    const paths = ["~/items/[0-9]{1,3}", "/a,/b"];
+    const view = await screen([route({ paths })]);
+    await view.click(operation === "create" ? "Nova route" : "Editar");
+    await view.input("Nome", "comma-paths");
+    if (operation === "create") await view.input("Paths", ` ${paths[0]} \r\n\n${paths[1]}\n`);
+    expect(view.dialog()!.textContent).toContain("~/a(?:/items/[0-9]{1,3})");
+    await view.submit();
+    const write = sent.find((r) => r.method === (operation === "create" ? "POST" : "PUT"))!;
+    expect(await write.json()).toMatchObject({ paths });
+  });
+
+  it.each([
+    ["archived", "manual", "arquivado"], ["active", "auto", "publicação automática"], ["archived", "auto", "arquivado"],
+  ] as const)("allows reading only for %s / %s", async (status, publishMode, reason) => {
+    const view = await screen([route(), { ...pathless(), id: "pathless-id" }], { status, publishMode });
+    expect(view.container.textContent).toContain("Somente leitura");
+    expect(view.container.textContent).toContain(reason);
+    for (const label of ["Nova route", "Editar", "Excluir"]) expect(view.buttons(label)).toHaveLength(0);
+    expect(view.container.findAll((n) => n.getAttribute("aria-haspopup") === "menu")).toHaveLength(0);
+    await view.click("Ver detalhes");
+    expect(view.dialog()!.textContent).toContain("sem paths é somente leitura");
+    expect(sent.every((r) => r.method === "GET")).toBe(true);
+  });
+
+  it.each(["workspace", "environment"] as const)("blocks writes while %s is pending or failed", async (query) => {
+    const view = await screen([route()], { pending: query });
+    expect(view.buttons("Nova route")).toHaveLength(0);
+    expect(view.buttons("Editar")).toHaveLength(0);
+    await act(async () => {
+      client!.getQueryCache().find({ queryKey: [query, W] })!.setState({ status: "error", error: new Error("offline") });
+      await tick();
+    });
+    expect(view.container.textContent).toContain("não foi possível verificar");
+    expect(view.buttons("Nova route")).toHaveLength(0);
+    expect(view.buttons("Editar")).toHaveLength(0);
+    expect(sent.every((r) => r.method === "GET")).toBe(true);
+  });
+
+  it.each(["workspace", "environment"] as const)("rejects stale permission data after a failed %s read", async (query) => {
+    const view = await screen([route()]);
+    expect(view.buttons("Editar")).toHaveLength(1);
+    await act(async () => {
+      client!.getQueryCache().find({ queryKey: [query, W] })!.setState({ status: "error", error: new Error("offline") });
+      await tick();
+    });
+    expect(view.container.textContent).toContain("não foi possível verificar");
+    expect(view.buttons("Nova route")).toHaveLength(0);
+    expect(view.buttons("Editar")).toHaveLength(0);
+    expect(sent.every((r) => r.method === "GET")).toBe(true);
+  });
+
+  it.each(["edit", "delete"])("removes an open %s dialog when publication becomes auto", async (operation) => {
+    const view = await screen([route()]);
+    if (operation === "edit") await view.click("Editar");
+    else {
+      const menu = view.container.findAll((n) => n.getAttribute("aria-haspopup") === "menu")[0]!;
+      await act(async () => { menu.dispatchEvent(new Event("click", { bubbles: true })); await tick(); });
+      await view.click("Excluir");
+    }
+    expect(view.dialog()).toBeDefined();
+    await act(async () => {
+      client!.setQueryData(["environment", W], { id: W, publishMode: "auto" });
+      await tick();
+    });
+    expect(view.dialog()).toBeUndefined();
+    expect(view.buttons("Editar")).toHaveLength(0);
+    expect(sent.every((r) => r.method === "GET")).toBe(true);
+  });
+
+  it("shows a preserveHost error beside the checkbox with an accessible description", async () => {
+    const view = await screen([route()], { writeResponse: () => Response.json({ title: "Invalid request", status: 422, errors: [{ path: "preserveHost", message: "must be boolean" }] }, { status: 422, headers: { "Content-Type": "application/problem+json" } }) });
+    await view.click("Editar");
+    await view.submit();
+    const checkbox = view.dialog()!.findAll((n) => n.tagName === "INPUT" && n.type === "checkbox" && n.getAttribute("aria-invalid") === "true")[0]!;
+    expect(checkbox).toBeDefined();
+    const error = view.dialog()!.findAll((n) => n.getAttribute("id") === checkbox.getAttribute("aria-describedby"))[0]!;
+    expect(error.getAttribute("role")).toBe("alert");
+    expect(error.textContent).toContain("Preservar o host");
+    expect(checkbox.parentNode!.parentNode).toBe(error.parentNode);
+  });
+
+  it("consults route plugins without any v1 mutation controls", async () => {
+    const view = await screen([route()]);
+    await view.click("Plugins");
+    await act(async () => { await tick(); });
+    const dialog = view.dialog()!;
+    expect(dialog.textContent).toContain("rate-limiting");
+    expect(dialog.textContent).toContain("Plugins por Workspace ainda não são editáveis aqui.");
+    expect(dialog.textContent).not.toMatch(/Adicionar plugin|Novo plugin|Editar|Excluir/);
+    expect(dialog.findAll((n) => n.tagName === "INPUT" && n.type === "checkbox")).toHaveLength(0);
+    expect(sent.some((r) => r.url.includes("/plugins?") && new URL(r.url).searchParams.get("routeId") === route().id)).toBe(true);
+    expect(sent.every((r) => r.method === "GET")).toBe(true);
+  });
+
   it("offers only read-only details for a pathless legacy route", async () => {
     const view = await screen([pathless()]);
     expect(view.container.textContent).toContain("Legada");
