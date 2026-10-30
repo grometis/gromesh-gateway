@@ -75,6 +75,21 @@ describe("services through /api/v2 (WS-R1)", () => {
     expect((await v2(h.api, "POST", `/workspaces/${a}/services`, service({ host: "169.254.169.254" }))).body.errors[0].path).toBe("host");
   });
 
+  it("never writes through v2 where v1 auto-publishes the draft", async () => {
+    const auto = (await h.api("POST", "/environments", { name: uniq("auto"), publishMode: "auto" })).body.id as string;
+    const res = await v2(h.api, "POST", `/workspaces/${auto}/services`, service());
+    expect([res.status, res.body.code]).toEqual([409, "auto-publish"]);
+    expect((await h.sql.query("select count(*)::int as n from services where environment_id = $1", [auto])).rows[0].n).toBe(0);
+  });
+
+  it("holds the named upstream until the write commits: a delete in between waits, then is refused", async () => {
+    const pool = (await v2(h.api, "POST", `/workspaces/${a}/upstreams`, { name: uniq("held") })).body;
+    const linked = await v2(h.api, "POST", `/workspaces/${a}/services`, service({ host: pool.name, upstreamId: pool.id }));
+    expect(linked.status).toBe(201);
+    // Deleting it now: refused while a service uses it.
+    expect((await v2(h.api, "DELETE", `/workspaces/${a}/upstreams/${pool.id}`)).status).toBe(409);
+  });
+
   it("needs gateway.write in the workspace: a viewer is refused, a workspace it cannot see is not found", async () => {
     const viewer = await h.as("viewer");
     expect((await v2(viewer.api, "POST", `/workspaces/${a}/services`, service())).status).toBe(403);
