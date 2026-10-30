@@ -46,7 +46,7 @@ export function gatewayMessage(path: string, message: string): string {
 }
 
 /**
- * 409 auto-publish on the form, path-compatibility on stripPath, a duplicate (409 without code) on the name; 422 per
+ * 409 on its supplied paths (otherwise auto-publish on the form, path-compatibility on stripPath, a duplicate on name); 422 per
  * `errors[].path` on the field it names (paths.N on paths, a host given as an upstream's name on host); 403 in words.
  */
 export function gatewayFormErrors(err: unknown, kind: GatewayKind): FormErrors {
@@ -61,13 +61,22 @@ export function gatewayFormErrors(err: unknown, kind: GatewayKind): FormErrors {
   if (!(err instanceof ApiError)) return { fields: {}, form: [statusMessage(err)] };
   if (err.status === 403) return { fields: {}, form: [GATEWAY_MESSAGES.forbidden] };
   if (err.status === 409) {
+    const items = err.problem?.errors ?? [];
+    const conflict = (text: string, fallback?: string): FormErrors => {
+      if (items.length > 0) {
+        for (const { path } of items) add(path.split(/[.[]/)[0] ?? "", text);
+      } else if (fallback) add(fallback, text);
+      else out.form.push(text);
+      return out;
+    };
     const code = problemCode(err);
-    if (code === "auto-publish") return { fields: {}, form: [GATEWAY_MESSAGES.autoPublish] };
-    if (code === "concurrent-update") return { fields: {}, form: [GATEWAY_MESSAGES.concurrent] };
-    if (code === "workspace-archived") return { fields: {}, form: [CONFLICTS["workspace-archived"]] };
-    if (code === "upstream-captures-service") return { fields: {}, form: [GATEWAY_MESSAGES.upstreamCapturesService] };
-    if (code === "path-compatibility") add("stripPath", GATEWAY_MESSAGES.pathCompatibility);
-    else add("name", GATEWAY_MESSAGES.duplicate[kind]);
+    if (code === "auto-publish") return conflict(GATEWAY_MESSAGES.autoPublish);
+    if (code === "concurrent-update") return conflict(GATEWAY_MESSAGES.concurrent);
+    if (code === "workspace-archived") return conflict(CONFLICTS["workspace-archived"]);
+    if (code === "upstream-captures-service") return conflict(GATEWAY_MESSAGES.upstreamCapturesService, kind === "service" ? "host" : "name");
+    if (code === "path-compatibility") return conflict(GATEWAY_MESSAGES.pathCompatibility, "stripPath");
+    if (items.length === 0) add("name", GATEWAY_MESSAGES.duplicate[kind]);
+    else for (const { path, message } of items) add(path.split(/[.[]/)[0] ?? "", gatewayMessage(path, message));
     return out;
   }
   const items = err.status === 422 ? err.problem?.errors ?? [] : [];
