@@ -1559,7 +1559,11 @@ export interface paths {
         };
         get: operations["listServices"];
         put?: never;
-        /** @description 422 at `host` for a forbidden destination (see the description of this API). */
+        /**
+         * @description 422 at `host` for a forbidden destination (see the description of this API). Edits the draft only (WS-R0): in
+         *     an environment that auto-publishes its draft through v1 it answers 409 with code auto-publish (RouteProblem)
+         *     and writes nothing.
+         */
         post: operations["createService"];
         delete?: never;
         options?: never;
@@ -1578,7 +1582,11 @@ export interface paths {
             cookie?: never;
         };
         get: operations["getService"];
-        /** @description 422 at `host` for a forbidden destination (see the description of this API). */
+        /**
+         * @description 422 at `host` for a forbidden destination (see the description of this API). Edits the draft only (WS-R0): in
+         *     an environment that auto-publishes its draft through v1 it answers 409 with code auto-publish (RouteProblem)
+         *     and writes nothing.
+         */
         put: operations["replaceService"];
         post?: never;
         /** @description Refused with 409 while routes or plugins reference the service. */
@@ -1599,6 +1607,13 @@ export interface paths {
         };
         get: operations["listRoutes"];
         put?: never;
+        /**
+         * @description WS-R0. Creates a route of this workspace with pathCompatibility workspace-default (decision D1): paths required,
+         *     every path prefixed with /<slug> by the compiler, the full path to the upstream unless stripPath is true.
+         *     serviceId must be a service of this workspace (422 at serviceId). Edits the draft only (no publish, no
+         *     deployment): in an environment that auto-publishes its draft through v1 (publishMode auto) it answers 409
+         *     auto-publish and writes nothing. Audited (route.create).
+         */
         post: operations["createRoute"];
         delete?: never;
         options?: never;
@@ -1617,6 +1632,15 @@ export interface paths {
             cookie?: never;
         };
         get: operations["getRoute"];
+        /**
+         * @description WS-R0. Keeps the route's pathCompatibility: only convertRoutePathCompatibility turns a legacy-preserved route
+         *     into workspace-default. For a legacy-preserved route an omitted stripPath keeps the stored value (never the
+         *     schema's default false), and a stripPath different from the stored one answers 409 with code
+         *     path-compatibility (convert it explicitly instead). For a workspace-default route the body applies as written
+         *     (stripPath default false). The body is WorkspaceRouteWrite in both cases (paths required: a migrated route
+         *     without paths is edited through v1 until it has some). serviceId must be a service of this workspace (422).
+         *     Edits the draft only (409 auto-publish as createRoute); audited (route.update, before and after).
+         */
         put: operations["replaceRoute"];
         post?: never;
         delete: operations["deleteRoute"];
@@ -2244,8 +2268,8 @@ export interface components {
             headers?: {
                 [key: string]: string[];
             };
-            /** @default false */
-            stripPath: boolean;
+            /** @description Absent: false on a workspace-default route (createRoute, and replaceRoute of one); on a legacy-preserved route the stored value (WS-R0). The server applies it, so the schema states no default. */
+            stripPath?: boolean;
             /** @default false */
             preserveHost: boolean;
             /**
@@ -2257,6 +2281,27 @@ export interface components {
              */
             analyticsRetentionDays?: number | null;
             tags?: components["schemas"]["Tags"];
+        };
+        /**
+         * @example {
+         *       "type": "https://gromesh.dev/problems/path-compatibility",
+         *       "title": "Conflict",
+         *       "status": 409,
+         *       "code": "path-compatibility",
+         *       "errors": [
+         *         {
+         *           "path": "stripPath",
+         *           "message": "differs from the legacy route's"
+         *         }
+         *       ]
+         *     }
+         */
+        RouteProblem: components["schemas"]["Problem"] & {
+            /**
+             * @description path-compatibility: replaceRoute on a legacy-preserved route with another stripPath (convert it with convertRoutePathCompatibility). auto-publish: a v2 write in an environment whose v1 publishMode is auto (switch it to manual).
+             * @enum {unknown}
+             */
+            code: "path-compatibility" | "auto-publish";
         };
         WorkspaceRoute: components["schemas"]["Route"] & {
             /**
@@ -6620,7 +6665,15 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
+            /** @description auto-publish (a v2 write where v1 auto-publishes), or a conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["RouteProblem"] | components["schemas"]["Problem"];
+                };
+            };
             422: components["responses"]["ValidationError"];
         };
     };
@@ -6678,7 +6731,15 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
+            /** @description auto-publish (a v2 write where v1 auto-publishes), or a conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["RouteProblem"] | components["schemas"]["Problem"];
+                };
+            };
             422: components["responses"]["ValidationError"];
         };
     };
@@ -6765,7 +6826,15 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
+            /** @description auto-publish (a v2 write where v1 auto-publishes), or a conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["RouteProblem"] | components["schemas"]["Problem"];
+                };
+            };
             422: components["responses"]["ValidationError"];
         };
     };
@@ -6823,7 +6892,15 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
+            /** @description path-compatibility (a legacy route's stripPath), or a conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["RouteProblem"] | components["schemas"]["Problem"];
+                };
+            };
             422: components["responses"]["ValidationError"];
         };
     };
