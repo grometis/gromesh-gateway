@@ -1,6 +1,9 @@
+import { formatWithOptions } from "node:util";
+import type { GatewayState } from "@gromesh/compiler";
+import { Logger } from "@nestjs/common";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { deploymentContext, ENCRYPTOR, type Encryptor } from "../../src/crypto/crypto.js";
+import { deploymentContext, ENCRYPTOR, releaseContext, type Encryptor } from "../../src/crypto/crypto.js";
 import { runMigrations } from "../../src/db/migrate.js";
 import { type ApiClient, type ApiResponse, startHarness, uniq, type Harness } from "./harness.js";
 
@@ -80,6 +83,29 @@ describe("VarRef resolution (WS-V2)", () => {
     expect(await lastRevision()).toBeNull();
   });
 
+  it("persists only references and placeholders in a release even when plain and secret values already exist", async () => {
+    const host = "release-plain-value.internal.example";
+    for (const [name, value] of [["ORDERS_HOST", host], ["ORDERS_PORT", "8443"], ["BASE_PATH", SECRET_PATH], ["SCHEME", "https"]]) {
+      expect((await v2(h.api, "PUT", `/workspaces/${a}/variables/${name}/value`, { value })).status).toBe(204);
+    }
+    const service = await v2(h.api, "POST", `/workspaces/${a}/services`, svc({ name: "persisted-refs" }));
+    expect(service.status).toBe(201);
+    const published = await v2(h.api, "POST", `/workspaces/${a}/releases`, { message: "values stay on the instance" });
+    expect(published.status, JSON.stringify(published.body)).toBe(201);
+    const { rows } = await h.sql.query("select * from releases where workspace_id = $1 and version = $2", [a, published.body.version]);
+    expect(rows).toHaveLength(1);
+    const row = rows[0]!;
+    const state = h.app.get<Encryptor>(ENCRYPTOR).openJson<GatewayState>(row.content, releaseContext(a, row.version));
+    expect(state.services.find((s) => s.id === service.body.id)).toMatchObject({
+      varRefs: { host: "ORDERS_HOST", port: "ORDERS_PORT", path: "BASE_PATH", protocol: "SCHEME" },
+      host: "VARIABLE.INVALID", port: 1, path: "/", protocol: "http",
+    });
+    // Inspect the opened payload too: searching ciphertext alone cannot detect resolved values in the release.
+    const serialized = JSON.stringify({ ...row, content: state });
+    expect(serialized).not.toContain(host);
+    expect(serialized).not.toContain(SECRET_PATH);
+  });
+
   it("resolves this instance's values at the deployment, checks them as the fields they fill, and never shows a secret", async () => {
     for (const [name, value] of [["ORDERS_HOST", "orders.internal.example"], ["ORDERS_PORT", "8443"], ["BASE_PATH", SECRET_PATH], ["SCHEME", "https"]]) {
       expect((await v2(h.api, "PUT", `/workspaces/${a}/variables/${name}/value`, { value })).status).toBe(204);
@@ -113,6 +139,81 @@ describe("VarRef resolution (WS-V2)", () => {
     await v2(h.api, "PUT", `/workspaces/${a}/variables/SCHEME/value`, { value: "ftp" });
     expect((await deploy(r1 + 1)).status).toBe(422);
     expect(await lastRevision()).toBe(r1 + 1);
+  });
+
+  it("resolves homonymous variables within their own workspace and changes the digest without cross-workspace leakage", async () => {
+    await freeLease();
+    expect((await v2(h.api, "PUT", `/workspaces/${a}/variables/SCHEME/value`, { value: "https" })).status).toBe(204);
+    const hostA = "workspace-a.internal.example";
+    const hostB = "workspace-b.internal.example";
+    expect((await v2(h.api, "PUT", `/workspaces/${a}/variables/ORDERS_HOST/value`, { value: hostA })).status).toBe(204);
+    expect((await v2(h.api, "PUT", `/workspaces/${b}/variables/ORDERS_HOST`, { type: "host", secret: false, required: true })).status).toBe(200);
+    expect((await v2(h.api, "PUT", `/workspaces/${b}/variables/ORDERS_HOST/value`, { value: hostB })).status).toBe(204);
+    expect((await v2(h.api, "PUT", `/workspaces/${b}/variables/ONLY_IN_B/value`, { value: "unused.internal.example" })).status).toBe(204);
+    const service = await v2(h.api, "POST", `/workspaces/${b}/services`, svc({ name: "orders-in-b", protocol: "https", port: 8443, path: "/" }));
+    expect(service.status).toBe(201);
+    expect((await v2(h.api, "POST", `/workspaces/${b}/releases`, { message: "same variable name, different workspace" })).status).toBe(201);
+    const first = await deploy(await lastRevision());
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    const one = await config(first.body.revision);
+    const servicesA = one.config.services.filter((s) => s.name.endsWith("~orders") || s.name.endsWith("~persisted-refs"));
+    const serviceB = one.config.services.find((s) => s.name.endsWith("~orders-in-b"));
+    expect(servicesA).toHaveLength(2);
+    expect(servicesA.every((s) => s.host === hostA)).toBe(true);
+    expect(serviceB?.host).toBe(hostB);
+    expect(JSON.stringify(servicesA)).not.toContain(hostB);
+    expect(JSON.stringify(serviceB)).not.toContain(hostA);
+
+    await freeLease();
+    const changedB = "workspace-b-updated.internal.example";
+    expect((await v2(h.api, "PUT", `/workspaces/${b}/variables/ORDERS_HOST/value`, { value: changedB })).status).toBe(204);
+    const second = await deploy(first.body.revision);
+    expect(second.status, JSON.stringify(second.body)).toBe(201);
+    const two = await config(second.body.revision);
+    expect(two.config.services.filter((s) => s.name.endsWith("~orders") || s.name.endsWith("~persisted-refs"))).toEqual(servicesA);
+    expect(two.config.services.find((s) => s.name.endsWith("~orders-in-b"))?.host).toBe(changedB);
+    expect(JSON.stringify(two.config)).not.toContain(hostB);
+    expect(one.valuesDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(two.valuesDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(two.valuesDigest).not.toBe(one.valuesDigest);
+  });
+
+  it("keeps a secret out of logs, the response and audit when the compiler refuses deployment composition", async () => {
+    await freeLease();
+    const before = await lastRevision();
+    const secret = "composition-secret.gromesh.internal";
+    const logged: string[] = [];
+    const capture = (...args: unknown[]) => { logged.push(formatWithOptions({ depth: null }, ...args)); };
+    // Spy at Nest's entry points even when the harness disables its output, and cover direct console calls too.
+    const spies = [
+      ...(["log", "warn", "error", "debug", "verbose", "fatal"] as const).flatMap((level) => [
+        vi.spyOn(Logger.prototype, level).mockImplementation(capture),
+        vi.spyOn(Logger, level).mockImplementation(capture),
+      ]),
+      ...(["log", "info", "warn", "error", "debug", "trace"] as const).map((level) => vi.spyOn(console, level).mockImplementation(capture)),
+    ];
+    try {
+      expect((await v2(h.api, "PUT", `/workspaces/${a}/variables/COMPOSITION_HOST`, { type: "host", secret: true, required: false })).status).toBe(200);
+      expect((await v2(h.api, "PUT", `/workspaces/${a}/variables/COMPOSITION_HOST/value`, { value: secret })).status).toBe(204);
+      const service = await v2(h.api, "POST", `/workspaces/${a}/services`, svc({ name: "composition-secret", host: { $var: "COMPOSITION_HOST" } }));
+      expect(service.status).toBe(201);
+      expect((await v2(h.api, "POST", `/workspaces/${a}/releases`, { message: "compiler refusal with a secret" })).status).toBe(201);
+      // The host passes declaration and destination checks; the compiler rejects its reserved internal suffix.
+      const refused = await deploy(before);
+      expect(refused.status, JSON.stringify(refused.body)).toBe(422);
+      expect(refused.body.detail).toBe("The instance's composition refuses this deployment");
+      expect(refused.body.errors).toEqual(expect.arrayContaining([expect.objectContaining({ path: expect.stringMatching(/services\[\d+\]\.host$/), message: "refused for a value that comes from a variable (not shown)" })]));
+      expect(JSON.stringify(refused.body)).not.toContain(secret);
+      expect(logged.join("\n")).not.toContain(secret);
+      const audit = await h.sql.query("select * from audit_events");
+      expect(audit.rows.length).toBeGreaterThan(0);
+      expect(JSON.stringify(audit.rows)).not.toContain(secret);
+      expect(await lastRevision()).toBe(before);
+      expect((await v2(h.api, "DELETE", `/workspaces/${a}/services/${service.body.id}`)).status).toBe(204);
+      expect((await v2(h.api, "POST", `/workspaces/${a}/releases`, { message: "remove refused service" })).status).toBe(201);
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
   });
 
   it("checks every value against the declarations the release froze, requires required ones, never answers a secret", async () => {
