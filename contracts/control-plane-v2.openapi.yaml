@@ -2001,7 +2001,10 @@ paths:
         - cookieAuth: []
           csrfToken: []
         - bearerApiToken: []
-      description: 422 at `host` for a forbidden destination (see the description of this API).
+      description: |
+        422 at `host` for a forbidden destination (see the description of this API). Edits the draft only (WS-R0): in
+        an environment that auto-publishes its draft through v1 it answers 409 with code auto-publish (RouteProblem)
+        and writes nothing.
       requestBody:
         required: true
         content:
@@ -2017,8 +2020,7 @@ paths:
                 $ref: "#/components/schemas/WorkspaceService"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
+        "409": { description: "auto-publish (a v2 write where v1 auto-publishes), or a conflict", content: { application/problem+json: { schema: { anyOf: [ { $ref: "#/components/schemas/RouteProblem" }, { $ref: "#/components/schemas/Problem" } ] } } } }
         "422":
           $ref: "#/components/responses/ValidationError"
         "401": { $ref: "#/components/responses/Unauthorized" }
@@ -2062,7 +2064,10 @@ paths:
         - cookieAuth: []
           csrfToken: []
         - bearerApiToken: []
-      description: 422 at `host` for a forbidden destination (see the description of this API).
+      description: |
+        422 at `host` for a forbidden destination (see the description of this API). Edits the draft only (WS-R0): in
+        an environment that auto-publishes its draft through v1 it answers 409 with code auto-publish (RouteProblem)
+        and writes nothing.
       requestBody:
         required: true
         content:
@@ -2078,8 +2083,7 @@ paths:
                 $ref: "#/components/schemas/WorkspaceService"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
+        "409": { description: "auto-publish (a v2 write where v1 auto-publishes), or a conflict", content: { application/problem+json: { schema: { anyOf: [ { $ref: "#/components/schemas/RouteProblem" }, { $ref: "#/components/schemas/Problem" } ] } } } }
         "422":
           $ref: "#/components/responses/ValidationError"
         "401": { $ref: "#/components/responses/Unauthorized" }
@@ -2155,6 +2159,12 @@ paths:
       tags:
         - routes
       operationId: createRoute
+      description: |
+        WS-R0. Creates a route of this workspace with pathCompatibility workspace-default (decision D1): paths required,
+        every path prefixed with /<slug> by the compiler, the full path to the upstream unless stripPath is true.
+        serviceId must be a service of this workspace (422 at serviceId). Edits the draft only (no publish, no
+        deployment): in an environment that auto-publishes its draft through v1 (publishMode auto) it answers 409
+        auto-publish and writes nothing. Audited (route.create).
       security:
         - cookieAuth: []
           csrfToken: []
@@ -2174,8 +2184,7 @@ paths:
                 $ref: "#/components/schemas/WorkspaceRoute"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
+        "409": { description: "auto-publish (a v2 write where v1 auto-publishes), or a conflict", content: { application/problem+json: { schema: { anyOf: [ { $ref: "#/components/schemas/RouteProblem" }, { $ref: "#/components/schemas/Problem" } ] } } } }
         "422":
           $ref: "#/components/responses/ValidationError"
         "401": { $ref: "#/components/responses/Unauthorized" }
@@ -2219,6 +2228,14 @@ paths:
       tags:
         - routes
       operationId: replaceRoute
+      description: |
+        WS-R0. Keeps the route's pathCompatibility: only convertRoutePathCompatibility turns a legacy-preserved route
+        into workspace-default. For a legacy-preserved route an omitted stripPath keeps the stored value (never the
+        schema's default false), and a stripPath different from the stored one answers 409 with code
+        path-compatibility (convert it explicitly instead). For a workspace-default route the body applies as written
+        (stripPath default false). The body is WorkspaceRouteWrite in both cases (paths required: a migrated route
+        without paths is edited through v1 until it has some). serviceId must be a service of this workspace (422).
+        Edits the draft only (409 auto-publish as createRoute); audited (route.update, before and after).
       security:
         - cookieAuth: []
           csrfToken: []
@@ -2238,8 +2255,7 @@ paths:
                 $ref: "#/components/schemas/WorkspaceRoute"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
+        "409": { description: "path-compatibility (a legacy route's stripPath), or a conflict", content: { application/problem+json: { schema: { anyOf: [ { $ref: "#/components/schemas/RouteProblem" }, { $ref: "#/components/schemas/Problem" } ] } } } }
         "422":
           $ref: "#/components/responses/ValidationError"
         "401": { $ref: "#/components/responses/Unauthorized" }
@@ -4008,7 +4024,7 @@ components:
               type: string
         stripPath:
           type: boolean
-          default: false
+          description: "Absent: false on a workspace-default route (createRoute, and replaceRoute of one); on a legacy-preserved route the stored value (WS-R0). The server applies it, so the schema states no default."
         preserveHost:
           type: boolean
           default: false
@@ -4027,6 +4043,14 @@ components:
         tags:
           $ref: ./control-plane.openapi.yaml#/components/schemas/Tags
       additionalProperties: false
+    RouteProblem:
+      allOf:
+        - $ref: "#/components/schemas/Problem"
+        - type: object
+          required: [ code ]
+          properties:
+            code: { enum: [ path-compatibility, auto-publish ], description: "path-compatibility: replaceRoute on a legacy-preserved route with another stripPath (convert it with convertRoutePathCompatibility). auto-publish: a v2 write in an environment whose v1 publishMode is auto (switch it to manual)." }
+      example: { type: "https://gromesh.dev/problems/path-compatibility", title: Conflict, status: 409, code: path-compatibility, errors: [ { path: stripPath, message: "differs from the legacy route's" } ] }
     WorkspaceRoute:
       allOf:
         - $ref: ./control-plane.openapi.yaml#/components/schemas/Route
