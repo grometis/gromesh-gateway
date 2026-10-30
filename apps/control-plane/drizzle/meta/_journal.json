@@ -183,6 +183,13 @@
       "when": 1793328808685,
       "tag": "0025_workspace_variables",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1793361888307,
+      "tag": "0026_service_upstream_binding",
+      "breakpoints": true
     }
   ]
 }

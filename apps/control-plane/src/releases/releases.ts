@@ -73,7 +73,8 @@ export function releaseContent(state: ReleaseState, enc: Encryptor, catalog: Plu
     return { id, spec: rest };
   };
   return {
-    services: state.services.map(spec),
+    // The contract's service fields only: upstreamId for a v2 service bound to one, never the internal binding flag.
+    services: state.services.map(({ binding, upstreamId, ...s }) => spec(binding === "explicit" && upstreamId ? { ...s, upstreamId } : s)),
     routes: state.routes.map(spec),
     consumers: state.consumers.map(({ id, aclGroups, ...rest }) => ({ id, aclGroups: aclGroups ?? [], spec: rest })),
     credentials: [],

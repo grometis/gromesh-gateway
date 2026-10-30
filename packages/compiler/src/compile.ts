@@ -67,6 +67,11 @@ export function diffGatewayStates(before: GatewayState, after: GatewayState) {
   // So are credentials pending reprovisioning (decision H-14), absent from the config: importing one is a change.
   const compared = (state: GatewayState, config: KongDeclarativeConfig) => ({
     ...config,
+    // So is a service's explicit binding (WS-U0): losing it on an import changes what may capture the service.
+    services: config.services.map((service) => {
+      const own = state.services.find((s) => s.id === service.id);
+      return { ...service, binding: own?.binding ?? null, upstreamId: own?.binding === "explicit" ? own.upstreamId ?? null : null };
+    }),
     routes: config.routes.map((route) => ({
       ...route, analyticsRetentionDays: state.routes.find((r) => r.id === route.id)?.analyticsRetentionDays ?? null,
     })),
@@ -419,6 +424,15 @@ export function validate(state: GatewayState): CompileIssue[] {
     if (!ALGORITHMS.has(algorithm)) add(`${p}.algorithm`, `unsupported algorithm "${algorithm}"`);
     issues.push(...hashIssues(u, p));
     upstreamIds.add(u.id);
+  });
+  // WS-U0: a service written through v2 is never bound by its host's name. In this (v1) configuration an upstream of
+  // the same name would capture it; one bound by upstreamId must keep the upstream's name as host.
+  state.services.forEach((s, i) => {
+    if (s.binding !== "explicit") return;
+    const bound = (state.upstreams ?? []).find((u) => u.id === s.upstreamId);
+    if (s.upstreamId && !bound) add(`services[${i}].upstreamId`, `unknown upstream ${s.upstreamId}`);
+    else if (bound && s.host !== bound.name) add(`services[${i}].host`, `must be the name of its upstream ${bound.name}`);
+    else if (!s.upstreamId && upstreamNames.has(s.host)) add(`services[${i}].host`, `an upstream named "${s.host}" would capture this service (upstream-captures-service)`);
   });
 
   const targetKeys = new Set<string>();

@@ -305,10 +305,20 @@ export const services = pgTable(
     writeTimeoutMs: integer("write_timeout_ms"),
     enabled: boolean("enabled").notNull().default(true),
     tags: text("tags").array().notNull().default(sql`'{}'::text[]`),
+    // WS-U0: "explicit" for a service written through v2 (bound to an upstream only by upstream_id, its host otherwise
+    // plain DNS); null for v1, whose host binds to an upstream of the same name.
+    binding: text("binding", { enum: ["explicit"] }),
+    upstreamId: uuid("upstream_id"),
     ...timestamps,
   },
   // Referenced with the workspace (composite foreign keys): nothing can point at an entity of another workspace.
-  (t) => [uniqueIndex("services_env_name_uq").on(t.environmentId, t.name), unique("services_env_id_uq").on(t.environmentId, t.id)],
+  (t) => [
+    uniqueIndex("services_env_name_uq").on(t.environmentId, t.name),
+    unique("services_env_id_uq").on(t.environmentId, t.id),
+    foreignKey({ name: "services_upstream_fk", columns: [t.environmentId, t.upstreamId], foreignColumns: [upstreams.environmentId, upstreams.id] }).onDelete("restrict"),
+    check("services_binding_ck", sql`${t.binding} is null or ${t.binding} = 'explicit'`),
+    check("services_upstream_binding_ck", sql`${t.upstreamId} is null or ${t.binding} = 'explicit'`),
+  ],
 );
 
 /** Load-balancing pools; a service whose host equals `name` balances across the targets. */

@@ -1,26 +1,28 @@
-import { Body, Controller, Delete, Get, HttpCode, Inject, Injectable, Module, Param, Post, Put, Query } from "@nestjs/common";
+import { Body, Controller, Delete, Get, HttpCode, HttpException, Inject, Injectable, Module, Param, Post, Put, Query } from "@nestjs/common";
 import type { GatewayState, Route, Service } from "@gromesh/compiler";
 import { and, asc, count, eq, gt, ilike, or, sql, type SQL } from "drizzle-orm";
 import type { PgColumn } from "drizzle-orm/pg-core";
 import type { RouteWrite, ServiceWrite } from "../api-types.js";
 import { audit } from "../audit/audit.js";
 import { Ctx, RequiredPermission, RequiredRole, type RequestContext } from "../auth/auth.js";
-import { contractBody } from "../common/contract.js";
+import { contractBody, contractBodyV2 } from "../common/contract.js";
 import { decodeCursor, parseLimit, toPage } from "../common/pagination.js";
+import { retryingTransaction } from "../common/retry.js";
 import { conflict, notFound, unprocessable } from "../common/problem.js";
 import { assertDestination, destinationPolicy, type DestinationPolicy } from "../common/destinations.js";
 import { APP_CONFIG, type AppConfig } from "../config.js";
 import { DB, type Db, type Executor } from "../db/db.js";
 import { consumerValues, keyAuthValues } from "../consumers/consumers.js";
-import { basicAuthCredentials, consumers, jwtCredentials, keyAuthCredentials, plugins, routes, services, targets, upstreams, type RouteRow, type ServiceRow } from "../db/schema.js";
+import { basicAuthCredentials, consumers, environments, jwtCredentials, keyAuthCredentials, plugins, routes, services, targets, upstreams, type RouteRow, type ServiceRow } from "../db/schema.js";
 import { basicAuthState, basicAuthValues, jwtState, jwtValues } from "../consumers/credentials.js";
 import { loadCertificates, restoreCertificates } from "../certificates/certificates.js";
-import { targetState, targetValues, upstreamState, upstreamValues } from "../upstreams/upstreams.js";
+import { lockUpstreamName, targetState, targetValues, upstreamState, upstreamValues } from "../upstreams/upstreams.js";
 import { pluginValues } from "../plugins/plugins.js";
 import { credentialContext, type Encryptor, pluginSecretContext } from "../crypto/crypto.js";
 import type { PluginCatalog } from "../plugin-catalog/catalog.js";
-import { markDraftChanged, requireEnvironment, uuidParam } from "../environments/environments.js";
+import { markDraftChanged, refuseArchived, requireEnvironment, uuidParam } from "../environments/environments.js";
 import { anonymousOf, namesConsumer } from "../workspaces/anonymous.js";
+import { refuseReservedHost, refuseVarRefs, type WithVarRefs } from "../workspaces/var-refs.js";
 import { assertStateFree } from "../workspaces/instance-uniqueness.js";
 
 /* ---------------- mapping ---------------- */
@@ -46,6 +48,12 @@ export function toService(r: ServiceRow) {
     createdAt: r.createdAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
   });
+}
+
+/** The compiler's view of a service: a v2 one carries its explicit binding (WS-U0), a v1 one nothing more. */
+function serviceState(r: ServiceRow): Service {
+  const { createdAt: _c, updatedAt: _u, ...svc } = toService(r);
+  return r.binding === "explicit" ? { ...svc, binding: "explicit", upstreamId: r.upstreamId } : svc;
 }
 
 export function toRoute(r: RouteRow) {
@@ -80,6 +88,9 @@ export function serviceValues(body: ServiceWrite | Service) {
     writeTimeoutMs: body.writeTimeoutMs ?? null,
     enabled: body.enabled ?? true,
     tags: body.tags ?? [],
+    // A restored state keeps each service's binding as it was (WS-U0); a v1 write or an import (no binding) gives the
+    // service the v1 semantics, its host bound by name, so a v1 edit never leaves an explicit binding behind.
+    ...("binding" in body && body.binding === "explicit" ? { binding: "explicit" as const, upstreamId: body.upstreamId ?? null } : { binding: null, upstreamId: null }),
   };
 }
 
@@ -126,10 +137,7 @@ export async function loadGatewayState(tx: Executor, envId: string, enc: Encrypt
     loadCertificates(tx, envId, enc),
   ]);
   return {
-    services: svcRows.map((s) => {
-      const { createdAt: _c, updatedAt: _u, ...svc } = toService(s);
-      return svc;
-    }),
+    services: svcRows.map(serviceState),
     routes: routeRows.map((r) => {
       const { createdAt: _c, updatedAt: _u, ...route } = toRoute(r);
       return route;
@@ -188,6 +196,11 @@ export async function restoreGatewayState(
   if (lost.length > 0) {
     throw unprocessable("A workspace-default route keeps at least one path", lost.map((r) => ({ path: `routes.${r.name}.paths`, message: "required for a workspace-default route" })));
   }
+  // WS-U0: no upstream of the state may capture a service written through v2 by its DNS host.
+  const captured = (state.upstreams ?? []).flatMap((u, i) =>
+    state.services.some((s) => s.binding === "explicit" && !s.upstreamId && s.host === u.name) ? [{ path: `upstreams[${i}].name`, message: "would capture the DNS host of a service written through v2 (upstream-captures-service)" }] : [],
+  );
+  if (captured.length > 0) throw unprocessable("An upstream would capture a service", captured);
   // Dependents first: plugins and credentials reference the rest, routes reference services (ON DELETE RESTRICT).
   await tx.delete(plugins).where(eq(plugins.environmentId, envId));
   await tx.delete(keyAuthCredentials).where(eq(keyAuthCredentials.environmentId, envId));
@@ -274,37 +287,41 @@ export class GatewayService {
     return toService(await this.requireService(this.db, envId, serviceId));
   }
 
-  async createService(ctx: RequestContext, envId: string, body: ServiceWrite) {
+  /** `check` runs inside the write's transaction (v2: the upstream it names, held until the commit). */
+  async createService(ctx: RequestContext, envId: string, body: ServiceWrite, check?: (tx: Executor) => Promise<void>, explicit?: { upstreamId: string | null }) {
     assertDestination("host", body.host, this.destinations, "service");
-    return this.db.transaction(async (tx) => {
+    return retryingTransaction(() => this.db.transaction(async (tx) => {
       await requireEnvironment(tx, envId);
-      const [row] = await tx.insert(services).values({ environmentId: envId, ...serviceValues(body) }).returning();
+      await check?.(tx);
+      const [row] = await tx.insert(services).values({ environmentId: envId, ...serviceValues(body), ...(explicit ? { binding: "explicit" as const, upstreamId: explicit.upstreamId } : {}) }).returning();
       const after = toService(row!);
       await markDraftChanged(tx, envId);
       await audit(tx, ctx, { action: "service.create", entityType: "service", entityId: after.id, environmentId: envId, after });
       return after;
-    });
+    }));
   }
 
-  async replaceService(ctx: RequestContext, envId: string, serviceId: string, body: ServiceWrite) {
+  async replaceService(ctx: RequestContext, envId: string, serviceId: string, body: ServiceWrite, check?: (tx: Executor) => Promise<void>, explicit?: { upstreamId: string | null }) {
     assertDestination("host", body.host, this.destinations, "service");
-    return this.db.transaction(async (tx) => {
-      const before = toService(await this.requireService(tx, envId, serviceId));
+    return retryingTransaction(() => this.db.transaction(async (tx) => {
+      // v2: the service row before the environment's, the order a v1 replace or delete takes them.
+      const before = toService(await this.requireService(tx, envId, serviceId, check !== undefined));
+      await check?.(tx);
       const [row] = await tx
         .update(services)
-        .set({ ...serviceValues(body), updatedAt: sql`now()` })
+        .set({ ...serviceValues(body), ...(explicit ? { binding: "explicit" as const, upstreamId: explicit.upstreamId } : {}), updatedAt: sql`now()` })
         .where(eq(services.id, serviceId))
         .returning();
       const after = toService(row!);
       await markDraftChanged(tx, envId);
       await audit(tx, ctx, { action: "service.update", entityType: "service", entityId: serviceId, environmentId: envId, before, after });
       return after;
-    });
+    }));
   }
 
   /** v2 also refuses while plugins are scoped to the service (v1 deletes them with it). */
   async deleteService(ctx: RequestContext, envId: string, serviceId: string, options: { keepPlugins?: boolean } = {}) {
-    await this.db.transaction(async (tx) => {
+    await retryingTransaction(() => this.db.transaction(async (tx) => {
       // Locked first: a route or plugin created meanwhile (it takes the row's key share) waits, then is counted.
       const before = toService(await this.requireService(tx, envId, serviceId, true));
       const [ref] = await tx.select({ n: count() }).from(routes).where(eq(routes.serviceId, serviceId));
@@ -316,7 +333,7 @@ export class GatewayService {
       await tx.delete(services).where(eq(services.id, serviceId));
       await markDraftChanged(tx, envId);
       await audit(tx, ctx, { action: "service.delete", entityType: "service", entityId: serviceId, environmentId: envId, before });
-    });
+    }));
   }
 
   /* routes */
@@ -340,7 +357,7 @@ export class GatewayService {
   }
 
   async createRoute(ctx: RequestContext, envId: string, body: RouteWrite) {
-    return this.db.transaction(async (tx) => {
+    return retryingTransaction(() => this.db.transaction(async (tx) => {
       await requireEnvironment(tx, envId);
       await this.checkRoute(tx, envId, body);
       const [row] = await tx.insert(routes).values({ environmentId: envId, ...routeValues(body) }).returning();
@@ -348,11 +365,11 @@ export class GatewayService {
       await markDraftChanged(tx, envId);
       await audit(tx, ctx, { action: "route.create", entityType: "route", entityId: after.id, environmentId: envId, after });
       return after;
-    });
+    }));
   }
 
   async replaceRoute(ctx: RequestContext, envId: string, routeId: string, body: RouteWrite) {
-    return this.db.transaction(async (tx) => {
+    return retryingTransaction(() => this.db.transaction(async (tx) => {
       const before = toRoute(await this.requireRoute(tx, envId, routeId));
       await this.checkRoute(tx, envId, body);
       const [row] = await tx
@@ -364,16 +381,33 @@ export class GatewayService {
       await markDraftChanged(tx, envId);
       await audit(tx, ctx, { action: "route.update", entityType: "route", entityId: routeId, environmentId: envId, before, after });
       return after;
-    });
+    }));
   }
 
   async deleteRoute(ctx: RequestContext, envId: string, routeId: string) {
-    await this.db.transaction(async (tx) => {
+    await retryingTransaction(() => this.db.transaction(async (tx) => {
       const before = toRoute(await this.requireRoute(tx, envId, routeId));
       await tx.delete(routes).where(eq(routes.id, routeId));
       await markDraftChanged(tx, envId);
       await audit(tx, ctx, { action: "route.delete", entityType: "route", entityId: routeId, environmentId: envId, before });
-    });
+    }));
+  }
+
+  /**
+   * A v2 write edits the draft only (WS-R0): never in an environment that auto-publishes its draft through v1, whose
+   * publisher would serve it without an explicit publish (409; switch the environment to manual first).
+   */
+  async refuseAutoPublish(tx: Executor, envId: string): Promise<void> {
+    // The archive lock first (shared), as every writer of the workspace takes it before the environment's row.
+    await refuseArchived(tx, envId);
+    // Inside the write's transaction, the environment row locked as markDraftChanged will update it (NO KEY UPDATE, so
+    // two writers queue instead of upgrading a shared lock into a deadlock): a switch to auto waits for this write,
+    // and the write sees a switch that committed first.
+    const [env] = await tx.select({ publishMode: environments.publishMode }).from(environments).where(eq(environments.id, envId)).for("no key update");
+    if (env?.publishMode === "auto") {
+      throw new HttpException({ type: "https://gromesh.dev/problems/auto-publish", title: "Conflict", status: 409, code: "auto-publish",
+        detail: "This workspace auto-publishes its draft through v1: switch it to manual publishing before writing through v2" }, 409);
+    }
   }
 
   /* helpers */
@@ -496,25 +530,104 @@ export class RoutesController {
 
 /* ---------------- control-plane-v2: the same services, scoped to a workspace (decision H-9) ---------------- */
 
-/** The workspace is the environment with the same id (N1-X1); a service balances through its host until N2. */
-const toWorkspaceService = (envId: string, s: ReturnType<typeof toService>) => ({ ...s, workspaceId: envId, upstreamId: null });
+/** contracts/control-plane-v2.openapi.yaml#/components/schemas/WorkspaceServiceWrite */
+type WorkspaceServiceWrite = WithVarRefs<ServiceWrite, "protocol" | "host" | "port" | "path"> & { upstreamId?: string | null };
+
+/** The workspace's upstreams by name: a service whose host is one of them balances across it (its upstreamId). */
+/**
+ * What reads report as each service's upstreamId: a v2 service its explicit binding; a v1 one the upstream its host
+ * names (the v1 binding by name, what the compiler resolves for it).
+ */
+async function upstreamsByName(db: Executor, workspaceId: string): Promise<(s: { id: string; host: string }) => string | null> {
+  const [ups, bound] = await Promise.all([
+    db.select({ id: upstreams.id, name: upstreams.name }).from(upstreams).where(eq(upstreams.environmentId, workspaceId)),
+    db.select({ id: services.id, binding: services.binding, upstreamId: services.upstreamId }).from(services).where(eq(services.environmentId, workspaceId)),
+  ]);
+  const byName = new Map(ups.map((u) => [u.name, u.id]));
+  const explicit = new Map(bound.filter((b) => b.binding === "explicit").map((b) => [b.id, b.upstreamId]));
+  return (s) => (explicit.has(s.id) ? explicit.get(s.id) ?? null : byName.get(s.host) ?? null);
+}
+
+/**
+ * The workspace is the environment with the same id (N1-X1). A service refers to its upstream by upstreamId; stored as
+ * the v1 model has it, the upstream's name as host (what the compiler resolves), so both APIs read the same row.
+ */
+const toWorkspaceService = (envId: string, s: ReturnType<typeof toService>, upstreamOf: (s: { id: string; host: string }) => string | null) => ({ ...s, workspaceId: envId, upstreamId: upstreamOf(s) });
+
+/**
+ * WorkspaceServiceWrite as the service layer stores it (WS-R1). A VarRef names a declared variable and none can be
+ * declared yet (422). With upstreamId, the upstream must be of this workspace and host its name; without it, host
+ * must not be the name of one of its upstreams (a service refers to an upstream only by upstreamId).
+ */
+function workspaceServiceWrite(gw: GatewayService, workspaceId: string, body: WorkspaceServiceWrite): { plain: ServiceWrite; check: (tx: Executor) => Promise<void>; explicit: { upstreamId: string | null } } {
+  const { upstreamId = null, ...rest } = body;
+  const plain = refuseVarRefs(rest, ["protocol", "host", "port", "path"]);
+  refuseReservedHost("host", plain.host);
+  // Inside the write's transaction: the upstream it names is locked (KEY SHARE) until the commit, so it cannot be
+  // deleted or renamed between this check and the write.
+  // The upstream before the environment: the order an upstream's delete or rename takes them (its row, then the draft).
+  const check = async (tx: Executor) => {
+    // The name decides a binding: the same lock an upstream's creation or rename takes (WS-U0).
+    await lockUpstreamName(tx, workspaceId, plain.host);
+    const rows = await tx
+      .select({ id: upstreams.id, name: upstreams.name })
+      .from(upstreams)
+      .where(and(eq(upstreams.environmentId, workspaceId), or(upstreamId !== null ? eq(upstreams.id, upstreamId.toLowerCase()) : sql`false`, eq(upstreams.name, plain.host))))
+      .for("key share");
+    if (upstreamId !== null) {
+      const own = rows.find((u) => u.id === upstreamId.toLowerCase());
+      if (!own) throw unprocessable("Invalid service", [{ path: "upstreamId", message: "unknown upstream in this workspace" }]);
+      if (plain.host !== own.name) throw unprocessable("Invalid service", [{ path: "host", message: `must be the upstream's name (${own.name}) when upstreamId is set` }]);
+    } else if (rows.some((u) => u.name === plain.host)) {
+      throw unprocessable("Invalid service", [{ path: "upstreamId", message: `host ${plain.host} is an upstream of this workspace: refer to it by upstreamId` }]);
+    }
+    await gw.refuseAutoPublish(tx, workspaceId);
+  };
+  return { plain, check, explicit: { upstreamId: upstreamId === null ? null : upstreamId.toLowerCase() } };
+}
 const toWorkspaceRoute = (r: RouteRow) => ({ ...toRoute(r), pathCompatibility: r.pathCompatibility });
 
 @Controller("api/v2/workspaces/:workspaceId/services")
 export class WorkspaceServicesController {
-  constructor(private readonly gw: GatewayService) {}
+  constructor(
+    private readonly gw: GatewayService,
+    @Inject(DB) private readonly db: Db,
+  ) {}
 
   @Get()
   @RequiredPermission("workspace.read", "workspace")
   async list(@Param("workspaceId", uuidParam()) workspaceId: string, @Query() query: Record<string, unknown>) {
     const page = await this.gw.listServices(workspaceId, query);
-    return { ...page, items: page.items.map((s) => toWorkspaceService(workspaceId, s)) };
+    const byName = await upstreamsByName(this.db, workspaceId);
+    return { ...page, items: page.items.map((s) => toWorkspaceService(workspaceId, s, byName)) };
   }
 
   @Get(":serviceId")
   @RequiredPermission("workspace.read", "workspace")
   async get(@Param("workspaceId", uuidParam()) workspaceId: string, @Param("serviceId", uuidParam()) serviceId: string) {
-    return toWorkspaceService(workspaceId, await this.gw.getService(workspaceId, serviceId));
+    return toWorkspaceService(workspaceId, await this.gw.getService(workspaceId, serviceId), await upstreamsByName(this.db, workspaceId));
+  }
+
+  /** createService (WS-R1): the v1 service layer in the workspace; it edits the draft and publishes nothing. */
+  @Post()
+  @RequiredPermission("gateway.write", "workspace")
+  async create(@Ctx() ctx: RequestContext, @Param("workspaceId", uuidParam()) workspaceId: string, @Body(contractBodyV2("WorkspaceServiceWrite")) body: WorkspaceServiceWrite) {
+    const { plain, check, explicit } = workspaceServiceWrite(this.gw, workspaceId, body);
+    const created = await this.gw.createService(ctx, workspaceId, plain, check, explicit);
+    return toWorkspaceService(workspaceId, created, await upstreamsByName(this.db, workspaceId));
+  }
+
+  @Put(":serviceId")
+  @RequiredPermission("gateway.write", "workspace")
+  async replace(
+    @Ctx() ctx: RequestContext,
+    @Param("workspaceId", uuidParam()) workspaceId: string,
+    @Param("serviceId", uuidParam()) serviceId: string,
+    @Body(contractBodyV2("WorkspaceServiceWrite")) body: WorkspaceServiceWrite,
+  ) {
+    const { plain, check, explicit } = workspaceServiceWrite(this.gw, workspaceId, body);
+    const replaced = await this.gw.replaceService(ctx, workspaceId, serviceId, plain, check, explicit);
+    return toWorkspaceService(workspaceId, replaced, await upstreamsByName(this.db, workspaceId));
   }
 
   @Delete(":serviceId")

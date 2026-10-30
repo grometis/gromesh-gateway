@@ -123,8 +123,10 @@ function memberIssues(state: GatewayState, platform: Plugin[]): CompileIssue[] {
   const mandatory = new Set(platform.map((p) => p.name));
   const upstreamNames = new Set((state.upstreams ?? []).map((u) => u.name));
 
+  const upstreamIds = new Set((state.upstreams ?? []).map((u) => u.id));
   state.services.forEach((s, i) => {
     reservedTag(`services[${i}]`, s.tags);
+    if (s.binding === "explicit" && s.upstreamId && !upstreamIds.has(s.upstreamId)) add(`services[${i}].upstreamId`, `unknown upstream ${s.upstreamId}`);
     if (!upstreamNames.has(s.host) && s.host.toLowerCase().replace(/\.$/, "").endsWith(INTERNAL_SUFFIX)) add(`services[${i}].host`, "the suffix .gromesh.internal is reserved");
   });
   (state.targets ?? []).forEach((t, i) => {
@@ -224,6 +226,7 @@ function namespaced(m: WorkspaceMember, platform: Plugin[]): GatewayState {
   const tags = (own: string[] | undefined) => [...(own ?? []), tag];
   const upstreamHost = (name: string) => `${name}.${slug}${INTERNAL_SUFFIX}`;
   const upstreamNames = new Set((state.upstreams ?? []).map((u) => u.name));
+  const upstreamNameById = new Map((state.upstreams ?? []).map((u) => [u.id, u.name]));
 
   // Workspace-wide plugins are one instance per route, unless the route or its service has its own (more specific).
   const plugins: Plugin[] = [];
@@ -255,7 +258,13 @@ function namespaced(m: WorkspaceMember, platform: Plugin[]): GatewayState {
   }
 
   return {
-    services: state.services.map((s) => ({ ...s, name: `${slug}~${s.name}`, host: upstreamNames.has(s.host) ? upstreamHost(s.host) : s.host, tags: tags(s.tags) })),
+    services: state.services.map(({ binding, upstreamId, ...s }) => ({
+      ...s,
+      name: `${slug}~${s.name}`,
+      // WS-U0: a v2 service balances only by its upstreamId; a v1 one keeps the binding by name.
+      host: binding === "explicit" ? (upstreamId ? upstreamHost(upstreamNameById.get(upstreamId)!) : s.host) : upstreamNames.has(s.host) ? upstreamHost(s.host) : s.host,
+      tags: tags(s.tags),
+    })),
     routes: state.routes.map((r) => ({
       ...r,
       name: `${slug}~${r.name}`,

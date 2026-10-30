@@ -124,7 +124,10 @@ export class ConfigTransferService {
           const pendingCredentials = plan!.pending.map(p => ({ ...p, path: converted?.sourcePath(p.path) ?? p.path }));
           const report = { added: changes.filter(c => c.change === "added"), modified: changes.filter(c => c.change === "modified"), removed: changes.filter(c => c.change === "removed"), errors: [], pendingCredentials };
           if (!request.dryRun) {
-            if (changes.length > 0) {
+            // An imported service takes the v1 binding (WS-U0): a service that loses its explicit one is a change too,
+            // even when the compiled configuration is the same.
+            const bindingChanged = current.services.some((s) => s.binding === "explicit" && plan!.state.services.some((p) => p.id === s.id && p.binding !== "explicit"));
+            if (changes.length > 0 || bindingChanged) {
               await restoreGatewayState(tx, envId, plan!.state, this.enc, this.catalog);
               await markDraftChanged(tx, envId);
               // Changed imported drafts require an explicit publish, including after a restart or on another replica.

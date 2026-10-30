@@ -302,8 +302,9 @@ describe("workspace entities through /api/v2", () => {
     const implemented = [...OPS.values()]
       .filter(({ path, op }) => !op["x-gromesh-planned"] && /^\/workspaces(\/\{workspaceId\})?(\/(services|routes|consumers|upstreams|certificates|plugins|export)(?!.*path-compatibility)|$)/.test(path))
       .map(({ op }) => op.operationId as string)
-      // Workspace administration (WS-M1) is exercised by workspace-admin.test.ts.
-      .filter((id) => !["createWorkspace", "updateWorkspace"].includes(id));
+      // Exercised by their own files: workspace administration (WS-M1, workspace-admin.test.ts), service writes (WS-R1,
+      // workspace-services-v2.test.ts).
+      .filter((id) => !["createWorkspace", "updateWorkspace", "createService", "replaceService"].includes(id));
     expect(implemented.length).toBe(44);
     expect(implemented.filter((id) => !called.has(id))).toEqual([]);
   });
