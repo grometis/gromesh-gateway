@@ -224,8 +224,10 @@ function WorkspaceServiceDetail({ workspaceId, serviceId }: { workspaceId: strin
         <dt>Tags</dt>
         <dd>{s.tags?.join(", ") || "—"}</dd>
       </dl>
-      <ScopedRoutes envId={workspaceId} service={s} />
-      <ScopedPlugins envId={workspaceId} scope={{ kind: "service", id: s.id }} title="Plugins do service" />
+      <p className="muted">Gerencie as routes na tela de <Link to={`/e/${workspaceId}/routes?serviceId=${s.id}`}>Routes do Workspace</Link>.</p>
+      <ScopedRoutes envId={workspaceId} service={s} readOnly />
+      <p className="muted">Plugins por Workspace ainda não são editáveis aqui.</p>
+      <ScopedPlugins envId={workspaceId} scope={{ kind: "service", id: s.id }} title="Plugins do service" readOnly />
       {editing && <ServiceForm workspaceId={workspaceId} service={s} onClose={() => setEditing(false)} />}
       {deleting && <DeleteService workspaceId={workspaceId} service={s} onClose={() => setDeleting(false)} onDeleted={() => navigate("..")} />}
     </section>
@@ -250,11 +252,8 @@ function keep<T>(original: T | undefined, shown: string, typed: string, parse: (
   return original !== undefined && typed === shown ? original : parse(typed);
 }
 
-function ServiceForm({ workspaceId, service, onClose }: { workspaceId: string; service: WorkspaceService | null; onClose: () => void }) {
-  const invalidate = useInvalidateWorkspaceGateway(workspaceId);
-  const upstreams = useWorkspaceUpstreams(workspaceId);
-  const upstreamList = upstreams.data ?? [];
-  const [form, setForm] = useState({
+export function initialServiceForm(service: WorkspaceService | null) {
+  return {
     name: service?.name ?? "",
     target: service?.upstreamId ? "upstream" : "dns",
     upstreamId: service?.upstreamId ?? "",
@@ -264,7 +263,34 @@ function ServiceForm({ workspaceId, service, onClose }: { workspaceId: string; s
     path: fieldText(service?.path),
     enabled: service?.enabled ?? true,
     tags: (service?.tags ?? []).join(", "),
-  });
+  };
+}
+
+export function serviceBody(service: WorkspaceService | null, form: ReturnType<typeof initialServiceForm>, chosen: { id: string; name: string } | undefined): WorkspaceServiceWrite {
+  // PUT replaces the whole service: keep what this form does not edit (retries, timeouts), and send only the
+  // fields WorkspaceServiceWrite declares (the response carries more: id, workspaceId, timestamps).
+  const kept = Object.fromEntries(KEPT.flatMap((k) => (service?.[k] === undefined ? [] : [[k, service[k]]])));
+  return {
+    ...kept,
+    name: form.name.trim(),
+    protocol: keep(service?.protocol, fieldText(service?.protocol), form.protocol, (v) => v as Protocol),
+    // The upstream's name is the host the compiler resolves (and what the server checks against upstreamId).
+    host: chosen && form.target === "upstream"
+      ? service?.upstreamId === chosen.id && typeof service.host === "object" ? service.host : chosen.name
+      : keep(service?.host, fieldText(service?.host), form.host.trim(), (v) => v),
+    port: keep(service?.port, fieldText(service?.port), form.port.trim(), Number),
+    path: keep(service?.path, fieldText(service?.path), form.path.trim(), (v) => v || null),
+    upstreamId: form.target === "upstream" ? chosen?.id ?? null : null,
+    enabled: form.enabled,
+    tags: splitList(form.tags),
+  };
+}
+
+export function ServiceForm({ workspaceId, service, onClose }: { workspaceId: string; service: WorkspaceService | null; onClose: () => void }) {
+  const invalidate = useInvalidateWorkspaceGateway(workspaceId);
+  const upstreams = useWorkspaceUpstreams(workspaceId);
+  const upstreamList = upstreams.data ?? [];
+  const [form, setForm] = useState(() => initialServiceForm(service));
   const [local, setLocal] = useState<FormErrors>(NO_ERRORS);
   const save = useMutation(saveServiceMutation(workspaceId, service, invalidate, onClose));
   const errors = save.isError ? gatewayFormErrors(save.error, "service") : local;
@@ -280,21 +306,7 @@ function ServiceForm({ workspaceId, service, onClose }: { workspaceId: string; s
     };
     setLocal({ fields, form: [] });
     if (Object.keys(fields).length > 0) return;
-    // PUT replaces the whole service: keep what this form does not edit (retries, timeouts), and send only the
-    // fields WorkspaceServiceWrite declares (the response carries more: id, workspaceId, timestamps).
-    const kept = Object.fromEntries(KEPT.flatMap((k) => (service?.[k] === undefined ? [] : [[k, service[k]]])));
-    const body: WorkspaceServiceWrite = {
-      ...kept,
-      name: form.name.trim(),
-      protocol: keep(service?.protocol, fieldText(service?.protocol), form.protocol, (v) => v as Protocol),
-      // The upstream's name is the host the compiler resolves (and what the server checks against upstreamId).
-      host: chosen && form.target === "upstream" ? chosen.name : keep(service?.host, fieldText(service?.host), form.host.trim(), (v) => v),
-      port: keep(service?.port, fieldText(service?.port), form.port.trim(), Number),
-      path: keep(service?.path, fieldText(service?.path), form.path.trim(), (v) => v || null),
-      upstreamId: form.target === "upstream" ? chosen?.id ?? null : null,
-      enabled: form.enabled,
-      tags: splitList(form.tags),
-    };
+    const body = serviceBody(service, form, chosen);
     save.mutate(body);
   };
   const set = <K extends keyof typeof form>(k: K, v: (typeof form)[K]) => setForm((f) => ({ ...f, [k]: v }));
@@ -331,8 +343,9 @@ function ServiceForm({ workspaceId, service, onClose }: { workspaceId: string; s
         )}
         <div className="row">
           <Field label="Protocolo" errors={errors.fields.protocol}>
-            {(id) => (
-              <select id={id} value={form.protocol} onChange={(e) => set("protocol", e.target.value)}>
+            {(id, invalid) => (
+              <select id={id} aria-invalid={invalid} value={form.protocol} onChange={(e) => set("protocol", e.target.value)}>
+                {typeof service?.protocol === "object" && <option value={fieldText(service.protocol)}>{fieldText(service.protocol)}</option>}
                 {PROTOCOLS.map((p) => (
                   <option key={p}>{p}</option>
                 ))}

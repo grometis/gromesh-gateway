@@ -198,6 +198,51 @@ export const roleBindings = pgTable(
 export type RoleBindingRow = typeof roleBindings.$inferSelect;
 
 /**
+ * Variable declarations of a workspace's draft (GW-ENV-05, WS-V1): what a VarRef may name. The values are apart
+ * (workspace_variable_values): they live on this instance only and never travel with a release or a package.
+ */
+export const workspaceVariables = pgTable(
+  "workspace_variables",
+  {
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    type: text("type", { enum: ["string", "host", "port", "url", "certificate", "privateKey", "credential"] }).notNull(),
+    secret: boolean("secret").notNull(),
+    required: boolean("required").notNull(),
+    validation: jsonb("validation").$type<{ pattern?: string; minimum?: number; maximum?: number; maxLength?: number }>(),
+    ...timestamps,
+  },
+  (t) => [
+    primaryKey({ columns: [t.workspaceId, t.name] }),
+    check("workspace_variables_name_ck", sql`${t.name} ~ '^[A-Z][A-Z0-9_]{0,63}$'`),
+    check("workspace_variables_type_ck", sql`${t.type} in ('string', 'host', 'port', 'url', 'certificate', 'privateKey', 'credential')`),
+  ],
+);
+export type WorkspaceVariableRow = typeof workspaceVariables.$inferSelect;
+
+/**
+ * The values this instance holds, versioned (insert only: the current one is the highest version). A secret
+ * variable's value is sealed (enc:v2, bound to the row); kept when the declaration goes, until a release without it.
+ */
+export const workspaceVariableValues = pgTable(
+  "workspace_variable_values",
+  {
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    version: integer("version").notNull(),
+    value: text("value").notNull(),
+    sealed: boolean("sealed").notNull(),
+    setBy: uuid("set_by").references(() => users.id, { onDelete: "set null" }),
+    setAt: timestamp("set_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.workspaceId, t.name, t.version] }), check("workspace_variable_values_version_ck", sql`${t.version} >= 1`)],
+);
+
+/**
  * The instance's workspace creation policy (GW-ADMIN-01, WS-M0): one row once platform administration sets it. No row:
  * restricted-request without creatorBecomesAdmin, the restrictive default.
  */
@@ -260,10 +305,20 @@ export const services = pgTable(
     writeTimeoutMs: integer("write_timeout_ms"),
     enabled: boolean("enabled").notNull().default(true),
     tags: text("tags").array().notNull().default(sql`'{}'::text[]`),
+    // WS-U0: "explicit" for a service written through v2 (bound to an upstream only by upstream_id, its host otherwise
+    // plain DNS); null for v1, whose host binds to an upstream of the same name.
+    binding: text("binding", { enum: ["explicit"] }),
+    upstreamId: uuid("upstream_id"),
     ...timestamps,
   },
   // Referenced with the workspace (composite foreign keys): nothing can point at an entity of another workspace.
-  (t) => [uniqueIndex("services_env_name_uq").on(t.environmentId, t.name), unique("services_env_id_uq").on(t.environmentId, t.id)],
+  (t) => [
+    uniqueIndex("services_env_name_uq").on(t.environmentId, t.name),
+    unique("services_env_id_uq").on(t.environmentId, t.id),
+    foreignKey({ name: "services_upstream_fk", columns: [t.environmentId, t.upstreamId], foreignColumns: [upstreams.environmentId, upstreams.id] }).onDelete("restrict"),
+    check("services_binding_ck", sql`${t.binding} is null or ${t.binding} = 'explicit'`),
+    check("services_upstream_binding_ck", sql`${t.upstreamId} is null or ${t.binding} = 'explicit'`),
+  ],
 );
 
 /** Load-balancing pools; a service whose host equals `name` balances across the targets. */

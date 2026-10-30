@@ -796,7 +796,9 @@ export interface paths {
         get: operations["listUpstreams"];
         put?: never;
         /**
-         * @description A load-balancing pool. A service whose `host` equals the upstream's `name` balances across its targets;
+         * @description WS-U0: 409 with code upstream-captures-service when a service written through the v2 API without
+         *     upstreamId uses the name as its DNS host (it would otherwise be captured by the binding by name below).
+         *     A load-balancing pool. A service whose `host` equals the upstream's `name` balances across its targets;
          *     any other host stays ordinary DNS (a service pointing at an upstream that does not exist is valid). 409 on a
          *     name already used in the environment; 422 with `path` when `hashOn`/`hashFallback` are set without
          *     `algorithm: consistent-hashing`, when `hashOnHeader`/`hashOnCookie`/`hashFallbackHeader` is missing for the
@@ -822,7 +824,8 @@ export interface paths {
         };
         get: operations["getUpstream"];
         /**
-         * @description 409 when the name changes while services of the environment use the current name as `host`; the problem
+         * @description WS-U0: the new name answers 409 upstream-captures-service as on creation.
+         *     409 when the name changes while services of the environment use the current name as `host`; the problem
          *     `detail` lists those services. Same 409/422 rules as the creation otherwise.
          */
         put: operations["replaceUpstream"];

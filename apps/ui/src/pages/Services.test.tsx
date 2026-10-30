@@ -1,4 +1,5 @@
-import { MutationObserver, QueryClient } from "@tanstack/react-query";
+import { MutationObserver, QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceService, WorkspaceServiceWrite } from "../api/client-v2";
 
@@ -63,5 +64,50 @@ describe("saving a workspace service", () => {
     expect(onSaved).not.toHaveBeenCalled();
     expect(invalidate).not.toHaveBeenCalled();
     expect(gatewayFormErrors(observer.getCurrentResult().error, "service").form).toEqual([GATEWAY_MESSAGES.autoPublish]);
+  });
+
+  it.each([false, true])("preserves all existing VarRefs in the PUT (upstream: %s)", async (bound) => {
+    let sent: Request | undefined;
+    const { initialServiceForm, serviceBody, saveServiceMutation } = await load(async (request) => {
+      sent = request;
+      return Response.json(saved);
+    });
+    const current: WorkspaceService = {
+      ...saved, upstreamId: bound ? body.upstreamId : null,
+      protocol: { $var: "SERVICE_PROTOCOL" }, host: { $var: "SERVICE_HOST" },
+      port: { $var: "SERVICE_PORT" }, path: { $var: "SERVICE_PATH" },
+      retries: 4, connectTimeoutMs: 1234, readTimeoutMs: 2345, writeTimeoutMs: 3456,
+    };
+    const form = { ...initialServiceForm(current), name: "renamed" };
+    const chosen = bound ? { id: body.upstreamId!, name: "cobranca.upstream" } : undefined;
+    await new MutationObserver(new QueryClient(), saveServiceMutation(W, current, () => {}, () => {}))
+      .mutate(serviceBody(current, form, chosen));
+    expect(await sent!.json()).toEqual({
+      name: "renamed", upstreamId: bound ? body.upstreamId : null,
+      protocol: { $var: "SERVICE_PROTOCOL" }, host: { $var: "SERVICE_HOST" },
+      port: { $var: "SERVICE_PORT" }, path: { $var: "SERVICE_PATH" },
+      retries: 4, connectTimeoutMs: 1234, readTimeoutMs: 2345, writeTimeoutMs: 3456,
+      enabled: true, tags: [],
+    });
+  });
+
+  it("replaces the host reference when choosing another upstream or a DNS destination", async () => {
+    const { initialServiceForm, serviceBody } = await load(() => new Promise(() => {}));
+    const current: WorkspaceService = { ...saved, host: { $var: "SERVICE_HOST" } };
+    const form = initialServiceForm(current);
+    expect(serviceBody(current, { ...form, upstreamId: "other" }, { id: "other", name: "other.upstream" }))
+      .toMatchObject({ upstreamId: "other", host: "other.upstream" });
+    expect(serviceBody(current, { ...form, target: "dns", host: "dns.example" }, undefined))
+      .toMatchObject({ upstreamId: null, host: "dns.example" });
+  });
+
+  it("shows the existing protocol reference as the selected option", async () => {
+    const { ServiceForm } = await load(() => new Promise(() => {}));
+    const html = renderToStaticMarkup(
+      <QueryClientProvider client={new QueryClient()}>
+        <ServiceForm workspaceId={W} service={{ ...saved, protocol: { $var: "SERVICE_PROTOCOL" } }} onClose={() => {}} />
+      </QueryClientProvider>,
+    );
+    expect(html).toContain('<option value="${SERVICE_PROTOCOL}" selected="">${SERVICE_PROTOCOL}</option>');
   });
 });

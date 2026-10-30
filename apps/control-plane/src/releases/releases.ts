@@ -11,7 +11,7 @@ import {
   platformPlugins,
   type WorkspaceContent,
 } from "@gromesh/compiler";
-import { and, asc, desc, eq, inArray, max, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, max, notInArray, sql } from "drizzle-orm";
 import { audit } from "../audit/audit.js";
 import { Ctx, RequiredPermission, type RequestContext } from "../auth/auth.js";
 import { contractBodyV2, inlineBody } from "../common/contract.js";
@@ -31,6 +31,8 @@ import {
   releases,
   workspaceActiveRelease,
   workspaces,
+  workspaceVariables,
+  workspaceVariableValues,
   type DeploymentMember,
   type InstanceRow,
   type ReleaseRow,
@@ -55,7 +57,9 @@ interface PublishBody {
 }
 
 /** A release's content opened: the workspace's draft without credentials, which are values of each instance. */
-type ReleaseState = GatewayState;
+/** The release keeps the draft's variable declarations (never a value: those stay on each instance, WS-V1). */
+type ReleaseVariable = { name: string; type: string; secret: boolean; required: boolean; validation?: Record<string, unknown> };
+type ReleaseState = GatewayState & { variables?: ReleaseVariable[] };
 
 /**
  * The release content in the contract's model (WorkspaceContent): every entity as {id, spec}. Plugin secrets and
@@ -69,7 +73,8 @@ export function releaseContent(state: ReleaseState, enc: Encryptor, catalog: Plu
     return { id, spec: rest };
   };
   return {
-    services: state.services.map(spec),
+    // The contract's service fields only: upstreamId for a v2 service bound to one, never the internal binding flag.
+    services: state.services.map(({ binding, upstreamId, ...s }) => spec(binding === "explicit" && upstreamId ? { ...s, upstreamId } : s)),
     routes: state.routes.map(spec),
     consumers: state.consumers.map(({ id, aclGroups, ...rest }) => ({ id, aclGroups: aclGroups ?? [], spec: rest })),
     credentials: [],
@@ -77,7 +82,7 @@ export function releaseContent(state: ReleaseState, enc: Encryptor, catalog: Plu
     upstreams: (state.upstreams ?? []).map(spec),
     targets: (state.targets ?? []).map(({ id, upstreamId, ...rest }) => ({ id, upstreamId, spec: rest })),
     certificates: (state.certificates ?? []).map((c) => spec({ ...c, key: secret(c.id, "key", c.key) })),
-    variables: [],
+    variables: (state.variables ?? []).map(({ name, type, secret, required, validation }) => ({ name, type, secret, required, ...(validation ? { validation } : {}) })),
   };
 }
 
@@ -185,7 +190,8 @@ export class ReleasesService {
       const draft = await loadGatewayState(tx, workspaceId, this.enc, this.catalog);
       const forbiddenIssues = [...destinationIssues(draft, this.destinations), ...stateVaultReferenceIssues(draft)];
       if (forbiddenIssues.length > 0) throw unprocessable("The draft cannot be published", forbiddenIssues);
-      const state = withoutCredentials(draft);
+      const declared = await tx.select().from(workspaceVariables).where(eq(workspaceVariables.workspaceId, workspaceId)).orderBy(asc(workspaceVariables.name));
+      const state: ReleaseState = { ...withoutCredentials(draft), variables: declared.map((v) => ({ name: v.name, type: v.type, secret: v.secret, required: v.required, ...(v.validation ? { validation: v.validation } : {}) })) };
       const content = releaseContent(state, this.enc, this.catalog);
       const digest = contentDigest(content);
       // The release must compose on its own (prefix, guard, reserved names): what only fails against the other
@@ -228,6 +234,16 @@ export class ReleasesService {
         .insert(workspaceActiveRelease)
         .values({ workspaceId, version, deploymentRevision: null })
         .onConflictDoUpdate({ target: workspaceActiveRelease.workspaceId, set: { version, deploymentRevision: null } });
+      // The values of variables this release no longer declares end with it (contract: kept until a release without
+      // the declaration is active). Only the names are audited.
+      const kept = (state.variables ?? []).map((v) => v.name);
+      const purged = await tx
+        .delete(workspaceVariableValues)
+        .where(and(eq(workspaceVariableValues.workspaceId, workspaceId), kept.length > 0 ? notInArray(workspaceVariableValues.name, kept) : undefined))
+        .returning({ name: workspaceVariableValues.name });
+      if (purged.length > 0) {
+        await audit(tx, ctx, { action: "workspace_variable.value.purge", entityType: "workspace_variable", environmentId: workspaceId, after: { names: [...new Set(purged.map((p) => p.name))].sort(), release: version } });
+      }
       await audit(tx, ctx, {
         action: "release.publish",
         entityType: "release",

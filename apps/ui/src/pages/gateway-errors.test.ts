@@ -53,6 +53,29 @@ describe("gatewayFormErrors", () => {
       .toEqual({ fields: { name: [GATEWAY_MESSAGES.duplicate.service] }, form: [] });
   });
 
+  it.each(["host", "upstreamId", "name"])("puts upstream-captures-service on its %s field", (path) => {
+    expect(gatewayFormErrors(problem(409, {
+      code: "upstream-captures-service", errors: [{ path, message: "would capture a service's DNS host" }],
+    }), "service")).toEqual({ fields: { [path]: [GATEWAY_MESSAGES.upstreamCapturesService] }, form: [] });
+  });
+
+  it("puts upstream-captures-service without a path on the DNS host", () => {
+    expect(gatewayFormErrors(problem(409, { code: "upstream-captures-service" }), "service"))
+      .toEqual({ fields: { host: [GATEWAY_MESSAGES.upstreamCapturesService] }, form: [] });
+  });
+
+  it.each([
+    ["concurrent-update", GATEWAY_MESSAGES.concurrent], ["auto-publish", GATEWAY_MESSAGES.autoPublish],
+  ])("keeps a 409 %s path on its field", (code, text) => {
+    expect(gatewayFormErrors(problem(409, { code, errors: [{ path: "host", message: "English" }] }), "service"))
+      .toEqual({ fields: { host: [text] }, form: [] });
+  });
+
+  it("maps other 409 validation paths to their fields in Portuguese", () => {
+    expect(gatewayFormErrors(problem(409, { errors: [{ path: "port", message: "must be <= 65535" }] }), "service"))
+      .toEqual({ fields: { port: ["Porta: use um valor de no máximo 65535."] }, form: [] });
+  });
+
   it("names a 403 and never shows the validator's English", () => {
     expect(gatewayFormErrors(problem(403), "route")).toEqual({ fields: {}, form: [GATEWAY_MESSAGES.forbidden] });
     expect(gatewayErrorMessage(problem(403))).toBe(GATEWAY_MESSAGES.forbidden);

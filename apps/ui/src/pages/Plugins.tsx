@@ -123,9 +123,9 @@ export function PluginsPage() {
 }
 
 /** Plugins of one service, route or consumer, shown inside that entity's screen. */
-export function ScopedPlugins({ envId, scope, title }: { envId: string; scope: ScopeChoice; title: string }) {
+export function ScopedPlugins({ envId, scope, title, readOnly = false }: { envId: string; scope: ScopeChoice; title: string; readOnly?: boolean }) {
   const canEdit = useCanEdit();
-  return <PluginList envId={envId} scope={scope} title={title} canEdit={canEdit} />;
+  return <PluginList envId={envId} scope={scope} title={title} canEdit={canEdit && !readOnly} />;
 }
 
 function PluginList({ envId, scope, title, page, onlyGlobal, onGlobalChange, canEdit }: { envId: string; scope: ScopeChoice | null; title: string; page?: boolean; onlyGlobal?: boolean; onGlobalChange?: (on: boolean) => void; canEdit: boolean }) {
@@ -195,8 +195,8 @@ function PluginList({ envId, scope, title, page, onlyGlobal, onGlobalChange, can
           Carregar mais
         </button>
       )}
-      {editing && <PluginEditor envId={envId} plugin={editing === "new" ? null : editing} preset={scope} onClose={() => setEditing(null)} />}
-      {deleting && <DeletePlugin envId={envId} plugin={deleting} label={names.label(scopeOf(deleting))} onClose={() => setDeleting(null)} />}
+      {canEdit && editing && <PluginEditor envId={envId} plugin={editing === "new" ? null : editing} preset={scope} onClose={() => setEditing(null)} />}
+      {canEdit && deleting && <DeletePlugin envId={envId} plugin={deleting} label={names.label(scopeOf(deleting))} onClose={() => setDeleting(null)} />}
     </div>
   );
 }

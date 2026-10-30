@@ -39,15 +39,15 @@ export function RoutesPage() {
   );
 }
 
-export function ScopedRoutes({ envId, service }: { envId: string; service: { id: string; name: string } }) {
+export function ScopedRoutes({ envId, service, readOnly = false }: { envId: string; service: { id: string; name: string }; readOnly?: boolean }) {
   return (
     <section aria-label="Routes do service">
-      <RouteList key={envId} workspaceId={envId} serviceId={service.id} service={service} />
+      <RouteList key={envId} workspaceId={envId} serviceId={service.id} service={service} readOnly={readOnly} />
     </section>
   );
 }
 
-function RouteList({ workspaceId, serviceId, service, onServiceChange }: { workspaceId: string; serviceId: string; service?: { id: string; name: string }; onServiceChange?: (id: string) => void }) {
+function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly = false }: { workspaceId: string; serviceId: string; service?: { id: string; name: string }; onServiceChange?: (id: string) => void; readOnly?: boolean }) {
   const draft = useEntityDraft(workspaceId, "routes");
   const workspace = useWorkspace(workspaceId);
   const slug = workspace.data?.slug;
@@ -71,8 +71,8 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange }: { works
   const [plugins, setPlugins] = useState<WorkspaceRoute | null>(null);
   const items = routes.data?.pages.flatMap((p) => p.items) ?? [];
   // No contract operation tells the caller's v2 permissions (a binding may grant gateway.write): every signed-in user
-  // is offered the actions and the server decides (its 403 is shown in Portuguese).
-  const createAction = (
+  // is offered the actions outside read-only service details and the server decides (its 403 is shown in Portuguese).
+  const createAction = !readOnly && (
     <Button variant="primary" onClick={() => setEditing("new")} disabled={serviceList.length === 0 || !slug} title={serviceList.length === 0 ? "Crie um service primeiro" : undefined}>
       Nova route
     </Button>
@@ -105,7 +105,7 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange }: { works
           <thead>
             <tr>
               <th>Route → paths públicos / service</th>
-              <th className="actions" aria-label="Ações" />
+              {!readOnly && <th className="actions" aria-label="Ações" />}
             </tr>
           </thead>
           <tbody>
@@ -128,7 +128,7 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange }: { works
                   </div>
                   {r.pathCompatibility === "legacy-preserved" && <p className="muted"><small>{isPathlessLegacy(r) ? PATHLESS_LEGACY : LEGACY}</small></p>}
                 </td>
-                <td className="actions">
+                {!readOnly && <td className="actions">
                   {isPathlessLegacy(r) ? (
                     <Button variant="quiet" onClick={() => setDetails(r)}>Ver detalhes</Button>
                   ) : (
@@ -138,7 +138,7 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange }: { works
                       <RowMenu label={`Mais ações para ${r.name}`} items={[{ label: "Excluir", danger: true, onSelect: () => setDeleting(r) }]} />
                     </>
                   )}
-                </td>
+                </td>}
               </tr>
             ))}
           </tbody>
@@ -149,7 +149,7 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange }: { works
           Carregar mais
         </button>
       )}
-      {editing && slug && (
+      {!readOnly && editing && slug && (
         <RouteForm
           workspaceId={workspaceId}
           slug={slug}
@@ -159,11 +159,11 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange }: { works
           onClose={() => setEditing(null)}
         />
       )}
-      {details && <RouteDetails route={details} serviceName={serviceName(details.serviceId)} onClose={() => setDetails(null)} />}
-      {deleting && <DeleteRoute workspaceId={workspaceId} route={deleting} onClose={() => setDeleting(null)} />}
-      {plugins && (
+      {!readOnly && details && <RouteDetails route={details} serviceName={serviceName(details.serviceId)} onClose={() => setDetails(null)} />}
+      {!readOnly && deleting && <DeleteRoute workspaceId={workspaceId} route={deleting} onClose={() => setDeleting(null)} />}
+      {!readOnly && plugins && (
         <Modal title={`Plugins de ${plugins.name}`} onClose={() => setPlugins(null)} wide>
-          <ScopedPlugins envId={workspaceId} scope={{ kind: "route", id: plugins.id }} title="Plugins aplicados" />
+          <ScopedPlugins envId={workspaceId} scope={{ kind: "route", id: plugins.id }} title="Plugins aplicados" readOnly={readOnly} />
         </Modal>
       )}
     </div>
