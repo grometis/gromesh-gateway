@@ -360,7 +360,7 @@ export class GatewayService {
    * stripPath when none is given, and refuses another one (409 path-compatibility: convert it explicitly); a
    * workspace-default one takes the body as written, with the v2 defaults.
    */
-  async replaceWorkspaceRoute(ctx: RequestContext, envId: string, routeId: string, body: RouteWrite & { stripPath?: boolean }) {
+  async replaceWorkspaceRoute(ctx: RequestContext, envId: string, routeId: string, body: Omit<RouteWrite, "stripPath"> & { stripPath?: boolean | undefined }) {
     const [current] = await this.db.select({ pathCompatibility: routes.pathCompatibility, stripPath: routes.stripPath }).from(routes).where(and(eq(routes.id, routeId), eq(routes.environmentId, envId)));
     if (!current) throw notFound("Route");
     if (current.pathCompatibility === "legacy-preserved") {
@@ -577,13 +577,11 @@ export class WorkspaceRoutesController {
 
   @Put(":routeId")
   @RequiredPermission("gateway.write", "workspace")
-  replace(
-    @Ctx() ctx: RequestContext,
-    @Param("workspaceId", uuidParam()) workspaceId: string,
-    @Param("routeId", uuidParam()) routeId: string,
-    @Body(contractBodyV2("WorkspaceRouteWrite")) body: RouteWrite,
-  ) {
-    return this.gw.replaceWorkspaceRoute(ctx, workspaceId, routeId, body);
+  replace(@Ctx() ctx: RequestContext, @Param("workspaceId", uuidParam()) workspaceId: string, @Param("routeId", uuidParam()) routeId: string, @Body() raw: unknown) {
+    // The schema fills stripPath's default (false): whether the caller gave one decides a legacy route's (WS-R0).
+    const given = typeof raw === "object" && raw !== null && "stripPath" in raw;
+    const body = ROUTE_WRITE.transform(structuredClone(raw)) as RouteWrite;
+    return this.gw.replaceWorkspaceRoute(ctx, workspaceId, routeId, given ? body : { ...body, stripPath: undefined });
   }
 
   @Delete(":routeId")
@@ -593,6 +591,8 @@ export class WorkspaceRoutesController {
     await this.gw.deleteRoute(ctx, workspaceId, routeId);
   }
 }
+
+const ROUTE_WRITE = contractBodyV2("WorkspaceRouteWrite");
 
 /** What the composition would refuse in a workspace-default route, answered at write time (422 at the path). */
 function workspaceRouteChecks(body: RouteWrite): void {
