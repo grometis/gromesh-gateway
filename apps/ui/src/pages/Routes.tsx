@@ -1,7 +1,7 @@
 import { useDeferredValue, useState, type FormEvent } from "react";
 import { useInfiniteQuery, useMutation } from "@tanstack/react-query";
 import { useSearchParams } from "react-router";
-import { api, unwrap, type Route, type RouteWrite, type Service } from "../api/client";
+import { api, unwrap, type Route, type RouteWrite } from "../api/client";
 import { statusMessage, toFormErrors, type FormErrors } from "../api/errors";
 import { useCanEdit } from "../auth";
 import { Field, FormErrorList } from "../components/Field";
@@ -31,7 +31,7 @@ export function RoutesPage() {
   );
 }
 
-export function ScopedRoutes({ envId, service }: { envId: string; service: Service }) {
+export function ScopedRoutes({ envId, service }: { envId: string; service: { id: string; name: string } }) {
   return (
     <section aria-label="Routes do service">
       <RouteList envId={envId} serviceId={service.id} service={service} />
@@ -39,7 +39,7 @@ export function ScopedRoutes({ envId, service }: { envId: string; service: Servi
   );
 }
 
-function RouteList({ envId, serviceId, service, onServiceChange }: { envId: string; serviceId: string; service?: Service; onServiceChange?: (id: string) => void }) {
+function RouteList({ envId, serviceId, service, onServiceChange }: { envId: string; serviceId: string; service?: { id: string; name: string }; onServiceChange?: (id: string) => void }) {
   const canEdit = useCanEdit();
   const draft = useEntityDraft(envId, "routes");
   const [search, setSearch] = useState("");

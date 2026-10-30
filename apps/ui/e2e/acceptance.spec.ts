@@ -44,7 +44,7 @@ test("login, create a service and a route, then preview the publication", async 
 
 test("422 errors from the API are shown on the fields they belong to", async ({ page }) => {
   // Prism has no example for this 422, so the problem body is pinned here (the mapping itself is what is tested).
-  await page.route("**/api/v1/environments/*/services", (route) =>
+  await page.route("**/api/v2/workspaces/*/services", (route) =>
     route.request().method() === "POST"
       ? route.fulfill({
           status: 422,
@@ -69,10 +69,12 @@ test("422 errors from the API are shown on the fields they belong to", async ({ 
   await page.getByRole("button", { name: "Novo service" }).click();
   const svc = page.getByRole("dialog", { name: "Novo service" });
   await svc.getByLabel("Nome").fill("orders");
+  await svc.getByLabel("Host").fill("orders.internal");
   await svc.getByLabel("Porta").fill("abc");
   await svc.getByRole("button", { name: "Salvar" }).click();
   await expect(svc.getByLabel("Porta")).toHaveAttribute("aria-invalid", "true");
-  await expect(svc.getByText("must be integer")).toBeVisible();
-  await expect(svc.getByText("name is already used")).toBeVisible();
+  await expect(svc.getByText("Porta: tipo de valor inválido.")).toBeVisible();
+  await expect(svc.getByText("Requisição inválida.")).toBeVisible();
+  await expect(svc).not.toContainText("must be");
   await expect(svc.getByLabel("Nome")).toHaveAttribute("aria-invalid", "false");
 });

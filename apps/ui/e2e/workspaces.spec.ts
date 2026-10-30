@@ -76,6 +76,8 @@ async function fakeApi(page: Page, init: { workspaces: Workspace[]; policy?: Wor
       fake.workspaces.push(created);
       return route.fulfill({ status: 201, json: created });
     }
+    // The gateway of a workspace (its Services screen opens after login): empty here, gateway suites cover it.
+    if (method === "GET" && /^\/workspaces\/[0-9a-f-]{36}\/(services|routes|upstreams)\b/.test(path)) return route.fulfill({ json: { items: [], nextCursor: null } });
     const match = /^\/workspaces\/([0-9a-f-]{36})(\/archive)?$/.exec(path);
     const target = fake.workspaces.find((w) => w.id === match?.[1]);
     if (!match || !target) return route.fulfill(problem(404));
@@ -340,12 +342,12 @@ test("a platform admin archives from the row menu with a confirmation; refusals 
 
 test("the selector switches workspace and shows nothing of the previous one while the next loads", async ({ page }) => {
   await fakeApi(page, { workspaces: [pagamentos(), recargas()] });
-  await page.route(`**/api/v1/environments/${id(1)}/services*`, (route) => route.fulfill({ json: { items: [{
-    id: id(80), name: "cobranca-api", protocol: "http", host: "cobranca.internal", port: 80, path: null, enabled: true, tags: [], createdAt: NOW, updatedAt: NOW,
+  await page.route(`**/api/v2/workspaces/${id(1)}/services*`, (route) => route.fulfill({ json: { items: [{
+    id: id(80), workspaceId: id(1), upstreamId: null, name: "cobranca-api", protocol: "http", host: "cobranca.internal", port: 80, path: null, enabled: true, tags: [], createdAt: NOW, updatedAt: NOW,
   }], nextCursor: null } }));
   let release!: () => void;
   const held = new Promise<void>((resolve) => (release = resolve));
-  await page.route(`**/api/v1/environments/${id(2)}/services*`, async (route) => {
+  await page.route(`**/api/v2/workspaces/${id(2)}/services*`, async (route) => {
     await held;
     return route.fulfill({ json: { items: [], nextCursor: null } });
   });

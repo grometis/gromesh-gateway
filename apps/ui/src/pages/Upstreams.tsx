@@ -2,6 +2,8 @@ import { useState, type FormEvent } from "react";
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, unwrap, type Schemas } from "../api/client";
 import { statusMessage, toFormErrors, type FormErrors } from "../api/errors";
+import { problemCode } from "../api/client-v2";
+import { GATEWAY_MESSAGES } from "./gateway-errors";
 import { useCanEdit } from "../auth";
 import { Field, FormErrorList } from "../components/Field";
 import { ConfirmDialog, Modal } from "../components/Modal";
@@ -183,7 +185,9 @@ function UpstreamForm({ envId, upstream, onClose }: { envId: string; upstream: U
       invalidate("upstreams");
       onClose();
     },
-    onError: (err) => setErrors(toFormErrors(err, FIELDS)),
+    onError: (err) => setErrors(problemCode(err) === "upstream-captures-service"
+      ? { fields: { name: [GATEWAY_MESSAGES.upstreamCapturesService] }, form: [] }
+      : toFormErrors(err, FIELDS)),
   });
 
   const submit = (e: FormEvent) => {

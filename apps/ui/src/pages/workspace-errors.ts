@@ -36,12 +36,18 @@ export function validationMessage(path: string, message: string): string {
   const field = path.split(/[.[]/)[0] ?? "";
   if (field === "slug") return /reserved/i.test(message) ? "Slug reservado pela plataforma. Escolha outro." : "Slug inválido: confira a regra abaixo.";
   if (path === "(body)") return /additional properties/i.test(message) ? "A requisição tem campos não aceitos." : "Requisição inválida.";
-  const label = LABELS[field] ?? field;
+  return ruleMessage(LABELS[field] ?? field, message);
+}
+
+/** A validator rule (required, sizes, format, type) in Portuguese for the field labelled `label`; never the English. */
+export function ruleMessage(label: string, message: string): string {
   if (/is required/i.test(message)) return `${label}: campo obrigatório.`;
   const max = /more than (\d+) characters/i.exec(message);
   if (max) return `${label}: use no máximo ${max[1]} caracteres.`;
   const min = /fewer than (\d+) characters/i.exec(message);
   if (min) return min[1] === "1" ? `${label}: campo obrigatório.` : `${label}: use no mínimo ${min[1]} caracteres.`;
+  const bound = /must be ([<>])=? *(-?\d+)/.exec(message);
+  if (bound) return `${label}: use um valor de no ${bound[1] === "<" ? "máximo" : "mínimo"} ${bound[2]}.`;
   if (/must match|format/i.test(message)) return `${label}: formato inválido.`;
   if (/must be /i.test(message)) return `${label}: tipo de valor inválido.`;
   return `${label}: valor inválido.`;
