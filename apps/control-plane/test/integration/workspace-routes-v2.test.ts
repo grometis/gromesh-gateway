@@ -20,6 +20,59 @@ describe("routes through /api/v2 (WS-R2)", () => {
       (select jsonb_agg(s order by s.version) from snapshots s where s.environment_id = e.id) as snapshots,
       (select jsonb_agg(a order by a.id) from audit_events a where a.environment_id = e.id) as audits
     from environments e where e.id = $1`, [workspaceId])).rows[0];
+  const routePayload = (body: Record<string, unknown>) => {
+    const { pathCompatibility: _compatibility, ...payload } = body;
+    return payload;
+  };
+  const eventsSince = async (ws: string, ids: string[]) => (await h.sql.query(`
+    select action, entity_type, entity_id, before, after from audit_events
+    where environment_id = $1 and id <> all($2::uuid[]) order by at, id`, [ws, ids])).rows;
+  const auditIds = async (ws: string) => (await h.sql.query<{ id: string }>(
+    "select id from audit_events where environment_id = $1", [ws])).rows.map((e) => e.id);
+
+  // Observe the actual blocked backend and its blocker, rather than assuming a request reached a lock after a delay.
+  const waitForLock = async (blockers: number[], queryPattern: string, exclude: number[] = []) => {
+    const deadline = Date.now() + 5_000;
+    do {
+      const { rows } = await h.sql.query<{ pid: number }>(`
+        select a.pid from pg_stat_activity a
+        where a.datname = current_database() and a.wait_event_type = 'Lock'
+          and pg_blocking_pids(a.pid) && $1::int[] and a.query ~ $2
+          and a.pid <> all($3::int[])`, [blockers, queryPattern, exclude]);
+      if (rows.length === 1) return rows[0]!.pid;
+      if (rows.length > 1) throw new Error(`Ambiguous lock wait for ${queryPattern}: ${JSON.stringify(rows)}`);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    } while (Date.now() < deadline);
+    const { rows } = await h.sql.query(`select pid, wait_event_type, wait_event, query,
+      pg_blocking_pids(pid) as blockers from pg_stat_activity where datname = current_database()`);
+    throw new Error(`API did not block on ${queryPattern} behind ${blockers} within 5s: ${JSON.stringify(rows)}`);
+  };
+  const withLock = async <T>(query: string, values: string[], run: (barrier: {
+    pid: number;
+    release: () => Promise<void>;
+    start: (request: Promise<ApiResponse>) => Promise<ApiResponse>;
+  }) => Promise<T>) => {
+    const connection = await h.sql.connect();
+    const pending: Promise<ApiResponse>[] = [];
+    try {
+      await connection.query("begin");
+      await connection.query(query, values);
+      const { rows: [backend] } = await connection.query<{ pid: number }>("select pg_backend_pid() as pid");
+      return await run({
+        pid: backend!.pid,
+        release: async () => { await connection.query("commit"); },
+        start: (request) => {
+          pending.push(request);
+          void request.catch(() => undefined);
+          return request;
+        },
+      });
+    } finally {
+      await connection.query("rollback");
+      connection.release();
+      await Promise.allSettled(pending);
+    }
+  };
   beforeAll(async () => {
     h = await startHarness({ autoPublishPollMs: 0 });
     a = (await h.api("POST", "/environments", { name: uniq("ws-a") })).body.id;
@@ -37,7 +90,9 @@ describe("routes through /api/v2 (WS-R2)", () => {
     expect((await v2(h.api, "GET", `/workspaces/${a}/routes/${res.body.id}`)).body).toEqual(res.body);
     expect((await v2(h.api, "GET", `/workspaces/${b}/routes/${res.body.id}`)).status).toBe(404);
     expect((await h.sql.query("select count(*)::int as n from snapshots where environment_id = $1", [a])).rows[0].n).toBe(snapshots);
-    expect((await h.sql.query("select count(*)::int as n from audit_events where action = 'route.create' and entity_id = $1", [res.body.id])).rows[0].n).toBe(1);
+    expect((await h.sql.query("select action, entity_type, entity_id, before, after from audit_events where entity_id = $1", [res.body.id])).rows).toEqual([{
+      action: "route.create", entity_type: "route", entity_id: res.body.id, before: null, after: routePayload(res.body),
+    }]);
     // stripPath true is an explicit choice.
     expect((await v2(h.api, "POST", `/workspaces/${a}/routes`, { name: uniq("r"), serviceId: svcA, paths: ["/x"], stripPath: true })).body.stripPath).toBe(true);
   });
@@ -116,103 +171,172 @@ describe("routes through /api/v2 (WS-R2)", () => {
     for (const r of results) expect(r.status, JSON.stringify(r.body)).toBeLessThan(300);
   });
 
-  it.each(["POST", "PUT"])("keeps routes and audits consistent when v2 %s races a service delete", async (method) => {
-    for (let round = 0; round < 6; round++) {
-      const ws = (await h.api("POST", "/environments", { name: uniq("ws-delete") })).body.id as string;
-      const svc = await h.api("POST", `/environments/${ws}/services`, { name: "target", protocol: "http", host: "target.example.com", port: 80 });
-      expect(svc.status).toBe(201);
-      // Rebind an existing route to the contested service: the delete can win even for PUT.
-      let routeId: string | undefined;
-      if (method === "PUT") {
-        const source = await h.api("POST", `/environments/${ws}/services`, { name: "source", protocol: "http", host: "source.example.com", port: 80 });
-        expect(source.status).toBe(201);
-        const route = await v2(h.api, "POST", `/workspaces/${ws}/routes`, { name: uniq("original"), serviceId: source.body.id, paths: ["/original"] });
-        expect(route.status).toBe(201);
-        routeId = route.body.id as string;
-      }
-      const before = (await h.sql.query("select * from routes where id = $1", [routeId])).rows;
-      const auditIds = (await h.sql.query<{ id: string }>("select id from audit_events where environment_id = $1", [ws])).rows.map((r) => r.id);
-      const body = { name: uniq("contested"), serviceId: svc.body.id as string, paths: ["/changed"] };
-      const write = () => v2(h.api, method, `/workspaces/${ws}/routes${routeId ? `/${routeId}` : ""}`, body);
-      const remove = () => round % 2 === 0
-        ? v2(h.api, "DELETE", `/workspaces/${ws}/services/${svc.body.id}`)
-        : h.api("DELETE", `/environments/${ws}/services/${svc.body.id}`);
-      const [written, deleted] = round % 3 === 0
-        ? await Promise.all([write(), remove()])
-        : await Promise.all([remove(), write()]).then(([d, w]) => [w, d] as const);
-      for (const res of [written, deleted]) expect(res.status, JSON.stringify(res.body)).toBeLessThan(500);
-      const success = written.status === (method === "POST" ? 201 : 200);
-      expect([method === "POST" ? 201 : 200, 404, 422], JSON.stringify(written.body)).toContain(written.status);
-      expect([204, 409], JSON.stringify(deleted.body)).toContain(deleted.status);
-      expect((await h.sql.query(`select r.id from routes r left join services s
-        on s.id = r.service_id and s.environment_id = r.environment_id
-        where r.environment_id = $1 and s.id is null`, [ws])).rows).toEqual([]);
-      const remaining = (await h.sql.query("select id from services where id = $1", [svc.body.id])).rows;
-      const stored = (await h.sql.query("select * from routes where environment_id = $1", [ws])).rows;
-      if (success) {
-        expect(deleted.status).toBe(409);
-        expect(deleted.body.detail).toMatch(/route|referenced/);
-        expect(remaining).toEqual([{ id: svc.body.id }]);
-        expect(stored).toHaveLength(1);
-        expect(stored[0]).toMatchObject({ id: written.body.id, name: body.name, service_id: svc.body.id, paths: body.paths, strip_path: false, path_compatibility: "workspace-default" });
-      } else {
-        expect(deleted.status).toBe(204);
-        expect(remaining).toEqual([]);
-        expect(stored).toEqual(before);
-        if (written.status === 422) expect(written.body.errors).toEqual(expect.arrayContaining([expect.objectContaining({ path: "serviceId" })]));
-      }
-      const events = (await h.sql.query(`select action, entity_id from audit_events
-        where environment_id = $1 and id <> all($2::uuid[])`, [ws, auditIds])).rows;
-      const expected = [];
-      if (success) expected.push({ action: method === "POST" ? "route.create" : "route.update", entity_id: written.body.id });
-      if (deleted.status === 204) expected.push({ action: "service.delete", entity_id: svc.body.id });
-      expect(events).toHaveLength(expected.length);
-      expect(events).toEqual(expect.arrayContaining(expected));
+  it.each([
+    ["POST", "v1", "route"], ["POST", "v2", "route"],
+    ["PUT", "v1", "route"], ["PUT", "v2", "route"],
+    ["POST", "v1", "delete"], ["POST", "v2", "delete"],
+    ["PUT", "v1", "delete"], ["PUT", "v2", "delete"],
+  ] as const)("serializes v2 %s and %s service deletion with %s first", async (method, deleteApi, first) => {
+    const ws = (await h.api("POST", "/environments", { name: uniq("ws-delete") })).body.id as string;
+    const svc = await h.api("POST", `/environments/${ws}/services`, { name: "target", protocol: "http", host: "target.example.com", port: 80 });
+    expect(svc.status).toBe(201);
+    // Rebinding from a different service lets DELETE win for PUT too.
+    let original: Record<string, unknown> | undefined;
+    if (method === "PUT") {
+      const source = await h.api("POST", `/environments/${ws}/services`, { name: "source", protocol: "http", host: "source.example.com", port: 80 });
+      expect(source.status).toBe(201);
+      const route = await v2(h.api, "POST", `/workspaces/${ws}/routes`, { name: uniq("original"), serviceId: source.body.id, paths: ["/original"] });
+      expect(route.status).toBe(201);
+      original = route.body;
+    }
+    const routeId = original?.id;
+    const before = (await h.sql.query("select * from routes where environment_id = $1", [ws])).rows;
+    const ids = await auditIds(ws);
+    const body = { name: uniq("contested"), serviceId: svc.body.id as string, paths: ["/changed"] };
+    const write = () => v2(h.api, method, `/workspaces/${ws}/routes${routeId ? `/${routeId}` : ""}`, body);
+    const remove = () => deleteApi === "v2"
+      ? v2(h.api, "DELETE", `/workspaces/${ws}/services/${svc.body.id}`)
+      : h.api("DELETE", `/environments/${ws}/services/${svc.body.id}`);
+    const [written, deleted] = await withLock(
+      first === "route"
+        ? "select 1 from services where id = $1 for update"
+        : "select 1 from environments where id = $1 for no key update",
+      [first === "route" ? svc.body.id : ws],
+      async ({ pid, release, start }) => {
+        if (first === "route") {
+          // The route holds the environment and waits on the service's FK KEY SHARE; DELETE queues behind it.
+          const writing = start(write());
+          const writerPid = await waitForLock([pid], '(insert into|update) "routes"');
+          const deleting = start(remove());
+          await waitForLock([pid, writerPid], 'from "services".*for update');
+          await release();
+          return Promise.all([writing, deleting]);
+        }
+        // DELETE holds the service through deletion and waits on the environment. The route queues on that environment.
+        const deleting = start(remove());
+        const deletePid = await waitForLock([pid], 'update "environments"');
+        const writing = start(write());
+        await waitForLock([pid, deletePid], 'from "environments".*for no key update', [deletePid]);
+        await release();
+        return Promise.all([writing, deleting]);
+      });
+    expect((await h.sql.query(`select r.id from routes r left join services s
+      on s.id = r.service_id and s.environment_id = r.environment_id
+      where r.environment_id = $1 and s.id is null`, [ws])).rows).toEqual([]);
+    const remaining = (await h.sql.query("select id from services where id = $1", [svc.body.id])).rows;
+    const stored = (await h.sql.query("select * from routes where environment_id = $1", [ws])).rows;
+    if (first === "route") {
+      expect(written.status, JSON.stringify(written.body)).toBe(method === "POST" ? 201 : 200);
+      expect([deleted.status, deleted.body.detail]).toEqual([409, expect.stringMatching(/route|referenced/)]);
+      expect(remaining).toEqual([{ id: svc.body.id }]);
+      expect(stored).toHaveLength(1);
+      expect(stored[0]).toMatchObject({ id: written.body.id, name: body.name, service_id: svc.body.id, paths: body.paths, strip_path: false, path_compatibility: "workspace-default" });
+      expect((await v2(h.api, "GET", `/workspaces/${ws}/routes/${written.body.id}`)).body).toEqual(written.body);
+      expect(await eventsSince(ws, ids)).toEqual([{
+        action: method === "POST" ? "route.create" : "route.update", entity_type: "route", entity_id: written.body.id,
+        before: original ? routePayload(original) : null, after: routePayload(written.body),
+      }]);
+    } else {
+      expect([written.status, written.body.errors?.[0]?.path], JSON.stringify(written.body)).toEqual([422, "serviceId"]);
+      expect(deleted.status, JSON.stringify(deleted.body)).toBe(204);
+      expect(remaining).toEqual([]);
+      expect(stored).toEqual(before);
+      expect(await eventsSince(ws, ids)).toEqual([{
+        action: "service.delete", entity_type: "service", entity_id: svc.body.id, before: svc.body, after: null,
+      }]);
+    }
+    if (original) {
+      const events = (await h.sql.query("select action, before, after from audit_events where entity_id = $1 order by at, id", [routeId])).rows;
+      expect(events).toEqual([
+        { action: "route.create", before: null, after: routePayload(original) },
+        ...(first === "route" ? [{ action: "route.update", before: routePayload(original), after: routePayload(written.body) }] : []),
+      ]);
+      if (events.length === 2) expect(events[1]!.before).toEqual(events[0]!.after);
     }
   });
 
-  it("keeps the final draft consistent when v2 writes race a v1 edit and workspace archival", async () => {
-    for (let round = 0; round < 6; round++) {
-      const ws = (await h.api("POST", "/environments", { name: uniq("ws-race") })).body.id as string;
-      const svc = (await h.api("POST", `/environments/${ws}/services`, { name: "svc", protocol: "http", host: "r.example.com", port: 80 })).body.id as string;
-      const initial = await v2(h.api, "POST", `/workspaces/${ws}/routes`, { name: uniq("r"), serviceId: svc, paths: ["/a"] });
-      expect(initial.status).toBe(201);
-      const r = initial.body;
-      const createName = uniq("r");
-      const [v2Edit, v1Edit, created, archived] = await Promise.all([
-        v2(h.api, "PUT", `/workspaces/${ws}/routes/${r.id}`, { name: r.name, serviceId: svc, paths: ["/b"] }),
-        h.api("PUT", `/environments/${ws}/routes/${r.id}`, { name: r.name, serviceId: svc, paths: ["/c"], stripPath: false }),
-        v2(h.api, "POST", `/workspaces/${ws}/routes`, { name: createName, serviceId: svc, paths: ["/d"] }),
-        v2(h.api, "POST", `/workspaces/${ws}/archive`),
-      ]);
+  it.each(["v1", "v2"] as const)("keeps complete, continuous audits when %s edits before the other API", async (first) => {
+    const ws = (await h.api("POST", "/environments", { name: uniq("ws-audit") })).body.id as string;
+    const svc = (await h.api("POST", `/environments/${ws}/services`, { name: "svc", protocol: "http", host: "audit.example.com", port: 80 })).body.id as string;
+    const initial = await v2(h.api, "POST", `/workspaces/${ws}/routes`, { name: uniq("r"), serviceId: svc, paths: ["/a"] });
+    expect(initial.status).toBe(201);
+    const r = initial.body;
+    const edit = (api: "v1" | "v2", path: string) => api === "v2"
+      ? v2(h.api, "PUT", `/workspaces/${ws}/routes/${r.id}`, { name: r.name, serviceId: svc, paths: [path] })
+      : h.api("PUT", `/environments/${ws}/routes/${r.id}`, { name: r.name, serviceId: svc, paths: [path], stripPath: false });
+    const [one, two] = await withLock("select 1 from routes where id = $1 for update", [r.id], async ({ pid, release, start }) => {
+      const writing = start(edit(first, "/b"));
+      const writerPid = await waitForLock([pid], '(from|update) "routes"');
+      const next = start(edit(first === "v1" ? "v2" : "v1", "/c"));
+      await waitForLock([pid, writerPid], '(from|update) "routes"', [writerPid]);
+      await release();
+      return Promise.all([writing, next]);
+    });
+    for (const res of [one, two]) expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(one.body.paths).toEqual(["/b"]);
+    expect(two.body.paths).toEqual(["/c"]);
+    expect((await h.api("GET", `/environments/${ws}/routes/${r.id}`)).body).toEqual(routePayload(two.body));
+    // Transaction start times can predate lock acquisition: compare the enforced order, not UUIDs or timestamps.
+    const events = (await h.sql.query("select action, entity_type, entity_id, before, after from audit_events where entity_id = $1", [r.id])).rows;
+    const expected = [
+      { action: "route.create", entity_type: "route", entity_id: r.id, before: null, after: routePayload(r) },
+      { action: "route.update", entity_type: "route", entity_id: r.id, before: routePayload(r), after: routePayload(one.body) },
+      { action: "route.update", entity_type: "route", entity_id: r.id, before: routePayload(one.body), after: routePayload(two.body) },
+    ];
+    expect(events).toHaveLength(expected.length);
+    expect(events).toEqual(expect.arrayContaining(expected));
+    const firstEvent = events.find((e) => e.action === "route.update" && e.after.paths[0] === "/b");
+    const secondEvent = events.find((e) => e.action === "route.update" && e.after.paths[0] === "/c");
+    expect(firstEvent?.before).toEqual(events.find((e) => e.action === "route.create")?.after);
+    expect(secondEvent?.before).toEqual(firstEvent?.after);
+  });
+
+  it.each([
+    ["v1", "POST"], ["v1", "PUT"], ["v2", "POST"], ["v2", "PUT"],
+  ] as const)("refuses pending %s %s after the guard when archival commits first", async (api, method) => {
+    const ws = (await h.api("POST", "/environments", { name: uniq("ws-archive") })).body.id as string;
+    const svc = (await h.api("POST", `/environments/${ws}/services`, { name: "svc", protocol: "http", host: "archive.example.com", port: 80 })).body.id as string;
+    const initial = await v2(h.api, "POST", `/workspaces/${ws}/routes`, { name: uniq("r"), serviceId: svc, paths: ["/a"] });
+    expect(initial.status).toBe(201);
+    const r = initial.body;
+    const workspace = (await v2(h.api, "GET", `/workspaces/${ws}`)).body;
+    const before = await draftState(ws);
+    const ids = await auditIds(ws);
+    const [written, archived] = await withLock("select 1 from environments where id = $1 for no key update", [ws], async ({ pid, release, start }) => {
+      // Archive owns its exclusive advisory lock but cannot change status until this environment lock is released.
+      const archiving = start(v2(h.api, "POST", `/workspaces/${ws}/archive`));
+      const archivePid = await waitForLock([pid], 'from "environments".*for no key update');
+      const body = { name: method === "PUT" ? r.name : uniq("pending"), serviceId: svc, paths: ["/pending"], stripPath: false };
+      const writing = start(api === "v2"
+        ? v2(h.api, method, `/workspaces/${ws}/routes${method === "PUT" ? `/${r.id}` : ""}`, body)
+        : h.api(method, `/environments/${ws}/routes${method === "PUT" ? `/${r.id}` : ""}`, body));
+      // This query runs inside the mutation, after the guard saw the workspace active. It waits behind archive itself.
+      await waitForLock([archivePid], "pg_advisory_xact_lock_shared");
+      expect((await h.sql.query("select status from workspaces where id = $1", [ws])).rows).toEqual([{ status: "active" }]);
+      await release();
+      const archived = await archiving;
       expect(archived.status, JSON.stringify(archived.body)).toBe(204);
-      expect((await h.sql.query("select status from workspaces where id = $1", [ws])).rows).toEqual([{ status: "archived" }]);
-      for (const [res, status] of [[v2Edit, 200], [v1Edit, 200], [created, 201]] as const) {
-        expect([status, 409], JSON.stringify(res.body)).toContain(res.status);
-        if (res.status === 409) expect(res.body.code).toBe("workspace-archived");
-      }
-      const stored = (await h.sql.query("select id, name, service_id, paths, strip_path, path_compatibility from routes where environment_id = $1", [ws])).rows;
-      const edits = [v2Edit, v1Edit].filter((res) => res.status === 200);
-      const final = stored.find((row) => row.id === r.id);
-      expect(final).toMatchObject({ name: r.name, service_id: svc, strip_path: false, path_compatibility: "workspace-default" });
-      expect(edits.length ? edits.map((res) => res.body.paths) : [["/a"]]).toContainEqual(final?.paths);
-      expect(stored).toHaveLength(1 + Number(created.status === 201));
-      if (created.status === 201) expect(stored).toContainEqual({ id: created.body.id, name: createName, service_id: svc, paths: ["/d"], strip_path: false, path_compatibility: "workspace-default" });
-      const events = (await h.sql.query("select action, entity_id, after from audit_events where environment_id = $1", [ws])).rows;
-      expect(events.filter((e) => e.action === "workspace.archive")).toHaveLength(1);
-      expect(events.filter((e) => e.action === "route.update")).toHaveLength(edits.length);
-      for (const [res, path] of [[v2Edit, "/b"], [v1Edit, "/c"]] as const) {
-        expect(events.filter((e) => e.action === "route.update" && e.entity_id === r.id && e.after.paths[0] === path)).toHaveLength(Number(res.status === 200));
-      }
-      expect(events.filter((e) => e.action === "route.create")).toHaveLength(1 + Number(created.status === 201));
-      const frozen = await draftState(ws);
-      for (const res of await Promise.all([
-        v2(h.api, "PUT", `/workspaces/${ws}/routes/${r.id}`, { name: r.name, serviceId: svc, paths: ["/late-v2"] }),
-        h.api("PUT", `/environments/${ws}/routes/${r.id}`, { name: r.name, serviceId: svc, paths: ["/late-v1"], stripPath: false }),
-        v2(h.api, "POST", `/workspaces/${ws}/routes`, { name: uniq("late"), serviceId: svc, paths: ["/late"] }),
-      ])) expect([res.status, res.body.code]).toEqual([409, "workspace-archived"]);
-      expect(await draftState(ws)).toEqual(frozen);
-    }
+      return [await writing, archived];
+    });
+    expect(archived.status).toBe(204);
+    expect([written.status, written.body.code], JSON.stringify(written.body)).toEqual([409, "workspace-archived"]);
+    expect((await h.sql.query("select status from workspaces where id = $1", [ws])).rows).toEqual([{ status: "archived" }]);
+    const after = await draftState(ws);
+    expect(after).toEqual({ ...before, environment: { ...before.environment, updated_at: after.environment.updated_at }, audits: after.audits });
+    expect(after.audits.filter((event: { id: string }) => ids.includes(event.id))).toEqual(before.audits);
+    expect(await eventsSince(ws, ids)).toEqual([{
+      action: "workspace.archive", entity_type: "workspace", entity_id: ws,
+      before: workspace, after: { ...workspace, status: "archived" },
+    }]);
+    expect((await h.sql.query("select action, before, after from audit_events where entity_id = $1", [r.id])).rows).toEqual([
+      { action: "route.create", before: null, after: routePayload(r) },
+    ]);
+    const frozen = await draftState(ws);
+    const late = api === "v2"
+      ? await v2(h.api, method, `/workspaces/${ws}/routes${method === "PUT" ? `/${r.id}` : ""}`, { name: r.name, serviceId: svc, paths: ["/late"] })
+      : await h.api(method, `/environments/${ws}/routes${method === "PUT" ? `/${r.id}` : ""}`, { name: r.name, serviceId: svc, paths: ["/late"], stripPath: false });
+    expect([late.status, late.body.code]).toEqual([409, "workspace-archived"]);
+    expect(await draftState(ws)).toEqual(frozen);
   });
 
   it("needs gateway.write in the workspace", async () => {

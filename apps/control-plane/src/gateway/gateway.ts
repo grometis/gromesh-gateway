@@ -399,8 +399,8 @@ export class GatewayService {
 
   async replaceRoute<T = ReturnType<typeof toRoute>>(ctx: RequestContext, envId: string, routeId: string, body: RouteWrite, map: (r: RouteRow) => T = toRoute as (r: RouteRow) => T, adjust?: (tx: Executor, current: RouteRow) => Promise<RouteWrite>) {
     return retryingTransaction(() => this.db.transaction(async (tx) => {
-      // Locked: what `adjust` decides from the stored row holds until this update (a v1 edit or a conversion waits).
-      const current = await this.requireRoute(tx, envId, routeId, adjust !== undefined);
+      // Both APIs lock before reading: a queued edit must audit the previous committed state, including v1 edits.
+      const current = await this.requireRoute(tx, envId, routeId, true);
       body = adjust ? await adjust(tx, current) : body;
       const before = toRoute(current);
       await this.checkRoute(tx, envId, body);
