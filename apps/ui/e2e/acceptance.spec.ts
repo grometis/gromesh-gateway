@@ -9,7 +9,7 @@ test("login, create a service and a route, then preview the publication", async 
   await page.getByRole("button", { name: "Entrar" }).click();
 
   await expect(page.getByRole("heading", { name: "Services" })).toBeVisible();
-  await expect(page.getByLabel("Environment")).toHaveValue(/[0-9a-f-]{36}/);
+  await expect(page.getByLabel("Workspace", { exact: true })).toHaveValue(/[0-9a-f-]{36}/);
 
   await page.getByRole("button", { name: "Novo service" }).click();
   const svc = page.getByRole("dialog", { name: "Novo service" });

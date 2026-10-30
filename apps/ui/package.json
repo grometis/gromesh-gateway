@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "typecheck": "pnpm gen:api && tsc -p tsconfig.json --noEmit",
-    "gen:api": "openapi-typescript ../../contracts/control-plane.openapi.yaml -o src/api/schema.d.ts",
+    "gen:api": "openapi-typescript ../../contracts/control-plane.openapi.yaml -o src/api/schema.d.ts && openapi-typescript ../../contracts/control-plane-v2.openapi.yaml -o src/api/schema-v2.d.ts",
     "mock": "prism mock --port 4010 ../../contracts/control-plane.openapi.yaml",
     "test": "vitest run",
     "test:e2e": "playwright test"

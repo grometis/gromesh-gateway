@@ -89,7 +89,7 @@ export function Shell() {
       <aside className="menu">
         <Brand />
         <div className="env">
-          <label htmlFor="env-select">Environment</label>
+          <label htmlFor="env-select">Workspace</label>
           <select id="env-select" value={envId} onChange={(e) => switchEnv(e.target.value)}>
             {envs.data?.map((e) => (
               <option key={e.id} value={e.id}>
@@ -105,6 +105,7 @@ export function Shell() {
               <MenuGroup title="Operação" items={OPERATION.map(([path, label]) => [`/e/${envId}/${path}`, label])} />
             </>
           )}
+          <MenuGroup title="Instância" items={[["/workspaces", "Workspaces"]]} />
           <MenuGroup
             title="Conta"
             items={[["/tokens", "Tokens de API"], ...(user?.role === "admin" ? ([["/users", "Usuários"], ["/audit", "Auditoria"]] as const) : [])]}
