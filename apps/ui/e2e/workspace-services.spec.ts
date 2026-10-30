@@ -109,6 +109,84 @@ for (const hold of ["workspace", "environment"] as const) {
   });
 }
 
+for (const key of ["workspace", "environment"] as const) {
+  for (const verdict of ["allow", "deny", "error"] as const) {
+    test(`an open service form survives ${key} revalidation and obeys its ${verdict} verdict`, async ({ page }) => {
+      const fake = await setup(page);
+      const create = page.getByRole("button", { name: "Novo service" });
+      await expect(create).toBeVisible();
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      let started!: () => void;
+      const requested = new Promise<void>((resolve) => { started = resolve; });
+      const path = key === "workspace" ? `/api/v2/workspaces/${W}` : `/api/v1/environments/${W}`;
+      await page.route(`**${path}`, async (route) => {
+        started();
+        await held;
+        if (verdict === "error") return route.fulfill({ status: 403, json: { title: "Forbidden", status: 403 } });
+        if (verdict === "allow") return route.fallback();
+        return route.fulfill({ json: key === "workspace"
+          ? { id: W, key: W, name: "Cobrança", slug: "billing", status: "archived", activeRelease: null }
+          : { id: W, name: "Cobrança", publishMode: "auto", currentVersion: 1, hasUnpublishedChanges: true, ...timestamps } });
+      });
+      await create.click();
+      await requested;
+      const dialog = page.getByRole("dialog", { name: "Novo service" });
+      try {
+        await dialog.getByLabel("Nome", { exact: true }).fill("preservado");
+        await dialog.getByLabel("Host", { exact: true }).fill("preservado.internal");
+        await expect(dialog.getByLabel("Destino", { exact: true })).toHaveValue("dns");
+        await expect(dialog.getByText(/Somente leitura enquanto/)).toBeVisible();
+        await expect(dialog.getByRole("button", { name: "Salvar", exact: true })).toBeDisabled();
+        // Even a submit event that bypasses the disabled button must not send a mutation.
+        await dialog.locator("form").evaluate((form) => form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+        expect(fake.writes).toEqual([]);
+      } finally { release(); }
+      if (verdict === "allow") {
+        await expect(dialog.getByRole("button", { name: "Salvar", exact: true })).toBeEnabled();
+        await expect(dialog.getByLabel("Nome", { exact: true })).toHaveValue("preservado");
+        await dialog.getByRole("button", { name: "Salvar", exact: true }).click();
+        await expect(dialog).toHaveCount(0);
+        expect(fake.writes).toHaveLength(1);
+        expect(fake.writes[0]).toMatchObject({ method: "POST", body: { name: "preservado" } });
+      } else {
+        await expect(dialog.getByText(verdict === "error" ? /não foi possível verificar/ : key === "workspace" ? /arquivado/ : /publicação automática/)).toBeVisible();
+        await expect(dialog.getByRole("button", { name: "Salvar", exact: true })).toHaveCount(0);
+        expect(fake.writes).toEqual([]);
+      }
+    });
+  }
+
+  test(`service deletion stays open and blocked until ${key} access is confirmed`, async ({ page }) => {
+    const fake = await setup(page);
+    // Also exercise the detail page's independently rendered dialog.
+    if (key === "environment") await page.getByRole("link", { name: "cobranca", exact: true }).click();
+    await page.getByRole("button", { name: "Mais ações para cobranca" }).click();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let started!: () => void;
+    const requested = new Promise<void>((resolve) => { started = resolve; });
+    const path = key === "workspace" ? `/api/v2/workspaces/${W}` : `/api/v1/environments/${W}`;
+    await page.route(`**${path}`, async (route) => { started(); await held; return route.fallback(); });
+    await page.getByRole("menuitem", { name: "Excluir", exact: true }).click();
+    await requested;
+    const dialog = page.getByRole("dialog", { name: "Excluir service" });
+    const confirm = dialog.getByRole("button", { name: "Excluir", exact: true });
+    try {
+      await expect(dialog).toBeVisible();
+      await expect(confirm).toBeDisabled();
+      await expect(dialog.getByText(/Somente leitura enquanto/)).toBeVisible();
+      await confirm.dispatchEvent("click");
+      expect(fake.writes).toEqual([]);
+    } finally { release(); }
+    await expect(confirm).toBeEnabled();
+    await confirm.click();
+    await expect(dialog).toHaveCount(0);
+    expect(fake.writes).toHaveLength(1);
+    expect(fake.writes[0]).toMatchObject({ method: "DELETE", path: `/api/v2/workspaces/${W}/services/${S}` });
+  });
+}
+
 test("manual publication keeps v2 create, edit and delete, without publishing a snapshot", async ({ page }) => {
   const fake = await setup(page);
   await page.getByRole("button", { name: "Novo service" }).click();
