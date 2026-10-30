@@ -1257,6 +1257,10 @@ describe("explicit service-to-upstream binding (WS-U0)", () => {
     expect(flat(op("replaceUpstream").description)).toContain("A rename stays refused (409) while a service written only through v1 uses the current name");
   });
 
+  it("answers a write that still aborts on concurrency with 409 concurrent-update, nothing written", () => {
+    expect(flat(v2.info.description)).toContain("If it still aborts, the answer is 409 with code concurrent-update and nothing was written");
+  });
+
   it("states it wherever a service host is written: the v2 schema, the import and the v1 upstream operations", () => {
     const host = flat(JSON.stringify(v2.components.schemas.WorkspaceServiceFields.properties.host));
     for (const phrase of ["always ordinary DNS", "without upstreamId is 422 at upstreamId", "so no binding is ever implicit", "A service written only through v1 or by an import keeps the v1 binding"]) expect(host, phrase).toContain(phrase);
