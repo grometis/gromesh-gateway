@@ -323,10 +323,11 @@ export class GatewayService {
   }
 
   /** v2 also refuses while plugins are scoped to the service (v1 deletes them with it). */
-  async deleteService(ctx: RequestContext, envId: string, serviceId: string, options: { keepPlugins?: boolean } = {}) {
+  async deleteService(ctx: RequestContext, envId: string, serviceId: string, options: { keepPlugins?: boolean; draftOnly?: boolean } = {}) {
     await retryingTransaction(() => this.db.transaction(async (tx) => {
       // Locked first: a route or plugin created meanwhile (it takes the row's key share) waits, then is counted.
       const before = toService(await this.requireService(tx, envId, serviceId, true));
+      if (options.draftOnly) await this.refuseAutoPublish(tx, envId);
       const [ref] = await tx.select({ n: count() }).from(routes).where(eq(routes.serviceId, serviceId));
       if (ref && ref.n > 0) throw conflict(`Service is used by ${ref.n} route(s); delete them first`);
       if (options.keepPlugins) {
@@ -419,9 +420,11 @@ export class GatewayService {
     }));
   }
 
-  async deleteRoute(ctx: RequestContext, envId: string, routeId: string) {
+  async deleteRoute(ctx: RequestContext, envId: string, routeId: string, options: { draftOnly?: boolean } = {}) {
     await retryingTransaction(() => this.db.transaction(async (tx) => {
-      const before = toRoute(await this.requireRoute(tx, envId, routeId));
+      // v2 takes the entity before the archive and environment locks, as replaceWorkspaceRoute does.
+      const before = toRoute(await this.requireRoute(tx, envId, routeId, options.draftOnly));
+      if (options.draftOnly) await this.refuseAutoPublish(tx, envId);
       await tx.delete(routes).where(eq(routes.id, routeId));
       await markDraftChanged(tx, envId);
       await audit(tx, ctx, { action: "route.delete", entityType: "route", entityId: routeId, environmentId: envId, before });
@@ -710,7 +713,7 @@ export class WorkspaceServicesController {
   @HttpCode(204)
   @RequiredPermission("gateway.write", "workspace")
   async remove(@Ctx() ctx: RequestContext, @Param("workspaceId", uuidParam()) workspaceId: string, @Param("serviceId", uuidParam()) serviceId: string) {
-    await this.gw.deleteService(ctx, workspaceId, serviceId, { keepPlugins: true });
+    await this.gw.deleteService(ctx, workspaceId, serviceId, { keepPlugins: true, draftOnly: true });
   }
 }
 
@@ -754,7 +757,7 @@ export class WorkspaceRoutesController {
   @HttpCode(204)
   @RequiredPermission("gateway.write", "workspace")
   async remove(@Ctx() ctx: RequestContext, @Param("workspaceId", uuidParam()) workspaceId: string, @Param("routeId", uuidParam()) routeId: string) {
-    await this.gw.deleteRoute(ctx, workspaceId, routeId);
+    await this.gw.deleteRoute(ctx, workspaceId, routeId, { draftOnly: true });
   }
 }
 

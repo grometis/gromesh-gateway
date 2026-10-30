@@ -212,9 +212,9 @@ describe("routes through /api/v2 (WS-R2)", () => {
           await release();
           return Promise.all([writing, deleting]);
         }
-        // DELETE holds the service through deletion and waits on the environment. The route queues on that environment.
+        // DELETE holds the service and waits on the environment (v2 checks its mode before deleting).
         const deleting = start(remove());
-        const deletePid = await waitForLock([pid], 'update "environments"');
+        const deletePid = await waitForLock([pid], deleteApi === "v2" ? 'from "environments".*for no key update' : 'update "environments"');
         const writing = start(write());
         await waitForLock([pid, deletePid], 'from "environments".*for no key update', [deletePid]);
         await release();
