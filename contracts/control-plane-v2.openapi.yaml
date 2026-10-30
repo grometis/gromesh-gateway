@@ -730,7 +730,6 @@ paths:
       x-scope: workspace
       x-gromesh-requirements: [ GW-ENV-05 ]
       x-required-permission: workspace.read
-      x-gromesh-planned: true
       description: Declarations plus whether this instance has a value. Secret values always read back as REDACTED.
       responses:
         "200": { description: Variables, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/WorkspaceVariable" } } } } }
@@ -747,7 +746,6 @@ paths:
       x-gromesh-requirements: [ GW-ENV-05 ]
       security: [ { cookieAuth: [], csrfToken: [] }, { bearerApiToken: [] } ]
       x-required-permission: values.write
-      x-gromesh-planned: true
       description: Instance-local value (never travels in a package). Audited; secrets sealed and redacted.
       requestBody: { required: true, content: { application/json: { schema: { type: object, required: [ value ], properties: { value: { type: string } }, additionalProperties: false } } } }
       responses:
@@ -3815,7 +3813,6 @@ paths:
           csrfToken: []
         - bearerApiToken: []
       x-required-permission: gateway.write
-      x-gromesh-planned: true
       description: Creates or replaces the declaration in the draft (audited; marks the draft changed). Changing type or secret of a variable referenced by the draft answers 409.
       requestBody:
         required: true
@@ -3848,7 +3845,6 @@ paths:
           csrfToken: []
         - bearerApiToken: []
       x-required-permission: gateway.write
-      x-gromesh-planned: true
       description: 409 while any draft field references it. The instance's value is kept until the next release without the declaration is active.
       responses:
         "204":
