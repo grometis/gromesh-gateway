@@ -396,10 +396,7 @@ const valuesV2 = (keys, replicas, { clickhousePeers } = {}) => ({
   networkPolicy: {
     enabled: true,
     controlPlanePeers: [{ namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": NS.cp } }, podSelector: { matchLabels: { app: "cp-relay" } } }],
-    upstreams: [{ cidr: `${ctx.topo.ext.backend.v4}/32`, ports: [8080, BACKEND_PORT] }, { cidr: `${ctx.topo.ext.backend.v6}/128`, ports: [8080, BACKEND_PORT] },
-      // Lab only (aceite n): the IMDS aliases on TCP 80 as if a route's upstream, so the cluster-wide n2c-deny-imds is
-      // the one barrier between Kong and them; removing it is the loss of isolation the containment scenarios cause.
-      ...["169.254.169.254/32", "169.254.170.2/32", "fd00:ec2::254/128"].map((cidr) => ({ cidr, ports: [80] }))],
+    upstreams: [{ cidr: `${ctx.topo.ext.backend.v4}/32`, ports: [8080, BACKEND_PORT] }, { cidr: `${ctx.topo.ext.backend.v6}/128`, ports: [8080, BACKEND_PORT] }],
     clickhousePeers: clickhousePeers ?? [{ namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": OBS } }, podSelector: { matchLabels: { app: "clickhouse" } } }],
   },
   workspaces: { enabled: true, clusterId: ctx.clusterId, instanceId: ctx.instanceId, instanceSigningKeys: keys, probe: { checks: ctx.checks } },
@@ -770,6 +767,61 @@ async function recover(it, why) {
   }
 }
 
+/** The lab's IMDS aliases: on every kind node routed to the imds fixture container (run.mjs), never a real metadata service. */
+const IMDS_CIDRS = ["169.254.169.254/32", "169.254.170.2/32", "fd00:ec2::254/128"];
+
+/**
+ * Lab only (aceite n): a NetworkPolicy of its own, beside the chart's (policies add up), allowing the dp pods TCP 80 to
+ * the IMDS aliases, so that the cluster-wide n2c-deny-imds becomes the one barrier and removing it is a real loss of
+ * isolation. Never in the chart's values; created only after chartBlocksImds proved the chart's policy alone blocks.
+ */
+async function labImdsException() {
+  const chartPolicy = (await json(["-n", NS.dp, "get", "networkpolicy"])).items.find((p) => p.spec.policyTypes?.includes("Egress"));
+  if (!chartPolicy) throw new Error("the chart's NetworkPolicy is missing");
+  await apply([{ apiVersion: "networking.k8s.io/v1", kind: "NetworkPolicy", metadata: { name: "n2-lab-imds-egress", namespace: NS.dp },
+    spec: { podSelector: chartPolicy.spec.podSelector, policyTypes: ["Egress"], egress: [{ to: IMDS_CIDRS.map((cidr) => ({ ipBlock: { cidr } })), ports: [{ protocol: "TCP", port: 80 }] }] } }]);
+}
+
+/**
+ * Control 1 of the privileged destination: with the cluster-wide IMDS deny removed and no lab exception, the chart's
+ * own NetworkPolicy keeps Kong from the IMDS. The route that targets it is tried (502/504: Kong reached for the
+ * upstream) and the IMDS server logs no request of the dp pods; the probe raises no containment. Then the lab exception.
+ */
+async function chartBlocksImds() {
+  const it = item("V2-chart-imds", "The chart's NetworkPolicy alone blocks the IMDS: cluster-wide deny removed, no lab exception, the route targeting it tried and never reaching it", {
+    rule: "the product's policy does not depend on the lab's cluster-wide deny" });
+  // Control 2: every node routes the IMDS aliases to the lab's imds fixture (run.mjs), never to a real metadata service.
+  for (const node of [NODES.cp, ...NODES.workers]) {
+    for (const [ip, via] of [["169.254.169.254", ctx.topo.ext.imds.v4], ["169.254.170.2", ctx.topo.ext.imds.v4], ["fd00:ec2::254", ctx.topo.ext.imds.v6]]) {
+      const route = (await docker(["exec", node, "ip", ...(ip.includes(":") ? ["-6"] : []), "route", "get", ip], { allowFail: true })).stdout;
+      expect(it, route.includes(`via ${via}`), `${node}: ${ip} is not routed to the lab's imds fixture (${route.trim()})`);
+    }
+  }
+  const scenario = `${RUN_ID}-chart-imds`;
+  await markServer("imds", scenario, "start");
+  const client = new Client("chart-imds", [ctx.proxy.host, String(ctx.proxy.port), `/${ctx.ws.A.slug}/api`, ctx.ws.A.key, `/${ctx.ws.A.slug}/api/ws`, `/${ctx.ws.A.slug}${PRIVILEGED_PATH}`]);
+  const t0 = await vmNow();
+  await kubectl(["delete", "ciliumclusterwidenetworkpolicy", "n2c-deny-imds"]);
+  await sleep(12_000);
+  await client.stop();
+  await apply(denyPolicies(ctx.topo.net));
+  await markServer("imds", scenario, "end");
+  const imdsLog = (await docker(["logs", `${CLUSTER}-fx-imds`], { allowFail: true })).stdout.split("\n").filter(Boolean);
+  const sources = (await Promise.all((await live()).map(async (p) => (await json(["-n", NS.dp, "get", "pod", p.name])).status.podIPs.map((x) => x.ip)))).flat();
+  const reached = privilegedRequestsBetween(imdsLog, { server: "ext:imds", scenario, sources, requests: scenarioRequestLines(ctx.ws.A.slug, PRIVILEGED_PATH).map((l) => createHash("sha256").update(l).digest("hex")) });
+  const ev = client.since(t0);
+  const tried = ev.filter((e) => e.k === "priv" && (e.s === 502 || e.s === 504)).length;
+  const served = ev.filter((e) => e.k === "new" && e.s === 200).length;
+  const violations = (await pendencies(ctx.clusterId)).filter((p) => ["confirmed-violation", "unconfirmed-isolation"].includes(p.lifecycle));
+  it.measures = { ...it.measures, reached, upstreamAttempts: tried, served200: served, pendencies: violations.length };
+  if (reached === null) it.failures.push("IMDS log incomplete or not bracketing the check");
+  else if (reached > 0) it.failures.push(`the chart's NetworkPolicy let ${reached} requests reach the IMDS without the cluster-wide deny`);
+  else if (tried === 0 || served === 0) it.open.push(`not exercised: ${tried} upstream attempts on the route, ${served} 200 on /api`);
+  expect(it, violations.length === 0, `the probe raised ${violations.length} containment pendencies with only the chart's policy`);
+  await labImdsException();
+  done(it);
+}
+
 /** Aceite n: fail-closed by a real loss of isolation with the pod serving, keepalive and WebSocket open. */
 async function containmentN({ frozenSupervisor = false } = {}) {
   const id = frozenSupervisor ? "V2-n-frozen-supervisor" : "V2-n";
@@ -1130,7 +1182,7 @@ const clients = [];
 
 async function mainV2() {
   for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => { report.aborted = { signal }; finishV2().finally(() => process.exit(130)); });
-  const all = [setupV2, d4Disabled, convergeV2, trafficV2, hashDivergence, revisionMismatch, rollbackV2, agentDown, probeDown, drainAndReplace, containmentN, function containmentFrozen() { return containmentN({ frozenSupervisor: true }); }];
+  const all = [setupV2, d4Disabled, convergeV2, trafficV2, hashDivergence, revisionMismatch, rollbackV2, agentDown, probeDown, drainAndReplace, chartBlocksImds, containmentN, function containmentFrozen() { return containmentN({ frozenSupervisor: true }); }];
   const only = (process.env.LAB_STEPS ?? "").split(",").filter(Boolean);
   const chosen = only.length ? all.filter((s, i) => i < 4 || only.includes(s.name)) : all;
   report.steps = chosen.map((s) => s.name);

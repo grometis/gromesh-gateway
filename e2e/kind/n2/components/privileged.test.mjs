@@ -201,5 +201,11 @@ test("the containment scenario is wired: route created, marks before the client,
   assert.ok(body.indexOf('markServer("imds", scenario, "start")') < body.indexOf("new Client(id, clientArgs)"), "the start mark precedes the client");
   assert.match(body, /clientArgs = \[[^\]]*PRIVILEGED_PATH/);
   assert.ok(body.indexOf("await recover(it, id)") < body.indexOf("privilegedRequestsBetween("), "the recovery check follows the recovery");
-  assert.match(src, /\.\.\.\["169\.254\.169\.254\/32", "169\.254\.170\.2\/32", "fd00:ec2::254\/128"\]\.map\(\(cidr\) => \(\{ cidr, ports: \[80\] \}\)\)/);
+  // The lab exception is its own NetworkPolicy, never the chart's values, created only after the chart-only proof.
+  const values = src.slice(src.indexOf("const valuesV2 ="), src.indexOf("const releaseV2 ="));
+  assert.doesNotMatch(values, /169\.254|fd00:ec2/);
+  const chart = src.slice(src.indexOf("async function chartBlocksImds"), src.indexOf("/** Aceite n: fail-closed"));
+  assert.ok(chart.indexOf('"n2c-deny-imds"]') < chart.indexOf("await labImdsException()"), "the exception follows the chart-only check");
+  const order = src.slice(src.indexOf("const all = [setupV2"), src.indexOf("];", src.indexOf("const all = [setupV2")));
+  assert.ok(order.indexOf("chartBlocksImds") > 0 && order.indexOf("chartBlocksImds") < order.indexOf("containmentN"), "the chart-only check runs before the containment scenarios");
 });

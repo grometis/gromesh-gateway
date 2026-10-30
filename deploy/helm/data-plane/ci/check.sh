@@ -220,3 +220,18 @@ for (const service of full.filter(resource => resource.kind === 'Service')) {
 }
 console.log('Data-plane lint/render passed: collector disabled has no hook; enabled collector blocks install/upgrade before resources change, using only its writer secret');
 JS
+# Privileged destinations (N2-E9, control 1): no shipped values and no rendered NetworkPolicy allow egress to the
+# cloud metadata service, link-local or any address; the lab's IMDS exception lives only in the kind suite.
+for values in "$chart"/values.yaml "$chart"/ci/*.yaml; do
+  allowed="$(docker run --rm -i mikefarah/yq:4.44.3 ea '[.networkPolicy | .. | select(has("cidr")) | .cidr] | join(" ")' < "$values")"
+  case " $allowed " in *" 169.254."*|*" fe80:"*|*" fd00:ec2:"*|*" 0.0.0.0/0 "*|*" ::/0 "*) echo "$values allows egress to a metadata, link-local or any address: $allowed" >&2; exit 1 ;; esac
+done
+helm template dp "$chart" -f "$chart/ci/values-workspaces.yaml" --kube-version 1.33.0 > "$work/workspaces-np.yaml"
+for render in full homelab workspaces-np; do
+  cidrs="$(docker run --rm -i mikefarah/yq:4.44.3 ea '[select(.kind == "NetworkPolicy") | .spec.egress[]?.to[]?.ipBlock.cidr | select(. != null)] | join(" ")' < "$work/$render.yaml")"
+  for cidr in $cidrs; do
+    case "$cidr" in
+      169.254.*|fe80:*|fd00:ec2:*|0.0.0.0/0|::/0) echo "NetworkPolicy ($render) allows egress to $cidr" >&2; exit 1 ;;
+    esac
+  done
+done
