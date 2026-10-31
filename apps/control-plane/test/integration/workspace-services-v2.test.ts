@@ -171,14 +171,23 @@ describe("concurrency aborts (B1)", () => {
     try {
       await t.query("begin");
       await t.query("select 1 from environments where id = $1 for update", [ws]);
-      // The write takes the upstream (KEY SHARE) and the archive lock, then waits on the environment held here.
+      // A deliberately noncompliant writer takes the environment first. Let the API detect this real deadlock.
+      await t.query("set local deadlock_timeout = '10s'");
       const write = v2(h.api, "POST", `/workspaces/${ws}/services`, service({ name, host: pool.name, upstreamId: pool.id }));
-      await new Promise((r) => setTimeout(r, 400));
+      const { rows: [backend] } = await t.query<{ pid: number }>("select pg_backend_pid() as pid");
+      let blocked = false;
+      const deadline = Date.now() + 4_000;
+      do {
+        blocked = (await h.sql.query(`select 1 from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'
+          and query ~ 'from "environments".*for no key update' and $1 = any(pg_blocking_pids(pid))`, [backend!.pid])).rows.length === 1;
+        if (!blocked) await new Promise((resolve) => setTimeout(resolve, 10));
+      } while (!blocked && Date.now() < deadline);
+      expect(blocked).toBe(true);
       // Now this side wants the upstream the write holds: a cycle; PostgreSQL aborts one of the two.
       const mine = await t.query("select 1 from upstreams where id = $1 for update", [pool.id]).then(() => "locked", (e: { code?: string }) => e.code);
       await t.query("rollback").catch(() => undefined);
       const res = await write;
-      expect([res.status, mine === "locked" || mine === "40P01"], JSON.stringify(res.body)).toEqual([201, true]);
+      expect([res.status, mine], JSON.stringify(res.body)).toEqual([201, "locked"]);
     } finally {
       t.release();
     }
