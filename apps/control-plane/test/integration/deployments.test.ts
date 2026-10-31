@@ -25,6 +25,8 @@ const EDGES = new Set(MACHINE.transitions.map(([from, to]) => `${from}>${to}`));
 const created: string[] = [];
 const b64 = (value: string | Buffer) => Buffer.from(value).toString("base64url");
 const KONG_B = "b".repeat(32);
+const collectorFingerprints = (id: string) => ({ current: `sha256:${createHash("sha256").update(`gromesh-collector-token/v1\n${id}`).digest("hex")}`, previous: null });
+const tokenStatus = (base: string, c: { id: string; token: string }) => agentCall(base, c.token, "POST", "v2/status", { nodeId: "node-1", epoch: 1, appliedRevision: null, appliedHash: null, kongHealthy: true, collectorTokenFingerprints: collectorFingerprints(c.id) });
 
 async function freshDatabase(label: string): Promise<string> {
   const name = `gromesh_n3c4_${label}_${Date.now()}_${process.pid}`;
@@ -153,7 +155,7 @@ describe("v2 delivery and convergence in a laboratory", () => {
   const probe = new Probe();
   let admissionId: string;
 
-  const status = (extra: Record<string, unknown>) => agentCall(base, c.token, "POST", "v2/status", { nodeId: "node-1", epoch: 1, appliedRevision: null, appliedHash: null, kongHealthy: true, ...extra });
+  const status = (extra: Record<string, unknown>) => agentCall(base, c.token, "POST", "v2/status", { nodeId: "node-1", epoch: 1, appliedRevision: null, appliedHash: null, kongHealthy: true, collectorTokenFingerprints: collectorFingerprints(c.id), ...extra });
   const report = async (extra: Record<string, unknown>) => {
     const res = await agentCall(base, c.token, "POST", "v2/isolation/reports", { reports: [probe.next(c.id, admissionId, extra)] });
     expect(res.status, res.raw).toBe(200);
@@ -198,6 +200,7 @@ describe("v2 delivery and convergence in a laboratory", () => {
     const validate = contractsV2.validator("InstanceCluster");
     expect(validate(structuredClone(res.body)), JSON.stringify(validate.errors)).toBe(true);
     expect(res.body).toMatchObject({ id: c.id, deliveryProtocol: "v2-pending", environmentId: c.env });
+    expect((await tokenStatus(base, c)).body!.code).toBe("delivery-protocol-switching");
     expect((await v2(h.api, "PUT", `/clusters/${c.id}/delivery-protocol`, { protocol: "v2", reason: "laboratory switch test" })).body.code).toBe("delivery-protocol-unchanged");
     const audit = (await h.sql.query(`select before, after from audit_events where action = 'cluster.delivery-protocol' and entity_id = $1`, [c.id])).rows;
     expect(audit).toEqual([{ before: { deliveryProtocol: "v1" }, after: { deliveryProtocol: "v2-pending", reason: "laboratory switch test" } }]);
@@ -464,13 +467,14 @@ describe("a deployment recorded before its cluster turns v2 (D-1, laboratory ord
       expect(await history(1)).toEqual(["composed", "active"]);
 
       expect((await v2(h.api, "PUT", `/clusters/${c.id}/delivery-protocol`, { protocol: "v2", reason: "laboratory switch after deploy" })).status).toBe(200);
+      expect((await tokenStatus(base, c)).body!.code).toBe("delivery-protocol-switching");
       const probe = new Probe();
       const asked = await agentCall(base, c.token, "POST", "v2/isolation/admission-requests", probe.request());
       const polled = await agentCall(base, c.token, "GET", `v2/isolation/admission-requests/${asked.body!.requestId}`);
       const admissionId = JSON.parse(Buffer.from(polled.body!.admission.payload, "base64url").toString("utf8")).admissionId as string;
       expect((await agentCall(base, c.token, "POST", "v2/isolation/reports", { reports: [probe.next(c.id, admissionId, { state: "verifying" })] })).body!.rejected).toEqual([]);
 
-      // The first v2 call is a status the control plane refuses (an epoch it never had): the activation still commits.
+      // With token evidence already recorded, a refused status still commits activation and evaluation.
       const refused = await agentCall(base, c.token, "POST", "v2/status", { nodeId: "node-1", epoch: 2, appliedRevision: null, appliedHash: null, kongHealthy: true });
       expect(refused.status, refused.raw).toBe(409);
       expect((await h.sql.query(`select delivery_protocol from clusters where id = $1`, [c.id])).rows[0].delivery_protocol).toBe("v2");
@@ -506,6 +510,7 @@ describe("a deployment recorded before its cluster turns v2 (D-1, laboratory ord
 
       // Only then the switch and the activation gate (admission, a conclusive passing round).
       expect((await v2(h.api, "PUT", `/clusters/${c.id}/delivery-protocol`, { protocol: "v2", reason: "laboratory switch after deploy" })).status).toBe(200);
+      expect((await tokenStatus(base, c)).body!.code).toBe("delivery-protocol-switching");
       const probe = new Probe();
       const asked = await agentCall(base, c.token, "POST", "v2/isolation/admission-requests", probe.request());
       const polled = await agentCall(base, c.token, "GET", `v2/isolation/admission-requests/${asked.body!.requestId}`);
@@ -560,6 +565,7 @@ describe("a deployment recorded before its cluster turns v2 (D-1, laboratory ord
       expect(await history(2)).toEqual(["composed", "active"]);
 
       expect((await v2(h.api, "PUT", `/clusters/${c.id}/delivery-protocol`, { protocol: "v2", reason: "laboratory switch after deploy" })).status).toBe(200);
+      expect((await tokenStatus(base, c)).body!.code).toBe("delivery-protocol-switching");
       const probe = new Probe();
       const asked = await agentCall(base, c.token, "POST", "v2/isolation/admission-requests", probe.request());
       const polled = await agentCall(base, c.token, "GET", `v2/isolation/admission-requests/${asked.body!.requestId}`);
