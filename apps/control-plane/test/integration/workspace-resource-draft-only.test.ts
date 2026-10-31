@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { ConfigDocument } from "@gromesh/compiler";
-import { credentialContext, ENCRYPTOR, Encryptor, jwtSecretContext } from "../../src/crypto/crypto.js";
+import { basicAuthPasswordHash, type ConfigDocument, type GatewayState } from "@gromesh/compiler";
+import { basicAuthHashContext, credentialContext, ENCRYPTOR, Encryptor, jwtSecretContext, snapshotContext } from "../../src/crypto/crypto.js";
 import { SnapshotsService } from "../../src/snapshots/snapshots.js";
 import { selfSigned } from "./certs.js";
 import { startHarness, uniq, type ApiClient, type ApiResponse, type Harness } from "./harness.js";
@@ -21,13 +21,15 @@ const operations: Operation[] = [
   { id: "deletePlugin", method: "DELETE", resource: "Plugin", action: "delete" },
 ];
 
-// One mutation per resource/credential family exercises the shared workspaceTransaction +
-// refuseAutoPublish boundary. The full operation matrix below retains per-handler coverage.
-// Certificate replacement includes its SNIs; ACL replacement has its own consumer write path.
+// Include guarded credential creation and consumer deletion (three credential tables + cascades),
+// alongside replacement/rotation paths. Certificate replacement also checks its SNIs.
+const uniquePaths = operations.filter((op) => [
+  "createKeyAuthCredential", "createJwtCredential", "createBasicAuthCredential", "deleteConsumer",
+].includes(op.id));
 const representatives = operations.filter((op) => [
   "replaceConsumer", "rotateKeyAuthCredential", "rotateJwtCredential", "deleteBasicAuthCredential",
   "replaceConsumerAclGroups", "replaceUpstream", "replaceTarget", "replaceCertificate", "deletePlugin",
-].includes(op.id));
+].includes(op.id) || uniquePaths.includes(op));
 
 interface DraftState {
   environment: { name: string; publish_mode: string; current_version: number | null; has_unpublished_changes: boolean };
@@ -78,12 +80,19 @@ describe("remaining resource draft-only writes (WS-R4 B2)", () => {
     };
     await seed("/services", { name: "svc", protocol: "http", host: "draft.example.com", port: 80 });
     let path = "";
-    let body: unknown;
+    let body: Record<string, unknown> | undefined;
+    let expectedSnis: string[] | undefined;
     const { resource, action } = op;
     if (["Consumer", "KeyAuth", "Jwt", "BasicAuth", "AclGroups"].includes(resource)) {
       path = "/consumers";
       if (resource === "Consumer") {
         if (action !== "create") path += `/${await seed(path, { username: "before" })}`;
+        if (action === "delete") {
+          await seed(path + "/key-auth", {});
+          await seed(path + "/jwt", { algorithm: "HS256" });
+          await seed(path + "/basic-auth", { username: uniq("cascade"), password: "test-password" });
+          await seed("/plugins", { name: "rate-limiting", scope: { consumerId: path.split("/").at(-1) }, config: { minute: 5, policy: "local" } });
+        }
         body = { username: "after" };
       } else {
         const consumer = await seed(path, { username: "parent" });
@@ -114,12 +123,13 @@ describe("remaining resource draft-only writes (WS-R4 B2)", () => {
       const pem = selfSigned(name);
       path = "/certificates";
       if (action !== "create") path += `/${await seed(path, { cert: pem.cert, key: pem.key, snis: [name] })}`;
-      body = { cert: pem.cert, key: pem.key, snis: [`changed.${name}`], tags: ["changed"] };
+      expectedSnis = [`changed.${name}`];
+      body = { cert: pem.cert, key: pem.key, snis: expectedSnis, tags: ["changed"] };
     } else {
       path = `/plugins/${await seed("/plugins", { name: "cors", scope: {}, config: {} })}`;
     }
     if (published) expect((await h.api("POST", root + "/snapshots", {})).status).toBe(201);
-    return { ws, path, write: (v1 = false, api = h.api) => api(op.method, (v1 ? root : `/../v2/workspaces/${ws}`) + path, action === "delete" || action === "rotate" ? undefined : body), status: action === "delete" ? 204 : action === "replace" || action === "rotate" ? 200 : 201 };
+    return { ws, path, body, expectedSnis, write: (v1 = false, api = h.api) => api(op.method, (v1 ? root : `/../v2/workspaces/${ws}`) + path, action === "delete" || action === "rotate" ? undefined : body), status: action === "delete" ? 204 : action === "replace" || action === "rotate" ? 200 : 201 };
   };
 
   const unchangedPublication = (before: DraftState, after: DraftState) => {
@@ -231,15 +241,21 @@ describe("remaining resource draft-only writes (WS-R4 B2)", () => {
     return op.resource === "AclGroups" ? "consumer.acl_groups.replace" : `${resource}.${op.action === "replace" ? "update" : op.action}`;
   };
   const storedMutation = async (op: Operation, f: Awaited<ReturnType<typeof fixture>>, written: ApiResponse<Record<string, unknown> | undefined>) => {
-    const id = f.path.split("/").at(op.action === "rotate" || op.resource === "AclGroups" ? -2 : -1)!;
-    if (op.action === "rotate") {
+    const id = op.action === "create" ? written.body?.id as string
+      : f.path.split("/").at(op.action === "rotate" || op.resource === "AclGroups" ? -2 : -1)!;
+    if (op.action === "rotate" || (op.action === "create" && ["KeyAuth", "Jwt"].includes(op.resource))) {
       const keyAuth = op.resource === "KeyAuth";
       const { rows: [row] } = await h.sql.query<{ sealed: string; pending_reprovision: boolean }>(
         `select ${keyAuth ? "key" : "secret"} as sealed, pending_reprovision from ${keyAuth ? "keyauth_credentials" : "jwt_credentials"} where environment_id = $1 and id = $2`, [f.ws, id]);
       expect(row).toBeDefined();
       expect(row!.pending_reprovision).toBe(false);
       const plain = h.app.get<Encryptor>(ENCRYPTOR).open(row!.sealed, keyAuth ? credentialContext(id) : jwtSecretContext(id));
+      expect(plain).toMatch(/^[A-Za-z0-9_-]{43}$/);
       expect(plain).toBe(written.body?.[keyAuth ? "key" : "secret"]);
+      if (op.action === "create") {
+        const parent = await h.sql.query(`select consumer_id from ${keyAuth ? "keyauth_credentials" : "jwt_credentials"} where id = $1`, [id]);
+        expect(parent.rows).toEqual([{ consumer_id: f.path.split("/")[2] }]);
+      }
       return;
     }
     const table = { Consumer: "consumers", AclGroups: "consumers", BasicAuth: "basicauth_credentials", Upstream: "upstreams", Target: "targets", Certificate: "certificates", Plugin: "plugins" }[op.resource];
@@ -247,9 +263,20 @@ describe("remaining resource draft-only writes (WS-R4 B2)", () => {
     const { rows } = await h.sql.query<Record<string, unknown>>(`select * from ${table} where environment_id = $1 and id = $2`, [f.ws, id]);
     if (op.action === "delete") {
       expect(rows).toEqual([]);
+      if (op.resource === "Consumer") {
+        for (const child of ["keyauth_credentials", "jwt_credentials", "basicauth_credentials", "plugins"]) {
+          expect((await h.sql.query(`select id from ${child} where environment_id = $1 and consumer_id = $2`, [f.ws, id])).rows).toEqual([]);
+        }
+      }
       return;
     }
     expect(rows).toHaveLength(1);
+    if (op.resource === "BasicAuth") {
+      expect(rows[0]).toMatchObject({ username: f.body?.username, consumer_id: f.path.split("/")[2] });
+      const plain = h.app.get<Encryptor>(ENCRYPTOR).open(rows[0]!.password_hash as string, basicAuthHashContext(id));
+      expect(plain).toBe(basicAuthPasswordHash(f.path.split("/")[2]!, f.body!.password as string));
+      return;
+    }
     const expected = {
       Consumer: { username: "after" }, AclGroups: { acl_groups: ["gold"] },
       Upstream: { name: "changed", algorithm: "least-connections" },
@@ -258,7 +285,8 @@ describe("remaining resource draft-only writes (WS-R4 B2)", () => {
     expect(rows[0]).toMatchObject(expected!);
     if (op.resource === "Certificate") {
       const snis = await h.sql.query<{ name: string }>("select name from certificate_snis where environment_id = $1 and certificate_id = $2 order by name", [f.ws, id]);
-      expect(snis.rows.map((s) => s.name)).toEqual(written.body?.snis);
+      expect(snis.rows.map((s) => s.name)).toEqual(f.expectedSnis);
+      expect(written.body?.snis).toEqual(f.expectedSnis);
     }
   };
 
@@ -286,6 +314,69 @@ describe("remaining resource draft-only writes (WS-R4 B2)", () => {
     expect(await state(f.ws)).toEqual(after);
   });
 
+  it.each(uniquePaths)("$id: eligible auto-publisher yields to the v2 writer, then publishes only the pending v1 edit", async (op) => {
+    const f = await fixture(op);
+    const enc = h.app.get<Encryptor>(ENCRYPTOR);
+    const snapshotState = async (version: number) => {
+      const { rows: [row] } = await h.sql.query<{ state: unknown }>("select state from snapshots where environment_id = $1 and version = $2", [f.ws, version]);
+      return enc.openJson<GatewayState>(row!.state, snapshotContext(f.ws, version, "state"));
+    };
+    const initial = await snapshotState(1);
+    const service = await h.api<{ items: { id: string }[] }>("GET", `/environments/${f.ws}/services`);
+    expect(service.status).toBe(200);
+    expect((await h.api("PATCH", `/environments/${f.ws}`, { name: (await state(f.ws)).environment.name, publishMode: "auto" })).status).toBe(200);
+    expect((await h.api("PUT", `/environments/${f.ws}/services/${service.body.items[0]!.id}`, {
+      name: "svc", protocol: "http", host: "pending-v1.example.com", port: 80,
+    })).status).toBe(200);
+    const before = await state(f.ws);
+    expect(before.environment).toMatchObject({ publish_mode: "auto", current_version: 1, has_unpublished_changes: true, draft_requires_publish: false });
+    const tables = op.resource === "Consumer" ? ["basicauth_credentials", "jwt_credentials", "keyauth_credentials"]
+      : [{ KeyAuth: "keyauth_credentials", Jwt: "jwt_credentials", BasicAuth: "basicauth_credentials" }[op.resource]!];
+    const holder = await h.sql.connect();
+    let writing: ReturnType<typeof f.write> | undefined;
+    try {
+      await holder.query("begin");
+      // SHARE blocks the writer's table lock, while allowing every SELECT needed to publish the committed v1 draft.
+      await holder.query(`lock table ${tables.join(", ")} in share mode`);
+      const { rows: [backend] } = await holder.query<{ pid: number }>("select pg_backend_pid() as pid");
+      writing = f.write();
+      void writing.catch(() => undefined);
+      const writer = await waitFor(backend!.pid, "lock table");
+      expect((await h.sql.query("select mode from pg_locks where pid = $1 and locktype = 'advisory' and objsubid = 1 and granted", [writer])).rows)
+        .toEqual([{ mode: "ExclusiveLock" }]);
+      // No environment row lock can make SKIP LOCKED hide this eligible draft: only the workspace lock excludes it.
+      expect((await h.sql.query("select mode from pg_locks where pid = $1 and relation = 'environments'::regclass", [writer])).rows).toEqual([]);
+      expect(await h.app.get(SnapshotsService).autoPublish(f.ws, 0)).toBe(true);
+      expect(await state(f.ws)).toEqual(before);
+      // The writer is still waiting at the same real lock after the publisher has yielded.
+      expect(await waitFor(backend!.pid, "lock table")).toBe(writer);
+      await holder.query("commit");
+      const refused = await writing;
+      expect([refused.status, refused.body?.code]).toEqual([409, "auto-publish"]);
+      expect(await state(f.ws)).toEqual(before);
+    } finally {
+      await holder.query("rollback");
+      holder.release();
+      if (writing) await Promise.allSettled([writing]);
+    }
+    // Positive control: with the workspace free, the identical eligible draft really produces a new snapshot.
+    expect(await h.app.get(SnapshotsService).autoPublish(f.ws, 0)).toBe(true);
+    const after = await state(f.ws);
+    expect(after.environment).toMatchObject({ current_version: 2, has_unpublished_changes: false });
+    expect(after.snapshots).toHaveLength(2);
+    expect(after.snapshots[0]).toEqual(before.snapshots[0]);
+    expect(after.snapshots[1]!.hash).not.toBe(before.snapshots[0]!.hash);
+    expect(after.entities).toEqual(before.entities);
+    expect(after.releases).toEqual(before.releases);
+    expect(after.deployments).toEqual(before.deployments);
+    expect(auditActions(before, after)).toEqual(["snapshot.publish"]);
+    expect(await snapshotState(2)).toEqual({
+      ...initial, services: initial.services.map((s) => ({ ...s, host: "pending-v1.example.com" })),
+    });
+    expect(await h.app.get(SnapshotsService).autoPublish(f.ws, 0)).toBe(true);
+    expect(await state(f.ws)).toEqual(after);
+  });
+
   it.each(representatives)("$id: holds the workspace from manual check through commit before publishMode can change", async (op) => {
     const f = await fixture(op);
     const before = await state(f.ws);
@@ -308,9 +399,6 @@ describe("remaining resource draft-only writes (WS-R4 B2)", () => {
       pending.push(switching);
       const switcher = await waitFor(writer, workspaceWait);
       await noEntityLocks(switcher);
-      expect(await state(f.ws)).toEqual(before);
-      // The actual v1 publisher also cannot publish a transaction that has not committed.
-      expect(await h.app.get(SnapshotsService).autoPublish(f.ws, 0)).toBe(true);
       expect(await state(f.ws)).toEqual(before);
       await holder.query("commit");
       const written = await writing;
