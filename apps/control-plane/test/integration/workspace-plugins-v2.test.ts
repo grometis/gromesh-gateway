@@ -234,6 +234,21 @@ describe("workspace plugin writes (WS-P1), real PostgreSQL and Kong", () => {
     await v2(h.api, "DELETE", b, `/${other.body.id}`);
   });
 
+  it("replaces the only key-auth with basic-auth via PUT on the same plugin id", async () => {
+    const f = await raceFixture("POST", false);
+    const route = await h.api("POST", `/environments/${f.ws}/routes`, { name: "auth", serviceId: f.serviceId, paths: ["/auth"] });
+    expect(route.status).toBe(201);
+    const made = await v2(h.api, "POST", f.ws, "", plugin(f.serviceId, { name: "key-auth" }));
+    expect(made.status).toBe(201);
+    const changed = await v2(h.api, "PUT", f.ws, `/${made.body.id}`, plugin(f.serviceId, { name: "basic-auth" }));
+    expect(changed.status, JSON.stringify(changed.body)).toBe(200);
+    expect(changed.body).toMatchObject({ id: made.body.id, createdAt: made.body.createdAt, name: "basic-auth", enabled: true,
+      scope: { serviceId: f.serviceId, routeId: null, consumerId: null } });
+    expect((await v2(h.api, "GET", f.ws)).body.items).toEqual([changed.body]);
+    expect((await h.sql.query("select before, after from audit_events where entity_id = $1 and action = 'plugin.update'", [made.body.id])).rows)
+      .toEqual([{ before: made.body, after: changed.body }]);
+  });
+
   it.each(["key-auth", "basic-auth", "jwt"] as const)("allows same-workspace anonymous with %s and rejects an overlapping second mechanism on POST and PUT", async (name) => {
     const f = await raceFixture("POST", false);
     const route = await h.api("POST", `/environments/${f.ws}/routes`, { name: "auth", serviceId: f.serviceId, paths: ["/auth"] });
@@ -530,19 +545,27 @@ describe("workspace plugin writes (WS-P1), real PostgreSQL and Kong", () => {
     } finally { await h.sql.query("drop function ws_p1_pause_archive() cascade"); }
   });
 
-  it.each(["service", "route"] as const)("POST and PUT recheck the %s target deleted while queued on the workspace", async (entity) => {
+  it.each(["service", "route", "consumer", "anonymous"] as const)("POST and PUT recheck the %s target deleted while queued on the workspace", async (reference) => {
+    const entity = reference === "anonymous" ? "consumer" : reference;
+    const path = reference === "anonymous" ? "config.anonymous" : `scope.${entity}Id`;
     for (const method of ["POST", "PUT"] as const) {
       const f = await raceFixture(method);
       const target = entity === "service"
         ? await h.api("POST", `/environments/${f.ws}/services`, { name: "target", protocol: "http", host: "echo", port: 80 })
-        : await h.api("POST", `/environments/${f.ws}/routes`, { name: "target", serviceId: f.serviceId, paths: ["/target"] });
+        : entity === "route"
+          ? await h.api("POST", `/environments/${f.ws}/routes`, { name: "target", serviceId: f.serviceId, paths: ["/target"] })
+          : await h.api("POST", `/environments/${f.ws}/consumers`, { username: uniq("target") });
       expect(target.status).toBe(201);
       const before = await state(f.ws);
       const suffix = method === "PUT" ? `/${before.plugins[0]!.id}` : "";
       await barrier("select 1 from environments where id = $1 for no key update", f.ws, async (pid, release, start) => {
         const deleting = start(h.api("DELETE", `/../v2/workspaces/${f.ws}/${entity}s/${target.body.id}`));
         const deleter = await waitFor(pid, 'from "environments".*for no key update');
-        const writing = start(v2(h.api, method, f.ws, suffix, plugin(f.serviceId, { scope: { [`${entity}Id`]: target.body.id } })));
+        const body = reference === "anonymous"
+          ? plugin(f.serviceId, { name: "key-auth", config: { anonymous: target.body.id } })
+          : plugin(f.serviceId, { scope: { [`${entity}Id`]: target.body.id },
+            ...(entity === "consumer" ? { name: "rate-limiting", config: { minute: 10, policy: "local" } } : {}) });
+        const writing = start(v2(h.api, method, f.ws, suffix, body));
         const writer = await waitFor(deleter, workspaceWait);
         await noEntityLocks(writer);
         expect(await state(f.ws)).toEqual(before);
@@ -550,7 +573,7 @@ describe("workspace plugin writes (WS-P1), real PostgreSQL and Kong", () => {
         expect((await deleting).status).toBe(204);
         const res = await writing;
         expect(res.status, JSON.stringify(res.body)).toBe(422);
-        expect(res.body.errors).toContainEqual(expect.objectContaining({ path: `scope.${entity}Id` }));
+        expect(res.body.errors).toContainEqual(expect.objectContaining({ path }));
       });
       const after = await state(f.ws);
       expect(after.plugins).toEqual(before.plugins);
@@ -560,12 +583,16 @@ describe("workspace plugin writes (WS-P1), real PostgreSQL and Kong", () => {
     }
   });
 
-  it.each(["service", "route"] as const)("%s DELETE waits for POST/PUT plugin commit and obeys reference or cascade rules", async (entity) => {
+  it.each(["service", "route", "consumer", "anonymous"] as const)("%s DELETE waits for POST/PUT plugin commit and obeys reference or cascade rules", async (reference) => {
+    const entity = reference === "anonymous" ? "consumer" : reference;
+    const cascades = reference === "route" || reference === "consumer";
     for (const method of ["POST", "PUT"] as const) {
       const f = await raceFixture(method);
       const route = entity === "route" ? await h.api("POST", `/environments/${f.ws}/routes`, { name: "target", serviceId: f.serviceId, paths: ["/target"] }) : undefined;
       if (route) expect(route.status).toBe(201);
-      const id = (route?.body.id ?? f.serviceId) as string;
+      const consumer = entity === "consumer" ? await h.api("POST", `/environments/${f.ws}/consumers`, { username: uniq("target") }) : undefined;
+      if (consumer) expect(consumer.status).toBe(201);
+      const id = (route?.body.id ?? consumer?.body.id ?? f.serviceId) as string;
       const before = await state(f.ws);
       const suffix = method === "PUT" ? `/${before.plugins[0]!.id}` : "";
       await h.sql.query(`create function ws_p1_pause_target() returns trigger language plpgsql as $$
@@ -575,7 +602,11 @@ describe("workspace plugin writes (WS-P1), real PostgreSQL and Kong", () => {
           when (NEW.environment_id = '${f.ws}'::uuid and NEW.action = '${method === "POST" ? "plugin.create" : "plugin.update"}')
           execute function ws_p1_pause_target('${f.ws}')`);
         await barrier("select pg_advisory_xact_lock(234, hashtext($1))", f.ws, async (pid, release, start) => {
-          const writing = start(v2(h.api, method, f.ws, suffix, plugin(f.serviceId, { scope: { [`${entity}Id`]: id }, enabled: false })));
+          const body = reference === "anonymous"
+            ? plugin(f.serviceId, { name: "key-auth", config: { anonymous: id }, enabled: false })
+            : plugin(f.serviceId, { scope: { [`${entity}Id`]: id }, enabled: false,
+              ...(entity === "consumer" ? { name: "rate-limiting", config: { minute: 10, policy: "local" } } : {}) });
+          const writing = start(v2(h.api, method, f.ws, suffix, body));
           const writer = await waitFor(pid, 'insert into "audit_events"');
           const deleting = start(h.api("DELETE", `/../v2/workspaces/${f.ws}/${entity}s/${id}`));
           const deleter = await waitFor(writer, workspaceWait);
@@ -585,11 +616,12 @@ describe("workspace plugin writes (WS-P1), real PostgreSQL and Kong", () => {
           const res = await writing;
           expect(res.status, JSON.stringify(res.body)).toBe(method === "POST" ? 201 : 200);
           const deleted = await deleting;
-          expect(deleted.status, JSON.stringify(deleted.body)).toBe(entity === "service" ? 409 : 204);
+          expect(deleted.status, JSON.stringify(deleted.body)).toBe(cascades ? 204 : 409);
           const after = await state(f.ws);
-          expect(after.plugins).toEqual(entity === "route" ? [] : [expect.objectContaining({ id: res.body.id, service_id: id, enabled: false })]);
-          expect((await h.sql.query(`select id from ${entity}s where id = $1`, [id])).rows).toEqual(entity === "route" ? [] : [{ id }]);
-          expect(auditActions(before, after)).toEqual([method === "POST" ? "plugin.create" : "plugin.update", ...(entity === "route" ? ["route.delete"] : [])].sort());
+          expect(after.plugins).toEqual(cascades ? [] : [expect.objectContaining({ id: res.body.id, service_id: f.serviceId, enabled: false,
+            ...(reference === "anonymous" ? { config: { anonymous: id } } : {}) })]);
+          expect((await h.sql.query(`select id from ${entity}s where id = $1`, [id])).rows).toEqual(cascades ? [] : [{ id }]);
+          expect(auditActions(before, after)).toEqual([method === "POST" ? "plugin.create" : "plugin.update", ...(cascades ? [`${entity}.delete`] : [])].sort());
           unchangedPublication(before, after);
         });
       } finally { await h.sql.query("drop function ws_p1_pause_target() cascade"); }
@@ -649,23 +681,21 @@ describe("workspace plugin writes (WS-P1), real PostgreSQL and Kong", () => {
   it("rechecks the current privileged plugin under the workspace lock after a concurrent v1 change", async () => {
     const editor = await h.as("editor");
     const made = await h.api("POST", `/environments/${a}/plugins`, plugin(sa, { name: "request-termination" }));
+    expect(made.status).toBe(201);
     const holder = await h.sql.connect();
+    let pending: ReturnType<typeof v2> | undefined;
     try {
       await holder.query("begin");
       await holder.query("select pg_advisory_xact_lock(hashtextextended($1::uuid::text, $2))", [a, 0x6772_7761]);
-      const pending = v2(editor.api, "PUT", a, `/${made.body.id}`, plugin(sa));
-      // Wait for the actual writer to be blocked, not a timing-based assumption.
-      const deadline = Date.now() + 4000;
-      let waiting = false;
-      while (!waiting && Date.now() < deadline) {
-        waiting = (await h.sql.query("select 1 from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock' and query like '%pg_advisory_xact_lock(%'")).rows.length > 0;
-        if (!waiting) await new Promise(r => setTimeout(r, 10));
-      }
-      expect(waiting).toBe(true);
+      const pid = (await holder.query<{ pid: number }>("select pg_backend_pid() pid")).rows[0]!.pid;
+      pending = v2(editor.api, "PUT", a, `/${made.body.id}`, plugin(sa));
+      const writer = await waitFor(pid, workspaceWait);
+      await noEntityLocks(writer);
       await holder.query("update plugins set name = 'pre-function', config = '{\"access\":[\"return\"]}' where id = $1", [made.body.id]);
       await holder.query("commit");
       expect((await pending).status).toBe(403);
-    } finally { await holder.query("rollback"); holder.release(); }
+    } finally { await holder.query("rollback"); holder.release(); if (pending) await pending; }
+    expect(aborts).toEqual([]);
     await h.api("DELETE", `/environments/${a}/plugins/${made.body.id}`);
   });
 });
