@@ -69,30 +69,55 @@ test("F4 actual collector recognizes kernel-confirmed missing lease", async () =
 
 // Python host operations run with fake clocks, process and systemd functions in a separate process. No sudo, SSH,
 // clock_settime, systemctl or runtime action reaches the OS; this verifies ordering and cleanup on the real script.
-function clockOperation(failWatchdog = false, failNtp = false) {
+function clockOperation(options = {}) {
   const script = String.raw`
 import json, sys, types
+options = json.loads(sys.argv[2])
 ns = {'__name__': 'synthetic_host_ops'}
 exec(compile(open(sys.argv[1]).read(),sys.argv[1],'exec'), ns)
 calls = []
 ns['os'].path.exists = lambda p: False
 ns['clock'] = lambda: dict(wall=2000000,mono=10000,boot='b',machine='m')
-ns['subprocess'].run = lambda args, **kw: (calls.append(args) or types.SimpleNamespace(returncode=1))
+ns['time'].CLOCK_BOOTTIME = 7
+ns['time'].clock_gettime = lambda clock: 10
+ns['time'].time = lambda: 2000
+watchdog = None
+def run(args, **kw):
+    calls.append(args)
+    if args[0:2] == ['systemctl', 'start']:
+        if options.get('failRestoreService'): raise RuntimeError('restore service unavailable')
+        exec(watchdog, {})
+    if args[0:2] == ['timedatectl', 'set-ntp']: return types.SimpleNamespace(returncode=0)
+    return types.SimpleNamespace(returncode=1)
+ns['subprocess'].run = run
 def call(*args):
+    global watchdog
     calls.append(list(args))
-    if args == ('timedatectl','show','-p','NTP','--value'): return 'yes'
-    if args[0:2] == ('systemctl','is-active') and sys.argv[2] == 'True': raise RuntimeError('watchdog missing')
-    if args == ('timedatectl','set-ntp','false') and sys.argv[3] == 'True': raise RuntimeError('cannot disable NTP')
+    if args[0] == 'systemd-run': watchdog = args[-1]
+    if args == ('timedatectl','show','-p','NTP','--value'): return 'no' if options.get('ntp') is False else 'yes'
+    if args[0:2] == ('systemctl','is-active') and options.get('failWatchdog'): raise RuntimeError('watchdog missing')
+    if args == ('timedatectl','set-ntp','false') and options.get('failNtp'): raise RuntimeError('cannot disable NTP')
     return 'active'
 ns['call'] = call
-ns['time'].clock_settime = lambda *args: calls.append(['clock_settime', *args])
+def settime(*args):
+    calls.append(['clock_settime', *args])
+    if options.get('failClock'): raise PermissionError('CAP_SYS_TIME missing')
+ns['time'].clock_settime = settime
 try:
-    result = ns['main']('rollback', {'run': 'a'*16})
-except RuntimeError as e:
+    action = options.get('action', 'rollback')
+    if action == 'watchdog':
+        result = ns['main']('rollback', {'run': 'a'*16})
+        calls.clear()
+        options['failClock'] = True
+        exec(watchdog, {})
+    else:
+        result = ns['main'](action, {'run': 'a'*16, 'unit': 'gromesh-n2-clock-'+'a'*16,
+                                    'before': dict(wall=2000000,mono=10000), 'ntp': options.get('ntp', True)})
+except (RuntimeError, PermissionError) as e:
     result = {'error': str(e)}
 print(json.dumps(dict(result=result,calls=calls)))
 `;
-  return JSON.parse(execFileSync("python3", ["-c", script, new URL("./host-ops.py", import.meta.url).pathname, failWatchdog ? "True" : "False", failNtp ? "True" : "False"], { encoding: "utf8" }));
+  return JSON.parse(execFileSync("python3", ["-c", script, new URL("./host-ops.py", import.meta.url).pathname, JSON.stringify(options)], { encoding: "utf8" }));
 }
 test("clock safety timer is installed and confirmed before NTP or realtime changes", () => {
   const { calls, result } = clockOperation();
@@ -105,12 +130,31 @@ test("clock safety timer is installed and confirmed before NTP or realtime chang
   assert.ok(calls[schedule].includes("--on-active=55s"));
 });
 test("failed watchdog does not alter NTP or the clock", () => {
-  const { calls, result } = clockOperation(true);
+  const { calls, result } = clockOperation({ failWatchdog: true });
   assert.equal(result.error, "watchdog missing");
   assert.ok(!calls.some((a) => a[0] === "clock_settime" || a[1] === "set-ntp"));
 });
 test("clock preparation failure starts the restore service immediately", () => {
-  const { calls, result } = clockOperation(false, true);
+  const { calls, result } = clockOperation({ failNtp: true });
   assert.equal(result.error, "cannot disable NTP");
   assert.ok(calls.some((a) => a[0] === "systemctl" && a[1] === "start" && a[2].endsWith(".service")));
+});
+for (const action of ["rollback", "watchdog", "restore"]) {
+  test(`clock ${action} restores NTP even without CAP_SYS_TIME`, () => {
+    const { calls, result } = clockOperation({ action, failClock: action !== "watchdog" });
+    assert.equal(result.error, "CAP_SYS_TIME missing");
+    const failedClock = calls.findLastIndex((a) => a[0] === "clock_settime");
+    assert.ok(failedClock >= 0);
+    assert.ok(calls.slice(failedClock + 1).some((a) => a[0] === "timedatectl" && a[1] === "set-ntp" && a[2] === "true"), JSON.stringify(calls));
+  });
+}
+test("rollback restores NTP locally if the restore service cannot start", () => {
+  const { calls, result } = clockOperation({ failClock: true, failRestoreService: true });
+  assert.ok(result.error);
+  assert.deepEqual(calls.at(-1), ["timedatectl", "set-ntp", "true"]);
+});
+test("restore preserves an originally disabled NTP state on clock failure", () => {
+  const { calls, result } = clockOperation({ action: "restore", failClock: true, ntp: false });
+  assert.equal(result.error, "CAP_SYS_TIME missing");
+  assert.deepEqual(calls.at(-1), ["timedatectl", "set-ntp", "false"]);
 });

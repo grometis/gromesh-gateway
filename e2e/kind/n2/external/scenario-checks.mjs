@@ -51,7 +51,7 @@ export function probeFailure({ events, start, end, victim, survivor, stopped, in
   if (healthy.length < 2 || healthy[0].t > start + 2000 || healthy.at(-1).t < end - 2000 || healthy.some((e, i) => i && e.t - healthy[i - 1].t > 2000)) return invalid("survivor traffic not continuous");
   if (healthy.some((e) => e.s !== 200)) return fail("healthy replica interrupted");
   const v = ev.filter((e) => e.pod === victim && e.k === "new");
-  if (!v.length) return invalid("no requests to the frozen pod");
+  if (v.length < 2 || v[0].t > start + 2000 || v.at(-1).t < end - 2000 || v.some((e, i) => i && e.t - v[i - 1].t > 2000)) return invalid("victim traffic not continuous");
   if (v.some((e) => e.s === 200 && e.t > start + 34_000)) return fail("victim served after lease deadline");
   const blocked = v.find((e) => e.s === 503);
   if (!blocked || !finite(stopped)) return invalid("503 or identified Kong exit absent");
@@ -70,6 +70,7 @@ export function probeRestart({ before, samples, after, start, end, events, pod, 
   if (reports.some((r, i) => r.final || (i && (r.seq !== reports[i - 1].seq + 1 || r.prevDigest !== reports[i - 1].digest)))) return fail("resumed report chain closed or discontinuous");
   if (samples.some((s, i) => i && (s.t < samples[i - 1].t || s.t - samples[i - 1].t > 2000))) return invalid("gap in lease/proof sampling");
   if (samples.some((s) => s.final || s.admission !== before.admission)) return fail("probe-only restart closed/replaced the admission");
+  if (samples.some((s) => s.ready && (!s.lease || !(s.passes >= 2) || s.proven !== 7 || !s.guardVerified))) return fail("Ready before valid lease, two complete proofs and canary verification");
   const withdrawn = samples.find((s) => s.t >= start && s.leasePresent === false);
   if (!withdrawn) return invalid("lease withdrawal not observed");
   const renewed = samples.find((s) => s.t > withdrawn.t && s.lease);

@@ -56,6 +56,7 @@ async function command(bin, args, input, timeout = 30_000) {
 }
 
 export async function main() {
+  assert.equal(process.env.SUITES, "host-events", "explicit SUITES=host-events required for privileged host actions");
   const out = process.env.LAB_OUT;
   assert.ok(out, "LAB_OUT required");
   mkdirSync(out, { recursive: true }); chmodSync(out, 0o700);

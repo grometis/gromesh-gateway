@@ -112,6 +112,25 @@ test("probe cannot use traffic only on a healthy Service replica", () => {
   const e = probe(); e.events.forEach((x) => { if (x.pod === "victim") x.k = "heartbeat"; });
   assert.equal(probeFailure(e).result, "INVALID");
 });
+test("probe rejects one initial 503 followed by victim heartbeats", () => {
+  const e = probe();
+  e.events.forEach((x) => { if (x.pod === e.victim && x.t > start) x.k = "heartbeat"; });
+  assert.equal(probeFailure(e).result, "INVALID");
+});
+test("probe requires distributed victim requests at both ends and throughout the window", () => {
+  for (const missing of [
+    (t) => t < start + 2500,
+    (t) => t > end - 2500,
+    (t) => t > start + 10_000 && t < start + 15_000,
+  ]) {
+    const e = probe();
+    e.events.forEach((x) => { if (x.pod === e.victim && x.t >= start && x.t <= end && missing(x.t)) x.k = "heartbeat"; });
+    assert.equal(probeFailure(e).result, "INVALID");
+  }
+  const e = probe();
+  e.events.forEach((x) => { if (x.pod === e.victim && x.t > start + 35_000) { delete x.s; x.e = "ECONNREFUSED"; } });
+  assert.equal(probeFailure(e).result, "PASS", "connection errors still exercise the stopped victim");
+});
 test("probe healthy replica interruption fails; missing traffic is INVALID", () => {
   const e = probe(); e.events.find((x) => x.pod === "survivor" && x.t > start).s = 503;
   assert.equal(probeFailure(e).result, "FAIL");
@@ -132,6 +151,20 @@ test("F4 rejects one proof, missing withdrawal, same container and premature Rea
     [(e) => e.samples.forEach((s) => { s.guardVerified = false; }), "FAIL"],
     [(e) => { e.samples[5].t += 3000; }, "INVALID"],
   ]) { const e = f4(); mutate(e); assert.equal(probeRestart(e).result, result); }
+});
+test("F4 rejects premature Ready in any sample before lease/proofs/canary recovery", () => {
+  for (const [index, state] of [
+    [0, {}], [8, {}],
+    [8, { lease: true, guardVerified: true, passes: 1 }],
+    [8, { lease: true, guardVerified: true, passes: 2, proven: 6 }],
+    [8, { lease: false, guardVerified: true, passes: 2 }],
+    [61, {}],
+    [90, { guardVerified: false }],
+  ]) {
+    const e = f4();
+    Object.assign(e.samples[index], state, { ready: true });
+    assert.equal(probeRestart(e).result, "FAIL", `premature Ready at sample ${index}: ${JSON.stringify(state)}`);
+  }
 });
 test("drain does not pass with missing sidecar times, empty nodes, SQL workaround or unchanged pod", () => {
   for (const mutate of [(e) => { delete e.exits.agent; }, (e) => { e.nodes = []; }, (e) => { e.mutated = true; }, (e) => { e.replacement.uid = e.removed.uid; }]) {

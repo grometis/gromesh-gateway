@@ -71,10 +71,12 @@ def main(action, data):
         ntp = call('timedatectl', 'show', '-p', 'NTP', '--value') == 'yes'
         unit = 'gromesh-n2-clock-' + data['run']
         # Independent restoration survives a killed observer/SSH connection. Restore using BOOTTIME, never a stale
-        # absolute date. NTP is restored to its original state, and only after the bounded experiment.
-        restore = ('import subprocess,time; '
-                   'time.clock_settime(time.CLOCK_REALTIME, %r + time.clock_gettime(time.CLOCK_BOOTTIME) - %r); '
-                   'subprocess.run(["timedatectl","set-ntp",%r],check=True)' %
+        # absolute date. Missing CAP_SYS_TIME must never prevent restoring the original NTP state.
+        restore = ('import subprocess,time\n'
+                   'try:\n'
+                   '    time.clock_settime(time.CLOCK_REALTIME, %r + time.clock_gettime(time.CLOCK_BOOTTIME) - %r)\n'
+                   'finally:\n'
+                   '    subprocess.run(["timedatectl","set-ntp",%r],check=True)\n' %
                    (before['wall'] / 1000, before['mono'] / 1000, 'true' if ntp else 'false'))
         call('systemd-run', '--unit=' + unit, '--on-active=55s', 'python3', '-c', restore)
         # Verify that the watchdog actually exists before changing the host clock.
@@ -83,7 +85,11 @@ def main(action, data):
             call('timedatectl', 'set-ntp', 'false')
             time.clock_settime(time.CLOCK_REALTIME, time.time() - 120)
         except BaseException:
-            subprocess.run(['systemctl', 'start', unit + '.service'], check=True)
+            try:
+                subprocess.run(['systemctl', 'start', unit + '.service'], check=True)
+            finally:
+                # The service may itself fail to start; recovery cannot rely on systemd alone.
+                call('timedatectl', 'set-ntp', 'true' if ntp else 'false')
             raise
         return dict(before=before, after=clock(), restoreUnit=unit, ntp=ntp)
     if action == 'restore':
@@ -92,8 +98,10 @@ def main(action, data):
             raise ValueError('unexpected restore unit')
         # Idempotent even after the safety timer already ran and systemd garbage-collected its unit.
         before = data['before']
-        time.clock_settime(time.CLOCK_REALTIME, before['wall'] / 1000 + time.clock_gettime(time.CLOCK_BOOTTIME) - before['mono'] / 1000)
-        call('timedatectl', 'set-ntp', 'true' if data['ntp'] else 'false')
+        try:
+            time.clock_settime(time.CLOCK_REALTIME, before['wall'] / 1000 + time.clock_gettime(time.CLOCK_BOOTTIME) - before['mono'] / 1000)
+        finally:
+            call('timedatectl', 'set-ntp', 'true' if data['ntp'] else 'false')
         subprocess.run(['systemctl', 'stop', unit + '.timer'], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         restored = clock()
         expected = before['wall'] + restored['mono'] - before['mono']
