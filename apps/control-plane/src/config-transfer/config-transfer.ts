@@ -1,3 +1,4 @@
+import { workspaceTransaction } from "../common/workspace-transaction.js";
 import { Controller, Get, HttpCode, Inject, Injectable, Module, Param, Post, Query, Res } from "@nestjs/common";
 import { convertKongConfig, diffGatewayStates, exportConfig, privilegedFingerprint, type ConfigDocument } from "@gromesh/compiler";
 import type { Response } from "express";
@@ -62,12 +63,12 @@ export class ConfigTransferService {
 
   private async importOnce(ctx: RequestContext, envId: string, request: ImportRequest): Promise<{ report: ReturnType<typeof emptyReport> } | { failure: Parameters<typeof importFailure>[0] }> {
     retry: for (let attempt = 0; ; attempt++) {
-      // Kinds without an instance index yet (a legacy repetition blocks them): their tables are locked before the
-      // serializable snapshot, so the instance check sees every value committed before it (decision H-5).
+      // The workspace advisory serializes the draft; the existing queue, table and uniqueness locks protect
+      // cross-workspace checks. READ COMMITTED must see values and actor counts committed while either lock waited.
       const unenforced = await unenforcedKinds(this.db);
       try {
-        return await this.db.transaction(async tx => {
-          // First statements, before the snapshot: one import at a time, then the tables of unenforced kinds.
+        return await workspaceTransaction(this.db, envId, async tx => {
+          // After the workspace lock: one import at a time, then the tables of unenforced kinds.
           await tx.execute(sql`lock table import_queue in exclusive mode`);
           await lockUnenforcedTables(tx, unenforced);
           await requireEnvironment(tx, envId, true);
@@ -139,15 +140,14 @@ export class ConfigTransferService {
             await audit(tx, ctx, { action: "environment.import", entityType: "environment", entityId: envId, environmentId: envId, after: { mode: request.mode, sourceFormat: request.sourceFormat ?? "gromesh/v1", ...report } });
           }
           return { report };
-        }, { isolationLevel: "serializable" });
+        }, { isolationLevel: "read committed" });
       } catch (error) {
         let pg: unknown = error;
         for (let i = 0; i < 4 && pg && typeof pg === "object"; i++, pg = "cause" in pg ? pg.cause : undefined) {
           if ("code" in pg) {
             const code = String(pg.code);
-            // SSI conflicts can also come from the at-rest key rotator. Re-plan from a fresh snapshot.
-            if (["40001", "40P01"].includes(code) && attempt < 3) continue retry;
-            // An import into another environment may claim a free UUID after our serializable snapshot.
+            // Concurrency aborts have already exhausted workspaceTransaction's bounded retries.
+            // An import into another workspace may claim a free consumer UUID while this import plans.
             if (code === "23505" && "constraint" in pg && pg.constraint === "consumers_pkey" && attempt < 3) continue retry;
             if (["23505", "23503", "40001", "40P01"].includes(code)) throw importFailure([{ path: "document", message: "the resulting draft conflicts with existing or concurrent changes; retry after resolving the conflict" }]);
           }

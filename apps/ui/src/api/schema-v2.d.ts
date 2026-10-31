@@ -1592,7 +1592,11 @@ export interface paths {
          */
         put: operations["replaceService"];
         post?: never;
-        /** @description Refused with 409 while routes or plugins reference the service. */
+        /**
+         * @description Refused with 409 while routes or plugins reference the service. Edits the draft only (no publish, no
+         *     deployment): in an environment that auto-publishes its draft through v1 (publishMode auto) it answers 409
+         *     auto-publish and writes nothing. Audited (service.delete).
+         */
         delete: operations["deleteService"];
         options?: never;
         head?: never;
@@ -1646,6 +1650,10 @@ export interface paths {
          */
         put: operations["replaceRoute"];
         post?: never;
+        /**
+         * @description Edits the draft only (no publish, no deployment): in an environment that auto-publishes its draft through v1
+         *     (publishMode auto) it answers 409 auto-publish and writes nothing. Audited (route.delete).
+         */
         delete: operations["deleteRoute"];
         options?: never;
         head?: never;
@@ -6773,7 +6781,15 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
+            /** @description auto-publish (a v2 write where v1 auto-publishes), or a conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["RouteProblem"] | components["schemas"]["Problem"];
+                };
+            };
         };
     };
     listRoutes: {
@@ -6934,6 +6950,15 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            /** @description auto-publish (a v2 write where v1 auto-publishes), or a conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["RouteProblem"] | components["schemas"]["Problem"];
+                };
+            };
         };
     };
     listConsumers: {

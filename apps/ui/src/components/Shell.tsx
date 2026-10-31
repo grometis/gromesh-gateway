@@ -1,5 +1,5 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Navigate, NavLink, Outlet, useLocation, useNavigate, useParams } from "react-router";
+import { Navigate, NavLink, Outlet, useLocation, useMatch, useNavigate, useParams } from "react-router";
 import { api, unwrap } from "../api/client";
 import { statusMessage } from "../api/errors";
 import { effectiveRole, useAuth } from "../auth";
@@ -61,6 +61,7 @@ const GATEWAY = [
   ["plugins", "Plugins"],
   ["upstreams", "Upstreams"],
   ["certificates", "Certificados"],
+  ["releases", "Releases"],
 ] as const;
 const OPERATION = [
   ["overview", "Visão geral"],
@@ -72,6 +73,7 @@ const OPERATION = [
 
 export function Shell() {
   const { envId: routeEnvId } = useParams();
+  const isReleasesRoute = useMatch("/e/:envId/releases");
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
@@ -123,7 +125,7 @@ export function Shell() {
         </div>
       </aside>
       <main className="content">
-        {routeEnvId && <PublishStrip envId={routeEnvId} />}
+        {routeEnvId && !isReleasesRoute && <PublishStrip envId={routeEnvId} />}
         <Outlet />
       </main>
     </div>

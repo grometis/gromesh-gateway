@@ -1,3 +1,4 @@
+import { workspaceTransaction } from "../common/workspace-transaction.js";
 import { HttpException, HttpStatus, Inject, Injectable } from "@nestjs/common";
 import { and, asc, eq, isNotNull, ne, sql } from "drizzle-orm";
 import { audit } from "../audit/audit.js";
@@ -9,7 +10,6 @@ import { APP_CONFIG, type AppConfig } from "../config.js";
 import { DB, type Db, type Executor } from "../db/db.js";
 import { clusters, deploymentStates, deployments, environments, instance, releases, roleBindings, workspaceActiveRelease, workspaceCreationPolicy, workspaces } from "../db/schema.js";
 import { toRoleBinding } from "../access/access.js";
-import { archiveLock } from "../environments/environments.js";
 import { normalizeSlug, proposeSlug, slugProblem } from "./slug.js";
 import { SLUG_LOCK_KEY } from "./workspaces.js";
 
@@ -27,9 +27,14 @@ export interface CreationPolicyWrite {
   creatorBecomesAdmin: boolean;
 }
 
-export type WorkspaceRow = { id: string; key: string; name: string; description: string | null; slug: string | null; status: "active" | "archived" };
+export const workspaceSelection = {
+  id: workspaces.id, key: workspaces.key, name: environments.name, description: environments.description, slug: workspaces.slug, status: workspaces.status,
+  // One statement snapshot for the workspace and its pointer, including reads that lock the workspace rows.
+  activeRelease: sql<number | null>`(select ${workspaceActiveRelease.version} from ${workspaceActiveRelease} where ${workspaceActiveRelease.workspaceId} = ${workspaces.id})`,
+};
 
-/** No release exists before the workspace composition (N2), and none was provisioned by a promotion. */
+export type WorkspaceRow = { id: string; key: string; name: string; description: string | null; slug: string | null; status: "active" | "archived"; activeRelease: number | null };
+
 export const toWorkspace = (w: WorkspaceRow) => ({
   id: w.id,
   key: w.key,
@@ -37,7 +42,7 @@ export const toWorkspace = (w: WorkspaceRow) => ({
   ...(w.description !== null ? { description: w.description } : {}),
   slug: w.slug!,
   status: w.status,
-  activeRelease: null,
+  activeRelease: w.activeRelease,
   provisionedByPromotion: null,
 });
 
@@ -166,7 +171,7 @@ export class WorkspaceAdminService {
         .set({ slug, slugStatus: "derived", slugReason: null, updatedAt: sql`now()` })
         .where(eq(workspaces.id, env!.id))
         .returning();
-      const after = toWorkspace({ id: ws!.id, key: ws!.key, name: env!.name, description: env!.description, slug: ws!.slug, status: ws!.status });
+      const after = toWorkspace({ id: ws!.id, key: ws!.key, name: env!.name, description: env!.description, slug: ws!.slug, status: ws!.status, activeRelease: null });
       await audit(tx, ctx, { action: "workspace.create", entityType: "workspace", entityId: after.id, environmentId: after.id, after });
       // Platform administration already administers every workspace: a binding would only add a grant to revoke.
       if (current.creatorBecomesAdmin && !held.has("platform.admin")) {
@@ -184,7 +189,7 @@ export class WorkspaceAdminService {
   private async row(tx: Executor, workspaceId: string, lock: boolean): Promise<WorkspaceRow> {
     // Environment before workspace, the order every writer takes them.
     const q = tx
-      .select({ id: workspaces.id, key: workspaces.key, name: environments.name, description: environments.description, slug: workspaces.slug, status: workspaces.status })
+      .select(workspaceSelection)
       .from(environments)
       .innerJoin(workspaces, eq(workspaces.id, environments.id))
       .where(eq(environments.id, workspaceId));
@@ -196,7 +201,7 @@ export class WorkspaceAdminService {
 
   /** updateWorkspace: name and description only; the id, the key and the slug never change. */
   async update(ctx: RequestContext, workspaceId: string, body: WorkspaceUpdate) {
-    return this.db.transaction(async (tx) => {
+    return workspaceTransaction(this.db, workspaceId, async (tx) => {
       // The lock creations take: two renames to one free name never both pass the check below.
       await tx.execute(sql`select pg_advisory_xact_lock(${SLUG_LOCK_KEY})`);
       const current = await this.row(tx, workspaceId, true);
@@ -222,9 +227,7 @@ export class WorkspaceAdminService {
    * release that is not a tombstone, a v1 snapshot published for it, or a cluster registered in it.
    */
   async archive(ctx: RequestContext, workspaceId: string) {
-    await this.db.transaction(async (tx) => {
-      // Exclusive before any row: every writer in the workspace holds the shared lock until it commits (refuseArchived).
-      await archiveLock(tx, workspaceId, "exclusive");
+    await workspaceTransaction(this.db, workspaceId, async (tx) => {
       const current = await this.row(tx, workspaceId, true);
       if (current.status === "archived") return;
       const [active] = await tx

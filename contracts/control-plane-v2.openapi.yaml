@@ -2109,14 +2109,16 @@ paths:
         - cookieAuth: []
           csrfToken: []
         - bearerApiToken: []
-      description: Refused with 409 while routes or plugins reference the service.
+      description: |
+        Refused with 409 while routes or plugins reference the service. Edits the draft only (no publish, no
+        deployment): in an environment that auto-publishes its draft through v1 (publishMode auto) it answers 409
+        auto-publish and writes nothing. Audited (service.delete).
       responses:
         "204":
           description: Deleted
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
+        "409": { description: "auto-publish (a v2 write where v1 auto-publishes), or a conflict", content: { application/problem+json: { schema: { anyOf: [ { $ref: "#/components/schemas/RouteProblem" }, { $ref: "#/components/schemas/Problem" } ] } } } }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
       x-required-permission: gateway.write
@@ -2277,6 +2279,9 @@ paths:
       tags:
         - routes
       operationId: deleteRoute
+      description: |
+        Edits the draft only (no publish, no deployment): in an environment that auto-publishes its draft through v1
+        (publishMode auto) it answers 409 auto-publish and writes nothing. Audited (route.delete).
       security:
         - cookieAuth: []
           csrfToken: []
@@ -2286,6 +2291,7 @@ paths:
           description: Deleted (route-scoped plugins are deleted with it)
         "404":
           $ref: "#/components/responses/NotFound"
+        "409": { description: "auto-publish (a v2 write where v1 auto-publishes), or a conflict", content: { application/problem+json: { schema: { anyOf: [ { $ref: "#/components/schemas/RouteProblem" }, { $ref: "#/components/schemas/Problem" } ] } } } }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
       x-required-permission: gateway.write

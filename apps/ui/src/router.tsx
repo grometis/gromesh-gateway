@@ -17,6 +17,7 @@ import { RequestsPage } from "./pages/Requests";
 import { OverviewPage } from "./pages/Overview";
 import { ReviewPublishPage } from "./pages/ReviewPublish";
 import { WorkspacesPage } from "./pages/Workspaces";
+import { ReleasesPage } from "./pages/Releases";
 import { VariablesPage } from "./pages/Variables";
 
 export const router = createBrowserRouter([
@@ -44,6 +45,7 @@ export const router = createBrowserRouter([
               { path: "services", element: <ServicesPage /> },
               { path: "services/:serviceId", element: <ServiceDetailPage /> },
               { path: "routes", element: <RoutesPage /> },
+              { path: "releases", element: <ReleasesPage /> },
               { path: "variables", element: <VariablesPage /> },
               { path: "consumers", element: <ConsumersPage /> },
               { path: "consumers/:consumerId", element: <ConsumerDetailPage /> },

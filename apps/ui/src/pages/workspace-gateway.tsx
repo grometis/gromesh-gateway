@@ -55,29 +55,32 @@ export function useWorkspace(workspaceId: string) {
 }
 
 /** v2 has status; publishMode remains on the v1 environment with the same id. Unknown data forbids writes. */
-export function workspaceGatewayAccess(workspace: Pick<Workspace, "status"> | undefined, environment: Pick<Environment, "publishMode"> | undefined) {
+export function workspaceGatewayAccess(workspace: Pick<Workspace, "status"> | undefined, environment: Pick<Environment, "publishMode"> | undefined, purpose: "gateway" | "release" = "gateway") {
   if (workspace?.status === "archived") return {
     canWrite: false,
-    reason: "Somente leitura: este Workspace está arquivado. Não é possível criar, editar ou excluir itens do gateway.",
+    reason: purpose === "release" ? "Somente leitura: este Workspace está arquivado. Não é possível publicar releases." : "Somente leitura: este Workspace está arquivado. Não é possível criar, editar ou excluir itens do gateway.",
   };
-  if (environment?.publishMode === "auto") return {
+  if (purpose === "gateway" && environment?.publishMode === "auto") return {
     canWrite: false,
     reason: "Somente leitura: este Workspace usa publicação automática. Mude o ambiente para publicação manual antes de criar, editar ou excluir itens nesta tela, para evitar publicação automática de exclusões.",
   };
-  const canWrite = workspace?.status === "active" && environment?.publishMode === "manual";
+  // publishRelease only freezes content; unlike gateway edits it never triggers v1 auto-publication.
+  const canWrite = workspace?.status === "active" && (environment?.publishMode === "manual" || (purpose === "release" && environment?.publishMode === "auto"));
   return { canWrite, reason: canWrite ? null : "Somente leitura enquanto verificamos o estado e o modo de publicação do Workspace." };
 }
 
 /** Shared with the v2 Routes screen. Cached access cannot authorize writes while its current state is unconfirmed. */
-export function useWorkspaceGatewayAccess(workspaceId: string) {
+export function useWorkspaceGatewayAccess(workspaceId: string, purpose: "gateway" | "release" = "gateway") {
   const workspace = useWorkspace(workspaceId);
   const env = useEnvironment(workspaceId);
   if (workspace.isError || env.isError) return {
     canWrite: false,
     isRevalidating: false,
-    reason: "Somente leitura: não foi possível verificar o estado ou o modo de publicação do Workspace. Tente novamente antes de alterar o gateway.",
+    reason: purpose === "release"
+      ? "Somente leitura: não foi possível verificar o estado ou o modo de publicação do Workspace. Tente novamente antes de publicar uma release."
+      : "Somente leitura: não foi possível verificar o estado ou o modo de publicação do Workspace. Tente novamente antes de alterar o gateway.",
   };
-  const access = workspaceGatewayAccess(workspace.data, env.data);
+  const access = workspaceGatewayAccess(workspace.data, env.data, purpose);
   if (workspace.fetchStatus !== "idle" || env.fetchStatus !== "idle" || !workspace.data || !env.data) return {
     canWrite: false,
     // Cached permission keeps an open form editable, but cannot authorize its submission.

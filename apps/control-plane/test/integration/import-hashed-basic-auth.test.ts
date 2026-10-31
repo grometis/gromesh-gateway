@@ -279,12 +279,12 @@ test("concurrent imports cannot claim the same globally free UUID in different e
   const id = randomUUID();
   // Force the insert race before allowing real transactions: a missing consumers_pkey retry returns a
   // generic document error, so the exact error-array assertion below must fail without that branch.
-  // The import's own (serializable) transaction, not the one of the conflict limit that wraps it.
+  // The import's own workspace transaction, not the separate conflict-limit transaction.
   const db = h.app.get<Db>(DB);
   const original = db.transaction.bind(db);
   let raced = false;
   const transaction = vi.spyOn(db, "transaction").mockImplementation(((work, config) => {
-    if (!raced && config?.isolationLevel === "serializable") {
+    if (!raced && config?.isolationLevel === "read committed") {
       raced = true;
       return Promise.reject({ cause: { code: "23505", constraint: "consumers_pkey" } });
     }
@@ -294,6 +294,7 @@ test("concurrent imports cannot claim the same globally free UUID in different e
     // Each environment its own username: the two imports collide on the consumer UUID only.
     const results = await Promise.all(ids.map(envId => imported(envId, source(id, undefined, uniq("login")))));
     expect(results.map(r => r.status).sort()).toEqual([200, 422]);
+    expect(raced).toBe(true);
     expect(transaction.mock.calls.length).toBeGreaterThanOrEqual(3);
     const rejected = results.find(r => r.status === 422)!;
     expect([...rejected.body.errors].sort((a, b) => a.path.localeCompare(b.path))).toEqual([

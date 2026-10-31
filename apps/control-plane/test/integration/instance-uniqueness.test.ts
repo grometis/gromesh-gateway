@@ -379,7 +379,7 @@ describe("an instance migrated with credentials repeated across environments", (
     expect(real.body.errors).toContainEqual({ path: "document", message: "an entity kept from the draft holds a value already in use in this instance" });
   });
 
-  it("sees a value another workspace commits while the import waits, though its snapshot is serializable", async () => {
+  it("sees a value another workspace commits while the import waits under its workspace lock", async () => {
     const writer = new pg.Client({ connectionString: url });
     await writer.connect();
     try {
