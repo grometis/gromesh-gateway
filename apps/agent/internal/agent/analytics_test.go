@@ -126,6 +126,66 @@ func TestAnalyticsScrapeAndWindow(t *testing.T) {
 	}
 }
 
+func TestAnalyticsPreservesVectorWindowWhenKongStatusFailsContinuously(t *testing.T) {
+	for _, tc := range []struct {
+		name                string
+		received, delivered int64
+		errors, auth        int64
+		state               string
+		reasons             []string
+	}{
+		{"delivery failures", 4, 3, 1, 0, "degraded", []string{"delivery-failing"}},
+		{"auth refusals", 0, 0, 0, 1, "degraded", []string{"auth-refusals"}},
+		{"delivery and auth failures", 4, 3, 1, 1, "degraded", []string{"delivery-failing", "auth-refusals"}},
+		{"no traffic", 0, 0, 0, 0, "unknown", []string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			metrics := ""
+			vector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprint(w, metrics)
+			}))
+			defer vector.Close()
+			kong := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusServiceUnavailable)
+			}))
+			defer kong.Close()
+			m := newAnalyticsMonitor(&client{config: Config{KongStatusURL: kong.URL}, http: vector.Client()})
+			m.metricsURL = vector.URL
+			start := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+			for i := int64(0); i <= 65; i++ {
+				metrics = vectorMetrics(600+5*i, 100+tc.received*i, 100+tc.delivered*i, 3+tc.auth*i) +
+					fmt.Sprintf("vector_http_client_responses_total{component_id=\"requests\",status=\"503\"} %d\n", 7+tc.errors*i)
+				m.sample(context.Background(), start.Add(time.Duration(i)*5*time.Second))
+				if i == 0 {
+					continue
+				}
+				h := m.health()
+				if h.State != tc.state || !reflect.DeepEqual(h.Reasons, tc.reasons) || h.KongRequests != nil || !h.CollectorReachable {
+					t.Fatalf("sample %d: %+v", i, h)
+				}
+				intervals := i
+				if intervals > 60 {
+					intervals = 60
+				}
+				for _, counter := range []struct {
+					name string
+					got  *int64
+					want int64
+				}{
+					{"received", h.Received, tc.received * intervals},
+					{"delivered", h.Delivered, tc.delivered * intervals},
+					{"delivery errors", h.DeliveryErrors, tc.errors * intervals},
+					{"auth refusals", h.AuthRefusals, tc.auth * intervals},
+				} {
+					if counter.got == nil || *counter.got != counter.want {
+						t.Fatalf("sample %d: %s = %v, want %d", i, counter.name, counter.got, counter.want)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestVectorMetricsSemantics(t *testing.T) {
 	// Vector registers topology counters at zero, but sink ACK/error/buffer activity counters are lazy.
 	raw := `vector_uptime_seconds 600

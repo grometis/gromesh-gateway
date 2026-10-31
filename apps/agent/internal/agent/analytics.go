@@ -218,11 +218,12 @@ func parseVectorMetrics(r io.Reader) (analyticsSample, error) {
 }
 
 type analyticsMonitor struct {
-	client     *client
-	metricsURL string
-	samples    []analyticsSample
-	mu         sync.RWMutex
-	latest     AnalyticsHealth
+	client        *client
+	metricsURL    string
+	vectorSamples []analyticsSample
+	kongSamples   []analyticsSample
+	mu            sync.RWMutex
+	latest        AnalyticsHealth
 }
 
 func newAnalyticsMonitor(c *client) *analyticsMonitor {
@@ -276,8 +277,8 @@ func (m *analyticsMonitor) sample(ctx context.Context, now time.Time) {
 			}
 		}()
 	}
-	if len(m.samples) > 0 {
-		prev := m.samples[len(m.samples)-1]
+	if len(m.vectorSamples) > 0 {
+		prev := m.vectorSamples[len(m.vectorSamples)-1]
 		reset := s.uptime == nil || prev.uptime == nil || *s.uptime < *prev.uptime
 		if !reset {
 			// Vector exports internally every 10s, independently of our 5s sampling. Compare process origins at
@@ -288,23 +289,40 @@ func (m *analyticsMonitor) sample(ctx context.Context, now time.Time) {
 				reset = math.Abs(float64(*s.uptime-*prev.uptime)-now.Sub(prev.at).Seconds()) > 15
 			}
 		}
-		for _, p := range [][2]*int64{{s.kong, prev.kong}, {s.received, prev.received}, {s.delivered, prev.delivered}, {s.errors, prev.errors}, {s.auth, prev.auth}} {
+		for _, p := range [][2]*int64{{s.received, prev.received}, {s.delivered, prev.delivered}, {s.errors, prev.errors}, {s.auth, prev.auth}} {
 			if p[0] == nil || p[1] == nil || *p[0] < *p[1] {
 				reset = true
 			}
 		}
 		if reset {
-			m.samples = nil
+			m.vectorSamples = nil
 		}
 	}
-	m.samples = append(m.samples, s)
-	cutoff := now.Add(-300 * time.Second)
-	for len(m.samples) > 1 && !m.samples[1].at.After(cutoff) {
-		m.samples = m.samples[1:]
+	// A missing or reset counter invalidates only its own source's window.
+	if len(m.kongSamples) > 0 {
+		prev := m.kongSamples[len(m.kongSamples)-1]
+		if s.kong == nil || prev.kong == nil || *s.kong < *prev.kong {
+			m.kongSamples = nil
+		}
 	}
-	base := m.samples[0]
-	h.WindowComplete = !base.at.After(cutoff) && s.uptime != nil && *s.uptime >= 300
-	h.KongRequests = delta(s.kong, base.kong)
+	m.vectorSamples = append(m.vectorSamples, s)
+	m.kongSamples = append(m.kongSamples, s)
+	cutoff := now.Add(-300 * time.Second)
+	for len(m.vectorSamples) > 1 && !m.vectorSamples[1].at.After(cutoff) {
+		m.vectorSamples = m.vectorSamples[1:]
+	}
+	for len(m.kongSamples) > 1 && !m.kongSamples[1].at.After(cutoff) {
+		m.kongSamples = m.kongSamples[1:]
+	}
+	base := m.vectorSamples[0]
+	kongBase := m.kongSamples[0]
+	h.WindowComplete = !base.at.After(cutoff) && !kongBase.at.After(cutoff) && s.uptime != nil && *s.uptime >= 300
+	// Compare requests with received events over the same interval after a Vector reset.
+	// Retain Kong's history independently while the collector is unavailable.
+	if base.at.After(kongBase.at) && s.received != nil {
+		kongBase = base
+	}
+	h.KongRequests = delta(s.kong, kongBase.kong)
 	h.Received = delta(s.received, base.received)
 	h.Delivered = delta(s.delivered, base.delivered)
 	h.DeliveryErrors = delta(s.errors, base.errors)
