@@ -19,6 +19,9 @@ import { CLIENT } from "./client-script.mjs";
 import { privilegedAfterLoss, privilegedRequestsBetween, scenarioRequestLines } from "./privileged.mjs";
 import { bootToWall, groupFromEvents, itemResult, keepaliveBlocked, kFromLiveness, ksFromDeletion, kxFromEvents, overall, rfc3339CeilMs, runExitCode } from "./budgets.mjs";
 
+import { bootLeaseRejected, drainConverged, negativeReplay, websocketClosed } from "../external/scenario-checks.mjs";
+import { forgedBootLease, probeOnlyRestart, probeStopped } from "../external/kind-scenarios.mjs";
+
 const out = process.env.LAB_OUT ?? mkdtempSync(join(tmpdir(), "gromesh-n2-comp-"));
 // Every image this suite pulls is pinned by digest in versions.env (a mutable tag would not reproduce the run).
 const VERSIONS = Object.fromEntries(readFileSync(join(here, "../versions.env"), "utf8").split("\n")
@@ -842,6 +845,9 @@ async function containmentN({ frozenSupervisor = false } = {}) {
   expect(it, warm.some((e) => e.k === "new" && e.s === 200) && warm.some((e) => e.k === "ka" && e.s === 200), "no 200 before the loss");
   expect(it, client.events.some((e) => e.k === "ws" && e.ev === "pong"), "the WebSocket never echoed before the loss");
   const pods = await live();
+  const wsClients = await Promise.all(pods.map(async (p) => ({ pod: p.name, client: await scenarioOps.client(p, `${id}-${p.name}`) })));
+  const uncontainedWs = new Client(`${id}-negative-backend`, [ctx.topo.ext.backend.v4, String(BACKEND_PORT), `/${ctx.ws.A.slug}/api`, ctx.ws.A.key, `/${ctx.ws.A.slug}/api/ws`, null, "uncontained-backend", `${id}-negative-backend`]);
+  await sleep(4000);
   // K needs the kong container's finishedAt in nanoseconds (crictl on its node; the pod status only has seconds), of
   // the very container that gets frozen (id read before), and the supervisor's last heartbeat (read after the freeze).
   const kongIds = frozenSupervisor ? await Promise.all(pods.map(async (p) => {
@@ -862,6 +868,22 @@ async function containmentN({ frozenSupervisor = false } = {}) {
   const loadEnd = await vmLoad(`${id} end`);
   await thawAll();
   await sleep(1500);
+  const wsEnd = await vmNow();
+  await sleep(1000);
+  const wsNegativeEvidence = { events: uncontainedWs.events, start: lossEarliest, end: wsEnd, limit: frozenSupervisor ? 24_000 : 20_000, pod: "uncontained-backend" };
+  const wsNegative = websocketClosed(wsNegativeEvidence);
+  it.negative.push({ kind: "live-uncontained-backend", expected: "FAIL", observed: wsNegative, evidence: wsNegativeEvidence });
+  if (wsNegative.result !== "FAIL") it.open.push("INVALID: WebSocket live negative control did not observe late backend pong/open");
+  await uncontainedWs.stop();
+  for (const entry of wsClients) {
+    await entry.client.stop();
+    const evidence = { events: entry.client.events, start: lossEarliest, end: wsEnd, limit: frozenSupervisor ? 24_000 : 20_000, pod: entry.pod };
+    const verdict = websocketClosed(evidence);
+    const control = negativeReplay(websocketClosed, evidence, (e) => { const h = e.events.find((x) => x.t > e.start + e.limit && x.k === "heartbeat"); if (h) Object.assign(h, { k: "ws", ev: "pong", connection: "unsafe-reconnect", pod: e.pod }); });
+    (it.measures.websockets ??= []).push({ evidence, verdict, control });
+    if (verdict.result === "INVALID") it.open.push(`WebSocket ${entry.pod}: INVALID ${verdict.reason}`);
+    else if (verdict.result === "FAIL" || control.result !== "PASS") it.failures.push(`WebSocket ${entry.pod}: ${verdict.reason ?? "negative replay failed"}`);
+  }
   await client.stop();
   const ev = client.since(t0);
   const per = [];
@@ -959,27 +981,107 @@ async function containmentN({ frozenSupervisor = false } = {}) {
 }
 
 /** Aceite o: the probe stopped (kill -STOP) on one pod: 503 ≤ 34 s and Kong stopped ≤ 35/39 s from the last lease. */
-async function probeDown() {
-  const it = item("V2-o-probe-down", "Probe frozen on one serving pod: lease not renewed; 503 on that pod and Kong stopped within the lease budget; the other pod keeps serving; recovery after SIGCONT", V2_BUDGET);
-  const [p] = await live();
-  const leaseLines = async () => (await vmLogs(p.name, "isolation-probe")).filter((l) => /round report|lease/.test(l.text));
-  const before = await leaseLines();
-  const loadStart = await vmLoad("probe-down start");
-  const target = await freeze(p.name, "isolation-probe", "isolation-probe");
-  const t0 = await vmNow();
-  const lastRound = before.at(-1)?.at ?? null;
-  const samples = await sampleReadiness(45_000);
-  const k = await kongExit(p.name, t0);
-  const notReady = first(samples, (s) => s.pods.find((x) => x.name === p.name)?.ready === false);
-  const loadEnd = await vmLoad("probe-down end");
-  await thaw(target);
-  const back = await waitFor("pod Ready again after SIGCONT", async () => { const pj = await json(["-n", NS.dp, "get", "pod", p.name]); return podReady(pj.status) ? await vmNow() : null; }, { timeoutMs: 180_000, intervalMs: 1000 }).catch(() => null);
-  Object.assign(it.measures, { vmLoad: { start: loadStart, end: loadEnd }, lastProbeLineBeforeFreezeMs: rel(lastRound, t0), kongStopLogMs: rel(k.stopLog, t0), kongExitedLogMs: rel(k.exitedLog, t0), notReadyMs: rel(notReady?.t, t0), readyAgainAfterThawMs: back ? back - t0 : null });
-  // The lease is valid 33 s after its write; the last write precedes the freeze, so from the freeze the bound is ≤ 35 s.
-  expect(it, k.exitedLog && k.exitedLog - t0 <= V2_BUDGET.probeDownStopSupervisor, `Kong stopped ${it.measures.kongExitedLogMs} ms after the freeze`);
-  expect(it, back, "the pod did not come back after SIGCONT");
-  if (loadEnd > 16) it.notes.push(`VM load ${loadEnd} > 16: repeat`);
+// Scenario operations keep the existing kind identity guard and process-thaw registry.
+const scenarioOps = {
+  live, now: vmNow, freeze, thaw,
+  async chain(id) { return (await reports(id)).map((r) => ({ seq: r.seq, final: r.final, digest: r.digest, prevDigest: r.prev_digest })); },
+  async client(p, label) {
+    const pj = await json(["-n", NS.dp, "get", "pod", p.name]);
+    return new Client(label, [pj.status.podIP, "8000", `/${ctx.ws.A.slug}/api`, ctx.ws.A.key, `/${ctx.ws.A.slug}/api/ws`, null, p.name, label]);
+  },
+  async snapshot(p) {
+    const from = await vmNow();
+    const pj = await json(["-n", NS.dp, "get", "pod", p.name]);
+    const dir = `/var/lib/kubelet/pods/${p.uid}/volumes/kubernetes.io~empty-dir/isolation`;
+    // Read the lease before its durable state: issue() saves the proof before publishing a lease, so a later lease
+    // must never be paired with the state of the preceding round by parallel reads.
+    const le = await docker(["exec", pj.spec.nodeName, "cat", `${dir}/lease.json`], { allowFail: true });
+    const [st, boot, uptime] = await Promise.all([
+      docker(["exec", pj.spec.nodeName, "cat", `${dir}/probe-state.json`], { allowFail: true }),
+      docker(["exec", pj.spec.nodeName, "cat", "/proc/sys/kernel/random/boot_id"]),
+      docker(["exec", pj.spec.nodeName, "cat", "/proc/uptime"]),
+    ]);
+    if (st.code !== 0) throw new Error("probe state could not be read");
+    if (le.code !== 0 && !/No such file or directory/.test(le.stderr)) throw new Error("lease presence could not be established");
+    const state = JSON.parse(st.stdout);
+    const lease = le.code === 0 ? JSON.parse(le.stdout) : null;
+    const containers = [...(pj.status.initContainerStatuses ?? []), ...(pj.status.containerStatuses ?? [])];
+    return { from, t: await vmNow(), uid: pj.metadata.uid, boot: boot.stdout.trim(), probe: containers.find((c) => c.name === "isolation-probe")?.containerID,
+      kong: containers.find((c) => c.name === "kong")?.containerID, admission: state.admissionId, seq: state.chain?.seq,
+      final: state.chain?.closed, passes: state.passes ?? 0, proven: state.proven?.length ?? 0,
+      leasePresent: le.code === 0,
+      lease: Boolean(lease && ["ok", "inconclusive"].includes(lease.state) && lease.bootId === boot.stdout.trim() && lease.podUid === p.uid && lease.admissionId === state.admissionId && lease.expiresBoottimeNs / 1e6 > Number(uptime.stdout.split(" ")[0]) * 1000), guardVerified: state.guardVerified, ready: podReady(pj.status) };
+  },
+  async stopProbe(p) {
+    const pj = await json(["-n", NS.dp, "get", "pod", p.name]);
+    const c = pj.status.initContainerStatuses.find((c) => c.name === "isolation-probe");
+    await docker(["exec", pj.spec.nodeName, "crictl", "stop", "--timeout", "2", c.containerID.replace(/^containerd:\/\//, "")]);
+  },
+  async beginExit(p) {
+    const pj = await json(["-n", NS.dp, "get", "pod", p.name]);
+    const id = pj.status.containerStatuses.find((c) => c.name === "kong").containerID.replace(/^containerd:\/\//, "");
+    return { finished: watchExits(pj.spec.nodeName, { kong: id }, 60) };
+  },
+  async exit(p, start, observed) {
+    // Logs for the supervisor path; CRI nanosecond exit for the independent path (the frozen process cannot log).
+    if (!observed) { const at = (await kongExit(p.name, start)).exitedLog; return at == null ? null : at + 1; }
+    const ex = await observed.finished;
+    return ex.states.kong.finishedAtNode ? rfc3339CeilMs(ex.states.kong.finishedAtNode) : null;
+  },
+  async remaining(p) {
+    const pj = await json(["-n", NS.dp, "get", "pod", p.name]);
+    const dir = `/var/lib/kubelet/pods/${p.uid}/volumes/kubernetes.io~empty-dir/isolation`;
+    const le = JSON.parse((await docker(["exec", pj.spec.nodeName, "cat", `${dir}/lease.json`])).stdout);
+    const uptime = Number((await docker(["exec", pj.spec.nodeName, "cat", "/proc/uptime"])).stdout.split(" ")[0]) * 1000;
+    return le.expiresBoottimeNs / 1e6 - uptime;
+  },
+  async nginxRunning(p) {
+    const result = await kubectl(["-n", NS.dp, "exec", p.name, "-c", "kong", "--", "sh", "-c", NGINX_SAMPLE]);
+    return Number(result.stdout.trim().split(" ")[0]) > 0;
+  },
+  async forgeLease(p, forgedBoot) {
+    const pj = await json(["-n", NS.dp, "get", "pod", p.name]);
+    const dir = `/var/lib/kubelet/pods/${p.uid}/volumes/kubernetes.io~empty-dir/isolation`;
+    const original = await docker(["exec", pj.spec.nodeName, "cat", `${dir}/lease.json`]);
+    const lease = JSON.parse(original.stdout);
+    const actualBoot = (await docker(["exec", pj.spec.nodeName, "cat", "/proc/sys/kernel/random/boot_id"])).stdout.trim();
+    if (lease.bootId !== actualBoot) throw new Error("baseline lease is already from another boot");
+    const uptime = Number((await docker(["exec", pj.spec.nodeName, "cat", "/proc/uptime"])).stdout.split(" ")[0]);
+    lease.bootId = forgedBoot;
+    // Keep an otherwise genuine lease. A stale lease would test expiry, not bootId.
+    await docker(["exec", "-i", pj.spec.nodeName, "sh", "-c", `cat > '${dir}/lease.x10'; chmod 644 '${dir}/lease.x10'; mv '${dir}/lease.x10' '${dir}/lease.json'`], { input: JSON.stringify(lease) });
+    return { actualBoot, lease: { bootId: lease.bootId, nowNs: uptime * 1e9, expiresBoottimeNs: lease.expiresBoottimeNs } };
+  },
+};
+function scenarioResult(it, result) {
+  it.measures.scenario = result;
+  if (result.verdict.result === "INVALID") it.open.push(`INVALID: ${result.verdict.reason}`);
+  else if (result.verdict.result === "FAIL") it.failures.push(result.verdict.reason);
+  if (result.verdict.result === "PASS" && result.negative?.result !== "PASS") it.failures.push("negative evidence replay did not detect unsafe behavior");
   done(it);
+}
+async function observedScenario(it, action) {
+  try { scenarioResult(it, await action()); }
+  catch (error) { scenarioResult(it, { verdict: { result: "INVALID", reason: `scenario observation unavailable: ${error.message}` } }); }
+}
+async function probeDown() {
+  const it = item("V2-o-probe-down", "Frozen probe: per-pod 503 ≤34s, supervisor stop ≤35s and uninterrupted other replica", V2_BUDGET);
+  await observedScenario(it, () => probeStopped(scenarioOps, false));
+  await waitFor("pods recover after probe thaw", async () => (await json(["-n", NS.dp, "get", "pods", "-l", SELECTOR])).items.filter((p) => !p.metadata.deletionTimestamp).every((p) => podReady(p.status)), { timeoutMs: 180_000 });
+}
+async function probeDownIndependent() {
+  const it = item("V2-o-probe-independent", "Frozen probe plus supervisor frozen before the actual lease expires: guard 503 ≤34s; independent stop ≤39s; other replica serves", V2_BUDGET);
+  await observedScenario(it, () => probeStopped(scenarioOps, true));
+  await waitFor("pods recover after independent stop", async () => (await json(["-n", NS.dp, "get", "pods", "-l", SELECTOR])).items.filter((p) => !p.metadata.deletionTimestamp).every((p) => podReady(p.status)), { timeoutMs: 180_000 });
+}
+async function f4ProbeRestart() {
+  const it = item("F4", "Only the probe CRI container restarts; same admission/chain; withdrawn lease, two proofs and canary before Ready", {});
+  await observedScenario(it, () => probeOnlyRestart(scenarioOps));
+}
+async function bootIdLease() {
+  const it = item("bootId-forged", "Unexpired lease with forged bootId is rejected on the selected pod", {});
+  await observedScenario(it, () => forgedBootLease(scenarioOps));
+  await waitFor("pod Ready after boot lease recovery", async () => (await json(["-n", NS.dp, "get", "pods", "-l", SELECTOR])).items.filter((p) => !p.metadata.deletionTimestamp).every((p) => podReady(p.status)), { timeoutMs: 180_000 });
 }
 
 /** Aceite o: the agent frozen on a serving pod (communication failure): no containment of a pod that proves isolation. */
@@ -1112,9 +1214,9 @@ async function rollbackV2() {
  * the replacement is admitted (F3 path) and the deployment converges; the stale node's effect is recorded. */
 async function drainAndReplace() {
   const it = item("V2-p-drain", "Serving pod deleted with traffic and an open WebSocket: supervisor signal (Ks), nginx exit (Kx after SIGKILL if the drain runs out), kong exits before the sidecars; replacement admitted and converged; stale node of the deleted pod measured", V2_BUDGET);
-  const client = new Client("drain", [ctx.proxy.host, String(ctx.proxy.port), `/${ctx.ws.A.slug}/api`, ctx.ws.A.key, `/${ctx.ws.A.slug}/api/ws`]);
-  await sleep(5000);
   const [p] = await live();
+  const client = await scenarioOps.client(p, "drain-target");
+  await sleep(5000);
   const pj = await json(["-n", NS.dp, "get", "pod", p.name]);
   const ids = Object.fromEntries([...pj.status.initContainerStatuses, ...pj.status.containerStatuses].filter((c) => c.containerID && c.state?.running).map((c) => [c.name, c.containerID.replace(/^containerd:\/\//, "")]));
   const follow = new Follower(p.name, "kong");
@@ -1140,7 +1242,7 @@ async function drainAndReplace() {
   const nodes = await nodesOf();
   const ws = client.since(t0).filter((e) => e.k === "ws");
   Object.assign(it.measures, { vmLoad: { start: loadStart, end: loadEnd }, deleteCallMs: t0b - t0, signalReceivedMs: rel(sig?.at, t0), sigkillMs: rel(kill?.at, t0), nginxExitedMs: rel(exited?.at, t0),
-    containersFinishedMs: fin, kongBeforeSidecars: fin.kong != null && ["agent", "isolation-probe", "collector"].every((c) => fin[c] == null || fin[c] >= fin.kong),
+    containersFinishedMs: fin, kongBeforeSidecars: fin.kong != null && ["agent", "isolation-probe", "collector"].every((c) => fin[c] != null && fin[c] >= fin.kong),
     wsEvents: ws.map((e) => `${e.ev}@${e.t - t0}`).slice(0, 6), replacementGranted: Boolean(g), replacementReady: Boolean(ready),
     nodesAfter: nodes.map((n) => ({ node: n.node_id, evidence: n.evidence })), deploymentStates: (await deploymentState(ctx.dep1.revision)).map((s) => s.state).slice(-4) });
   // t0 is read before the delete call, so signal − t0 bounds Ks from above (the kubelet observes after the call starts).
@@ -1149,12 +1251,29 @@ async function drainAndReplace() {
     // Kx from the supervisor's own milestones (CLOCK_BOOTTIME around kill(2) and Wait4, one run of nginx).
     kxFromEvents(lines.filter((l) => l.at >= t0).map((l) => l.text), "drain"),
   ]);
-  expect(it, fin.kong != null && fin.kong <= V2_BUDGET.drainExit, `kong finished ${fin.kong} ms`);
-  expect(it, it.measures.kongBeforeSidecars, `exit order ${JSON.stringify(fin)}`);
+  if (fin.kong != null) expect(it, fin.kong <= V2_BUDGET.drainExit, `kong finished ${fin.kong} ms`);
+  if (["kong", "agent", "isolation-probe", "collector"].every((c) => fin[c] != null)) expect(it, it.measures.kongBeforeSidecars, `exit order ${JSON.stringify(fin)}`);
   expect(it, g && ready, "replacement not admitted/Ready");
-  const stale = nodes.find((n) => n.node_id === p.name);
-  if (stale) it.notes.push(`known gap: the deleted pod's node stays registered (evidence ${stale.evidence}); deployment states ${JSON.stringify(it.measures.deploymentStates)}`);
-  if (stale) { await sql(`with d as (delete from cluster_nodes where cluster_id = '${ctx.clusterId}' and node_id = '${p.name}' returning 1) select count(*)::int as n from d`); it.notes.push("lab contour: stale cluster_nodes row removed"); }
+  // Observe the natural result for up to 240 s; never delete stale registration rows to manufacture convergence.
+  await waitFor("natural deployment reconvergence", async () => {
+    const ns = await nodesOf();
+    const ds = await deploymentState(ctx.dep1.revision);
+    return ns.length >= 2 && !ns.some((n) => n.node_id === p.name) && ns.every((n) => n.evidence === "verified" && n.verified_revision === ctx.dep1.revision) && ds.at(-1)?.state === "converged";
+  }, { timeoutMs: 240_000, intervalMs: 2000 }).catch(() => false);
+  const replacementClient = await scenarioOps.client(replacement, "drain-replacement");
+  await sleep(4000);
+  await replacementClient.stop();
+  const evidence = { removed: { name: p.name, uid: p.uid }, replacement: { uid: replacement.uid, admitted: Boolean(g), ready: Boolean(ready), attempts: replacementClient.events.filter((e) => e.k === "new").length, served: replacementClient.events.some((e) => e.k === "new" && e.s === 200) },
+    exits: fin, nodes: await nodesOf(), states: await deploymentState(ctx.dep1.revision), revision: ctx.dep1.revision, exercised: true, mutated: false };
+  const wsEvidence = { events: client.events, start: t0, end: client.events.at(-1)?.t - 1000, limit: 20_000, pod: p.name };
+  it.measures.drainWebsocket = websocketClosed(wsEvidence);
+  const verdict = drainConverged(evidence);
+  const control = negativeReplay(drainConverged, evidence, (e) => e.nodes.push({ node_id: p.name, evidence: "stale" }));
+  it.measures.reconvergence = { evidence, verdict, control };
+  if (verdict.result === "INVALID") it.open.push(`INVALID: ${verdict.reason}`);
+  else if (verdict.result === "FAIL" || control.result !== "PASS") it.failures.push(verdict.reason ?? "drain negative replay failed");
+  if (it.measures.drainWebsocket.result === "INVALID") it.open.push(`INVALID: ${it.measures.drainWebsocket.reason}`);
+  else if (it.measures.drainWebsocket.result === "FAIL") it.failures.push(it.measures.drainWebsocket.reason);
   if (loadEnd > 16) it.notes.push(`VM load ${loadEnd} > 16: repeat`);
   done(it);
 }
@@ -1193,7 +1312,7 @@ const clients = [];
 
 async function mainV2() {
   for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => { report.aborted = { signal }; finishV2().finally(() => process.exit(130)); });
-  const all = [setupV2, d4Disabled, convergeV2, trafficV2, hashDivergence, revisionMismatch, rollbackV2, agentDown, probeDown, drainAndReplace, chartBlocksImds, containmentN, function containmentFrozen() { return containmentN({ frozenSupervisor: true }); }];
+  const all = [setupV2, d4Disabled, convergeV2, trafficV2, hashDivergence, revisionMismatch, rollbackV2, agentDown, f4ProbeRestart, bootIdLease, probeDown, probeDownIndependent, drainAndReplace, chartBlocksImds, containmentN, function containmentFrozen() { return containmentN({ frozenSupervisor: true }); }];
   const only = (process.env.LAB_STEPS ?? "").split(",").filter(Boolean);
   // A containment scenario needs the chart-only proof first: it is the step that adds the lab's IMDS exception.
   if (only.some((name) => ["containmentN", "containmentFrozen"].includes(name))) only.push("chartBlocksImds");
