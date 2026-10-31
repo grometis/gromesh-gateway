@@ -1,3 +1,4 @@
+import { refuseAutoPublish } from "../common/draft-only.js";
 import { workspaceTransaction } from "../common/workspace-transaction.js";
 import { randomUUID } from "node:crypto";
 import { Body, Controller, Delete, Get, HttpCode, Inject, Injectable, Module, Param, Post, Put, Query } from "@nestjs/common";
@@ -142,8 +143,9 @@ export class PluginsService {
     return { ...body, config };
   }
 
-  async remove(ctx: RequestContext, envId: string, pluginId: string) {
+  async remove(ctx: RequestContext, envId: string, pluginId: string, options: { draftOnly?: boolean } = {}) {
     await workspaceTransaction(this.db, envId, async (tx) => {
+      if (options.draftOnly) await refuseAutoPublish(tx, envId);
       const before = toPlugin(await this.requirePlugin(tx, envId, pluginId));
       requirePlatformAdmin(ctx, pluginPrivilegedIssues(before));
       await tx.delete(plugins).where(eq(plugins.id, pluginId));
@@ -263,7 +265,7 @@ export class WorkspacePluginsController {
   @HttpCode(204)
   @RequiredPermission("gateway.write", "workspace")
   async remove(@Ctx() ctx: RequestContext, @Param("workspaceId", uuidParam()) workspaceId: string, @Param("pluginId", uuidParam()) pluginId: string) {
-    await this.plugins.remove(ctx, workspaceId, pluginId);
+    await this.plugins.remove(ctx, workspaceId, pluginId, { draftOnly: true });
   }
 }
 
