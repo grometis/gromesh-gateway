@@ -90,7 +90,11 @@ describe("privileged plugin capabilities", () => {
     await h.sql.query("insert into plugins (environment_id, name, config) values ($1, 'pre-function', $2::jsonb)", [envId, JSON.stringify(preFunction.config)]);
     const refused = await editor("POST", `/environments/${envId}/snapshots`, {});
     expect(refused.status).toBe(403);
-    expect(paths(refused.body)).toEqual(["plugins[1].name"]);
+    // The draft query has no ordering guarantee (at-rest rotation can move a row). Assert the refused capability.
+    expect(refused.body.errors).toEqual([{
+      path: expect.stringMatching(/^plugins\[\d+\]\.name$/),
+      message: 'plugin "pre-function" is reserved to the platform admin',
+    }]);
     expect((await h.api("POST", `/environments/${envId}/snapshots`, {})).status).toBe(201);
     // Unchanged privileged plugins do not hold back an editor's ordinary publish...
     expect((await editor("POST", `/environments/${envId}/plugins`, { name: "cors", config: {} })).status).toBe(201);

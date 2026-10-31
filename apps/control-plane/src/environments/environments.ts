@@ -1,3 +1,5 @@
+import { archiveLockKey, workspaceTransaction } from "../common/workspace-transaction.js";
+export { ARCHIVE_LOCK_CLASS, archiveLockKey } from "../common/workspace-transaction.js";
 import { Body, Controller, Delete, Get, HttpCode, Inject, Injectable, Module, Param, ParseUUIDPipe, Patch, Post, Req } from "@nestjs/common";
 import { and, asc, eq, sql } from "drizzle-orm";
 import type { EnvironmentWrite } from "../api-types.js";
@@ -38,25 +40,18 @@ export async function requireEnvironment(tx: Executor, envId: string, lock = fal
   return row;
 }
 
-/** One lock per workspace between archiveWorkspace (exclusive) and the writers in it (shared). */
-export const ARCHIVE_LOCK_CLASS = 0x6772_7761; // "grwa"
-export const archiveLock = (tx: Executor, workspaceId: string, mode: "shared" | "exclusive") =>
-  tx.execute(mode === "shared"
-    ? sql`select pg_advisory_xact_lock_shared(${ARCHIVE_LOCK_CLASS}, ${archiveLockKey(workspaceId)})`
-    : sql`select pg_advisory_xact_lock(${ARCHIVE_LOCK_CLASS}, ${archiveLockKey(workspaceId)})`);
-/** The key of a workspace's archive lock, from its canonical UUID (an id in capitals is the same workspace). */
-export const archiveLockKey = (workspaceId: string) => sql`hashtext(${workspaceId}::uuid::text)`;
-
-/**
- * 409 workspace-archived when the workspace is archived. The shared archive lock waits for an archive in flight and
- * keeps the next one out until this transaction ends. A writer takes it before locking the environment or the
- * workspace row, and archiveWorkspace takes the exclusive one before them, so the two never wait on each other.
+/** Administrative access checks retain their shared archive lock. Draft writers already own the same key
+ * exclusively through workspaceTransaction, before any entity/FK locks; reacquisition never upgrades it.
  */
+export const archiveLock = (tx: Executor, workspaceId: string) =>
+  tx.execute(sql`select pg_advisory_xact_lock_shared(${archiveLockKey(workspaceId)})`);
+
+/** Refuse archive under the same key held exclusively by every draft writer. */
 export async function refuseArchived(tx: Executor, workspaceId: string): Promise<void> {
-  await archiveLock(tx, workspaceId, "shared");
+  await archiveLock(tx, workspaceId);
   // In READ COMMITTED this statement already sees an archive committed while the lock waited. A REPEATABLE READ or
-  // SERIALIZABLE transaction (an import) may hold a snapshot from before it: there the environment row is locked (the
-  // first row every writer locks; archiveWorkspace updates it too), so an archive committed since is a serialization
+  // SERIALIZABLE caller may hold a snapshot from before it: there the environment row is locked (archiveWorkspace
+  // updates it too), so an archive committed since is a serialization
   // failure and nothing is written. Never a lock on the workspace row: a publish updates it after the environment's.
   const [{ iso }] = (await tx.execute<{ iso: string }>(sql`select current_setting('transaction_isolation') as iso`)).rows as [{ iso: string }];
   if (iso !== "read committed") await tx.select({ id: environments.id }).from(environments).where(eq(environments.id, workspaceId)).for("update");
@@ -109,7 +104,7 @@ export class EnvironmentsService {
   }
 
   async update(ctx: RequestContext, envId: string, body: EnvironmentWrite) {
-    return this.db.transaction(async (tx) => {
+    return workspaceTransaction(this.db, envId, async (tx) => {
       const before = toEnvironment(await requireEnvironment(tx, envId, true));
       const [row] = await tx
         .update(environments)
@@ -128,7 +123,7 @@ export class EnvironmentsService {
   }
 
   async remove(ctx: RequestContext, envId: string) {
-    await this.db.transaction(async (tx) => {
+    await workspaceTransaction(this.db, envId, async (tx) => {
       // The cascade writes the credential tables: they come before the environment's row, as for every writer.
       await lockTablesForWrite(tx, UNIQUE_KINDS);
       const before = toEnvironment(await requireEnvironment(tx, envId, true));

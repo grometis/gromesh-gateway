@@ -1,3 +1,4 @@
+import { workspaceTransaction } from "../common/workspace-transaction.js";
 import { HttpException, HttpStatus, Inject, Injectable } from "@nestjs/common";
 import { and, asc, eq, isNotNull, ne, sql } from "drizzle-orm";
 import { audit } from "../audit/audit.js";
@@ -9,7 +10,6 @@ import { APP_CONFIG, type AppConfig } from "../config.js";
 import { DB, type Db, type Executor } from "../db/db.js";
 import { clusters, deploymentStates, deployments, environments, instance, releases, roleBindings, workspaceActiveRelease, workspaceCreationPolicy, workspaces } from "../db/schema.js";
 import { toRoleBinding } from "../access/access.js";
-import { archiveLock } from "../environments/environments.js";
 import { normalizeSlug, proposeSlug, slugProblem } from "./slug.js";
 import { SLUG_LOCK_KEY } from "./workspaces.js";
 
@@ -196,7 +196,7 @@ export class WorkspaceAdminService {
 
   /** updateWorkspace: name and description only; the id, the key and the slug never change. */
   async update(ctx: RequestContext, workspaceId: string, body: WorkspaceUpdate) {
-    return this.db.transaction(async (tx) => {
+    return workspaceTransaction(this.db, workspaceId, async (tx) => {
       // The lock creations take: two renames to one free name never both pass the check below.
       await tx.execute(sql`select pg_advisory_xact_lock(${SLUG_LOCK_KEY})`);
       const current = await this.row(tx, workspaceId, true);
@@ -222,9 +222,7 @@ export class WorkspaceAdminService {
    * release that is not a tombstone, a v1 snapshot published for it, or a cluster registered in it.
    */
   async archive(ctx: RequestContext, workspaceId: string) {
-    await this.db.transaction(async (tx) => {
-      // Exclusive before any row: every writer in the workspace holds the shared lock until it commits (refuseArchived).
-      await archiveLock(tx, workspaceId, "exclusive");
+    await workspaceTransaction(this.db, workspaceId, async (tx) => {
       const current = await this.row(tx, workspaceId, true);
       if (current.status === "archived") return;
       const [active] = await tx

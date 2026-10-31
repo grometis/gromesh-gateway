@@ -1,5 +1,4 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { ARCHIVE_LOCK_CLASS } from "../../src/environments/environments.js";
 import { SnapshotsService } from "../../src/snapshots/snapshots.js";
 import { type ApiResponse, startHarness, uniq, type Harness } from "./harness.js";
 
@@ -118,7 +117,7 @@ describe("draft-only v2 deletes (WS-R3)", () => {
       const blocked = await waitForLock(backend!.pid);
       expect(blocked.query).toMatch(/from "environments".*for no key update/);
       expect((await h.sql.query(`select mode from pg_locks
-        where pid = $1 and locktype = 'advisory' and classid = $2::oid and granted`, [blocked.pid, ARCHIVE_LOCK_CLASS])).rows).toEqual([{ mode: "ShareLock" }]);
+        where pid = $1 and locktype = 'advisory' and objsubid = 1 and mode = 'ExclusiveLock' and granted`, [blocked.pid])).rows).toEqual([{ mode: "ExclusiveLock" }]);
       // Uncommitted DELETEs are invisible to another reader; inspect their locks to prove no write happened yet.
       expect((await h.sql.query(`select relation::regclass::text as name from pg_locks
         where pid = $1 and mode = 'RowExclusiveLock' and relation in

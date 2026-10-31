@@ -3,7 +3,7 @@ import * as retry from "../../src/common/retry.js";
 import { DB, type Db } from "../../src/db/db.js";
 import { type ApiResponse, startHarness, uniq, type Harness } from "./harness.js";
 
-describe("v2 delete lock order (WS-R3 r2)", () => {
+describe("v2 delete lock order (WS-R3 r3)", () => {
   let h: Harness;
   const aborts: string[] = [];
   let observed: { mockRestore(): void };
@@ -12,7 +12,7 @@ describe("v2 delete lock order (WS-R3 r2)", () => {
     h = await startHarness({ autoPublishPollMs: 0 });
     const db = h.app.get<Db>(DB);
     const transaction = db.transaction.bind(db);
-    // Observe every attempt, including v1 plugins (no retry) and import's own retry loop.
+    // Observe every attempt, including recovered aborts from all workspace writers.
     observed = vi.spyOn(db, "transaction").mockImplementation(((work, config) =>
       transaction(work, config).catch((error: unknown) => {
         const code = retry.pgCode(error);
@@ -89,7 +89,7 @@ describe("v2 delete lock order (WS-R3 r2)", () => {
         const restoring = start(h.api("POST", `/environments/${ws}/snapshots/${snapshot.body.version}/rollback`));
         const rollback = await waitFor([pid], 'delete from "plugins"');
         const writing = start(h.api("PUT", `/environments/${ws}/plugins/${plugin.body.id}`, { ...body, enabled: false }));
-        await waitFor([rollback.pid], 'update "plugins"');
+        await waitFor([rollback.pid], "pg_advisory_xact_lock\\(hashtextextended");
         await release();
         // Restoring the current configuration still deletes/reinserts the parents, then rolls back on the
         // no-change conflict. The PUT can then update the original row, preserving v1's existing behavior.
@@ -125,7 +125,7 @@ describe("v2 delete lock order (WS-R3 r2)", () => {
         { name: "written", serviceId, paths: ["/after"] }));
       const writer = await waitFor([pid], '"environments"');
       const deleting = start(h.api("DELETE", `/../v2/workspaces/${ws}/services/${serviceId}`));
-      await waitFor([pid, writer.pid], '"(services|environments)"', [writer.pid]);
+      await waitFor([writer.pid], "pg_advisory_xact_lock\\(hashtextextended");
       await release();
       const [written, deleted] = await Promise.all([writing, deleting]);
       expect(written.status, JSON.stringify(written.body)).toBe(method === "POST" ? 201 : 200);
@@ -152,7 +152,7 @@ describe("v2 delete lock order (WS-R3 r2)", () => {
           : h.api(operation === "create" ? "POST" : "PUT", `/environments/${ws}/plugins${plugin ? `/${plugin.body.id}` : ""}`, body));
         const writer = await waitFor([pid], '"plugins"');
         const deleting = start(h.api("DELETE", `/../v2/workspaces/${ws}/routes/${routeId}`));
-        await waitFor([writer.pid], '"(routes|plugins)"');
+        await waitFor([writer.pid], "pg_advisory_xact_lock\\(hashtextextended");
         await release();
         const [written, deleted] = await Promise.all([writing, deleting]);
         expect(written.status, JSON.stringify(written.body)).toBe(operation.startsWith("delete") ? 204 : operation === "create" ? 201 : 200);
@@ -165,7 +165,7 @@ describe("v2 delete lock order (WS-R3 r2)", () => {
     }
   });
 
-  it.each(["create", "rebind"] as const)("serializes plugin %s at its FK behind a Route DELETE that already owns the route and plugins", async (operation) => {
+  it.each(["create", "rebind"] as const)("serializes plugin %s behind a Route DELETE before checking the deleted scope", async (operation) => {
     const { ws, serviceId } = await fixture();
     const route = await h.api("POST", `/environments/${ws}/routes`, { name: "route", serviceId, paths: ["/route"] });
     expect(route.status).toBe(201);
@@ -179,11 +179,11 @@ describe("v2 delete lock order (WS-R3 r2)", () => {
       const deleting = start(h.api("DELETE", `/../v2/workspaces/${ws}/routes/${routeId}`));
       const deletion = await waitFor([pid], 'from "environments".*for no key update');
       const writing = start(h.api(plugin ? "PUT" : "POST", `/environments/${ws}/plugins${plugin ? `/${plugin.body.id}` : ""}`, body));
-      await waitFor([deletion.pid], plugin ? 'update "plugins"' : 'insert into "plugins"');
+      await waitFor([deletion.pid], "pg_advisory_xact_lock\\(hashtextextended");
       await release();
       expect((await deleting).status).toBe(204);
       const written = await writing;
-      expect([written.status, written.body?.detail], JSON.stringify(written.body)).toEqual([409, "The entity is still referenced by other entities"]);
+      expect([written.status, written.body?.detail], JSON.stringify(written.body)).toEqual([422, "Invalid plugin"]);
       expect(written.body?.code).not.toBe("concurrent-update");
     });
     expect((await h.sql.query("select id from routes where id = $1", [routeId])).rows).toEqual([]);
@@ -191,7 +191,7 @@ describe("v2 delete lock order (WS-R3 r2)", () => {
     if (plugin) expect((await h.sql.query("select id from audit_events where entity_id = $1 and action = 'plugin.update'", [plugin.body.id])).rows).toEqual([]);
   });
 
-  it.each(["retain", "unbind"] as const)("queues plugin PUT (%s scope) on its row behind Route DELETE before the environment", async (operation) => {
+  it.each(["retain", "unbind"] as const)("queues plugin PUT (%s scope) on the workspace behind Route DELETE", async (operation) => {
     const { ws, serviceId } = await fixture();
     const route = await h.api("POST", `/environments/${ws}/routes`, { name: "route", serviceId, paths: ["/route"] });
     expect(route.status).toBe(201);
@@ -199,15 +199,15 @@ describe("v2 delete lock order (WS-R3 r2)", () => {
     const body = { name: "key-auth", scope: { routeId }, config: {} };
     const plugin = await h.api("POST", `/environments/${ws}/plugins`, body);
     expect(plugin.status).toBe(201);
-    // The DELETE takes the route/plugins before checking auto mode. Its refusal leaves the plugin available
-    // for the queued PUT, so this barrier can check the existing v1 success response as well as no aborts.
+    // The DELETE owns the workspace before checking auto mode. Its refusal leaves the plugin available
+    // for the queued PUT, so this checks the existing v1 success response as well as no aborts.
     expect((await h.api("PATCH", `/environments/${ws}`, { name: uniq("auto-delete-locks"), publishMode: "auto" })).status).toBe(200);
     const scope = operation === "unbind" ? {} : body.scope;
     await withBarrier("select 1 from environments where id = $1 for no key update", ws, async (pid, start, release) => {
       const deleting = start(h.api("DELETE", `/../v2/workspaces/${ws}/routes/${routeId}`));
       const deletion = await waitFor([pid], 'from "environments".*for no key update');
       const writing = start(h.api("PUT", `/environments/${ws}/plugins/${plugin.body.id}`, { ...body, enabled: false, scope }));
-      await waitFor([deletion.pid], 'update "plugins"');
+      await waitFor([deletion.pid], "pg_advisory_xact_lock\\(hashtextextended");
       await release();
       const deleted = await deleting;
       expect([deleted.status, deleted.body?.code]).toEqual([409, "auto-publish"]);
@@ -227,7 +227,7 @@ describe("v2 delete lock order (WS-R3 r2)", () => {
       const writing = start(h.api("POST", `/environments/${ws}/plugins`, { name: "key-auth", scope: { [`${entity}Id`]: id }, config: {} }));
       const writer = await waitFor([pid], 'update "environments"');
       const deleting = start(h.api("DELETE", `/../v2/workspaces/${ws}/${entity}s/${id}`));
-      await waitFor([writer.pid], `from "${entity}s".*for update`);
+      await waitFor([writer.pid], "pg_advisory_xact_lock\\(hashtextextended");
       await release();
       expect((await writing).status).toBe(201);
       const deleted = await deleting;
@@ -246,7 +246,7 @@ describe("v2 delete lock order (WS-R3 r2)", () => {
       const archiving = start(h.api("POST", `/../v2/workspaces/${ws}/archive`));
       const archive = await waitFor([pid], 'from "environments".*for no key update');
       const deleting = start(h.api("DELETE", `/../v2/workspaces/${ws}/${entity}s/${id}`));
-      await waitFor([archive.pid], "pg_advisory_xact_lock_shared");
+      await waitFor([archive.pid], "pg_advisory_xact_lock\\(hashtextextended");
       await release();
       expect((await archiving).status).toBe(204);
       const deleted = await deleting;

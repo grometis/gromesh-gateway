@@ -1,3 +1,4 @@
+import { workspaceTransaction } from "../common/workspace-transaction.js";
 import { createHash } from "node:crypto";
 import { Body, Controller, Get, HttpCode, HttpStatus, Inject, Injectable, Module, Param, Post } from "@nestjs/common";
 import {
@@ -194,7 +195,7 @@ export class ReleasesService {
    */
   async publish(ctx: RequestContext, workspaceId: string, body: PublishBody) {
     const stage = this.config.workspacesDeployments?.stage ?? this.config.instanceStage ?? null;
-    return this.db.transaction(async (tx) => {
+    return workspaceTransaction(this.db, workspaceId, async (tx) => {
       const { self } = await this.lease(tx, stage, false);
 
       // Every edit and import of the draft updates this row in its own transaction (markDraftChanged): holding it, the
