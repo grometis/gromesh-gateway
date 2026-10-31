@@ -999,6 +999,9 @@ async function agentDown() {
   const k = await kongExit(p.name, t0);
   Object.assign(it.measures, { non200: ev.filter((e) => (e.k === "new" || e.k === "ka") && e.s !== 200).length, total: ev.filter((e) => e.k === "new" || e.k === "ka").length,
     wsClosed: ev.some((e) => e.k === "ws" && e.ev === "close"), kongStopped: Boolean(k.stopLog), communicationFailureOpened: pend.length, closedWithoutRelease: closed });
+  expect(it, it.measures.total > 0, "no traffic observed while the agent was frozen");
+  expect(it, pend.length > 0, "communication-failure never opened while the agent was frozen");
+  expect(it, !it.measures.wsClosed, "WebSocket closed while only the agent was frozen");
   expect(it, it.measures.non200 === 0, `${it.measures.non200} non-200 answers while the agent was frozen`);
   expect(it, !it.measures.kongStopped, "Kong stopped while only the agent was frozen");
   expect(it, closed, "communication-failure did not close after SIGCONT");
