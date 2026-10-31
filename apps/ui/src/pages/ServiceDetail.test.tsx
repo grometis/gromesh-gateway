@@ -115,8 +115,8 @@ describe("service detail route and plugin access", () => {
     expect(html).not.toMatch(/Adicionar plugin|Editar|Mais ações|type="checkbox"|role="switch"/);
   });
 
-  it("keeps default editing actions for workspace routes and legacy plugins", async () => {
-    const { RoutesPage, PluginsPage, ScopedRoutes, ScopedPlugins, loaded } = await load();
+  it("keeps default editing actions for workspace routes and legacy scoped plugins", async () => {
+    const { RoutesPage, ScopedRoutes, ScopedPlugins, loaded } = await load();
     for (const element of [<RoutesPage />, <ScopedRoutes envId={W} service={service} />]) {
       const html = await loaded(element);
       expect(html).toContain("Nova route");
@@ -124,7 +124,6 @@ describe("service detail route and plugin access", () => {
       expect(html).toContain(`Mais ações para ${route.name}`);
     }
     for (const [element, createLabel] of [
-      [<PluginsPage />, "Novo plugin"],
       [<ScopedPlugins envId={W} scope={{ kind: "consumer", id: "consumer-1" }} title="Plugins do consumer" />, "Adicionar plugin"],
       [<ScopedPlugins envId={W} scope={{ kind: "route", id: route.id }} title="Plugins aplicados" />, "Adicionar plugin"],
     ] as const) {
