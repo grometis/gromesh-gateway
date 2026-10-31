@@ -1,14 +1,14 @@
 import { useDeferredValue, useState, type FormEvent } from "react";
 import { useInfiniteQuery, useMutation } from "@tanstack/react-query";
 import { useSearchParams } from "react-router";
-import { api, unwrap, type Route, type RouteWrite, type Service } from "../api/client";
+import { api, unwrap, type Route, type RouteWrite } from "../api/client";
 import { statusMessage, toFormErrors, type FormErrors } from "../api/errors";
 import { useCanEdit } from "../auth";
 import { Field, FormErrorList } from "../components/Field";
 import { ConfirmDialog, Modal } from "../components/Modal";
 import { useEnvId } from "../components/Shell";
 import { ScopedPlugins } from "./Plugins";
-import { splitList, useEntityDraft, useInvalidateDraft, useServices } from "./Services";
+import { splitPaths, splitList, useEntityDraft, useInvalidateDraft, useServices } from "./Services";
 import { PageHeader } from "../components/PageHeader";
 import { EmptyState } from "../components/EmptyState";
 import { Table } from "../components/Table";
@@ -31,16 +31,17 @@ export function RoutesPage() {
   );
 }
 
-export function ScopedRoutes({ envId, service }: { envId: string; service: Service }) {
+export function ScopedRoutes({ envId, service, readOnly = false }: { envId: string; service: { id: string; name: string }; readOnly?: boolean }) {
   return (
     <section aria-label="Routes do service">
-      <RouteList envId={envId} serviceId={service.id} service={service} />
+      <RouteList envId={envId} serviceId={service.id} service={service} readOnly={readOnly} />
     </section>
   );
 }
 
-function RouteList({ envId, serviceId, service, onServiceChange }: { envId: string; serviceId: string; service?: Service; onServiceChange?: (id: string) => void }) {
-  const canEdit = useCanEdit();
+function RouteList({ envId, serviceId, service, onServiceChange, readOnly = false }: { envId: string; serviceId: string; service?: { id: string; name: string }; onServiceChange?: (id: string) => void; readOnly?: boolean }) {
+  const roleCanEdit = useCanEdit();
+  const canEdit = roleCanEdit && !readOnly;
   const draft = useEntityDraft(envId, "routes");
   const [search, setSearch] = useState("");
   const q = useDeferredValue(search.trim());
@@ -140,7 +141,7 @@ function RouteList({ envId, serviceId, service, onServiceChange }: { envId: stri
           Carregar mais
         </button>
       )}
-      {editing && (
+      {canEdit && editing && (
         <RouteForm
           envId={envId}
           route={editing === "new" ? null : editing}
@@ -149,10 +150,10 @@ function RouteList({ envId, serviceId, service, onServiceChange }: { envId: stri
           onClose={() => setEditing(null)}
         />
       )}
-      {deleting && <DeleteRoute envId={envId} route={deleting} onClose={() => setDeleting(null)} />}
+      {canEdit && deleting && <DeleteRoute envId={envId} route={deleting} onClose={() => setDeleting(null)} />}
       {plugins && (
         <Modal title={`Plugins de ${plugins.name}`} onClose={() => setPlugins(null)} wide>
-          <ScopedPlugins envId={envId} scope={{ kind: "route", id: plugins.id }} title="Plugins aplicados" />
+          <ScopedPlugins envId={envId} scope={{ kind: "route", id: plugins.id }} title="Plugins aplicados" readOnly={readOnly} />
         </Modal>
       )}
     </div>
@@ -182,7 +183,7 @@ function RouteForm(props: { envId: string; route: Route | null; services: { id: 
         ...rest,
         name: form.name.trim(),
         serviceId: form.serviceId,
-        paths: splitList(form.paths),
+        paths: splitPaths(form.paths),
         hosts: splitList(form.hosts),
         methods: splitList(form.methods).map((m) => m.toUpperCase()),
         protocols: form.protocols,
