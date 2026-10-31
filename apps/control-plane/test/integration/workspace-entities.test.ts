@@ -52,9 +52,19 @@ describe("workspace entities through /api/v2", () => {
   });
 
   it("lists and reads workspaces the caller may read, with the slug and no release yet", async () => {
-    const page = await call(h.api, "listWorkspaces", {}, undefined, "?limit=200");
-    expect(page.status).toBe(200);
-    expect(page.body.items.map((w: { id: string }) => w.id)).toEqual(expect.arrayContaining([a, b]));
+    // Other files share this database: the caller's workspaces may span multiple pages.
+    const listIds = async (client: ApiClient) => {
+      const ids: string[] = [];
+      let cursor: string | null = null;
+      do {
+        const page: ApiResponse = await call(client, "listWorkspaces", {}, undefined, `?limit=200${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+        expect(page.status).toBe(200);
+        ids.push(...page.body.items.map((w: { id: string }) => w.id));
+        cursor = page.body.nextCursor;
+      } while (cursor);
+      return ids;
+    };
+    expect(await listIds(h.api)).toEqual(expect.arrayContaining([a, b]));
     const one = await call(h.api, "getWorkspace", { workspaceId: a });
     expect(one.status).toBe(200);
     const slug = (await h.sql.query(`select slug, key from workspaces where id = $1`, [a])).rows[0];
@@ -62,7 +72,7 @@ describe("workspace entities through /api/v2", () => {
     // A user denied in one workspace does not see it, in the list or alone.
     const hidden = await h.as("viewer");
     await h.api("PUT", `/users/${hidden.id}/environment-roles`, { items: [{ environmentId: a, role: "none" }] });
-    const seen = (await call(hidden.api, "listWorkspaces", {}, undefined, "?limit=200")).body.items.map((w: { id: string }) => w.id);
+    const seen = await listIds(hidden.api);
     expect(seen).toContain(b);
     expect(seen).not.toContain(a);
     expect((await call(hidden.api, "getWorkspace", { workspaceId: a })).status).toBe(404);

@@ -43,13 +43,14 @@ async function load() {
     Promise.all([
       import("./Services"), import("./Routes"), import("./Consumers"), import("./Plugins"), import("./Upstreams"),
       import("./Certificates"), import("./Overview"), import("./Snapshots"), import("./Clusters"), import("./Analytics"),
-      import("./Requests"), import("./ReviewPublish"),
+      import("./Requests"), import("./ReviewPublish"), import("./Variables"),
     ]),
   ]);
-  const [services, routes, consumers, plugins, upstreams, certificates, overview, snapshots, clusters, analytics, requests, publish] = pages;
+  const [services, routes, consumers, plugins, upstreams, certificates, overview, snapshots, clusters, analytics, requests, publish, variables] = pages;
   const SECTIONS: Record<string, () => ReactElement> = {
     services: () => <services.ServicesPage />,
     routes: () => <routes.RoutesPage />,
+    variables: () => <variables.VariablesPage />,
     consumers: () => <consumers.ConsumersPage />,
     plugins: () => <plugins.PluginsPage />,
     upstreams: () => <upstreams.UpstreamsPage />,
@@ -82,7 +83,7 @@ const newClient = () => new QueryClient({ defaultOptions: { queries: { retry: fa
 // Rendering registers each query the screen reads (with its options); fetching them fills the cache as the browser would.
 const fetchAll = (client: QueryClient) => Promise.allSettled(client.getQueryCache().getAll().map((q) => q.fetch()));
 // Read by the selector or shared by the whole instance, never by one workspace.
-const INSTANCE_KEYS = new Set(["environments", "plugin-catalog", "plugin-schema"]);
+const INSTANCE_KEYS = new Set(["environments", "plugin-catalog", "plugin-schema", "workspace-creation-policy"]);
 
 describe("switching workspaces", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -124,7 +125,7 @@ describe("switching workspaces", () => {
 describe("v1 publication strip on workspace gateway screens", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it.each(["services", "services/service-1", "routes"])("shows the strip on %s with pending changes", async (section) => {
+  it.each(["services", "services/service-1", "routes", "variables"])("shows the strip on %s with pending changes", async (section) => {
     const { render } = await load();
     const client = newClient();
     client.setQueryData(["environment", A], { ...env(A, "Pagamentos"), hasUnpublishedChanges: true });

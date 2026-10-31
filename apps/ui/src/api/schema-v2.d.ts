@@ -1671,6 +1671,7 @@ export interface paths {
         };
         get: operations["listConsumers"];
         put?: never;
+        /** @description Edits the draft only (no publish, no deployment): in an environment that auto-publishes its draft through v1 (publishMode auto) it answers 409 auto-publish and writes nothing. */
         post: operations["createConsumer"];
         delete?: never;
         options?: never;
@@ -1689,8 +1690,10 @@ export interface paths {
             cookie?: never;
         };
         get: operations["getConsumer"];
+        /** @description Edits the draft only (no publish, no deployment): in an environment that auto-publishes its draft through v1 (publishMode auto) it answers 409 auto-publish and writes nothing. */
         put: operations["replaceConsumer"];
         post?: never;
+        /** @description Edits the draft only (no publish, no deployment): in an environment that auto-publishes its draft through v1 (publishMode auto) it answers 409 auto-publish and writes nothing. */
         delete: operations["deleteConsumer"];
         options?: never;
         head?: never;
@@ -1709,11 +1712,7 @@ export interface paths {
         };
         get: operations["listKeyAuthCredentials"];
         put?: never;
-        /**
-         * @description As createKeyAuthCredential of v1: the server generates every key (32 bytes from a CSPRNG), returned only in
-         *     this response; a supplied `key` answers 422 at `key` (decision H-14). Audited as `keyauth.create`, without
-         *     the key.
-         */
+        /** @description As createKeyAuthCredential of v1: the server generates every key (32 bytes from a CSPRNG), returned only in this response; a supplied `key` answers 422 at `key` (decision H-14). Audited as `keyauth.create`, without the key. Edits the draft only (no publish, no deployment): in an environment that auto-publishes its draft through v1 (publishMode auto) it answers 409 auto-publish and writes nothing. */
         post: operations["createKeyAuthCredential"];
         delete?: never;
         options?: never;
@@ -1735,6 +1734,7 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
+        /** @description Edits the draft only (no publish, no deployment): in an environment that auto-publishes its draft through v1 (publishMode auto) it answers 409 auto-publish and writes nothing. */
         delete: operations["deleteKeyAuthCredential"];
         options?: never;
         head?: never;
@@ -1754,11 +1754,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /**
-         * @description As rotateKeyAuthCredential of v1 (decision H-14): a new key the server generates, returned only in this response; a
-         *     credential pending reprovisioning becomes active. Same id. 404 for a credential of another consumer or
-         *     workspace. No request body (a supplied one answers 422). Audited without the value.
-         */
+        /** @description As rotateKeyAuthCredential of v1 (decision H-14): a new key the server generates, returned only in this response; a credential pending reprovisioning becomes active. Same id. 404 for a credential of another consumer or workspace. No request body (a supplied one answers 422). Audited without the value. Edits the draft only (no publish, no deployment): in an environment that auto-publishes its draft through v1 (publishMode auto) it answers 409 auto-publish and writes nothing. */
         post: operations["rotateKeyAuthCredential"];
         delete?: never;
         options?: never;
@@ -1778,13 +1774,7 @@ export interface paths {
         };
         get: operations["listJwtCredentials"];
         put?: never;
-        /**
-         * @description HS256 signs with a shared secret the server generates (32 bytes from a CSPRNG), returned only in this response;
-         *     a supplied `secret` answers 422 at `secret` (decision H-14). RS256 and ES256 verify with `rsaPublicKey` (an RSA or EC P-256 public key, despite Kong's field
-         *     name). If `key` is omitted a random one is generated. 409 when `key` is already used by a JWT credential in the
-         *     instance (any workspace; generic conflict). 422 with `path`: `secret` given with RS256/ES256; `rsaPublicKey` missing with RS256/ES256, given
-         *     with HS256, not a PEM public key, or of the wrong type for the algorithm (RSA for RS256, EC P-256 for ES256).
-         */
+        /** @description HS256 signs with a shared secret the server generates (32 bytes from a CSPRNG), returned only in this response; a supplied `secret` answers 422 at `secret` (decision H-14). RS256 and ES256 verify with `rsaPublicKey` (an RSA or EC P-256 public key, despite Kong's field name). If `key` is omitted a random one is generated. 409 when `key` is already used by a JWT credential in the instance (any workspace; generic conflict). 422 with `path`: `secret` given with RS256/ES256; `rsaPublicKey` missing with RS256/ES256, given with HS256, not a PEM public key, or of the wrong type for the algorithm (RSA for RS256, EC P-256 for ES256). Edits the draft only (no publish, no deployment): in an environment that auto-publishes its draft through v1 (publishMode auto) it answers 409 auto-publish and writes nothing. */
         post: operations["createJwtCredential"];
         delete?: never;
         options?: never;
@@ -1806,6 +1796,7 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
+        /** @description Edits the draft only (no publish, no deployment): in an environment that auto-publishes its draft through v1 (publishMode auto) it answers 409 auto-publish and writes nothing. */
         delete: operations["deleteJwtCredential"];
         options?: never;
         head?: never;
@@ -1825,12 +1816,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /**
-         * @description As rotateJwtCredential of v1 (decision H-14): a new HS256 secret the server generates, returned only in this response; a
-         *     credential pending reprovisioning becomes active. Same id. 404 for a credential of another consumer or
-         *     workspace. 409 for an RS256/ES256 credential. No request body (a supplied one answers 422). Audited without
-         *     the value.
-         */
+        /** @description As rotateJwtCredential of v1 (decision H-14): a new HS256 secret the server generates, returned only in this response; a credential pending reprovisioning becomes active. Same id. 404 for a credential of another consumer or workspace. 409 for an RS256/ES256 credential. No request body (a supplied one answers 422). Audited without the value. Edits the draft only (no publish, no deployment): in an environment that auto-publishes its draft through v1 (publishMode auto) it answers 409 auto-publish and writes nothing. */
         post: operations["rotateJwtCredential"];
         delete?: never;
         options?: never;
@@ -1850,13 +1836,7 @@ export interface paths {
         };
         get: operations["listBasicAuthCredentials"];
         put?: never;
-        /**
-         * @description The password is write-only and never returned, not even here. The control plane keeps only Kong's salted hash of it
-         *     (`sha1(password + consumerId)`), and the snapshot carries that hash (applied with `_transform: false`), never the
-         *     password itself. The hash is treated as a secret: encrypted at rest in the control plane's table and `"REDACTED"`
-         *     everywhere except the agent endpoint (API, audit, diff, preview and snapshot envelope). 409 when `username` is
-         *     already used by a basic-auth credential in the instance (any workspace; generic conflict).
-         */
+        /** @description The password is write-only and never returned, not even here. The control plane keeps only Kong's salted hash of it (`sha1(password + consumerId)`), and the snapshot carries that hash (applied with `_transform: false`), never the password itself. The hash is treated as a secret: encrypted at rest in the control plane's table and `"REDACTED"` everywhere except the agent endpoint (API, audit, diff, preview and snapshot envelope). 409 when `username` is already used by a basic-auth credential in the instance (any workspace; generic conflict). Edits the draft only (no publish, no deployment): in an environment that auto-publishes its draft through v1 (publishMode auto) it answers 409 auto-publish and writes nothing. */
         post: operations["createBasicAuthCredential"];
         delete?: never;
         options?: never;
@@ -1878,6 +1858,7 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
+        /** @description Edits the draft only (no publish, no deployment): in an environment that auto-publishes its draft through v1 (publishMode auto) it answers 409 auto-publish and writes nothing. */
         delete: operations["deleteBasicAuthCredential"];
         options?: never;
         head?: never;
@@ -1895,7 +1876,7 @@ export interface paths {
             cookie?: never;
         };
         get: operations["getConsumerAclGroups"];
-        /** @description Replaces the whole set; `[]` removes the consumer from every group. The `acl` plugin matches these names in `allow`/`deny`. */
+        /** @description Replaces the whole set; `[]` removes the consumer from every group. The `acl` plugin matches these names in `allow`/`deny`. Edits the draft only (no publish, no deployment): in an environment that auto-publishes its draft through v1 (publishMode auto) it answers 409 auto-publish and writes nothing. */
         put: operations["replaceConsumerAclGroups"];
         post?: never;
         delete?: never;
@@ -1915,17 +1896,7 @@ export interface paths {
         };
         get: operations["listUpstreams"];
         put?: never;
-        /**
-         * @description A load-balancing pool of the workspace. A service balances across it only through `upstreamId` (its host
-         *     is then generated as <name>.<slug>.gromesh.internal); a service host is always ordinary DNS. 409 on a
-         *     name already used in the workspace, and 409 with code upstream-captures-service when a service written
-         *     through v2 without upstreamId uses the name as its DNS host (WS-U0: a v1 delivery resolves a host equal to
-         *     an upstream's name to that upstream, so the service would silently change destination; services written
-         *     only through v1 keep that v1 binding by name, unchanged); 422 with `path` when `hashOn`/`hashFallback` are set without
-         *     `algorithm: consistent-hashing`, when `hashOnHeader`/`hashOnCookie`/`hashFallbackHeader` is missing for the
-         *     chosen hash, or when `hashOn: cookie` has a fallback other than `none`; 422 at `name` when the name is a
-         *     forbidden destination (see the description of this API).
-         */
+        /** @description A load-balancing pool of the workspace. A service balances across it only through `upstreamId` (its host is then generated as <name>.<slug>.gromesh.internal); a service host is always ordinary DNS. 409 on a name already used in the workspace, and 409 with code upstream-captures-service when a service written through v2 without upstreamId uses the name as its DNS host (WS-U0: a v1 delivery resolves a host equal to an upstream's name to that upstream, so the service would silently change destination; services written only through v1 keep that v1 binding by name, unchanged); 422 with `path` when `hashOn`/`hashFallback` are set without `algorithm: consistent-hashing`, when `hashOnHeader`/`hashOnCookie`/`hashFallbackHeader` is missing for the chosen hash, or when `hashOn: cookie` has a fallback other than `none`; 422 at `name` when the name is a forbidden destination (see the description of this API). Edits the draft only (no publish, no deployment): in an environment that auto-publishes its draft through v1 (publishMode auto) it answers 409 auto-publish and writes nothing. */
         post: operations["createUpstream"];
         delete?: never;
         options?: never;
@@ -1944,18 +1915,10 @@ export interface paths {
             cookie?: never;
         };
         get: operations["getUpstream"];
-        /**
-         * @description Renaming keeps every service that refers to it by upstreamId (the generated host follows the new name in the
-         *     next publication). Same 409/422 rules as the creation otherwise, upstream-captures-service included for the
-         *     new name. A rename stays refused (409) while a service written only through v1 uses the current name as
-         *     its host, as in v1: its binding by name would silently break.
-         */
+        /** @description Renaming keeps every service that refers to it by upstreamId (the generated host follows the new name in the next publication). Same 409/422 rules as the creation otherwise, upstream-captures-service included for the new name. A rename stays refused (409) while a service written only through v1 uses the current name as its host, as in v1: its binding by name would silently break. Edits the draft only (no publish, no deployment): in an environment that auto-publishes its draft through v1 (publishMode auto) it answers 409 auto-publish and writes nothing. */
         put: operations["replaceUpstream"];
         post?: never;
-        /**
-         * @description Deletes the upstream and its targets. 409 while services of the workspace refer to it by upstreamId; the
-         *     problem `detail` lists those services.
-         */
+        /** @description Deletes the upstream and its targets. 409 while services of the workspace refer to it by upstreamId; the problem `detail` lists those services. Edits the draft only (no publish, no deployment): in an environment that auto-publishes its draft through v1 (publishMode auto) it answers 409 auto-publish and writes nothing. */
         delete: operations["deleteUpstream"];
         options?: never;
         head?: never;
@@ -1974,7 +1937,7 @@ export interface paths {
         };
         get: operations["listTargets"];
         put?: never;
-        /** @description 409 when the same `target` already exists in this upstream; 422 on `target` with a port outside 1..65535 or a host that is a forbidden destination (see the description of this API). */
+        /** @description 409 when the same `target` already exists in this upstream; 422 on `target` with a port outside 1..65535 or a host that is a forbidden destination (see the description of this API). Edits the draft only (no publish, no deployment): in an environment that auto-publishes its draft through v1 (publishMode auto) it answers 409 auto-publish and writes nothing. */
         post: operations["createTarget"];
         delete?: never;
         options?: never;
@@ -1994,8 +1957,10 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
+        /** @description Edits the draft only (no publish, no deployment): in an environment that auto-publishes its draft through v1 (publishMode auto) it answers 409 auto-publish and writes nothing. */
         put: operations["replaceTarget"];
         post?: never;
+        /** @description Edits the draft only (no publish, no deployment): in an environment that auto-publishes its draft through v1 (publishMode auto) it answers 409 auto-publish and writes nothing. */
         delete: operations["deleteTarget"];
         options?: never;
         head?: never;
@@ -2013,17 +1978,7 @@ export interface paths {
         };
         get: operations["listCertificates"];
         put?: never;
-        /**
-         * @description A TLS certificate with its private key and the server names (SNIs) it answers. `cert` may be a PEM chain, leaf
-         *     first then intermediates; the whole chain is served. The key is checked against the leaf, and `subject`,
-         *     `issuer`, `notBefore`, `notAfter` and `fingerprintSha256` describe the leaf. The key is write-only: it is
-         *     stored encrypted and reads back as "REDACTED". 422 with `path`: `cert` when it is not a PEM certificate chain or
-         *     its leaf has expired; `key` when it is not a PEM private key, does not match the leaf, or is "REDACTED" here;
-         *     `snis.<i>` when a name is repeated in the request or has a wildcard anywhere but as the `*.` prefix. 409 (generic
-         *     conflict) when a name already belongs to another certificate of the instance (any workspace).
-         *     Expiry is judged only when `cert` is created or replaced: publishing, rolling back and editing only the `snis`
-         *     of a certificate that has since expired keep working.
-         */
+        /** @description A TLS certificate with its private key and the server names (SNIs) it answers. `cert` may be a PEM chain, leaf first then intermediates; the whole chain is served. The key is checked against the leaf, and `subject`, `issuer`, `notBefore`, `notAfter` and `fingerprintSha256` describe the leaf. The key is write-only: it is stored encrypted and reads back as "REDACTED". 422 with `path`: `cert` when it is not a PEM certificate chain or its leaf has expired; `key` when it is not a PEM private key, does not match the leaf, or is "REDACTED" here; `snis.<i>` when a name is repeated in the request or has a wildcard anywhere but as the `*.` prefix. 409 (generic conflict) when a name already belongs to another certificate of the instance (any workspace). Expiry is judged only when `cert` is created or replaced: publishing, rolling back and editing only the `snis` of a certificate that has since expired keep working. Edits the draft only (no publish, no deployment): in an environment that auto-publishes its draft through v1 (publishMode auto) it answers 409 auto-publish and writes nothing. */
         post: operations["createCertificate"];
         delete?: never;
         options?: never;
@@ -2042,13 +1997,10 @@ export interface paths {
             cookie?: never;
         };
         get: operations["getCertificate"];
-        /**
-         * @description `key: "REDACTED"` keeps the stored key, which must then still match the leaf of the new `cert` (422 on `key`
-         *     otherwise). Same 422 and 409 rules as the creation; an unchanged `cert` is not judged on expiry.
-         */
+        /** @description `key: "REDACTED"` keeps the stored key, which must then still match the leaf of the new `cert` (422 on `key` otherwise). Same 422 and 409 rules as the creation; an unchanged `cert` is not judged on expiry. Edits the draft only (no publish, no deployment): in an environment that auto-publishes its draft through v1 (publishMode auto) it answers 409 auto-publish and writes nothing. */
         put: operations["replaceCertificate"];
         post?: never;
-        /** @description Deletes the certificate and its SNIs. */
+        /** @description Deletes the certificate and its SNIs. Edits the draft only (no publish, no deployment): in an environment that auto-publishes its draft through v1 (publishMode auto) it answers 409 auto-publish and writes nothing. */
         delete: operations["deleteCertificate"];
         options?: never;
         head?: never;
@@ -2087,6 +2039,7 @@ export interface paths {
         get: operations["getPlugin"];
         put: operations["replacePlugin"];
         post?: never;
+        /** @description Edits the draft only (no publish, no deployment): in an environment that auto-publishes its draft through v1 (publishMode auto) it answers 409 auto-publish and writes nothing. */
         delete: operations["deletePlugin"];
         options?: never;
         head?: never;
@@ -2212,10 +2165,10 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /** @description Creates or replaces the declaration in the draft (audited; marks the draft changed). Changing type or secret of a variable referenced by the draft answers 409. */
+        /** @description Creates or replaces the declaration in the draft (audited; marks the draft changed). Changing type or secret of a variable referenced by the draft answers 409. Edits the draft only (no publish, no deployment): in an environment that auto-publishes its draft through v1 (publishMode auto) it answers 409 auto-publish and writes nothing. */
         put: operations["declareWorkspaceVariable"];
         post?: never;
-        /** @description 409 while any draft field references it. The instance's value is kept until the next release without the declaration is active. */
+        /** @description 409 while any draft field references it. The instance's value is kept until the next release without the declaration is active. Edits the draft only (no publish, no deployment): in an environment that auto-publishes its draft through v1 (publishMode auto) it answers 409 auto-publish and writes nothing. */
         delete: operations["deleteWorkspaceVariable"];
         options?: never;
         head?: never;
@@ -7018,7 +6971,15 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
+            /** @description auto-publish (a v2 write where v1 auto-publishes), or a conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["RouteProblem"] | components["schemas"]["Problem"];
+                };
+            };
             422: components["responses"]["ValidationError"];
         };
     };
@@ -7076,7 +7037,15 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
+            /** @description auto-publish (a v2 write where v1 auto-publishes), or a conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["RouteProblem"] | components["schemas"]["Problem"];
+                };
+            };
             422: components["responses"]["ValidationError"];
         };
     };
@@ -7102,6 +7071,15 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            /** @description auto-publish (a v2 write where v1 auto-publishes), or a conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["RouteProblem"] | components["schemas"]["Problem"];
+                };
+            };
         };
     };
     listKeyAuthCredentials: {
@@ -7167,7 +7145,15 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
+            /** @description auto-publish (a v2 write where v1 auto-publishes), or a conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["RouteProblem"] | components["schemas"]["Problem"];
+                };
+            };
             422: components["responses"]["ValidationError"];
         };
     };
@@ -7194,6 +7180,15 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            /** @description auto-publish (a v2 write where v1 auto-publishes), or a conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["RouteProblem"] | components["schemas"]["Problem"];
+                };
+            };
         };
     };
     rotateKeyAuthCredential: {
@@ -7224,6 +7219,15 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            /** @description auto-publish (a v2 write where v1 auto-publishes), or a conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["RouteProblem"] | components["schemas"]["Problem"];
+                };
+            };
             422: components["responses"]["ValidationError"];
         };
     };
@@ -7286,7 +7290,15 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
+            /** @description auto-publish (a v2 write where v1 auto-publishes), or a conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["RouteProblem"] | components["schemas"]["Problem"];
+                };
+            };
             422: components["responses"]["ValidationError"];
         };
     };
@@ -7313,6 +7325,15 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            /** @description auto-publish (a v2 write where v1 auto-publishes), or a conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["RouteProblem"] | components["schemas"]["Problem"];
+                };
+            };
         };
     };
     rotateJwtCredential: {
@@ -7343,7 +7364,15 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
+            /** @description auto-publish (a v2 write where v1 auto-publishes), or a conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["RouteProblem"] | components["schemas"]["Problem"];
+                };
+            };
             422: components["responses"]["ValidationError"];
         };
     };
@@ -7403,7 +7432,15 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
+            /** @description auto-publish (a v2 write where v1 auto-publishes), or a conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["RouteProblem"] | components["schemas"]["Problem"];
+                };
+            };
             422: components["responses"]["ValidationError"];
         };
     };
@@ -7430,6 +7467,15 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            /** @description auto-publish (a v2 write where v1 auto-publishes), or a conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["RouteProblem"] | components["schemas"]["Problem"];
+                };
+            };
         };
     };
     getConsumerAclGroups: {
@@ -7486,6 +7532,15 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            /** @description auto-publish (a v2 write where v1 auto-publishes), or a conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["RouteProblem"] | components["schemas"]["Problem"];
+                };
+            };
             422: components["responses"]["ValidationError"];
         };
     };
@@ -7546,7 +7601,15 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
+            /** @description auto-publish (a v2 write where v1 auto-publishes), or a conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["RouteProblem"] | components["schemas"]["Problem"];
+                };
+            };
             422: components["responses"]["ValidationError"];
         };
     };
@@ -7604,7 +7667,15 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
+            /** @description auto-publish (a v2 write where v1 auto-publishes), or a conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["RouteProblem"] | components["schemas"]["Problem"];
+                };
+            };
             422: components["responses"]["ValidationError"];
         };
     };
@@ -7630,7 +7701,15 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
+            /** @description auto-publish (a v2 write where v1 auto-publishes), or a conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["RouteProblem"] | components["schemas"]["Problem"];
+                };
+            };
         };
     };
     listTargets: {
@@ -7690,7 +7769,15 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
+            /** @description auto-publish (a v2 write where v1 auto-publishes), or a conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["RouteProblem"] | components["schemas"]["Problem"];
+                };
+            };
             422: components["responses"]["ValidationError"];
         };
     };
@@ -7723,7 +7810,15 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
+            /** @description auto-publish (a v2 write where v1 auto-publishes), or a conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["RouteProblem"] | components["schemas"]["Problem"];
+                };
+            };
             422: components["responses"]["ValidationError"];
         };
     };
@@ -7750,6 +7845,15 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            /** @description auto-publish (a v2 write where v1 auto-publishes), or a conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["RouteProblem"] | components["schemas"]["Problem"];
+                };
+            };
         };
     };
     listCertificates: {
@@ -7807,7 +7911,15 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
+            /** @description auto-publish (a v2 write where v1 auto-publishes), or a conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["RouteProblem"] | components["schemas"]["Problem"];
+                };
+            };
             422: components["responses"]["ValidationError"];
         };
     };
@@ -7865,7 +7977,15 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
+            /** @description auto-publish (a v2 write where v1 auto-publishes), or a conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["RouteProblem"] | components["schemas"]["Problem"];
+                };
+            };
             422: components["responses"]["ValidationError"];
         };
     };
@@ -7891,6 +8011,15 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            /** @description auto-publish (a v2 write where v1 auto-publishes), or a conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["RouteProblem"] | components["schemas"]["Problem"];
+                };
+            };
         };
     };
     listPlugins: {
@@ -8037,6 +8166,15 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            /** @description auto-publish (a v2 write where v1 auto-publishes), or a conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["RouteProblem"] | components["schemas"]["Problem"];
+                };
+            };
         };
     };
     previewPublish: {
@@ -8259,7 +8397,15 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
+            /** @description auto-publish (a v2 write where v1 auto-publishes), or a conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["RouteProblem"] | components["schemas"]["Problem"];
+                };
+            };
             422: components["responses"]["ValidationError"];
         };
     };
@@ -8285,7 +8431,15 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
+            /** @description auto-publish (a v2 write where v1 auto-publishes), or a conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["RouteProblem"] | components["schemas"]["Problem"];
+                };
+            };
         };
     };
     startEmergencyPostReview: {

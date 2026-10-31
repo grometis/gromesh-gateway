@@ -1,3 +1,4 @@
+import { refuseAutoPublish } from "../common/draft-only.js";
 import { workspaceTransaction } from "../common/workspace-transaction.js";
 import { Body, Controller, Delete, Get, HttpCode, HttpException, Inject, Injectable, Module, Param, Post, Put, Query } from "@nestjs/common";
 import { hashIssues, type Target, type Upstream } from "@gromesh/compiler";
@@ -137,10 +138,11 @@ export class UpstreamsService {
     return toUpstream(await this.requireUpstream(this.db, envId, upstreamId));
   }
 
-  async create(ctx: RequestContext, envId: string, body: UpstreamWrite) {
+  async create(ctx: RequestContext, envId: string, body: UpstreamWrite, options: { draftOnly?: boolean } = {}) {
     checkUpstream(body);
     assertDestination("name", body.name, this.destinations, "upstream");
     return workspaceTransaction(this.db, envId, async (tx) => {
+      if (options.draftOnly) await refuseAutoPublish(tx, envId);
       await requireEnvironment(tx, envId);
       await refuseCapture(tx, envId, body.name);
       const [row] = await tx.insert(upstreams).values({ environmentId: envId, ...upstreamValues(body) }).returning();
@@ -151,10 +153,11 @@ export class UpstreamsService {
     });
   }
 
-  async replace(ctx: RequestContext, envId: string, upstreamId: string, body: UpstreamWrite) {
+  async replace(ctx: RequestContext, envId: string, upstreamId: string, body: UpstreamWrite, options: { draftOnly?: boolean } = {}) {
     checkUpstream(body);
     assertDestination("name", body.name, this.destinations, "upstream");
     return workspaceTransaction(this.db, envId, async (tx) => {
+      if (options.draftOnly) await refuseAutoPublish(tx, envId);
       const current = await this.requireUpstream(tx, envId, upstreamId, true);
       if (current.name !== body.name) {
         await refuseWhileReferenced(tx, envId, current.name, "renamed");
@@ -175,8 +178,9 @@ export class UpstreamsService {
     });
   }
 
-  async remove(ctx: RequestContext, envId: string, upstreamId: string) {
+  async remove(ctx: RequestContext, envId: string, upstreamId: string, options: { draftOnly?: boolean } = {}) {
     await workspaceTransaction(this.db, envId, async (tx) => {
+      if (options.draftOnly) await refuseAutoPublish(tx, envId);
       const current = await this.requireUpstream(tx, envId, upstreamId, true);
       await refuseWhileReferenced(tx, envId, current.name, "deleted");
       await tx.delete(upstreams).where(eq(upstreams.id, upstreamId));
@@ -200,10 +204,11 @@ export class UpstreamsService {
     return toPage(rows, limit, (r) => r.target, toTarget);
   }
 
-  async createTarget(ctx: RequestContext, envId: string, upstreamId: string, body: TargetWrite) {
+  async createTarget(ctx: RequestContext, envId: string, upstreamId: string, body: TargetWrite, options: { draftOnly?: boolean } = {}) {
     checkTarget(body);
     assertDestination("target", targetHost(body.target), this.destinations, "target");
     return workspaceTransaction(this.db, envId, async (tx) => {
+      if (options.draftOnly) await refuseAutoPublish(tx, envId);
       await this.requireUpstream(tx, envId, upstreamId);
       const [row] = await tx.insert(targets).values({ environmentId: envId, upstreamId, ...targetValues(body) }).returning();
       const after = toTarget(row!);
@@ -213,10 +218,11 @@ export class UpstreamsService {
     });
   }
 
-  async replaceTarget(ctx: RequestContext, envId: string, upstreamId: string, targetId: string, body: TargetWrite) {
+  async replaceTarget(ctx: RequestContext, envId: string, upstreamId: string, targetId: string, body: TargetWrite, options: { draftOnly?: boolean } = {}) {
     checkTarget(body);
     assertDestination("target", targetHost(body.target), this.destinations, "target");
     return workspaceTransaction(this.db, envId, async (tx) => {
+      if (options.draftOnly) await refuseAutoPublish(tx, envId);
       const before = toTarget(await this.requireTarget(tx, envId, upstreamId, targetId));
       const [row] = await tx
         .update(targets)
@@ -230,8 +236,9 @@ export class UpstreamsService {
     });
   }
 
-  async removeTarget(ctx: RequestContext, envId: string, upstreamId: string, targetId: string) {
+  async removeTarget(ctx: RequestContext, envId: string, upstreamId: string, targetId: string, options: { draftOnly?: boolean } = {}) {
     await workspaceTransaction(this.db, envId, async (tx) => {
+      if (options.draftOnly) await refuseAutoPublish(tx, envId);
       const before = toTarget(await this.requireTarget(tx, envId, upstreamId, targetId));
       await tx.delete(targets).where(eq(targets.id, targetId));
       await markDraftChanged(tx, envId);
@@ -411,7 +418,7 @@ export class WorkspaceUpstreamsController {
   @Post()
   @RequiredPermission("gateway.write", "workspace")
   create(@Ctx() ctx: RequestContext, @Param("workspaceId", uuidParam()) workspaceId: string, @Body(contractBodyV2("WorkspaceUpstreamWrite")) body: UpstreamWrite) {
-    return this.upstreams.create(ctx, workspaceId, body);
+    return this.upstreams.create(ctx, workspaceId, body, { draftOnly: true });
   }
 
   @Get(":upstreamId")
@@ -428,14 +435,14 @@ export class WorkspaceUpstreamsController {
     @Param("upstreamId", uuidParam()) upstreamId: string,
     @Body(contractBodyV2("WorkspaceUpstreamWrite")) body: UpstreamWrite,
   ) {
-    return this.upstreams.replace(ctx, workspaceId, upstreamId, body);
+    return this.upstreams.replace(ctx, workspaceId, upstreamId, body, { draftOnly: true });
   }
 
   @Delete(":upstreamId")
   @HttpCode(204)
   @RequiredPermission("gateway.write", "workspace")
   async remove(@Ctx() ctx: RequestContext, @Param("workspaceId", uuidParam()) workspaceId: string, @Param("upstreamId", uuidParam()) upstreamId: string) {
-    await this.upstreams.remove(ctx, workspaceId, upstreamId);
+    await this.upstreams.remove(ctx, workspaceId, upstreamId, { draftOnly: true });
   }
 
   @Get(":upstreamId/targets")
@@ -452,7 +459,7 @@ export class WorkspaceUpstreamsController {
     @Param("upstreamId", uuidParam()) upstreamId: string,
     @Body(contractBodyV2("WorkspaceTargetWrite")) body: WithVarRefs<TargetWrite, "target">,
   ) {
-    return this.upstreams.createTarget(ctx, workspaceId, upstreamId, workspaceTarget(body));
+    return this.upstreams.createTarget(ctx, workspaceId, upstreamId, workspaceTarget(body), { draftOnly: true });
   }
 
   @Put(":upstreamId/targets/:targetId")
@@ -464,7 +471,7 @@ export class WorkspaceUpstreamsController {
     @Param("targetId", uuidParam()) targetId: string,
     @Body(contractBodyV2("WorkspaceTargetWrite")) body: WithVarRefs<TargetWrite, "target">,
   ) {
-    return this.upstreams.replaceTarget(ctx, workspaceId, upstreamId, targetId, workspaceTarget(body));
+    return this.upstreams.replaceTarget(ctx, workspaceId, upstreamId, targetId, workspaceTarget(body), { draftOnly: true });
   }
 
   @Delete(":upstreamId/targets/:targetId")
@@ -476,7 +483,7 @@ export class WorkspaceUpstreamsController {
     @Param("upstreamId", uuidParam()) upstreamId: string,
     @Param("targetId", uuidParam()) targetId: string,
   ) {
-    await this.upstreams.removeTarget(ctx, workspaceId, upstreamId, targetId);
+    await this.upstreams.removeTarget(ctx, workspaceId, upstreamId, targetId, { draftOnly: true });
   }
 }
 
