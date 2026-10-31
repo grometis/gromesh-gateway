@@ -25,8 +25,11 @@ const work = mkdtempSync(join(tmpdir(), "gromesh-x4-kind-"));
 const out = process.env.LAB_OUT ?? work;
 const AGENT_IMAGE = process.env.AGENT_IMAGE;
 const KONG_IMAGE = process.env.KONG_IMAGE;
-const CLICKHOUSE_IMAGE = "clickhouse/clickhouse-server:25.8.33.6-alpine";
-const VECTOR_IMAGE = "timberio/vector:0.57.0-alpine";
+const CLICKHOUSE_IMAGE = versions.CLICKHOUSE_IMAGE;
+const VECTOR_IMAGE = versions.VECTOR_IMAGE;
+for (const image of [CLICKHOUSE_IMAGE, VECTOR_IMAGE]) {
+  assert.match(image ?? "", /@sha256:[0-9a-f]{64}$/, "collector images must be pinned by digest");
+}
 assert.ok(AGENT_IMAGE && KONG_IMAGE, "set AGENT_IMAGE and KONG_IMAGE to local tags loaded into the lab");
 const DP = "gromesh-x4";
 const OBS = "gromesh-x4-obs";
@@ -126,7 +129,7 @@ function values({ clickhousePeers }) {
         { capability: "CAP-7", kind: "http", name: "collector token", url: "http://127.0.0.1:8080/kong", expectStatus: 401, method: "POST" },
       ] } },
     collector: { enabled: true, mode: "sidecar", clusterId, environmentId: instanceId,
-      image: { repository: "timberio/vector", tag: "0.57.0-alpine", digest: "", pullPolicy: "IfNotPresent" },
+      image: { repository: VECTOR_IMAGE.split("@")[0].split(":")[0], tag: VECTOR_IMAGE.split("@")[0].split(":")[1], digest: VECTOR_IMAGE.split("@")[1], pullPolicy: "IfNotPresent" },
       clickhouse: { endpoint: `http://clickhouse.${OBS}.svc.cluster.local:8123`, existingSecret: "clickhouse-writer" } },
     networkPolicy: { enabled: true,
       controlPlanePeers: [{ ipBlock: { cidr: "192.0.2.0/24" } }],
