@@ -13,8 +13,8 @@ export function serviceTargetV2(s: WorkspaceService): string {
   return `${fieldText(s.protocol)}://${fieldText(s.host)}:${fieldText(s.port)}${fieldText(s.path)}`;
 }
 
-/** The public path of a route path in its workspace: the compiler prefixes it with /<slug> (a regex stays a regex). */
-export function publicPath(slug: string, path: string): string {
+/** Prediction for configuration v2 only; neither a Release nor this prefix proves delivery. */
+export function plannedV2Path(slug: string, path: string): string {
   return path.startsWith("~") ? `~/${slug}(?:${path.slice(1)})` : `/${slug}${path}`;
 }
 
@@ -35,13 +35,14 @@ export function upstreamPath(servicePath: string | null | undefined, requestPath
 }
 
 /** What the upstream receives for a request under the route's first path, the service's path included (decision D1). */
-export function upstreamEffect(slug: string, path: string, stripPath: boolean, servicePath?: string | null): string {
+export function upstreamEffect(slug: string, path: string, stripPath: boolean, servicePath?: string | null, flow: "v1" | "v2" = "v1"): string {
+  if (servicePath?.includes("${")) return "O path do service usa uma variável; o path recebido pelo upstream depende do valor na instância.";
   const sp = servicePath && servicePath !== "/" ? servicePath : null;
   if (path.startsWith("~")) {
     if (stripPath) return sp ? `O upstream recebe ${sp} seguido do que vier depois do trecho que a expressão casar.` : "O upstream recebe só o que vier depois do trecho que a expressão casar.";
-    return sp ? `O upstream recebe ${sp} seguido do path completo, com o prefixo do Workspace.` : "O upstream recebe o path completo, com o prefixo do Workspace.";
+    return sp ? `O upstream recebe ${sp} seguido do path completo, ${flow === "v2" ? "com o prefixo do Workspace" : "sem acrescentar o prefixo do Workspace"}.` : `O upstream recebe o path completo, ${flow === "v2" ? "com o prefixo do Workspace" : "sem acrescentar o prefixo do Workspace"}.`;
   }
-  const matched = publicPath(slug, path);
+  const matched = flow === "v2" ? plannedV2Path(slug, path) : path;
   const request = matched.endsWith("/") ? `${matched}x` : `${matched}/x`;
   return `Uma requisição a ${request} chega ao upstream como ${upstreamPath(servicePath, request, stripPath ? matched : "")}.`;
 }
@@ -152,10 +153,10 @@ export function WorkspaceGatewayNote({ workspaceId }: { workspaceId: string }) {
   return (
     <div className="note" role="note" aria-label="Estado do Workspace">
       <p>
-        Prefixo público <span className="mono">/{w.slug}</span> · {w.activeRelease == null ? "nenhuma release ativa" : `release ativa v${w.activeRelease}`}
+        Prefixo previsto na configuração v2 <span className="mono">/{w.slug}</span> · {w.activeRelease === null ? "nenhuma Release v2 ativa" : typeof w.activeRelease === "number" ? `Release v2 ativa v${w.activeRelease}` : "estado da Release v2 não comprovado"}
         {env.data && (env.data.hasUnpublishedChanges ? " · há alterações no rascunho ainda não publicadas" : " · rascunho sem alterações pendentes")}.
       </p>
-      {access.reason ? <p role="status">{access.reason}</p> : <p>Deployment de Workspaces indisponível nesta fase: o que for criado ou editado aqui fica só no rascunho e não é implantado.</p>}
+      {access.reason ? <p role="status">{access.reason}</p> : <p>Deployment v2 indisponível nesta fase. Criar ou editar altera o rascunho; uma Release v2 publicada também não comprova implantação.</p>}
     </div>
   );
 }

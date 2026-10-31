@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { allWorkspaceServicesKey, publicPath, upstreamEffect, upstreamPath, workspaceServicesKey } from "./workspace-gateway";
+import { allWorkspaceServicesKey, plannedV2Path, upstreamEffect, upstreamPath, workspaceServicesKey } from "./workspace-gateway";
 
 // What Kong 3.9.4 sent upstream, recorded by the control plane (path_handling v0).
 const OBSERVED = JSON.parse(readFileSync(new URL("../../../control-plane/src/workspaces/kong-3.9-path-handling-v0.json", import.meta.url), "utf8")) as {
@@ -15,14 +15,14 @@ describe("upstream path", () => {
     });
 
   it("includes the service's path in the preview, with and without stripPath", () => {
-    expect(upstreamEffect("tvro", "/orders", false, "/v1")).toBe("Uma requisição a /tvro/orders/x chega ao upstream como /v1/tvro/orders/x.");
-    expect(upstreamEffect("tvro", "/orders", true, "/v1")).toBe("Uma requisição a /tvro/orders/x chega ao upstream como /v1/x.");
-    expect(upstreamEffect("tvro", "/orders", true, "/v1/")).toBe("Uma requisição a /tvro/orders/x chega ao upstream como /v1/x.");
-    expect(upstreamEffect("tvro", "/orders", false, null)).toBe("Uma requisição a /tvro/orders/x chega ao upstream como /tvro/orders/x.");
-    expect(upstreamEffect("tvro", "/orders/", true, null)).toBe("Uma requisição a /tvro/orders/x chega ao upstream como /x.");
-    expect(upstreamEffect("tvro", "/", false, "/v1")).toBe("Uma requisição a /tvro/x chega ao upstream como /v1/tvro/x.");
+    expect(upstreamEffect("tvro", "/orders", false, "/v1")).toBe("Uma requisição a /orders/x chega ao upstream como /v1/orders/x.");
+    expect(upstreamEffect("tvro", "/orders", true, "/v1")).toBe("Uma requisição a /orders/x chega ao upstream como /v1/x.");
+    expect(upstreamEffect("tvro", "/orders", true, "/v1/")).toBe("Uma requisição a /orders/x chega ao upstream como /v1/x.");
+    expect(upstreamEffect("tvro", "/orders", false, null)).toBe("Uma requisição a /orders/x chega ao upstream como /orders/x.");
+    expect(upstreamEffect("tvro", "/orders/", true, null)).toBe("Uma requisição a /orders/x chega ao upstream como /x.");
+    expect(upstreamEffect("tvro", "/", false, "/v1")).toBe("Uma requisição a /x chega ao upstream como /v1/x.");
     expect(upstreamEffect("tvro", "~/v[0-9]+", true, "/v1")).toBe("O upstream recebe /v1 seguido do que vier depois do trecho que a expressão casar.");
-    expect(publicPath("tvro", "~/v[0-9]+")).toBe("~/tvro(?:/v[0-9]+)");
+    expect(plannedV2Path("tvro", "~/v[0-9]+")).toBe("~/tvro(?:/v[0-9]+)");
   });
 });
 
@@ -32,5 +32,15 @@ describe("service list keys", () => {
     for (const q of ["", "all", "ws-services-all"]) expect(workspaceServicesKey(w, q)).not.toEqual(allWorkspaceServicesKey(w));
     expect(workspaceServicesKey(w, "all").slice(0, 2)).not.toEqual(allWorkspaceServicesKey(w).slice(0, 2));
     expect(allWorkspaceServicesKey(w)).toContain(w);
+  });
+});
+
+describe("upstream effects are conditional on the flow", () => {
+  it.each([true, false])("keeps v1 unprefixed and v2 explicitly predicted with stripPath=%s", (strip) => {
+    expect(upstreamEffect("billing", "/orders", strip, "/api", "v1")).toBe(`Uma requisição a /orders/x chega ao upstream como /api/${strip ? "x" : "orders/x"}.`);
+    expect(upstreamEffect("billing", "/orders", strip, "/api", "v2")).toBe(`Uma requisição a /billing/orders/x chega ao upstream como /api/${strip ? "x" : "billing/orders/x"}.`);
+  });
+  it("does not resolve service variables or manufacture a concrete upstream path", () => {
+    expect(upstreamEffect("billing", "/orders", false, "${BASE_PATH}")).toContain("depende do valor na instância");
   });
 });
