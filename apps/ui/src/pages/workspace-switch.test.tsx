@@ -124,14 +124,15 @@ describe("switching workspaces", () => {
 describe("v1 publication strip on workspace gateway screens", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it.each(["services", "services/service-1", "routes"])("omits the strip on %s even with pending changes", async (section) => {
+  it.each(["services", "services/service-1", "routes"])("shows the strip on %s with pending changes", async (section) => {
     const { render } = await load();
     const client = newClient();
     client.setQueryData(["environment", A], { ...env(A, "Pagamentos"), hasUnpublishedChanges: true });
     const html = render(client, `/e/${A}/${section}`);
-    expect(html).not.toContain('aria-label="Publicação"');
-    expect(html).not.toContain(`/e/${A}/publish`);
-    expect(client.getQueryCache().find({ queryKey: ["clusters", A] })).toBeUndefined();
+    expect(html).toContain('aria-label="Publicação"');
+    expect(html).toContain(`/e/${A}/publish`);
+    expect(client.getQueryCache().find({ queryKey: ["clusters", A] })).toBeDefined();
+    expect(client.getQueryCache().find({ queryKey: ["preview", A] })).toBeDefined();
   });
 
   it("retains the strip on v1 screens", async () => {

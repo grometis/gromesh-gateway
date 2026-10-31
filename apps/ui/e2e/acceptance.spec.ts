@@ -32,8 +32,7 @@ test("login, create a service and a route, then preview the publication", async 
   expect((await createdRoute).status()).toBe(201);
   await expect(route).toBeHidden();
 
-  await expect(page.getByRole("region", { name: "Publicação" })).toHaveCount(0);
-  await page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Publicações", exact: true }).click();
+  await expect(page.getByRole("region", { name: "Publicação" })).toContainText("2 alterações");
   await page.getByRole("region", { name: "Publicação" }).getByRole("button", { name: /^Publicar v\d+$/ }).click();
   const publish = page.getByRole("region", { name: "Revisar e publicar" });
   const changes = publish.getByRole("list", { name: "Alterações" }).getByRole("listitem");

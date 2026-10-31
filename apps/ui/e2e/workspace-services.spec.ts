@@ -91,7 +91,7 @@ for (const options of [
       await expect(page.getByRole("note", { name: "Estado do Workspace" })).toContainText(options.reason);
       await expect(page.getByText(/Somente leitura:/)).toBeVisible();
       await expect(page.getByRole("button", { name: /Novo service|^Editar$|Mais ações para/ })).toHaveCount(0);
-      await expect(page.getByRole("region", { name: "Publicação", exact: true })).toHaveCount(0);
+      await expect(page.getByRole("region", { name: "Publicação", exact: true })).toBeVisible();
     }
     expect(fake.writes).toEqual([]);
   });
@@ -228,13 +228,15 @@ test("enabled validation appears beside the service checkbox", async ({ page }) 
   await expect(dialog).toBeVisible();
 });
 
-test("the v1 publication strip is absent on Services, its detail and Routes", async ({ page }) => {
+test("the v1 publication strip is available on Services, its detail and Routes", async ({ page }) => {
   const fake = await setup(page);
   for (const path of ["services", `services/${S}`, "routes"]) {
     await page.goto(`/e/${W}/${path}`);
     await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
-    await expect(page.getByRole("region", { name: "Publicação", exact: true })).toHaveCount(0);
-    await expect(page.getByRole("link", { name: "Ver diff" })).toHaveCount(0);
+    await expect(page.getByRole("region", { name: "Publicação", exact: true })).toBeVisible();
+    const strip = page.getByRole("region", { name: "Publicação", exact: true });
+    await expect(strip.getByRole("link", { name: "Ver diff" })).toHaveAttribute("href", `/e/${W}/publish`);
+    await expect(strip.getByRole("button", { name: "Publicar v2" })).toBeEnabled();
   }
   await page.goto(`/e/${W}/plugins`);
   await expect(page.getByRole("region", { name: "Publicação", exact: true })).toBeVisible();
