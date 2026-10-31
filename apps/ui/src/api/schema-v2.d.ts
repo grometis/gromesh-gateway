@@ -1282,9 +1282,32 @@ export interface paths {
             };
             cookie?: never;
         };
+        /**
+         * @description Lists logical Workspace-global draft records (including disabled ones), ordered by name then id, with
+         *     cursor pagination. Never returns platform globals, another Workspace's records, or derived route instances.
+         *     Secret config fields are REDACTED for every caller. Reading neither publishes nor deploys.
+         */
         get: operations["listWorkspaceGlobalPlugins"];
         put?: never;
-        /** @description Emulated by one instance per route or service, by the plugin classes in info ("Plugins"); rate-limiting, response-ratelimiting and proxy-cache answer 422 until H-8 is decided; privileged capabilities stay platform-admin only. */
+        /**
+         * @description Creates one logical Workspace-global plugin; composition follows info "Plugins" and "L9 composition".
+         *     Edits the draft only (no publish, no deployment): in an environment that auto-publishes its draft through v1
+         *     (publishMode auto) it answers 409 auto-publish and writes nothing (D3). workspace.admin is required in this
+         *     Workspace, with a session and CSRF; gateway.write alone does not authorize this operation, nor does it grant
+         *     any platform capability. Privileged capabilities require platform administration (403), but even platform
+         *     administration cannot bypass L9's reserved names, unsupported semantics, or composition validation (422).
+         *     The writer takes the shared Workspace transaction lock before entity/uniqueness locks, rechecks archive,
+         *     publishMode, duplicate names, references and effective composition under that lock, and atomically creates
+         *     the record, marks the draft changed and audits workspace.global-plugin.create with the logical id,
+         *     Workspace, actor and redacted after state. It serializes with route/service/consumer/plugin writes, imports,
+         *     publication and archive. A bounded retry exhausted or lock timeout returns 409 concurrent-update with no
+         *     partial record, draft change or success audit. Archived Workspaces return 409 workspace-archived.
+         *     New routes and later edits must preserve the same invariants; publication revalidates the complete candidate.
+         *     Config is validated against the pinned catalog, including protocols, destinations, secret/reference fields
+         *     and reserved tags. REDACTED cannot initialize a secret. No generated route ids or Kong JSON are API inputs.
+         *     rate-limiting, response-ratelimiting and proxy-cache return 422 plugin-not-workspace-global until H-8 is
+         *     decided; no per-route quota/cache is silently advertised as a shared Workspace policy.
+         */
         post: operations["createWorkspaceGlobalPlugin"];
         delete?: never;
         options?: never;
@@ -3302,14 +3325,57 @@ export interface components {
         WorkspaceJwtCredentialCreate: components["schemas"]["JwtCredentialCreate"];
         /** @description BasicAuthCredentialCreate of v1. username is unique IN THE INSTANCE, across workspaces (409, generic conflict). */
         WorkspaceBasicAuthCredentialCreate: components["schemas"]["BasicAuthCredentialCreate"];
-        /** @description A plugin that applies to every route of the workspace, emulated by the compiler (info, "Plugins"). */
+        /**
+         * @description A logical fallback for every current and future route of this Workspace, emulated only by the compiler
+         *     (info, "Plugins" and "L9 composition"). No scope/serviceId/routeId/consumerId/workspaceId is accepted in
+         *     the body: the URL owns the scope. One name per Workspace, including disabled records. enabled false
+         *     disables only this logical record, never a mandatory platform plugin or a more specific instance.
+         */
         WorkspaceGlobalPluginWrite: {
-            name: string;
+            /**
+             * @description Eligibility is necessary but not sufficient; mandatory platform names and privileged config remain forbidden to L9 as described in info.
+             * @enum {string}
+             */
+            name: "cors" | "ip-restriction" | "bot-detection" | "request-size-limiting" | "request-termination" | "request-transformer" | "response-transformer" | "correlation-id" | "redirect" | "grpc-gateway" | "grpc-web" | "standard-webhooks" | "key-auth" | "basic-auth" | "jwt" | "acl" | "ai-prompt-decorator" | "ai-prompt-guard" | "ai-prompt-template" | "ai-request-transformer" | "ai-response-transformer" | "ai-proxy" | "http-log" | "tcp-log" | "udp-log" | "syslog" | "loggly" | "datadog" | "statsd" | "opentelemetry" | "zipkin" | "prometheus";
             /** @default true */
             enabled: boolean;
+            /** @description Pinned catalog schema and semantic validation apply; secrets are write-only and references may resolve only within this Workspace. A new secret cannot be REDACTED. */
             config: Record<string, never>;
-            protocols?: string[];
+            /** @description Omission uses the pinned plugin defaults; supplied protocols must be supported by that plugin and preserve the effective per-route coverage. */
+            protocols?: ("http" | "https" | "grpc" | "grpcs" | "tcp" | "tls" | "tls_passthrough" | "udp")[];
             tags?: components["schemas"]["Tags"];
+        };
+        WorkspaceGlobalPluginConflict: components["schemas"]["Problem"] & {
+            /** @constant */
+            status?: 409;
+            /**
+             * @description auto-publish: v1 publishMode auto (switch to manual); workspace-archived: read-only; concurrent-update: bounded Workspace lock/retry exhausted (retry the request); plugin-scope-conflict: name already exists in this Workspace, enabled or disabled. No other Workspace is disclosed.
+             * @enum {unknown}
+             */
+            code: "auto-publish" | "workspace-archived" | "concurrent-update" | "plugin-scope-conflict";
+        };
+        WorkspaceGlobalPluginValidationProblem: components["schemas"]["Problem"] & {
+            /** @constant */
+            status?: 422;
+            /**
+             * @description invalid-plugin: body, pinned config/protocol/schema, tag, destination, reference or secret error;
+             *     path is the offending field (config.<field>, protocols[i], tags[i], scope or name).
+             *     plugin-not-workspace-global: name cannot preserve the admitted L9 semantics (path name), including
+             *     rate-limiting, response-ratelimiting, proxy-cache, hmac-auth, ldap-auth/session (L10), oauth2,
+             *     aws-lambda/azure-functions pending policy. reserved-plugin: mandatory platform name, gromesh-* or
+             *     acme (path name), even when disabled; privileged capabilities separately require platform admin (403).
+             *     unsafe-auth-composition: more than one effective mechanism on an affected route (path name);
+             *     consumer-required: ACL has no effective same-Workspace consumer authenticator (path name).
+             *     foreign-consumer: anonymous cannot resolve within this Workspace (path config.anonymous); the
+             *     response never confirms whether a consumer exists in another Workspace. Paths use dot/index
+             *     notation, never Kong's derived route ids; messages and paths contain no secret values.
+             * @enum {unknown}
+             */
+            code: "invalid-plugin" | "plugin-not-workspace-global" | "reserved-plugin" | "unsafe-auth-composition" | "consumer-required" | "foreign-consumer";
+            errors: {
+                path: string;
+                message: string;
+            }[];
         };
         /**
          * @description The cluster's analytics as its agents report it (agent-protocol-v2 "Analytics guarantees"). state: degraded when
@@ -3525,6 +3591,7 @@ export interface components {
             /** Format: date-time */
             decidedAt: string | null;
         } & (unknown & unknown & unknown);
+        /** @description Logical Workspace-global draft record, never a materialized Kong instance. Config secrets are REDACTED in reads, audit and diffs. No platform plugins are included. */
         WorkspaceGlobalPlugin: {
             /** Format: uuid */
             id: string;
@@ -3537,6 +3604,10 @@ export interface components {
             createdAt: string;
             /** Format: date-time */
             updatedAt: string;
+        };
+        WorkspaceGlobalPluginPage: {
+            items: components["schemas"]["WorkspaceGlobalPlugin"][];
+            nextCursor: string | null;
         };
         /** @description Healthchecks of v1, closed at every level. */
         WorkspaceHealthchecks: {
@@ -6327,7 +6398,10 @@ export interface operations {
     };
     listWorkspaceGlobalPlugins: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: components["parameters"]["Limit"];
+                cursor?: components["parameters"]["Cursor"];
+            };
             header?: never;
             path: {
                 workspaceId: components["parameters"]["WorkspaceId"];
@@ -6336,15 +6410,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Plugins applied to every route of the workspace */
+            /** @description Logical Workspace globals */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        items?: components["schemas"]["WorkspaceGlobalPlugin"][];
-                    };
+                    "application/json": components["schemas"]["WorkspaceGlobalPluginPage"];
                 };
             };
             401: components["responses"]["Unauthorized"];
@@ -6367,17 +6439,36 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Created */
+            /** @description Logical plugin created in the draft */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["WorkspaceGlobalPlugin"];
+                };
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            422: components["responses"]["ValidationError"];
+            /** @description auto-publish, workspace-archived, concurrent-update or plugin-scope-conflict; nothing written */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["WorkspaceGlobalPluginConflict"];
+                };
+            };
+            /** @description Invalid plugin, reserved name, unsupported Workspace-global semantics, unsafe authentication or consumer dependency */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["WorkspaceGlobalPluginValidationProblem"];
+                };
+            };
         };
     };
     listRoles: {
