@@ -230,7 +230,21 @@ export class DeliveryService {
       // Token evidence is independent of applied revisions: pending nodes must be able to supply the gate's input.
       // A switching refusal commits this observation, never an applied revision or a delivered configuration.
       const tokenEvidence = collectorTokenEvidence(this.enc, body.collectorTokenFingerprints);
-      await tx.update(clusterNodes).set({ collectorTokenEvidence: tokenEvidence, collectorTokenReportedAt: sql`clock_timestamp()`, lastSeenAt: sql`clock_timestamp()` }).where(where);
+      try {
+        await tx.update(clusterNodes).set({ collectorTokenEvidence: tokenEvidence, collectorTokenReportedAt: sql`clock_timestamp()`, lastSeenAt: sql`clock_timestamp()` }).where(where);
+      } catch (error: unknown) {
+        // Drizzle includes the HMAC parameters in its message/stack; retain only known HTTP conflict semantics.
+        let current: unknown = error;
+        let code: string | undefined;
+        for (let i = 0; i < 3 && current && typeof current === "object"; i++) {
+          if ("code" in current && typeof current.code === "string" && ["23505", "23503", "40P01", "40001"].includes(current.code)) {
+            code = current.code;
+            break;
+          }
+          current = "cause" in current ? current.cause : null;
+        }
+        throw Object.assign(new Error("Collector token evidence could not be recorded"), code ? { code } : {});
+      }
       if (JSON.stringify(node.collectorTokenEvidence) !== JSON.stringify(tokenEvidence)) {
         await audit(tx, agentContext(req, node.nodeId), {
           action: "agent.collector-token", entityType: "node", entityId: node.nodeId, environmentId: cluster.environmentId,
@@ -454,8 +468,12 @@ export class DeliveryService {
     const [cluster] = await tx.select().from(clusters).where(eq(clusters.id, clusterId)).for("update");
     if (cluster!.deliveryProtocol === "v2") return true;
     if (cluster!.deliveryProtocol !== "v2-pending") return false;
-    const tokenState = (await reconcileCollectorTokens(tx)).get(clusterId);
-    if (!tokenState || tokenState.shared || tokenState.unverified) return false;
+    // The current agent learns its first epoch from delivery before it can report: keep the new gate lab-only/off.
+    const collectorTokenGate = this.config.workspacesDeployments?.collectorTokenGate === true;
+    if (collectorTokenGate) {
+      const tokenState = (await reconcileCollectorTokens(tx)).get(clusterId);
+      if (!tokenState || tokenState.shared || tokenState.unverified) return false;
+    }
     // Every registered node is expected (none is deregistered yet), and a node without an open admission (a v1-mode
     // agent) holds the gate: one writer per Kong.
     const nodes = await tx.select({ nodeId: clusterNodes.nodeId }).from(clusterNodes).where(eq(clusterNodes.clusterId, clusterId));
@@ -486,7 +504,7 @@ export class DeliveryService {
       entityId: clusterId,
       environmentId: cluster!.environmentId,
       before: { deliveryProtocol: "v2-pending" },
-      after: { deliveryProtocol: "v2", reason: "activation gate: every node passed a conclusive round, no pendency open, collector token exclusive", nodes: nodes.map((n) => n.nodeId) },
+      after: { deliveryProtocol: "v2", reason: `activation gate: every node passed a conclusive round, no pendency open${collectorTokenGate ? ", collector token exclusive" : ""}`, nodes: nodes.map((n) => n.nodeId) },
     });
     return true;
   }

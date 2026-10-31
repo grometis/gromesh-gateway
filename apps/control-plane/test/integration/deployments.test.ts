@@ -489,7 +489,7 @@ describe("a deployment recorded before its cluster turns v2 (D-1, laboratory ord
     }
   });
 
-  it("never converges without an expected node, and the cluster activated later joins and must prove the revision", async () => {
+  it("activates a new cluster without collector fingerprints by default, then converges only with matching evidence", async () => {
     const h = await startHarness({ databaseUrl: await freshDatabase("d1"), workspacesDeployments: LAB });
     try {
       const base = (await h.app.getUrl()).replace("[::1]", "127.0.0.1");
@@ -510,7 +510,8 @@ describe("a deployment recorded before its cluster turns v2 (D-1, laboratory ord
 
       // Only then the switch and the activation gate (admission, a conclusive passing round).
       expect((await v2(h.api, "PUT", `/clusters/${c.id}/delivery-protocol`, { protocol: "v2", reason: "laboratory switch after deploy" })).status).toBe(200);
-      expect((await tokenStatus(base, c)).body!.code).toBe("delivery-protocol-switching");
+      // The current agent cannot report before it learns an epoch: bootstrap must not depend on fingerprints.
+      expect((await agentCall(base, c.token, "GET", "v2/deployments/current")).body!.code).toBe("delivery-protocol-switching");
       const probe = new Probe();
       const asked = await agentCall(base, c.token, "POST", "v2/isolation/admission-requests", probe.request());
       const polled = await agentCall(base, c.token, "GET", `v2/isolation/admission-requests/${asked.body!.requestId}`);
@@ -524,6 +525,7 @@ describe("a deployment recorded before its cluster turns v2 (D-1, laboratory ord
       const served = await agentCall(base, c.token, "GET", "v2/deployments/current");
       expect(served.status, served.raw).toBe(200);
       expect((await h.sql.query(`select delivery_protocol from clusters where id = $1`, [c.id])).rows[0].delivery_protocol).toBe("v2");
+      expect((await h.sql.query("select collector_token_evidence from cluster_nodes where cluster_id = $1", [c.id])).rows[0].collector_token_evidence).toBeNull();
       // The activation re-evaluates: the cluster's node joins the expected nodes and the revision waits for it, under
       // the lease and a convergence deadline from now.
       expect(await history(dep.revision)).toEqual(["composed", "active", "converging"]);

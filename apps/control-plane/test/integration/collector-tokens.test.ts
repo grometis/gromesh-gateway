@@ -1,15 +1,17 @@
 import { createHash, createHmac, generateKeyPairSync, randomUUID, sign } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { Logger } from "@nestjs/common";
 import { readFileSync } from "node:fs";
 import { DB, type Db } from "../../src/db/db.js";
 import { collectorTokenStates } from "../../src/analytics/collector-tokens.js";
+import { loadConfig } from "../../src/config.js";
 import { ENCRYPTION_KEYS, startHarness, uniq, type Harness } from "./harness.js";
 
 const fingerprint = (token: string) => `sha256:${createHash("sha256").update(`gromesh-collector-token/v1\n${token}`).digest("hex")}`;
 const A = fingerprint("a".repeat(40));
 const B = fingerprint("b".repeat(40));
 const C = fingerprint("c".repeat(40));
-const LAB = { stage: "dev" as const, convergenceDeadlineMs: 600_000 };
+const LAB = { stage: "dev" as const, convergenceDeadlineMs: 600_000, collectorTokenGate: true };
 interface Node { id: string; token: string; registrationToken: string; }
 interface ShareVector {
   name: string;
@@ -75,6 +77,43 @@ beforeAll(async () => {
 afterAll(async () => { await replica?.close(); await h?.close(); });
 
 describe("collector token exclusivity (N3-A1 contract, B3)", () => {
+  it("keeps the collector activation gate off unless explicitly enabled for the laboratory", () => {
+    const env = { DATABASE_URL: "unused", GROMESH_EXPERIMENTAL_WORKSPACES: "lab", GROMESH_INSTANCE_STAGE: "dev" };
+    expect(loadConfig(env).workspacesDeployments).toMatchObject({ collectorTokenGate: false });
+    expect(loadConfig({ ...env, GROMESH_EXPERIMENTAL_COLLECTOR_TOKEN_GATE: "true" }).workspacesDeployments).toMatchObject({ collectorTokenGate: true });
+  });
+
+  it.each([ ["P0001", 500], ["23505", 409], ["40001", 409], ["40P01", 409], ["23503", 409] ] as const)("does not log evidence SQL parameters or driver details on %s, retaining HTTP %i", async (code, status) => {
+    const x = await node();
+    const logged: string[] = [];
+    const spy = vi.spyOn(Logger.prototype, "error").mockImplementation((...args: unknown[]) => void logged.push(JSON.stringify(args)));
+    try {
+      await h.sql.query(`create function b3_reject_token_evidence() returns trigger language plpgsql as $$ begin
+        if NEW.cluster_id = '${x.id}' and NEW.collector_token_evidence is not null then
+          raise exception using message = 'evidence rejected: ' || NEW.collector_token_evidence::text, errcode = '${code}';
+        end if; return NEW; end $$`);
+      await h.sql.query("create trigger b3_reject_token_evidence before update on cluster_nodes for each row execute function b3_reject_token_evidence()");
+      const result = await report(x, A, B);
+      expect(result.status).toBe(status);
+      const output = JSON.stringify(logged) + result.raw;
+      for (const digest of [A, B]) {
+        const hmac = createHmac("sha256", Buffer.from(ENCRYPTION_KEYS.fingerprint, "base64")).update(`gromesh-collector-fingerprint/v1\n${digest}`).digest("hex");
+        expect(output).not.toContain(hmac);
+        expect(output).not.toContain(digest);
+      }
+      expect(output).not.toContain("evidence rejected:");
+      expect(output).not.toContain("params:");
+      if (status === 500) expect(logged.join()).toContain("Collector token evidence could not be recorded");
+      if (code === "40001" || code === "40P01") expect(result.body?.code).toBe("concurrent-update");
+      expect((await h.sql.query("select collector_token_evidence from cluster_nodes where cluster_id = $1", [x.id])).rows[0].collector_token_evidence).toBeNull();
+    } finally {
+      spy.mockRestore();
+      await h.sql.query("drop trigger if exists b3_reject_token_evidence on cluster_nodes");
+      await h.sql.query("drop function if exists b3_reject_token_evidence()");
+      await h.sql.query("delete from clusters where id = $1", [x.id]);
+    }
+  });
+
   it.each(vectors.collectorTokenShare.cases)("matches the normative vector with HTTP reports and Postgres: $name", async (vector) => {
     const ids = new Map<string, string>();
     try {

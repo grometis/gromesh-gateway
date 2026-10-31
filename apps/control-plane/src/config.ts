@@ -68,7 +68,12 @@ export interface AppConfig {
    * laboratories set while the N2 gates are open. On, GROMESH_INSTANCE_STAGE (dev, hml or prd) is required: it becomes
    * the instance's immutable stage on the first deployment. Off, createDeployment and the switch to v2 answer 409 workspaces-mode-disabled; publishing a release stays allowed.
    */
-  workspacesDeployments: { stage: "dev" | "hml" | "prd"; convergenceDeadlineMs: number } | null;
+  workspacesDeployments: {
+    stage: "dev" | "hml" | "prd";
+    convergenceDeadlineMs: number;
+    /** Lab opt-in only until the agent sends fingerprints and the contract defines their bootstrap. */
+    collectorTokenGate?: boolean;
+  } | null;
   /**
    * GROMESH_INSTANCE_STAGE, also with Workspaces deployments off: publishing a release (decision D4) reaches no data
    * plane and needs only the stage, which becomes the instance's immutable stage on first use. Unset (and no instance
@@ -145,7 +150,11 @@ function workspacesDeployments(env: NodeJS.ProcessEnv): AppConfig["workspacesDep
   if (mode !== "lab") throw new Error("GROMESH_EXPERIMENTAL_WORKSPACES accepts only lab (unset: off)");
   const stage = env.GROMESH_INSTANCE_STAGE;
   if (stage !== "dev" && stage !== "hml" && stage !== "prd") throw new Error("GROMESH_INSTANCE_STAGE must be dev, hml or prd when Workspaces deployments are on");
-  return { stage, convergenceDeadlineMs: Number(env.GROMESH_CONVERGENCE_DEADLINE_MS ?? 10 * 60 * 1000) };
+  return {
+    stage,
+    convergenceDeadlineMs: Number(env.GROMESH_CONVERGENCE_DEADLINE_MS ?? 10 * 60 * 1000),
+    collectorTokenGate: env.GROMESH_EXPERIMENTAL_COLLECTOR_TOKEN_GATE === "true",
+  };
 }
 
 export const APP_CONFIG = Symbol("APP_CONFIG");
