@@ -7,7 +7,7 @@ const envId = "3f6b8c1e-2a4d-4e5f-8a9b-0c1d2e3f4a5b";
 const id = (n: number) => `9a1b2c3d-4e5f-4a6b-8c7d-${String(n).padStart(12, "0")}`;
 const environment = { id: envId, name: "Produção", publishMode: "manual", currentVersion: 3, hasUnpublishedChanges: true };
 const service = (n: number, name: string, host: string, port: number, extra: object = {}) => ({
-  id: id(n), name, protocol: "http", host, port, path: null, enabled: true, tags: [], createdAt: "2026-10-15T12:00:00Z", updatedAt: "2026-10-15T12:00:00Z", ...extra,
+  id: id(n), workspaceId: envId, upstreamId: null, name, protocol: "http", host, port, path: null, enabled: true, tags: [], createdAt: "2026-10-15T12:00:00Z", updatedAt: "2026-10-15T12:00:00Z", ...extra,
 });
 const services = [
   service(1, "catalog", "catalog.internal", 8080),
@@ -28,7 +28,7 @@ async function openServices(page: Page, clusters = converging) {
   await mockSession(page, { id: id(30), name: "Ana Souza", email: "ana@gromesh.dev", role: "editor", active: true, createdAt: "2026-10-15T12:00:00Z", updatedAt: "2026-10-15T12:00:00Z" });
   await page.route("**/api/v1/environments", (route) => route.fulfill({ json: { items: [environment, { ...environment, id: id(40), name: "Homologação" }] } }));
   await page.route(`**/api/v1/environments/${envId}`, (route) => route.fulfill({ json: environment }));
-  await page.route("**/api/v1/environments/*/services*", (route) => route.fulfill({ json: { items: services, nextCursor: null } }));
+  await page.route("**/api/v2/workspaces/*/services*", (route) => route.fulfill({ json: { items: services, nextCursor: null } }));
   await page.route("**/api/v1/environments/*/publish-preview", (route) => route.fulfill({ json: { currentVersion: 3, draftHash: `sha256:${"a".repeat(64)}`, hasChanges: true, changes } }));
   await page.route("**/api/v1/environments/*/clusters", (route) => route.fulfill({ json: { items: clusters } }));
   await page.goto("/login");
@@ -83,8 +83,8 @@ test("a degraded rollout is written in the strip, not only coloured", async ({ p
 });
 
 test("a service row opens its detail; Editar is quiet and Excluir lives in the keyboard-operable ⋯ menu", async ({ page }) => {
-  await page.route(`**/api/v1/environments/*/services/${id(3)}`, (route) => route.fulfill({ json: services[2] }));
   await openServices(page);
+  await page.route(`**/api/v2/workspaces/*/services/${id(3)}`, (route) => route.fulfill({ json: services[2] }));
   const row = page.getByRole("table", { name: "Services" }).getByRole("row").filter({ hasText: "orders" });
   await expect(row.getByRole("button", { name: "Editar" })).toBeVisible();
   await expect(row.getByRole("button", { name: "Excluir" })).toHaveCount(0);
