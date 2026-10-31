@@ -26,10 +26,13 @@ function useValueAccess() {
   // (auth/permissions.ts); never assume that an editor's gateway.write also grants access to instance values.
   const canAdmin = useCanAdmin();
   const isDev = !policy.isError && policy.data?.stage === "dev";
+  const isRevalidating = policy.fetchStatus !== "idle";
+  const confirmed = policy.isSuccess && !isRevalidating;
   const reason = policy.isError ? "Não foi possível verificar o stage da instância. Definir valores está indisponível."
+    : !confirmed ? "Verificando o stage da instância. Aguarde a confirmação antes de definir valores."
     : isDev ? "Valores pertencem somente a esta instância DEV e não viajam com releases ou promoções."
     : "Definir valores só está disponível em DEV. Em HML, PRD ou sem stage confirmado, a ação fica indisponível.";
-  return { canOffer: canAdmin, canSet: canAdmin && isDev, reason };
+  return { canOffer: canAdmin, canSet: canAdmin && isDev && confirmed, isRevalidating: canAdmin && isDev && isRevalidating, reason };
 }
 
 function useInvalidateVariables(workspaceId: string) {
@@ -56,7 +59,13 @@ function WorkspaceVariables({ workspaceId }: { workspaceId: string }) {
   const valueAccess = useValueAccess();
   const variables = useQuery({
     queryKey: variablesKey(workspaceId),
-    queryFn: () => unwrap(apiV2.GET("/workspaces/{workspaceId}/variables", { params: { path: { workspaceId } } })),
+    queryFn: async () => {
+      const items = await unwrap(apiV2.GET("/workspaces/{workspaceId}/variables", { params: { path: { workspaceId } } }));
+      // Sanitize before caching: select only changes observer data, leaving the original response in the cache.
+      return items.map(({ name, type, secret, required, hasValue, validation }) => ({
+        name, type, secret, required, hasValue, ...(validation ? { validation } : {}),
+      }));
+    },
   });
   const [editing, setEditing] = useState<WorkspaceVariable | "new" | null>(null);
   const [setting, setSetting] = useState<WorkspaceVariable | null>(null);
@@ -87,7 +96,7 @@ function WorkspaceVariables({ workspaceId }: { workspaceId: string }) {
         </tr>)}</tbody>
       </Table>}
       {keepForm && editing && <DeclarationForm workspaceId={workspaceId} variable={editing === "new" ? null : editing} onClose={() => setEditing(null)} />}
-      {keepForm && valueAccess.canSet && setting && <ValueForm workspaceId={workspaceId} variable={setting} onClose={() => setSetting(null)} />}
+      {keepForm && (valueAccess.canSet || valueAccess.isRevalidating) && setting && <ValueForm workspaceId={workspaceId} variable={setting} onClose={() => setSetting(null)} />}
       {keepForm && deleting && <DeleteVariable workspaceId={workspaceId} variable={deleting} onClose={() => setDeleting(null)} />}
     </section>
   );

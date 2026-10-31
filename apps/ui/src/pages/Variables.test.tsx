@@ -24,6 +24,7 @@ async function screen(options: {
   items?: Variable[]; stage?: "dev" | "hml" | "prd" | null;
   role?: "admin" | "editor" | "viewer"; status?: "active" | "archived"; publishMode?: "manual" | "auto";
   pending?: "workspace" | "environment" | "policy";
+  cachedStage?: "dev";
   readResponse?: (request: Request) => Response | Promise<Response> | undefined;
   writeResponse?: (request: Request) => Response | Promise<Response>;
 } = {}) {
@@ -67,6 +68,7 @@ async function screen(options: {
   ]);
   const router = createMemoryRouter([{ path: "/e/:envId/variables", element: <VariablesPage /> }], { initialEntries: [`/e/${W}/variables`] });
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  if (options.cachedStage) client.setQueryData(["workspace-creation-policy"], { stage: options.cachedStage });
   root = createRoot(container as unknown as HTMLElement);
   await act(async () => { root!.render(<QueryClientProvider client={client!}><AuthProvider><RouterProvider router={router} /></AuthProvider></QueryClientProvider>); await tick(); });
   await act(async () => { await tick(); });
@@ -174,6 +176,10 @@ describe("workspace variables", () => {
     expect(view.container.textContent).toContain("Obrigatória sem valor");
     expect(view.container.textContent).toContain("REDACTED");
     expect(view.container.textContent).not.toContain("unexpected-secret");
+    expect(client!.getQueryData<Variable[]>(["ws-variables", W])?.find((v) => v.name === "DEFINED")).toEqual({
+      name: "DEFINED", type: "credential", secret: true, required: true, hasValue: true,
+    });
+    expect(JSON.stringify(client!.getQueryCache().getAll().map((q) => q.state.data))).not.toContain("unexpected-secret");
     expect(view.sent.some((r) => new URL(r.url).pathname === `/api/v2/workspaces/${W}/variables`)).toBe(true);
   });
 
@@ -236,6 +242,44 @@ describe("workspace variables", () => {
     expect(view.container.textContent).toMatch(/DEV/);
     expect(view.writes()).toHaveLength(0);
   });
+  it.each(["hml", "prd"] as const)("offers declaration writes on %s, where the server has no stage restriction", async (stage) => {
+    const view = await screen({ stage });
+    await view.click("Editar declaração");
+    await view.submit();
+    await view.click("Declarar variável");
+    await view.input("Nome", "HOST");
+    await view.submit();
+    await view.click("Excluir");
+    await view.click("Excluir variável");
+    await vi.waitFor(async () => {
+      await act(async () => { await tick(); });
+      expect(view.container.textContent).toContain("Nenhuma variável declarada.");
+    });
+    expect(view.writes().map((r) => [r.method, new URL(r.url).pathname])).toEqual([
+      ["PUT", `/api/v2/workspaces/${W}/variables/API_KEY`],
+      ["PUT", `/api/v2/workspaces/${W}/variables/HOST`],
+      ["DELETE", `/api/v2/workspaces/${W}/variables/HOST`],
+    ]);
+  });
+  it.each(["Declarar variável", "Excluir"])("shows the server's 403 in Portuguese without changing declarations for viewer: %s", async (action) => {
+    const view = await screen({ role: "viewer", writeResponse: () => Response.json({ status: 403, detail: "Requires permission gateway.write" }, { status: 403 }) });
+    await view.click(action);
+    if (action === "Declarar variável") {
+      await view.input("Nome", "DENIED");
+      await view.submit();
+    } else await view.click("Excluir variável");
+    await vi.waitFor(async () => {
+      await act(async () => { await tick(); });
+      expect(view.dialog()!.textContent).toContain("Você não tem permissão para esta ação.");
+    });
+    expect(view.dialog()!.textContent).not.toContain("Requires permission");
+    expect(view.writes()).toHaveLength(1);
+    expect(view.writes()[0]!.method).toBe(action === "Declarar variável" ? "PUT" : "DELETE");
+    expect(client!.getQueryData(["ws-variables", W])).toEqual([variable]);
+    await view.click("Cancelar");
+    expect(view.container.textContent).toContain("API_KEY");
+    expect(view.container.textContent).not.toContain("DENIED");
+  });
   it.each(["viewer", "editor"] as const)("hides value writes without known values.write (%s)", async (role) => {
     const view = await screen({ role });
     expect(view.buttons("Definir valor")).toHaveLength(0);
@@ -249,6 +293,49 @@ describe("workspace variables", () => {
   it("blocks value writes until the instance stage is known", async () => {
     const view = await screen({ pending: "policy" });
     expect(view.buttons("Definir valor")[0]!.getAttribute("disabled")).not.toBeNull();
+  });
+  it("blocks opening the value form while cached DEV is being revalidated", async () => {
+    const view = await screen({ pending: "policy", cachedStage: "dev" });
+    expect(client!.getQueryData(["workspace-creation-policy"])).toEqual({ stage: "dev" });
+    expect(view.buttons("Definir valor")[0]!.getAttribute("disabled")).not.toBeNull();
+    await view.click("Definir valor");
+    expect(view.dialog()).toBeUndefined();
+    expect(view.writes()).toHaveLength(0);
+  });
+  it.each(["dev", "hml", "error"] as const)("blocks submission while cached DEV is revalidated, then handles %s", async (result) => {
+    let reads = 0;
+    let release!: (response: Response) => void;
+    const held = new Promise<Response>((resolve) => { release = resolve; });
+    const view = await screen({ readResponse: (request) => {
+      if (new URL(request.url).pathname === "/api/v2/workspace-creation-policy" && ++reads > 1) return held;
+    } });
+    try {
+      await view.click("Definir valor");
+      expect(view.dialog()).toBeDefined();
+      await view.input("Valor", "wait-for-stage");
+      expect(view.buttons("Definir valor")[0]!.getAttribute("disabled")).not.toBeNull();
+      expect(view.buttons("Salvar valor")[0]!.getAttribute("disabled")).not.toBeNull();
+      await view.submit();
+      expect(view.writes()).toHaveLength(0);
+    } finally {
+      await act(async () => {
+        release(result === "error" ? Response.json({ status: 500 }, { status: 500 }) : Response.json({ stage: result }));
+        await tick();
+      });
+    }
+    await vi.waitFor(async () => {
+      await act(async () => { await tick(); });
+      if (result === "dev") expect(view.buttons("Salvar valor")[0]!.getAttribute("disabled")).toBeNull();
+      else expect(view.dialog()).toBeUndefined();
+    });
+    if (result === "dev") {
+      await view.submit();
+      expect(await view.writes()[0]!.json()).toEqual({ value: "wait-for-stage" });
+    } else {
+      expect(view.buttons("Definir valor")[0]!.getAttribute("disabled")).not.toBeNull();
+      expect(view.writes()).toHaveLength(0);
+      if (result === "error") expect(view.container.textContent).toContain("Não foi possível verificar o stage");
+    }
   });
 
   it.each(["Declarar variável", "Editar declaração", "Definir valor", "Excluir"])("discards the %s form on workspace change", async (action) => {
