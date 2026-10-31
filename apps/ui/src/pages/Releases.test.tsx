@@ -1,7 +1,14 @@
 import { MutationObserver, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderToStaticMarkup } from "react-dom/server";
+import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Release } from "../api/client-v2";
+
+vi.mock("../auth", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../auth")>(),
+  useAuth: () => ({ user: { role: "viewer", name: "Ana" }, logout: vi.fn() }),
+  useCanEdit: () => false,
+}));
 
 const W = "6d3e8b20-4c5e-4d6f-9a70-00000000000a";
 const B = "6d3e8b20-4c5e-4d6f-9a70-00000000000b";
@@ -25,6 +32,73 @@ async function load(answer: (request: Request) => Promise<Response>) {
 
 describe("workspace releases", () => {
   afterEach(() => vi.unstubAllGlobals());
+
+  it.each([403, 201])("offers publication to a legacy viewer and honors the server response (%s)", async (status) => {
+    const requests: Request[] = [];
+    const { ReleasesPage, releasesQuery, publishReleaseMutation, releaseErrors } = await load(async (request) => {
+      requests.push(request);
+      if (request.method === "GET") return Response.json({ csrfToken: "csrf" });
+      return status === 201 ? Response.json(release, { status })
+        : Response.json({ title: "Forbidden", status, detail: "Requires release.publish" }, { status });
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
+    const workspace = { status: "active", activeRelease: 1 };
+    const environment = { publishMode: "manual", hasUnpublishedChanges: true, currentVersion: 3 };
+    const snapshots = [{ version: 3 }];
+    client.setQueryData(["workspace", W], workspace);
+    client.setQueryData(["environment", W], environment);
+    client.setQueryData(["snapshots", W], snapshots);
+    client.setQueryData(releasesQuery(W).queryKey, []);
+    const html = renderToStaticMarkup(<QueryClientProvider client={client}>
+      <MemoryRouter initialEntries={[`/e/${W}/releases`]}>
+        <Routes><Route path="/e/:envId/releases" element={<ReleasesPage />} /></Routes>
+      </MemoryRouter>
+    </QueryClientProvider>);
+    expect(html).toContain(">Publicar release</button>");
+    expect(html).not.toContain("Publicação requer a permissão");
+    const saved = vi.fn();
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    const observer = new MutationObserver(client, publishReleaseMutation(client, W, 1, saved));
+    if (status === 403) {
+      await expect(observer.mutate("Cobrança")).rejects.toMatchObject({ status: 403 });
+      expect(releaseErrors(observer.getCurrentResult().error)).toEqual([expect.stringContaining("Você não tem permissão para publicar")]);
+      expect(saved).not.toHaveBeenCalled();
+      expect(invalidate).not.toHaveBeenCalled();
+      expect(client.getQueryData(releasesQuery(W).queryKey)).toEqual([]);
+      expect(client.getQueryData(["workspace", W])).toEqual(workspace);
+    } else {
+      await expect(observer.mutate("Cobrança")).resolves.toEqual(release);
+      expect(saved).toHaveBeenCalledExactlyOnceWith(release);
+      expect(client.getQueryData(releasesQuery(W).queryKey)).toEqual([release]);
+    }
+    expect(client.getQueryData(["environment", W])).toEqual(environment);
+    expect(client.getQueryData(["snapshots", W])).toEqual(snapshots);
+    expect(requests.map((r) => [r.method, new URL(r.url).pathname])).toEqual([
+      ["GET", "/api/v1/auth/csrf"], ["POST", `/api/v2/workspaces/${W}/releases`],
+    ]);
+    client.clear();
+  });
+
+  it.each(["releases", "releases/", "services", "services/service-id", "routes", "consumers", "consumers/consumer-id", "plugins", "upstreams", "certificates", "publish", "publications", "publications/3", "clusters", "overview", "metrics", "analytics", "requests"])("keeps the v1 strip exclusively outside Releases (%s)", async (section) => {
+    await load(() => new Promise(() => {}));
+    const { Shell } = await import("../components/Shell");
+    const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity } } });
+    client.setQueryData(["environments"], { items: [] });
+    client.setQueryData(["environment", W], { currentVersion: 3, hasUnpublishedChanges: true });
+    const html = renderToStaticMarkup(<QueryClientProvider client={client}>
+      <MemoryRouter initialEntries={[`/e/${W}/${section}`]}>
+        <Routes><Route path="/e/:envId/*" element={<Shell />} /></Routes>
+      </MemoryRouter>
+    </QueryClientProvider>);
+    if (section.startsWith("releases")) {
+      expect(html).not.toContain('aria-label="Publicação"');
+      expect(html).not.toContain(`/e/${W}/publish"`);
+    } else {
+      expect(html).toContain('aria-label="Publicação"');
+      expect(html).toContain(`/e/${W}/publish"`);
+    }
+    client.clear();
+  });
 
   it("lists and publishes only through v2, with the real CSRF middleware and version guard", async () => {
     const requests: Request[] = [];

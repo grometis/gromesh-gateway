@@ -52,6 +52,7 @@ async function setup(page: Page, options: {
         return route.fulfill({ json: { id, key: id, name: environment(id).name, slug: id === W ? "billing" : "recargas", status: archived ? "archived" : "active", activeRelease: id === W ? activeRelease : null } satisfies Workspace });
       }
       if (path === `/api/v2/workspaces/${id}/releases`) return route.fulfill({ json: id === W ? items : [] });
+      if (path === `/api/v2/workspaces/${id}/services`) return route.fulfill({ json: { items: [], nextCursor: null } });
       if (path === `/api/v1/environments/${id}/publish-preview`) return route.fulfill({ json: { currentVersion: 3, draftHash: `sha256:${"b".repeat(64)}`, hasChanges: true, changes: [] } });
       if (path === `/api/v1/environments/${id}/clusters`) return route.fulfill({ json: { items: [], nextCursor: null } });
     }
@@ -63,12 +64,18 @@ async function setup(page: Page, options: {
   return { writes, unexpected, releaseRead, archive: () => { archived = true; }, holdReads: (kind: typeof hold) => { hold = kind; } };
 }
 
+test.afterEach(async ({ page }) => {
+  await expect(page.getByRole("region", { name: "Publicação", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^Publicar v\d/ })).toHaveCount(0);
+  await expect(page.locator(`a[href="/e/${W}/publish"], a[href="/e/${B}/publish"]`)).toHaveCount(0);
+});
+
 test("publishes an immutable release through v2 without deploying or calling v1 snapshots", async ({ page }) => {
   const fake = await setup(page);
   await expect(page.getByRole("link", { name: "Releases", exact: true })).toHaveAttribute("href", `/e/${W}/releases`);
   await expect(page.getByRole("region", { name: "Deployment", exact: true })).toContainText("Deployment de Workspaces indisponível nesta fase");
   await expect(page.getByRole("region", { name: "Convergência", exact: true })).toContainText("indisponível");
-  await expect(page.getByRole("region", { name: "Publicação", exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Publicação", exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Publicar release", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Publicar release" });
   await expect(dialog).toContainText("Publicar não implanta");
@@ -115,12 +122,48 @@ test("auto mode permits the inert v2 release", async ({ page }) => {
   expect(fake.unexpected).toEqual([]);
 });
 
-for (const options of [{ role: "viewer" }, { status: "archived" }, { hold: "workspace" }, { hold: "environment" }] as const) {
+for (const status of [403, 201] as const) {
+  test(`legacy viewer can submit a release and the server decides (${status})`, async ({ page }) => {
+    const fake = await setup(page, { role: "viewer", ...(status === 403 ? { error: { status, detail: "Requires release.publish" } } : {}) });
+    await page.getByRole("button", { name: "Publicar release", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Publicar release" });
+    await dialog.getByLabel("Resumo (opcional)").fill("Publicação por binding v2");
+    await dialog.getByRole("button", { name: "Confirmar publicação" }).click();
+    if (status === 403) {
+      await expect(dialog.getByRole("alert")).toContainText("Você não tem permissão para publicar (release.publish)");
+      await expect(page.getByText("Nenhuma release publicada neste Workspace.", { exact: true })).toBeVisible();
+      await expect(page.getByText("Nenhuma release ativa informada.", { exact: true })).toBeVisible();
+      await expect(page.getByText(/Release v\d+ publicada/)).toHaveCount(0);
+      await dialog.getByRole("button", { name: "Cancelar", exact: true }).click();
+    } else {
+      await expect(dialog).toHaveCount(0);
+      await expect(page.getByRole("table", { name: "Releases publicadas" })).toContainText("Publicação por binding v2");
+      await expect(page.getByText("Release v1 publicada. Nenhum deployment foi criado.", { exact: true })).toBeVisible();
+    }
+    await expect(page.getByText("Há alterações pendentes no rascunho (indicador v1).", { exact: true })).toBeVisible();
+    expect(fake.writes).toEqual([{ method: "POST", path: `/api/v2/workspaces/${W}/releases`, body: { message: "Publicação por binding v2", expectedActiveVersion: null }, csrf: "session-csrf" }]);
+    expect(fake.unexpected).toEqual([]);
+  });
+}
+
+test("v1 publication stays available on Services and disappears again on Releases", async ({ page }) => {
+  const fake = await setup(page);
+  await page.getByRole("link", { name: "Services", exact: true }).click();
+  await expect(page.getByRole("region", { name: "Publicação", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Publicar v4" })).toBeEnabled();
+  await expect(page.getByRole("link", { name: "Ver diff", exact: true })).toHaveAttribute("href", `/e/${W}/publish`);
+  await page.getByRole("link", { name: "Releases", exact: true }).click();
+  await expect(page).toHaveURL(`/e/${W}/releases`);
+  await expect(page.getByRole("button", { name: "Publicar release", exact: true })).toBeVisible();
+  expect(fake.writes).toEqual([]);
+  expect(fake.unexpected).toEqual([]);
+});
+
+for (const options of [{ status: "archived" }, { hold: "workspace" }, { hold: "environment" }] as const) {
   test(`read only when ${JSON.stringify(options)}`, async ({ page }) => {
     const fake = await setup(page, options);
     try {
       if ("status" in options) await expect(page.getByText("Somente leitura: este Workspace está arquivado. Não é possível publicar releases.", { exact: true })).toBeVisible();
-      if ("role" in options) await expect(page.getByText("Publicação requer a permissão release.publish neste Workspace.", { exact: true })).toBeVisible();
       if ("hold" in options) await expect(page.getByText(/Somente leitura enquanto/)).toBeVisible();
       await expect(page.getByRole("button", { name: "Publicar release", exact: true })).toHaveCount(0);
       expect(fake.writes).toEqual([]);

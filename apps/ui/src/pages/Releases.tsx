@@ -2,7 +2,6 @@ import { useState } from "react";
 import { type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, unwrap } from "../api/client";
 import { apiV2, problemCode, type Release } from "../api/client-v2";
-import { useCanEdit } from "../auth";
 import { Button } from "../components/Button";
 import { Field } from "../components/Field";
 import { Modal } from "../components/Modal";
@@ -64,9 +63,7 @@ function WorkspaceReleases({ workspaceId }: { workspaceId: string }) {
   const workspace = useWorkspace(workspaceId);
   const environment = useEnvironment(workspaceId);
   const access = useWorkspaceGatewayAccess(workspaceId, "release");
-  // /me exposes legacy roles: editor -> publisher, admin -> workspace/platform-admin (H-9).
-  // No effective v2 permissions endpoint exists yet; the server decides every publish.
-  const hasPublishPermission = useCanEdit();
+  // /me cannot describe v2 bindings: offer publication to readers and let the server enforce release.publish.
   const [confirm, setConfirm] = useState<{ expectedVersion: number | null } | null>(null);
   const [published, setPublished] = useState<number | null>(null);
   const activeVersion = workspace.data?.activeRelease ?? null;
@@ -78,9 +75,8 @@ function WorkspaceReleases({ workspaceId }: { workspaceId: string }) {
   };
   return <section className="final-page stack">
     <PageHeader title="Releases" description={`Releases do Workspace ${workspace.data?.name ?? "selecionado"}. Publicar uma release não implanta seu conteúdo.`}
-      actions={hasPublishPermission && access.canWrite && <Button variant="publish" onClick={open}>Publicar release</Button>} />
+      actions={access.canWrite && <Button variant="publish" onClick={open}>Publicar release</Button>} />
     {access.reason && <p role="status" className="note">{access.reason}</p>}
-    {!hasPublishPermission && <p className="muted">Publicação requer a permissão release.publish neste Workspace.</p>}
     {published !== null && <p role="status">Release v{published} publicada. Nenhum deployment foi criado.</p>}
     <section className="stack" aria-label="Rascunho">
       <h2>Rascunho</h2>
@@ -138,10 +134,9 @@ function releaseAuthor(actor: unknown): string {
 function PublishRelease({ workspaceId, expectedVersion, onClose, onPublished }: { workspaceId: string; expectedVersion: number | null; onClose: () => void; onPublished: (r: Release) => void }) {
   const client = useQueryClient();
   const access = useWorkspaceGatewayAccess(workspaceId, "release");
-  const hasPublishPermission = useCanEdit();
   const [message, setMessage] = useState("");
   const publish = useMutation(publishReleaseMutation(client, workspaceId, expectedVersion, onPublished));
-  const allowed = hasPublishPermission && access.canWrite && !publish.isPending;
+  const allowed = access.canWrite && !publish.isPending;
   return <Modal title="Publicar release" onClose={() => { if (!publish.isPending) onClose(); }} footer={<>
     <Button disabled={publish.isPending} onClick={onClose}>Cancelar</Button>
     <Button variant="publish" disabled={!allowed} onClick={() => { if (allowed) publish.mutate(message); }}>{publish.isPending ? "Publicando…" : "Confirmar publicação"}</Button>
