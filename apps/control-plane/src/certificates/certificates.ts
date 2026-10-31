@@ -1,3 +1,4 @@
+import { refuseAutoPublish } from "../common/draft-only.js";
 import { workspaceTransaction } from "../common/workspace-transaction.js";
 import { createPrivateKey, randomUUID, X509Certificate, type KeyObject } from "node:crypto";
 import { Body, Controller, Delete, Get, HttpCode, Inject, Injectable, Module, Param, Post, Put, Query } from "@nestjs/common";
@@ -145,10 +146,11 @@ export class CertificatesService {
     return toCertificate(row, (await this.snisOf(this.db, [row.id])).get(row.id) ?? []);
   }
 
-  async create(ctx: RequestContext, envId: string, body: CertificateWrite) {
+  async create(ctx: RequestContext, envId: string, body: CertificateWrite, options: { draftOnly?: boolean } = {}) {
     const { leaf, key } = checkCertificate(body, null, true);
     return guardedUniqueWrite(this.db, ctx, "sni", this.conflicts, () => workspaceTransaction(this.db, envId, async (tx) => {
       await lockTablesForWrite(tx, ["sni"]);
+      if (options.draftOnly) await refuseAutoPublish(tx, envId);
       await requireEnvironment(tx, envId, true);
       if (!(await this.snisFree(tx, ctx, body.snis, null))) return refuse(tx, ctx, "sni", this.conflicts);
       const id = randomUUID();
@@ -164,12 +166,13 @@ export class CertificatesService {
     }));
   }
 
-  async replace(ctx: RequestContext, envId: string, certificateId: string, body: CertificateWrite) {
+  async replace(ctx: RequestContext, envId: string, certificateId: string, body: CertificateWrite, options: { draftOnly?: boolean } = {}) {
     // The stored key is read before validation: "REDACTED" keeps it, and it must still match the new leaf.
     const current = await this.requireCertificate(this.db, envId, certificateId);
     const { leaf, key } = checkCertificate(body, this.enc.open(current.key, certificateKeyContext(current.id)), body.cert !== current.cert);
     return guardedUniqueWrite(this.db, ctx, "sni", this.conflicts, () => workspaceTransaction(this.db, envId, async (tx) => {
       await lockTablesForWrite(tx, ["sni"]);
+      if (options.draftOnly) await refuseAutoPublish(tx, envId);
       await requireEnvironment(tx, envId, true);
       const locked = await this.requireCertificate(tx, envId, certificateId);
       const before = toCertificate(locked, (await this.snisOf(tx, [locked.id])).get(locked.id) ?? []);
@@ -188,11 +191,12 @@ export class CertificatesService {
     }));
   }
 
-  async remove(ctx: RequestContext, envId: string, certificateId: string) {
+  async remove(ctx: RequestContext, envId: string, certificateId: string, options: { draftOnly?: boolean } = {}) {
     await workspaceTransaction(this.db, envId, async (tx) => {
       // The order of every writer of these tables (rollback, import): the tables, then the environment's row, before
       // any row is deleted.
       await lockTablesForWrite(tx, ["sni"]);
+      if (options.draftOnly) await refuseAutoPublish(tx, envId);
       await requireEnvironment(tx, envId, true);
       const row = await this.requireCertificate(tx, envId, certificateId);
       const before = toCertificate(row, (await this.snisOf(tx, [row.id])).get(row.id) ?? []);
@@ -316,7 +320,7 @@ export class WorkspaceCertificatesController {
   @Post()
   @RequiredPermission("gateway.write", "workspace")
   create(@Ctx() ctx: RequestContext, @Param("workspaceId", uuidParam()) workspaceId: string, @Body(contractBodyV2("WorkspaceCertificateWrite")) body: WithVarRefs<CertificateWrite, "cert" | "key">) {
-    return this.certs.create(ctx, workspaceId, refuseVarRefs(body, ["cert", "key"]));
+    return this.certs.create(ctx, workspaceId, refuseVarRefs(body, ["cert", "key"]), { draftOnly: true });
   }
 
   @Get(":certificateId")
@@ -333,14 +337,14 @@ export class WorkspaceCertificatesController {
     @Param("certificateId", uuidParam()) certificateId: string,
     @Body(contractBodyV2("WorkspaceCertificateWrite")) body: WithVarRefs<CertificateWrite, "cert" | "key">,
   ) {
-    return this.certs.replace(ctx, workspaceId, certificateId, refuseVarRefs(body, ["cert", "key"]));
+    return this.certs.replace(ctx, workspaceId, certificateId, refuseVarRefs(body, ["cert", "key"]), { draftOnly: true });
   }
 
   @Delete(":certificateId")
   @HttpCode(204)
   @RequiredPermission("gateway.write", "workspace")
   async remove(@Ctx() ctx: RequestContext, @Param("workspaceId", uuidParam()) workspaceId: string, @Param("certificateId", uuidParam()) certificateId: string) {
-    await this.certs.remove(ctx, workspaceId, certificateId);
+    await this.certs.remove(ctx, workspaceId, certificateId, { draftOnly: true });
   }
 }
 

@@ -2336,6 +2336,9 @@ paths:
       tags:
         - consumers
       operationId: createConsumer
+      description: >-
+        Edits the draft only (no publish, no deployment): in an environment that auto-publishes its draft through v1
+        (publishMode auto) it answers 409 auto-publish and writes nothing.
       security:
         - cookieAuth: []
           csrfToken: []
@@ -2355,8 +2358,7 @@ paths:
                 $ref: ./control-plane.openapi.yaml#/components/schemas/Consumer
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
+        "409": { description: "auto-publish (a v2 write where v1 auto-publishes), or a conflict", content: { application/problem+json: { schema: { anyOf: [ { $ref: "#/components/schemas/RouteProblem" }, { $ref: "#/components/schemas/Problem" } ] } } } }
         "422":
           $ref: "#/components/responses/ValidationError"
         "401": { $ref: "#/components/responses/Unauthorized" }
@@ -2397,6 +2399,9 @@ paths:
       tags:
         - consumers
       operationId: replaceConsumer
+      description: >-
+        Edits the draft only (no publish, no deployment): in an environment that auto-publishes its draft through v1
+        (publishMode auto) it answers 409 auto-publish and writes nothing.
       security:
         - cookieAuth: []
           csrfToken: []
@@ -2416,8 +2421,7 @@ paths:
                 $ref: ./control-plane.openapi.yaml#/components/schemas/Consumer
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
+        "409": { description: "auto-publish (a v2 write where v1 auto-publishes), or a conflict", content: { application/problem+json: { schema: { anyOf: [ { $ref: "#/components/schemas/RouteProblem" }, { $ref: "#/components/schemas/Problem" } ] } } } }
         "422":
           $ref: "#/components/responses/ValidationError"
         "401": { $ref: "#/components/responses/Unauthorized" }
@@ -2433,11 +2437,15 @@ paths:
       tags:
         - consumers
       operationId: deleteConsumer
+      description: >-
+        Edits the draft only (no publish, no deployment): in an environment that auto-publishes its draft through v1
+        (publishMode auto) it answers 409 auto-publish and writes nothing.
       security:
         - cookieAuth: []
           csrfToken: []
         - bearerApiToken: []
       responses:
+        "409": { description: "auto-publish (a v2 write where v1 auto-publishes), or a conflict", content: { application/problem+json: { schema: { anyOf: [ { $ref: "#/components/schemas/RouteProblem" }, { $ref: "#/components/schemas/Problem" } ] } } } }
         "204":
           description: Deleted (credentials and consumer-scoped plugins are deleted with it)
         "404":
@@ -2492,10 +2500,11 @@ paths:
         - cookieAuth: []
           csrfToken: []
         - bearerApiToken: []
-      description: |
+      description: >-
         As createKeyAuthCredential of v1: the server generates every key (32 bytes from a CSPRNG), returned only in
         this response; a supplied `key` answers 422 at `key` (decision H-14). Audited as `keyauth.create`, without
-        the key.
+        the key. Edits the draft only (no publish, no deployment): in an environment that auto-publishes its draft
+        through v1 (publishMode auto) it answers 409 auto-publish and writes nothing.
       requestBody:
         required: false
         content:
@@ -2527,8 +2536,7 @@ paths:
                         description: Full key, shown once
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
+        "409": { description: "auto-publish (a v2 write where v1 auto-publishes), or a conflict", content: { application/problem+json: { schema: { anyOf: [ { $ref: "#/components/schemas/RouteProblem" }, { $ref: "#/components/schemas/Problem" } ] } } } }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/ValidationError" }
@@ -2547,11 +2555,15 @@ paths:
       tags:
         - consumers
       operationId: deleteKeyAuthCredential
+      description: >-
+        Edits the draft only (no publish, no deployment): in an environment that auto-publishes its draft through v1
+        (publishMode auto) it answers 409 auto-publish and writes nothing.
       security:
         - cookieAuth: []
           csrfToken: []
         - bearerApiToken: []
       responses:
+        "409": { description: "auto-publish (a v2 write where v1 auto-publishes), or a conflict", content: { application/problem+json: { schema: { anyOf: [ { $ref: "#/components/schemas/RouteProblem" }, { $ref: "#/components/schemas/Problem" } ] } } } }
         "204":
           description: Deleted
         "404":
@@ -2583,11 +2595,14 @@ paths:
         - cookieAuth: []
           csrfToken: []
         - bearerApiToken: []
-      description: |
-        As rotateKeyAuthCredential of v1 (decision H-14): a new key the server generates, returned only in this response; a
-        credential pending reprovisioning becomes active. Same id. 404 for a credential of another consumer or
-        workspace. No request body (a supplied one answers 422). Audited without the value.
+      description: >-
+        As rotateKeyAuthCredential of v1 (decision H-14): a new key the server generates, returned only in this
+        response; a credential pending reprovisioning becomes active. Same id. 404 for a credential of another
+        consumer or workspace. No request body (a supplied one answers 422). Audited without the value. Edits the
+        draft only (no publish, no deployment): in an environment that auto-publishes its draft through v1
+        (publishMode auto) it answers 409 auto-publish and writes nothing.
       responses:
+        "409": { description: "auto-publish (a v2 write where v1 auto-publishes), or a conflict", content: { application/problem+json: { schema: { anyOf: [ { $ref: "#/components/schemas/RouteProblem" }, { $ref: "#/components/schemas/Problem" } ] } } } }
         "200":
           description: Rotated
           content:
@@ -2662,12 +2677,15 @@ paths:
         - cookieAuth: []
           csrfToken: []
         - bearerApiToken: []
-      description: |
-        HS256 signs with a shared secret the server generates (32 bytes from a CSPRNG), returned only in this response;
-        a supplied `secret` answers 422 at `secret` (decision H-14). RS256 and ES256 verify with `rsaPublicKey` (an RSA or EC P-256 public key, despite Kong's field
-        name). If `key` is omitted a random one is generated. 409 when `key` is already used by a JWT credential in the
-        instance (any workspace; generic conflict). 422 with `path`: `secret` given with RS256/ES256; `rsaPublicKey` missing with RS256/ES256, given
-        with HS256, not a PEM public key, or of the wrong type for the algorithm (RSA for RS256, EC P-256 for ES256).
+      description: >-
+        HS256 signs with a shared secret the server generates (32 bytes from a CSPRNG), returned only in this
+        response; a supplied `secret` answers 422 at `secret` (decision H-14). RS256 and ES256 verify with
+        `rsaPublicKey` (an RSA or EC P-256 public key, despite Kong's field name). If `key` is omitted a random one
+        is generated. 409 when `key` is already used by a JWT credential in the instance (any workspace; generic
+        conflict). 422 with `path`: `secret` given with RS256/ES256; `rsaPublicKey` missing with RS256/ES256, given
+        with HS256, not a PEM public key, or of the wrong type for the algorithm (RSA for RS256, EC P-256 for
+        ES256). Edits the draft only (no publish, no deployment): in an environment that auto-publishes its draft
+        through v1 (publishMode auto) it answers 409 auto-publish and writes nothing.
       requestBody:
         required: false
         content:
@@ -2689,8 +2707,7 @@ paths:
                         description: "HS256 only: the full secret, shown once"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
+        "409": { description: "auto-publish (a v2 write where v1 auto-publishes), or a conflict", content: { application/problem+json: { schema: { anyOf: [ { $ref: "#/components/schemas/RouteProblem" }, { $ref: "#/components/schemas/Problem" } ] } } } }
         "422":
           $ref: "#/components/responses/ValidationError"
         "401": { $ref: "#/components/responses/Unauthorized" }
@@ -2710,11 +2727,15 @@ paths:
       tags:
         - consumers
       operationId: deleteJwtCredential
+      description: >-
+        Edits the draft only (no publish, no deployment): in an environment that auto-publishes its draft through v1
+        (publishMode auto) it answers 409 auto-publish and writes nothing.
       security:
         - cookieAuth: []
           csrfToken: []
         - bearerApiToken: []
       responses:
+        "409": { description: "auto-publish (a v2 write where v1 auto-publishes), or a conflict", content: { application/problem+json: { schema: { anyOf: [ { $ref: "#/components/schemas/RouteProblem" }, { $ref: "#/components/schemas/Problem" } ] } } } }
         "204":
           description: Deleted
         "404":
@@ -2746,11 +2767,12 @@ paths:
         - cookieAuth: []
           csrfToken: []
         - bearerApiToken: []
-      description: |
-        As rotateJwtCredential of v1 (decision H-14): a new HS256 secret the server generates, returned only in this response; a
-        credential pending reprovisioning becomes active. Same id. 404 for a credential of another consumer or
-        workspace. 409 for an RS256/ES256 credential. No request body (a supplied one answers 422). Audited without
-        the value.
+      description: >-
+        As rotateJwtCredential of v1 (decision H-14): a new HS256 secret the server generates, returned only in this
+        response; a credential pending reprovisioning becomes active. Same id. 404 for a credential of another
+        consumer or workspace. 409 for an RS256/ES256 credential. No request body (a supplied one answers 422).
+        Audited without the value. Edits the draft only (no publish, no deployment): in an environment that
+        auto-publishes its draft through v1 (publishMode auto) it answers 409 auto-publish and writes nothing.
       responses:
         "200":
           description: Rotated
@@ -2768,8 +2790,7 @@ paths:
                         description: Shown once
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
+        "409": { description: "auto-publish (a v2 write where v1 auto-publishes), or a conflict", content: { application/problem+json: { schema: { anyOf: [ { $ref: "#/components/schemas/RouteProblem" }, { $ref: "#/components/schemas/Problem" } ] } } } }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "422":
@@ -2828,12 +2849,14 @@ paths:
         - cookieAuth: []
           csrfToken: []
         - bearerApiToken: []
-      description: |
-        The password is write-only and never returned, not even here. The control plane keeps only Kong's salted hash of it
-        (`sha1(password + consumerId)`), and the snapshot carries that hash (applied with `_transform: false`), never the
-        password itself. The hash is treated as a secret: encrypted at rest in the control plane's table and `"REDACTED"`
-        everywhere except the agent endpoint (API, audit, diff, preview and snapshot envelope). 409 when `username` is
-        already used by a basic-auth credential in the instance (any workspace; generic conflict).
+      description: >-
+        The password is write-only and never returned, not even here. The control plane keeps only Kong's salted
+        hash of it (`sha1(password + consumerId)`), and the snapshot carries that hash (applied with `_transform:
+        false`), never the password itself. The hash is treated as a secret: encrypted at rest in the control
+        plane's table and `"REDACTED"` everywhere except the agent endpoint (API, audit, diff, preview and snapshot
+        envelope). 409 when `username` is already used by a basic-auth credential in the instance (any workspace;
+        generic conflict). Edits the draft only (no publish, no deployment): in an environment that auto-publishes
+        its draft through v1 (publishMode auto) it answers 409 auto-publish and writes nothing.
       requestBody:
         required: true
         content:
@@ -2849,8 +2872,7 @@ paths:
                 $ref: ./control-plane.openapi.yaml#/components/schemas/BasicAuthCredential
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
+        "409": { description: "auto-publish (a v2 write where v1 auto-publishes), or a conflict", content: { application/problem+json: { schema: { anyOf: [ { $ref: "#/components/schemas/RouteProblem" }, { $ref: "#/components/schemas/Problem" } ] } } } }
         "422":
           $ref: "#/components/responses/ValidationError"
         "401": { $ref: "#/components/responses/Unauthorized" }
@@ -2870,11 +2892,15 @@ paths:
       tags:
         - consumers
       operationId: deleteBasicAuthCredential
+      description: >-
+        Edits the draft only (no publish, no deployment): in an environment that auto-publishes its draft through v1
+        (publishMode auto) it answers 409 auto-publish and writes nothing.
       security:
         - cookieAuth: []
           csrfToken: []
         - bearerApiToken: []
       responses:
+        "409": { description: "auto-publish (a v2 write where v1 auto-publishes), or a conflict", content: { application/problem+json: { schema: { anyOf: [ { $ref: "#/components/schemas/RouteProblem" }, { $ref: "#/components/schemas/Problem" } ] } } } }
         "204":
           description: Deleted
         "404":
@@ -2928,7 +2954,10 @@ paths:
         - cookieAuth: []
           csrfToken: []
         - bearerApiToken: []
-      description: Replaces the whole set; `[]` removes the consumer from every group. The `acl` plugin matches these names in `allow`/`deny`.
+      description: >-
+        Replaces the whole set; `[]` removes the consumer from every group. The `acl` plugin matches these names in
+        `allow`/`deny`. Edits the draft only (no publish, no deployment): in an environment that auto-publishes its
+        draft through v1 (publishMode auto) it answers 409 auto-publish and writes nothing.
       requestBody:
         required: true
         content:
@@ -2936,6 +2965,7 @@ paths:
             schema:
               $ref: "#/components/schemas/WorkspaceAclGroups"
       responses:
+        "409": { description: "auto-publish (a v2 write where v1 auto-publishes), or a conflict", content: { application/problem+json: { schema: { anyOf: [ { $ref: "#/components/schemas/RouteProblem" }, { $ref: "#/components/schemas/Problem" } ] } } } }
         "200":
           description: Replaced
           content:
@@ -2990,16 +3020,18 @@ paths:
         - cookieAuth: []
           csrfToken: []
         - bearerApiToken: []
-      description: |
-        A load-balancing pool of the workspace. A service balances across it only through `upstreamId` (its host
-        is then generated as <name>.<slug>.gromesh.internal); a service host is always ordinary DNS. 409 on a
-        name already used in the workspace, and 409 with code upstream-captures-service when a service written
-        through v2 without upstreamId uses the name as its DNS host (WS-U0: a v1 delivery resolves a host equal to
-        an upstream's name to that upstream, so the service would silently change destination; services written
-        only through v1 keep that v1 binding by name, unchanged); 422 with `path` when `hashOn`/`hashFallback` are set without
-        `algorithm: consistent-hashing`, when `hashOnHeader`/`hashOnCookie`/`hashFallbackHeader` is missing for the
-        chosen hash, or when `hashOn: cookie` has a fallback other than `none`; 422 at `name` when the name is a
-        forbidden destination (see the description of this API).
+      description: >-
+        A load-balancing pool of the workspace. A service balances across it only through `upstreamId` (its host is
+        then generated as <name>.<slug>.gromesh.internal); a service host is always ordinary DNS. 409 on a name
+        already used in the workspace, and 409 with code upstream-captures-service when a service written through v2
+        without upstreamId uses the name as its DNS host (WS-U0: a v1 delivery resolves a host equal to an
+        upstream's name to that upstream, so the service would silently change destination; services written only
+        through v1 keep that v1 binding by name, unchanged); 422 with `path` when `hashOn`/`hashFallback` are set
+        without `algorithm: consistent-hashing`, when `hashOnHeader`/`hashOnCookie`/`hashFallbackHeader` is missing
+        for the chosen hash, or when `hashOn: cookie` has a fallback other than `none`; 422 at `name` when the name
+        is a forbidden destination (see the description of this API). Edits the draft only (no publish, no
+        deployment): in an environment that auto-publishes its draft through v1 (publishMode auto) it answers 409
+        auto-publish and writes nothing.
       requestBody:
         required: true
         content:
@@ -3015,8 +3047,7 @@ paths:
                 $ref: ./control-plane.openapi.yaml#/components/schemas/Upstream
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
+        "409": { description: "auto-publish (a v2 write where v1 auto-publishes), or a conflict", content: { application/problem+json: { schema: { anyOf: [ { $ref: "#/components/schemas/RouteProblem" }, { $ref: "#/components/schemas/Problem" } ] } } } }
         "422":
           $ref: "#/components/responses/ValidationError"
         "401": { $ref: "#/components/responses/Unauthorized" }
@@ -3055,11 +3086,13 @@ paths:
         - cookieAuth: []
           csrfToken: []
         - bearerApiToken: []
-      description: |
+      description: >-
         Renaming keeps every service that refers to it by upstreamId (the generated host follows the new name in the
         next publication). Same 409/422 rules as the creation otherwise, upstream-captures-service included for the
-        new name. A rename stays refused (409) while a service written only through v1 uses the current name as
-        its host, as in v1: its binding by name would silently break.
+        new name. A rename stays refused (409) while a service written only through v1 uses the current name as its
+        host, as in v1: its binding by name would silently break. Edits the draft only (no publish, no deployment):
+        in an environment that auto-publishes its draft through v1 (publishMode auto) it answers 409 auto-publish
+        and writes nothing.
       requestBody:
         required: true
         content:
@@ -3075,8 +3108,7 @@ paths:
                 $ref: ./control-plane.openapi.yaml#/components/schemas/Upstream
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
+        "409": { description: "auto-publish (a v2 write where v1 auto-publishes), or a conflict", content: { application/problem+json: { schema: { anyOf: [ { $ref: "#/components/schemas/RouteProblem" }, { $ref: "#/components/schemas/Problem" } ] } } } }
         "422":
           $ref: "#/components/responses/ValidationError"
         "401": { $ref: "#/components/responses/Unauthorized" }
@@ -3093,16 +3125,16 @@ paths:
         - cookieAuth: []
           csrfToken: []
         - bearerApiToken: []
-      description: |
+      description: >-
         Deletes the upstream and its targets. 409 while services of the workspace refer to it by upstreamId; the
-        problem `detail` lists those services.
+        problem `detail` lists those services. Edits the draft only (no publish, no deployment): in an environment
+        that auto-publishes its draft through v1 (publishMode auto) it answers 409 auto-publish and writes nothing.
       responses:
         "204":
           description: Deleted
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
+        "409": { description: "auto-publish (a v2 write where v1 auto-publishes), or a conflict", content: { application/problem+json: { schema: { anyOf: [ { $ref: "#/components/schemas/RouteProblem" }, { $ref: "#/components/schemas/Problem" } ] } } } }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
       x-required-permission: gateway.write
@@ -3143,7 +3175,11 @@ paths:
         - cookieAuth: []
           csrfToken: []
         - bearerApiToken: []
-      description: 409 when the same `target` already exists in this upstream; 422 on `target` with a port outside 1..65535 or a host that is a forbidden destination (see the description of this API).
+      description: >-
+        409 when the same `target` already exists in this upstream; 422 on `target` with a port outside 1..65535 or
+        a host that is a forbidden destination (see the description of this API). Edits the draft only (no publish,
+        no deployment): in an environment that auto-publishes its draft through v1 (publishMode auto) it answers 409
+        auto-publish and writes nothing.
       requestBody:
         required: true
         content:
@@ -3159,8 +3195,7 @@ paths:
                 $ref: "#/components/schemas/WorkspaceTarget"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
+        "409": { description: "auto-publish (a v2 write where v1 auto-publishes), or a conflict", content: { application/problem+json: { schema: { anyOf: [ { $ref: "#/components/schemas/RouteProblem" }, { $ref: "#/components/schemas/Problem" } ] } } } }
         "422":
           $ref: "#/components/responses/ValidationError"
         "401": { $ref: "#/components/responses/Unauthorized" }
@@ -3177,6 +3212,9 @@ paths:
       tags:
         - upstreams
       operationId: replaceTarget
+      description: >-
+        Edits the draft only (no publish, no deployment): in an environment that auto-publishes its draft through v1
+        (publishMode auto) it answers 409 auto-publish and writes nothing.
       security:
         - cookieAuth: []
           csrfToken: []
@@ -3196,8 +3234,7 @@ paths:
                 $ref: "#/components/schemas/WorkspaceTarget"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
+        "409": { description: "auto-publish (a v2 write where v1 auto-publishes), or a conflict", content: { application/problem+json: { schema: { anyOf: [ { $ref: "#/components/schemas/RouteProblem" }, { $ref: "#/components/schemas/Problem" } ] } } } }
         "422":
           $ref: "#/components/responses/ValidationError"
         "401": { $ref: "#/components/responses/Unauthorized" }
@@ -3210,11 +3247,15 @@ paths:
       tags:
         - upstreams
       operationId: deleteTarget
+      description: >-
+        Edits the draft only (no publish, no deployment): in an environment that auto-publishes its draft through v1
+        (publishMode auto) it answers 409 auto-publish and writes nothing.
       security:
         - cookieAuth: []
           csrfToken: []
         - bearerApiToken: []
       responses:
+        "409": { description: "auto-publish (a v2 write where v1 auto-publishes), or a conflict", content: { application/problem+json: { schema: { anyOf: [ { $ref: "#/components/schemas/RouteProblem" }, { $ref: "#/components/schemas/Problem" } ] } } } }
         "204":
           description: Deleted
         "404":
@@ -3260,16 +3301,18 @@ paths:
         - cookieAuth: []
           csrfToken: []
         - bearerApiToken: []
-      description: |
-        A TLS certificate with its private key and the server names (SNIs) it answers. `cert` may be a PEM chain, leaf
-        first then intermediates; the whole chain is served. The key is checked against the leaf, and `subject`,
-        `issuer`, `notBefore`, `notAfter` and `fingerprintSha256` describe the leaf. The key is write-only: it is
-        stored encrypted and reads back as "REDACTED". 422 with `path`: `cert` when it is not a PEM certificate chain or
-        its leaf has expired; `key` when it is not a PEM private key, does not match the leaf, or is "REDACTED" here;
-        `snis.<i>` when a name is repeated in the request or has a wildcard anywhere but as the `*.` prefix. 409 (generic
-        conflict) when a name already belongs to another certificate of the instance (any workspace).
-        Expiry is judged only when `cert` is created or replaced: publishing, rolling back and editing only the `snis`
-        of a certificate that has since expired keep working.
+      description: >-
+        A TLS certificate with its private key and the server names (SNIs) it answers. `cert` may be a PEM chain,
+        leaf first then intermediates; the whole chain is served. The key is checked against the leaf, and
+        `subject`, `issuer`, `notBefore`, `notAfter` and `fingerprintSha256` describe the leaf. The key is
+        write-only: it is stored encrypted and reads back as "REDACTED". 422 with `path`: `cert` when it is not a
+        PEM certificate chain or its leaf has expired; `key` when it is not a PEM private key, does not match the
+        leaf, or is "REDACTED" here; `snis.<i>` when a name is repeated in the request or has a wildcard anywhere
+        but as the `*.` prefix. 409 (generic conflict) when a name already belongs to another certificate of the
+        instance (any workspace). Expiry is judged only when `cert` is created or replaced: publishing, rolling back
+        and editing only the `snis` of a certificate that has since expired keep working. Edits the draft only (no
+        publish, no deployment): in an environment that auto-publishes its draft through v1 (publishMode auto) it
+        answers 409 auto-publish and writes nothing.
       requestBody:
         required: true
         content:
@@ -3289,8 +3332,7 @@ paths:
           $ref: "#/components/responses/ValidationError"
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
-        "409":
-          $ref: "#/components/responses/Conflict"
+        "409": { description: "auto-publish (a v2 write where v1 auto-publishes), or a conflict", content: { application/problem+json: { schema: { anyOf: [ { $ref: "#/components/schemas/RouteProblem" }, { $ref: "#/components/schemas/Problem" } ] } } } }
       x-required-permission: gateway.write
       x-scope: workspace
       x-gromesh-requirements:
@@ -3325,9 +3367,11 @@ paths:
         - cookieAuth: []
           csrfToken: []
         - bearerApiToken: []
-      description: |
+      description: >-
         `key: "REDACTED"` keeps the stored key, which must then still match the leaf of the new `cert` (422 on `key`
-        otherwise). Same 422 and 409 rules as the creation; an unchanged `cert` is not judged on expiry.
+        otherwise). Same 422 and 409 rules as the creation; an unchanged `cert` is not judged on expiry. Edits the
+        draft only (no publish, no deployment): in an environment that auto-publishes its draft through v1
+        (publishMode auto) it answers 409 auto-publish and writes nothing.
       requestBody:
         required: true
         content:
@@ -3347,8 +3391,7 @@ paths:
           $ref: "#/components/responses/ValidationError"
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
-        "409":
-          $ref: "#/components/responses/Conflict"
+        "409": { description: "auto-publish (a v2 write where v1 auto-publishes), or a conflict", content: { application/problem+json: { schema: { anyOf: [ { $ref: "#/components/schemas/RouteProblem" }, { $ref: "#/components/schemas/Problem" } ] } } } }
       x-required-permission: gateway.write
       x-scope: workspace
       x-gromesh-requirements:
@@ -3361,8 +3404,11 @@ paths:
         - cookieAuth: []
           csrfToken: []
         - bearerApiToken: []
-      description: Deletes the certificate and its SNIs.
+      description: >-
+        Deletes the certificate and its SNIs. Edits the draft only (no publish, no deployment): in an environment
+        that auto-publishes its draft through v1 (publishMode auto) it answers 409 auto-publish and writes nothing.
       responses:
+        "409": { description: "auto-publish (a v2 write where v1 auto-publishes), or a conflict", content: { application/problem+json: { schema: { anyOf: [ { $ref: "#/components/schemas/RouteProblem" }, { $ref: "#/components/schemas/Problem" } ] } } } }
         "204":
           description: Deleted
         "404":
@@ -3530,11 +3576,15 @@ paths:
       tags:
         - plugins
       operationId: deletePlugin
+      description: >-
+        Edits the draft only (no publish, no deployment): in an environment that auto-publishes its draft through v1
+        (publishMode auto) it answers 409 auto-publish and writes nothing.
       security:
         - cookieAuth: []
           csrfToken: []
         - bearerApiToken: []
       responses:
+        "409": { description: "auto-publish (a v2 write where v1 auto-publishes), or a conflict", content: { application/problem+json: { schema: { anyOf: [ { $ref: "#/components/schemas/RouteProblem" }, { $ref: "#/components/schemas/Problem" } ] } } } }
         "204":
           description: Deleted
         "404":
@@ -3828,7 +3878,11 @@ paths:
           csrfToken: []
         - bearerApiToken: []
       x-required-permission: gateway.write
-      description: Creates or replaces the declaration in the draft (audited; marks the draft changed). Changing type or secret of a variable referenced by the draft answers 409.
+      description: >-
+        Creates or replaces the declaration in the draft (audited; marks the draft changed). Changing type or secret
+        of a variable referenced by the draft answers 409. Edits the draft only (no publish, no deployment): in an
+        environment that auto-publishes its draft through v1 (publishMode auto) it answers 409 auto-publish and
+        writes nothing.
       requestBody:
         required: true
         content:
@@ -3846,8 +3900,7 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationError" }
-        "409":
-          $ref: "#/components/responses/Conflict"
+        "409": { description: "auto-publish (a v2 write where v1 auto-publishes), or a conflict", content: { application/problem+json: { schema: { anyOf: [ { $ref: "#/components/schemas/RouteProblem" }, { $ref: "#/components/schemas/Problem" } ] } } } }
     delete:
       tags:
         - workspaces
@@ -3860,12 +3913,14 @@ paths:
           csrfToken: []
         - bearerApiToken: []
       x-required-permission: gateway.write
-      description: 409 while any draft field references it. The instance's value is kept until the next release without the declaration is active.
+      description: >-
+        409 while any draft field references it. The instance's value is kept until the next release without the
+        declaration is active. Edits the draft only (no publish, no deployment): in an environment that
+        auto-publishes its draft through v1 (publishMode auto) it answers 409 auto-publish and writes nothing.
       responses:
         "204":
           description: Deleted
-        "409":
-          $ref: "#/components/responses/Conflict"
+        "409": { description: "auto-publish (a v2 write where v1 auto-publishes), or a conflict", content: { application/problem+json: { schema: { anyOf: [ { $ref: "#/components/schemas/RouteProblem" }, { $ref: "#/components/schemas/Problem" } ] } } } }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
