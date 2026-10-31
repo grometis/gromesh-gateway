@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, api, unwrap, type Plugin } from "../api/client";
 import { apiV2 } from "../api/client-v2";
 import type { components } from "../api/schema-v2";
@@ -8,6 +8,10 @@ import { CheckboxField, Field, FormErrorList } from "../components/Field";
 import { Button } from "../components/Button";
 import { PageHeader } from "../components/PageHeader";
 import { EmptyState } from "../components/EmptyState";
+import { Badge, DraftBadge } from "../components/Badge";
+import { RowMenu } from "../components/RowMenu";
+import { CatalogPicker } from "../components/PluginCatalog";
+import { useEntityDraft } from "./Services";
 import { Table } from "../components/Table";
 import { ConfirmDialog, Modal } from "../components/Modal";
 import { SchemaFields } from "../schema-form/SchemaForm";
@@ -64,26 +68,51 @@ async function allPages<T>(read: (cursor?: string) => Promise<{ items: T[]; next
 }
 
 function usePluginChoices(workspaceId: string) {
-  return useQuery({
-    queryKey: ["ws-plugin-choices", workspaceId],
-    queryFn: async () => {
-      const path = { workspaceId };
-      const [services, routes, consumers] = await Promise.all([
-        allPages(cursor => unwrap(apiV2.GET("/workspaces/{workspaceId}/services", { params: { path, query: { limit: 200, cursor } } }))),
-        allPages(cursor => unwrap(apiV2.GET("/workspaces/{workspaceId}/routes", { params: { path, query: { limit: 200, cursor } } }))),
-        allPages(cursor => unwrap(apiV2.GET("/workspaces/{workspaceId}/consumers", { params: { path, query: { limit: 200, cursor } } }))),
-      ]);
-      return { serviceId: services.map(s => ({ id: s.id, name: s.name })), routeId: routes.map(r => ({ id: r.id, name: r.name })), consumerId: consumers.map(c => ({ id: c.id, name: c.username ?? c.customId ?? c.id })) };
-    },
+  const path = { workspaceId };
+  // A slow or unavailable scope must not hide names and filters from the others.
+  const [services, routes, consumers] = useQueries({
+    queries: [
+      {
+        queryKey: ["ws-plugin-choices", workspaceId, "services"],
+        queryFn: async () => (await allPages(cursor => unwrap(apiV2.GET("/workspaces/{workspaceId}/services", { params: { path, query: { limit: 200, cursor } } })))).map(s => ({ id: s.id, name: s.name })),
+      },
+      {
+        queryKey: ["ws-plugin-choices", workspaceId, "routes"],
+        queryFn: async () => (await allPages(cursor => unwrap(apiV2.GET("/workspaces/{workspaceId}/routes", { params: { path, query: { limit: 200, cursor } } })))).map(r => ({ id: r.id, name: r.name })),
+      },
+      {
+        queryKey: ["ws-plugin-choices", workspaceId, "consumers"],
+        queryFn: async () => (await allPages(cursor => unwrap(apiV2.GET("/workspaces/{workspaceId}/consumers", { params: { path, query: { limit: 200, cursor } } })))).map(c => ({ id: c.id, name: c.username ?? c.customId ?? c.id })),
+      },
+    ],
   });
+  const queries = [services, routes, consumers];
+  return {
+    data: { serviceId: services.data ?? [], routeId: routes.data ?? [], consumerId: consumers.data ?? [] },
+    isSuccess: queries.every(query => query.isSuccess),
+    isError: queries.some(query => query.isError),
+    error: queries.find(query => query.isError)?.error,
+  };
 }
 
 export function WorkspacePlugins({ workspaceId }: { workspaceId: string }) {
   const access = useWorkspaceGatewayAccess(workspaceId);
   const client = useQueryClient();
+  const names = usePluginChoices(workspaceId);
+  const draft = useEntityDraft(workspaceId, "plugins");
+  const [scopeFilter, setScopeFilter] = useState("");
+  const filter = scopeFilter === "global" ? { global: true } : scopeFilter ? { [scopeFilter.split(":")[0]!]: scopeFilter.split(":")[1]! } : {};
+  const scopeLabel = (plugin: Plugin) => {
+    const parts = ([ ["serviceId", "Service"], ["routeId", "Route"], ["consumerId", "Consumer"] ] as const)
+      .flatMap(([kind, label]) => {
+        const id = plugin.scope?.[kind];
+        return id ? [`${label} ${names.data?.[kind].find(item => item.id === id)?.name ?? id}`] : [];
+      });
+    return parts.length ? parts.join(" · ") : "Global legado (somente leitura)";
+  };
   const plugins = useInfiniteQuery({
-    queryKey: ["ws-plugins", workspaceId],
-    queryFn: ({ pageParam }) => unwrap(apiV2.GET("/workspaces/{workspaceId}/plugins", { params: { path: { workspaceId }, query: { cursor: pageParam || undefined } } })),
+    queryKey: ["ws-plugins", workspaceId, filter],
+    queryFn: ({ pageParam }) => unwrap(apiV2.GET("/workspaces/{workspaceId}/plugins", { params: { path: { workspaceId }, query: { ...filter, cursor: pageParam || undefined } } })),
     initialPageParam: "", getNextPageParam: page => page.nextCursor ?? undefined,
   });
   const [editing, setEditing] = useState<Plugin | "new" | null>(null);
@@ -106,24 +135,40 @@ export function WorkspacePlugins({ workspaceId }: { workspaceId: string }) {
     finally { setBusy(false); }
   };
   const items = plugins.data?.pages.flatMap(page => page.items) ?? [];
-  return <section className="final-page">
+  return <section className="final-page gateway-list">
     <PageHeader title="Plugins" description="Plugins com escopo neste Workspace. As alterações ficam no rascunho." actions={access.canWrite && <Button variant="primary" onClick={() => setEditing("new")}>Novo plugin</Button>} />
     <WorkspaceGatewayNote workspaceId={workspaceId} />
     <p className="muted">Escolha ao menos um service, route ou consumer. Plugins globais do Workspace ainda não estão disponíveis; os obrigatórios da plataforma são protegidos pelo servidor.</p>
+    <div className="gateway-filters">
+      <select aria-label="Filtrar por escopo" value={scopeFilter} onChange={event => setScopeFilter(event.target.value)}>
+        <option value="">Todos os escopos</option>
+        <option value="global">Só globais</option>
+        {([ ["serviceId", "Service"], ["routeId", "Route"], ["consumerId", "Consumer"] ] as const).map(([kind, label]) =>
+          names.data?.[kind].map(item => <option key={`${kind}:${item.id}`} value={`${kind}:${item.id}`}>{label} {item.name}</option>))}
+      </select>
+    </div>
     {plugins.isPending && <p role="status">Carregando…</p>}
     {plugins.isError && <p className="error" role="alert">{statusMessage(plugins.error)}</p>}
-    {plugins.isSuccess && !items.length && <EmptyState title="Nenhum plugin neste Workspace." />}
-    {!!items.length && <Table label="Plugins" cards><thead><tr><th>Plugin</th><th>Escopo</th><th>Ativo</th><th>Ações</th></tr></thead><tbody>
+    {plugins.isSuccess && !items.length && <EmptyState title={scopeFilter ? "Nenhum plugin encontrado." : "Nenhum plugin neste Workspace."} />}
+    {!!items.length && <Table label="Plugins" cards><thead><tr><th>Plugin → escopo</th><th className="plugin-state">Ativo</th>{access.canWrite && <th className="actions" aria-label="Ações" />}</tr></thead><tbody>
       {items.map(p => {
-        const scoped = Object.entries(p.scope ?? {}).filter(([, id]) => id).map(([kind, id]) => `${({ serviceId: "Service", routeId: "Route", consumerId: "Consumer" } as Record<string, string>)[kind] ?? kind}: ${id}`).join(" · ");
-        return <tr key={p.id}><td>{p.name}</td><td className="mono">{scoped || "Global legado (somente leitura)"}</td><td>{p.enabled === false ? "Não" : "Sim"}</td><td className="actions">
-          {access.canWrite && scoped && <><Button variant="quiet" onClick={() => setEditing(p)}>Editar {p.name}</Button><Button variant="quiet" onClick={() => { setError(null); setDeleting(p); }}>Excluir {p.name}</Button></>}
-        </td></tr>;
+        const scoped = Object.values(p.scope ?? {}).some(Boolean);
+        const label = scopeLabel(p);
+        return <tr key={p.id}>
+          <td className="row-main"><div className="service-route">
+            <span className="service-name mono">{p.name}</span><DraftBadge change={draft.get(p.id)} />
+            <span className="arrow" aria-hidden="true">→</span><span className="target mono">{label}</span>
+          </div></td>
+          <td className="plugin-state"><span className="visually-hidden">Ativo: </span><Badge tone={p.enabled === false ? "off" : "converged"}>{p.enabled === false ? "Não" : "Sim"}</Badge></td>
+          {access.canWrite && <td className="actions">
+            {scoped && <><Button variant="quiet" aria-label={`Editar ${p.name}`} onClick={() => setEditing(p)}>Editar</Button><RowMenu label={`Mais ações para ${p.name} (${label})`} items={[{ label: "Excluir", danger: true, onSelect: () => { setError(null); setDeleting(p); } }]} /></>}
+          </td>}
+        </tr>;
       })}
     </tbody></Table>}
     {plugins.hasNextPage && <Button disabled={plugins.isFetchingNextPage} onClick={() => void plugins.fetchNextPage()}>Carregar mais</Button>}
     {editing && <PluginEditor workspaceId={workspaceId} current={editing === "new" ? null : editing} onClose={() => setEditing(null)} onSaved={() => { invalidate(); setEditing(null); }} />}
-    {deleting && <ConfirmDialog title="Excluir plugin" message={<>Excluir <strong>{deleting.name}</strong> do rascunho deste Workspace?</>} confirmLabel="Excluir plugin" busy={busy} confirmDisabled={!access.canWrite} error={error} onConfirm={() => void remove()} onClose={() => setDeleting(null)} />}
+    {deleting && <ConfirmDialog title="Excluir plugin" message={<>Excluir <strong>{deleting.name}</strong> ({scopeLabel(deleting)}) do rascunho deste Workspace?</>} confirmLabel="Excluir" busy={busy} confirmDisabled={!access.canWrite} error={error} onConfirm={() => void remove()} onClose={() => setDeleting(null)} />}
   </section>;
 }
 
@@ -131,6 +176,7 @@ function PluginEditor({ workspaceId, current, onClose, onSaved }: { workspaceId:
   const [name, setName] = useState(current?.name ?? "");
   const catalog = useQuery({ queryKey: ["plugin-catalog"], queryFn: () => unwrap(api.GET("/plugin-schemas")), staleTime: Infinity });
   const schema = useQuery({ queryKey: ["plugin-schema", name], queryFn: async () => parsePluginSchema(await unwrap(api.GET("/plugin-schemas/{pluginName}", { params: { path: { pluginName: name } } }))), enabled: !!name, staleTime: Infinity });
+  if (!name) return <CatalogPicker onPick={setName} onClose={onClose} />;
   return <Modal title={current ? `Editar plugin ${current.name}` : "Novo plugin"} onClose={onClose} wide>
     <Field label="Plugin">{id => <select id={id} value={name} disabled={!!current} onChange={e => setName(e.target.value)}><option value="">Escolha um plugin</option>{catalog.data?.items.map(p => <option key={p.name} value={p.name} disabled={!p.supportedInDbless}>{p.name}{!p.supportedInDbless ? " (indisponível)" : ""}</option>)}</select>}</Field>
     {(catalog.isError || schema.isError) && <p className="error" role="alert">{statusMessage(catalog.error ?? schema.error)}</p>}

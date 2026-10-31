@@ -72,7 +72,7 @@ for (const options of [{ archived: true }, { auto: true }]) {
     const fake = await setup(page, options);
     await expect(page.getByRole("note")).toContainText("Somente leitura");
     await expect(page.getByRole("table", { name: "Plugins" })).toContainText("rate-limiting");
-    await expect(page.getByRole("button", { name: /Novo plugin|Editar rate|Excluir rate|Publicar|Deployment/ })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /Novo plugin|Editar rate|Mais ações para|Publicar|Deployment/ })).toHaveCount(0);
     expect(fake.writes).toEqual([]);
   });
 }
@@ -88,7 +88,7 @@ test("creates scoped plugins, edits a write-only secret, reopens empty and delet
   const fake = await setup(page, { empty: true, paginated: true });
   // The session is a legacy viewer: server permission grants, not the legacy role, decide whether saving succeeds.
   await page.getByRole("button", { name: "Novo plugin" }).click();
-  await page.getByLabel("Plugin", { exact: true }).selectOption("rate-limiting");
+  await page.getByRole("dialog", { name: "Escolha um plugin" }).getByRole("button", { name: "rate-limiting", exact: true }).click();
   await page.getByLabel("Service", { exact: true }).selectOption(S);
   await page.getByLabel("minute", { exact: false }).fill("10");
   await page.getByLabel("password", { exact: true }).fill("typed-secret");
@@ -103,8 +103,9 @@ test("creates scoped plugins, edits a write-only secret, reopens empty and delet
   await page.getByRole("button", { name: "Editar rate-limiting" }).click();
   await expect(page.getByLabel("password", { exact: true })).toHaveValue("");
   await page.getByRole("button", { name: "Fechar", exact: true }).click();
-  await page.getByRole("button", { name: "Excluir rate-limiting" }).click();
-  await page.getByRole("button", { name: "Excluir plugin", exact: true }).click();
+  await page.getByRole("button", { name: /^Mais ações para rate-limiting/ }).click();
+  await page.getByRole("menuitem", { name: "Excluir", exact: true }).click();
+  await page.getByRole("button", { name: "Excluir", exact: true }).click();
   await expect(page.getByText("Nenhum plugin neste Workspace.")).toBeVisible();
   expect(fake.writes.map(w => [w.method, w.path])).toEqual([["POST", `/api/v2/workspaces/${A}/plugins`], ["PUT", `/api/v2/workspaces/${A}/plugins/${P}`], ["DELETE", `/api/v2/workspaces/${A}/plugins/${P}`]]);
   expect(fake.writes[0]!.body).toMatchObject({ scope: { serviceId: S }, config: { redis: { password: "typed-secret" } } });
@@ -130,7 +131,7 @@ for (const status of [403, 409, 422]) {
 test("requires an explicit workspace scope and isolates an open form when switching workspace", async ({ page }) => {
   const fake = await setup(page, { empty: true });
   await page.getByRole("button", { name: "Novo plugin" }).click();
-  await page.getByLabel("Plugin", { exact: true }).selectOption("rate-limiting");
+  await page.getByRole("dialog", { name: "Escolha um plugin" }).getByRole("button", { name: "rate-limiting", exact: true }).click();
   await page.getByLabel("minute", { exact: false }).fill("10");
   await page.getByRole("button", { name: "Salvar no rascunho" }).click();
   await expect(page.getByRole("alert")).toContainText("Escolha ao menos um escopo");
@@ -140,7 +141,7 @@ test("requires an explicit workspace scope and isolates an open form when switch
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(page.getByText("Nenhum plugin neste Workspace.")).toBeVisible();
   await page.getByRole("button", { name: "Novo plugin" }).click();
-  await page.getByLabel("Plugin", { exact: true }).selectOption("rate-limiting");
+  await page.getByRole("dialog", { name: "Escolha um plugin" }).getByRole("button", { name: "rate-limiting", exact: true }).click();
   await expect(page.getByLabel("password", { exact: true })).toHaveValue("");
   await expect(page.getByLabel("Service", { exact: true }).getByRole("option", { name: "cobranca" })).toHaveCount(0);
   expect(fake.writes).toEqual([]);
@@ -150,9 +151,45 @@ test("requires an explicit workspace scope and isolates an open form when switch
 test("shows the server's reservation when deletion of a mandatory legacy plugin is refused", async ({ page }) => {
   const fake = await setup(page, { mandatory: true });
   fake.reject({ status: 422, errors: [{ path: "name", message: "reserved mandatory platform plugin" }] });
-  await page.getByRole("button", { name: "Excluir prometheus" }).click();
-  await page.getByRole("button", { name: "Excluir plugin", exact: true }).click();
+  await page.getByRole("button", { name: /^Mais ações para prometheus/ }).click();
+  await page.getByRole("menuitem", { name: "Excluir", exact: true }).click();
+  await page.getByRole("button", { name: "Excluir", exact: true }).click();
   await expect(page.getByRole("dialog").getByRole("alert")).toBeVisible();
   await expect(page.getByRole("table", { name: "Plugins" })).toContainText("prometheus");
   expect(fake.writes.map(w => w.method)).toEqual(["DELETE"]);
+});
+
+
+test("a legacy viewer gets the server's 403 for each v2 plugin mutation without changing the list", async ({ page }) => {
+  const fake = await setup(page);
+  fake.reject({ status: 403 });
+  const table = page.getByRole("table", { name: "Plugins", exact: true });
+  await expect(table).toContainText("Service cobranca");
+  const before = await table.getByRole("row").allTextContents();
+  await page.getByRole("button", { name: "Novo plugin", exact: true }).click();
+  await page.getByRole("dialog", { name: "Escolha um plugin" }).getByRole("button", { name: "rate-limiting", exact: true }).click();
+  await page.getByLabel("Service", { exact: true }).selectOption(S);
+  await page.getByLabel("minute", { exact: false }).fill("20");
+  await page.getByRole("button", { name: "Salvar no rascunho" }).click();
+  const create = page.getByRole("dialog", { name: "Novo plugin", exact: true });
+  await expect(create.getByRole("alert")).toContainText("permissão");
+  await create.getByRole("button", { name: "Fechar", exact: true }).click();
+  await page.getByRole("button", { name: "Editar rate-limiting" }).click();
+  await page.getByLabel("Ativo", { exact: true }).uncheck();
+  await page.getByRole("button", { name: "Salvar no rascunho" }).click();
+  const edit = page.getByRole("dialog", { name: "Editar plugin rate-limiting" });
+  await expect(edit.getByRole("alert")).toContainText("permissão");
+  await edit.getByRole("button", { name: "Fechar", exact: true }).click();
+  await page.getByRole("button", { name: /^Mais ações para rate-limiting/ }).click();
+  await page.getByRole("menuitem", { name: "Excluir", exact: true }).click();
+  const remove = page.getByRole("dialog", { name: "Excluir plugin", exact: true });
+  await remove.getByRole("button", { name: "Excluir", exact: true }).click();
+  await expect(remove.getByRole("alert")).toContainText("permissão");
+  await expect(table.getByRole("row")).toHaveText(before);
+  await expect(page.getByRole("button", { name: "Sair", exact: true })).toBeVisible();
+  expect(fake.writes.map(w => [w.method, w.path])).toEqual([
+    ["POST", `/api/v2/workspaces/${A}/plugins`],
+    ["PUT", `/api/v2/workspaces/${A}/plugins/${P}`],
+    ["DELETE", `/api/v2/workspaces/${A}/plugins/${P}`],
+  ]);
 });

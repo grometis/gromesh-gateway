@@ -1,3 +1,5 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Plugin } from "../api/client";
 import { parsePluginSchema } from "../schema-form/schema";
@@ -49,5 +51,103 @@ describe("workspace plugin form and transport", () => {
     if (status === 403) expect(errors.form.join()).toContain("permissão");
     if (status === 409) expect(errors.form.join()).toContain("publicação manual");
     if (status === 422) expect(errors.fields["config.redis.password"]).toBeDefined();
+  });
+});
+
+
+describe("workspace plugin screen", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  async function screen(items: Plugin[], options: { archived?: boolean; auto?: boolean; names?: boolean; pending?: boolean } = {}) {
+    const { WorkspacePlugins } = await load(async () => { throw new Error("Rendering must use the seeded cache"); });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    if (!options.pending) {
+      client.setQueryData(["workspace", W], { id: W, slug: "orders", status: options.archived ? "archived" : "active", activeRelease: 1 });
+      client.setQueryData(["environment", W], { publishMode: options.auto ? "auto" : "manual", hasUnpublishedChanges: true });
+    }
+    client.setQueryData(["ws-plugins", W, {}], { pages: [{ items, nextCursor: null }], pageParams: [""] });
+    client.setQueryData(["preview", W], { changes: items.map(p => ({ kind: "plugins", id: p.id, change: "modified" })) });
+    client.setQueryData(["ws-plugin-choices", W, "services"], options.names === false ? [] : [{ id: W, name: "orders" }]);
+    client.setQueryData(["ws-plugin-choices", W, "routes"], [{ id: W, name: "orders-api" }]);
+    client.setQueryData(["ws-plugin-choices", W, "consumers"], [{ id: W, name: "checkout" }]);
+    const html = renderToStaticMarkup(<QueryClientProvider client={client}><WorkspacePlugins workspaceId={W} /></QueryClientProvider>);
+    client.clear();
+    return html;
+  }
+
+  it("preserves cards, readable combined scopes, draft and enabled state without exposing config", async () => {
+    const html = await screen([{ ...saved, enabled: false, scope: { serviceId: W, routeId: W, consumerId: W } }]);
+    expect(html).toContain('class="cards"');
+    expect(html).toContain('aria-label="Plugins"');
+    for (const value of ["rate-limiting", "Service orders · Route orders-api · Consumer checkout", "Alterado", "Não", 'aria-label="Filtrar por escopo"', 'value="global"', `value="serviceId:${W}"`, 'aria-label="Mais ações para rate-limiting']) expect(html).toContain(value);
+    expect(html).not.toContain("minute");
+    expect(html).not.toContain("password");
+    expect(html).not.toContain("typed-secret");
+    expect(html).toContain("Novo plugin");
+  });
+
+  it("uses an id when a scope name is unavailable", async () => {
+    expect(await screen([saved], { names: false })).toContain(`Service ${W}`);
+  });
+
+  it.each(["pending", "failed"])("keeps service names and scope filters available while consumers are %s", async state => {
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const { WorkspacePlugins } = await load(async request => {
+      const url = new URL(request.url);
+      if (url.pathname.endsWith("/services")) return Response.json(url.searchParams.has("cursor")
+        ? { items: [{ id: W, name: "orders" }], nextCursor: null }
+        : { items: [], nextCursor: "next" });
+      if (url.pathname.endsWith("/routes")) return Response.json({ items: [{ id: W, name: "orders-api" }], nextCursor: null });
+      if (url.pathname.endsWith("/consumers")) {
+        if (state === "pending") await held;
+        return Response.json({ title: "Unavailable", status: 503 }, { status: 503 });
+      }
+      throw new Error(`Unexpected query: ${url.pathname}`);
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    client.setQueryData(["workspace", W], { id: W, slug: "orders", status: "active", activeRelease: 1 });
+    client.setQueryData(["environment", W], { publishMode: "manual", hasUnpublishedChanges: true });
+    client.setQueryData(["ws-plugins", W, {}], { pages: [{ items: [saved], nextCursor: null }], pageParams: [""] });
+    client.setQueryData(["preview", W], { changes: [] });
+    const render = () => renderToStaticMarkup(<QueryClientProvider client={client}><WorkspacePlugins workspaceId={W} /></QueryClientProvider>);
+    render();
+    const fetching = client.getQueryCache().getAll().filter(query => query.state.status === "pending").map(query => query.fetch().catch(() => {}));
+    try {
+      await vi.waitFor(() => {
+        const html = render();
+        expect(html).toContain("Service orders");
+        expect(html).toContain(`<option value="serviceId:${W}">Service orders</option>`);
+        expect(html).toContain("Route orders-api");
+      });
+    } finally {
+      release();
+      await Promise.all(fetching);
+      client.clear();
+    }
+  });
+
+  it("keeps legacy global plugins visible and read-only", async () => {
+    const html = await screen([{ ...saved, scope: {} }]);
+    expect(html).toContain("Global legado (somente leitura)");
+    expect(html).not.toContain('aria-label="Editar');
+    expect(html).not.toContain('aria-label="Mais ações');
+  });
+
+  it("keeps EmptyState and creation when the workspace is empty", async () => {
+    const html = await screen([]);
+    expect(html).toContain('class="empty-state muted"');
+    expect(html).toContain("Nenhum plugin neste Workspace.");
+    expect(html).toContain("Novo plugin");
+    expect(html).not.toContain('class="cards"');
+  });
+
+  it.each([{ archived: true }, { auto: true }, { pending: true }])("keeps read-only workspace cards without mutations: %s", async options => {
+    const html = await screen([saved], options);
+    expect(html).toContain("rate-limiting");
+    expect(html).toContain("Somente leitura");
+    expect(html).not.toContain("Novo plugin");
+    expect(html).not.toContain('aria-label="Editar');
+    expect(html).not.toContain('aria-label="Mais ações');
   });
 });
