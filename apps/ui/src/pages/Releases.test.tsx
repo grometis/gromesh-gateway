@@ -1,8 +1,10 @@
 import { MutationObserver, QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Release } from "../api/client-v2";
+import { installTestDom } from "../test/dom";
 
 vi.mock("../auth", async (importOriginal) => ({
   ...await importOriginal<typeof import("../auth")>(),
@@ -32,6 +34,67 @@ async function load(answer: (request: Request) => Promise<Response>) {
 
 describe("workspace releases", () => {
   afterEach(() => vi.unstubAllGlobals());
+
+  it("uses the refreshed active version on the next publication through the screen", async () => {
+    const container = installTestDom();
+    let activeRelease: number | null = null;
+    const published: Release[] = [];
+    const expectedVersions: (number | null)[] = [];
+    const { ReleasesPage } = await load(async (request) => {
+      const path = new URL(request.url).pathname;
+      if (path === "/api/v1/auth/csrf") return Response.json({ csrfToken: "csrf" });
+      if (path === `/api/v2/workspaces/${W}/releases`) {
+        if (request.method === "GET") return Response.json(published);
+        const body = await request.json() as { expectedActiveVersion: number | null };
+        expectedVersions.push(body.expectedActiveVersion);
+        if (body.expectedActiveVersion !== activeRelease) return Response.json({ status: 409, detail: "Active release changed" }, { status: 409 });
+        activeRelease = (activeRelease ?? 0) + 1;
+        const next = { ...release, version: activeRelease, contentOriginVersion: activeRelease };
+        published.unshift(next);
+        return Response.json(next, { status: 201 });
+      }
+      if (path === `/api/v2/workspaces/${W}`) return Response.json({ id: W, name: "Pagamentos", status: "active", activeRelease });
+      if (path === `/api/v1/environments/${W}`) return Response.json({ publishMode: "manual", hasUnpublishedChanges: true });
+      throw new Error(`Unexpected request: ${request.method} ${path}`);
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    const { createRoot } = await import("react-dom/client");
+    const root = createRoot(container as unknown as HTMLElement);
+    const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+    const settle = async () => { await act(async () => { await tick(); }); };
+    const click = async (label: string) => {
+      const button = container.findAll((node) => node.tagName === "BUTTON" && node.textContent === label)[0];
+      expect(button, label).toBeDefined();
+      expect(button!.getAttribute("disabled"), label).toBeNull();
+      await act(async () => { button!.dispatchEvent(new Event("click", { bubbles: true })); await tick(); });
+      await settle();
+    };
+    try {
+      await act(async () => {
+        root.render(<QueryClientProvider client={client}>
+          <MemoryRouter initialEntries={[`/e/${W}/releases`]}>
+            <Routes><Route path="/e/:envId/releases" element={<ReleasesPage />} /></Routes>
+          </MemoryRouter>
+        </QueryClientProvider>);
+        await tick();
+      });
+      await settle();
+      await settle();
+      expect(container.textContent).toContain("Nenhuma release ativa informada.");
+      for (const version of [1, 2]) {
+        await click("Publicar release");
+        await click("Confirmar publicação");
+        await settle();
+        expect(container.findAll((node) => node.getAttribute("role") === "dialog")).toHaveLength(0);
+        expect(container.textContent).toContain(`Release ativa: v${version}.`);
+        expect(client.getQueryData(["workspace", W])).toMatchObject({ activeRelease: version });
+      }
+      expect(expectedVersions).toEqual([null, 1]);
+    } finally {
+      await act(() => root.unmount());
+      client.clear();
+    }
+  });
 
   it.each([403, 201])("offers publication to a legacy viewer and honors the server response (%s)", async (status) => {
     const requests: Request[] = [];

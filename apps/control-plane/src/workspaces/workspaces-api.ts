@@ -8,7 +8,7 @@ import { notFound } from "../common/problem.js";
 import { DB, type Db } from "../db/db.js";
 import { environmentRoles, environments, workspaces } from "../db/schema.js";
 import { uuidParam } from "../environments/environments.js";
-import { type CreationPolicyWrite, toWorkspace, WorkspaceAdminService, type WorkspaceUpdate, type WorkspaceWrite } from "./workspace-admin.js";
+import { type CreationPolicyWrite, toWorkspace, WorkspaceAdminService, workspaceSelection, type WorkspaceUpdate, type WorkspaceWrite } from "./workspace-admin.js";
 import { backfillWorkspaces } from "./workspaces.js";
 
 
@@ -46,7 +46,7 @@ export class WorkspacesController {
 
   private select() {
     return this.db
-      .select({ id: workspaces.id, key: workspaces.key, name: environments.name, description: environments.description, slug: workspaces.slug, status: workspaces.status })
+      .select(workspaceSelection)
       .from(workspaces)
       .innerJoin(environments, eq(environments.id, workspaces.id));
   }

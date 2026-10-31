@@ -1,5 +1,6 @@
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { contractsV2 } from "../../src/common/contract.js";
 import { runMigrations } from "../../src/db/migrate.js";
 import { SnapshotsService } from "../../src/snapshots/snapshots.js";
 import { type ApiClient, type ApiResponse, startHarness, uniq, type Harness } from "./harness.js";
@@ -35,6 +36,109 @@ afterAll(async () => {
 
 const v2 = (client: ApiClient, method: string, path: string, body?: unknown, headers?: Record<string, string>): Promise<ApiResponse> => client(method, `/../v2${path}`, body, headers);
 const count = async (h: Harness, table: string) => Number((await h.sql.query(`select count(*)::int as n from ${table}`)).rows[0].n);
+
+describe("Workspace active release responses (WS-L1 r2)", () => {
+  let h: Harness;
+  const workspaceSchema = contractsV2.validator("#/components/schemas/Workspace");
+  const pageSchema = contractsV2.validator("#/components/schemas/WorkspacePage");
+  beforeAll(async () => {
+    h = await startHarness({ databaseUrl: await freshDatabase("active_release"), workspacesDeployments: LAB });
+  });
+  afterAll(async () => h?.close());
+
+  const create = async () => {
+    const response = await v2(h.api, "POST", "/workspaces", { name: uniq("Release") });
+    expect(response.status).toBe(201);
+    expect(workspaceSchema(response.body), JSON.stringify(workspaceSchema.errors)).toBe(true);
+    expect(response.body.activeRelease).toBeNull();
+    return response.body.id as string;
+  };
+  const publish = async (id: string, expectedActiveVersion: number | null) => {
+    const response = await v2(h.api, "POST", `/workspaces/${id}/releases`, { expectedActiveVersion });
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    expect(response.body.version).toBe((expectedActiveVersion ?? 0) + 1);
+  };
+  const read = async (id: string) => {
+    const response = await v2(h.api, "GET", `/workspaces/${id}`);
+    expect(response.status).toBe(200);
+    expect(workspaceSchema(response.body), JSON.stringify(workspaceSchema.errors)).toBe(true);
+    return response.body as { id: string; activeRelease: number | null; description?: string };
+  };
+  const list = async (cursor?: string) => {
+    const response = await v2(h.api, "GET", `/workspaces?limit=1${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+    expect(response.status).toBe(200);
+    expect(pageSchema(response.body), JSON.stringify(pageSchema.errors)).toBe(true);
+    return response.body as { items: { id: string; activeRelease: number | null; description?: string }[]; nextCursor: string | null };
+  };
+
+  it("returns null, then 1, then 2 in GET, paginated lists and PATCH, isolated by workspace", async () => {
+    const a = await create();
+    const b = await create();
+    const c = await create();
+    const expectActive = async (versions: Record<string, number | null>) => {
+      for (const [id, version] of Object.entries(versions)) expect((await read(id)).activeRelease).toBe(version);
+      const listed: Record<string, number | null> = {};
+      let cursor: string | undefined;
+      do {
+        const page = await list(cursor);
+        for (const item of page.items) if (item.id in versions) listed[item.id] = item.activeRelease;
+        cursor = page.nextCursor ?? undefined;
+      } while (cursor);
+      expect(listed).toEqual(versions);
+    };
+    await expectActive({ [a]: null, [b]: null, [c]: null });
+    await publish(a, null);
+    await expectActive({ [a]: 1, [b]: null, [c]: null });
+    for (const version of [1, 2]) {
+      const response = await v2(h.api, "PATCH", `/workspaces/${a}`, { description: `release-${version}` });
+      expect(response.status).toBe(200);
+      expect(workspaceSchema(response.body), JSON.stringify(workspaceSchema.errors)).toBe(true);
+      expect(response.body.activeRelease).toBe(version);
+      const event = (await h.sql.query("select before, after from audit_events where action = 'workspace.update' and entity_id = $1 order by at desc limit 1", [a])).rows[0];
+      expect(event.before.activeRelease).toBe(version);
+      expect(event.after.activeRelease).toBe(version);
+      if (version === 1) {
+        expect((await h.api("POST", `/environments/${a}/services`, { name: "changed", protocol: "http", host: "echo", port: 80 })).status).toBe(201);
+        await publish(a, 1);
+        await expectActive({ [a]: 2, [b]: null, [c]: null });
+      }
+    }
+    await publish(b, null);
+    await expectActive({ [a]: 2, [b]: 1, [c]: null });
+    expect((await v2(h.api, "POST", `/workspaces/${c}/archive`)).status).toBe(204);
+    expect((await read(c)).activeRelease).toBeNull();
+  });
+
+  it("reads the persisted pointer, with workspace metadata from the same committed state during concurrent writes", async () => {
+    const id = await create();
+    await publish(id, null);
+    expect((await h.api("POST", `/environments/${id}/services`, { name: "changed", protocol: "http", host: "echo", port: 80 })).status).toBe(201);
+    await publish(id, 1);
+    await v2(h.api, "PATCH", `/workspaces/${id}`, { description: "release-2" });
+    const writer = await h.sql.connect();
+    try {
+      for (const version of [1, 2, 1, 2]) {
+        await writer.query("begin");
+        await writer.query("update environments set description = $2 where id = $1", [id, `release-${version}`]);
+        await writer.query("update workspace_active_release set version = $2 where workspace_id = $1", [id, version]);
+        // Uncommitted pointer and metadata remain invisible to the other API connection.
+        expect(await read(id)).toMatchObject({ activeRelease: version === 1 ? 2 : 1, description: `release-${version === 1 ? 2 : 1}` });
+        const reads = Promise.all([read(id), v2(h.api, "GET", "/workspaces?limit=100")]);
+        await writer.query("commit");
+        const [workspace, page] = await reads;
+        expect(workspace.description).toBe(`release-${workspace.activeRelease}`);
+        expect(page.status).toBe(200);
+        expect(pageSchema(page.body), JSON.stringify(pageSchema.errors)).toBe(true);
+        const item = (page.body.items as { id: string; activeRelease: number; description: string }[]).find((w) => w.id === id)!;
+        expect(item.description).toBe(`release-${item.activeRelease}`);
+        expect(await read(id)).toMatchObject({ activeRelease: version, description: `release-${version}` });
+      }
+    } finally {
+      await writer.query("rollback");
+      writer.release();
+    }
+  });
+});
 
 describe("while Workspaces mode is disabled (the N2 block)", () => {
   let h: Harness;
