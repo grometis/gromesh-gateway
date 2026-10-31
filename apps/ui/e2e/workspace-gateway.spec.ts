@@ -3,6 +3,7 @@ import type { Page } from "@playwright/test";
 import { expect, mockSession, test } from "./fixtures";
 import { checkLayout } from "./layout";
 import { invalidBody, v2BodyErrors } from "./v2-bodies";
+import type { PublishPreview } from "../src/api/client";
 import type { Me } from "../src/api/client";
 import type { Workspace, WorkspaceRoute, WorkspaceService } from "../src/api/client-v2";
 
@@ -23,6 +24,9 @@ interface Fake {
   routeOwner: Map<string, string>;
   upstreams: Upstream[];
   dirty: Set<string>;
+  snapshots?: Map<string, { version: number; routes: WorkspaceRoute[]; services: WorkspaceService[] }>;
+  changes?: Map<string, PublishPreview["changes"]>;
+  releases?: Map<string, { workspaceId: string; version: number; contentRevoked: boolean }[]>;
   /** Workspaces whose v1 environment publishes automatically. */
   autoPublish?: Set<string>;
   paused?: "import";
@@ -33,7 +37,7 @@ interface Fake {
 }
 
 async function fakeApi(page: Page, fake: Fake) {
-  const env = (w: Workspace) => ({ id: w.id, name: w.name, publishMode: fake.autoPublish?.has(w.id) ? "auto" : "manual", ...(fake.paused ? { autoPublishPausedReason: fake.paused } : {}), currentVersion: null, hasUnpublishedChanges: fake.dirty.has(w.id), createdAt: NOW, updatedAt: NOW });
+  const env = (w: Workspace) => ({ id: w.id, name: w.name, publishMode: fake.autoPublish?.has(w.id) ? "auto" : "manual", ...(fake.paused ? { autoPublishPausedReason: fake.paused } : {}), currentVersion: fake.snapshots?.get(w.id)?.version ?? null, hasUnpublishedChanges: fake.dirty.has(w.id), createdAt: NOW, updatedAt: NOW });
   const record = (method: string, path: string, body: unknown) => fake.requests.push({ method, path, body });
   // Everything the v1 screens around the gateway read for these workspaces; publishing or deploying is recorded.
   // Match APIs at the origin root, never Vite modules such as /src/api/client.ts.
@@ -51,7 +55,16 @@ async function fakeApi(page: Page, fake: Fake) {
       return route.fulfill({ json: env(w) });
     }
     if (rest === "/plugins") return route.fulfill({ json: { items: [{ id: "route-plugin", name: "rate-limiting", enabled: true, scope: { routeId: legacyRoute.id }, config: { minute: 5 }, createdAt: NOW, updatedAt: NOW }], nextCursor: null } });
-    if (rest === "/publish-preview") return route.fulfill({ json: { currentVersion: null, draftHash: `sha256:${"a".repeat(64)}`, hasChanges: true, changes: [] } });
+    if (/^\/snapshots\/\d+$/.test(rest ?? "")) {
+      const snapshot = fake.snapshots?.get(w.id);
+      if (!snapshot || rest !== `/snapshots/${snapshot.version}`) return route.fulfill(problem(404));
+      return route.fulfill({ json: { version: snapshot.version, environmentId: w.id, createdAt: NOW, hash: `sha256:${"a".repeat(64)}`, config: {
+        _format_version: "3.0", _transform: false, consumers: [], keyauth_credentials: [], plugins: [],
+        routes: snapshot.routes.map((r) => ({ id: r.id, name: r.name, service: r.serviceId, paths: r.paths, strip_path: r.stripPath, tags: ["managed-by:gromesh"] })),
+        services: snapshot.services.map((s) => ({ id: s.id, name: s.name, protocol: s.protocol, host: s.host, port: s.port, ...(s.path ? { path: s.path } : {}), tags: ["managed-by:gromesh"] })),
+      } } });
+    }
+    if (rest === "/publish-preview") return route.fulfill({ json: { currentVersion: fake.snapshots?.get(w.id)?.version ?? null, draftHash: `sha256:${"a".repeat(64)}`, hasChanges: fake.dirty.has(w.id), changes: fake.changes?.get(w.id) ?? [] } });
     if (rest === "/clusters") return route.fulfill({ json: { items: [] } });
     // Keep the old fallback observable: read-only legacy scenarios must never call it.
     const v1Route = /^\/routes\/([^/]+)$/.exec(rest ?? "");
@@ -85,7 +98,7 @@ async function fakeApi(page: Page, fake: Fake) {
       fake.workspaces.push(w);
       return route.fulfill({ status: 201, json: w });
     }
-    const [, wsId, kind, entityId] = /^\/workspaces\/([^/]+)(?:\/(services|routes|upstreams)(?:\/([^/]+))?)?$/.exec(path) ?? [];
+    const [, wsId, kind, entityId] = /^\/workspaces\/([^/]+)(?:\/(services|routes|upstreams|releases)(?:\/([^/]+))?)?$/.exec(path) ?? [];
     const w = fake.workspaces.find((x) => x.id === wsId);
     if (!w) return route.fulfill(problem(404));
     if (!kind) {
@@ -93,6 +106,7 @@ async function fakeApi(page: Page, fake: Fake) {
       if (fake.failed === "workspace") return route.fulfill(problem(503));
       return route.fulfill({ json: w });
     }
+    if (kind === "releases") return route.fulfill({ json: (fake.releases?.get(w.id) ?? []).map((r) => ({ contentDigest: `sha256:${"b".repeat(64)}`, origin: "local", contentOriginVersion: r.version, contentFirstActivatedAt: null, originPromotionId: null, createdAt: NOW, ...r })) });
     if (kind === "upstreams") return route.fulfill({ json: { items: fake.upstreams.filter((u) => u.workspaceId === w.id), nextCursor: null } });
     if (method === "DELETE" && kind === "routes") {
       fake.routes = fake.routes.filter((r) => r.id !== entityId || fake.routeOwner.get(r.id) !== w.id);
@@ -189,6 +203,9 @@ async function expectPathlessReadOnly(page: Page) {
   const row = page.getByRole("table", { name: "Routes", exact: true }).getByRole("row").filter({ hasText: "boletos-host" });
   await expect(row).toContainText("Legada");
   await expect(row).toContainText(explanation);
+  await expect(row).toContainText("Path previsto na configuração v2: não comprovado");
+  await expect(row).not.toContainText("/legado/");
+  await expect(row).not.toContainText("Path público");
   await expect(row.getByRole("button")).toHaveCount(1);
   await expect(row.getByRole("button", { name: "Ver detalhes", exact: true })).toBeVisible();
   const dialog = page.getByRole("dialog", { name: "Detalhes de boletos-host" });
@@ -232,9 +249,11 @@ async function createRoute(page: Page, name: string, service: string, path: stri
   await dialog.getByLabel("Nome").fill(name);
   await dialog.getByLabel("Service", { exact: true }).selectOption({ label: service });
   await dialog.getByLabel("Paths", { exact: true }).fill(path);
-  await expect(dialog.getByRole("group", { name: "Path público" })).toContainText(`Prefixo do Workspace: /${slug}`);
-  await expect(dialog.getByRole("group", { name: "Path público" })).toContainText(`Path público: /${slug}${path}`);
-  await expect(dialog.getByRole("group", { name: "Path público" })).toContainText(`chega ao upstream como /${slug}${path}/x`);
+  await expect(dialog.getByRole("group", { name: "Configuração e publicação por fluxo" })).toContainText(`Path configurado: ${path}`);
+  await expect(dialog.getByRole("group", { name: "Configuração e publicação por fluxo" })).toContainText(`Path previsto na configuração v2: /${slug}${path}`);
+  await expect(dialog.getByRole("group", { name: "Configuração e publicação por fluxo" })).toContainText(`Uma requisição a ${path}/x chega ao upstream como ${path}/x.`);
+  await expect(dialog.getByRole("group", { name: "Configuração e publicação por fluxo" })).toContainText(`chega ao upstream como /${slug}${path}/x`);
+  await expect(dialog).not.toContainText("Path público");
   await dialog.getByRole("button", { name: "Salvar" }).click();
   await expect(dialog).toHaveCount(0);
 }
@@ -248,7 +267,7 @@ test("two workspaces keep their services and routes apart; nothing crosses, noth
   const [a, b] = [fake.workspaces[1]!, fake.workspaces[2]!];
 
   await openSection(page, "Cobrança", "Services");
-  await expect(page.getByRole("note", { name: "Estado do Workspace" })).toContainText("Prefixo público /cobranca · nenhuma release ativa");
+  await expect(page.getByRole("note", { name: "Estado do Workspace" })).toContainText("Prefixo previsto na configuração v2 /cobranca · nenhuma Release v2 ativa");
   await createService(page, "service-a", "cobranca.internal");
   await openSection(page, "Recargas", "Services");
   await createService(page, "service-b", "recargas.internal");
@@ -283,7 +302,7 @@ test("two workspaces keep their services and routes apart; nothing crosses, noth
   // Editing the route: stripPath is an explicit choice and the effect is spelled out before saving.
   await dialog.getByLabel("Paths", { exact: true }).fill("/boletos\n/segunda-via");
   await dialog.getByLabel("Remover o path da route ao encaminhar (stripPath)").check();
-  await expect(dialog.getByRole("group", { name: "Path público" })).toContainText("Uma requisição a /cobranca/boletos/x chega ao upstream como /x.");
+  await expect(dialog.getByRole("group", { name: "Configuração e publicação por fluxo" })).toContainText("Uma requisição a /cobranca/boletos/x chega ao upstream como /x.");
   await dialog.getByRole("button", { name: "Salvar" }).click();
   await expect(dialog).toHaveCount(0);
   await expect(routes).toContainText("/cobranca/boletos, /cobranca/segunda-via");
@@ -302,7 +321,7 @@ test("two workspaces keep their services and routes apart; nothing crosses, noth
   await expect(dialog).toHaveCount(0);
   await expect(services).toContainText("https://cobranca.internal:8443");
   await expect(page.getByRole("note", { name: "Estado do Workspace" })).toContainText("há alterações no rascunho ainda não publicadas");
-  await expect(page.getByRole("note", { name: "Estado do Workspace" })).toContainText("Deployment de Workspaces indisponível nesta fase");
+  await expect(page.getByRole("note", { name: "Estado do Workspace" })).toContainText("Deployment v2 indisponível nesta fase");
 
   // Nothing was published, released or deployed: only draft writes reached the server.
   const writes = fake.requests.filter((r) => r.method !== "GET");
@@ -344,12 +363,12 @@ for (const stripPath of [true, false]) {
     await expect(routes).toContainText("Legada");
     await expect(routes).toContainText("mantém o stripPath que tinha");
     await expect(routes).toContainText("/legado/boletos");
-    await expect(page.getByRole("note", { name: "Estado do Workspace" })).toContainText("release ativa v7");
+    await expect(page.getByRole("note", { name: "Estado do Workspace" })).toContainText("Release v2 ativa v7");
     await routes.getByRole("button", { name: "Editar", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "Editar boletos-api" });
     await expect(dialog.getByLabel(/stripPath/)).toHaveCount(0);
     await expect(dialog).toContainText(`stripPath atual: ${stripPath ? "sim" : "não"}`);
-    await expect(dialog.getByRole("group", { name: "Path público" })).toContainText(`Uma requisição a /legado/boletos/x chega ao upstream como ${stripPath ? "/x" : "/legado/boletos/x"}.`);
+    await expect(dialog.getByRole("group", { name: "Configuração e publicação por fluxo" })).toContainText(`Uma requisição a /legado/boletos/x chega ao upstream como ${stripPath ? "/x" : "/legado/boletos/x"}.`);
     await dialog.getByLabel("Métodos").fill("GET");
     await dialog.getByRole("button", { name: "Salvar" }).click();
     await expect(dialog).toHaveCount(0);
@@ -395,7 +414,7 @@ test("searching services for \"all\" and then opening Routes keeps both lists ap
   await dialog.getByLabel("Service", { exact: true }).selectOption({ label: "all-in-one" });
   await dialog.getByLabel("Paths", { exact: true }).fill("/orders");
   // The service's path comes first in what the upstream receives.
-  const preview = dialog.getByRole("group", { name: "Path público" });
+  const preview = dialog.getByRole("group", { name: "Configuração e publicação por fluxo" });
   await expect(preview).toContainText("Uma requisição a /legado/orders/x chega ao upstream como /v1/legado/orders/x.");
   await dialog.getByLabel("Remover o path da route ao encaminhar (stripPath)").check();
   await expect(preview).toContainText("Uma requisição a /legado/orders/x chega ao upstream como /v1/x.");
@@ -558,7 +577,7 @@ for (const operation of ["create", "edit"] as const) {
     const dialog = page.getByRole("dialog", { name: operation === "create" ? "Nova route" : "Editar boletos-api" });
     await dialog.getByLabel("Nome", { exact: true }).fill("comma-paths");
     if (operation === "create") await dialog.getByLabel("Paths", { exact: true }).fill(paths.join("\n"));
-    await expect(dialog.getByRole("group", { name: "Path público" })).toContainText("~/legado(?:/items/[0-9]{1,3}), /legado/a,/b");
+    await expect(dialog.getByRole("group", { name: "Configuração e publicação por fluxo" })).toContainText("~/legado(?:/items/[0-9]{1,3}), /legado/a,/b");
     await dialog.getByRole("button", { name: "Salvar" }).click();
     await expect(dialog).toHaveCount(0);
     await expect(page.getByRole("table", { name: "Routes", exact: true })).toContainText("comma-paths");
@@ -632,3 +651,125 @@ for (const width of [390, 1440]) {
     await audit("route form");
   });
 }
+
+for (const stripPath of [true, false]) {
+  test(`D1: v1 snapshot /orders is distinct from the predicted v2 path (stripPath=${stripPath})`, async ({ page }) => {
+    const fake = newFake();
+    const stored: WorkspaceRoute = { ...legacyRoute, paths: ["/orders"], pathCompatibility: "workspace-default", stripPath };
+    fake.routes = [stored];
+    fake.services[0]!.path = "/api";
+    fake.snapshots = new Map([[legacyWs.id, { version: 5, routes: [structuredClone(stored)], services: structuredClone(fake.services) }]]);
+    fake.releases = new Map([[legacyWs.id, [{ workspaceId: legacyWs.id, version: 7, contentRevoked: false }]]]);
+    await signIn(page, fake);
+    await openSection(page, "Legado", "Routes");
+    const row = page.getByRole("table", { name: "Routes", exact: true }).getByRole("row").filter({ hasText: stored.name });
+    const check = async (scope: ReturnType<Page["locator"]>) => {
+      await expect(scope).toContainText("Path configurado: /orders");
+      await expect(scope).toContainText("Path no fluxo v1: /orders — publicado na versão v5");
+      await expect(scope).toContainText("Path previsto na configuração v2: /legado/orders — previsão; ainda não implantado");
+      await expect(scope).toContainText(`Upstream v1 · stripPath ${stripPath} · simulação: Uma requisição a /orders/x chega ao upstream como /api/${stripPath ? "x" : "orders/x"}.`);
+      await expect(scope).toContainText(`Upstream v2 · stripPath ${stripPath} · simulação: Uma requisição a /legado/orders/x chega ao upstream como /api/${stripPath ? "x" : "legado/orders/x"}.`);
+      await expect(scope).toContainText("Release v2 do Workspace publicada v7; inclusão desta configuração da route não comprovada");
+      await expect(scope).toContainText("Deployment v2 indisponível nesta fase");
+      await expect(scope).not.toContainText("Path público");
+    };
+    await check(row);
+    await row.getByRole("button", { name: "Ver detalhes", exact: true }).click();
+    let dialog = page.getByRole("dialog");
+    await check(dialog);
+    await dialog.getByRole("button", { name: "Fechar", exact: true }).last().click();
+    await row.getByRole("button", { name: "Editar", exact: true }).click();
+    dialog = page.getByRole("dialog");
+    await check(dialog);
+    await dialog.getByLabel("Paths", { exact: true }).fill("/draft-orders");
+    await expect(dialog).toContainText("Path no fluxo v1: /orders — publicado na versão v5");
+    await expect(dialog).toContainText("Path no fluxo v1 (rascunho): /draft-orders — alterado no formulário, não publicado");
+    expect(fake.requests.every((r) => r.method === "GET")).toBe(true);
+    expect(fake.requests.some((r) => r.path === `/environments/${legacyWs.id}/snapshots/5`)).toBe(true);
+    expect(fake.requests.some((r) => r.path.includes("/deployments"))).toBe(false);
+  });
+}
+
+test("D1: an unpublished new route and a Release without Deployment never expose an operational v2 address", async ({ page }) => {
+  const fake = newFake();
+  fake.releases = new Map([[legacyWs.id, [{ workspaceId: legacyWs.id, version: 7, contentRevoked: false }]]]);
+  await signIn(page, fake);
+  await openSection(page, "Legado", "Routes");
+  await createRoute(page, "new-orders", legacyService.name, "/orders", legacyWs.slug);
+  const row = page.getByRole("table", { name: "Routes", exact: true }).getByRole("row").filter({ hasText: "new-orders" });
+  await expect(row).toContainText("Path no fluxo v1: /orders — não publicado; ainda não implantado");
+  await expect(row).toContainText("Path previsto na configuração v2: /legado/orders — previsão; ainda não implantado");
+  await expect(row).toContainText("Release v2 do Workspace publicada v7");
+  await expect(row).toContainText("Deployment v2 indisponível nesta fase");
+  await expect(row).not.toContainText("publicado na versão");
+  await expect(page.locator("body")).not.toContainText("Path público");
+  expect(fake.requests.filter((r) => r.method !== "GET").map((r) => r.path)).toEqual([`/workspaces/${legacyWs.id}/routes`]);
+});
+
+test("D1: a modified legacy regex keeps its published v1 expression and both stripPath effects", async ({ page }) => {
+  const fake = newFake();
+  const published = { ...legacyRoute, paths: ["~/orders/[0-9]+"], stripPath: false };
+  fake.routes = [{ ...published, paths: ["~/draft-orders/[0-9]+"] }];
+  fake.dirty.add(legacyWs.id);
+  fake.snapshots = new Map([[legacyWs.id, { version: 4, routes: [published], services: structuredClone(fake.services) }]]);
+  fake.changes = new Map([[legacyWs.id, [{ kind: "routes", id: published.id, label: published.name, change: "modified" }]]]);
+  await signIn(page, fake);
+  await openSection(page, "Legado", "Routes");
+  const row = page.getByRole("table", { name: "Routes", exact: true }).getByRole("row").filter({ hasText: published.name });
+  await expect(row).toContainText("Legada");
+  await expect(row).toContainText("Alterado");
+  await expect(row).toContainText("Path no fluxo v1: ~/orders/[0-9]+ — publicado na versão v4");
+  await expect(row).toContainText("Path no fluxo v1 (rascunho): ~/draft-orders/[0-9]+ — alterado no rascunho, não publicado");
+  await expect(row).toContainText("Path previsto na configuração v2: ~/legado(?:/draft-orders/[0-9]+) — previsão");
+  await expect(row).toContainText("sem acrescentar o prefixo do Workspace");
+  await expect(row).toContainText("com o prefixo do Workspace");
+  await row.getByRole("button", { name: "Editar", exact: true }).click();
+  await expect(page.getByRole("dialog").getByLabel(/stripPath/)).toHaveCount(0);
+  expect(fake.requests.every((r) => r.method === "GET")).toBe(true);
+});
+
+test("D1: switching Workspace discards publication evidence, including a warm previous cache", async ({ page }) => {
+  const fake = newFake();
+  const other: Workspace = { id: uuid(), key: uuid(), name: "Orders", slug: "orders-ws", status: "active", activeRelease: null };
+  const service: WorkspaceService = { ...legacyService, id: uuid(), workspaceId: other.id, name: "other-service" };
+  const otherRoute: WorkspaceRoute = { ...legacyRoute, id: uuid(), name: "other-orders", serviceId: service.id, paths: ["/orders"], pathCompatibility: "workspace-default", stripPath: false };
+  fake.workspaces.push(other);
+  fake.services.push(service);
+  fake.routes.push(otherRoute);
+  fake.routeOwner.set(otherRoute.id, other.id);
+  fake.snapshots = new Map([[legacyWs.id, { version: 5, routes: [structuredClone(legacyRoute)], services: [structuredClone(legacyService)] }]]);
+  fake.releases = new Map([[legacyWs.id, [{ workspaceId: legacyWs.id, version: 7, contentRevoked: false }]]]);
+  await signIn(page, fake);
+  await openSection(page, "Orders", "Routes");
+  await openSection(page, "Legado", "Routes");
+  const table = page.getByRole("table", { name: "Routes", exact: true });
+  await expect(table).toContainText("publicado na versão v5");
+  await expect(table).toContainText("Release v2 do Workspace publicada v7");
+  await table.getByRole("button", { name: "Editar", exact: true }).click();
+  await selector(page).selectOption({ label: "Orders" });
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(table).toContainText("Path no fluxo v1: /orders — não publicado; ainda não implantado");
+  await expect(table).toContainText("Path previsto na configuração v2: /orders-ws/orders — previsão");
+  await expect(table).not.toContainText("publicado na versão v5");
+  await expect(table).not.toContainText("publicada v7");
+  await expect(table).not.toContainText("/legado/");
+  await table.getByRole("button", { name: "Ver detalhes", exact: true }).click();
+  await expect(page.getByRole("dialog")).toContainText("nenhuma Release v2 ativa no Workspace");
+  expect(fake.requests.every((r) => r.method === "GET")).toBe(true);
+});
+
+test("D1: unavailable snapshot evidence never manufactures a published address", async ({ page }) => {
+  const fake = newFake();
+  fake.routes[0]!.paths = ["/orders"];
+  fake.snapshots = new Map([[legacyWs.id, { version: 5, routes: [structuredClone(fake.routes[0]!)], services: structuredClone(fake.services) }]]);
+  await signIn(page, fake);
+  await page.route(new RegExp(`^https?://[^/]+/api/v1/environments/${legacyWs.id}/snapshots/5$`), (route) => route.fulfill(problem(503)));
+  const unavailable = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/environments/${legacyWs.id}/snapshots/5` && response.status() === 503);
+  await openSection(page, "Legado", "Routes");
+  await unavailable;
+  const row = page.getByRole("table", { name: "Routes", exact: true }).getByRole("row").filter({ hasText: legacyRoute.name });
+  await expect(row).toContainText("Path no fluxo v1: /orders — publicação não comprovada; ainda não implantado");
+  await expect(row).toContainText("Path previsto na configuração v2: /legado/orders — previsão");
+  await expect(row).not.toContainText("publicado na versão");
+  await expect(row).not.toContainText("Path público");
+});

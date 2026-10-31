@@ -31,8 +31,9 @@ async function load(status = "active", publishMode = "manual", storedRoutes: Wor
     if (path.endsWith("/services")) return Response.json(page([service]));
     if (path.endsWith("/routes")) return Response.json(page(storedRoutes));
     if (path.endsWith("/plugins")) return Response.json(page([plugin]));
-    if (path === `/api/v1/environments/${W}`) return Response.json({ id: W, publishMode, hasUnpublishedChanges: false });
+    if (path === `/api/v1/environments/${W}`) return Response.json({ id: W, publishMode, currentVersion: null, hasUnpublishedChanges: false });
     if (path === `/api/v2/workspaces/${W}`) return Response.json({ id: W, slug: "billing", status, activeRelease: null });
+    if (path.endsWith("/releases")) return Response.json([]);
     if (path.endsWith("/upstreams") || path.endsWith("/consumers")) return Response.json(page([]));
     throw new Error(`Unexpected query: ${path}`);
   });

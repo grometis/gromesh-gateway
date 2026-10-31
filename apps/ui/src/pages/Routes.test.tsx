@@ -3,8 +3,9 @@ import type { Root } from "react-dom/client";
 import { installTestDom, type TestNode } from "../test/dom";
 import { MutationObserver, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { PublishPreview } from "../api/client";
 import type { WorkspaceRoute } from "../api/client-v2";
-import { publicPath, upstreamEffect } from "./workspace-gateway";
+import { plannedV2Path, upstreamEffect } from "./workspace-gateway";
 
 // Exercise the v2 plugin boundary even for users allowed to edit v1 plugins.
 vi.mock("../auth", () => ({ useCanEdit: () => true }));
@@ -51,21 +52,32 @@ async function load(respond: (request: Request) => Promise<Response>) {
   return import("./Routes");
 }
 
-describe("public paths", () => {
-  it("prefixes every path with the workspace slug; a regex stays a regex", () => {
-    expect(publicPath("tvro", "/recarga")).toBe("/tvro/recarga");
-    expect(publicPath("tvro", "/")).toBe("/tvro/");
-    expect(publicPath("tvro", "~/v[0-9]+/pix")).toBe("~/tvro(?:/v[0-9]+/pix)");
+describe("paths previstos na configuração v2", () => {
+  it("predicts the v2 prefix without claiming publication; a regex stays a regex", () => {
+    expect(plannedV2Path("tvro", "/recarga")).toBe("/tvro/recarga");
+    expect(plannedV2Path("tvro", "/")).toBe("/tvro/");
+    expect(plannedV2Path("tvro", "~/v[0-9]+/pix")).toBe("~/tvro(?:/v[0-9]+/pix)");
   });
 
   it("says what the upstream receives with and without stripPath", () => {
-    expect(upstreamEffect("tvro", "/recarga", false)).toBe("Uma requisição a /tvro/recarga/x chega ao upstream como /tvro/recarga/x.");
-    expect(upstreamEffect("tvro", "/recarga", true)).toBe("Uma requisição a /tvro/recarga/x chega ao upstream como /x.");
-    expect(upstreamEffect("tvro", "/", false)).toBe("Uma requisição a /tvro/x chega ao upstream como /tvro/x.");
+    expect(upstreamEffect("tvro", "/recarga", false)).toBe("Uma requisição a /recarga/x chega ao upstream como /recarga/x.");
+    expect(upstreamEffect("tvro", "/recarga", true)).toBe("Uma requisição a /recarga/x chega ao upstream como /x.");
+    expect(upstreamEffect("tvro", "/", false)).toBe("Uma requisição a /x chega ao upstream como /x.");
   });
 });
 
 describe("saving a workspace route", () => {
+  it.each(["create", "edit"])("reserves the Paths accessible label for the input on %s", async (operation) => {
+    const view = await screen([route()]);
+    await view.click(operation === "create" ? "Nova route" : "Editar");
+    const dialog = view.dialog()!;
+    expect(view.field("Paths").tagName).toBe("TEXTAREA");
+    expect(dialog.findAll((node) => (node.getAttribute("aria-label") ?? "").includes("Paths"))).toHaveLength(0);
+    await view.input("Paths", "/orders");
+    expect(view.field("Paths").value).toBe("/orders");
+    expect(dialog.textContent).toContain("Path configurado: /orders");
+  });
+
   it("sends the user's stripPath on a workspace-default route and keeps what the form does not edit", async () => {
     const { routeBody } = await load(() => new Promise(() => {}));
     expect(routeBody(null, values)).toEqual(values);
@@ -138,6 +150,13 @@ async function screen(stored: WorkspaceRoute[] = [], options: {
   staleTime?: number;
   accessResponse?: (query: "workspace" | "environment", response: Response) => Promise<Response>;
   writeResponse?: () => Response;
+  version?: number | null;
+  publishedRoutes?: WorkspaceRoute[];
+  changes?: PublishPreview["changes"];
+  releaseVersion?: number;
+  failure?: "snapshot" | "preview" | "releases";
+  snapshotWorkspace?: string;
+  snapshotVersion?: number;
 } = {}) {
   const container = installTestDom();
   const { RoutesPage } = await load(async (request) => {
@@ -152,6 +171,17 @@ async function screen(stored: WorkspaceRoute[] = [], options: {
     const name = workspaceId === W ? "service-a" : "service-b";
     const accessQuery = path === `/api/v2/workspaces/${workspaceId}` ? "workspace" : path === `/api/v1/environments/${workspaceId}` ? "environment" : null;
     if (accessQuery && options.pending === accessQuery) return new Promise<Response>(() => {});
+    if (/\/snapshots\/\d+$/.test(path)) {
+      if (options.failure === "snapshot") return Response.json({}, { status: 503 });
+      return Response.json({ environmentId: options.snapshotWorkspace ?? workspaceId, version: options.snapshotVersion ?? options.version, config: {
+        routes: (options.publishedRoutes ?? []).map((r) => ({ id: r.id, paths: r.paths, strip_path: r.stripPath, service: r.serviceId })),
+        services: [{ id: values.serviceId, path: "/v1" }],
+      } });
+    }
+    if (path.endsWith("/publish-preview")) return options.failure === "preview" ? Response.json({}, { status: 422 }) : Response.json({
+      currentVersion: options.version ?? null, changes: options.changes ?? [], draftHash: "hash", hasChanges: true,
+    });
+    if (path.endsWith("/releases")) return options.failure === "releases" ? Response.json({}, { status: 503 }) : Response.json(options.releaseVersion ? [{ workspaceId, version: options.releaseVersion, contentRevoked: false }] : []);
     if (path.endsWith("/services")) return Response.json({ items: [{
       id: workspaceId === W ? values.serviceId : "service-b-id", workspaceId, name, path: null,
       protocol: "http", host: `${name}.internal`, port: 80, enabled: true, createdAt: NOW, updatedAt: NOW,
@@ -161,8 +191,8 @@ async function screen(stored: WorkspaceRoute[] = [], options: {
     if (path.endsWith("/consumers")) return Response.json({ items: [], nextCursor: null });
     if (accessQuery) {
       const response = Response.json(accessQuery === "workspace"
-        ? { id: workspaceId, name, slug: workspaceId === W ? "a" : "b", status: options.status ?? "active", activeRelease: null }
-        : { id: workspaceId, name, publishMode: options.publishMode ?? "manual", hasUnpublishedChanges: false });
+        ? { id: workspaceId, name, slug: workspaceId === W ? "a" : "b", status: options.status ?? "active", activeRelease: workspaceId === W ? options.releaseVersion ?? null : null }
+        : { id: workspaceId, name, publishMode: options.publishMode ?? "manual", currentVersion: workspaceId === W ? options.version ?? null : null, hasUnpublishedChanges: workspaceId === W && options.changes !== undefined });
       return options.accessResponse ? options.accessResponse(accessQuery, response) : response;
     }
     if (path.startsWith("/api/v1/environments/")) return Response.json({ id: workspaceId, hasUnpublishedChanges: false });
@@ -178,9 +208,10 @@ async function screen(stored: WorkspaceRoute[] = [], options: {
     await tick();
   });
   await act(async () => { await tick(); });
+  await act(async () => { await tick(); });
   const buttons = (name: string, scope = container) => scope.findAll((node) => node.tagName === "BUTTON" && node.textContent === name);
-  const click = async (name: string) => {
-    const button = buttons(name)[0];
+  const click = async (name: string, index = 0) => {
+    const button = buttons(name)[index];
     expect(button, `button ${name}`).toBeDefined();
     await act(async () => { button!.dispatchEvent(new Event("click", { bubbles: true })); await tick(); });
   };
@@ -284,7 +315,7 @@ describe("routes screen", () => {
     expect(view.container.textContent).toContain(reason);
     for (const label of ["Nova route", "Editar", "Excluir"]) expect(view.buttons(label)).toHaveLength(0);
     expect(view.container.findAll((n) => n.getAttribute("aria-haspopup") === "menu")).toHaveLength(0);
-    await view.click("Ver detalhes");
+    await view.click("Ver detalhes", 1);
     expect(view.dialog()!.textContent).toContain("sem paths é somente leitura");
     expect(sent.every((r) => r.method === "GET")).toBe(true);
   });
@@ -433,5 +464,123 @@ describe("routes screen", () => {
     expect(view.dialog()).toBeUndefined();
     await view.click("Nova route");
     expect(view.field("Nome").value).toBe("");
+  });
+});
+
+describe("route publication evidence (D1)", () => {
+  it.each([true, false])("reads v1 paths and stripPath=%s from the actual current snapshot in list, detail and form", async (stripPath) => {
+    const stored = route({ paths: ["/orders"], stripPath });
+    const view = await screen([stored], { version: 7, publishedRoutes: [stored] });
+    const check = (scope: TestNode) => {
+      expect(scope.textContent).toContain("Path configurado: /orders");
+      expect(scope.textContent).toContain("Path no fluxo v1: /orders — publicado na versão v7");
+      expect(scope.textContent).toContain("Path previsto na configuração v2: /a/orders — previsão; ainda não implantado");
+      expect(scope.textContent).toContain(`Upstream v1 · stripPath ${stripPath} · simulação: Uma requisição a /orders/x chega ao upstream como /v1/${stripPath ? "x" : "orders/x"}.`);
+      expect(scope.textContent).toContain("Aplicação do snapshot v1 no gateway não comprovada");
+      expect(scope.textContent).not.toContain("Path público");
+    };
+    check(view.container);
+    await view.click("Ver detalhes");
+    check(view.dialog()!);
+    await view.click("Fechar");
+    await view.click("Editar");
+    check(view.dialog()!);
+    expect(sent.some((r) => new URL(r.url).pathname === `/api/v1/environments/${W}/snapshots/7`)).toBe(true);
+    expect(sent.every((r) => r.method === "GET")).toBe(true);
+  });
+
+  it("keeps the published v1 configuration apart from a modified draft and an unsaved form", async () => {
+    const stored = route({ paths: ["/next"], stripPath: false });
+    const published = route({ paths: ["/orders"], stripPath: true });
+    const view = await screen([stored], { version: 3, publishedRoutes: [published], changes: [{ kind: "routes", id: stored.id, label: stored.name, change: "modified" }] });
+    expect(view.container.textContent).toContain("Path no fluxo v1: /orders — publicado na versão v3");
+    expect(view.container.textContent).toContain("Path no fluxo v1 (rascunho): /next — alterado no rascunho, não publicado");
+    expect(view.container.textContent).toContain("Upstream v1 · stripPath true · simulação: Uma requisição a /orders/x chega ao upstream como /v1/x.");
+    expect(view.container.textContent).toContain("Upstream v1 · stripPath false · simulação: Uma requisição a /next/x chega ao upstream como /next/x.");
+    await view.click("Editar");
+    await view.input("Paths", "/unsaved");
+    expect(view.dialog()!.textContent).toContain("Path no fluxo v1: /orders — publicado na versão v3");
+    expect(view.dialog()!.textContent).toContain("Path no fluxo v1 (rascunho): /unsaved — alterado no formulário, não publicado");
+    expect(view.dialog()!.textContent).toContain("Path previsto na configuração v2: /a/unsaved — previsão");
+  });
+
+  it.each([null, 4])("never treats a newly created route as published (current snapshot %s)", async (version) => {
+    const stored = route({ paths: ["/orders"] });
+    const view = await screen([stored], { version, publishedRoutes: [], changes: [{ kind: "routes", id: stored.id, label: stored.name, change: "added" }] });
+    expect(view.container.textContent).toContain("Path no fluxo v1: /orders — não publicado; ainda não implantado");
+    expect(view.container.textContent).not.toContain("publicado na versão");
+    await view.click("Nova route");
+    await view.input("Paths", "/created");
+    expect(view.dialog()!.textContent).toContain("Path no fluxo v1: /created — não publicado; ainda não implantado");
+    expect(view.dialog()!.textContent).not.toContain("publicado na versão");
+    expect(view.dialog()!.textContent).not.toContain("Path público");
+  });
+
+  it("a published Release v2 is a workspace state and never proof of route inclusion or deployment", async () => {
+    const view = await screen([route({ paths: ["/orders"] })], { releaseVersion: 9 });
+    expect(view.container.textContent).toContain("Release v2 do Workspace publicada v9; inclusão desta configuração da route não comprovada");
+    expect(view.container.textContent).toContain("Deployment v2 indisponível nesta fase");
+    expect(view.container.textContent).not.toContain("publicado na versão");
+    expect(view.container.textContent).not.toMatch(/Path público|route implantada|Deployment aplicado/);
+    expect(sent.some((r) => new URL(r.url).pathname.endsWith("/releases"))).toBe(true);
+    expect(sent.some((r) => r.url.includes("/deployments"))).toBe(false);
+  });
+
+  it("does not leak snapshot or Release evidence across a workspace change", async () => {
+    const stored = route({ paths: ["/orders"] });
+    const view = await screen([stored], { version: 7, publishedRoutes: [stored], releaseVersion: 9 });
+    expect(view.container.textContent).toContain("publicado na versão v7");
+    await view.click("Editar");
+    await act(async () => { await view.router.navigate(`/e/${B}/routes`); await tick(); });
+    await act(async () => { await tick(); });
+    expect(view.dialog()).toBeUndefined();
+    await view.click("Nova route");
+    await view.input("Paths", "/orders");
+    expect(view.dialog()!.textContent).toContain("/b/orders — previsão");
+    expect(view.container.textContent).not.toMatch(/\/a\/orders|publicado na versão v7|publicada v9/);
+    expect(view.dialog()!.textContent).toContain("não publicado; ainda não implantado");
+  });
+
+  it.each(["snapshot", "preview", "releases"] as const)("fails closed when %s evidence cannot be read", async (failure) => {
+    const stored = route({ paths: ["/orders"] });
+    const view = await screen([stored], { version: 7, publishedRoutes: [stored], releaseVersion: 9, changes: [], failure });
+    expect(view.container.textContent).toContain("não comprovad");
+    if (failure === "snapshot") expect(view.container.textContent).not.toContain("publicado na versão");
+    if (failure === "preview") expect(view.container.textContent).toContain("publicação do rascunho não comprovada");
+    if (failure === "releases") expect(view.container.textContent).toContain("estado da Release v2 não comprovado");
+    expect(view.container.textContent).not.toContain("Path público");
+  });
+
+  it.each([{ snapshotWorkspace: B }, { snapshotVersion: 6 }])("rejects a snapshot whose workspace/version differs from the environment: %o", async (mismatch) => {
+    const stored = route({ paths: ["/orders"] });
+    const view = await screen([stored], { version: 7, publishedRoutes: [stored], ...mismatch });
+    expect(view.container.textContent).not.toContain("publicado na versão");
+    expect(view.container.textContent).toContain("publicação não comprovada; ainda não implantado");
+  });
+
+  it("preserves a legacy regex exactly as published in v1 and labels its v2 expression as a prediction", async () => {
+    const stored = route({ paths: ["~/items/[0-9]{1,3}"], pathCompatibility: "legacy-preserved", stripPath: false });
+    const view = await screen([stored], { version: 7, publishedRoutes: [stored] });
+    expect(view.container.textContent).toContain("Legada");
+    expect(view.container.textContent).toContain("Path no fluxo v1: ~/items/[0-9]{1,3} — publicado na versão v7");
+    expect(view.container.textContent).toContain("Path previsto na configuração v2: ~/a(?:/items/[0-9]{1,3}) — previsão");
+    expect(view.container.textContent).toContain("sem acrescentar o prefixo do Workspace");
+    expect(view.container.textContent).toContain("com o prefixo do Workspace");
+    expect(view.container.textContent).not.toContain("Path público");
+  });
+});
+
+describe("pathless legacy publication", () => {
+  it.each([true, false])("shows its published host-only match without inventing any v2 path (stripPath=%s)", async (stripPath) => {
+    const stored = { ...pathless(), stripPath };
+    const view = await screen([stored], { version: 7, publishedRoutes: [stored] });
+    expect(view.container.textContent).toContain("Path no fluxo v1: sem paths (outros critérios de correspondência) — publicado na versão v7");
+    expect(view.container.textContent).toContain("Path previsto na configuração v2: não comprovado");
+    expect(view.container.textContent).toContain(`Upstream v1 · stripPath ${stripPath}: sem match de path para remover`);
+    expect(view.container.textContent).not.toContain("/a/");
+    await view.click("Ver detalhes");
+    expect(view.dialog()!.textContent).toContain("somente leitura");
+    expect(view.buttons("Salvar")).toHaveLength(0);
+    expect(sent.every((r) => r.method === "GET")).toBe(true);
   });
 });

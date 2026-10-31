@@ -15,11 +15,11 @@ import { Table } from "../components/Table";
 import { Badge, DraftBadge } from "../components/Badge";
 import { Button } from "../components/Button";
 import { RowMenu } from "../components/RowMenu";
+import { RoutePaths, useRoutePublication } from "./route-publication";
 import { gatewayErrorMessage, gatewayFormErrors } from "./gateway-errors";
-import { fieldText, publicPath, upstreamEffect, useAllWorkspaceServices, useInvalidateWorkspaceGateway, useWorkspace, useWorkspaceGatewayAccess, WorkspaceGatewayNote } from "./workspace-gateway";
+import { fieldText, useAllWorkspaceServices, useInvalidateWorkspaceGateway, useWorkspace, useWorkspaceGatewayAccess, WorkspaceGatewayNote } from "./workspace-gateway";
 
-// Routes of the selected workspace through API v2 (WS-S1): every path is public under /<slug>; a migrated route
-// (legacy-preserved) keeps its stripPath, and converting it is a separate, explicit operation this screen never does.
+// CRUD v2 does not select the delivery protocol. A legacy route retains stripPath without implicit conversion.
 const PROTOCOLS = ["http", "https", "grpc", "grpcs"] as const;
 type Protocol = (typeof PROTOCOLS)[number];
 const NO_ERRORS: FormErrors = { fields: {}, form: [] };
@@ -49,6 +49,7 @@ export function ScopedRoutes({ envId, service, readOnly = false }: { envId: stri
 
 function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly = false }: { workspaceId: string; serviceId: string; service?: { id: string; name: string }; onServiceChange?: (id: string) => void; readOnly?: boolean }) {
   const draft = useEntityDraft(workspaceId, "routes");
+  const publication = useRoutePublication(workspaceId);
   const workspace = useWorkspace(workspaceId);
   const access = useWorkspaceGatewayAccess(workspaceId);
   const canWrite = !readOnly && access.canWrite;
@@ -59,6 +60,10 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
   const q = useDeferredValue(search.trim());
   const services = useAllWorkspaceServices(workspaceId);
   const serviceList = services.data ?? [];
+  const servicePath = (id: string) => {
+    const stored = serviceList.find((s) => s.id === id);
+    return stored ? fieldText(stored.path) || null : undefined;
+  };
   const serviceName = (id: string) => (id === service?.id ? service.name : serviceList.find((s) => s.id === id)?.name) ?? id.slice(0, 8);
 
   const routes = useInfiniteQuery({
@@ -86,7 +91,7 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
     <div className="gateway-list">
       {service ? <div className="page-head"><h2>Routes do service</h2>{createAction}</div> : (
         <>
-          <PageHeader title="Routes" description="As regras que levam cada requisição ao seu service, sob o prefixo do Workspace." actions={createAction} />
+          <PageHeader title="Routes" description="Paths configurados, publicação no fluxo v1 e previsão para a configuração v2." actions={createAction} />
           <WorkspaceGatewayNote workspaceId={workspaceId} />
         </>
       )}
@@ -109,7 +114,7 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
         <Table label={service ? "Routes do service" : "Routes"} cards>
           <thead>
             <tr>
-              <th>Route → paths públicos / service</th>
+              <th>Route → configuração e publicação / service</th>
               {!readOnly && <th className="actions" aria-label="Ações" />}
             </tr>
           </thead>
@@ -122,9 +127,9 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
                     <DraftBadge change={draft.get(r.id)} />
                     {r.pathCompatibility === "legacy-preserved" && <Badge tone="warning">Legada</Badge>}
                     <span className="arrow" aria-hidden="true">→</span>
-                    <span className="target mono">{r.paths?.map((p) => (slug ? publicPath(slug, p) : p)).join(", ") || "—"}</span>
                     <span className="muted">Service <span className="mono">{serviceName(r.serviceId)}</span></span>
                   </div>
+                  <RoutePaths route={r} slug={slug} servicePath={servicePath(r.serviceId)} publication={publication} />
                   <div className="route-matches">
                     <span className="muted">Métodos</span>
                     {r.methods === undefined ? <span className="match-chip mono">todos</span> : r.methods.map((m) => <span className="match-chip mono" key={m}>{m}</span>)}
@@ -134,17 +139,20 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
                   {r.pathCompatibility === "legacy-preserved" && <p className="muted"><small>{isPathlessLegacy(r) ? PATHLESS_LEGACY : LEGACY}</small></p>}
                 </td>
                 {!readOnly && <td className="actions">
-                  {isPathlessLegacy(r) ? (
-                    <Button variant="quiet" onClick={() => setDetails(r)}>Ver detalhes</Button>
-                  ) : (
-                    <>
-                      <Button variant="quiet" onClick={() => setPlugins(r)}>Plugins</Button>
-                      {canWrite && <>
-                        <Button variant="quiet" onClick={() => setEditing(r)}>Editar</Button>
-                        <RowMenu label={`Mais ações para ${r.name}`} items={[{ label: "Excluir", danger: true, onSelect: () => setDeleting(r) }]} />
-                      </>}
-                    </>
-                  )}
+                  <div className="route-actions">
+                    {isPathlessLegacy(r) ? (
+                      <Button variant="quiet" onClick={() => setDetails(r)}>Ver detalhes</Button>
+                    ) : (
+                      <>
+                        <Button variant="quiet" onClick={() => setDetails(r)}>Ver detalhes</Button>
+                        <Button variant="quiet" onClick={() => setPlugins(r)}>Plugins</Button>
+                        {canWrite && <>
+                          <Button variant="quiet" onClick={() => setEditing(r)}>Editar</Button>
+                          <RowMenu label={`Mais ações para ${r.name}`} items={[{ label: "Excluir", danger: true, onSelect: () => setDeleting(r) }]} />
+                        </>}
+                      </>
+                    )}
+                  </div>
                 </td>}
               </tr>
             ))}
@@ -159,6 +167,7 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
       {keepDialogs && editing && slug && (
         <RouteForm
           workspaceId={workspaceId}
+          publication={publication}
           slug={slug}
           route={editing === "new" ? null : editing}
           services={serviceList.map((s) => ({ id: s.id, name: s.name, path: fieldText(s.path) || null }))}
@@ -166,7 +175,7 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
           onClose={() => setEditing(null)}
         />
       )}
-      {!readOnly && details && <RouteDetails route={details} serviceName={serviceName(details.serviceId)} onClose={() => setDetails(null)} />}
+      {!readOnly && details && <RouteDetails route={details} slug={slug} publication={publication} servicePath={servicePath(details.serviceId)} serviceName={serviceName(details.serviceId)} onClose={() => setDetails(null)} />}
       {keepDialogs && deleting && <DeleteRoute workspaceId={workspaceId} route={deleting} onClose={() => setDeleting(null)} />}
       {!readOnly && plugins && (
         <Modal title={`Plugins de ${plugins.name}`} onClose={() => setPlugins(null)} wide>
@@ -181,7 +190,7 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
 const isPathlessLegacy = (route: WorkspaceRoute | null): boolean =>
   route?.pathCompatibility === "legacy-preserved" && (route.paths?.length ?? 0) === 0;
 
-function RouteDetails({ route, serviceName, onClose }: { route: WorkspaceRoute; serviceName: string; onClose: () => void }) {
+function RouteDetails({ route, serviceName, onClose, ...paths }: { route: WorkspaceRoute; serviceName: string; onClose: () => void; slug?: string; servicePath?: string | null; publication: ReturnType<typeof useRoutePublication> }) {
   const fields = [
     ["Nome", route.name],
     ["Service", serviceName],
@@ -197,7 +206,8 @@ function RouteDetails({ route, serviceName, onClose }: { route: WorkspaceRoute; 
   ];
   return (
     <Modal title={`Detalhes de ${route.name}`} onClose={onClose} footer={<Button onClick={onClose}>Fechar</Button>}>
-      <p className="warn"><Badge tone="warning">Legada</Badge> {PATHLESS_LEGACY}</p>
+      {route.pathCompatibility === "legacy-preserved" && <p className="warn"><Badge tone="warning">Legada</Badge> {isPathlessLegacy(route) ? PATHLESS_LEGACY : LEGACY}</p>}
+      <RoutePaths route={route} {...paths} />
       <dl>
         {fields.map(([label, value]) => <div key={label}><dt>{label}</dt><dd className="mono">{value}</dd></div>)}
       </dl>
@@ -242,7 +252,7 @@ export function routeBody(route: WorkspaceRoute | null, form: RouteFormValues): 
   return { ...kept, ...form, stripPath: route?.pathCompatibility === "legacy-preserved" ? route.stripPath : form.stripPath };
 }
 
-function RouteForm(props: { workspaceId: string; slug: string; route: WorkspaceRoute | null; services: { id: string; name: string; path: string | null }[]; defaultServiceId: string; onClose: () => void }) {
+function RouteForm(props: { publication: ReturnType<typeof useRoutePublication>; workspaceId: string; slug: string; route: WorkspaceRoute | null; services: { id: string; name: string; path: string | null }[]; defaultServiceId: string; onClose: () => void }) {
   const { workspaceId, slug, route, services, onClose } = props;
   const legacy = route?.pathCompatibility === "legacy-preserved";
   const invalidate = useInvalidateWorkspaceGateway(workspaceId);
@@ -263,6 +273,14 @@ function RouteForm(props: { workspaceId: string; slug: string; route: WorkspaceR
   const errors = save.isError ? gatewayFormErrors(save.error, "route") : local;
   const paths = splitPaths(form.paths);
   const stripPath = legacy ? route.stripPath ?? false : form.stripPath;
+
+  const unsaved = route !== null && (
+    JSON.stringify(paths) !== JSON.stringify(route.paths ?? []) || stripPath !== route.stripPath ||
+    form.serviceId !== route.serviceId || form.name !== route.name ||
+    form.hosts !== (route.hosts ?? []).join("\n") || form.methods !== (route.methods ?? []).join(", ") ||
+    JSON.stringify(form.protocols) !== JSON.stringify(route.protocols) || form.preserveHost !== route.preserveHost ||
+    form.tags !== (route.tags ?? []).join(", ")
+  );
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -307,14 +325,17 @@ function RouteForm(props: { workspaceId: string; slug: string; route: WorkspaceR
             </select>
           )}
         </Field>
-        <Field label="Paths" errors={errors.fields.paths} hint={`Um por linha, ex.: /orders (ou ~/regex). O prefixo /${slug} do Workspace é acrescentado.`}>
+        <Field label="Paths" errors={errors.fields.paths} hint="Um por linha, literal ou expressão iniciada por ~. O fluxo v1 mantém o path configurado; o prefixo do Workspace é apenas previsto na configuração v2.">
           {(id, invalid) => <textarea id={id} aria-invalid={invalid} rows={2} value={form.paths} onChange={(e) => set("paths", e.target.value)} />}
         </Field>
-        <div className="note" aria-label="Path público" role="group">
-          <p>Prefixo do Workspace: <span className="mono">/{slug}</span></p>
-          {paths.length > 0 && <p>Path público: <span className="mono">{paths.map((p) => publicPath(slug, p)).join(", ")}</span></p>}
-          {paths[0] && <p>{upstreamEffect(slug, paths[0], stripPath, services.find((x) => x.id === form.serviceId)?.path)}</p>}
-        </div>
+        <RoutePaths
+          route={route}
+          config={{ paths, stripPath, serviceId: form.serviceId }}
+          slug={slug}
+          servicePath={services.find((s) => s.id === form.serviceId)?.path}
+          publication={props.publication}
+          unsaved={unsaved}
+        />
         <Field label="Hosts" errors={errors.fields.hosts} hint="Um por linha (opcional)">
           {(id, invalid) => <textarea id={id} aria-invalid={invalid} rows={2} value={form.hosts} onChange={(e) => set("hosts", e.target.value)} />}
         </Field>
