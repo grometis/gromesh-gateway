@@ -177,7 +177,7 @@ for s in $SUITES; do
     f3-residual4) suite f3-residual4 "$KONG_IMAGE $AGENT_admission" RESIDUAL=4 LAB_STEPS=coldStart,secondPod,residualHeld CP_IMAGE="$CP_admission" AGENT_IMAGE="$AGENT_admission" node "$n2/components/f3.mjs" ;;
     f3-neg) suite f3-neg "$KONG_IMAGE $AGENT_neg" LAB_PHASE=neg CP_IMAGE="$CP_admission" AGENT_IMAGE="$AGENT_neg" CP_REV="$REV_admission" AGENT_REV="$REV_neg" node "$n2/components/f3.mjs" ;;
     collector)
-      if [[ -f "$n2/collector.mjs" ]]; then suite collector "$AGENT_v2" AGENT_IMAGE="$AGENT_v2" node "$n2/collector.mjs"
+      if [[ -f "$n2/collector.mjs" ]]; then suite collector "$KONG_IMAGE $AGENT_v2 $CLICKHOUSE_DIGEST $VECTOR_DIGEST" AGENT_IMAGE="$AGENT_v2" node "$n2/collector.mjs"
       else echo "collector: skipped (e2e/kind/n2/collector.mjs not in this tree)" | tee -a "$OUT/summary.txt"; fi ;;
     v2) suite v2 "$KONG_IMAGE $AGENT_v2 $CLICKHOUSE_DIGEST $VECTOR_DIGEST" CP_IMAGE="$CP_v2" AGENT_IMAGE="$AGENT_v2" CP_REV="$REV_v2" AGENT_REV="$REV_v2" node "$n2/components/v2.mjs" ;;
     *) echo "unknown suite $s" | tee -a "$OUT/summary.txt" >&2; failed=1 ;;
