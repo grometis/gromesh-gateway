@@ -16,7 +16,26 @@ n2="$root/e2e/kind/n2"
 # shellcheck source=../versions.env
 source "$n2/versions.env"
 : "${LAB_KUBECONFIG:?set LAB_KUBECONFIG to a lab-only kubeconfig file}"
-: "${OUT:?set OUT to the evidence directory}" "${ADMISSION_REF:?}" "${NEG_REF:?}" "${V2_REF:?}"
+: "${OUT:?set OUT to the evidence directory}"
+if [[ " ${SUITES:-} " == *" host-events "* && "${SUITES:-}" != host-events ]]; then
+  echo 'host-events must run alone with its own environment B manifest and kubeconfig' >&2
+  exit 1
+fi
+# Environment B has its own explicit identity pins, independent kernels and pre-provisioned fixtures. Never route a
+# VM kubeconfig through cluster.sh, kind's guard, build/cleanup or the Docker sampler. This mode does not create it.
+if [[ "${SUITES:-}" == host-events ]]; then
+  : "${HOST_EVENTS_MANIFEST:?set HOST_EVENTS_MANIFEST to the reviewed environment B manifest}"
+  [[ ! -e "$OUT/host-events" ]] || { echo 'host-events evidence directory already exists; choose a fresh OUT' >&2; exit 1; }
+  mkdir -p "$OUT/host-events"
+  rc=0
+  LAB_OUT="$OUT/host-events" node "$here/host-events.mjs" >"$OUT/host-events/run.log" 2>&1 || rc=$?
+  if [[ "$rc" == 0 ]]; then echo 'host-events: pass' >"$OUT/summary.txt"
+  elif [[ "$rc" == 2 ]]; then echo 'host-events: INVALID/INCOMPLETE (see results.json)' >"$OUT/summary.txt"
+  else echo "host-events: FAIL (exit $rc; see run.log)" >"$OUT/summary.txt"; fi
+  cat "$OUT/summary.txt"
+  exit "$rc"
+fi
+: "${ADMISSION_REF:?}" "${NEG_REF:?}" "${V2_REF:?}"
 KONG_REF="${KONG_REF:-$KONG_IMAGE_REF}"
 [[ "$KONG_REF" =~ @sha256:[0-9a-f]{64}$ ]] || { echo "KONG_REF must be pinned by digest" >&2; exit 1; }
 SUITES="${SUITES:-env components f3 f3-residual4 f3-neg collector v2}"
@@ -180,6 +199,7 @@ for s in $SUITES; do
       if [[ -f "$n2/collector.mjs" ]]; then suite collector "$KONG_IMAGE $AGENT_v2 $CLICKHOUSE_DIGEST $VECTOR_DIGEST" AGENT_IMAGE="$AGENT_v2" node "$n2/collector.mjs"
       else echo "collector: skipped (e2e/kind/n2/collector.mjs not in this tree)" | tee -a "$OUT/summary.txt"; fi ;;
     v2) suite v2 "$KONG_IMAGE $AGENT_v2 $CLICKHOUSE_DIGEST $VECTOR_DIGEST" CP_IMAGE="$CP_v2" AGENT_IMAGE="$AGENT_v2" CP_REV="$REV_v2" AGENT_REV="$REV_v2" node "$n2/components/v2.mjs" ;;
+    lifecycle) suite lifecycle "$KONG_IMAGE $AGENT_v2 $CLICKHOUSE_DIGEST $VECTOR_DIGEST" LAB_STEPS=f4ProbeRestart,bootIdLease,probeDown,probeDownIndependent,drainAndReplace,containmentN,containmentFrozen CP_IMAGE="$CP_v2" AGENT_IMAGE="$AGENT_v2" CP_REV="$REV_v2" AGENT_REV="$REV_v2" node "$n2/components/v2.mjs" ;;
     *) echo "unknown suite $s" | tee -a "$OUT/summary.txt" >&2; failed=1 ;;
   esac
 done
