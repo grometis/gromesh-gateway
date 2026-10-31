@@ -1,3 +1,4 @@
+import { workspaceTransaction } from "../common/workspace-transaction.js";
 import { Body, Controller, Delete, Get, HttpCode, HttpException, Inject, Injectable, Module, Param, Post, Put, Query } from "@nestjs/common";
 import { hashIssues, type Target, type Upstream } from "@gromesh/compiler";
 import { and, asc, eq, gt, ilike, isNull, or, sql, type SQL } from "drizzle-orm";
@@ -139,7 +140,7 @@ export class UpstreamsService {
   async create(ctx: RequestContext, envId: string, body: UpstreamWrite) {
     checkUpstream(body);
     assertDestination("name", body.name, this.destinations, "upstream");
-    return this.db.transaction(async (tx) => {
+    return workspaceTransaction(this.db, envId, async (tx) => {
       await requireEnvironment(tx, envId);
       await refuseCapture(tx, envId, body.name);
       const [row] = await tx.insert(upstreams).values({ environmentId: envId, ...upstreamValues(body) }).returning();
@@ -153,7 +154,7 @@ export class UpstreamsService {
   async replace(ctx: RequestContext, envId: string, upstreamId: string, body: UpstreamWrite) {
     checkUpstream(body);
     assertDestination("name", body.name, this.destinations, "upstream");
-    return this.db.transaction(async (tx) => {
+    return workspaceTransaction(this.db, envId, async (tx) => {
       const current = await this.requireUpstream(tx, envId, upstreamId, true);
       if (current.name !== body.name) {
         await refuseWhileReferenced(tx, envId, current.name, "renamed");
@@ -175,7 +176,7 @@ export class UpstreamsService {
   }
 
   async remove(ctx: RequestContext, envId: string, upstreamId: string) {
-    await this.db.transaction(async (tx) => {
+    await workspaceTransaction(this.db, envId, async (tx) => {
       const current = await this.requireUpstream(tx, envId, upstreamId, true);
       await refuseWhileReferenced(tx, envId, current.name, "deleted");
       await tx.delete(upstreams).where(eq(upstreams.id, upstreamId));
@@ -202,7 +203,7 @@ export class UpstreamsService {
   async createTarget(ctx: RequestContext, envId: string, upstreamId: string, body: TargetWrite) {
     checkTarget(body);
     assertDestination("target", targetHost(body.target), this.destinations, "target");
-    return this.db.transaction(async (tx) => {
+    return workspaceTransaction(this.db, envId, async (tx) => {
       await this.requireUpstream(tx, envId, upstreamId);
       const [row] = await tx.insert(targets).values({ environmentId: envId, upstreamId, ...targetValues(body) }).returning();
       const after = toTarget(row!);
@@ -215,7 +216,7 @@ export class UpstreamsService {
   async replaceTarget(ctx: RequestContext, envId: string, upstreamId: string, targetId: string, body: TargetWrite) {
     checkTarget(body);
     assertDestination("target", targetHost(body.target), this.destinations, "target");
-    return this.db.transaction(async (tx) => {
+    return workspaceTransaction(this.db, envId, async (tx) => {
       const before = toTarget(await this.requireTarget(tx, envId, upstreamId, targetId));
       const [row] = await tx
         .update(targets)
@@ -230,7 +231,7 @@ export class UpstreamsService {
   }
 
   async removeTarget(ctx: RequestContext, envId: string, upstreamId: string, targetId: string) {
-    await this.db.transaction(async (tx) => {
+    await workspaceTransaction(this.db, envId, async (tx) => {
       const before = toTarget(await this.requireTarget(tx, envId, upstreamId, targetId));
       await tx.delete(targets).where(eq(targets.id, targetId));
       await markDraftChanged(tx, envId);

@@ -310,12 +310,19 @@ describe("in a dev lab", () => {
     try {
       await archiver.query("begin");
       // What archiveWorkspace does: the exclusive archive lock, then its rows.
-      await archiver.query("select pg_advisory_xact_lock($1, hashtext($2::uuid::text))", [0x67727761, racing]);
+      await archiver.query("select pg_advisory_xact_lock(hashtextextended($2::uuid::text, $1))", [0x67727761, racing]);
       await archiver.query("select 1 from environments e join workspaces w on w.id = e.id where e.id = $1 for no key update", [racing]);
       await archiver.query("update workspaces set status = 'archived' where id = $1", [racing]);
       // The same workspace written in capitals: the same lock.
       const write = h.api("POST", `/environments/${racing.toUpperCase()}/services`, { name: "late", protocol: "http", host: "example.com", port: 80 });
-      await new Promise((r) => setTimeout(r, 500));
+      const { rows: [backend] } = await archiver.query<{ pid: number }>("select pg_backend_pid() as pid");
+      let blocked = false;
+      const deadline = Date.now() + 4_000;
+      do {
+        blocked = (await h.sql.query("select 1 from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock' and query like '%pg_advisory_xact_lock%' and $1 = any(pg_blocking_pids(pid))", [backend!.pid])).rows.length === 1;
+        if (!blocked) await new Promise((r) => setTimeout(r, 10));
+      } while (!blocked && Date.now() < deadline);
+      expect(blocked).toBe(true);
       await archiver.query("commit");
       const late = await write;
       expect([late.status, late.body.code]).toEqual([409, "workspace-archived"]);

@@ -131,7 +131,7 @@ export class UsersService {
     // An archived workspace takes no new access (WS-M0): there a role may only become none, the v1 deny.
     const was = new Map(before.map((b) => [b.environmentId, b.role]));
     const now = new Map(items.map((i) => [i.environmentId, i.role]));
-    for (const id of new Set([...was.keys(), ...now.keys()])) {
+    for (const id of [...new Set([...was.keys(), ...now.keys()])].sort()) {
       if (was.get(id) === now.get(id) || now.get(id) === "none") continue;
       await refuseArchived(tx, id);
     }
@@ -144,7 +144,8 @@ export class UsersService {
 
   private async require(tx: Executor, userId: string, lock = false): Promise<UserRow> {
     const q = tx.select().from(users).where(eq(users.id, userId));
-    const [row] = lock ? await q.for("update") : await q;
+    // IDs never change: serialize user edits without blocking workspace writers at their User FK (KEY SHARE).
+    const [row] = lock ? await q.for("no key update") : await q;
     if (!row) throw notFound("User");
     return row;
   }

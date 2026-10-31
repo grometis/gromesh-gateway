@@ -1,3 +1,4 @@
+import { workspaceTransaction } from "../common/workspace-transaction.js";
 import { createPrivateKey, X509Certificate } from "node:crypto";
 import { runInNewContext } from "node:vm";
 import { Body, Controller, Delete, Get, HttpCode, Inject, Injectable, Module, Param, Put } from "@nestjs/common";
@@ -158,7 +159,7 @@ export class WorkspaceVariablesService {
     if (body.name !== undefined && body.name !== name) throw unprocessable("Invalid declaration", [{ path: "name", message: "must equal the name in the path" }]);
     const badPattern = body.validation?.pattern !== undefined ? patternProblem(body.validation.pattern) : null;
     if (badPattern) throw unprocessable("Invalid declaration", [{ path: "validation.pattern", message: badPattern }]);
-    return this.db.transaction(async (tx) => {
+    return workspaceTransaction(this.db, workspaceId, async (tx) => {
       await requireEnvironment(tx, workspaceId, true);
       const [before] = await tx.select().from(workspaceVariables).where(and(eq(workspaceVariables.workspaceId, workspaceId), eq(workspaceVariables.name, name))).for("update");
       // Changing type or secret of a variable the draft references answers 409 (contract).
@@ -194,7 +195,7 @@ export class WorkspaceVariablesService {
 
   /** deleteWorkspaceVariable: the declaration only; this instance's values stay until a release without it is active. */
   async remove(ctx: RequestContext, workspaceId: string, name: string) {
-    await this.db.transaction(async (tx) => {
+    await workspaceTransaction(this.db, workspaceId, async (tx) => {
       await requireEnvironment(tx, workspaceId, true);
       const users = await referencedBy(tx, workspaceId, name);
       if (users.length > 0) throw conflict(`Variable ${name} is referenced by the draft: ${users.join(", ")}`);
@@ -210,7 +211,7 @@ export class WorkspaceVariablesService {
    * sealed and the audit records only that it changed (REDACTED); a plain one is audited as written.
    */
   async setValue(ctx: RequestContext, workspaceId: string, name: string, value: string) {
-    await this.db.transaction(async (tx) => {
+    await workspaceTransaction(this.db, workspaceId, async (tx) => {
       // The environment first, the order every writer of the workspace takes.
       await requireEnvironment(tx, workspaceId, true);
       const [d] = await tx.select().from(workspaceVariables).where(and(eq(workspaceVariables.workspaceId, workspaceId), eq(workspaceVariables.name, name))).for("share");

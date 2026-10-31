@@ -204,19 +204,19 @@ describe("routes through /api/v2 (WS-R2)", () => {
       [first === "route" ? svc.body.id : ws],
       async ({ pid, release, start }) => {
         if (first === "route") {
-          // The route holds the environment and waits on the service's FK KEY SHARE; DELETE queues behind it.
+          // The route owns the workspace and waits at its FK; DELETE queues on the workspace.
           const writing = start(write());
           const writerPid = await waitForLock([pid], '(insert into|update) "routes"');
           const deleting = start(remove());
-          await waitForLock([pid, writerPid], 'from "services".*for update');
+          await waitForLock([writerPid], "pg_advisory_xact_lock\\(hashtextextended");
           await release();
           return Promise.all([writing, deleting]);
         }
-        // DELETE holds the service through deletion and waits on the environment. The route queues on that environment.
+        // DELETE holds the service and waits on the environment (v2 checks its mode before deleting).
         const deleting = start(remove());
-        const deletePid = await waitForLock([pid], 'update "environments"');
+        const deletePid = await waitForLock([pid], deleteApi === "v2" ? 'from "environments".*for no key update' : 'update "environments"');
         const writing = start(write());
-        await waitForLock([pid, deletePid], 'from "environments".*for no key update', [deletePid]);
+        await waitForLock([deletePid], "pg_advisory_xact_lock\\(hashtextextended");
         await release();
         return Promise.all([writing, deleting]);
       });
@@ -268,7 +268,7 @@ describe("routes through /api/v2 (WS-R2)", () => {
       const writing = start(edit(first, "/b"));
       const writerPid = await waitForLock([pid], '(from|update) "routes"');
       const next = start(edit(first === "v1" ? "v2" : "v1", "/c"));
-      await waitForLock([pid, writerPid], '(from|update) "routes"', [writerPid]);
+      await waitForLock([writerPid], "pg_advisory_xact_lock\\(hashtextextended");
       await release();
       return Promise.all([writing, next]);
     });
@@ -311,7 +311,7 @@ describe("routes through /api/v2 (WS-R2)", () => {
         ? v2(h.api, method, `/workspaces/${ws}/routes${method === "PUT" ? `/${r.id}` : ""}`, body)
         : h.api(method, `/environments/${ws}/routes${method === "PUT" ? `/${r.id}` : ""}`, body));
       // This query runs inside the mutation, after the guard saw the workspace active. It waits behind archive itself.
-      await waitForLock([archivePid], "pg_advisory_xact_lock_shared");
+      await waitForLock([archivePid], "pg_advisory_xact_lock\\(hashtextextended");
       expect((await h.sql.query("select status from workspaces where id = $1", [ws])).rows).toEqual([{ status: "active" }]);
       await release();
       const archived = await archiving;

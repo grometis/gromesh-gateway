@@ -1,3 +1,4 @@
+import { archiveLockKey, workspaceTimeouts, workspaceTransaction } from "../common/workspace-transaction.js";
 import {
   Body,
   Controller,
@@ -39,7 +40,7 @@ import { stateVaultReferenceIssues } from "../common/vault-references.js";
 import { DB, type Db, type Executor, type Tx } from "../db/db.js";
 import { environments, snapshots, type EnvironmentRow, type SnapshotRow, workspaces } from "../db/schema.js";
 import { retryingTransaction } from "../common/retry.js";
-import { ARCHIVE_LOCK_CLASS, archiveLockKey, requireEnvironment, uuidParam } from "../environments/environments.js";
+import { requireEnvironment, uuidParam } from "../environments/environments.js";
 import { loadGatewayState, restoreGatewayState, workspaceDefaultRoutes } from "../gateway/gateway.js";
 import { AGENT_CHANNEL } from "../clusters/clusters.js";
 import { PluginCatalog, PluginCatalogModule } from "../plugin-catalog/catalog.js";
@@ -133,7 +134,7 @@ export class SnapshotsService {
   /** Compiles the draft into version N+1. The environment row lock serialises concurrent publishes. */
   async publish(ctx: RequestContext, envId: string, body: PublishRequest) {
     // Runs again on a deadlock or serialization abort (its notify is delivered on commit only).
-    const { row, changeCount } = await retryingTransaction(() => this.db.transaction(async (tx) => {
+    const { row, changeCount } = await workspaceTransaction(this.db, envId, async (tx) => {
       const env = await requireEnvironment(tx, envId, true);
       if (body.expectedCurrentVersion !== undefined && body.expectedCurrentVersion !== env.currentVersion) {
         throw conflict(`Current version is ${env.currentVersion ?? "none"}, expected ${body.expectedCurrentVersion ?? "none"}`);
@@ -142,7 +143,7 @@ export class SnapshotsService {
       if (prepared.current?.hash === prepared.envelope.hash) throw conflict("Nothing to publish: the draft equals the current version");
       requirePlatformAdmin(ctx, privilegedChange(prepared));
       return this.commit(tx, ctx, env, prepared, { message: body.message ?? null, rollbackOf: null });
-    }));
+    });
     return toSnapshotSummary(row, true, changeCount);
   }
 
@@ -152,7 +153,7 @@ export class SnapshotsService {
    * like a single write's, so an old version is no oracle either.
    */
   async rollback(ctx: RequestContext, envId: string, version: number) {
-    const { row, changeCount } = await guardedUniqueWrite(this.db, ctx, "rollback", conflictLimit(this.config), () => retryingTransaction(() => this.db.transaction(async (tx) => {
+    const { row, changeCount } = await guardedUniqueWrite(this.db, ctx, "rollback", conflictLimit(this.config), () => workspaceTransaction(this.db, envId, async (tx) => {
       await lockTablesForWrite(tx, UNIQUE_KINDS);
       const env = await requireEnvironment(tx, envId, true);
       const target = await this.requireSnapshot(tx, envId, version);
@@ -168,7 +169,7 @@ export class SnapshotsService {
       // An older version may hold privileged plugins written before the rule existed.
       requirePlatformAdmin(ctx, privilegedChange(prepared));
       return this.commit(tx, ctx, env, prepared, { message: `Rollback to version ${version}`, rollbackOf: version });
-    })));
+    }));
     return toSnapshotSummary(row, true, changeCount);
   }
 
@@ -178,7 +179,11 @@ export class SnapshotsService {
    * Returns false when the draft does not compile, so the caller stops retrying until the next edit.
    */
   async autoPublish(envId: string, delayMs: number): Promise<boolean> {
-    const compiled = await this.db.transaction(async (tx) => {
+    const compiled = await retryingTransaction(() => this.db.transaction(async (tx) => {
+      await workspaceTimeouts(tx);
+      // Never wait for a writer: the next tick will recheck its committed draft.
+      const [{ got }] = (await tx.execute<{ got: boolean }>(sql`select pg_try_advisory_xact_lock(${archiveLockKey(envId)}) as got`)).rows as [{ got: boolean }];
+      if (!got) return true;
       const [env] = await tx
         .select()
         .from(environments)
@@ -193,10 +198,6 @@ export class SnapshotsService {
         )
         .for("update", { skipLocked: true });
       if (!env) return true;
-      // An archived workspace publishes nothing (WS-M0): its pending draft stays a draft. The environment is already
-      // locked here, so the archive lock is only tried (an archive in flight skips this tick instead of deadlocking).
-      const [{ got }] = (await tx.execute<{ got: boolean }>(sql`select pg_try_advisory_xact_lock_shared(${ARCHIVE_LOCK_CLASS}, ${archiveLockKey(envId)}) as got`)).rows as [{ got: boolean }];
-      if (!got) return true;
       const [ws] = await tx.select({ status: workspaces.status }).from(workspaces).where(eq(workspaces.id, envId));
       if (ws?.status === "archived") return true;
 
@@ -221,7 +222,7 @@ export class SnapshotsService {
       }
       await this.commit(tx, AUTO_PUBLISH_CTX, env, prepared, { message: "Auto-publish", rollbackOf: null });
       return true;
-    });
+    }));
     return compiled;
   }
 

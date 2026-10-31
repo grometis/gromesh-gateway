@@ -1,3 +1,4 @@
+import { workspaceTransaction } from "../common/workspace-transaction.js";
 import { randomUUID } from "node:crypto";
 import { Body, Controller, Delete, Get, HttpCode, Inject, Injectable, Module, Param, Post, Put, Query } from "@nestjs/common";
 import type { Plugin } from "@gromesh/compiler";
@@ -92,7 +93,7 @@ export class PluginsService {
     requirePlatformAdmin(ctx, pluginPrivilegedIssues(body));
     const merged = this.withSecrets(body, null);
     await this.validate(id, merged);
-    return this.db.transaction(async (tx) => {
+    return workspaceTransaction(this.db, envId, async (tx) => {
       await requireEnvironment(tx, envId);
       await this.checkScope(tx, envId, merged);
       const [row] = await tx.insert(plugins).values({ id, environmentId: envId, ...pluginValues(id, merged, this.enc, this.catalog) }).returning();
@@ -110,7 +111,7 @@ export class PluginsService {
     requirePlatformAdmin(ctx, [...pluginPrivilegedIssues(current), ...pluginPrivilegedIssues(body)]);
     const merged = this.withSecrets(body, current);
     await this.validate(pluginId, merged);
-    return this.db.transaction(async (tx) => {
+    return workspaceTransaction(this.db, envId, async (tx) => {
       const before = this.publicPlugin(await this.requirePlugin(tx, envId, pluginId));
       await this.checkScope(tx, envId, merged);
       const [row] = await tx
@@ -142,7 +143,7 @@ export class PluginsService {
   }
 
   async remove(ctx: RequestContext, envId: string, pluginId: string) {
-    await this.db.transaction(async (tx) => {
+    await workspaceTransaction(this.db, envId, async (tx) => {
       const before = toPlugin(await this.requirePlugin(tx, envId, pluginId));
       requirePlatformAdmin(ctx, pluginPrivilegedIssues(before));
       await tx.delete(plugins).where(eq(plugins.id, pluginId));

@@ -1,3 +1,4 @@
+import { workspaceTransaction } from "../common/workspace-transaction.js";
 import { Body, Controller, Delete, Get, HttpCode, HttpException, Inject, Injectable, Module, Param, Post, Put, Query } from "@nestjs/common";
 import { type GatewayState, regexIssue, type Route, type Service, type VarField } from "@gromesh/compiler";
 import { and, asc, count, eq, gt, ilike, inArray, or, sql, type SQL } from "drizzle-orm";
@@ -7,7 +8,6 @@ import { audit } from "../audit/audit.js";
 import { Ctx, RequiredPermission, RequiredRole, type RequestContext } from "../auth/auth.js";
 import { contractBody, contractBodyV2 } from "../common/contract.js";
 import { decodeCursor, parseLimit, toPage } from "../common/pagination.js";
-import { retryingTransaction } from "../common/retry.js";
 import { conflict, notFound, unprocessable } from "../common/problem.js";
 import { assertDestination, destinationPolicy, type DestinationPolicy } from "../common/destinations.js";
 import { APP_CONFIG, type AppConfig } from "../config.js";
@@ -293,7 +293,7 @@ export class GatewayService {
   /** `check` runs inside the write's transaction (v2: the upstream it names, held until the commit). */
   async createService(ctx: RequestContext, envId: string, body: ServiceWrite, check?: (tx: Executor) => Promise<void>, explicit?: ExplicitService) {
     assertDestination("host", body.host, this.destinations, "service");
-    return retryingTransaction(() => this.db.transaction(async (tx) => {
+    return workspaceTransaction(this.db, envId, async (tx) => {
       await requireEnvironment(tx, envId);
       await check?.(tx);
       const [row] = await tx.insert(services).values({ environmentId: envId, ...serviceValues(body), ...(explicit ? { binding: "explicit" as const, upstreamId: explicit.upstreamId, varRefs: explicit.varRefs } : {}) }).returning();
@@ -301,13 +301,12 @@ export class GatewayService {
       await markDraftChanged(tx, envId);
       await audit(tx, ctx, { action: "service.create", entityType: "service", entityId: after.id, environmentId: envId, after });
       return after;
-    }));
+    });
   }
 
   async replaceService(ctx: RequestContext, envId: string, serviceId: string, body: ServiceWrite, check?: (tx: Executor) => Promise<void>, explicit?: ExplicitService) {
     assertDestination("host", body.host, this.destinations, "service");
-    return retryingTransaction(() => this.db.transaction(async (tx) => {
-      // v2: the service row before the environment's, the order a v1 replace or delete takes them.
+    return workspaceTransaction(this.db, envId, async (tx) => {
       const before = toService(await this.requireService(tx, envId, serviceId, check !== undefined));
       await check?.(tx);
       const [row] = await tx
@@ -319,14 +318,15 @@ export class GatewayService {
       await markDraftChanged(tx, envId);
       await audit(tx, ctx, { action: "service.update", entityType: "service", entityId: serviceId, environmentId: envId, before, after });
       return after;
-    }));
+    });
   }
 
   /** v2 also refuses while plugins are scoped to the service (v1 deletes them with it). */
-  async deleteService(ctx: RequestContext, envId: string, serviceId: string, options: { keepPlugins?: boolean } = {}) {
-    await retryingTransaction(() => this.db.transaction(async (tx) => {
-      // Locked first: a route or plugin created meanwhile (it takes the row's key share) waits, then is counted.
+  async deleteService(ctx: RequestContext, envId: string, serviceId: string, options: { keepPlugins?: boolean; draftOnly?: boolean } = {}) {
+    await workspaceTransaction(this.db, envId, async (tx) => {
+      // Read and count references under the workspace lock, shared by both APIs.
       const before = toService(await this.requireService(tx, envId, serviceId, true));
+      if (options.draftOnly) await this.refuseAutoPublish(tx, envId);
       const [ref] = await tx.select({ n: count() }).from(routes).where(eq(routes.serviceId, serviceId));
       if (ref && ref.n > 0) throw conflict(`Service is used by ${ref.n} route(s); delete them first`);
       if (options.keepPlugins) {
@@ -336,7 +336,7 @@ export class GatewayService {
       await tx.delete(services).where(eq(services.id, serviceId));
       await markDraftChanged(tx, envId);
       await audit(tx, ctx, { action: "service.delete", entityType: "service", entityId: serviceId, environmentId: envId, before });
-    }));
+    });
   }
 
   /* routes */
@@ -361,9 +361,8 @@ export class GatewayService {
 
   /** v1 creates legacy-preserved routes (the column's default); v2 creates workspace-default ones (WS-R0). */
   async createRoute<T = ReturnType<typeof toRoute>>(ctx: RequestContext, envId: string, body: RouteWrite, workspaceDefault = false, map: (r: RouteRow) => T = toRoute as (r: RouteRow) => T) {
-    return retryingTransaction(() => this.db.transaction(async (tx) => {
+    return workspaceTransaction(this.db, envId, async (tx) => {
       await requireEnvironment(tx, envId);
-      // v2 (workspace-default): the draft only, never where v1 auto-publishes (WS-R0), decided inside this write.
       if (workspaceDefault) await this.refuseAutoPublish(tx, envId);
       await this.checkRoute(tx, envId, body);
       const [row] = await tx
@@ -374,7 +373,7 @@ export class GatewayService {
       await markDraftChanged(tx, envId);
       await audit(tx, ctx, { action: "route.create", entityType: "route", entityId: after.id, environmentId: envId, after });
       return map(row!);
-    }));
+    });
   }
 
   /**
@@ -401,7 +400,7 @@ export class GatewayService {
   }
 
   async replaceRoute<T = ReturnType<typeof toRoute>>(ctx: RequestContext, envId: string, routeId: string, body: RouteWrite, map: (r: RouteRow) => T = toRoute as (r: RouteRow) => T, adjust?: (tx: Executor, current: RouteRow) => Promise<RouteWrite>) {
-    return retryingTransaction(() => this.db.transaction(async (tx) => {
+    return workspaceTransaction(this.db, envId, async (tx) => {
       // Both APIs lock before reading: a queued edit must audit the previous committed state, including v1 edits.
       const current = await this.requireRoute(tx, envId, routeId, true);
       body = adjust ? await adjust(tx, current) : body;
@@ -416,16 +415,17 @@ export class GatewayService {
       await markDraftChanged(tx, envId);
       await audit(tx, ctx, { action: "route.update", entityType: "route", entityId: routeId, environmentId: envId, before, after });
       return map(row!);
-    }));
+    });
   }
 
-  async deleteRoute(ctx: RequestContext, envId: string, routeId: string) {
-    await retryingTransaction(() => this.db.transaction(async (tx) => {
+  async deleteRoute(ctx: RequestContext, envId: string, routeId: string, options: { draftOnly?: boolean } = {}) {
+    await workspaceTransaction(this.db, envId, async (tx) => {
       const before = toRoute(await this.requireRoute(tx, envId, routeId));
+      if (options.draftOnly) await this.refuseAutoPublish(tx, envId);
       await tx.delete(routes).where(eq(routes.id, routeId));
       await markDraftChanged(tx, envId);
       await audit(tx, ctx, { action: "route.delete", entityType: "route", entityId: routeId, environmentId: envId, before });
-    }));
+    });
   }
 
   /**
@@ -433,7 +433,7 @@ export class GatewayService {
    * publisher would serve it without an explicit publish (409; switch the environment to manual first).
    */
   async refuseAutoPublish(tx: Executor, envId: string): Promise<void> {
-    // The archive lock first (shared), as every writer of the workspace takes it before the environment's row.
+    // The workspace transaction already holds the exclusive advisory before any entity or environment lock.
     await refuseArchived(tx, envId);
     // Inside the write's transaction, the environment row locked as markDraftChanged will update it (NO KEY UPDATE, so
     // two writers queue instead of upgrading a shared lock into a deadlock): a switch to auto waits for this write,
@@ -710,7 +710,7 @@ export class WorkspaceServicesController {
   @HttpCode(204)
   @RequiredPermission("gateway.write", "workspace")
   async remove(@Ctx() ctx: RequestContext, @Param("workspaceId", uuidParam()) workspaceId: string, @Param("serviceId", uuidParam()) serviceId: string) {
-    await this.gw.deleteService(ctx, workspaceId, serviceId, { keepPlugins: true });
+    await this.gw.deleteService(ctx, workspaceId, serviceId, { keepPlugins: true, draftOnly: true });
   }
 }
 
@@ -754,7 +754,7 @@ export class WorkspaceRoutesController {
   @HttpCode(204)
   @RequiredPermission("gateway.write", "workspace")
   async remove(@Ctx() ctx: RequestContext, @Param("workspaceId", uuidParam()) workspaceId: string, @Param("routeId", uuidParam()) routeId: string) {
-    await this.gw.deleteRoute(ctx, workspaceId, routeId);
+    await this.gw.deleteRoute(ctx, workspaceId, routeId, { draftOnly: true });
   }
 }
 

@@ -1,3 +1,4 @@
+import { workspaceTransaction } from "../common/workspace-transaction.js";
 import { createPrivateKey, randomUUID, X509Certificate, type KeyObject } from "node:crypto";
 import { Body, Controller, Delete, Get, HttpCode, Inject, Injectable, Module, Param, Post, Put, Query } from "@nestjs/common";
 import type { Certificate } from "@gromesh/compiler";
@@ -146,7 +147,7 @@ export class CertificatesService {
 
   async create(ctx: RequestContext, envId: string, body: CertificateWrite) {
     const { leaf, key } = checkCertificate(body, null, true);
-    return guardedUniqueWrite(this.db, ctx, "sni", this.conflicts, () => this.db.transaction(async (tx) => {
+    return guardedUniqueWrite(this.db, ctx, "sni", this.conflicts, () => workspaceTransaction(this.db, envId, async (tx) => {
       await lockTablesForWrite(tx, ["sni"]);
       await requireEnvironment(tx, envId, true);
       if (!(await this.snisFree(tx, ctx, body.snis, null))) return refuse(tx, ctx, "sni", this.conflicts);
@@ -167,7 +168,7 @@ export class CertificatesService {
     // The stored key is read before validation: "REDACTED" keeps it, and it must still match the new leaf.
     const current = await this.requireCertificate(this.db, envId, certificateId);
     const { leaf, key } = checkCertificate(body, this.enc.open(current.key, certificateKeyContext(current.id)), body.cert !== current.cert);
-    return guardedUniqueWrite(this.db, ctx, "sni", this.conflicts, () => this.db.transaction(async (tx) => {
+    return guardedUniqueWrite(this.db, ctx, "sni", this.conflicts, () => workspaceTransaction(this.db, envId, async (tx) => {
       await lockTablesForWrite(tx, ["sni"]);
       await requireEnvironment(tx, envId, true);
       const locked = await this.requireCertificate(tx, envId, certificateId);
@@ -188,7 +189,7 @@ export class CertificatesService {
   }
 
   async remove(ctx: RequestContext, envId: string, certificateId: string) {
-    await this.db.transaction(async (tx) => {
+    await workspaceTransaction(this.db, envId, async (tx) => {
       // The order of every writer of these tables (rollback, import): the tables, then the environment's row, before
       // any row is deleted.
       await lockTablesForWrite(tx, ["sni"]);
