@@ -15,6 +15,8 @@ export type WorkspaceServiceWrite = Schemas["WorkspaceServiceWrite"];
 export type WorkspaceRoute = Schemas["WorkspaceRoute"];
 export type WorkspaceRouteWrite = Schemas["WorkspaceRouteWrite"];
 export type RouteProblemCode = Schemas["RouteProblem"]["code"];
+export type WorkspaceVariable = Schemas["WorkspaceVariable"];
+export type WorkspaceVariableDeclaration = Schemas["WorkspaceVariableDeclaration"];
 
 /** Workspaces API (`/api/v2`): same session, CSRF and `unwrap`/`ApiError` handling as v1. */
 export const apiV2 = createClient<paths>({ baseUrl: "/api/v2", credentials: "include" });

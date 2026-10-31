@@ -56,6 +56,7 @@ export function FirstEnvironment() {
 const GATEWAY = [
   ["services", "Services"],
   ["routes", "Routes"],
+  ["variables", "Variáveis"],
   ["consumers", "Consumers"],
   ["plugins", "Plugins"],
   ["upstreams", "Upstreams"],
