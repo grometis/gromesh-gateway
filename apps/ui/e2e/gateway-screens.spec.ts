@@ -17,6 +17,19 @@ async function login(page: Page) {
   await page.route(`**/api/v2/workspaces/*/services/${service.id}`, (r) => r.fulfill({ json: v2Service }));
   await page.route("**/api/v2/workspaces/*/routes*", (r) => r.fulfill({ json: { items: [{ ...route, pathCompatibility: "workspace-default" }], nextCursor: null } }));
   await page.route("**/api/v1/environments/*/plugins*", (r) => r.fulfill({ json: { items: [plugin], nextCursor: null } }));
+  // WorkspacePlugins reads v2; scoped detail lists still read v1.
+  let pluginItems: Array<Omit<typeof plugin, "scope"> & { scope: { serviceId?: string } }> = [plugin, { ...plugin, id: id(5), name: "cors", scope: {} }];
+  await page.route("**/api/v2/workspaces/*/plugins*", (r) => {
+    const query = new URL(r.request().url()).searchParams;
+    const items = query.get("global") === "true" ? pluginItems.filter(p => !p.scope?.serviceId)
+      : query.has("serviceId") ? pluginItems.filter(p => p.scope?.serviceId === query.get("serviceId")) : pluginItems;
+    return r.fulfill({ json: { items, nextCursor: null } });
+  });
+  await page.route(`**/api/v2/workspaces/*/plugins/${plugin.id}`, (r) => {
+    expect(r.request().method()).toBe("DELETE");
+    pluginItems = pluginItems.filter(p => p.id !== plugin.id);
+    return r.fulfill({ status: 204 });
+  });
   await page.route("**/api/v1/environments/*/publish-preview", (r) => r.fulfill({ json: {
     currentVersion: 1, draftHash: `sha256:${"a".repeat(64)}`, hasChanges: true,
     changes: [
@@ -102,12 +115,19 @@ test("plugin cards keep name, scope and state; scope filtering and deletion stil
   await page.goto(`/e/${envId}/plugins`);
   const table = page.getByRole("table", { name: "Plugins", exact: true });
   await expect(table).toHaveClass("cards");
-  const row = table.getByRole("row").last();
+  const row = table.getByRole("row").filter({ hasText: "rate-limiting" });
   for (const value of ["rate-limiting", "Service orders", "Não", "Alterado"]) await expect(row).toContainText(value);
   await expect(row).not.toContainText("minute");
   const filtered = page.waitForRequest((r) => new URL(r.url()).pathname.endsWith("/plugins") && new URL(r.url()).searchParams.get("global") === "true");
   await page.getByLabel("Filtrar por escopo").selectOption("global");
   await filtered;
+  await expect(table.getByRole("row").filter({ hasText: "rate-limiting" })).toHaveCount(0);
+  await expect(table).toContainText("cors");
+  await expect(table.getByRole("button", { name: /^Editar|^Mais ações/ })).toHaveCount(0);
+  const scoped = page.waitForRequest(r => new URL(r.url()).pathname.startsWith("/api/v2/") && new URL(r.url()).searchParams.get("serviceId") === service.id);
+  await page.getByLabel("Filtrar por escopo").selectOption(`serviceId:${service.id}`);
+  await scoped;
+  await expect(table).not.toContainText("cors");
   await row.getByRole("button", { name: /^Mais ações para rate-limiting/ }).click();
   await page.getByRole("menuitem", { name: "Excluir" }).click();
   const confirm = page.getByRole("dialog", { name: "Excluir plugin" });
@@ -115,16 +135,24 @@ test("plugin cards keep name, scope and state; scope filtering and deletion stil
   await expect(confirm.getByRole("button", { name: "Excluir", exact: true })).toHaveClass("danger");
   await confirm.getByRole("button", { name: "Cancelar" }).click();
   await expect(confirm).toBeHidden();
+  await expect(row).toBeVisible();
+  await row.getByRole("button", { name: /^Mais ações para rate-limiting/ }).click();
+  await page.getByRole("menuitem", { name: "Excluir" }).click();
+  await confirm.getByRole("button", { name: "Excluir", exact: true }).click();
+  await expect(confirm).toBeHidden();
+  await expect(row).toHaveCount(0);
 });
 
 test("empty route and plugin lists use EmptyState without hiding their creation actions", async ({ page }) => {
   const envId = await login(page);
   await page.route("**/api/v2/workspaces/*/routes*", (r) => r.fulfill({ json: { items: [], nextCursor: null } }));
   await page.route("**/api/v1/environments/*/plugins*", (r) => r.fulfill({ json: { items: [], nextCursor: null } }));
+  await page.route("**/api/v2/workspaces/*/plugins*", (r) => r.fulfill({ json: { items: [], nextCursor: null } }));
   await page.goto(`/e/${envId}/routes`);
   await expect(page.locator(".empty-state").getByRole("heading", { name: "Nenhuma route encontrada." })).toBeVisible();
   await expect(page.getByRole("button", { name: "Nova route" })).toBeEnabled();
   await page.goto(`/e/${envId}/plugins`);
-  await expect(page.locator(".empty-state").getByRole("heading", { name: "Nenhum plugin." })).toBeVisible();
+  // v2 names the Workspace explicitly; the shared EmptyState and creation action remain required.
+  await expect(page.locator(".empty-state").getByRole("heading", { name: "Nenhum plugin neste Workspace." })).toBeVisible();
   await expect(page.getByRole("button", { name: "Novo plugin" })).toBeEnabled();
 });

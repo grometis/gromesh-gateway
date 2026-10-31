@@ -142,7 +142,7 @@ describe("workspace releases", () => {
     client.clear();
   });
 
-  it.each(["releases", "releases/", "services", "services/service-id", "routes", "consumers", "consumers/consumer-id", "plugins", "upstreams", "certificates", "publish", "publications", "publications/3", "clusters", "overview", "metrics", "analytics", "requests"])("keeps the v1 strip exclusively outside Releases (%s)", async (section) => {
+  it.each(["releases", "releases/", "services", "services/service-id", "routes", "variables", "consumers", "consumers/consumer-id", "plugins", "upstreams", "certificates", "publish", "publications", "publications/3", "clusters", "overview", "metrics", "analytics", "requests"])("keeps the v1 strip exclusively outside Releases (%s)", async (section) => {
     await load(() => new Promise(() => {}));
     const { Shell } = await import("../components/Shell");
     const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity } } });
@@ -158,7 +158,10 @@ describe("workspace releases", () => {
       expect(html).not.toContain(`/e/${W}/publish"`);
     } else {
       expect(html).toContain('aria-label="Publicação"');
-      expect(html).toContain(`/e/${W}/publish"`);
+      if (section === "plugins") {
+        expect(html).not.toContain(`/e/${W}/publish"`);
+        expect(html).not.toContain('class="publish"');
+      } else expect(html).toContain(`/e/${W}/publish"`);
     }
     client.clear();
   });

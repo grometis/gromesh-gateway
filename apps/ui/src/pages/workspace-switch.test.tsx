@@ -136,10 +136,13 @@ describe("v1 publication strip on workspace gateway screens", () => {
     expect(client.getQueryCache().find({ queryKey: ["preview", A] })).toBeDefined();
   });
 
-  it("retains the strip on v1 screens", async () => {
+  it("retains draft status without publication actions on workspace plugins", async () => {
     const { render } = await load();
     const client = newClient();
     client.setQueryData(["environment", A], { ...env(A, "Pagamentos"), hasUnpublishedChanges: true });
-    expect(render(client, `/e/${A}/plugins`)).toContain('aria-label="Publicação"');
+    const html = render(client, `/e/${A}/plugins`);
+    expect(html).toContain('aria-label="Publicação"');
+    expect(html).not.toContain('class="publish"');
+    expect(html).not.toContain('>Ver diff</a>');
   });
 });
