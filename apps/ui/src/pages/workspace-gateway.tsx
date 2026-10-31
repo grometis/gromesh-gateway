@@ -13,8 +13,8 @@ export function serviceTargetV2(s: WorkspaceService): string {
   return `${fieldText(s.protocol)}://${fieldText(s.host)}:${fieldText(s.port)}${fieldText(s.path)}`;
 }
 
-/** The public path of a route path in its workspace: the compiler prefixes it with /<slug> (a regex stays a regex). */
-export function publicPath(slug: string, path: string): string {
+/** Prediction for configuration v2 only; neither a Release nor this prefix proves delivery. */
+export function plannedV2Path(slug: string, path: string): string {
   return path.startsWith("~") ? `~/${slug}(?:${path.slice(1)})` : `/${slug}${path}`;
 }
 
@@ -35,13 +35,14 @@ export function upstreamPath(servicePath: string | null | undefined, requestPath
 }
 
 /** What the upstream receives for a request under the route's first path, the service's path included (decision D1). */
-export function upstreamEffect(slug: string, path: string, stripPath: boolean, servicePath?: string | null): string {
+export function upstreamEffect(slug: string, path: string, stripPath: boolean, servicePath?: string | null, flow: "v1" | "v2" = "v1"): string {
+  if (servicePath?.includes("${")) return "O path do service usa uma variável; o path recebido pelo upstream depende do valor na instância.";
   const sp = servicePath && servicePath !== "/" ? servicePath : null;
   if (path.startsWith("~")) {
     if (stripPath) return sp ? `O upstream recebe ${sp} seguido do que vier depois do trecho que a expressão casar.` : "O upstream recebe só o que vier depois do trecho que a expressão casar.";
-    return sp ? `O upstream recebe ${sp} seguido do path completo, com o prefixo do Workspace.` : "O upstream recebe o path completo, com o prefixo do Workspace.";
+    return sp ? `O upstream recebe ${sp} seguido do path completo, ${flow === "v2" ? "com o prefixo do Workspace" : "sem acrescentar o prefixo do Workspace"}.` : `O upstream recebe o path completo, ${flow === "v2" ? "com o prefixo do Workspace" : "sem acrescentar o prefixo do Workspace"}.`;
   }
-  const matched = publicPath(slug, path);
+  const matched = flow === "v2" ? plannedV2Path(slug, path) : path;
   const request = matched.endsWith("/") ? `${matched}x` : `${matched}/x`;
   return `Uma requisição a ${request} chega ao upstream como ${upstreamPath(servicePath, request, stripPath ? matched : "")}.`;
 }
@@ -54,29 +55,32 @@ export function useWorkspace(workspaceId: string) {
 }
 
 /** v2 has status; publishMode remains on the v1 environment with the same id. Unknown data forbids writes. */
-export function workspaceGatewayAccess(workspace: Pick<Workspace, "status"> | undefined, environment: Pick<Environment, "publishMode"> | undefined) {
+export function workspaceGatewayAccess(workspace: Pick<Workspace, "status"> | undefined, environment: Pick<Environment, "publishMode"> | undefined, purpose: "gateway" | "release" = "gateway") {
   if (workspace?.status === "archived") return {
     canWrite: false,
-    reason: "Somente leitura: este Workspace está arquivado. Não é possível criar, editar ou excluir itens do gateway.",
+    reason: purpose === "release" ? "Somente leitura: este Workspace está arquivado. Não é possível publicar releases." : "Somente leitura: este Workspace está arquivado. Não é possível criar, editar ou excluir itens do gateway.",
   };
-  if (environment?.publishMode === "auto") return {
+  if (purpose === "gateway" && environment?.publishMode === "auto") return {
     canWrite: false,
     reason: "Somente leitura: este Workspace usa publicação automática. Mude o ambiente para publicação manual antes de criar, editar ou excluir itens nesta tela, para evitar publicação automática de exclusões.",
   };
-  const canWrite = workspace?.status === "active" && environment?.publishMode === "manual";
+  // publishRelease only freezes content; unlike gateway edits it never triggers v1 auto-publication.
+  const canWrite = workspace?.status === "active" && (environment?.publishMode === "manual" || (purpose === "release" && environment?.publishMode === "auto"));
   return { canWrite, reason: canWrite ? null : "Somente leitura enquanto verificamos o estado e o modo de publicação do Workspace." };
 }
 
 /** Shared with the v2 Routes screen. Cached access cannot authorize writes while its current state is unconfirmed. */
-export function useWorkspaceGatewayAccess(workspaceId: string) {
+export function useWorkspaceGatewayAccess(workspaceId: string, purpose: "gateway" | "release" = "gateway") {
   const workspace = useWorkspace(workspaceId);
   const env = useEnvironment(workspaceId);
   if (workspace.isError || env.isError) return {
     canWrite: false,
     isRevalidating: false,
-    reason: "Somente leitura: não foi possível verificar o estado ou o modo de publicação do Workspace. Tente novamente antes de alterar o gateway.",
+    reason: purpose === "release"
+      ? "Somente leitura: não foi possível verificar o estado ou o modo de publicação do Workspace. Tente novamente antes de publicar uma release."
+      : "Somente leitura: não foi possível verificar o estado ou o modo de publicação do Workspace. Tente novamente antes de alterar o gateway.",
   };
-  const access = workspaceGatewayAccess(workspace.data, env.data);
+  const access = workspaceGatewayAccess(workspace.data, env.data, purpose);
   if (workspace.fetchStatus !== "idle" || env.fetchStatus !== "idle" || !workspace.data || !env.data) return {
     canWrite: false,
     // Cached permission keeps an open form editable, but cannot authorize its submission.
@@ -152,10 +156,10 @@ export function WorkspaceGatewayNote({ workspaceId }: { workspaceId: string }) {
   return (
     <div className="note" role="note" aria-label="Estado do Workspace">
       <p>
-        Prefixo público <span className="mono">/{w.slug}</span> · {w.activeRelease == null ? "nenhuma release ativa" : `release ativa v${w.activeRelease}`}
+        Prefixo previsto na configuração v2 <span className="mono">/{w.slug}</span> · {w.activeRelease === null ? "nenhuma Release v2 ativa" : typeof w.activeRelease === "number" ? `Release v2 ativa v${w.activeRelease}` : "estado da Release v2 não comprovado"}
         {env.data && (env.data.hasUnpublishedChanges ? " · há alterações no rascunho ainda não publicadas" : " · rascunho sem alterações pendentes")}.
       </p>
-      {access.reason ? <p role="status">{access.reason}</p> : <p>Deployment de Workspaces indisponível nesta fase: o que for criado ou editado aqui fica só no rascunho e não é implantado.</p>}
+      {access.reason ? <p role="status">{access.reason}</p> : <p>Deployment v2 indisponível nesta fase. Criar ou editar altera o rascunho; uma Release v2 publicada também não comprova implantação.</p>}
     </div>
   );
 }

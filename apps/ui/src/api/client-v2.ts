@@ -4,6 +4,8 @@ import type { components, paths } from "./schema-v2";
 
 type Schemas = components["schemas"];
 export type Workspace = Schemas["Workspace"];
+// The contract leaves createdBy open; the generator emits Record<string, never> for that object.
+export type Release = Omit<Schemas["Release"], "createdBy"> & { createdBy?: Record<string, unknown> };
 export type WorkspaceWrite = Schemas["WorkspaceWrite"];
 export type WorkspacePage = Schemas["WorkspacePage"];
 export type WorkspaceCreationPolicy = Schemas["WorkspaceCreationPolicy"];
