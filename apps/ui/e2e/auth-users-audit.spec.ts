@@ -77,17 +77,20 @@ test("403 no logout aparece sem abandonar a sessão", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Sair", exact: true })).toBeEnabled();
 });
 
-test("viewer não vê edição nem menus administrativos; acesso direto é recusado", async ({ page }) => {
+test("viewer conserva restrições v1; gateway v2 usa permissões do servidor e recusa 403", async ({ page }) => {
   await login(page, viewer);
   const menu = page.getByRole("navigation", { name: "Menu principal" });
   await expect(menu.getByRole("link", { name: /Usuários|Auditoria/ })).toHaveCount(0);
-  // Services and Routes go through v2, where no operation tells the caller's permissions: the actions are offered and the
-  // server's 403 decides (below). The v1 screens still hide what the v1 role cannot do.
-  for (const section of ["Consumers", "Plugins", "Publicações", "Clusters"]) {
+  // Services, Routes and Plugins go through v2, where no operation tells the caller's permissions: the actions are offered
+  // and the server's 403 decides (Services/Routes below; Plugins in workspace-plugins.spec.ts). The v1 screens hide v1 edits.
+  for (const section of ["Consumers", "Publicações", "Clusters"]) {
     await menu.getByRole("link", { name: section, exact: true }).click();
     await expect(page.getByRole("heading", { name: section, exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: /^(Novo |Nova |Editar|Excluir|Publicar$|Restaurar |Rotacionar |Gerar )/ })).toHaveCount(0);
   }
+  await menu.getByRole("link", { name: "Plugins", exact: true }).click();
+  await expect(page.getByRole("table", { name: "Plugins", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Novo plugin", exact: true })).toBeEnabled();
   await menu.getByRole("link", { name: "Services", exact: true }).click();
   const services = page.getByRole("table", { name: "Services", exact: true });
   await expect(services.getByRole("row")).not.toHaveCount(0);

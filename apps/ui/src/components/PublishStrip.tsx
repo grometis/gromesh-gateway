@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { api, unwrap } from "../api/client";
 import { useCanEdit } from "../auth";
-import { Link, useNavigate } from "react-router";
+import { Link, useNavigate, useLocation } from "react-router";
 import { useEnvironment } from "./Shell";
 
 /**
@@ -10,7 +10,10 @@ import { useEnvironment } from "./Shell";
  */
 export function PublishStrip({ envId }: { envId: string }) {
   const env = useEnvironment(envId);
-  const canEdit = useCanEdit();
+  const legacyCanEdit = useCanEdit();
+  const location = useLocation();
+  const workspacePlugins = location.pathname.split("/")[3] === "plugins";
+  const canEdit = legacyCanEdit && !workspacePlugins;
   const navigate = useNavigate();
   const review = () => navigate(`/e/${envId}/publish`);
   const pending = env.data?.hasUnpublishedChanges ?? false;
@@ -43,7 +46,7 @@ export function PublishStrip({ envId }: { envId: string }) {
         <strong>Rascunho</strong>
         <span className="sep" aria-hidden="true">·</span>
         <span>{!pending ? "sem alterações" : count === undefined ? "alterações não publicadas" : `${count} ${count === 1 ? "alteração" : "alterações"}`}</span>
-        {pending && (
+        {pending && !workspacePlugins && (
           <>
             <span className="sep" aria-hidden="true">·</span>
             <Link to={`/e/${envId}/publish`} className="strip-link">

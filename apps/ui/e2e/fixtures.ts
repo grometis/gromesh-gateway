@@ -17,12 +17,12 @@ async function bridgeV2(route: Route) {
   const request = route.request();
   const url = new URL(request.url());
   const [, workspaceId, rest = ""] = /^\/api\/v2\/workspaces\/([^/]+)(\/.*)?$/.exec(url.pathname) ?? [];
-  const kind = /^\/(services|routes|upstreams)\b/.exec(rest)?.[1];
+  const kind = /^\/(services|routes|upstreams|consumers|plugins)\b/.exec(rest)?.[1];
   if (!workspaceId || (rest && !kind)) return route.fulfill({ status: 404, json: { title: "Not Found", status: 404 } });
   const v1 = new URL(`/api/v1/environments/${workspaceId}${rest}${url.search}`, url);
   const body: unknown = request.postData() ? request.postDataJSON() : undefined;
-  if (kind && kind !== "upstreams" && body !== undefined) {
-    const errors = v2BodyErrors(kind as "services" | "routes", body);
+  if ((kind === "services" || kind === "routes") && body !== undefined) {
+    const errors = v2BodyErrors(kind, body);
     if (errors.length > 0) return route.fulfill(invalidBody(errors));
   }
   const { upstreamId: _upstreamId, ...v1Body } = (body ?? {}) as Record<string, unknown>;
