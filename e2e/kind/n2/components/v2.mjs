@@ -992,13 +992,19 @@ async function agentDown() {
   const t0 = await vmNow();
   await sleep(90_000);
   const pend = (await pendencies(ctx.clusterId)).filter((x) => x.lifecycle === "communication-failure");
+  const t1 = await vmNow(); // Exclusive end, before SIGCONT: recovery is not evidence of service during the freeze.
   await thaw(target);
   const closed = await waitFor("communication-failure closed", async () => (await pendencies(ctx.clusterId)).filter((x) => x.lifecycle === "communication-failure").length === 0, { timeoutMs: 120_000, intervalMs: 2000 }).catch(() => false);
   await client.stop();
-  const ev = client.since(t0);
+  // Read the unfiltered events: since(t0) silently drops missing timestamps, hiding invalid evidence.
+  const invalidTimestamps = client.events.filter((e) => !Number.isFinite(e.t)).length;
+  const ev = client.events.filter((e) => Number.isFinite(e.t) && e.t >= t0 && e.t < t1);
   const k = await kongExit(p.name, t0);
   Object.assign(it.measures, { non200: ev.filter((e) => (e.k === "new" || e.k === "ka") && e.s !== 200).length, total: ev.filter((e) => e.k === "new" || e.k === "ka").length,
-    wsClosed: ev.some((e) => e.k === "ws" && e.ev === "close"), kongStopped: Boolean(k.stopLog), communicationFailureOpened: pend.length, closedWithoutRelease: closed });
+    wsClosed: ev.some((e) => e.k === "ws" && e.ev === "close"), kongStopped: k.stopLog != null && k.stopLog >= t0 && k.stopLog < t1, communicationFailureOpened: pend.length, closedWithoutRelease: closed });
+  it.measures.trafficWindow = { startMs: t0, endExclusiveMs: t1, invalidTimestamps,
+    result: invalidTimestamps ? "INVALID" : it.measures.total > 0 ? "PASS" : "NOT_EXERCISED" };
+  expect(it, invalidTimestamps === 0, `traffic window INVALID: ${invalidTimestamps} events without a valid timestamp`);
   expect(it, it.measures.total > 0, "no traffic observed while the agent was frozen");
   expect(it, pend.length > 0, "communication-failure never opened while the agent was frozen");
   expect(it, !it.measures.wsClosed, "WebSocket closed while only the agent was frozen");
