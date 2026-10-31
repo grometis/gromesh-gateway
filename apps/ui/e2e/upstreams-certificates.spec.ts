@@ -67,13 +67,20 @@ test("upstreams: list, consistent hashing with a header, health checks and targe
   expect((await reweighed).postDataJSON()).toMatchObject({ target: "10.0.0.11:8080", weight: 25 });
 });
 
-test("the service form suggests the environment's upstreams for the host", async ({ page }) => {
+test("the service form offers the workspace's upstreams or a direct DNS destination", async ({ page }) => {
   await login(page);
   await page.getByRole("button", { name: "Novo service" }).click();
   const dialog = page.getByRole("dialog", { name: "Novo service" });
-  await expect(dialog.locator("datalist#upstream-names option")).toHaveAttribute("value", "orders.upstream");
-  await dialog.getByLabel("Host").fill("orders.upstream");
-  await expect(dialog).toContainText("Balanceado pelo upstream de mesmo nome");
+  await expect(dialog.getByLabel("Destino", { exact: true })).toHaveValue("dns");
+  await expect(dialog.getByLabel("Host")).toBeVisible();
+  await dialog.getByLabel("Destino", { exact: true }).selectOption("Upstream do Workspace");
+  await expect(dialog.getByLabel("Host")).toHaveCount(0);
+  await dialog.getByLabel("Upstream", { exact: true }).selectOption({ label: "orders.upstream" });
+  await expect(dialog).toContainText("O host do service passa a ser orders.upstream");
+  const created = page.waitForRequest((r) => r.method() === "POST" && r.url().endsWith("/services"));
+  await dialog.getByLabel("Nome").fill("orders");
+  await dialog.getByRole("button", { name: "Salvar" }).click();
+  expect((await created).postDataJSON()).toMatchObject({ name: "orders", host: "orders.upstream", upstreamId: expect.stringMatching(/^[0-9a-f-]{36}$/) });
 });
 
 test("certificates: upload PEM files and the key is never shown again", async ({ page }) => {

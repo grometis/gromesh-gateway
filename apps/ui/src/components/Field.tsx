@@ -28,3 +28,22 @@ export function FormErrorList({ messages }: { messages: string[] }) {
     </ul>
   );
 }
+
+/** Checkbox label and field feedback, shared by enabled, preserveHost and other boolean fields. */
+export function CheckboxField({ label, errors, checked, onChange }: {
+  label: string; errors?: string[]; checked: boolean; onChange: (checked: boolean) => void;
+}) {
+  const id = useId();
+  const invalid = (errors?.length ?? 0) > 0;
+  const errorId = `${id}-errors`;
+  return (
+    <div className="field">
+      <label className="check" htmlFor={id}>
+        <input id={id} type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} aria-invalid={invalid} aria-describedby={invalid ? errorId : undefined} /> {label}
+      </label>
+      {invalid && <div id={errorId} role="alert">
+        {errors!.map((message) => <small key={message} className="error">{message}</small>)}
+      </div>}
+    </div>
+  );
+}

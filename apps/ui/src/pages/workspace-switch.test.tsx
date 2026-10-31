@@ -10,17 +10,17 @@ const env = (id: string, name: string) => ({
   id, name, publishMode: "manual", currentVersion: 3, hasUnpublishedChanges: false, createdAt: NOW, updatedAt: NOW,
 });
 const service = (id: string, name: string) => ({
-  id, name, protocol: "http", host: `${name}.internal`, port: 80, path: null, enabled: true, tags: [], createdAt: NOW, updatedAt: NOW,
+  id, workspaceId: A, upstreamId: null, name, protocol: "http", host: `${name}.internal`, port: 80, path: null, enabled: true, tags: [], createdAt: NOW, updatedAt: NOW,
 });
 const page = (items: unknown[]) => ({ items, nextCursor: null });
 
-/** Answers for workspace A only; anything of B stays pending, as a slow network would. */
+/** Answers for workspace A only (the gateway through v2, the rest v1); anything of B stays pending, as a slow network would. */
 function answer(url: URL): Promise<Response> {
   const path = url.pathname.replace(/^\/api\/v1/, "");
   if (path === "/environments") return Promise.resolve(Response.json(page([env(A, "Pagamentos"), env(B, "Recargas")])));
   if (path.includes(B)) return new Promise(() => {});
   if (path === `/environments/${A}`) return Promise.resolve(Response.json(env(A, "Pagamentos")));
-  if (path === `/environments/${A}/services`) return Promise.resolve(Response.json(page([service("7c1d2e3f-4a5b-4c6d-8e7f-0000000000a1", "servico-de-pagamentos")])));
+  if (url.pathname === `/api/v2/workspaces/${A}/services`) return Promise.resolve(Response.json(page([service("7c1d2e3f-4a5b-4c6d-8e7f-0000000000a1", "servico-de-pagamentos")])));
   return Promise.resolve(Response.json({ title: "Not Found", status: 404 }, { status: 404 }));
 }
 
@@ -67,6 +67,7 @@ async function load() {
         <MemoryRouter initialEntries={[path]}>
           <Routes>
             <Route element={<Shell />}>
+              <Route path="e/:envId/services/:serviceId" element={<services.ServiceDetailPage />} />
               {Object.entries(SECTIONS).map(([section, element]) => <Route key={section} path={`e/:envId/${section}`} element={element()} />)}
             </Route>
           </Routes>
@@ -116,5 +117,28 @@ describe("switching workspaces", () => {
     expect(after).toContain("Carregando");
     // The selector already shows B, and its list (instance-wide) is the only data reused.
     expect(after).toMatch(new RegExp(`<option value="${B}" selected="">Recargas</option>`));
+  });
+});
+
+
+describe("v1 publication strip on workspace gateway screens", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it.each(["services", "services/service-1", "routes"])("shows the strip on %s with pending changes", async (section) => {
+    const { render } = await load();
+    const client = newClient();
+    client.setQueryData(["environment", A], { ...env(A, "Pagamentos"), hasUnpublishedChanges: true });
+    const html = render(client, `/e/${A}/${section}`);
+    expect(html).toContain('aria-label="Publicação"');
+    expect(html).toContain(`/e/${A}/publish`);
+    expect(client.getQueryCache().find({ queryKey: ["clusters", A] })).toBeDefined();
+    expect(client.getQueryCache().find({ queryKey: ["preview", A] })).toBeDefined();
+  });
+
+  it("retains the strip on v1 screens", async () => {
+    const { render } = await load();
+    const client = newClient();
+    client.setQueryData(["environment", A], { ...env(A, "Pagamentos"), hasUnpublishedChanges: true });
+    expect(render(client, `/e/${A}/plugins`)).toContain('aria-label="Publicação"');
   });
 });
