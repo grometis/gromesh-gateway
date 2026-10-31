@@ -1,3 +1,4 @@
+import { refuseAutoPublish } from "../common/draft-only.js";
 import { workspaceTransaction } from "../common/workspace-transaction.js";
 import { createPrivateKey, X509Certificate } from "node:crypto";
 import { runInNewContext } from "node:vm";
@@ -160,6 +161,7 @@ export class WorkspaceVariablesService {
     const badPattern = body.validation?.pattern !== undefined ? patternProblem(body.validation.pattern) : null;
     if (badPattern) throw unprocessable("Invalid declaration", [{ path: "validation.pattern", message: badPattern }]);
     return workspaceTransaction(this.db, workspaceId, async (tx) => {
+      await refuseAutoPublish(tx, workspaceId);
       await requireEnvironment(tx, workspaceId, true);
       const [before] = await tx.select().from(workspaceVariables).where(and(eq(workspaceVariables.workspaceId, workspaceId), eq(workspaceVariables.name, name))).for("update");
       // Changing type or secret of a variable the draft references answers 409 (contract).
@@ -196,6 +198,7 @@ export class WorkspaceVariablesService {
   /** deleteWorkspaceVariable: the declaration only; this instance's values stay until a release without it is active. */
   async remove(ctx: RequestContext, workspaceId: string, name: string) {
     await workspaceTransaction(this.db, workspaceId, async (tx) => {
+      await refuseAutoPublish(tx, workspaceId);
       await requireEnvironment(tx, workspaceId, true);
       const users = await referencedBy(tx, workspaceId, name);
       if (users.length > 0) throw conflict(`Variable ${name} is referenced by the draft: ${users.join(", ")}`);
