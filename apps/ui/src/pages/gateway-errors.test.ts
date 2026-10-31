@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ApiError, type Problem } from "../api/client";
-import { GATEWAY_MESSAGES, gatewayErrorMessage, gatewayFormErrors, gatewayMessage } from "./gateway-errors";
+import { GATEWAY_MESSAGES, gatewayErrorMessage, gatewayFormErrors, gatewayMessage, variableFormErrors } from "./gateway-errors";
 import { CONFLICTS } from "./workspace-errors";
 
 const problem = (status: number, extra: Record<string, unknown> = {}) =>
@@ -82,5 +82,37 @@ describe("gatewayFormErrors", () => {
     for (const [path, message] of [["name", "is required"], ["tags", "must be array"], ["(body)", "must NOT have additional properties"], ["retries", "whatever"]] as const) {
       expect(gatewayMessage(path, message)).not.toMatch(/must|required|whatever/);
     }
+  });
+});
+
+describe("variable errors", () => {
+  it("attaches declaration errors to checkbox and nested validation fields without echoing server data", () => {
+    const errors = variableFormErrors(invalid(
+      { path: "secret", message: "must be equal to constant" },
+      { path: "required", message: "must be boolean" },
+      { path: "validation.pattern", message: "a quantified group holding a quantifier is not allowed" },
+      { path: "validation.minimum", message: "must be integer" },
+      { path: "unexpected-secret-path", message: "unexpected-secret-value" },
+    ));
+    expect(Object.keys(errors.fields)).toEqual(["secret", "required", "validation.pattern", "validation.minimum"]);
+    expect(errors.fields["validation.pattern"]).toEqual(["Padrão inválido ou não permitido pelo servidor."]);
+    expect(JSON.stringify(errors)).not.toMatch(/unexpected-secret|must be|quantified/);
+    expect(errors.form).toHaveLength(1);
+  });
+
+  it.each(["auto-publish", "workspace-archived", "concurrent-update"])("keeps the shared 409 %s explanation", (code) => {
+    expect(variableFormErrors(problem(409, { code })).form).toEqual([gatewayErrorMessage(problem(409, { code }))]);
+  });
+
+  it.each([
+    ["must be a port, 1 to 65535", "porta de 1 a 65535"],
+    ["must be a host name or an IP address", "host ou endereço IP"],
+    ["must be an http or https URL", "URL HTTP ou HTTPS"],
+    ["must be a PEM certificate", "certificado PEM"],
+    ["must be a PEM private key", "chave privada PEM"],
+    ["must not be empty", "campo obrigatório"],
+    ["does not match the declared pattern", "padrão declarado"],
+  ])("translates a value error: %s", (message, translated) => {
+    expect(variableFormErrors(invalid({ path: "value", message })).fields.value?.[0]).toContain(translated);
   });
 });
