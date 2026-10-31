@@ -40,18 +40,19 @@ type Status struct {
 
 // DeploymentStatus is the StatusReport of agent protocol v2.
 type DeploymentStatus struct {
-	NodeID          string  `json:"nodeId"`
-	Epoch           int64   `json:"epoch"`
-	AppliedRevision *int64  `json:"appliedRevision"`
-	AppliedHash     *string `json:"appliedHash"`
-	FailedRevision  *int64  `json:"failedRevision"`
-	FailedHash      *string `json:"failedHash"`
-	FailureStatus   *int    `json:"failureStatus"`
-	FailureReason   *string `json:"failureReason"`
-	KongConfigHash  *string `json:"kongConfigHash"`
-	KongHealthy     bool    `json:"kongHealthy"`
-	Analytics       *string `json:"analytics"`
-	IsolationState  *string `json:"isolationState"`
+	AnalyticsHealth json.RawMessage `json:"analyticsHealth,omitempty"`
+	NodeID          string          `json:"nodeId"`
+	Epoch           int64           `json:"epoch"`
+	AppliedRevision *int64          `json:"appliedRevision"`
+	AppliedHash     *string         `json:"appliedHash"`
+	FailedRevision  *int64          `json:"failedRevision"`
+	FailedHash      *string         `json:"failedHash"`
+	FailureStatus   *int            `json:"failureStatus"`
+	FailureReason   *string         `json:"failureReason"`
+	KongConfigHash  *string         `json:"kongConfigHash"`
+	KongHealthy     bool            `json:"kongHealthy"`
+	Analytics       *string         `json:"analytics"`
+	IsolationState  *string         `json:"isolationState"`
 }
 
 type Server struct {
@@ -225,7 +226,7 @@ func validDeploymentStatus(body []byte) (DeploymentStatus, bool) {
 	if string(fields["kongHealthy"]) != "true" && string(fields["kongHealthy"]) != "false" {
 		return status, false
 	}
-	for _, name := range []string{"analytics", "isolationState"} {
+	for _, name := range []string{"analytics", "analyticsHealth", "isolationState"} {
 		if raw, ok := fields[name]; ok && string(raw) == "null" {
 			return status, false
 		}
@@ -246,6 +247,23 @@ func validDeploymentStatus(body []byte) (DeploymentStatus, bool) {
 		return status, false
 	}
 	analytics := status.Analytics == nil || *status.Analytics == "analytics-healthy" || *status.Analytics == "analytics-degraded"
+	if len(status.AnalyticsHealth) > 0 {
+		var health struct {
+			State string `json:"state"`
+		}
+		if json.Unmarshal(status.AnalyticsHealth, &health) != nil || status.Analytics == nil {
+			return status, false
+		}
+		switch health.State {
+		case "healthy", "idle":
+			analytics = analytics && *status.Analytics == "analytics-healthy"
+		case "degraded", "unknown":
+			analytics = analytics && *status.Analytics == "analytics-degraded"
+		default:
+			return status, false
+		}
+	}
+
 	isolation := status.IsolationState == nil
 	if status.IsolationState != nil {
 		switch *status.IsolationState {

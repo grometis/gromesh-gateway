@@ -308,16 +308,18 @@ func (d *deployments) loadFailure() (*permanentFailure, error) {
 
 // DeploymentStatus is the StatusReport of agent protocol v2.
 type DeploymentStatus struct {
-	NodeID          string  `json:"nodeId"`
-	Epoch           int64   `json:"epoch"`
-	AppliedRevision *int64  `json:"appliedRevision"`
-	AppliedHash     *string `json:"appliedHash"`
-	FailedRevision  *int64  `json:"failedRevision"`
-	FailedHash      *string `json:"failedHash"`
-	FailureStatus   *int    `json:"failureStatus"`
-	FailureReason   *string `json:"failureReason,omitempty"`
-	KongConfigHash  *string `json:"kongConfigHash"`
-	KongHealthy     bool    `json:"kongHealthy"`
+	Analytics       string           `json:"analytics,omitempty"`
+	AnalyticsHealth *AnalyticsHealth `json:"analyticsHealth,omitempty"`
+	NodeID          string           `json:"nodeId"`
+	Epoch           int64            `json:"epoch"`
+	AppliedRevision *int64           `json:"appliedRevision"`
+	AppliedHash     *string          `json:"appliedHash"`
+	FailedRevision  *int64           `json:"failedRevision"`
+	FailedHash      *string          `json:"failedHash"`
+	FailureStatus   *int             `json:"failureStatus"`
+	FailureReason   *string          `json:"failureReason,omitempty"`
+	KongConfigHash  *string          `json:"kongConfigHash"`
+	KongHealthy     bool             `json:"kongHealthy"`
 }
 
 type currentDeployment struct {
@@ -637,7 +639,15 @@ func (a *Agent) reportDeployment(ctx context.Context) {
 	if status == nil {
 		return
 	}
-	err := a.client.reportDeployment(ctx, *status)
+	report := *status
+	if a.analytics != nil {
+		h := a.analytics.health()
+		if h.ObservedAt != "" {
+			report.AnalyticsHealth = &h
+			report.Analytics = h.analytics()
+		}
+	}
+	err := a.client.reportDeployment(ctx, report)
 	var refused *deliveryRefused
 	switch {
 	case err == nil:

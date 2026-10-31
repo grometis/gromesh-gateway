@@ -104,6 +104,9 @@ export class AgentGatewayService {
             agentVersion: body.agentVersion,
             labels: body.labels ?? {},
             tokenHash: tokenHash(nodeToken),
+            analyticsHealth: null,
+            analyticsReceivedAt: null,
+            collectorTokenFingerprints: null,
             lastSeenAt: sql`now()`,
           },
         });

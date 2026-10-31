@@ -1,3 +1,4 @@
+import type { AnalyticsHealth, CollectorTokenFingerprints } from "../analytics/collector-health.js";
 import { sql } from "drizzle-orm";
 import {
   boolean,
@@ -613,6 +614,7 @@ export type PluginRow = typeof plugins.$inferSelect;
 export type SnapshotRow = typeof snapshots.$inferSelect;
 
 export const clusters = pgTable("clusters", {
+  analyticsDegraded: boolean("analytics_degraded").notNull().default(false),
   id: uuid("id").primaryKey().defaultRandom(),
   environmentId: uuid("environment_id").notNull().references(() => environments.id, { onDelete: "restrict" }),
   name: text("name").notNull(),
@@ -629,6 +631,9 @@ export const clusters = pgTable("clusters", {
 ]);
 
 export const clusterNodes = pgTable("cluster_nodes", {
+  analyticsHealth: jsonb("analytics_health").$type<AnalyticsHealth>(),
+  analyticsReceivedAt: timestamp("analytics_received_at", { withTimezone: true }),
+  collectorTokenFingerprints: jsonb("collector_token_fingerprints").$type<CollectorTokenFingerprints>(),
   clusterId: uuid("cluster_id").notNull().references(() => clusters.id, { onDelete: "cascade" }),
   nodeId: text("node_id").notNull(),
   tokenHash: text("token_hash").notNull(),

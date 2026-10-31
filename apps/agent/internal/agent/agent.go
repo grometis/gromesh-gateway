@@ -31,6 +31,7 @@ type Agent struct {
 	poll         time.Duration
 	heartbeat    time.Duration
 	retry        func(int) time.Duration
+	analytics    *analyticsMonitor
 	isolation    *isolation
 	deploy       *deployments
 	deployStatus *DeploymentStatus
@@ -93,6 +94,7 @@ func New(config Config, logger *slog.Logger) (*Agent, error) {
 	}
 	if config.HandoffDir != "" {
 		// The probe renews every 15 s: a challenge or an ack relayed within 2 s reaches its next round.
+		a.analytics = newAnalyticsMonitor(a.client)
 		a.isolation = &isolation{config: config, client: a.client, log: logger, interval: 2 * time.Second, retry: retryDelay}
 	}
 	return a, nil
@@ -189,6 +191,7 @@ func (a *Agent) runSession(ctx context.Context, registration Registration, saved
 	done := make(chan struct{})
 	heartbeatDone := make(chan struct{})
 	isolationDone := make(chan struct{})
+	analyticsDone := make(chan struct{})
 	wake := make(chan struct{}, 1)
 	a.wake = wake
 	if a.deploy != nil {
@@ -197,6 +200,12 @@ func (a *Agent) runSession(ctx context.Context, registration Registration, saved
 	go func() {
 		defer close(done)
 		a.events(ctx, wake)
+	}()
+	go func() {
+		defer close(analyticsDone)
+		if a.analytics != nil {
+			a.analytics.run(ctx)
+		}
 	}()
 	go func() {
 		defer close(isolationDone)
@@ -209,6 +218,7 @@ func (a *Agent) runSession(ctx context.Context, registration Registration, saved
 		<-done
 		<-heartbeatDone
 		<-isolationDone
+		<-analyticsDone
 		a.client.http.CloseIdleConnections()
 		a.client.applyHTTP.CloseIdleConnections()
 	}()
