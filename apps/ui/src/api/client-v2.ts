@@ -4,6 +4,8 @@ import type { components, paths } from "./schema-v2";
 
 type Schemas = components["schemas"];
 export type Workspace = Schemas["Workspace"];
+// The contract leaves createdBy open; the generator emits Record<string, never> for that object.
+export type Release = Omit<Schemas["Release"], "createdBy"> & { createdBy?: Record<string, unknown> };
 export type WorkspaceWrite = Schemas["WorkspaceWrite"];
 export type WorkspacePage = Schemas["WorkspacePage"];
 export type WorkspaceCreationPolicy = Schemas["WorkspaceCreationPolicy"];
@@ -13,6 +15,8 @@ export type WorkspaceServiceWrite = Schemas["WorkspaceServiceWrite"];
 export type WorkspaceRoute = Schemas["WorkspaceRoute"];
 export type WorkspaceRouteWrite = Schemas["WorkspaceRouteWrite"];
 export type RouteProblemCode = Schemas["RouteProblem"]["code"];
+export type WorkspaceVariable = Schemas["WorkspaceVariable"];
+export type WorkspaceVariableDeclaration = Schemas["WorkspaceVariableDeclaration"];
 
 /** Workspaces API (`/api/v2`): same session, CSRF and `unwrap`/`ApiError` handling as v1. */
 export const apiV2 = createClient<paths>({ baseUrl: "/api/v2", credentials: "include" });

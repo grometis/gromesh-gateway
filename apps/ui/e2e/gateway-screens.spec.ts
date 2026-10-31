@@ -15,7 +15,7 @@ async function login(page: Page) {
   await page.route("**/api/v2/workspaces/*/services*", (r) => r.fulfill({ json: { items: [v2Service], nextCursor: null } }));
   // A single glob star does not cross the slash before the detail id.
   await page.route(`**/api/v2/workspaces/*/services/${service.id}`, (r) => r.fulfill({ json: v2Service }));
-  await page.route("**/api/v1/environments/*/routes*", (r) => r.fulfill({ json: { items: [route], nextCursor: null } }));
+  await page.route("**/api/v2/workspaces/*/routes*", (r) => r.fulfill({ json: { items: [{ ...route, pathCompatibility: "workspace-default" }], nextCursor: null } }));
   await page.route("**/api/v1/environments/*/plugins*", (r) => r.fulfill({ json: { items: [plugin], nextCursor: null } }));
   // WorkspacePlugins reads v2; scoped detail lists still read v1.
   let pluginItems: Array<Omit<typeof plugin, "scope"> & { scope: { serviceId?: string } }> = [plugin, { ...plugin, id: id(5), name: "cors", scope: {} }];
@@ -89,7 +89,11 @@ test("route cards retain matches, filters and actions, with draft badges and a c
   await page.getByLabel("Buscar routes").fill("/orders");
   await searched;
   await row.getByRole("button", { name: "Plugins", exact: true }).click();
-  await expect(page.getByRole("dialog", { name: "Plugins de orders-api" }).getByRole("table", { name: "Plugins" })).toHaveClass("cards");
+  const plugins = page.getByRole("dialog", { name: "Plugins de orders-api" });
+  await expect(plugins.getByRole("table", { name: "Plugins" })).toHaveClass("cards");
+  await expect(plugins).toContainText("Plugins por Workspace ainda não são editáveis aqui.");
+  await expect(plugins.getByRole("button", { name: /Adicionar plugin|Novo plugin|Editar|Mais ações/ })).toHaveCount(0);
+  await expect(plugins.getByRole("checkbox")).toHaveCount(0);
   await page.getByRole("dialog", { name: "Plugins de orders-api" }).getByRole("button", { name: "Fechar", exact: true }).click();
   await row.getByRole("button", { name: "Editar", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Editar orders-api" }).getByLabel("Paths", { exact: true })).toHaveValue("/orders");
@@ -141,7 +145,7 @@ test("plugin cards keep name, scope and state; scope filtering and deletion stil
 
 test("empty route and plugin lists use EmptyState without hiding their creation actions", async ({ page }) => {
   const envId = await login(page);
-  await page.route("**/api/v1/environments/*/routes*", (r) => r.fulfill({ json: { items: [], nextCursor: null } }));
+  await page.route("**/api/v2/workspaces/*/routes*", (r) => r.fulfill({ json: { items: [], nextCursor: null } }));
   await page.route("**/api/v1/environments/*/plugins*", (r) => r.fulfill({ json: { items: [], nextCursor: null } }));
   await page.route("**/api/v2/workspaces/*/plugins*", (r) => r.fulfill({ json: { items: [], nextCursor: null } }));
   await page.goto(`/e/${envId}/routes`);
