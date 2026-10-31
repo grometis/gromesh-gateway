@@ -55,7 +55,7 @@ test("a new consumer's key is shown once and is gone after closing", async ({ pa
   expect(stored).not.toContain(key);
 });
 
-test("rate-limiting on a route through the generated form, with a 422 on config.minute shown on the field", async ({ page }) => {
+test("rate-limiting on a route from the v1 Plugins screen, with a 422 on config.minute shown on the field", async ({ page }) => {
   await page.route("**/api/v1/plugin-schemas", (route) => route.fulfill({ contentType: "application/json", body: catalogFile("_catalog") }));
   await page.route("**/api/v1/plugin-schemas/*", (route) => {
     const name = new URL(route.request().url()).pathname.split("/").pop()!;
@@ -63,10 +63,8 @@ test("rate-limiting on a route through the generated form, with a 422 on config.
   });
   await login(page);
 
-  await menu(page).getByRole("link", { name: "Routes" }).click();
-  await page.getByRole("button", { name: "Plugins" }).first().click();
-  const scoped = page.getByRole("dialog", { name: /^Plugins de / });
-  await scoped.getByRole("button", { name: "Adicionar plugin" }).click();
+  await menu(page).getByRole("link", { name: "Plugins", exact: true }).click();
+  await page.getByRole("button", { name: "Novo plugin" }).click();
 
   const picker = page.getByRole("dialog", { name: "Escolha um plugin" });
   await expect(picker.getByRole("button", { name: /^oauth2/ })).toBeDisabled();
@@ -79,6 +77,8 @@ test("rate-limiting on a route through the generated form, with a 422 on config.
   await picker.getByRole("button", { name: /^rate-limiting/ }).click();
 
   const editor = page.getByRole("dialog", { name: "Novo plugin rate-limiting" });
+  await editor.getByRole("radio", { name: "Route", exact: true }).check();
+  await editor.getByRole("combobox", { name: "Route", exact: true }).selectOption({ index: 1 });
   await expect(editor.getByRole("radio", { name: "Route" })).toBeChecked();
   await expect(editor.getByRole("combobox", { name: "Route" })).toHaveValue(/[0-9a-f-]{36}/);
   await expect(editor.getByLabel("limit_by")).toHaveValue("consumer");
