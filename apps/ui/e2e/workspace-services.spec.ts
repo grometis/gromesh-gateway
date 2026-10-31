@@ -43,7 +43,11 @@ async function setup(page: Page, options: {
         items = [saved];
         return route.fulfill({ status: request.method() === "POST" ? 201 : 200, json: saved });
       }
-      if (path === `/api/v1/environments/${W}/routes` && request.method() === "POST") return route.fulfill({ status: 201, json: { id: S, ...(body as object), ...timestamps } });
+      if (path === `/api/v2/workspaces/${W}/routes` && request.method() === "POST") {
+        const errors = v2BodyErrors("routes", body);
+        if (errors.length) return route.fulfill(invalidBody(errors));
+        return route.fulfill({ status: 201, json: { id: S, pathCompatibility: "workspace-default", ...(body as object), ...timestamps } });
+      }
       return route.fulfill({ status: 500, json: { title: "Unexpected mutation", status: 500 } });
     }
     if (path === "/api/v1/environments") return route.fulfill({ json: pageOf([environment, { ...environment, id: B, name: "Recargas", publishMode: "manual" }]) });
@@ -239,7 +243,7 @@ test("the v1 publication strip is available on Services, its detail and Routes",
   expect(fake.writes).toEqual([]);
 });
 
-test("the existing Routes form sends commas within paths unchanged", async ({ page }) => {
+test("the v2 Routes form sends commas within paths unchanged", async ({ page }) => {
   const fake = await setup(page);
   await page.getByRole("link", { name: "Routes", exact: true }).click();
   await page.getByRole("button", { name: "Nova route" }).click();
@@ -249,7 +253,7 @@ test("the existing Routes form sends commas within paths unchanged", async ({ pa
   await dialog.getByRole("button", { name: "Salvar" }).click();
   await expect(dialog).toHaveCount(0);
   expect(fake.writes).toHaveLength(1);
-  expect(fake.writes[0]).toMatchObject({ method: "POST", body: { paths: ["~/items/[0-9]{1,3}", "/a,/b"] } });
+  expect(fake.writes[0]).toMatchObject({ method: "POST", path: `/api/v2/workspaces/${W}/routes`, body: { paths: ["~/items/[0-9]{1,3}", "/a,/b"], stripPath: false } });
 });
 
 test("switching workspace closes a service form and discards its input", async ({ page }) => {
