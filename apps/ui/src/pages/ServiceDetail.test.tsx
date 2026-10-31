@@ -94,7 +94,7 @@ describe("service detail route and plugin access", () => {
   });
 
   it("keeps creation, editing and deletion actions by default for v1 pages and scoped components", async () => {
-    const { RoutesPage, PluginsPage, ScopedRoutes, ScopedPlugins, loaded } = await load();
+    const { RoutesPage, ScopedRoutes, ScopedPlugins, loaded } = await load();
     for (const element of [<RoutesPage />, <ScopedRoutes envId={W} service={service} />]) {
       const html = await loaded(element);
       expect(html).toContain("Nova route");
@@ -102,7 +102,6 @@ describe("service detail route and plugin access", () => {
       expect(html).toContain(`Mais ações para ${route.name}`);
     }
     for (const [element, createLabel] of [
-      [<PluginsPage />, "Novo plugin"],
       [<ScopedPlugins envId={W} scope={{ kind: "consumer", id: "consumer-1" }} title="Plugins do consumer" />, "Adicionar plugin"],
       [<ScopedPlugins envId={W} scope={{ kind: "route", id: route.id }} title="Plugins aplicados" />, "Adicionar plugin"],
     ] as const) {

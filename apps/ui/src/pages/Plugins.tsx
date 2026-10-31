@@ -1,3 +1,4 @@
+import { WorkspacePlugins } from "./WorkspacePlugins";
 import { useDeferredValue, useMemo, useState, type FormEvent } from "react";
 import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
 import { ApiError, api, unwrap, type Plugin, type PluginCatalogEntry, type PluginScope, type PluginWrite } from "../api/client";
@@ -105,21 +106,7 @@ function usePlugins(envId: string, scope: ScopeChoice | null) {
 
 export function PluginsPage() {
   const envId = useEnvId();
-  const canEdit = useCanEdit();
-  const [onlyGlobal, setOnlyGlobal] = useState(false);
-  return (
-    <section className="final-page">
-      <PluginList
-        envId={envId}
-        scope={onlyGlobal ? { kind: "global", id: "" } : null}
-        title="Plugins"
-        page
-        canEdit={canEdit}
-        onlyGlobal={onlyGlobal}
-        onGlobalChange={setOnlyGlobal}
-      />
-    </section>
-  );
+  return <WorkspacePlugins key={envId} workspaceId={envId} />;
 }
 
 /** Plugins of one service, route or consumer, shown inside that entity's screen. */
