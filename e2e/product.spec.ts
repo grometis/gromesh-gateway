@@ -136,7 +136,7 @@ test("UI publication, key-auth traffic, viewer limits, audit and rollback on the
     await route.getByLabel("Nome").fill(name);
     await route.getByLabel("Service", { exact: true }).selectOption({ label: name });
     await route.getByLabel("Paths").fill(path);
-    const routeCreated = page.waitForResponse((r) => r.request().method() === "POST" && r.url().endsWith(`/environments/${env.id}/routes`));
+    const routeCreated = page.waitForResponse((r) => r.request().method() === "POST" && r.url().endsWith(`/api/v2/workspaces/${env.id}/routes`));
     await route.getByRole("button", { name: "Salvar" }).click();
     const routeResponse = await routeCreated;
     expect(routeResponse.status()).toBe(201);
@@ -222,6 +222,26 @@ test("UI publication, key-auth traffic, viewer limits, audit and rollback on the
       await expect(viewerEdit.getByRole("alert")).toHaveText(refused);
       await viewerEdit.getByRole("button", { name: "Cancelar" }).click();
       expect(await api<{ items: unknown[] }>("GET", `/environments/${env.id}/services`, 200)).toEqual(servicesBefore);
+      const routesBefore = await api<{ items: unknown[] }>("GET", `/environments/${env.id}/routes`, 200);
+      await viewerPage.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Routes", exact: true }).click();
+      await viewerPage.getByRole("button", { name: "Nova route" }).click();
+      const viewerRoute = viewerPage.getByRole("dialog", { name: "Nova route" });
+      await viewerRoute.getByLabel("Nome").fill(`${name}-viewer`);
+      await viewerRoute.getByLabel("Paths", { exact: true }).fill(`${path}-viewer`);
+      const routeRefused = viewerPage.waitForResponse((r) => r.request().method() === "POST" && r.url().endsWith(`/api/v2/workspaces/${env.id}/routes`));
+      await viewerRoute.getByRole("button", { name: "Salvar" }).click();
+      expect((await routeRefused).status()).toBe(403);
+      await expect(viewerRoute.getByRole("alert")).toHaveText(refused);
+      await viewerRoute.getByRole("button", { name: "Cancelar" }).click();
+      await viewerPage.getByRole("table", { name: "Routes", exact: true }).getByRole("row").filter({ hasText: name }).getByRole("button", { name: "Editar", exact: true }).click();
+      const viewerRouteEdit = viewerPage.getByRole("dialog", { name: `Editar ${name}` });
+      await viewerRouteEdit.getByLabel("Métodos").fill("GET");
+      const routeEditRefused = viewerPage.waitForResponse((r) => r.request().method() === "PUT" && r.url().includes(`/api/v2/workspaces/${env.id}/routes/`));
+      await viewerRouteEdit.getByRole("button", { name: "Salvar" }).click();
+      expect((await routeEditRefused).status()).toBe(403);
+      await expect(viewerRouteEdit.getByRole("alert")).toHaveText(refused);
+      await viewerRouteEdit.getByRole("button", { name: "Cancelar" }).click();
+      expect(await api<{ items: unknown[] }>("GET", `/environments/${env.id}/routes`, 200)).toEqual(routesBefore);
       await expect(viewerPage.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: /Usuários|Auditoria/ })).toHaveCount(0);
       await viewerPage.context().close();
     } finally {
