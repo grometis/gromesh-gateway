@@ -507,7 +507,7 @@ for (const options of [
     await expect(page.getByRole("table", { name: "Routes", exact: true })).toContainText("boletos-api");
     await expect(page.getByRole("note", { name: "Estado do Workspace" })).toContainText(options.reason);
     await expect(page.getByRole("button", { name: /Nova route|^Editar$|Mais ações para/ })).toHaveCount(0);
-    await expect(page.getByRole("region", { name: "Publicação", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("region", { name: "Publicação", exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Plugins", exact: true }).click();
     const plugins = page.getByRole("dialog", { name: "Plugins de boletos-api" });
     await expect(plugins).toContainText("rate-limiting");
@@ -553,7 +553,7 @@ for (const operation of ["create", "edit"] as const) {
     fake.routes[0]!.paths = paths;
     await signIn(page, fake);
     await menu(page).getByRole("link", { name: "Routes", exact: true }).click();
-    await expect(page.getByRole("region", { name: "Publicação", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("region", { name: "Publicação", exact: true })).toBeVisible();
     await page.getByRole("button", { name: operation === "create" ? "Nova route" : "Editar", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: operation === "create" ? "Nova route" : "Editar boletos-api" });
     await dialog.getByLabel("Nome", { exact: true }).fill("comma-paths");
