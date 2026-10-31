@@ -2,16 +2,17 @@ import { refuseAutoPublish } from "../common/draft-only.js";
 import { workspaceTransaction } from "../common/workspace-transaction.js";
 import { randomUUID } from "node:crypto";
 import { Body, Controller, Delete, Get, HttpCode, Inject, Injectable, Module, Param, Post, Put, Query } from "@nestjs/common";
-import type { Plugin } from "@gromesh/compiler";
+import { platformPlugins, type Plugin } from "@gromesh/compiler";
 import { and, asc, eq, gt, isNull, or, sql, type SQL } from "drizzle-orm";
 import type { PluginWrite } from "../api-types.js";
 import { audit } from "../audit/audit.js";
 import { Ctx, RequiredPermission, RequiredRole, type RequestContext } from "../auth/auth.js";
-import { contractBody } from "../common/contract.js";
+import { contractBody, contractBodyV2 } from "../common/contract.js";
 import { decodeCursor, parseLimit, toPage } from "../common/pagination.js";
 import { notFound, unprocessable, type FieldError } from "../common/problem.js";
 import { pluginPrivilegedIssues, requirePlatformAdmin } from "../common/privileged.js";
 import { vaultReferenceIssues } from "../common/vault-references.js";
+import { APP_CONFIG, type AppConfig } from "../config.js";
 import { DB, type Db, type Executor } from "../db/db.js";
 import { consumers, plugins, routes, services, type PluginRow } from "../db/schema.js";
 import { markDraftChanged, requireEnvironment, uuidParam } from "../environments/environments.js";
@@ -59,6 +60,7 @@ export class PluginsService {
     @Inject(ENCRYPTOR) private readonly enc: Encryptor,
     private readonly catalog: PluginCatalog,
     private readonly validator: KongValidator,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
 
   /** Every plugin the API returns has its secrets redacted, whatever the caller's role: they are write-only. */
@@ -89,12 +91,18 @@ export class PluginsService {
     return this.publicPlugin(await this.requirePlugin(this.db, envId, pluginId));
   }
 
-  async create(ctx: RequestContext, envId: string, body: PluginWrite) {
+  async create(ctx: RequestContext, envId: string, body: PluginWrite, options: { draftOnly?: boolean } = {}) {
     const id = randomUUID();
     requirePlatformAdmin(ctx, pluginPrivilegedIssues(body));
     const merged = this.withSecrets(body, null);
-    await this.validate(id, merged);
+    if (!options.draftOnly) await this.validate(id, merged);
     return workspaceTransaction(this.db, envId, async (tx) => {
+      if (options.draftOnly) {
+        await refuseAutoPublish(tx, envId);
+        this.checkWorkspacePlugin(envId, merged);
+        await this.validate(id, merged);
+        await this.checkWorkspaceAuthentication(tx, envId, id, merged);
+      }
       await requireEnvironment(tx, envId);
       await this.checkScope(tx, envId, merged);
       const [row] = await tx.insert(plugins).values({ id, environmentId: envId, ...pluginValues(id, merged, this.enc, this.catalog) }).returning();
@@ -105,15 +113,27 @@ export class PluginsService {
     });
   }
 
-  async replace(ctx: RequestContext, envId: string, pluginId: string, body: PluginWrite) {
-    // The stored secrets are read before validation, which runs outside the transaction (it calls Kong).
+  async replace(ctx: RequestContext, envId: string, pluginId: string, body: PluginWrite, options: { draftOnly?: boolean } = {}) {
+    // v1 validates before taking the lock; v2 merges and validates again from the row held by the workspace writer.
     const current = await this.requirePlugin(this.db, envId, pluginId);
     // Replacing a privileged plugin with an ordinary one would still change what the platform admin put live.
     requirePlatformAdmin(ctx, [...pluginPrivilegedIssues(current), ...pluginPrivilegedIssues(body)]);
-    const merged = this.withSecrets(body, current);
-    await this.validate(pluginId, merged);
+    const validated = options.draftOnly ? null : this.withSecrets(body, current);
+    if (validated) await this.validate(pluginId, validated);
     return workspaceTransaction(this.db, envId, async (tx) => {
-      const before = this.publicPlugin(await this.requirePlugin(tx, envId, pluginId));
+      if (options.draftOnly) await refuseAutoPublish(tx, envId);
+      const locked = await this.requirePlugin(tx, envId, pluginId);
+      let merged = validated ?? body;
+      if (options.draftOnly) {
+        // A v1 writer may have changed both privileges and secrets while this writer waited for the workspace.
+        requirePlatformAdmin(ctx, [...pluginPrivilegedIssues(locked), ...pluginPrivilegedIssues(body)]);
+        this.checkWorkspacePlugin(envId, locked, false);
+        merged = this.withSecrets(body, locked);
+        this.checkWorkspacePlugin(envId, merged);
+        await this.validate(pluginId, merged);
+        await this.checkWorkspaceAuthentication(tx, envId, pluginId, merged);
+      }
+      const before = this.publicPlugin(locked);
       await this.checkScope(tx, envId, merged);
       const [row] = await tx
         .update(plugins)
@@ -147,11 +167,44 @@ export class PluginsService {
     await workspaceTransaction(this.db, envId, async (tx) => {
       if (options.draftOnly) await refuseAutoPublish(tx, envId);
       const before = toPlugin(await this.requirePlugin(tx, envId, pluginId));
+      if (options.draftOnly) this.checkWorkspacePlugin(envId, before, false);
       requirePlatformAdmin(ctx, pluginPrivilegedIssues(before));
       await tx.delete(plugins).where(eq(plugins.id, pluginId));
       await markDraftChanged(tx, envId);
       await audit(tx, ctx, { action: "plugin.delete", entityType: "plugin", entityId: pluginId, environmentId: envId, before: this.redacted(before) });
     });
+  }
+
+  /** v2 reservations apply even to platform admins here: exceptions have their own future contract. */
+  private checkWorkspacePlugin(workspaceId: string, body: Pick<PluginWrite, "name" | "config" | "scope" | "tags">, writing = true): void {
+    const mandatory = this.config.platformHttpLogEndpoint
+      ? platformPlugins({ httpLogEndpoint: this.config.platformHttpLogEndpoint, environmentId: workspaceId }) : [];
+    const errors: FieldError[] = [];
+    if (body.name.startsWith("gromesh-") || mandatory.some(p => p.name === body.name)) {
+      errors.push({ path: "name", message: "reserved mandatory platform plugin" });
+    }
+    if (writing) {
+      if (["ldap-auth", "session", "hmac-auth", "acme", "oauth2"].includes(body.name)) errors.push({ path: "name", message: "plugin is not available to a Workspace" });
+      body.tags?.forEach((tag, i) => { if (tag.startsWith("gromesh-")) errors.push({ path: `tags.${i}`, message: "tags gromesh-* are reserved" }); });
+      errors.push(...this.catalog.importConfigErrors(body.name, body.config ?? {}));
+    }
+    if (errors.length) throw unprocessable("Invalid workspace plugin", errors);
+  }
+
+  /** Only key-auth/basic-auth/jwt are modelled in the core; two distinct effective mechanisms are forbidden. */
+  private async checkWorkspaceAuthentication(tx: Executor, envId: string, id: string, body: PluginWrite): Promise<void> {
+    const auth = new Set(["key-auth", "basic-auth", "jwt"]);
+    if (!auth.has(body.name)) return;
+    if (body.scope?.consumerId) throw unprocessable("Invalid workspace plugin", [{ path: "scope.consumerId", message: "an authenticator cannot be scoped to a consumer" }]);
+    if (body.enabled === false) return;
+    const all = await tx.select().from(plugins).where(eq(plugins.environmentId, envId));
+    const candidates = [...all.filter(p => p.id !== id).map(p => ({ name: p.name, enabled: p.enabled, scope: { serviceId: p.serviceId, routeId: p.routeId, consumerId: p.consumerId } })), body];
+    const ownRoutes = await tx.select().from(routes).where(eq(routes.environmentId, envId));
+    for (const route of ownRoutes) {
+      const names = new Set(candidates.filter(p => auth.has(p.name) && p.enabled !== false && !p.scope?.consumerId &&
+        (!p.scope?.routeId || p.scope.routeId === route.id) && (!p.scope?.serviceId || p.scope.serviceId === route.serviceId)).map(p => p.name));
+      if (names.size > 1) throw unprocessable("Invalid workspace plugin", [{ path: "name", message: "at most one effective authentication mechanism per route is allowed" }]);
+    }
   }
 
   private redacted(p: ReturnType<typeof toPlugin>) {
@@ -167,7 +220,7 @@ export class PluginsService {
     return row;
   }
 
-  /** Catalog rules (ours), then the config itself is validated by Kong — outside any transaction. */
+  /** Catalog rules (ours), then the config itself is validated by the pinned Kong. */
   async validate(id: string, body: PluginWrite): Promise<void> {
     const entry = this.catalog.find(body.name);
     if (!entry) throw unprocessable("Invalid plugin", [{ path: "name", message: `unknown plugin "${body.name}"` }]);
@@ -242,8 +295,7 @@ export class PluginsController {
 }
 
 /**
- * control-plane-v2: the same service in the workspace with the environment's id (decision H-9). Writing waits for
- * the platform-only capabilities (pre/post-function, file-log, *_by_lua, ambient cloud credentials) of the F-1 track.
+ * control-plane-v2 shares the v1 service (H-9); its writes remain draft-only under the workspace lock.
  */
 @Controller("api/v2/workspaces/:workspaceId/plugins")
 export class WorkspacePluginsController {
@@ -253,6 +305,18 @@ export class WorkspacePluginsController {
   @RequiredPermission("workspace.read", "workspace")
   list(@Param("workspaceId", uuidParam()) workspaceId: string, @Query() query: Record<string, unknown>) {
     return this.plugins.list(workspaceId, query);
+  }
+
+  @Post()
+  @RequiredPermission("gateway.write", "workspace")
+  create(@Ctx() ctx: RequestContext, @Param("workspaceId", uuidParam()) workspaceId: string, @Body(contractBodyV2("WorkspacePluginWrite")) body: PluginWrite) {
+    return this.plugins.create(ctx, workspaceId, body, { draftOnly: true });
+  }
+
+  @Put(":pluginId")
+  @RequiredPermission("gateway.write", "workspace")
+  replace(@Ctx() ctx: RequestContext, @Param("workspaceId", uuidParam()) workspaceId: string, @Param("pluginId", uuidParam()) pluginId: string, @Body(contractBodyV2("WorkspacePluginWrite")) body: PluginWrite) {
+    return this.plugins.replace(ctx, workspaceId, pluginId, body, { draftOnly: true });
   }
 
   @Get(":pluginId")
