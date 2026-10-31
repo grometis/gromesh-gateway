@@ -1,7 +1,7 @@
 import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { WorkspaceService } from "../api/client-v2";
+import type { WorkspaceRoute, WorkspaceService } from "../api/client-v2";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 // Exercise readOnly with full editing permission, so RBAC cannot hide a regression.
@@ -10,11 +10,11 @@ vi.mock("../auth", () => ({ useCanEdit: () => true }));
 const W = "6d3e8b20-4c5e-4d6f-9a70-00000000000a";
 const NOW = "2026-10-30T12:00:00Z";
 const service: WorkspaceService = { id: "service-1", workspaceId: W, name: "cobranca", protocol: "http", host: "billing.internal", port: 80, enabled: true, tags: [], upstreamId: null, path: null, createdAt: NOW, updatedAt: NOW };
-const route = { id: "route-1", name: "billing-api", serviceId: service.id, paths: ["/billing"], methods: ["GET"], createdAt: NOW, updatedAt: NOW };
+const route: WorkspaceRoute = { id: "route-1", name: "billing-api", serviceId: service.id, paths: ["/billing"], methods: ["GET"], protocols: ["http", "https"], stripPath: true, preserveHost: false, pathCompatibility: "workspace-default", createdAt: NOW, updatedAt: NOW };
 const plugin = { id: "plugin-1", name: "rate-limiting", enabled: false, scope: { serviceId: service.id }, config: { minute: 5 }, createdAt: NOW, updatedAt: NOW };
 const page = (items: unknown[]) => ({ items, nextCursor: null });
 
-async function load(status = "active", publishMode = "manual") {
+async function load(status = "active", publishMode = "manual", storedRoutes: WorkspaceRoute[] = [route]) {
   vi.resetModules();
   const sent: Request[] = [];
   const NativeRequest = Request;
@@ -29,10 +29,11 @@ async function load(status = "active", publishMode = "manual") {
     if (request.method !== "GET") throw new Error(`Unexpected mutation: ${request.method} ${path}`);
     if (path.endsWith(`/services/${service.id}`)) return Response.json(service);
     if (path.endsWith("/services")) return Response.json(page([service]));
-    if (path.endsWith("/routes")) return Response.json(page([route]));
+    if (path.endsWith("/routes")) return Response.json(page(storedRoutes));
     if (path.endsWith("/plugins")) return Response.json(page([plugin]));
-    if (path === `/api/v1/environments/${W}`) return Response.json({ id: W, publishMode, hasUnpublishedChanges: false });
+    if (path === `/api/v1/environments/${W}`) return Response.json({ id: W, publishMode, currentVersion: null, hasUnpublishedChanges: false });
     if (path === `/api/v2/workspaces/${W}`) return Response.json({ id: W, slug: "billing", status, activeRelease: null });
+    if (path.endsWith("/releases")) return Response.json([]);
     if (path.endsWith("/upstreams") || path.endsWith("/consumers")) return Response.json(page([]));
     throw new Error(`Unexpected query: ${path}`);
   });
@@ -82,7 +83,28 @@ describe("service detail route and plugin access", () => {
     expect(html).not.toContain(`Mais ações para ${plugin.name}`);
     expect(sent.some((r) => new URL(r.url).searchParams.get("serviceId") === service.id && r.url.includes("/routes"))).toBe(true);
     expect(sent.some((r) => new URL(r.url).searchParams.get("serviceId") === service.id && r.url.includes("/plugins"))).toBe(true);
-    expect(sent.filter((r) => r.url.includes("/api/v1/") && ["POST", "PUT", "DELETE", "PATCH"].includes(r.method))).toEqual([]);
+    expect(sent.every((r) => r.method === "GET")).toBe(true);
+    expect(client.getMutationCache().getAll()).toEqual([]);
+  });
+
+  it.each([
+    route,
+    { ...route, pathCompatibility: "legacy-preserved" as const },
+    { ...route, pathCompatibility: "legacy-preserved" as const, paths: [], hosts: ["billing.example"] },
+  ])("shows a scoped route without any actions when readOnly (compatibility $pathCompatibility, paths $paths)", async (stored) => {
+    const { ScopedRoutes, loaded, sent, client } = await load("active", "manual", [stored]);
+    const html = await loaded(<ScopedRoutes envId={W} service={service} readOnly />);
+    expect(html).toContain(route.name);
+    expect(html).toContain(service.name);
+    expect(html).not.toMatch(/<button|aria-label="Ações"|class="actions"|<form|role="dialog"/);
+    const queries = sent.filter((r) => new URL(r.url).pathname.endsWith("/routes"));
+    expect(queries.length).toBeGreaterThan(0);
+    for (const request of queries) {
+      const url = new URL(request.url);
+      expect(url.pathname).toBe(`/api/v2/workspaces/${W}/routes`);
+      expect(url.searchParams.get("serviceId")).toBe(service.id);
+    }
+    expect(sent.every((r) => r.method === "GET")).toBe(true);
     expect(client.getMutationCache().getAll()).toEqual([]);
   });
 
@@ -93,7 +115,7 @@ describe("service detail route and plugin access", () => {
     expect(html).not.toMatch(/Adicionar plugin|Editar|Mais ações|type="checkbox"|role="switch"/);
   });
 
-  it("keeps creation, editing and deletion actions by default for v1 pages and scoped components", async () => {
+  it("keeps default editing actions for workspace routes and legacy plugins", async () => {
     const { RoutesPage, PluginsPage, ScopedRoutes, ScopedPlugins, loaded } = await load();
     for (const element of [<RoutesPage />, <ScopedRoutes envId={W} service={service} />]) {
       const html = await loaded(element);
