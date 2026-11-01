@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { NODE_IMAGE, pullImages, VECTOR_IMAGE } from "./docker-images.mjs";
+import { NODE_IMAGE, pullImages, VECTOR_IMAGE, VECTOR_TEST } from "./docker-images.mjs";
 
 const exec = promisify(execFile);
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -85,8 +85,8 @@ async function main() {
     await run(["run", "--rm", "-e", "CLICKHOUSE_PASSWORD=unit-test",
       "-e", "GROMESH_CLUSTER_ID=00000000-0000-4000-8000-00000000c0c0", "-e", "GROMESH_ENVIRONMENT_ID=any", "-e", 'GROMESH_KEY_NAMES=["legacy-key"]',
       "-v", `${root}${directory}:/etc/vector:ro`,
-      "-v", `${root}deploy/observability/vector:/tests:ro`, VECTOR_IMAGE,
-      "test", "--dangerously-allow-env-var-interpolation", "/etc/vector/vector.yaml",
+      "-v", `${root}deploy/observability/vector:/tests:ro`, ...VECTOR_TEST,
+     
       "/tests/key-names.tests.yaml", "/tests/path-masking.tests.yaml"]);
   }
   await exec("pnpm", ["--filter", "@gromesh/compiler", "build"], { cwd: root, env, timeout: 60_000 });

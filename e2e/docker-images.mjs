@@ -7,6 +7,10 @@ import { promisify } from "node:util";
 const exec = promisify(execFile);
 
 export const VECTOR_IMAGE = "timberio/vector:0.57.0-alpine@sha256:19e3526faf4d4b1ed0c28a0d68d4cc3a1e13e437099986a5b7a768707907497c";
+// `docker run [options] ...VECTOR_TEST <tests.yaml...>`: unit tests of the mounted /etc/vector/vector.yaml after the same
+// "config.sh render" the entrypoint does (the raw file has @@placeholders@@ that Vector cannot parse).
+export const VECTOR_TEST = ["--entrypoint", "sh", VECTOR_IMAGE, "-c",
+  'sh /etc/vector/config.sh render /etc/vector/vector.yaml > /tmp/vector.yaml && exec vector test /tmp/vector.yaml "$@"', "vector-test"];
 export const NODE_IMAGE = "node:24.18.0-alpine";
 // The same ClickHouse as deploy/compose: bumped together.
 export const CLICKHOUSE_IMAGE = "clickhouse/clickhouse-server:25.8.33.6-alpine@sha256:87e0a5b72f5465b18eacca7c76850e7ff551c9795c50e451f5646299e5e24146";

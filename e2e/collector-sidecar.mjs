@@ -273,6 +273,7 @@ async function main() {
   await exec("mkdir", ["-p", open]);
   writeFileSync(join(open, "vector.yaml"), stripped);
   writeFileSync(join(open, "entrypoint.sh"), readFileSync(join(root, "deploy/observability/vector/entrypoint.sh")));
+  writeFileSync(join(open, "config.sh"), readFileSync(join(root, "deploy/observability/vector/config.sh")));
   await startCollector({ config: open });
   const beforeOpen = await rows();
   const forgedOpen = (await post(intake, "", event(randomBytes(16).toString("hex")))).status;
