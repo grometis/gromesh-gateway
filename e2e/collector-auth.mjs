@@ -9,6 +9,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { NODE_IMAGE, pullImages } from "./docker-images.mjs";
+import { assertStack } from "../scripts/stack-guard.mjs";
 
 const exec = promisify(execFile);
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -65,6 +66,7 @@ async function rows(environmentId) {
 }
 
 async function main() {
+  await assertStack("acceptance");
   await pullImages([NODE_IMAGE]);
   const { stdout: agents } = await compose("ps", "--status", "running", "-q", "agent");
   check(agents.trim() === "", "Stop the compose agent before running: it would overwrite the test config");

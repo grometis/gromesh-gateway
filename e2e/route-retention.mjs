@@ -2,8 +2,10 @@
 // ClickHouse-only acceptance: never changes the gateway or collector, and deletes only its own test rows.
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { assertStack } from "../scripts/stack-guard.mjs";
 
 export async function retentionAcceptance() {
+  await assertStack("acceptance");
   const environmentId = randomUUID();
   const shortRoute = randomUUID();
   const defaultRoute = randomUUID();

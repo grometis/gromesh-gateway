@@ -5,6 +5,7 @@ export default defineConfig({
   testMatch: "*.spec.ts",
   // The kind scenario has its own config and environment (e2e/kind/run.sh).
   testIgnore: "kind/**",
+  globalSetup: "./stack-guard.setup.ts",
   timeout: 120_000,
   expect: { timeout: 10_000 },
   // The scenario owns the compose agent and data plane; it must never run concurrently.

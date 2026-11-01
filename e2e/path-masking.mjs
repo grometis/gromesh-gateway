@@ -7,6 +7,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { NODE_IMAGE, pullImages, VECTOR_IMAGE } from "./docker-images.mjs";
+import { assertStack } from "../scripts/stack-guard.mjs";
 
 const exec = promisify(execFile);
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -79,6 +80,7 @@ async function admin(method, body) {
 }
 
 async function main() {
+  await assertStack("acceptance");
   // The timeouts below cover only the runs: the images are pulled first, with retries.
   await pullImages([VECTOR_IMAGE, NODE_IMAGE]);
   for (const directory of ["deploy/observability/vector", "deploy/helm/data-plane/files/vector"]) {

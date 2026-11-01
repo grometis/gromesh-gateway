@@ -7,6 +7,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { NODE_IMAGE, pullImages } from "./docker-images.mjs";
+import { assertStack } from "../scripts/stack-guard.mjs";
 
 const exec = promisify(execFile);
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -68,6 +69,7 @@ async function collectorReady(timeoutMs = 60_000) {
 }
 
 async function main() {
+  await assertStack("acceptance");
   // The timeouts below cover only the runs: the helper image is pulled first, with retries.
   await pullImages([NODE_IMAGE]);
   await exec("pnpm", ["--filter", "@gromesh/compiler", "build"], { cwd: root, env, timeout: 60_000 });

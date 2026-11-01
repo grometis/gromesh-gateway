@@ -38,6 +38,9 @@ pnpm smoke                # aplica contracts/examples/snapshot.example.json no K
 pnpm --filter @gromesh/compiler example   # regenera o exemplo do contrato
 pnpm --filter @gromesh/control-plane db:generate -- --name <nome>   # nova migração a partir de src/db/schema.ts
 pnpm --filter @gromesh/control-plane test:e2e                      # contra a stack do compose
+# Ao lado de outra stack: GROMESH_STACK_ISOLATED=1 + COMPOSE_PROJECT_NAME próprio, COMPOSE_FILE, UI_URL, CLICKHOUSE_URL,
+# CLICKHOUSE_PASSWORD e POSTGRES_PORT (integração: TEST_DATABASE_URL, TEST_CLICKHOUSE_URL, KONG_VALIDATOR_URL e senhas
+# TEST_CLICKHOUSE_*); os padrões apontam para a stack padrão, e scripts/stack-guard.mjs recusa antes de escrever.
 ```
 
 Os testes de integração do control plane usam um Postgres real: suba o do compose (`pnpm dev:up`) ou aponte `TEST_DATABASE_URL`.
