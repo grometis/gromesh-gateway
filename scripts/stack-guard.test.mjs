@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { stackProblems, assertStack, disposableLabel } from "./stack-guard.mjs";
+import { stackProblems, assertStack, disposableLabel, composeProblems, daemonProblems, hostBindSource } from "./stack-guard.mjs";
 import { fixture, remappedFixture } from "./stack-guard.fixture.mjs";
 const secret = "fixture-secret-never-in-diagnostics";
 const problems = (f) => stackProblems("acceptance", f.env, f.containers, f.volumes, f.networks).join("\n");
@@ -168,4 +168,75 @@ test("a stopped sidecar may retain a removed Kong namespace after recreation, bu
   assert.equal(problems(f), "");
   f.containers.at(-1).mounts.push({ type: "volume", name: "foreign", destination: "/data" });
   assert.match(problems(f), /volume/);
+});
+
+// Future services must be proved even when no container has been created yet.
+test("effective Compose protects future one-shots, storage, networks and checkout binds", () => {
+  const f = fixture();
+  assert.deepEqual(composeProblems(f.env, f.compose, f.images), []);
+  for (const mutate of [
+    c => { c.services.smoke.labels = {}; },
+    c => { c.services.smoke.volumes = [{type: "volume", source: "foreign", target: "/data"}]; },
+    c => { c.volumes["pg-data"].external = true; },
+    c => { c.volumes["pg-data"].name = "foreign"; },
+    c => { c.services.smoke.volumes = [{type: "volume", target: "/data"}]; },
+    c => { c.services.smoke.volumes = [{type: "bind", source: "/tmp/foreign", target: "/data", read_only: true}]; },
+    c => { c.services.smoke.volumes[0].read_only = false; },
+    c => { c.networks.default.external = true; },
+    c => { c.services.smoke.network_mode = "host"; },
+    c => { c.services.smoke.networks = {foreign: {}}; },
+    c => { c.services.smoke.volumes_from = ["foreign"]; },
+    c => { c.services.smoke.configs = [{source: "foreign"}]; },
+    c => { c.services.smoke.secrets = [{source: "foreign"}]; },
+    c => { c.services.smoke.use_api_socket = true; },
+  ]) {
+    const config = structuredClone(f.compose);
+    mutate(config);
+    assert.ok(composeProblems(f.env, config, f.images).length > 0);
+  }
+});
+test("image VOLUME on an exited ClickHouse init is refused until explicitly covered", () => {
+  const f = fixture();
+  const image = f.compose.services["clickhouse-init"].image;
+  f.images[image] = ["/var/lib/clickhouse"];
+  assert.ok(composeProblems(f.env, f.compose, f.images).some(p => p.includes("image volume")));
+  f.compose.services["clickhouse-init"].tmpfs = ["/var/lib/clickhouse", "/var/log/clickhouse-server"];
+  assert.deepEqual(composeProblems(f.env, f.compose, f.images), []);
+  const init = {...f.containers[0], id: "exited-init", service: "clickhouse-init", running: false,
+    mounts: [{type: "volume", name: "anonymous-unlabelled", destination: "/var/lib/clickhouse"}]};
+  f.containers.push(init);
+  assert.match(problems(f), /mounted volume/);
+  init.mounts = [{type: "tmpfs", destination: "/var/lib/clickhouse"}];
+  assert.equal(problems(f), "");
+});
+test("daemon must be a local Unix context and a remote DOCKER_HOST always refuses", () => {
+  const context = {Endpoints: {docker: {Host: "unix:///var/run/docker.sock"}}};
+  assert.deepEqual(daemonProblems({}, context), []);
+  for (const env of [{DOCKER_HOST: "tcp://127.0.0.1:2375"}, {DOCKER_HOST: "ssh://foreign"}])
+    assert.ok(daemonProblems(env, context).length > 0);
+  for (const host of ["tcp://127.0.0.1:2375", "ssh://foreign", "npipe:////./pipe/docker_engine", "unix://foreign/socket", "unix:relative"])
+    assert.ok(daemonProblems({}, {Endpoints: {docker: {Host: host}}}).length > 0);
+  assert.ok(daemonProblems({}, {}).length > 0);
+});
+
+test("a future Compose volume/network cannot adopt an existing foreign resource", async () => {
+  for (const type of ["volumes", "networks"]) {
+    const f = fixture();
+    const key = "future";
+    f.compose[type][key] = {name: `${f.env.COMPOSE_PROJECT_NAME}_${key}`, labels: {[disposableLabel]: f.env.GROMESH_DISPOSABLE_ID}};
+    f[type].push({name: f.compose[type][key].name, project: "foreign", disposableId: "foreign"});
+    await assert.rejects(assertStack("acceptance", f.env, async () => f), /ownership/);
+  }
+});
+
+test("Docker Desktop translated bind paths retain real checkout proof only on a verified Mac daemon", () => {
+  const source = new URL("../scripts", import.meta.url).pathname;
+  assert.equal(hostBindSource(`/host_mnt${source}`, "Docker Desktop", "darwin"), source);
+  assert.equal(hostBindSource(`/host_mnt${source}`, "Linux", "darwin"), `/host_mnt${source}`);
+  assert.equal(hostBindSource(`/host_mnt${source}`, "Docker Desktop", "linux"), `/host_mnt${source}`);
+  const f = fixture();
+  f.containers[0].mounts = [{type: "bind", source: hostBindSource(`/host_mnt${source}`, "Docker Desktop", "darwin"), destination: "/scripts", writable: false}];
+  assert.equal(problems(f), "");
+  f.containers[0].mounts[0].source = hostBindSource("/host_mnt/tmp/foreign", "Docker Desktop", "darwin");
+  assert.match(problems(f), /bind/);
 });

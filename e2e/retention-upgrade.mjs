@@ -8,10 +8,9 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { CLICKHOUSE_IMAGE, pullImages, VECTOR_IMAGE } from "./docker-images.mjs";
-import { disposableDocker } from "../scripts/disposable-docker.mjs";
-import { assertStack } from "../scripts/stack-guard.mjs";
+import { assertStandalone, disposableDocker } from "../scripts/disposable-docker.mjs";
 
-await assertStack("acceptance");
+await assertStandalone();
 
 const exec = promisify(execFile);
 const root = new URL("../", import.meta.url);
@@ -26,7 +25,7 @@ async function main() {
     const child = execFile("docker", args, { timeout: 60_000, maxBuffer: 1024 * 1024 },
       (error, stdout, stderr) => error ? reject(Object.assign(new Error("Isolated ClickHouse command failed"), { code: error.code, stderr })) : resolve({ stdout, stderr }));
     if (input !== undefined) child.stdin.end(input);
-  }));
+  }), process.env.GROMESH_DISPOSABLE_ID, {bindRoots: []});
   const sql = async query => (await run(["exec", "-i", name, "clickhouse-client", "-n"], query)).stdout.trim();
   const check = () => run(["run", "--rm", "--network", `container:${name}`,
     "-e", "CLICKHOUSE_ENDPOINT=http://127.0.0.1:8123", "-e", "CLICKHOUSE_DATABASE_BASE64=Z3JvbWVzaA==",

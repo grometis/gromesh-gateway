@@ -15,10 +15,9 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { NODE_IMAGE, pullImages } from "./docker-images.mjs";
-import { disposableDocker } from "../scripts/disposable-docker.mjs";
-import { assertStack } from "../scripts/stack-guard.mjs";
+import { assertStandalone, disposableDocker } from "../scripts/disposable-docker.mjs";
 
-await assertStack("acceptance");
+await assertStandalone();
 
 const exec = promisify(execFile);
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -40,7 +39,7 @@ const docker = disposableDocker((args, { input, timeout = 300_000, allowFail = f
     else resolve({ code: error ? (error.code ?? 1) : 0, stdout, stderr });
   });
   if (input !== undefined) { child.stdin.end(input); }
-}));
+}), process.env.GROMESH_DISPOSABLE_ID, {bindRoots: [dir]});
 
 // --- report -------------------------------------------------------------------------------------------------------
 const secrets = new Set();

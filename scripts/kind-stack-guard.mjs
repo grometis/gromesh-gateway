@@ -1,8 +1,13 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
+import { assertLocalDaemon } from "./stack-guard.mjs";
 import { mkdtempSync, writeFileSync, rmSync, readFileSync, readdirSync, readlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 const fail = () => new Error("Kind test stack refused before any write: ownership, kubeconfig or port-forward proof missing");
+export function kindClusterName(run) {
+  return `gromesh-mvp-${createHash("sha256").update(run).digest("hex").slice(0, 32)}`;
+}
 export function kindProblems(env, node, current, exported) {
   const problems = [];
   const name = env.KIND_CLUSTER_NAME;
@@ -10,6 +15,8 @@ export function kindProblems(env, node, current, exported) {
     problems.push("KIND_CLUSTER_NAME");
   if (!/^[a-zA-Z0-9_-]{12,128}$/.test(env.GROMESH_DISPOSABLE_ID ?? ""))
     problems.push("GROMESH_DISPOSABLE_ID");
+  else if (name !== kindClusterName(env.GROMESH_DISPOSABLE_ID))
+    problems.push("kind cluster does not belong to this execution ID");
   if (!env.KUBECONFIG)
     problems.push("KUBECONFIG");
   if (node?.Config?.Labels?.["io.x-k8s.kind.cluster"] !== name || node?.State?.Running !== true)
@@ -61,6 +68,7 @@ export async function assertKindStack(scope = "cluster", env = process.env) {
   try {
     if (!env.KIND_CLUSTER_NAME || !env.KUBECONFIG || !env.GROMESH_DISPOSABLE_ID)
       throw fail();
+    await assertLocalDaemon(env);
     const node = JSON.parse(await exec("docker", ["inspect", `${env.KIND_CLUSTER_NAME}-control-plane`]))[0];
     const current = JSON.parse(await exec("kubectl", ["--kubeconfig", env.KUBECONFIG, "config", "view", "--raw", "--minify", "-o", "json"]));
     const yaml = await exec("kind", ["get", "kubeconfig", "--name", env.KIND_CLUSTER_NAME]);
@@ -102,4 +110,7 @@ export async function assertKindStack(scope = "cluster", env = process.env) {
   }
 }
 if (process.argv[1] && import.meta.url === new URL(process.argv[1], "file:").href)
-  await assertKindStack(process.argv[2]);
+  if (process.argv[2] === "name") {
+    if (!/^[a-zA-Z0-9_-]{12,128}$/.test(process.env.GROMESH_DISPOSABLE_ID ?? "")) throw fail();
+    console.log(kindClusterName(process.env.GROMESH_DISPOSABLE_ID));
+  } else await assertKindStack(process.argv[2]);

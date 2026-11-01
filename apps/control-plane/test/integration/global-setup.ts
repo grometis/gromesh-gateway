@@ -1,14 +1,13 @@
 import { readFileSync } from "node:fs";
 import pg from "pg";
 import type { TestProject } from "vitest/node";
-import { clickhouseInputs, createPostgresSandbox, provisionClickhouse, type ClickhouseConfig } from "../../../../scripts/integration-databases.mjs";
+import { integrationInputs, createPostgresSandbox, provisionClickhouse, type ClickhouseConfig } from "../../../../scripts/integration-databases.mjs";
 import { runMigrations } from "../../src/db/migrate.js";
 
 /** The base connection only issues CREATE/DROP DATABASE, never fixture or migration SQL. */
 export default async function setup({ provide }: TestProject) {
   // Validate forbidden ClickHouse overrides before the first connection, including PostgreSQL.
-  const clickhouseAdmin = clickhouseInputs(process.env);
-  const adminUrl = process.env.TEST_DATABASE_URL ?? "postgres://gromesh:gromesh@127.0.0.1:5432/gromesh";
+  const { clickhouse: clickhouseAdmin, databaseUrl: adminUrl } = integrationInputs(process.env);
   const postgres = createPostgresSandbox(adminUrl, async (connectionString) => {
     const client = new pg.Client({ connectionString });
     await client.connect();

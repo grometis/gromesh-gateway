@@ -42,6 +42,10 @@ services:
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set a fresh password}
   clickhouse-init:
     labels: *disposable
+    # The client-only init still inherits the server image VOLUME; keep its storage/logs ephemeral.
+    tmpfs:
+      - /var/lib/clickhouse
+      - /var/log/clickhouse-server
     environment:
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set a fresh password}
       CLICKHOUSE_READER_PASSWORD: ${CLICKHOUSE_READER_PASSWORD:?set a fresh password}

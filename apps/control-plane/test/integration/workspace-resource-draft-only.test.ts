@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import pg from "pg";
+import { integrationDatabaseName, createIntegrationDatabase, dropIntegrationDatabase } from "./databases.js";
 import { basicAuthPasswordHash, type ConfigDocument, type GatewayState } from "@gromesh/compiler";
 import { basicAuthHashContext, credentialContext, ENCRYPTOR, Encryptor, jwtSecretContext, snapshotContext } from "../../src/crypto/crypto.js";
 import { runMigrations } from "../../src/db/migrate.js";
@@ -44,37 +44,22 @@ interface DraftState {
 }
 
 describe("remaining resource draft-only writes (WS-R4 B2)", () => {
-  const adminUrl = process.env.TEST_DATABASE_URL ?? "postgres://gromesh:gromesh@127.0.0.1:5432/gromesh";
-  const database = `gromesh_ws_r4d_${Date.now()}_${process.pid}`;
+  const database = integrationDatabaseName("wsr4d");
   const applicationName = `ws-r4d-${process.pid}`;
-  let databaseCreated = false;
   let h: Harness;
   let viewer: ApiClient;
   beforeAll(async () => {
     // Table barriers and audit-trigger DDL affect every workspace in a database. Foreign harnesses also
     // publish every eligible draft, even when this harness's poller is off: isolate the whole file.
-    const admin = new pg.Client({ connectionString: adminUrl });
-    await admin.connect();
-    try {
-      await admin.query(`CREATE DATABASE "${database}"`);
-      databaseCreated = true;
-    } finally { await admin.end(); }
-    const url = new URL(adminUrl);
-    url.pathname = `/${database}`;
-    url.searchParams.set("application_name", applicationName);
-    await runMigrations(url.toString());
-    h = await startHarness({ databaseUrl: url.toString(), autoPublishPollMs: 0 });
+    const url = await createIntegrationDatabase(database, { applicationName });
+    await runMigrations(url);
+    h = await startHarness({ databaseUrl: url, autoPublishPollMs: 0 });
     viewer = (await h.as("viewer")).api;
   });
   afterAll(async () => {
     try { await h?.close(); }
     finally {
-      if (databaseCreated) {
-        const admin = new pg.Client({ connectionString: adminUrl });
-        await admin.connect();
-        try { await admin.query(`DROP DATABASE "${database}" WITH (FORCE)`); }
-        finally { await admin.end(); }
-      }
+      await dropIntegrationDatabase(database);
     }
   });
   const state = async (ws: string) => (await h.sql.query<DraftState>(`select to_jsonb(e) as environment,

@@ -9,6 +9,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { NODE_IMAGE, pullImages } from "./docker-images.mjs";
+import { dockerProcess, processFailure } from "../scripts/private-process.mjs";
 import { assertStack } from "../scripts/stack-guard.mjs";
 
 await assertStack("acceptance");
@@ -17,7 +18,12 @@ const exec = promisify(execFile);
 const root = fileURLToPath(new URL("../", import.meta.url));
 const composeFile = fileURLToPath(new URL("../deploy/compose/docker-compose.yml", import.meta.url));
 const env = { ...process.env, POSTGRES_PORT: process.env.POSTGRES_PORT ?? "55433" };
-const run = (args) => exec("docker", args, { cwd: root, env, timeout: 60_000, maxBuffer: 8 * 1024 * 1024 });
+const secrets = new Set();
+const run = (args, extraEnv = {}) => {
+  const command = dockerProcess(args, {...env, ...extraEnv});
+  return exec("docker", command.args, { cwd: root, env: command.env, timeout: 60_000, maxBuffer: 8 * 1024 * 1024 })
+    .catch(error => { throw processFailure(error, command.env, [...secrets]); });
+};
 const compose = (...args) => run(["compose", ...(env.COMPOSE_FILE ? [] : ["-f", composeFile]), "--profile", "observability", ...args]);
 const proxy = process.env.KONG_PROXY_URL ?? "http://127.0.0.1:8000";
 const clickhouse = process.env.CLICKHOUSE_URL ?? "http://127.0.0.1:8123";
@@ -84,14 +90,22 @@ async function main() {
   const pinnedName = `gromesh-pinned-collector-${own.slice(0, 8)}`;
   const rotated = randomBytes(36).toString("base64url");
   const otherCluster = randomBytes(36).toString("base64url");
+  secrets.add(rotated); secrets.add(otherCluster);
+  if (process.env.GITHUB_ACTIONS === "true") {
+    console.log(`::add-mask::${rotated}`);
+    console.log(`::add-mask::${otherCluster}`);
+  }
   const startPinned = async (previous) => {
     await run(["rm", "-f", pinnedName]).catch(() => {});
     await run(["run", "-d", "--name", pinnedName, "--network", network.trim().split(" ")[0], "--user", "65534:65534",
       "--tmpfs", "/var/lib/vector:uid=65534,gid=65534,mode=0700", "--entrypoint", "sh",
       "-e", "GROMESH_CLUSTER_ID=00000000-0000-4000-8000-00000000c0c0", "-e", `GROMESH_ENVIRONMENT_ID=${own}`,
-      "-e", `GROMESH_COLLECTOR_TOKEN=${rotated}`, "-e", `GROMESH_COLLECTOR_TOKEN_PREVIOUS=${previous}`,
-      "-e", `CLICKHOUSE_PASSWORD=${process.env.CLICKHOUSE_WRITER_PASSWORD ?? "gromesh-dev-writer"}`,
-      "-v", `${root}deploy/observability/vector:/etc/vector:ro`, VECTOR_IMAGE, "/etc/vector/entrypoint.sh"]);
+      "-e", "GROMESH_COLLECTOR_TOKEN", "-e", "GROMESH_COLLECTOR_TOKEN_PREVIOUS",
+      "-e", "CLICKHOUSE_PASSWORD",
+      "-v", `${root}deploy/observability/vector:/etc/vector:ro`, VECTOR_IMAGE, "/etc/vector/entrypoint.sh"], {
+        GROMESH_COLLECTOR_TOKEN: rotated, GROMESH_COLLECTOR_TOKEN_PREVIOUS: previous,
+        CLICKHOUSE_PASSWORD: process.env.CLICKHOUSE_WRITER_PASSWORD,
+      });
   };
   await startPinned(token);
 

@@ -2,11 +2,91 @@
 // Docker's container and volume metadata prove it. Integration uses exclusive databases instead (see its setup).
 import { AssertionError } from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { resolve } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
+import { realpathSync } from "node:fs";
 
 export const disposableLabel = "com.grometis.gromesh.disposable";
 const projectLabel = "com.docker.compose.project";
 const serviceLabel = "com.docker.compose.service";
+const checkout = resolve(import.meta.dirname, "..");
+function localSocket(endpoint) {
+  try {
+    const url = new URL(endpoint);
+    return url.protocol === "unix:" && !url.host && url.pathname.startsWith("/") && !url.search && !url.hash;
+  } catch { return false; }
+}
+export function daemonProblems(env, context) {
+  return (env.DOCKER_HOST && !localSocket(env.DOCKER_HOST)) || !localSocket(context?.Endpoints?.docker?.Host)
+    ? ["Docker daemon must use a local Unix socket in the current context; remote DOCKER_HOST/context refused"] : [];
+}
+export async function assertLocalDaemon(env = process.env) {
+  try {
+    if (env.DOCKER_HOST && !localSocket(env.DOCKER_HOST)) throw Error();
+    const context = JSON.parse(await docker(["context", "inspect"], env))[0];
+    if (daemonProblems(env, context).length) throw Error();
+  } catch {
+    throw new Error("Test stack refused before any write: Docker daemon must use a local Unix socket in the current context");
+  }
+}
+function checkoutBind(source) {
+  try {
+    const path = relative(realpathSync(checkout), realpathSync(source));
+    return path !== ".." && !path.startsWith("../") && !isAbsolute(path);
+  } catch { return false; }
+}
+// Docker Desktop reports its VM translation in Mounts.Source, rather than the host path in Compose.
+export function hostBindSource(source, daemonOs, platform = process.platform) {
+  return platform === "darwin" && daemonOs === "Docker Desktop" && source?.startsWith("/host_mnt/")
+    ? source.slice("/host_mnt".length) : source;
+}
+// Inspect the entire effective model (including inactive profiles): these are the resources the next run/up creates.
+export function composeProblems(env, config, images = {}) {
+  const problems = [];
+  const project = env.COMPOSE_PROJECT_NAME, run = env.GROMESH_DISPOSABLE_ID;
+  if (!config?.services || config.name !== project)
+    return ["Effective Compose configuration must belong to this project"];
+  for (const type of ["volumes", "networks"]) {
+    for (const [name, obj] of Object.entries(config[type] ?? {})) {
+      if (obj.external || obj.name !== `${project}_${name}` || obj.labels?.[disposableLabel] !== run
+        || (obj.driver && obj.driver !== (type === "volumes" ? "local" : "bridge")) || Object.keys(obj.driver_opts ?? {}).length)
+        problems.push(`Effective Compose ${type} must be non-external, labelled resources of this project`);
+    }
+  }
+  for (const service of Object.values(config.services)) {
+    if (service.labels?.[disposableLabel] !== run)
+      problems.push("Effective Compose service lacks this execution label");
+    if (service.volumes_from?.length || service.privileged || service.pid || service.ipc || service.devices?.length
+      || service.configs?.length || service.secrets?.length || service.use_api_socket)
+      problems.push("Effective Compose service has unproven host/container access");
+    if (service.network_mode) {
+      if (!service.network_mode.startsWith("service:") || !config.services[service.network_mode.slice(8)])
+        problems.push("Effective Compose service network is not owned by this project");
+    } else {
+      const names = Object.keys(service.networks ?? {default: {}});
+      if (!names.length || names.some(name => !config.networks?.[name]))
+        problems.push("Effective Compose service network is not owned by this project");
+    }
+    for (const m of service.volumes ?? []) {
+      if (m.type === "volume") {
+        if (!m.source || !config.volumes?.[m.source])
+          problems.push("Effective Compose volume must name a labelled project volume; anonymous volumes refused");
+      } else if (m.type === "bind") {
+        if (m.read_only !== true || !checkoutBind(m.source))
+          problems.push("Effective Compose bind must be read-only within this checkout");
+      } else if (m.type !== "tmpfs")
+        problems.push("Effective Compose mount type is unproven");
+    }
+    const image = service.image;
+    if (!image || !Array.isArray(images[image])) {
+      problems.push("Effective Compose image volume metadata could not be proved");
+      continue;
+    }
+    const targets = [...(service.volumes ?? []).map(m => m.target), ...(service.tmpfs ?? []).map(m => m.split(":")[0])];
+    if (images[image].some(path => !targets.includes(path)))
+      problems.push("Effective Compose image volume needs an explicit project volume or tmpfs mount");
+  }
+  return [...new Set(problems)];
+}
 // Keep this list beside the compose development defaults. Never interpolate values into diagnostics.
 const devSecrets = new Set(["gromesh", "gromesh-dev-admin", "gromesh-dev-observability", "gromesh-dev-reader",
   "gromesh-dev-writer", "gromesh-dev-collector-token-not-a-secret",
@@ -38,6 +118,8 @@ export function stackProblems(scope, env, containers = [], volumes = [], network
   if (scope !== "acceptance")
     throw new Error("Unknown isolation scope");
   const problems = [];
+  if (env.DOCKER_HOST && !localSocket(env.DOCKER_HOST))
+    problems.push("Docker daemon must use a local Unix socket; remote DOCKER_HOST refused");
   const project = env.COMPOSE_PROJECT_NAME;
   const run = env.GROMESH_DISPOSABLE_ID;
   if (!project || project === "gromesh" || !/^[a-z0-9][a-z0-9_-]+$/.test(project))
@@ -84,8 +166,8 @@ export function stackProblems(scope, env, containers = [], volumes = [], network
         problems.push("A project container network lacks this execution ownership proof");
     }
     for (const m of c.mounts ?? []) {
-      if (m.type === "bind" && m.writable !== false)
-        problems.push("A project container has an unproven writable bind mount");
+      if (m.type === "bind" && (m.writable !== false || !checkoutBind(m.source)))
+        problems.push("A project container has an unproven bind mount; requires read-only checkout source");
       if (m.type !== "volume")
         continue;
       const volume = volumes.find(v => v.name === m.name);
@@ -126,14 +208,28 @@ export function stackProblems(scope, env, containers = [], volumes = [], network
   }
   return [...new Set(problems)];
 }
-async function docker(args) {
-  return new Promise((resolve, reject) => execFile("docker", args, { timeout: 30000, maxBuffer: 16 * 1024 * 1024 }, (error, out) => error ? reject(new Error("Docker ownership inspection failed")) : resolve(String(out))));
+async function docker(args, env = process.env) {
+  return new Promise((resolve, reject) => execFile("docker", args, { cwd: checkout, env, timeout: 30000, maxBuffer: 16 * 1024 * 1024 }, (error, out) => error ? reject(new Error("Docker ownership inspection failed")) : resolve(String(out))));
 }
-export async function runningContainers() {
-  const ids = (await docker(["ps", "-aq"])).trim().split(/\s+/).filter(Boolean);
+export async function runningContainers(env = process.env) {
+  await assertLocalDaemon(env);
+  const context = JSON.parse(await docker(["context", "inspect"], env))[0];
+  const daemonOs = (await docker(["info", "--format", "{{.OperatingSystem}}"], env)).trim();
+  const compose = JSON.parse(await docker(["compose", ...composeFiles("", env).flatMap(f => ["-f", f]), "-p", env.COMPOSE_PROJECT_NAME, "--profile", "*", "config", "--format", "json"], env));
+  const images = {};
+  for (const [name, service] of Object.entries(compose.services ?? {})) {
+    service.image ??= `${env.COMPOSE_PROJECT_NAME}-${name}`;
+    if (!images[service.image]) {
+      const image = JSON.parse(await docker(["image", "inspect", service.image], env))[0];
+      if (!image?.Config) throw new Error("Image volume metadata unavailable");
+      images[service.image] = Object.keys(image.Config?.Volumes ?? {});
+    }
+  }
+  const read = args => docker(args, env);
+  const ids = (await read(["ps", "-aq"])).trim().split(/\s+/).filter(Boolean);
   if (!ids.length)
-    return { containers: [], volumes: [], networks: [] };
-  const raw = JSON.parse(await docker(["inspect", ...ids]));
+    return { containers: [], volumes: [], networks: [], context, compose, images };
+  const raw = JSON.parse(await read(["inspect", ...ids]));
   const containers = raw.map(c => ({
     id: c.Id, project: c.Config?.Labels?.[projectLabel] ?? "", service: c.Config?.Labels?.[serviceLabel] ?? "",
     disposableId: c.Config?.Labels?.[disposableLabel] ?? "", running: c.State?.Running === true,
@@ -141,26 +237,38 @@ export async function runningContainers() {
     bindings: Object.entries(c.NetworkSettings?.Ports ?? {}).flatMap(([key, bindings]) => (bindings ?? []).map(b => ({ port: Number(b.HostPort), host: b.HostIp, protocol: key.split("/")[1] }))),
     ports: [...new Set(Object.values(c.NetworkSettings?.Ports ?? {}).flatMap(bindings => (bindings ?? []).map(b => Number(b.HostPort))))],
     environment: Object.fromEntries((c.Config?.Env ?? []).map(e => { const i = e.indexOf("="); return [e.slice(0, i), e.slice(i + 1)]; })),
-    mounts: (c.Mounts ?? []).map(m => ({ type: m.Type, name: m.Name, destination: m.Destination, writable: m.RW })),
+    mounts: (c.Mounts ?? []).map(m => ({ type: m.Type, name: m.Name, source: hostBindSource(m.Source, daemonOs), destination: m.Destination, writable: m.RW })),
   }));
-  const names = [...new Set(containers.flatMap(c => c.mounts.filter(m => m.type === "volume").map(m => m.name)))];
-  const volumes = names.length ? JSON.parse(await docker(["volume", "inspect", ...names])).map(v => ({
+  const availableVolumes = new Set((await read(["volume", "ls", "-q"])).trim().split(/\s+/));
+  const names = [...new Set([...containers.flatMap(c => c.mounts.filter(m => m.type === "volume").map(m => m.name)),
+    ...Object.values(compose.volumes ?? {}).map(v => v.name).filter(name => availableVolumes.has(name))])];
+  const volumes = names.length ? JSON.parse(await read(["volume", "inspect", ...names])).map(v => ({
     name: v.Name, project: v.Labels?.[projectLabel] ?? "", disposableId: v.Labels?.[disposableLabel] ?? "",
   })) : [];
-  const networkNames = [...new Set(containers.filter(c => c.project).flatMap(c => c.networks))];
-  const networks = networkNames.length ? JSON.parse(await docker(["network", "inspect", ...networkNames])).map(n => ({
+  const availableNetworks = new Set((await read(["network", "ls", "--format", "{{.Name}}"])).trim().split(/\s+/));
+  const networkNames = [...new Set([...containers.filter(c => c.project).flatMap(c => c.networks),
+    ...Object.values(compose.networks ?? {}).map(n => n.name).filter(name => availableNetworks.has(name))])];
+  const networks = networkNames.length ? JSON.parse(await read(["network", "inspect", ...networkNames])).map(n => ({
     name: n.Name, project: n.Labels?.[projectLabel] ?? "", disposableId: n.Labels?.[disposableLabel] ?? "",
   })) : [];
-  return { containers, volumes, networks };
+  return { containers, volumes, networks, context, compose, images };
 }
 export async function assertStack(scope, env = process.env, inspect = runningContainers) {
   // Fail on missing configuration without even requiring a working Docker daemon.
-  const config = stackProblems(scope, env, [], []).filter(p => /must be set explicitly|COMPOSE_|GROMESH_DISPOSABLE_ID/.test(p));
+  const config = stackProblems(scope, env, [], []).filter(p => /must be set explicitly|COMPOSE_|GROMESH_DISPOSABLE_ID|Docker daemon/.test(p));
   let problems = config;
   if (!problems.length) {
     try {
-      const snapshot = await inspect();
-      problems = stackProblems(scope, env, snapshot.containers, snapshot.volumes, snapshot.networks);
+      const snapshot = await inspect(env);
+      problems = [...daemonProblems(env, snapshot.context), ...composeProblems(env, snapshot.compose, snapshot.images),
+        ...stackProblems(scope, env, snapshot.containers, snapshot.volumes, snapshot.networks)];
+      for (const type of ["volumes", "networks"]) {
+        for (const resource of Object.values(snapshot.compose?.[type] ?? {})) {
+          const existing = snapshot[type].find(r => r.name === resource.name);
+          if (existing && (existing.project !== env.COMPOSE_PROJECT_NAME || existing.disposableId !== env.GROMESH_DISPOSABLE_ID))
+            problems.push(`A future Compose ${type} resource lacks this execution ownership proof`);
+        }
+      }
     }
     catch {
       problems = ["Docker ownership inspection failed; destinations cannot be proved"];

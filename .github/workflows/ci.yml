@@ -386,6 +386,8 @@ jobs:
           docker compose --profile observability up -d --wait clickhouse
           docker compose --profile observability run --rm --no-deps clickhouse-init
           docker compose --profile observability up -d --wait --no-deps vector
+      - name: Fetch one-shot image metadata before guarded execution
+        run: docker compose --profile '*' pull --ignore-buildable
       - name: Kong accepts the compiler output (contract example)
         run: pnpm smoke
       - name: Walking skeleton (API → compiler → Kong → upstream)
@@ -418,8 +420,6 @@ jobs:
     permissions:
       contents: read
       packages: read
-    env:
-      KIND_CLUSTER_NAME: gromesh-mvp-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -428,7 +428,9 @@ jobs:
         shell: bash
         run: |
           echo "KUBECONFIG=$RUNNER_TEMP/kind-kubeconfig" >> "$GITHUB_ENV"
-          echo "GROMESH_DISPOSABLE_ID=$(openssl rand -hex 16)" >> "$GITHUB_ENV"
+          run_id="$(openssl rand -hex 16)"
+          echo "GROMESH_DISPOSABLE_ID=$run_id" >> "$GITHUB_ENV"
+          echo "KIND_CLUSTER_NAME=$(GROMESH_DISPOSABLE_ID="$run_id" node scripts/kind-stack-guard.mjs name)" >> "$GITHUB_ENV"
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
@@ -623,6 +625,7 @@ jobs:
       TEST_CLICKHOUSE_ADMIN_USER: gromesh
       TEST_CLICKHOUSE_ADMIN_PASSWORD: gromesh-dev-observability
       MIGRATION_REGRESSION: "1"
+      KONG_VALIDATOR_URL: http://127.0.0.1:8011
       MIGRATION_SCALE: "500"
     steps:
       - uses: actions/checkout@v7

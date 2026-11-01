@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { expect, test } from "@playwright/test";
-import { composeFiles } from "../scripts/stack-guard.mjs";
+import { assertStack, composeFiles } from "../scripts/stack-guard.mjs";
 
 const exec = promisify(execFile);
 const script = fileURLToPath(new URL("./admin-isolation.mjs", import.meta.url));
@@ -19,8 +19,11 @@ test("services aimed at the gateway itself never reach its Admin or status API",
 
 test("negative control: the same check fails against a TCP Admin API", async () => {
   test.setTimeout(300_000);
-  const up = (...files: string[]) => exec("docker", ["compose", ...files.flatMap((f) => ["-f", f]), "up", "-d", "--wait", "kong"],
-    { timeout: 120_000, env });
+  const up = async (...files: string[]) => {
+    await assertStack("acceptance", { ...env, COMPOSE_FILE: files.join(env.COMPOSE_PATH_SEPARATOR ?? ":") });
+    return exec("docker", ["compose", ...files.flatMap((f) => ["-f", f]), "up", "-d", "--wait", "kong"],
+      { timeout: 120_000, env });
+  };
   await up(...composeFile, tcpAdmin);
   try {
     const run = exec(process.execPath, [script], { timeout: 170_000, env: { ...env, COMPOSE_FILE: [...composeFile, tcpAdmin].join(":") } });

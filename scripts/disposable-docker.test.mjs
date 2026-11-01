@@ -28,7 +28,7 @@ function fixture() {
     }
     return { stdout: "", stderr: "", code: 0 };
   };
-  return { docker: disposableDocker(execute, run), objects, calls, run };
+  return { docker: disposableDocker(execute, run), execute, objects, calls, run };
 }
 test("standalone resources get labels and only verified resources can be attached/changed/removed", async () => {
   const f = fixture();
@@ -66,4 +66,67 @@ test("unknown volumes/network namespaces and relabelled containers fail before w
   f.objects.get("own").Config.Labels[disposableLabel] = "foreign";
   await assert.rejects(f.docker(["exec", "own", "touch", "/file"]), /ownership/);
   assert.ok(!f.calls.some(c => c[0] === "exec"));
+});
+
+test("standalone entry requires run ID and local daemon, without requiring Compose", async () => {
+  const { assertStandalone } = await import("./disposable-docker.mjs");
+  let calls = 0;
+  const inspect = async () => { calls++; return [{Endpoints: {docker: {Host: "unix:///var/run/docker.sock"}}}]; };
+  await assert.rejects(assertStandalone({}, inspect), /GROMESH_DISPOSABLE_ID/);
+  assert.equal(calls, 0);
+  await assertStandalone({GROMESH_DISPOSABLE_ID: "standalone-run-123"}, inspect);
+  assert.equal(calls, 1);
+  await assert.rejects(assertStandalone({GROMESH_DISPOSABLE_ID: "standalone-run-123", DOCKER_HOST: "ssh://foreign"}, inspect), /Unix/);
+});
+test("strict standalone mount proof refuses foreign binds, anonymous volumes and alternate mount syntax", async () => {
+  const f = fixture();
+  const run = disposableDocker(async args => { f.calls.push(args); return {stdout: ""}; }, f.run, {bindRoots: []});
+  for (const args of [["-v", "/tmp/foreign:/data"], ["-v", "/data"], ["--mount", "type=volume,source=foreign,target=/data"], ["--network=host"]]) {
+    await assert.rejects(run(["run", "--rm", ...args, "image"]), /ownership/);
+  }
+  assert.equal(f.calls.length, 0);
+});
+test("Docker secret assignments move to child environment and errors lose all raw process properties", async () => {
+  const { dockerProcess, processFailure } = await import("./private-process.mjs");
+  const secret = "rotated-fixture-credential";
+  const command = dockerProcess(["run", "-e", `GROMESH_COLLECTOR_TOKEN=${secret}`, "-e", "CLICKHOUSE_PASSWORD=pw-fixture", "image"], {});
+  assert.deepEqual(command.args, ["run", "-e", "GROMESH_COLLECTOR_TOKEN", "-e", "CLICKHOUSE_PASSWORD", "image"]);
+  assert.equal(command.env.GROMESH_COLLECTOR_TOKEN, secret);
+  const error = processFailure({message: secret, stderr: `failed ${secret} pw-fixture`, stdout: secret, cmd: secret}, command.env);
+  assert.ok(!String(error.stack).includes(secret));
+  assert.ok(!JSON.stringify(error).includes(secret));
+  assert.equal(error.cmd, undefined);
+});
+
+test("strict standalone cannot label bind-backed foreign storage as its own", async () => {
+  const calls = [];
+  const run = disposableDocker(async args => {calls.push(args); return {stdout: "[]"};}, "standalone-fixture-run", {bindRoots: []});
+  for (const type of ["volume", "network"])
+    await assert.rejects(run([type, "create", "--driver", "local", "--opt", "device=/foreign", "own-name"]), /ownership/);
+  assert.equal(calls.length, 0);
+});
+test("strict standalone proves new resources and rejects an implicit image volume", async () => {
+  const f = fixture();
+  const run = disposableDocker(f.execute, f.run, {bindRoots: []});
+  await run(["network", "create", "own-net"]);
+  await run(["volume", "create", "own-volume"]);
+  f.objects.set("image", {Config: {Volumes: {"/data": {}}}});
+  await assert.rejects(run(["run", "--rm", "image"]), /ownership/);
+  const result = await run(["run", "-d", "--name", "strict-own", "--network", "own-net", "-v", "own-volume:/data", "image"]);
+  await run(["exec", "strict-own", "touch", "/data/fixture"]);
+  await run(["rm", "-f", "strict-own"]);
+  assert.ok(f.calls.some(args => args[0] === "rm" && args.includes(result.stdout)));
+});
+
+test("real failed child cannot expose token/password through its rejection", async () => {
+  const {execFile} = await import("node:child_process");
+  const {promisify} = await import("node:util");
+  const {dockerProcess, processFailure} = await import("./private-process.mjs");
+  const command = dockerProcess(["run", "-e", "GROMESH_COLLECTOR_TOKEN=rotated-real-child-fixture", "-e", "CLICKHOUSE_PASSWORD=password-real-child-fixture", "image"], {});
+  assert.ok(!command.args.join(" ").includes(command.env.GROMESH_COLLECTOR_TOKEN));
+  await assert.rejects(promisify(execFile)(process.execPath, ["-e", "console.error(process.env.GROMESH_COLLECTOR_TOKEN, process.env.CLICKHOUSE_PASSWORD); process.exit(1)"], {env: command.env}).catch(error => {throw processFailure(error, command.env);}), error => {
+    assert.match(error.message, /REDACTED/);
+    for (const value of Object.values(command.env)) assert.ok(!String(error.stack).includes(value));
+    return true;
+  });
 });

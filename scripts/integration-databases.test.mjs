@@ -264,3 +264,26 @@ test("database setup diagnostics never expose credentials in URL parser or clien
   const queryFailure = createPostgresSandbox(adminUrl, async () => ({ async query() { throw Error(secret); }, async end() { } }));
   await assert.rejects(queryFailure.create(queryFailure.name()), safe);
 });
+
+test("integration requires all three explicit destinations before any connection", async () => {
+  const { integrationInputs } = await import("./integration-databases.mjs");
+  const env = {TEST_DATABASE_URL: adminUrl, TEST_CLICKHOUSE_URL: "http://db.invalid:8123", KONG_VALIDATOR_URL: "http://validator.invalid:8001"};
+  for (const key of Object.keys(env)) {
+    const missing = {...env}; delete missing[key];
+    assert.throws(() => integrationInputs(missing), new RegExp(key));
+  }
+  assert.doesNotThrow(() => integrationInputs(env));
+  assert.throws(() => clickhouseInputs({}), /TEST_CLICKHOUSE_URL/);
+});
+test("private file database owns its application_name URL and drops only its creation", async () => {
+  const pg = postgres();
+  const sandbox = createPostgresSandbox(adminUrl, pg.factory);
+  const name = sandbox.name("wsr4d");
+  const url = await sandbox.create(name, {applicationName: "ws-r4d-123"});
+  assert.equal(new URL(url).searchParams.get("application_name"), "ws-r4d-123");
+  assert.equal(sandbox.assertOwned(url), url);
+  assert.throws(() => sandbox.assertOwned(url.replace("ws-r4d-123", "foreign")), /not owned/);
+  await sandbox.drop(name);
+  assert.throws(() => sandbox.assertOwned(url), /not owned/);
+  assert.equal(pg.existing.size, 0);
+});

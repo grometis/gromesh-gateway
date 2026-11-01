@@ -4,7 +4,7 @@ export interface DatabaseClient {
 }
 export interface PostgresSandbox {
   name(label?: string): string;
-  create(name: string): Promise<string>;
+  create(name: string, options?: { applicationName?: string }): Promise<string>;
   assertOwned(url: string): string;
   drop(name: string): Promise<void>;
 }
@@ -16,6 +16,11 @@ export interface ClickhouseConfig {
 }
 export function createPostgresSandbox(adminUrl: string, connect: (url: string) => Promise<DatabaseClient>): PostgresSandbox;
 export function clickhouseInputs(env?: Record<string, string | undefined>): Omit<ClickhouseConfig, "database">;
+export function integrationInputs(env?: Record<string, string | undefined>): {
+  databaseUrl: string;
+  clickhouse: Omit<ClickhouseConfig, "database">;
+  validatorUrl: string;
+};
 export function provisionClickhouse(admin: Omit<ClickhouseConfig, "database">, requestsDdl: string): Promise<{
   reader: ClickhouseConfig;
   writer: ClickhouseConfig;

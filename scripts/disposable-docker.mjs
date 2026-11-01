@@ -1,10 +1,26 @@
 // Standalone harness resources are created exclusively, labelled, and recorded only after successful creation.
 // Cleanup never adopts a name: it can remove only a recorded resource whose label still matches this process.
 import { randomUUID } from "node:crypto";
-import { disposableLabel } from "./stack-guard.mjs";
-export function disposableDocker(execute, run = randomUUID()) {
+import { realpathSync } from "node:fs";
+import { isAbsolute, relative, resolve } from "node:path";
+import { assertLocalDaemon, daemonProblems, disposableLabel } from "./stack-guard.mjs";
+export async function assertStandalone(env = process.env, inspectContext) {
+  if (!/^[a-zA-Z0-9_-]{12,128}$/.test(env.GROMESH_DISPOSABLE_ID ?? ""))
+    throw new Error("Standalone test stack refused before any write: GROMESH_DISPOSABLE_ID must identify this execution");
+  if (inspectContext) {
+    if (daemonProblems(env, (await inspectContext())[0]).length)
+      throw new Error("Standalone test stack refused before any write: Docker requires a local Unix socket");
+  } else await assertLocalDaemon(env);
+}
+export function disposableDocker(execute, run = randomUUID(), strict) {
   const containers = new Map(), volumes = new Set(), networks = new Set();
   const refused = () => new Error("Standalone test resource ownership could not be proved");
+  const inside = (source, root) => {
+    try {
+      const path = relative(realpathSync(root), realpathSync(source));
+      return path !== ".." && !path.startsWith("../") && !isAbsolute(path);
+    } catch { return false; }
+  };
   const inspect = async (type, name) => {
     try {
       const r = await execute(type === "container" ? ["inspect", name] : [type, "inspect", name]);
@@ -27,6 +43,29 @@ export function disposableDocker(execute, run = randomUUID()) {
     args = [...args];
     const cmd = args[0], sub = args[1];
     if (cmd === "run" || cmd === "create") {
+      if (strict) {
+        const targets = new Set();
+        const valued = new Set(["--name", "--network", "--network-alias", "-v", "--volume", "--tmpfs", "-p", "--publish", "--entrypoint", "--user", "-u", "--env-file", "-e", "--env", "--label", "-w", "--workdir"]);
+        const switches = new Set(["-d", "--detach", "--rm", "--read-only", "-i", "-t"]);
+        let at = 1;
+        while (args[at]?.startsWith("-")) {
+          const flag = args[at];
+          if (!valued.has(flag) && !switches.has(flag)) throw refused();
+          if (["-v", "--volume"].includes(flag)) {
+            const [source, target, mode] = args[at + 1].split(":");
+            if (!target) throw refused();
+            if (isAbsolute(source) && !((mode === "ro" && inside(source, resolve(import.meta.dirname, "..")))
+              || strict.bindRoots.some(root => inside(source, root)))) throw refused();
+            targets.add(target);
+          }
+          if (flag === "--tmpfs") targets.add(args[at + 1].split(":")[0]);
+          at += valued.has(flag) ? 2 : 1;
+        }
+        if (!args[at]) throw refused();
+        const metadata = JSON.parse((await execute(["image", "inspect", args[at]])).stdout)[0];
+        if (!metadata?.Config || Object.keys(metadata.Config.Volumes ?? {}).some(path => !targets.has(path))) throw refused();
+        if (!args.slice(1, at).includes("--network")) args.splice(1, 0, "--network", "none");
+      }
       for (let i = 1; i < args.length; i++) {
         if (args[i] === "--network") {
           const n = args[i + 1];
@@ -59,6 +98,11 @@ export function disposableDocker(execute, run = randomUUID()) {
     }
     if ((cmd === "volume" || cmd === "network") && sub === "create") {
       const name = args.at(-1);
+      if (strict) {
+        if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]+$/.test(name)) throw refused();
+        for (let at = 2; at < args.length - 1; at += 2)
+          if (args[at] !== "--label" || at + 1 >= args.length - 1) throw refused();
+      }
       if (await inspect(cmd, name))
         throw refused();
       args.splice(2, 0, "--label", `${disposableLabel}=${run}`);

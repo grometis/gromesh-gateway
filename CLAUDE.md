@@ -47,6 +47,8 @@ export BOOTSTRAP_ADMIN_EMAIL=acceptance@example.test POSTGRES_PORT=55443 CLICKHO
 export UI_URL=http://127.0.0.1:5174 CP_URL=http://127.0.0.1:3000/api/v1 CLICKHOUSE_URL="http://127.0.0.1:$CLICKHOUSE_PORT" KONG_VALIDATOR_URL="http://127.0.0.1:$KONG_VALIDATOR_PORT"
 export KONG_PROXY_URL=http://127.0.0.1:8000 KONG_PROXY_TLS_PORT=8443 KONG_STATUS_URL=http://127.0.0.1:8100/status/ready KONG_METRICS_URL=http://127.0.0.1:8100 ECHO_URL=http://127.0.0.1:8080
 pnpm dev:up && docker compose --profile observability up -d --wait
+docker compose --profile '*' pull --ignore-buildable # Inclui imagens dos one-shots; o guard inspeciona seus VOLUME antes de criar containers.
+docker compose --profile '*' build # Inclui agent inativo; imagens futuras também precisam existir para inspeção.
 pnpm smoke && pnpm --filter @gromesh/control-plane test:e2e && pnpm test:e2e && node deploy/observability/acceptance.mjs
 export TEST_DATABASE_URL="postgres://gromesh:$POSTGRES_PASSWORD@127.0.0.1:$POSTGRES_PORT/gromesh" TEST_CLICKHOUSE_URL="$CLICKHOUSE_URL" TEST_CLICKHOUSE_ADMIN_USER=gromesh TEST_CLICKHOUSE_ADMIN_PASSWORD="$CLICKHOUSE_PASSWORD"
 unset TEST_CLICKHOUSE_DATABASE TEST_CLICKHOUSE_USER TEST_CLICKHOUSE_PASSWORD GROMESH_PG_TOOLS
@@ -54,7 +56,8 @@ pnpm test # Integração cria/apaga bancos próprios; também funciona com dev:u
 docker compose --profile observability down -v # Somente ao encerrar esta execução descartável.
 ```
 
-Os testes de integração do control plane usam um Postgres real: suba o do compose (`pnpm dev:up`) ou aponte `TEST_DATABASE_URL`.
+Os testes de integração do control plane exigem `TEST_DATABASE_URL`, `TEST_CLICKHOUSE_URL` e `KONG_VALIDATOR_URL` explícitos, antes de qualquer conexão.
+Para desenvolvimento: `pnpm dev:up && docker compose -f deploy/compose/docker-compose.yml --profile observability up -d --wait`; exporte as três URLs para as portas escolhidas (defaults: `postgres://gromesh:gromesh@127.0.0.1:5432/gromesh`, `http://127.0.0.1:8123`, `http://127.0.0.1:8011`). No aceite descartável, use as variáveis do bloco acima.
 Cada execução cria e apaga um banco próprio.
 
 Go: `cd apps/agent && go test ./... && go vet ./...`

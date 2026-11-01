@@ -1,4 +1,4 @@
-import { assertClickhouseOverride } from "../../../../scripts/integration-databases.mjs";
+import { assertClickhouseOverride, integrationInputs } from "../../../../scripts/integration-databases.mjs";
 import { assertIntegrationDatabase } from "./databases.js";
 import type { INestApplication } from "@nestjs/common";
 import { inject } from "vitest";
@@ -40,7 +40,7 @@ export interface Harness {
 }
 
 /** Plugin configs are validated by a real Kong: the compose one unless overridden. */
-export const KONG_VALIDATOR_URL = process.env.KONG_VALIDATOR_URL ?? "http://127.0.0.1:8011";
+export const KONG_VALIDATOR_URL = integrationInputs(process.env).validatorUrl;
 
 export const BOOTSTRAP_ADMIN = { email: "admin@harness.test", password: "harness-admin-password" };
 

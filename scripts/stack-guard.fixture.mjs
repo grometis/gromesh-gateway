@@ -25,7 +25,15 @@ export function fixture() {
     own("kong", [8000, 8443, 8100], { GROMESH_COLLECTOR_TOKEN: secret }), own("kong-validator", [8011]), own("echo", [8080]),
     own("vector", [], { CLICKHOUSE_PASSWORD: secret, GROMESH_COLLECTOR_TOKEN: secret })];
   containers.find(c => c.service === "postgres").mounts = [{ type: "volume", name: volumes[0].name, destination: "/var/lib/postgresql/data" }];
-  return { env, containers, volumes, networks: [{ name: `${project}_default`, project, disposableId: id }] };
+  const labels = { "com.grometis.gromesh.disposable": id };
+  const compose = {name: project, services: {}, volumes: {"pg-data": {name: `${project}_pg-data`, labels}}, networks: {default: {name: `${project}_default`, labels}}};
+  const images = {};
+  for (const service of [...containers.map(c => c.service), "smoke", "clickhouse-init", "observability-acceptance"]) {
+    compose.services[service] = {image: `fixture/${service}`, labels, networks: {default: {}}};
+    images[`fixture/${service}`] = [];
+  }
+  compose.services.smoke.volumes = [{type: "bind", source: new URL("../scripts", import.meta.url).pathname, target: "/repo/scripts", read_only: true}];
+  return { env, containers, volumes, compose, images, context: {Endpoints: {docker: {Host: "unix:///var/run/docker.sock"}}}, networks: [{ name: `${project}_default`, project, disposableId: id }] };
 }
 export function remappedFixture() {
   const f = fixture();

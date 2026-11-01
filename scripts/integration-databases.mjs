@@ -71,14 +71,20 @@ export function createPostgresSandbox(adminUrl, connect) {
       issued.add(name);
       return name;
     },
-    async create(name) {
+    async create(name, { applicationName } = {}) {
       if (!issued.has(name))
         throw new Error("Database name was not issued by this run");
       if (owned.has(name) || creating.has(name))
         throw new Error("Database already created by this run");
       creating.add(name);
       try {
-        const url = urlFor(name);
+        const parsed = new URL(urlFor(name));
+        if (applicationName !== undefined) {
+          if (!/^[a-zA-Z0-9_-]{1,63}$/.test(applicationName))
+            throw new Error("Invalid database application name");
+          parsed.searchParams.set("application_name", applicationName);
+        }
+        const url = parsed.toString();
         await execute(`CREATE DATABASE "${name}"`, () => owned.set(name, url));
         return url;
       }
@@ -104,12 +110,23 @@ export function createPostgresSandbox(adminUrl, connect) {
     drop,
   };
 }
+export function integrationInputs(env = process.env) {
+  const missing = ["TEST_DATABASE_URL", "TEST_CLICKHOUSE_URL", "KONG_VALIDATOR_URL"].filter(key => !env[key]);
+  if (missing.length)
+    throw new Error(`Integration requires explicit destinations: ${missing.join(", ")}`);
+  const validator = privateUrl(env.KONG_VALIDATOR_URL);
+  if (!["http:", "https:"].includes(validator.protocol) || validator.username || validator.password || validator.search || validator.hash)
+    throw new Error("KONG_VALIDATOR_URL must be an HTTP URL without credentials or query");
+  return { databaseUrl: env.TEST_DATABASE_URL, clickhouse: clickhouseInputs(env), validatorUrl: env.KONG_VALIDATOR_URL };
+}
 export function clickhouseInputs(env = process.env) {
   for (const key of ["TEST_CLICKHOUSE_DATABASE", "TEST_CLICKHOUSE_USER", "TEST_CLICKHOUSE_PASSWORD"]) {
     if (env[key] !== undefined)
       throw new Error(`${key} cannot override generated run resources`);
   }
-  const url = env.TEST_CLICKHOUSE_URL ?? "http://127.0.0.1:8123";
+  const url = env.TEST_CLICKHOUSE_URL;
+  if (!url)
+    throw new Error("TEST_CLICKHOUSE_URL must be set explicitly");
   const parsed = privateUrl(url);
   if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash || parsed.pathname !== "/") {
     throw new Error("TEST_CLICKHOUSE_URL must be an HTTP origin without credentials, database path or query");
