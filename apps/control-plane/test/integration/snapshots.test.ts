@@ -1,4 +1,6 @@
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import pg from "pg";
+import { afterAll, beforeAll, describe, expect, inject, it, vi } from "vitest";
+import { runMigrations } from "../../src/db/migrate.js";
 import { AutoPublisher, maskConfigFor, SnapshotsService } from "../../src/snapshots/snapshots.js";
 import { startHarness, uniq, type Harness } from "./harness.js";
 
@@ -325,18 +327,41 @@ describe("auto publish", () => {
 });
 
 describe("auto publish failures", () => {
-  // One replica with the poller off and no debounce, so the test drives each tick.
+  // Fault injection is local to one replica; foreign pollers must not publish its eligible drafts.
+  const database = `gromesh_snap_fail_${Date.now()}_${process.pid}`;
+  let databaseCreated = false;
   let r: Harness;
   let service: SnapshotsService;
   let publisher: AutoPublisher;
   beforeAll(async () => {
-    r = await startHarness({ autoPublishPollMs: 0, autoPublishDelayMs: 0 });
+    const url = new URL(inject("databaseUrl"));
+    const admin = new pg.Client({ connectionString: url.toString() });
+    await admin.connect();
+    try {
+      await admin.query(`CREATE DATABASE "${database}"`);
+      databaseCreated = true;
+    } finally {
+      await admin.end();
+    }
+    url.pathname = `/${database}`;
+    url.searchParams.set("application_name", `snapshot-failures-${process.pid}`);
+    await runMigrations(url.toString());
+    r = await startHarness({ databaseUrl: url.toString(), autoPublishPollMs: 0, autoPublishDelayMs: 0 });
     service = r.app.get(SnapshotsService);
     publisher = r.app.get(AutoPublisher);
   });
   afterAll(async () => {
-    vi.restoreAllMocks();
-    await r?.close();
+    try {
+      vi.restoreAllMocks();
+      await r?.close();
+    } finally {
+      if (databaseCreated) {
+        const admin = new pg.Client({ connectionString: inject("databaseUrl") });
+        await admin.connect();
+        try { await admin.query(`DROP DATABASE "${database}" WITH (FORCE)`); }
+        finally { await admin.end(); }
+      }
+    }
   });
 
   const currentVersion = async (envId: string) => (await r.api("GET", `/environments/${envId}`)).body.currentVersion as number | null;
@@ -370,7 +395,17 @@ describe("auto publish failures", () => {
 
     prepare.mockRejectedValueOnce(transient);
     await publisher.tick();
-    expect(await currentVersion(envId)).toBeNull();
+    // A healthy replica on the suite database must not publish this fault-injection fixture.
+    const foreign = await startHarness({ autoPublishPollMs: 0, autoPublishDelayMs: 0 });
+    try {
+      const otherEnv = await newEnv(foreign.api, { publishMode: "auto" });
+      await newService(otherEnv, {}, foreign.api);
+      await foreign.app.get(AutoPublisher).tick();
+      expect((await foreign.api("GET", `/environments/${otherEnv}`)).body.currentVersion).toBe(1);
+      expect(await currentVersion(envId)).toBeNull();
+    } finally {
+      await foreign.close();
+    }
 
     await publisher.tick();
     expect(await currentVersion(envId)).toBe(1);
