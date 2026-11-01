@@ -53,7 +53,7 @@ pnpm smoke && pnpm --filter @gromesh/control-plane test:e2e && pnpm test:e2e && 
 export TEST_DATABASE_URL="postgres://gromesh:$POSTGRES_PASSWORD@127.0.0.1:$POSTGRES_PORT/gromesh" TEST_CLICKHOUSE_URL="$CLICKHOUSE_URL" TEST_CLICKHOUSE_ADMIN_USER=gromesh TEST_CLICKHOUSE_ADMIN_PASSWORD="$CLICKHOUSE_PASSWORD"
 unset TEST_CLICKHOUSE_DATABASE TEST_CLICKHOUSE_USER TEST_CLICKHOUSE_PASSWORD GROMESH_PG_TOOLS
 pnpm test # Integração cria/apaga bancos próprios; também funciona com dev:up de desenvolvimento + observability, sem override.
-docker compose --profile observability down -v # Somente ao encerrar esta execução descartável.
+docker compose --profile '*' down -v # Somente ao encerrar esta execução descartável.
 ```
 
 Os testes de integração do control plane exigem `TEST_DATABASE_URL`, `TEST_CLICKHOUSE_URL` e `KONG_VALIDATOR_URL` explícitos, antes de qualquer conexão.
