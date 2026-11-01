@@ -22,7 +22,7 @@
 | `deploy/compose/` | Ambiente local | Docker Compose |
 | `deploy/helm/` | Charts de produção (semana 8) | Helm |
 | `images/kong/` | Build próprio do Kong 3.9.4 | Bazel/Docker |
-| `scripts/` | Smoke e utilitários | Node ≥ 24 sem dependências |
+| `scripts/` | Smoke e utilitários | Node ≥ 26 sem dependências |
 
 Cada tarefa em `TASKS.md` declara os diretórios que pode alterar. **Não edite fora deles.** Se precisar, pare e registre no PR.
 

@@ -41,7 +41,7 @@ updates:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
       # Base-image line changes are planned (backlog 22): only patches and digests of Ubuntu 24.04 and nginx 1.28 stable.
-      # node keeps minor/patch: 24.x is one LTS line.
+      # node keeps minor/patch: 26.x is one LTS line.
       - dependency-name: "ubuntu"
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
       - dependency-name: "nginxinc/nginx-unprivileged"

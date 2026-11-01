@@ -1,7 +1,8 @@
-FROM node:24.22.0-alpine AS build
-RUN corepack enable
+FROM node:26.13.0-alpine AS build
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
+# Node 26 no longer ships Corepack: the bundled npm installs the pnpm pinned in packageManager.
+RUN npm install -g --ignore-scripts "$(node -p 'require("./package.json").packageManager')"
 COPY apps/ui/package.json apps/ui/
 RUN pnpm install --frozen-lockfile --filter @gromesh/ui...
 COPY apps/ui apps/ui
