@@ -1,6 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import pg from "pg";
 import { basicAuthPasswordHash, type ConfigDocument, type GatewayState } from "@gromesh/compiler";
 import { basicAuthHashContext, credentialContext, ENCRYPTOR, Encryptor, jwtSecretContext, snapshotContext } from "../../src/crypto/crypto.js";
+import { runMigrations } from "../../src/db/migrate.js";
 import { SnapshotsService } from "../../src/snapshots/snapshots.js";
 import { selfSigned } from "./certs.js";
 import { startHarness, uniq, type ApiClient, type ApiResponse, type Harness } from "./harness.js";
@@ -42,13 +44,39 @@ interface DraftState {
 }
 
 describe("remaining resource draft-only writes (WS-R4 B2)", () => {
+  const adminUrl = process.env.TEST_DATABASE_URL ?? "postgres://gromesh:gromesh@127.0.0.1:5432/gromesh";
+  const database = `gromesh_ws_r4d_${Date.now()}_${process.pid}`;
+  const applicationName = `ws-r4d-${process.pid}`;
+  let databaseCreated = false;
   let h: Harness;
   let viewer: ApiClient;
   beforeAll(async () => {
-    h = await startHarness({ autoPublishPollMs: 0 });
+    // Table barriers and audit-trigger DDL affect every workspace in a database. Foreign harnesses also
+    // publish every eligible draft, even when this harness's poller is off: isolate the whole file.
+    const admin = new pg.Client({ connectionString: adminUrl });
+    await admin.connect();
+    try {
+      await admin.query(`CREATE DATABASE "${database}"`);
+      databaseCreated = true;
+    } finally { await admin.end(); }
+    const url = new URL(adminUrl);
+    url.pathname = `/${database}`;
+    url.searchParams.set("application_name", applicationName);
+    await runMigrations(url.toString());
+    h = await startHarness({ databaseUrl: url.toString(), autoPublishPollMs: 0 });
     viewer = (await h.as("viewer")).api;
   });
-  afterAll(async () => h?.close());
+  afterAll(async () => {
+    try { await h?.close(); }
+    finally {
+      if (databaseCreated) {
+        const admin = new pg.Client({ connectionString: adminUrl });
+        await admin.connect();
+        try { await admin.query(`DROP DATABASE "${database}" WITH (FORCE)`); }
+        finally { await admin.end(); }
+      }
+    }
+  });
   const state = async (ws: string) => (await h.sql.query<DraftState>(`select to_jsonb(e) as environment,
     (select to_jsonb(w) from workspaces w where w.id = e.id) as workspace,
     (select jsonb_agg(a order by a.id) from audit_events a where a.environment_id = e.id) as audits,
@@ -201,16 +229,21 @@ describe("remaining resource draft-only writes (WS-R4 B2)", () => {
     expect(await state(f.ws)).toEqual(before);
   });
 
-  // Poll database-observed wait edges, with no timing-based sleeps or mocked application locks.
+  // Only a database-observed wait edge establishes readiness; the polling interval merely yields.
   const waitFor = async (blocker: number, pattern: string) => {
     const deadline = Date.now() + 4_000;
     while (Date.now() < deadline) {
       const { rows } = await h.sql.query<{ pid: number }>(`select pid from pg_stat_activity
         where datname = current_database() and wait_event_type = 'Lock'
-          and $1 = any(pg_blocking_pids(pid)) and query ~ $2`, [blocker, pattern]);
+          and application_name = $3
+          and $1 = any(pg_blocking_pids(pid)) and query ~ $2`, [blocker, pattern, applicationName]);
       if (rows.length === 1) return rows[0]!.pid;
+      if (rows.length > 1) throw new Error(`Ambiguous lock wait for ${pattern} behind ${blocker}: ${JSON.stringify(rows)}`);
+      await new Promise((resolve) => setTimeout(resolve, 10));
     }
-    throw new Error(`No lock wait for ${pattern} behind ${blocker}`);
+    const { rows } = await h.sql.query(`select pid, application_name, wait_event_type, wait_event,
+      pg_blocking_pids(pid) as blockers, query from pg_stat_activity where datname = current_database()`);
+    throw new Error(`No lock wait for ${pattern} behind ${blocker}: ${JSON.stringify(rows)}`);
   };
   const workspaceWait = "pg_advisory_xact_lock\\(hashtextextended";
   const barrier = async (ws: string, run: (pid: number, release: () => Promise<void>, start: <T>(p: Promise<T>) => Promise<T>) => Promise<void>) => {
