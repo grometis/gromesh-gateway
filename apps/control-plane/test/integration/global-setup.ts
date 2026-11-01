@@ -1,39 +1,48 @@
+import { readFileSync } from "node:fs";
 import pg from "pg";
 import type { TestProject } from "vitest/node";
-import { assertStack } from "../../../../scripts/stack-guard.mjs";
+import { clickhouseInputs, createPostgresSandbox, provisionClickhouse, type ClickhouseConfig } from "../../../../scripts/integration-databases.mjs";
 import { runMigrations } from "../../src/db/migrate.js";
 
-/**
- * One throwaway database per test run, migrated from drizzle/.
- * TEST_DATABASE_URL must point at a Postgres where the user can CREATE DATABASE
- * (default: the compose Postgres).
- */
-const ADMIN_URL = process.env.TEST_DATABASE_URL ?? "postgres://gromesh:gromesh@127.0.0.1:5432/gromesh";
-
+/** The base connection only issues CREATE/DROP DATABASE, never fixture or migration SQL. */
 export default async function setup({ provide }: TestProject) {
-  // An isolated run (GROMESH_STACK_ISOLATED=1) names its Postgres, ClickHouse and validator and owns them.
-  await assertStack("integration");
-  const dbName = `gromesh_test_${Date.now()}_${process.pid}`;
-  const admin = new pg.Client({ connectionString: ADMIN_URL });
-  await admin.connect();
-  await admin.query(`CREATE DATABASE "${dbName}"`);
-  await admin.end();
-
-  const url = new URL(ADMIN_URL);
-  url.pathname = `/${dbName}`;
-  await runMigrations(url.toString());
-  provide("databaseUrl", url.toString());
-
-  return async () => {
-    const c = new pg.Client({ connectionString: ADMIN_URL });
-    await c.connect();
-    await c.query(`DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`);
-    await c.end();
+  // Validate forbidden ClickHouse overrides before the first connection, including PostgreSQL.
+  const clickhouseAdmin = clickhouseInputs(process.env);
+  const adminUrl = process.env.TEST_DATABASE_URL ?? "postgres://gromesh:gromesh@127.0.0.1:5432/gromesh";
+  const postgres = createPostgresSandbox(adminUrl, async (connectionString) => {
+    const client = new pg.Client({ connectionString });
+    await client.connect();
+    return client;
+  });
+  const dbName = postgres.name();
+  let clickhouse: Awaited<ReturnType<typeof provisionClickhouse>> | undefined;
+  const close = async () => {
+    const results = await Promise.allSettled([clickhouse?.close(), postgres.drop(dbName)]);
+    const errors = results.filter((result) => result.status === "rejected").map((result) => result.reason as unknown);
+    if (errors.length) throw new AggregateError(errors, "Integration database cleanup failed");
   };
+  try {
+    const databaseUrl = await postgres.create(dbName);
+    await runMigrations(postgres.assertOwned(databaseUrl));
+    const ddl = ["001-requests.sql", "002-retention.sql"].map((name) => readFileSync(new URL(`../../../../deploy/observability/clickhouse/${name}`, import.meta.url), "utf8")).join("\n");
+    clickhouse = await provisionClickhouse(clickhouseAdmin, ddl);
+    provide("databaseUrl", databaseUrl);
+    provide("databaseAdminUrl", adminUrl);
+    provide("clickhouse", clickhouse.reader);
+    provide("clickhouseWriter", clickhouse.writer);
+    return close;
+  } catch (error) {
+    try { await close(); }
+    catch (cleanupError) { throw new AggregateError([error, cleanupError], "Integration database setup and cleanup failed"); }
+    throw error;
+  }
 }
 
 declare module "vitest" {
   export interface ProvidedContext {
     databaseUrl: string;
+    databaseAdminUrl: string;
+    clickhouse: ClickhouseConfig;
+    clickhouseWriter: ClickhouseConfig;
   }
 }

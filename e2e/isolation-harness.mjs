@@ -9,11 +9,13 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { disposableDocker } from "../scripts/disposable-docker.mjs";
 import { NODE_IMAGE, pullImages } from "./docker-images.mjs";
 
 const exec = promisify(execFile);
 export const root = fileURLToPath(new URL("../", import.meta.url));
-export const docker = (...args) => exec("docker", args, { cwd: root, timeout: 300_000, maxBuffer: 16 * 1024 * 1024 });
+const ownedDocker = disposableDocker((args) => exec("docker", args, { cwd: root, timeout: 300_000, maxBuffer: 16 * 1024 * 1024 }));
+export const docker = (...args) => ownedDocker(args);
 // The same toolchain as apps/agent/Dockerfile.
 const GO_IMAGE = "golang:1.27.2-alpine";
 export const ECHO_IMAGE = "traefik/whoami:v1.10.3";
@@ -25,7 +27,7 @@ export async function kongImage() {
 
 export class Harness {
   constructor() {
-    this.run = randomUUID().slice(0, 8);
+    this.run = randomUUID();
     this.network = `gromesh-e2e-${this.run}`;
     this.dir = mkdtempSync(join(tmpdir(), "gromesh-e2e-"));
     this.containers = [];
@@ -44,8 +46,8 @@ export class Harness {
       "-e", "CGO_ENABLED=0", "-e", "GOTOOLCHAIN=local", "-e", "GOCACHE=/tmp/go-cache", GO_IMAGE,
       "go", "build", "-trimpath", "-o", "/out/bin/", "./cmd/...");
     this.leaseVolume = `gromesh-e2e-lease-${this.run}`;
-    this.volumes.push(this.leaseVolume);
     await docker("volume", "create", this.leaseVolume);
+    this.volumes.push(this.leaseVolume);
     this.mode("stop");
     this.writer = (await docker("run", "-d", "--rm", "--network", "none", "-v", `${this.leaseVolume}:/gromesh/isolation`,
       "-v", `${join(this.dir, "bin")}:/gromesh/bin:ro`, "-v", `${join(this.dir, "control")}:/control:ro`,
@@ -67,8 +69,8 @@ export class Harness {
     const name = `kong-${this.run}-${this.containers.length}`;
     writeFileSync(join(this.dir, `${name}.json`), JSON.stringify(config), { mode: 0o644 });
     const state = `gromesh-e2e-state-${this.run}-${this.containers.length}`;
-    this.volumes.push(state);
     await docker("volume", "create", state);
+    this.volumes.push(state);
     // The kong user (1001) writes its state; the volume starts root-owned.
     await docker("run", "--rm", "-v", `${state}:/s`, NODE_IMAGE, "chown", "1001:1001", "/s");
     const args = ["run", "-d", "--name", name, "--network", this.network, "-p", "127.0.0.1::8000",

@@ -9,10 +9,12 @@ import { promisify } from "node:util";
 import { NODE_IMAGE, pullImages, VECTOR_IMAGE } from "./docker-images.mjs";
 import { assertStack } from "../scripts/stack-guard.mjs";
 
+await assertStack("acceptance");
+
 const exec = promisify(execFile);
 const root = fileURLToPath(new URL("../", import.meta.url));
 const composeFile = fileURLToPath(new URL("../deploy/compose/docker-compose.yml", import.meta.url));
-const env = { ...process.env, POSTGRES_PORT: "55433" };
+const env = { ...process.env, POSTGRES_PORT: process.env.POSTGRES_PORT };
 const run = (args) => exec("docker", args, { cwd: root, env, timeout: 60_000, maxBuffer: 8 * 1024 * 1024 });
 const compose = (...args) => run(["compose", ...(env.COMPOSE_FILE ? [] : ["-f", composeFile]), "--profile", "observability", ...args]);
 const proxy = process.env.KONG_PROXY_URL ?? "http://127.0.0.1:8000";
@@ -80,7 +82,6 @@ async function admin(method, body) {
 }
 
 async function main() {
-  await assertStack("acceptance");
   // The timeouts below cover only the runs: the images are pulled first, with retries.
   await pullImages([VECTOR_IMAGE, NODE_IMAGE]);
   for (const directory of ["deploy/observability/vector", "deploy/helm/data-plane/files/vector"]) {

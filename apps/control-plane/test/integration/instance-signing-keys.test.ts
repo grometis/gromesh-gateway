@@ -1,3 +1,4 @@
+import { ADMIN_URL, integrationDatabaseName, createIntegrationDatabase, dropIntegrationDatabase } from "./databases.js";
 import { createPrivateKey, createPublicKey, verify } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { Logger } from "@nestjs/common";
@@ -13,8 +14,7 @@ import { type ApiClient, ENCRYPTION_KEYS, startHarness, uniq, type Harness } fro
 
 // N4-D3: the instance's own signing keys and the signer the isolation admissions use. A database of its own: the
 // number of active keys is instance-wide, and no other file may create or revoke one under these tests.
-const ADMIN_URL = process.env.TEST_DATABASE_URL ?? "postgres://gromesh:gromesh@127.0.0.1:5432/gromesh";
-const name = `gromesh_signing_${Date.now()}_${process.pid}`;
+const name = integrationDatabaseName("signing");
 const vector = JSON.parse(readFileSync(new URL("../../../../contracts/examples/isolation-signatures.example.json", import.meta.url), "utf8"));
 
 type Key = { kid: string; publicKey: string; status: string; validFrom: string; validUntil: string; retiredAt: string | null; revokedAt: string | null; createdAt: string };
@@ -61,10 +61,7 @@ describe("instance signing keys (N4-D3)", () => {
   const leaks = (haystack: string, needles: string[]) => needles.filter((n) => haystack.includes(n));
 
   beforeAll(async () => {
-    const admin = new pg.Client({ connectionString: ADMIN_URL });
-    await admin.connect();
-    await admin.query(`CREATE DATABASE "${name}"`);
-    await admin.end();
+    await createIntegrationDatabase(name);
     const url = new URL(ADMIN_URL);
     url.pathname = `/${name}`;
     dbUrl = url.toString();
@@ -82,10 +79,7 @@ describe("instance signing keys (N4-D3)", () => {
     vi.restoreAllMocks();
     await replica?.close();
     await h?.close();
-    const admin = new pg.Client({ connectionString: ADMIN_URL });
-    await admin.connect();
-    await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
-    await admin.end();
+    await dropIntegrationDatabase(name);
   }, 60_000);
   beforeEach(async () => {
     await reset();

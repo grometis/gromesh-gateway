@@ -38,9 +38,20 @@ pnpm smoke                # aplica contracts/examples/snapshot.example.json no K
 pnpm --filter @gromesh/compiler example   # regenera o exemplo do contrato
 pnpm --filter @gromesh/control-plane db:generate -- --name <nome>   # nova migração a partir de src/db/schema.ts
 pnpm --filter @gromesh/control-plane test:e2e                      # contra a stack do compose
-# Ao lado de outra stack: GROMESH_STACK_ISOLATED=1 + COMPOSE_PROJECT_NAME próprio, COMPOSE_FILE, UI_URL, CLICKHOUSE_URL,
-# CLICKHOUSE_PASSWORD e POSTGRES_PORT (integração: TEST_DATABASE_URL, TEST_CLICKHOUSE_URL, KONG_VALIDATOR_URL e senhas
-# TEST_CLICKHOUSE_*); os padrões apontam para a stack padrão, e scripts/stack-guard.mjs recusa antes de escrever.
+# Aceite: CP/proxy/status/echo/TLS precisam das portas fixas livres; remapeie os demais destinos junto das URLs.
+export GROMESH_DISPOSABLE_ID="$(openssl rand -hex 16)"
+export COMPOSE_PROJECT_NAME="gromesh-test-$GROMESH_DISPOSABLE_ID" COMPOSE_FILE="$PWD/deploy/compose/docker-compose.yml:$PWD/deploy/compose/disposable.yml"
+for key in POSTGRES_PASSWORD BOOTSTRAP_ADMIN_PASSWORD CLICKHOUSE_PASSWORD CLICKHOUSE_READER_PASSWORD CLICKHOUSE_WRITER_PASSWORD GROMESH_COLLECTOR_TOKEN; do export "$key=$(openssl rand -hex 24)"; done
+export GROMESH_ENCRYPTION_KEY="test:$(openssl rand -base64 32)" GROMESH_FINGERPRINT_KEY="$(openssl rand -base64 32)"
+export BOOTSTRAP_ADMIN_EMAIL=acceptance@example.test POSTGRES_PORT=55443 CLICKHOUSE_PORT=18124 KONG_VALIDATOR_PORT=18012
+export UI_URL=http://127.0.0.1:5174 CP_URL=http://127.0.0.1:3000/api/v1 CLICKHOUSE_URL="http://127.0.0.1:$CLICKHOUSE_PORT" KONG_VALIDATOR_URL="http://127.0.0.1:$KONG_VALIDATOR_PORT"
+export KONG_PROXY_URL=http://127.0.0.1:8000 KONG_PROXY_TLS_PORT=8443 KONG_STATUS_URL=http://127.0.0.1:8100/status/ready KONG_METRICS_URL=http://127.0.0.1:8100 ECHO_URL=http://127.0.0.1:8080
+pnpm dev:up && docker compose --profile observability up -d --wait
+pnpm smoke && pnpm --filter @gromesh/control-plane test:e2e && pnpm test:e2e && node deploy/observability/acceptance.mjs
+export TEST_DATABASE_URL="postgres://gromesh:$POSTGRES_PASSWORD@127.0.0.1:$POSTGRES_PORT/gromesh" TEST_CLICKHOUSE_URL="$CLICKHOUSE_URL" TEST_CLICKHOUSE_ADMIN_USER=gromesh TEST_CLICKHOUSE_ADMIN_PASSWORD="$CLICKHOUSE_PASSWORD"
+unset TEST_CLICKHOUSE_DATABASE TEST_CLICKHOUSE_USER TEST_CLICKHOUSE_PASSWORD GROMESH_PG_TOOLS
+pnpm test # Integração cria/apaga bancos próprios; também funciona com dev:up de desenvolvimento + observability, sem override.
+docker compose --profile observability down -v # Somente ao encerrar esta execução descartável.
 ```
 
 Os testes de integração do control plane usam um Postgres real: suba o do compose (`pnpm dev:up`) ou aponte `TEST_DATABASE_URL`.

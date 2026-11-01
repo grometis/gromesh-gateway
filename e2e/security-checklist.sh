@@ -4,6 +4,7 @@
 # Every check prints PASS/FAIL/NOTE; the script fails if any check fails. Manual notes are listed at the end.
 set -uo pipefail
 cd "$(dirname "$0")/.."
+node scripts/assert-test-stack.mjs || exit 1
 export POSTGRES_PORT="${POSTGRES_PORT:-55433}"
 UI="${UI_URL:-http://127.0.0.1:5174}"
 CP="${CP_URL:-http://127.0.0.1:3000/api/v1}"
@@ -80,13 +81,13 @@ key_line="$(sed -n 2p "$work/tls.key")"
 cert_body="$(node -e 'const fs=require("fs");process.stdout.write(JSON.stringify({cert:fs.readFileSync(process.argv[1],"utf8"),key:fs.readFileSync(process.argv[2],"utf8"),snis:["seccheck-'"$RANDOM"'.test"]}))' "$work/tls.pem" "$work/tls.key")"
 cert_created="$(api -d "$cert_body" "$CP/environments/$env_id/certificates")"
 [[ "$cert_created" == *'"key":"REDACTED"'* && "$cert_created" != *"$key_line"* ]] || { echo "certificate creation failed" >&2; exit 2; }
-stored="$(docker compose -f deploy/compose/docker-compose.yml exec -T postgres psql -U gromesh -d gromesh -tAc "select count(*) from keyauth_credentials where key not like 'enc:v2:%' union all select count(*) from plugins where config::text like '%$pw%' union all select count(*) from snapshots where config::text not like '{\"\$enc\"%' or state::text not like '{\"\$enc\"%' union all select count(*) from certificates where key not like 'enc:v2:%' or key like '%$key_line%' union all select count(*) from jwt_credentials where secret not like 'enc:v2:%' or secret like '%$jwt_secret%' union all select count(*) from basicauth_credentials where password_hash not like 'enc:v2:%' or password_hash like '%$bhash%' or password_hash like '%$bpw%' union all select count(*) from audit_events where concat(before::text, after::text) like '%$bpw%' or concat(before::text, after::text) like '%$bhash%' or concat(before::text, after::text) like '%$jwt_secret%'" | tr '\n' ' ')"
+stored="$(node scripts/compose.mjs exec -T postgres psql -U gromesh -d gromesh -tAc "select count(*) from keyauth_credentials where key not like 'enc:v2:%' union all select count(*) from plugins where config::text like '%$pw%' union all select count(*) from snapshots where config::text not like '{\"\$enc\"%' or state::text not like '{\"\$enc\"%' union all select count(*) from certificates where key not like 'enc:v2:%' or key like '%$key_line%' union all select count(*) from jwt_credentials where secret not like 'enc:v2:%' or secret like '%$jwt_secret%' union all select count(*) from basicauth_credentials where password_hash not like 'enc:v2:%' or password_hash like '%$bhash%' or password_hash like '%$bpw%' union all select count(*) from audit_events where concat(before::text, after::text) like '%$bpw%' or concat(before::text, after::text) like '%$bhash%' or concat(before::text, after::text) like '%$jwt_secret%'" | tr '\n' ' ')"
 [[ "$stored" == "0 0 0 0 0 0 0 " ]] && check S5 "Segredos cifrados em repouso (credenciais, plugins, snapshots, chaves de certificado, segredo JWT, hash do basic-auth; senha nunca guardada)" PASS "" || check S5 "Cifragem em repouso" FAIL "$stored"
 api -X DELETE "$CP/environments/$env_id" > /dev/null
 
 # 5. Logs sanitized: the observability acceptance proves apikey never reaches ClickHouse or the Vector log.
 if node deploy/observability/acceptance.mjs > "$work/obs.log" 2>&1; then check L1 "Pipeline de logs sem credenciais (deploy/observability/acceptance.mjs)" PASS "$(tail -1 "$work/obs.log" | cut -c1-80)"; else check L1 "Pipeline de logs" FAIL "$(tail -1 "$work/obs.log")"; fi
-cp_logs="$(docker compose -f deploy/compose/docker-compose.yml logs --no-color control-plane 2>/dev/null)"
+cp_logs="$(node scripts/compose.mjs logs --no-color control-plane 2>/dev/null)"
 [[ "$cp_logs" != *"$pw"* && "$cp_logs" != *"$key"* && "$cp_logs" != *"$ADMIN_PASSWORD"* && "$cp_logs" != *"$jwt_secret"* && "$cp_logs" != *"$bpw"* && "$cp_logs" != *"$bhash"* ]] && check L2 "Log do control plane sem segredos nem senhas" PASS "" || check L2 "Log do control plane" FAIL ""
 
 # 6. Images without CRITICAL: scripts/scan-images.sh (W7-X2) when present.
@@ -106,10 +107,10 @@ mine="$(api "$CP/users/me/tokens")"
 audit_tokens="$(api "$CP/audit-events?entityType=api_token&limit=50")"
 [[ "$mine" != *"$token"* && "$mine" == *tokenHint* && "$audit_tokens" != *"$token"* ]] && check T1 "Token de API só na criação; depois só tokenHint (lista e audit)" PASS "" || check T1 "Token de API reaparece" FAIL ""
 bearer_ok="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -H "Authorization: Bearer $token" "$CP/environments")"
-docker compose -f deploy/compose/docker-compose.yml exec -T postgres psql -U gromesh -d gromesh -tAc "update api_tokens set expires_at = now() - interval '1 second' where id = '$token_id'" > /dev/null
+node scripts/compose.mjs exec -T postgres psql -U gromesh -d gromesh -tAc "update api_tokens set expires_at = now() - interval '1 second' where id = '$token_id'" > /dev/null
 bearer_expired="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -H "Authorization: Bearer $token" "$CP/environments")"
 [[ "$bearer_ok" == 200 && "$bearer_expired" == 401 ]] && check T2 "Token expirado → 401 (válido antes: $bearer_ok)" PASS "" || check T2 "Token expirado" FAIL "antes=$bearer_ok depois=$bearer_expired"
-docker compose -f deploy/compose/docker-compose.yml exec -T postgres psql -U gromesh -d gromesh -tAc "update api_tokens set expires_at = now() + interval '1 day' where id = '$token_id'" > /dev/null
+node scripts/compose.mjs exec -T postgres psql -U gromesh -d gromesh -tAc "update api_tokens set expires_at = now() + interval '1 day' where id = '$token_id'" > /dev/null
 bearer_tokens="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -H "Authorization: Bearer $token" -H 'content-type: application/json' -d '{"name":"nested","role":"viewer","expiresInDays":1}' "$CP/users/me/tokens")"
 bearer_users="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -H "Authorization: Bearer $token" "$CP/users")"
 [[ "$bearer_tokens" == 401 && "$bearer_users" == 401 ]] && check T3 "Token não cria tokens nem gerencia usuários (401)" PASS "" || check T3 "Token gerencia tokens/usuários" FAIL "tokens=$bearer_tokens users=$bearer_users"

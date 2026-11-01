@@ -1,3 +1,4 @@
+import { ADMIN_URL, integrationDatabaseName, createIntegrationDatabase, dropIntegrationDatabase } from "./databases.js";
 import pg from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Role } from "../../src/auth/environment-access.js";
@@ -8,8 +9,7 @@ import { type ApiClient, type ApiResponse, startHarness, uniq, type Harness } fr
 
 // N1-X5: what still calls the v1 the controlled migration will cut (decision H-9), the migration report, and one
 // authorization for both APIs. A database of its own: other files call v1 too, and their calls would count here.
-const ADMIN_URL = process.env.TEST_DATABASE_URL ?? "postgres://gromesh:gromesh@127.0.0.1:5432/gromesh";
-const name = `gromesh_usage_${Date.now()}_${process.pid}`;
+const name = integrationDatabaseName("usage");
 
 describe("the v1 calls the cut will remove, the migration report and one authorization for v1 and v2", () => {
   let h: Harness;
@@ -36,10 +36,7 @@ describe("the v1 calls the cut will remove, the migration report and one authori
   };
 
   beforeAll(async () => {
-    const admin = new pg.Client({ connectionString: ADMIN_URL });
-    await admin.connect();
-    await admin.query(`CREATE DATABASE "${name}"`);
-    await admin.end();
+    await createIntegrationDatabase(name);
     const url = new URL(ADMIN_URL);
     url.pathname = `/${name}`;
     dbUrl = url.toString();
@@ -59,10 +56,7 @@ describe("the v1 calls the cut will remove, the migration report and one authori
   });
   afterAll(async () => {
     await h?.close();
-    const admin = new pg.Client({ connectionString: ADMIN_URL });
-    await admin.connect();
-    await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
-    await admin.end();
+    await dropIntegrationDatabase(name);
   });
   afterEach(async () => {
     await h?.sql.query(`delete from test_clock`);

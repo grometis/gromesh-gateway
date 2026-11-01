@@ -15,6 +15,10 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { NODE_IMAGE, pullImages } from "./docker-images.mjs";
+import { disposableDocker } from "../scripts/disposable-docker.mjs";
+import { assertStack } from "../scripts/stack-guard.mjs";
+
+await assertStack("acceptance");
 
 const exec = promisify(execFile);
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -22,7 +26,7 @@ const IMAGES = { cp: process.env.CP_IMAGE, agent: process.env.AGENT_IMAGE, kong:
 for (const [k, v] of Object.entries(IMAGES)) if (!v) throw new Error(`${k.toUpperCase()}_IMAGE is required`);
 if (!/@sha256:[0-9a-f]{64}$/.test(IMAGES.kong)) throw new Error("KONG_IMAGE must be pinned by digest");
 
-const RUN = randomUUID().slice(0, 8);
+const RUN = randomUUID();
 const PREFIX = `gromesh-v2flow-${RUN}`;
 const out = process.env.V2FLOW_OUT ?? mkdtempSync(join(tmpdir(), "gromesh-v2flow-out-"));
 const dir = mkdtempSync(join(tmpdir(), "gromesh-v2flow-"));
@@ -30,13 +34,13 @@ const containers = [];
 const volumes = [];
 let network = null;
 
-const docker = (args, { input, timeout = 300_000, allowFail = false } = {}) => new Promise((resolve, reject) => {
+const docker = disposableDocker((args, { input, timeout = 300_000, allowFail = false } = {}) => new Promise((resolve, reject) => {
   const child = execFile("docker", args, { cwd: root, timeout, maxBuffer: 32 * 1024 * 1024 }, (error, stdout, stderr) => {
     if (error && !allowFail) reject(new Error(`docker ${args.slice(0, 3).join(" ")}: ${redact(stderr || error.message)}`.slice(0, 4000)));
     else resolve({ code: error ? (error.code ?? 1) : 0, stdout, stderr });
   });
   if (input !== undefined) { child.stdin.end(input); }
-});
+}));
 
 // --- report -------------------------------------------------------------------------------------------------------
 const secrets = new Set();
@@ -306,7 +310,8 @@ async function setup() {
   await run("echo", ["--network", network, "--network-alias", "echo", IMAGES.echo]);
   const pgEnv = join(dir, "pg.env");
   writeFileSync(pgEnv, `POSTGRES_DB=gromesh\nPOSTGRES_USER=gromesh\nPOSTGRES_PASSWORD=${pgPassword}\n`, { mode: 0o600 });
-  await run("postgres", ["--network", network, "--network-alias", "postgres", "--env-file", pgEnv, IMAGES.pg]);
+  const postgresData = await volume("postgres-data");
+  await run("postgres", ["-v", `${postgresData}:/var/lib/postgresql/data`, "--network", network, "--network-alias", "postgres", "--env-file", pgEnv, IMAGES.pg]);
   await waitFor("postgres", async () => (await docker(["exec", `${PREFIX}-postgres`, "pg_isready", "-U", "gromesh"], { allowFail: true })).code === 0, { timeoutMs: 60_000 });
   // Plugin validation by the same Kong image, Admin API only on the private network (as in deploy/compose).
   await run("kong-validator", ["--network", network, "--network-alias", "kong-validator", "-e", "KONG_DATABASE=off", "-e", "KONG_PROXY_LISTEN=off",

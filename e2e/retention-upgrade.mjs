@@ -8,6 +8,10 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { CLICKHOUSE_IMAGE, pullImages, VECTOR_IMAGE } from "./docker-images.mjs";
+import { disposableDocker } from "../scripts/disposable-docker.mjs";
+import { assertStack } from "../scripts/stack-guard.mjs";
+
+await assertStack("acceptance");
 
 const exec = promisify(execFile);
 const root = new URL("../", import.meta.url);
@@ -17,12 +21,13 @@ const read = (path) => readFileSync(new URL(path, root), "utf8");
 async function main() {
   await pullImages([CLICKHOUSE_IMAGE, VECTOR_IMAGE]);
   const name = `gromesh-retention-upgrade-${randomUUID()}`;
-  const run = (args) => exec("docker", args, { timeout: 60_000, maxBuffer: 1024 * 1024 });
-  const sql = (query) => new Promise((resolve, reject) => {
-    const child = execFile("docker", ["exec", "-i", name, "clickhouse-client", "-n"],
-      { timeout: 30_000, maxBuffer: 1024 * 1024 }, (error, stdout) => error ? reject(new Error("Isolated ClickHouse query failed")) : resolve(stdout.trim()));
-    child.stdin.end(query);
-  });
+  const volumes = [`${name}-data`, `${name}-logs`];
+  const run = disposableDocker((args, input) => new Promise((resolve, reject) => {
+    const child = execFile("docker", args, { timeout: 60_000, maxBuffer: 1024 * 1024 },
+      (error, stdout, stderr) => error ? reject(Object.assign(new Error("Isolated ClickHouse command failed"), { code: error.code, stderr })) : resolve({ stdout, stderr }));
+    if (input !== undefined) child.stdin.end(input);
+  }));
+  const sql = async query => (await run(["exec", "-i", name, "clickhouse-client", "-n"], query)).stdout.trim();
   const check = () => run(["run", "--rm", "--network", `container:${name}`,
     "-e", "CLICKHOUSE_ENDPOINT=http://127.0.0.1:8123", "-e", "CLICKHOUSE_DATABASE_BASE64=Z3JvbWVzaA==",
     "-e", "CLICKHOUSE_PASSWORD=synthetic-writer-password", "-v", `${schemaCheck}:/check-schema.sh:ro`,
@@ -34,7 +39,9 @@ async function main() {
       && error.stderr.includes(`-n < deploy/observability/clickhouse/${migration}`));
   };
   try {
-    await run(["run", "--rm", "-d", "--name", name, "--network", "none", CLICKHOUSE_IMAGE]);
+    for (const volume of volumes) await run(["volume", "create", volume]);
+    await run(["run", "--rm", "-d", "--name", name, "--network", "none",
+      "-v", `${volumes[0]}:/var/lib/clickhouse`, "-v", `${volumes[1]}:/var/log/clickhouse-server`, CLICKHOUSE_IMAGE]);
     for (let attempt = 0; ; attempt++) {
       try { await sql("SELECT 1"); break; } catch {
         assert.ok(attempt < 60, "Isolated ClickHouse did not start");
@@ -63,6 +70,7 @@ async function main() {
     console.log("Retention upgrade OK: missing 001 and 002 named with their commands; old schema, wrong TTL and wrong default blocked; migrated schema accepted by INSERT-only user; repeated migration created no mutations");
   } finally {
     await run(["rm", "-f", name]).catch(() => {});
+    for (const volume of volumes) await run(["volume", "rm", volume]).catch(() => {});
   }
 }
 

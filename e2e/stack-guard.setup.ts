@@ -1,6 +1,6 @@
 import { assertStack } from "../scripts/stack-guard.mjs";
 
-// Before any spec writes: an isolated run (GROMESH_STACK_ISOLATED=1) must target only its own compose project.
+// Before any spec writes, prove disposable container, volume and endpoint ownership.
 export default async function globalSetup() {
   await assertStack("acceptance");
 }

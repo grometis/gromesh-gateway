@@ -1,108 +1,174 @@
-// Isolated acceptance runs (GROMESH_STACK_ISOLATED=1): a run beside another compose stack must never reach that
-// stack through a default endpoint (the defaults are the ports of the standard compose project, and remapping ports
-// or renaming the project does not change them). Before the first write, every destination the tests use from the
-// host must be named explicitly where the tests read it from the environment, and every destination (named or fixed
-// in the tests) must be published by the expected service of the run's own compose project. Containers the tests
-// start join that project's network, so they follow COMPOSE_PROJECT_NAME. Without the flag nothing is checked and
-// the documented modes (CI, `pnpm dev:up`) keep their defaults.
+// Acceptance must prove resource ownership before its first write. Environment variables name the run;
+// Docker's container and volume metadata prove it. Integration uses exclusive databases instead (see its setup).
 import { AssertionError } from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { resolve } from "node:path";
 
-export const FLAG = "GROMESH_STACK_ISOLATED";
-// The standard project (`name:` in deploy/compose/docker-compose.yml) and its development credentials.
-const SHARED_PROJECT = "gromesh";
-const DEV_SECRETS = new Set(["gromesh-dev-observability", "gromesh-dev-reader", "gromesh-dev-writer"]);
-
-// [variable, service, fixed port when the tests also use it without the variable]
-const SCOPES = {
-  acceptance: {
-    required: ["COMPOSE_FILE", "UI_URL", "CLICKHOUSE_URL", "CLICKHOUSE_PASSWORD", "POSTGRES_PORT"],
-    secrets: ["CLICKHOUSE_PASSWORD"],
-    destinations: [
-      ["UI_URL", "ui"], ["CLICKHOUSE_URL", "clickhouse"], ["POSTGRES_PORT", "postgres"],
-      ["CP_URL", "control-plane", 3000], ["KONG_PROXY_URL", "kong", 8000], ["KONG_STATUS_URL", "kong", 8100],
-      ["KONG_METRICS_URL", "kong", 8100], ["ECHO_URL", "echo", 8080],
-    ],
-  },
-  integration: {
-    required: ["TEST_DATABASE_URL", "TEST_CLICKHOUSE_URL", "KONG_VALIDATOR_URL", "TEST_CLICKHOUSE_PASSWORD", "TEST_CLICKHOUSE_ADMIN_PASSWORD"],
-    secrets: ["TEST_CLICKHOUSE_PASSWORD", "TEST_CLICKHOUSE_ADMIN_PASSWORD"],
-    destinations: [["TEST_DATABASE_URL", "postgres"], ["TEST_CLICKHOUSE_URL", "clickhouse"], ["KONG_VALIDATOR_URL", "kong-validator"]],
-  },
-};
-
-export const isolated = (env = process.env) => env[FLAG] === "1";
-
-/** Loopback host port of a URL or a bare port; null when it is not a loopback destination. */
+export const disposableLabel = "com.grometis.gromesh.disposable";
+const projectLabel = "com.docker.compose.project";
+const serviceLabel = "com.docker.compose.service";
+// Keep this list beside the compose development defaults. Never interpolate values into diagnostics.
+const devSecrets = new Set(["gromesh", "gromesh-dev-admin", "gromesh-dev-observability", "gromesh-dev-reader",
+  "gromesh-dev-writer", "gromesh-dev-collector-token-not-a-secret",
+  "dev:ZGV2LW9ubHktZ3JvbWVzaC1lbmNyeXB0aW9uLWtleS0=", "ZGV2LW9ubHktZ3JvbWVzaC1maW5nZXJwcmludC1rZXk="]);
+const secrets = ["POSTGRES_PASSWORD", "BOOTSTRAP_ADMIN_PASSWORD", "CLICKHOUSE_PASSWORD", "CLICKHOUSE_READER_PASSWORD",
+  "CLICKHOUSE_WRITER_PASSWORD", "GROMESH_COLLECTOR_TOKEN", "GROMESH_ENCRYPTION_KEY", "GROMESH_FINGERPRINT_KEY"];
+// The compose host ports for CP, Kong and echo remain fixed. UI, Postgres, ClickHouse and
+// validator can be remapped; their unused development ports are not destinations of this run.
+const destinations = [
+  ["UI_URL", "ui"], ["CP_URL", "control-plane", 3000], ["CLICKHOUSE_URL", "clickhouse"], ["POSTGRES_PORT", "postgres"],
+  ["KONG_PROXY_URL", "kong", 8000], ["KONG_STATUS_URL", "kong", 8100], ["KONG_METRICS_URL", "kong", 8100],
+  ["ECHO_URL", "echo", 8080], ["KONG_VALIDATOR_URL", "kong-validator"], ["KONG_PROXY_TLS_PORT", "kong", 8443],
+];
 function hostPort(value) {
-  if (/^\d+$/.test(value)) return Number(value);
-  let url;
-  try { url = new URL(value); } catch { return null; }
-  if (!["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)) return null;
-  const port = url.port || { "http:": "80", "https:": "443", "postgres:": "5432", "postgresql:": "5432" }[url.protocol];
-  return port ? Number(port) : null;
+  if (/^\d+$/.test(value))
+    return Number(value) > 0 && Number(value) <= 65535 ? { port: Number(value), host: "127.0.0.1" } : null;
+  try {
+    const url = new URL(value);
+    if (!["http:", "https:"].includes(url.protocol) || !["127.0.0.1", "[::1]"].includes(url.hostname)
+      || url.username || url.password)
+      return null;
+    return { port: Number(url.port || (url.protocol === "https:" ? 443 : 80)), host: url.hostname === "[::1]" ? "::1" : url.hostname };
+  }
+  catch {
+    return null;
+  }
 }
-
-/**
- * Problems that refuse the run (empty = ok). `containers`: [{ project, service, ports: [host ports] }] of every
- * running container. Values are never echoed: only variable names, ports and service names.
- */
-export function stackProblems(scope, env, containers) {
-  const spec = SCOPES[scope];
-  if (!spec) throw new Error(`unknown stack scope ${scope}`);
-  const project = env.COMPOSE_PROJECT_NAME;
+export function stackProblems(scope, env, containers = [], volumes = [], networks = []) {
+  if (scope !== "acceptance")
+    throw new Error("Unknown isolation scope");
   const problems = [];
-  if (!project) problems.push("COMPOSE_PROJECT_NAME must name the run's own compose project");
-  else if (project === SHARED_PROJECT) problems.push(`COMPOSE_PROJECT_NAME must not be the standard project "${SHARED_PROJECT}"`);
-  for (const name of spec.required) if (!env[name]) problems.push(`${name} must be set explicitly`);
-  for (const name of spec.secrets) if (env[name] && DEV_SECRETS.has(env[name])) problems.push(`${name} must not be a development default credential`);
-  const owned = (port, service, label) => {
-    const publishers = containers.filter((c) => c.ports.includes(port));
-    const match = publishers.filter((c) => c.project === project && c.service === service);
-    if (match.length === 1 && publishers.length === 1) return;
-    const seen = publishers.map((c) => `${c.project}/${c.service}`).join(", ") || "no container";
-    problems.push(`${label} (port ${port}) must be published by ${project ?? "?"}/${service}, found ${seen}`);
-  };
-  const checked = new Set();
-  for (const [name, service, fixed] of spec.destinations) {
-    if (env[name]) {
-      const port = hostPort(env[name]);
-      if (port === null) problems.push(`${name} must be a loopback URL or port`);
-      else if (fixed !== undefined && port !== fixed) problems.push(`${name} must use port ${fixed}: other tests reach that port directly`);
-      else if (!checked.has(`${port}/${service}`)) { checked.add(`${port}/${service}`); owned(port, service, name); }
-    } else if (fixed !== undefined && !checked.has(`${fixed}/${service}`)) {
-      checked.add(`${fixed}/${service}`);
-      owned(fixed, service, `${service} (fixed in the tests)`);
+  const project = env.COMPOSE_PROJECT_NAME;
+  const run = env.GROMESH_DISPOSABLE_ID;
+  if (!project || project === "gromesh" || !/^[a-z0-9][a-z0-9_-]+$/.test(project))
+    problems.push("COMPOSE_PROJECT_NAME must name a non-default run project");
+  if (!run || !/^[a-zA-Z0-9_-]{12,128}$/.test(run))
+    problems.push("GROMESH_DISPOSABLE_ID must identify this execution");
+  if (!env.COMPOSE_FILE || !composeFiles("", env).some(f => resolve(import.meta.dirname, "..", f) === resolve(import.meta.dirname, "../deploy/compose/disposable.yml"))) {
+    problems.push("COMPOSE_FILE must include deploy/compose/disposable.yml");
+  }
+  for (const name of ["BOOTSTRAP_ADMIN_EMAIL", ...secrets]) {
+    if (!env[name])
+      problems.push(`${name} must be set explicitly`);
+    else if (devSecrets.has(env[name]))
+      problems.push(`${name} must not use a development credential`);
+  }
+  const owned = c => c.project === project && c.disposableId === run;
+  for (const [name, service, fixed] of destinations) {
+    if (!env[name]) {
+      problems.push(`${name} must be set explicitly`);
+      continue;
+    }
+    const endpoint = hostPort(env[name]);
+    if (endpoint === null) {
+      problems.push(`${name} must be a loopback endpoint without URL credentials`);
+      continue;
+    }
+    for (const target of new Set([endpoint.port, ...(fixed ? [fixed] : [])])) {
+      const publishers = containers.filter(c => c.running !== false && c.ports.includes(target));
+      if (publishers.length !== 1 || !owned(publishers[0]) || publishers[0].service !== service
+        || !publishers[0].bindings?.some(b => b.port === target && b.protocol === "tcp"
+          && [target === endpoint.port ? endpoint.host : "127.0.0.1", target === endpoint.port && endpoint.host === "::1" ? "::" : "0.0.0.0"].includes(b.host))) {
+        problems.push(`${name}: port ${target} must have exactly one disposable publisher of service ${service} in this run`);
+      }
     }
   }
-  return problems;
-}
-
-/** Running containers with their compose project, service and published host ports. */
-export async function runningContainers() {
-  const stdout = await new Promise((resolve, reject) => execFile("docker", ["ps", "--format",
-    '{{.Label "com.docker.compose.project"}}\t{{.Label "com.docker.compose.service"}}\t{{.Ports}}'], { timeout: 30_000 },
-  (error, out) => error ? reject(new Error("docker ps failed: the isolated run cannot check its destinations")) : resolve(String(out))));
-  return stdout.split("\n").filter(Boolean).map((line) => {
-    const [project, service, ports = ""] = line.split("\t");
-    const published = [...ports.matchAll(/:(\d+)->/g)].map((m) => Number(m[1]));
-    return { project, service, ports: [...new Set(published)] };
-  });
-}
-
-const done = new Set();
-/** Refuses an isolated run whose destinations are not explicit or not the run's own stack. No-op otherwise. */
-export async function assertStack(scope, env = process.env) {
-  if (!isolated(env) || done.has(scope)) return;
-  const problems = stackProblems(scope, env, await runningContainers());
-  if (problems.length) {
-    // An assertion: the scripts print assertion messages, which carry only names, ports and services.
-    throw new AssertionError({ message: `Isolated run refused before any write (${FLAG}=1, scope ${scope}):\n- ${problems.join("\n- ")}` });
+  // A compose exec/run can address services that have no published port, including stopped init services.
+  for (const c of containers.filter(c => c.project === project)) {
+    if (!owned(c))
+      problems.push("A project container lacks this execution disposable label");
+    if (c.running !== false && (!c.networks?.length || c.networks.some(name => !networks.some(n => n.name === name && n.project === project && n.disposableId === run)))) {
+      // Network-mode sidecars inherit the proved Kong namespace; their own Networks can be empty.
+      const parent = containers.find(p => p.id === c.networkParent && owned(p));
+      if (!parent || !parent.networks?.length || parent.networks.some(name => !networks.some(n => n.name === name && n.project === project && n.disposableId === run)))
+        problems.push("A project container network lacks this execution ownership proof");
+    }
+    for (const m of c.mounts ?? []) {
+      if (m.type === "bind" && m.writable !== false)
+        problems.push("A project container has an unproven writable bind mount");
+      if (m.type !== "volume")
+        continue;
+      const volume = volumes.find(v => v.name === m.name);
+      if (!volume || volume.project !== project || volume.disposableId !== run)
+        problems.push("A mounted volume lacks this execution ownership proof");
+    }
   }
-  done.add(scope);
+  const pg = containers.find(c => owned(c) && c.service === "postgres" && c.running !== false);
+  if (!pg?.mounts?.some(m => m.destination === "/var/lib/postgresql/data" && m.type === "volume"
+    && volumes.some(v => v.name === m.name && v.project === project && v.disposableId === run))) {
+    problems.push("Postgres storage must be a labelled disposable volume of this execution");
+  }
+  const credentialChecks = [
+    ["postgres", "POSTGRES_PASSWORD", "POSTGRES_PASSWORD"], ["control-plane", "BOOTSTRAP_ADMIN_PASSWORD", "BOOTSTRAP_ADMIN_PASSWORD"],
+    ["control-plane", "CLICKHOUSE_PASSWORD", "CLICKHOUSE_READER_PASSWORD"], ["control-plane", "GROMESH_ENCRYPTION_KEY", "GROMESH_ENCRYPTION_KEY"],
+    ["control-plane", "GROMESH_FINGERPRINT_KEY", "GROMESH_FINGERPRINT_KEY"], ["clickhouse", "CLICKHOUSE_PASSWORD", "CLICKHOUSE_PASSWORD"],
+    ["kong", "GROMESH_COLLECTOR_TOKEN", "GROMESH_COLLECTOR_TOKEN"], ["vector", "CLICKHOUSE_PASSWORD", "CLICKHOUSE_WRITER_PASSWORD"],
+    ["vector", "GROMESH_COLLECTOR_TOKEN", "GROMESH_COLLECTOR_TOKEN"],
+  ];
+  for (const [service, key, variable] of credentialChecks) {
+    const matches = containers.filter(c => owned(c) && c.service === service && c.running !== false);
+    if (matches.length !== 1 || !matches[0].environment?.[key] || devSecrets.has(matches[0].environment[key])
+      || matches[0].environment[key] !== env[variable])
+      problems.push(`${service} credential ${variable} is not the run credential`);
+  }
+  const cp = containers.find(c => owned(c) && c.service === "control-plane" && c.running !== false);
+  if (cp?.environment?.CLICKHOUSE_URL !== "http://clickhouse:8123" || cp?.environment?.KONG_VALIDATOR_URL !== "http://kong-validator:8001")
+    problems.push("control-plane internal destinations do not match the disposable services");
+  try {
+    const db = new URL(cp?.environment?.DATABASE_URL);
+    if (decodeURIComponent(db.password) !== env.POSTGRES_PASSWORD || devSecrets.has(decodeURIComponent(db.password))
+      || db.protocol !== "postgres:" || db.username !== "gromesh" || db.port !== "5432" || db.search || db.hash
+      || db.hostname !== "postgres" || db.pathname !== "/gromesh")
+      throw Error();
+  }
+  catch {
+    problems.push("control-plane database credential/destination does not match this run");
+  }
+  return [...new Set(problems)];
 }
-
-/** The compose files the run uses: COMPOSE_FILE when set, so explicit `-f` calls keep the run's overrides. */
+async function docker(args) {
+  return new Promise((resolve, reject) => execFile("docker", args, { timeout: 30000, maxBuffer: 16 * 1024 * 1024 }, (error, out) => error ? reject(new Error("Docker ownership inspection failed")) : resolve(String(out))));
+}
+export async function runningContainers() {
+  const ids = (await docker(["ps", "-aq"])).trim().split(/\s+/).filter(Boolean);
+  if (!ids.length)
+    return { containers: [], volumes: [], networks: [] };
+  const raw = JSON.parse(await docker(["inspect", ...ids]));
+  const containers = raw.map(c => ({
+    id: c.Id, project: c.Config?.Labels?.[projectLabel] ?? "", service: c.Config?.Labels?.[serviceLabel] ?? "",
+    disposableId: c.Config?.Labels?.[disposableLabel] ?? "", running: c.State?.Running === true,
+    networks: Object.keys(c.NetworkSettings?.Networks ?? {}), networkParent: c.HostConfig?.NetworkMode?.replace(/^container:/, ""),
+    bindings: Object.entries(c.NetworkSettings?.Ports ?? {}).flatMap(([key, bindings]) => (bindings ?? []).map(b => ({ port: Number(b.HostPort), host: b.HostIp, protocol: key.split("/")[1] }))),
+    ports: [...new Set(Object.values(c.NetworkSettings?.Ports ?? {}).flatMap(bindings => (bindings ?? []).map(b => Number(b.HostPort))))],
+    environment: Object.fromEntries((c.Config?.Env ?? []).map(e => { const i = e.indexOf("="); return [e.slice(0, i), e.slice(i + 1)]; })),
+    mounts: (c.Mounts ?? []).map(m => ({ type: m.Type, name: m.Name, destination: m.Destination, writable: m.RW })),
+  }));
+  const names = [...new Set(containers.flatMap(c => c.mounts.filter(m => m.type === "volume").map(m => m.name)))];
+  const volumes = names.length ? JSON.parse(await docker(["volume", "inspect", ...names])).map(v => ({
+    name: v.Name, project: v.Labels?.[projectLabel] ?? "", disposableId: v.Labels?.[disposableLabel] ?? "",
+  })) : [];
+  const networkNames = [...new Set(containers.filter(c => c.project).flatMap(c => c.networks))];
+  const networks = networkNames.length ? JSON.parse(await docker(["network", "inspect", ...networkNames])).map(n => ({
+    name: n.Name, project: n.Labels?.[projectLabel] ?? "", disposableId: n.Labels?.[disposableLabel] ?? "",
+  })) : [];
+  return { containers, volumes, networks };
+}
+export async function assertStack(scope, env = process.env, inspect = runningContainers) {
+  // Fail on missing configuration without even requiring a working Docker daemon.
+  const config = stackProblems(scope, env, [], []).filter(p => /must be set explicitly|COMPOSE_|GROMESH_DISPOSABLE_ID/.test(p));
+  let problems = config;
+  if (!problems.length) {
+    try {
+      const snapshot = await inspect();
+      problems = stackProblems(scope, env, snapshot.containers, snapshot.volumes, snapshot.networks);
+    }
+    catch {
+      problems = ["Docker ownership inspection failed; destinations cannot be proved"];
+    }
+  }
+  if (problems.length)
+    throw new AssertionError({ message: `Test stack refused before any write (scope ${scope}):\n- ${problems.join("\n- ")}` });
+}
 export function composeFiles(base, env = process.env) {
   return env.COMPOSE_FILE ? env.COMPOSE_FILE.split(env.COMPOSE_PATH_SEPARATOR ?? ":") : [base];
 }

@@ -1,5 +1,5 @@
+import { ADMIN_URL, integrationDatabaseName, createIntegrationDatabase, dropIntegrationDatabase } from "./databases.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import pg from "pg";
 import { runMigrations } from "../../src/db/migrate.js";
 import { releaseContent } from "../../src/releases/releases.js";
 import { selfSigned } from "./certs.js";
@@ -143,14 +143,10 @@ describe("workspace variables (WS-V1)", () => {
 });
 
 describe("values of a deleted declaration end with the next release (WS-V1)", () => {
-  const ADMIN_URL = process.env.TEST_DATABASE_URL ?? "postgres://gromesh:gromesh@127.0.0.1:5432/gromesh";
-  const name = `gromesh_wsv1_${Date.now()}_${process.pid}`;
+  const name = integrationDatabaseName("wsv1");
   let h: Harness;
   beforeAll(async () => {
-    const admin = new pg.Client({ connectionString: ADMIN_URL });
-    await admin.connect();
-    await admin.query(`CREATE DATABASE "${name}"`);
-    await admin.end();
+    await createIntegrationDatabase(name);
     const url = new URL(ADMIN_URL);
     url.pathname = `/${name}`;
     await runMigrations(url.toString());
@@ -159,10 +155,7 @@ describe("values of a deleted declaration end with the next release (WS-V1)", ()
   });
   afterAll(async () => {
     await h?.close();
-    const admin = new pg.Client({ connectionString: ADMIN_URL });
-    await admin.connect();
-    await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
-    await admin.end();
+    await dropIntegrationDatabase(name);
   });
 
   it("keeps a deleted variable's values until a release without it is published, then purges them (names audited)", async () => {

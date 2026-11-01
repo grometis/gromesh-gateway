@@ -1,0 +1,80 @@
+# Only for disposable acceptance runs. Every resource is tied to one execution, including one-shot services.
+x-disposable: &disposable
+  com.grometis.gromesh.disposable: ${GROMESH_DISPOSABLE_ID:?set a fresh execution id}
+
+services:
+  postgres:
+    labels: *disposable
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set a fresh password}
+  kong-config-init:
+    labels: *disposable
+  kong:
+    labels: *disposable
+    environment:
+      GROMESH_COLLECTOR_TOKEN: ${GROMESH_COLLECTOR_TOKEN:?set a fresh token}
+  kong-validator:
+    labels: *disposable
+  agent:
+    labels: *disposable
+  smoke:
+    labels: *disposable
+  control-plane:
+    labels: *disposable
+    environment:
+      DATABASE_URL: postgres://gromesh:${POSTGRES_PASSWORD:?set a fresh password}@postgres:5432/gromesh
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:?set the run admin email}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:?set a fresh password}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_READER_PASSWORD:?set a fresh password}
+      GROMESH_ENCRYPTION_KEY: ${GROMESH_ENCRYPTION_KEY:?set a fresh encryption key}
+      GROMESH_FINGERPRINT_KEY: ${GROMESH_FINGERPRINT_KEY:?set a fresh fingerprint key}
+  ui:
+    labels: *disposable
+  echo:
+    labels: *disposable
+  echo-2:
+    labels: *disposable
+  clickhouse:
+    labels: *disposable
+    volumes:
+      - clickhouse-logs:/var/log/clickhouse-server
+    environment:
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set a fresh password}
+  clickhouse-init:
+    labels: *disposable
+    environment:
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set a fresh password}
+      CLICKHOUSE_READER_PASSWORD: ${CLICKHOUSE_READER_PASSWORD:?set a fresh password}
+      CLICKHOUSE_WRITER_PASSWORD: ${CLICKHOUSE_WRITER_PASSWORD:?set a fresh password}
+  vector:
+    labels: *disposable
+    environment:
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_WRITER_PASSWORD:?set a fresh password}
+      GROMESH_COLLECTOR_TOKEN: ${GROMESH_COLLECTOR_TOKEN:?set a fresh token}
+  prometheus:
+    labels: *disposable
+  observability-acceptance:
+    labels: *disposable
+    environment:
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set a fresh password}
+      GROMESH_COLLECTOR_TOKEN: ${GROMESH_COLLECTOR_TOKEN:?set a fresh token}
+
+volumes:
+  pg-data:
+    labels: *disposable
+  kong-config:
+    labels: *disposable
+  kong-admin:
+    labels: *disposable
+  agent-state:
+    labels: *disposable
+  clickhouse-data:
+    labels: *disposable
+  clickhouse-logs:
+    labels: *disposable
+  prometheus-data:
+    labels: *disposable
+
+networks:
+  default:
+    labels: *disposable

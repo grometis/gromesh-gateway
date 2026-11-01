@@ -11,6 +11,8 @@ import { promisify } from "node:util";
 import { NODE_IMAGE, pullImages } from "./docker-images.mjs";
 import { assertStack } from "../scripts/stack-guard.mjs";
 
+await assertStack("acceptance");
+
 const exec = promisify(execFile);
 const root = fileURLToPath(new URL("../", import.meta.url));
 const composeFile = fileURLToPath(new URL("../deploy/compose/docker-compose.yml", import.meta.url));
@@ -66,7 +68,6 @@ async function rows(environmentId) {
 }
 
 async function main() {
-  await assertStack("acceptance");
   await pullImages([NODE_IMAGE]);
   const { stdout: agents } = await compose("ps", "--status", "running", "-q", "agent");
   check(agents.trim() === "", "Stop the compose agent before running: it would overwrite the test config");
