@@ -21,5 +21,7 @@ if [ -n "${GROMESH_COLLECTOR_TOKEN_PREVIOUS:-}" ] && [ "${#GROMESH_COLLECTOR_TOK
   echo "GROMESH_COLLECTOR_TOKEN_PREVIOUS must be empty or hold the previous token (at least 32 characters)" >&2; exit 64
 fi
 # Environment values reach the config only through config.sh (checked formats), never through Vector's interpolation.
+# The rendered file holds no secret (the password is resolved in memory); it is still readable by this user only.
+umask 077
 sh /etc/vector/config.sh render /etc/vector/vector.yaml > /var/lib/vector/vector.yaml
 exec vector --config /var/lib/vector/vector.yaml --log-format json "$@"

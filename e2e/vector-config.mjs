@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { pullImages, VECTOR_IMAGE, VECTOR_TEST } from "./docker-images.mjs";
+import { NODE_IMAGE, pullImages, VECTOR_IMAGE, VECTOR_TEST } from "./docker-images.mjs";
 
 const exec = promisify(execFile);
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -38,7 +38,7 @@ async function start(directory, env) {
 }
 
 async function main() {
-  await pullImages([VECTOR_IMAGE]);
+  await pullImages([VECTOR_IMAGE, NODE_IMAGE]);
   for (const name of ["vector.yaml", "entrypoint.sh", "config.sh"]) {
     record(`chart copy of ${name} is identical`, readFileSync(`${root}${directories[0]}/${name}`, "utf8") === readFileSync(`${root}${directories[1]}/${name}`, "utf8"));
   }
@@ -79,13 +79,39 @@ async function main() {
       ["invalid CLICKHOUSE_DATABASE", { CLICKHOUSE_DATABASE: `gromesh; ${injected}` }, "CLICKHOUSE_DATABASE"],
       ["metrics address without port", { GROMESH_COLLECTOR_METRICS_ADDRESS: "0.0.0.0" }, "GROMESH_COLLECTOR_METRICS_ADDRESS"],
       ["quote in CLICKHOUSE_PASSWORD", { CLICKHOUSE_PASSWORD: `p"\n${injected}` }, "CLICKHOUSE_PASSWORD"],
+      ["backslash in CLICKHOUSE_PASSWORD", { CLICKHOUSE_PASSWORD: `p\\n${injected}` }, "CLICKHOUSE_PASSWORD"],
+      ["control character in CLICKHOUSE_PASSWORD", { CLICKHOUSE_PASSWORD: `p\t${injected}` }, "CLICKHOUSE_PASSWORD"],
       ["missing CLICKHOUSE_PASSWORD", { CLICKHOUSE_PASSWORD: "" }, "CLICKHOUSE_PASSWORD"],
     ];
     for (const [label, override, variable] of refusals) {
       const { running, code, output } = await start(directory, { ...base, ...override });
       const config = output.split(/exit=\d+\n?/)[1] ?? "";
       record(`${directory}: refuses ${label}`, !running && code !== 0 && output.includes(`${variable} is missing or not in the accepted format`)
-        && !config.includes(injected), `exit ${code}`);
+        && !config.includes(injected) && !output.includes(injected), `exit ${code}`);
+    }
+
+    // Accepted passwords reach ClickHouse byte for byte (the sink's healthcheck sends them to a stand-in), UTF-8 and
+    // text that looks like interpolation included, and never appear in Vector's output.
+    for (const password of ["sénha-ü-密码", "a'b$x{y} ]^~[", "SECRET[env.other]${HOME}"]) {
+      const net = `gromesh-vector-config-${randomBytes(4).toString("hex")}`;
+      await docker(["network", "create", net]);
+      try {
+        await docker(["run", "-d", "--name", `${net}-ch`, "--network", net, "--network-alias", "ch", NODE_IMAGE, "node", "-e",
+          'require("http").createServer((q,s)=>{const a=q.headers.authorization;if(a)console.log("AUTH "+Buffer.from(a.split(" ")[1],"base64").toString("hex"));s.end("1")}).listen(8123)']);
+        await docker(["run", "-d", "--name", `${net}-v`, "--network", net, ...runArgs(directory, { ...base, CLICKHOUSE_ENDPOINT: "http://ch:8123", CLICKHOUSE_PASSWORD: password }),
+          "/etc/vector/entrypoint.sh"]);
+        let seen = "";
+        for (let i = 0; i < 40 && !seen; i++) {
+          await sleep(500);
+          seen = /AUTH ([0-9a-f]+)/.exec((await docker(["logs", `${net}-ch`])).stdout)?.[1] ?? "";
+        }
+        const logs = await docker(["logs", `${net}-v`]).then((r) => `${r.stdout}${r.stderr}`);
+        record(`${directory}: password ${JSON.stringify(password)} reaches ClickHouse unchanged and stays out of the logs`,
+          seen === Buffer.from(`gromesh_writer:${password}`, "utf8").toString("hex") && !logs.includes(password));
+      } finally {
+        await docker(["rm", "-f", `${net}-ch`, `${net}-v`]).catch(() => {});
+        await docker(["network", "rm", net]).catch(() => {});
+      }
     }
 
     // ${VAR} written in a value is kept literally: nothing in the environment is expanded into the config.

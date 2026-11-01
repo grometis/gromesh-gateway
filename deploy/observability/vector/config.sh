@@ -11,8 +11,6 @@ set -eu
 address='(\[[0-9A-Fa-f:.]+\]|[0-9A-Za-z.-]+):[0-9]{1,5}'
 endpoint='https?://(\[[0-9A-Fa-f:.]+\]|[0-9A-Za-z.-]+)(:[0-9]{1,5})?(/[0-9A-Za-z._~/-]*)?'
 database='[A-Za-z_][A-Za-z0-9_]{0,63}'
-# Printable ASCII without the double quote and the backslash: the value lands inside a double-quoted YAML string.
-password='[] !#-[^-~]+'
 
 # value <name>: prints the checked value of a known name; exits 2 for an unknown name, 1 for a missing/invalid value.
 value() {
@@ -21,11 +19,18 @@ value() {
     metrics_address) variable=GROMESH_COLLECTOR_METRICS_ADDRESS v=${GROMESH_COLLECTOR_METRICS_ADDRESS:-0.0.0.0:9598} format=$address ;;
     clickhouse_endpoint) variable=CLICKHOUSE_ENDPOINT v=${CLICKHOUSE_ENDPOINT:-http://clickhouse:8123} format=$endpoint ;;
     clickhouse_database) variable=CLICKHOUSE_DATABASE v=${CLICKHOUSE_DATABASE:-gromesh} format=$database ;;
-    clickhouse_password) variable=CLICKHOUSE_PASSWORD v=${CLICKHOUSE_PASSWORD:-} format=$password ;;
+    clickhouse_password) variable=CLICKHOUSE_PASSWORD v=${CLICKHOUSE_PASSWORD:-} format='' ;;
     *) return 2 ;;
   esac
+  if [ -z "$format" ]; then
+    # The password lands inside a double-quoted YAML string: any character but the double quote, the backslash
+    # (both already broke or silently changed it under Vector's interpolation) and control characters.
+    [ -n "$v" ] && [ "$(printf '%s' "$v" | LC_ALL=C tr -d '"\\[:cntrl:]')" = "$v" ] || {
+      echo "$variable is missing or not in the accepted format" >&2
+      return 1
+    }
   # grep -x matches line by line: a value with a newline must be refused before it.
-  if [ "$(printf '%s' "$v" | wc -l)" -ne 0 ] || ! printf '%s' "$v" | grep -Eqx "$format"; then
+  elif [ "$(printf '%s' "$v" | wc -l)" -ne 0 ] || ! printf '%s' "$v" | grep -Eqx "$format"; then
     echo "$variable is missing or not in the accepted format" >&2
     return 1
   fi
