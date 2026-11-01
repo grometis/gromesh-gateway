@@ -55,11 +55,19 @@ test("a new consumer's key is shown once and is gone after closing", async ({ pa
   expect(stored).not.toContain(key);
 });
 
-test("rate-limiting on a route from the v1 Plugins screen, with a 422 on config.minute shown on the field", async ({ page }) => {
+test("rate-limiting on a route from the Workspace Plugins screen, with a 422 on config.minute shown on the field", async ({ page }) => {
   await page.route("**/api/v1/plugin-schemas", (route) => route.fulfill({ contentType: "application/json", body: catalogFile("_catalog") }));
   await page.route("**/api/v1/plugin-schemas/*", (route) => {
     const name = new URL(route.request().url()).pathname.split("/").pop()!;
     return route.fulfill({ contentType: "application/json", body: catalogFile(name) });
+  });
+  // Prism has no consumer-list example and repeats nextCursor="string" forever.
+  // This scenario needs a route only; give the scope picker a complete empty consumer list.
+  await page.route("**/api/v2/workspaces/*/consumers?*", route => route.fulfill({ json: { items: [], nextCursor: null } }));
+  const writes: string[] = [];
+  page.on("request", request => {
+    const path = new URL(request.url()).pathname;
+    if (request.method() !== "GET" && /\/api\/v[12]\/.*\/plugins$/.test(path)) writes.push(`${request.method()} ${path}`);
   });
   await login(page);
 
@@ -76,11 +84,12 @@ test("rate-limiting on a route from the v1 Plugins screen, with a 422 on config.
   await picker.getByLabel("Buscar plugin").fill("rate-limiting");
   await picker.getByRole("button", { name: /^rate-limiting/ }).click();
 
-  const editor = page.getByRole("dialog", { name: "Novo plugin rate-limiting" });
-  await editor.getByRole("radio", { name: "Route", exact: true }).check();
+  // WS-P2 uses independent scope selectors and v2 writes, including on the existing /e/:id/plugins URL.
+  const editor = page.getByRole("dialog", { name: "Novo plugin", exact: true });
+  await expect(editor.getByRole("combobox", { name: "Plugin", exact: true })).toHaveValue("rate-limiting");
   await editor.getByRole("combobox", { name: "Route", exact: true }).selectOption({ index: 1 });
-  await expect(editor.getByRole("radio", { name: "Route" })).toBeChecked();
   await expect(editor.getByRole("combobox", { name: "Route" })).toHaveValue(/[0-9a-f-]{36}/);
+  const routeId = await editor.getByRole("combobox", { name: "Route", exact: true }).inputValue();
   await expect(editor.getByLabel("limit_by")).toHaveValue("consumer");
   await expect(editor).not.toContainText(/kong/i, { useInnerText: true });
   await editor.getByLabel("minute", { exact: true }).fill("5");
@@ -99,18 +108,21 @@ test("rate-limiting on a route from the v1 Plugins screen, with a 422 on config.
           }),
         })
       : route.fallback();
-  await page.route("**/api/v1/environments/*/plugins", refuse);
-  await editor.getByRole("button", { name: "Salvar" }).click();
+  await page.route("**/api/v2/workspaces/*/plugins", refuse);
+  await editor.getByRole("button", { name: "Salvar no rascunho", exact: true }).click();
   await expect(editor.getByLabel("minute", { exact: true })).toHaveAttribute("aria-invalid", "true");
-  await expect(editor.getByRole("alert").filter({ hasText: "value should be lower than the hour limit" })).toBeVisible();
+  await expect(editor.locator(".field").filter({ has: page.getByLabel("minute", { exact: true }) }).getByRole("alert")).toHaveText("config: valor inválido.");
 
   // Second save goes to the mock and carries the form's values and the schema defaults.
-  await page.unroute("**/api/v1/environments/*/plugins", refuse);
-  const created = page.waitForRequest((r) => r.method() === "POST" && r.url().endsWith("/plugins"));
-  await editor.getByRole("button", { name: "Salvar" }).click();
-  const body = (await created).postDataJSON() as { name: string; scope: { routeId?: string }; config: Record<string, unknown> };
+  await page.unroute("**/api/v2/workspaces/*/plugins", refuse);
+  const created = page.waitForRequest((r) => r.method() === "POST" && /\/api\/v2\/workspaces\/[^/]+\/plugins$/.test(new URL(r.url()).pathname));
+  await editor.getByRole("button", { name: "Salvar no rascunho", exact: true }).click();
+  const request = await created;
+  const body = request.postDataJSON() as { name: string; scope: { routeId?: string }; config: Record<string, unknown> };
   expect(body.name).toBe("rate-limiting");
-  expect(body.scope.routeId).toMatch(/[0-9a-f-]{36}/);
+  expect(body.scope).toEqual({ routeId });
   expect(body.config).toMatchObject({ minute: 5, limit_by: "consumer", policy: "local", fault_tolerant: true });
   await expect(editor).toBeHidden();
+  const path = new URL(request.url()).pathname;
+  expect(writes).toEqual([`POST ${path}`, `POST ${path}`]);
 });

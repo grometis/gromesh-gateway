@@ -1,6 +1,8 @@
-import { useDeferredValue, useMemo, useState, type FormEvent } from "react";
+import { CatalogPicker } from "../components/PluginCatalog";
+import { WorkspacePlugins } from "./WorkspacePlugins";
+import { useMemo, useState, type FormEvent } from "react";
 import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
-import { ApiError, api, unwrap, type Plugin, type PluginCatalogEntry, type PluginScope, type PluginWrite } from "../api/client";
+import { ApiError, api, unwrap, type Plugin, type PluginScope, type PluginWrite } from "../api/client";
 import { consumerName, useConsumers, useRouteList } from "../api/lists";
 import { statusMessage } from "../api/errors";
 import { useCanEdit } from "../auth";
@@ -24,18 +26,6 @@ export interface ScopeChoice {
 }
 
 const SCOPE_LABEL: Record<ScopeKind, string> = { global: "Global", service: "Service", route: "Route", consumer: "Consumer" };
-const CATEGORY_LABEL: Record<PluginCatalogEntry["category"], string> = {
-  authentication: "Autenticação",
-  security: "Segurança",
-  "traffic-control": "Controle de tráfego",
-  transformation: "Transformação",
-  logging: "Logs",
-  observability: "Observabilidade",
-  serverless: "Serverless",
-  ai: "IA",
-  other: "Outros",
-};
-const NOT_IN_DBLESS = "Indisponível: depende de banco de dados no data plane, que roda sem banco.";
 
 export function scopeOf(p: Pick<Plugin, "scope">): ScopeChoice {
   const s = p.scope ?? {};
@@ -52,9 +42,6 @@ function scopeBody(scope: ScopeChoice): PluginScope {
   return {};
 }
 
-export function usePluginCatalog() {
-  return useQuery({ queryKey: ["plugin-catalog"], queryFn: () => unwrap(api.GET("/plugin-schemas")), staleTime: Infinity });
-}
 
 function usePluginSchema(name: string | null) {
   return useQuery({
@@ -105,21 +92,7 @@ function usePlugins(envId: string, scope: ScopeChoice | null) {
 
 export function PluginsPage() {
   const envId = useEnvId();
-  const canEdit = useCanEdit();
-  const [onlyGlobal, setOnlyGlobal] = useState(false);
-  return (
-    <section className="final-page">
-      <PluginList
-        envId={envId}
-        scope={onlyGlobal ? { kind: "global", id: "" } : null}
-        title="Plugins"
-        page
-        canEdit={canEdit}
-        onlyGlobal={onlyGlobal}
-        onGlobalChange={setOnlyGlobal}
-      />
-    </section>
-  );
+  return <WorkspacePlugins key={envId} workspaceId={envId} />;
 }
 
 /** Plugins of one service, route or consumer, shown inside that entity's screen. */
@@ -216,41 +189,6 @@ function PluginEditor({ envId, plugin, preset, onClose }: { envId: string; plugi
   );
 }
 
-function CatalogPicker({ onPick, onClose }: { onPick: (name: string) => void; onClose: () => void }) {
-  const catalog = usePluginCatalog();
-  const [search, setSearch] = useState("");
-  const q = useDeferredValue(search.trim().toLowerCase());
-  const groups = useMemo(() => {
-    const out = new Map<PluginCatalogEntry["category"], PluginCatalogEntry[]>();
-    for (const p of catalog.data?.items ?? []) if (!q || p.name.includes(q)) out.set(p.category, [...(out.get(p.category) ?? []), p]);
-    return [...out.entries()].sort(([a], [b]) => CATEGORY_LABEL[a].localeCompare(CATEGORY_LABEL[b], "pt-BR"));
-  }, [catalog.data, q]);
-  return (
-    <Modal title="Escolha um plugin" onClose={onClose} wide>
-      <input type="search" className="search" placeholder="Buscar plugin" aria-label="Buscar plugin" value={search} onChange={(e) => setSearch(e.target.value)} />
-      {catalog.isPending && <p className="muted">Carregando catálogo…</p>}
-      {catalog.isError && <p className="error">{statusMessage(catalog.error)}</p>}
-      {catalog.isSuccess && groups.length === 0 && <EmptyState title="Nenhum plugin encontrado." />}
-      {groups.map(([category, items]) => (
-        <section key={category} className="catalog-group" aria-label={CATEGORY_LABEL[category]}>
-          <h3>{CATEGORY_LABEL[category]}</h3>
-          <div className="catalog">
-            {items.map((p) => {
-              const unsupported = p.supportedInDbless === false;
-              return (
-                <Button key={p.name} className="catalog-card" disabled={unsupported} title={unsupported ? NOT_IN_DBLESS : undefined} onClick={() => onPick(p.name)}>
-                  <span className="mono">{p.name}</span>
-                  {p.source === "custom" && <small className="muted"> (customizado)</small>}
-                  {unsupported && <small className="muted unsupported">{NOT_IN_DBLESS}</small>}
-                </Button>
-              );
-            })}
-          </div>
-        </section>
-      ))}
-    </Modal>
-  );
-}
 
 const STATIC_PATHS = ["name", "enabled", "protocols", "tags", "scope", "scope.serviceId", "scope.routeId", "scope.consumerId"];
 
