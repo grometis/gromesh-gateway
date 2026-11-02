@@ -13,7 +13,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import {
   Api, apply, assertLab, CLUSTER, CONTEXT, controlPlaneObjects, controlPlaneSecret, cpSecrets, createSecret, dbSkew, denyPolicies, docker, Forward, helm, here, json,
   kubeconfig, kubectl, NODES, NS, registrationSecret, relayObjects, removeSuiteObjects, root, run, sql,
-  scrubKong,
+  ownership, scrubKong,
 } from "./lab.mjs";
 import { CLIENT } from "./client-script.mjs";
 import { privilegedAfterLoss, privilegedRequestsBetween, scenarioRequestLines } from "./privileged.mjs";
@@ -426,6 +426,10 @@ s.listen(${BACKEND_PORT}, "::");`;
 
 
 let Client = class {
+  static async start(...args) {
+    await ownership.preflightResources([{ type: "pod", name: "observer", namespace: NS.fx }], true);
+    return new Client(...args);
+  }
   constructor(label, args) {
     this.events = [];
     this.child = spawn("kubectl", ["--kubeconfig", kubeconfig, "--context", CONTEXT, "-n", NS.fx, "exec", "-i", "observer", "--", "node", "--input-type=module", "-"], { stdio: ["pipe", "pipe", "pipe"] });
@@ -525,8 +529,7 @@ async function setupV2() {
   ctx.topo = topo;
   ctx.checks = [...probeChecks(topo).filter((c) => c.capability !== "CAP-7"), CAP7];
   ctx.owned = true;
-  await removeSuiteObjects();
-  await kubectl(["delete", "namespace", OBS, "--ignore-not-found", "--wait", "--timeout=240s"], { timeout: 260_000 });
+  await removeSuiteObjects([OBS]);
   const secrets = cpSecrets();
   ctx.secrets = secrets;
   await apply([{ apiVersion: "v1", kind: "Namespace", metadata: { name: NS.cp } }]);
@@ -801,7 +804,7 @@ async function chartBlocksImds() {
   }
   const scenario = `${RUN_ID}-chart-imds`;
   await markServer("imds", scenario, "start");
-  const client = new Client("chart-imds", [ctx.proxy.host, String(ctx.proxy.port), `/${ctx.ws.A.slug}/api`, ctx.ws.A.key, `/${ctx.ws.A.slug}/api/ws`, `/${ctx.ws.A.slug}${PRIVILEGED_PATH}`]);
+  const client = await Client.start("chart-imds", [ctx.proxy.host, String(ctx.proxy.port), `/${ctx.ws.A.slug}/api`, ctx.ws.A.key, `/${ctx.ws.A.slug}/api/ws`, `/${ctx.ws.A.slug}${PRIVILEGED_PATH}`]);
   const t0 = await vmNow();
   await kubectl(["delete", "ciliumclusterwidenetworkpolicy", "n2c-deny-imds"]);
   await sleep(12_000);
@@ -835,7 +838,7 @@ async function containmentN({ frozenSupervisor = false } = {}) {
   const scenario = `${RUN_ID}-${id}`;
   await markServer("imds", scenario, "start");
   const clientArgs = [ctx.proxy.host, String(ctx.proxy.port), `/${ctx.ws.A.slug}/api`, ctx.ws.A.key, `/${ctx.ws.A.slug}/api/ws`, `/${ctx.ws.A.slug}${PRIVILEGED_PATH}`];
-  const client = new Client(id, clientArgs);
+  const client = await Client.start(id, clientArgs);
   await sleep(6000);
   const warm = client.events.slice(-40);
   it.measures.warmup = { ok: warm.filter((e) => e.s === 200).length, ws: client.events.filter((e) => e.k === "ws").map((e) => e.ev).slice(0, 4) };
@@ -940,7 +943,7 @@ async function containmentN({ frozenSupervisor = false } = {}) {
   // Blocked → reachable → blocked: with the deny back, the recovered pods' requests on the route never reach it.
   const recovered = `${scenario}-recovered`;
   await markServer("imds", recovered, "start");
-  const after = new Client(`${id}-recovered`, clientArgs);
+  const after = await Client.start(`${id}-recovered`, clientArgs);
   await sleep(5000);
   await after.stop();
   await markServer("imds", recovered, "end");
@@ -985,7 +988,7 @@ async function probeDown() {
 /** Aceite o: the agent frozen on a serving pod (communication failure): no containment of a pod that proves isolation. */
 async function agentDown() {
   const it = item("V2-o-agent-down", "Agent frozen 90 s on a serving pod: no 503 and no Kong stop (the probe keeps proving isolation), communication-failure opened, closed on SIGCONT without a release", {});
-  const client = new Client("agent-down", [ctx.proxy.host, String(ctx.proxy.port), `/${ctx.ws.A.slug}/api`, ctx.ws.A.key, `/${ctx.ws.A.slug}/api/ws`]);
+  const client = await Client.start("agent-down", [ctx.proxy.host, String(ctx.proxy.port), `/${ctx.ws.A.slug}/api`, ctx.ws.A.key, `/${ctx.ws.A.slug}/api/ws`]);
   await sleep(4000);
   const [p] = await live();
   const target = await freeze(p.name, "agent", "gromesh-agent");
@@ -1112,7 +1115,7 @@ async function rollbackV2() {
  * the replacement is admitted (F3 path) and the deployment converges; the stale node's effect is recorded. */
 async function drainAndReplace() {
   const it = item("V2-p-drain", "Serving pod deleted with traffic and an open WebSocket: supervisor signal (Ks), nginx exit (Kx after SIGKILL if the drain runs out), kong exits before the sidecars; replacement admitted and converged; stale node of the deleted pod measured", V2_BUDGET);
-  const client = new Client("drain", [ctx.proxy.host, String(ctx.proxy.port), `/${ctx.ws.A.slug}/api`, ctx.ws.A.key, `/${ctx.ws.A.slug}/api/ws`]);
+  const client = await Client.start("drain", [ctx.proxy.host, String(ctx.proxy.port), `/${ctx.ws.A.slug}/api`, ctx.ws.A.key, `/${ctx.ws.A.slug}/api/ws`]);
   await sleep(5000);
   const [p] = await live();
   const pj = await json(["-n", NS.dp, "get", "pod", p.name]);
@@ -1171,14 +1174,14 @@ let finishedV2 = false;
 async function finishV2() {
   if (finishedV2) return;
   finishedV2 = true;
-  report.thawed = await thawAll();
+  report.thawed = await thawAll().catch(error => { report.cleanupFailed = true; return [error.message]; });
   for (const f of followers) f.stop();
   for (const c of clients) await c.stop().catch(() => {});
   ctx.forward?.stop();
-  if (process.env.LAB_KEEP === "1") report.cleanup = "kept (LAB_KEEP=1)";
+  if (ownership.refused) { report.cleanup = "refused; ownership receipt and evidence preserved"; report.cleanupFailed = true; }
+  else if (process.env.LAB_KEEP === "1") report.cleanup = "kept (LAB_KEEP=1)";
   else if (ctx.owned) {
-    await docker(["exec", "gromesh-n2-lab-fx-backend", "pkill", "-f", `listen\\(${BACKEND_PORT}`], { allowFail: true });
-    await Promise.all([removeSuiteObjects(), kubectl(["delete", "namespace", OBS, "--ignore-not-found", "--wait", "--timeout=240s"], { timeout: 260_000 })])
+    await removeSuiteObjects([OBS], () => docker(["exec", "gromesh-n2-lab-fx-backend", "pkill", "-f", `listen\\(${BACKEND_PORT}`], { allowFail: true }))
       .then(() => { report.cleanup = "namespaces, policies and the backend server removed"; }, (e) => { report.cleanup = `failed: ${e.message}`; report.cleanupFailed = true; });
   }
   if (frozen.size) { report.cleanupFailed = true; report.stillFrozen = [...frozen]; }

@@ -4,6 +4,7 @@
 //   LAB_KUBECONFIG=<file> AGENT_IMAGE=<local tag> KONG_IMAGE=<local tag> [LAB_OUT=<dir>] node e2e/kind/n2/collector.mjs
 // Requires the cluster from cluster.sh. No control plane: Kong never gets a lease here, the sidecars run regardless.
 // Never prints the collector token or the ClickHouse passwords.
+import { N2Lab } from "../../../scripts/kind-stack-guard.mjs";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -44,9 +45,9 @@ const record = (item, ok, detail) => {
   assert.ok(ok, `${item}: ${detail}`);
 };
 
-function run(command, args, { input, timeout = 180_000, allowFail = false } = {}) {
+function rawRun(command, args, { input, timeout = 180_000, allowFail = false, env: extra = {} } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { env, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(command, args, { env: { ...env, ...extra }, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     const timer = setTimeout(() => child.kill("SIGKILL"), timeout);
@@ -61,8 +62,13 @@ function run(command, args, { input, timeout = 180_000, allowFail = false } = {}
     child.stdin.end(input ?? "");
   });
 }
-const kubectl = (args, options) => run("kubectl", ["--kubeconfig", kubeconfig, "--context", context, ...args], options);
-const helm = (args, options) => run("helm", ["--kubeconfig", kubeconfig, "--kube-context", context, ...args], options);
+const ownership = new N2Lab({ env, execute: rawRun });
+function run(command, args, options) {
+  if (command === "docker") return ownership.docker(args, options);
+  return rawRun(command, args, options);
+}
+const kubectl = (args, options) => ownership.kubectl(args, options);
+const helm = (args, options) => ownership.helm(args, options);
 const apply = (objects) => kubectl(["apply", "-f", "-"], { input: JSON.stringify({ apiVersion: "v1", kind: "List", items: objects }) });
 const json = async (args) => JSON.parse((await kubectl([...args, "-o", "json"])).stdout);
 
@@ -192,7 +198,6 @@ async function main() {
   const status = await run("bash", [join(here, "cluster.sh"), "status"], { allowFail: true, env: { LAB_KUBECONFIG: kubeconfig } });
   assert.equal(status.code, 0, `the lab is not the pinned kind cluster: ${status.stderr.trim()}`);
   // A fresh start: a rerun would otherwise meet ClickHouse users created with an earlier run's passwords.
-  await helm(["uninstall", "dp", "-n", DP], { allowFail: true });
   await kubectl(["delete", "namespace", DP, OBS, FX, "--ignore-not-found", "--wait=true"], { timeout: 300_000 });
   await clickhouse();
   await apply([{ apiVersion: "v1", kind: "Namespace", metadata: { name: DP } },

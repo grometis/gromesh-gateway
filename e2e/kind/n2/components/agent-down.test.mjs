@@ -15,7 +15,7 @@ async function evaluate({ events = [{ t: START, k: "new", s: 200 }, { t: END - 1
   await runInNewContext(`${scenario}\nagentDown()`, {
     item: () => result, expect: (it, ok, why) => { if (!ok) it.failures.push(why); }, done: (it) => { it.result = itemResult(it); },
     ctx: { proxy: { host: "fixture", port: 8000 }, ws: { A: { slug: "a", key: "test" } } },
-    Client: class { events = events; since(t) { return this.events.filter((e) => e.t >= t); } async stop() {} },
+    Client: class { static async start() { return new this(); } events = events; since(t) { return this.events.filter((e) => e.t >= t); } async stop() {} },
     sleep: async (ms) => { now += ms; }, live: async () => [{ name: "pod" }],
     freeze: async () => { now += 1000; return {}; }, thaw: async () => { now += 10_000; },
     vmNow: async () => now, pendencies: async () => pend, waitFor: async () => true,

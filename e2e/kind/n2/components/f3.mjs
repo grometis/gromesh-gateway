@@ -11,7 +11,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import {
   Api, apply, assertLab, CONTEXT, controlPlaneObjects, controlPlaneSecret, cpSecrets, createSecret, dbSkew, denyPolicies, docker, Forward, helm, here, json,
   kubeconfig, kubectl, NODES, NS, registrationSecret, relayObjects, removeSuiteObjects, root, run, sql,
-  scrubKong,
+  ownership, scrubKong,
 } from "./lab.mjs";
 
 const out = process.env.LAB_OUT ?? mkdtempSync(join(tmpdir(), "gromesh-n2-comp-"));
@@ -393,8 +393,7 @@ async function setup() {
   await preflight();
   mark("preflight", { images: report.imageIds });
 
-  // A fresh, reproducible start: only this suite's namespaces and its own cluster-wide policies are removed. From here
-  // on the run owns them, and only then does its cleanup remove them (never after a failed lab check or preflight).
+  // A fresh start may remove only resources whose creation this lab run recorded; the guard refuses preexisting objects.
   ctx.owned = true;
   await removeSuiteObjects();
 
@@ -1136,13 +1135,14 @@ let finished = false;
 async function finish() {
   if (finished) return;
   finished = true;
-  report.thawed = await thawAll();
+  report.thawed = await thawAll().catch(error => { report.cleanupFailed = true; return [error.message]; });
   for (const f of followers) f.stop();
   ctx.forward?.stop();
   // Only a cluster whose identity assertLab accepted is read, logs included: a refused kubeconfig may name any cluster.
   if (ctx.labVerified && (report.items.some((i) => i.result === "fail") || report.aborted)) await diagnostics().catch((error) => log(`diagnostics: ${error.message}`));
   else if (!ctx.labVerified) report.diagnostics = "skipped: the lab identity was never verified";
-  if (!ctx.owned) report.cleanup = "nothing touched: the run stopped before the lab check and the preflight passed";
+  if (ownership.refused) { report.cleanup = "refused; ownership receipt and evidence preserved"; report.cleanupFailed = true; }
+  else if (!ctx.owned) report.cleanup = "nothing touched: the run stopped before the lab check and the preflight passed";
   else if (process.env.LAB_KEEP === "1") report.cleanup = "kept (LAB_KEEP=1)";
   else {
     await removeSuiteObjects().then(() => { report.cleanup = "namespaces and policies removed"; }, (error) => { report.cleanup = `failed: ${error.message}`; report.cleanupFailed = true; });

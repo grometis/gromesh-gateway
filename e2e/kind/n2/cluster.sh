@@ -18,23 +18,16 @@ if [[ "$LAB_KUBECONFIG" -ef "$HOME/.kube/config" || "$(cd -P "$(dirname "$LAB_KU
 fi
 # kind, kubectl and helm see only the lab file, whatever the caller's environment says.
 export KUBECONFIG="$LAB_KUBECONFIG"
-k() { kubectl --kubeconfig "$LAB_KUBECONFIG" --context "$context" "$@"; }
-h() { helm --kubeconfig "$LAB_KUBECONFIG" --kube-context "$context" "$@"; }
-
-# Refuses any mutation unless the lab context is the named kind cluster: same API endpoint and same CA as the
-# kubeconfig kind itself exports for it (a loopback address alone could be a tunnel to any cluster).
-identity() { kubectl --kubeconfig "$1" config view --raw --minify --flatten ${2:+--context "$2"} \
-  -o jsonpath='{.clusters[0].cluster.server} {.clusters[0].cluster.certificate-authority-data}'; }
-assert_lab() {
-  local exported lab want got
-  kind get clusters | grep -qx "$CLUSTER_NAME" || { echo "kind cluster $CLUSTER_NAME not found" >&2; exit 1; }
-  exported="$(mktemp)"
-  kind get kubeconfig --name "$CLUSTER_NAME" >"$exported"
-  want="$(identity "$exported")"
-  rm -f "$exported"
-  got="$(identity "$LAB_KUBECONFIG" "$context" 2>/dev/null || true)"
-  [[ "$want" =~ ^https://127\.0\.0\.1:[0-9]+\ [A-Za-z0-9+/=]{100,}$ ]] || { echo "kind exported no usable kubeconfig for $CLUSTER_NAME" >&2; exit 1; }
-  [[ "$got" == "$want" ]] || { echo "context $context (${got%% *}) is not kind cluster $CLUSTER_NAME (${want%% *}): endpoint or CA differ" >&2; exit 1; }
+guard="$here/../../../scripts/kind-stack-guard.mjs"
+assert_lab() { node "$guard" n2-assert; }
+# Installation is a mutation too: recheck the creation identity immediately before Helm writes.
+h() {
+  if [[ "${1:-}" == install && " $* " != *" --dry-run=client "* ]]; then assert_lab; fi
+  helm --kubeconfig "$LAB_KUBECONFIG" --kube-context "$context" "$@"
+}
+k() {
+  case " $* " in *" rollout restart "*|*" exec "*) assert_lab ;; esac
+  kubectl --kubeconfig "$LAB_KUBECONFIG" --context "$context" "$@"
 }
 
 # A reused cluster or release must be the pinned one: Kubernetes, node and Cilium images, and Cilium's effective config.
@@ -142,8 +135,9 @@ up() {
     image: $NODE_IMAGE
 "; done
   t0=$(date +%s)
-  # Resumable: an existing lab cluster is kept (only Cilium is installed if missing), if it is the pinned one.
-  kind get clusters | grep -qx "$CLUSTER_NAME" || kind create cluster --name "$CLUSTER_NAME" --kubeconfig "$LAB_KUBECONFIG" --wait 0s --config - <<EOF
+  # A receipt from this creation is mandatory; an old cluster is never adopted by name.
+  if [[ -f "$LAB_KUBECONFIG.n2-owner.json" ]]; then assert_lab
+  else node "$guard" n2-create <<EOF
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 networking:
@@ -154,6 +148,7 @@ nodes:
     image: $NODE_IMAGE
 $workers
 EOF
+  fi
   t1=$(date +%s)
   assert_lab
   assert_nodes $((WORKERS + 1))
@@ -199,9 +194,7 @@ status() {
 }
 
 down() {
-  kind delete cluster --name "$CLUSTER_NAME" --kubeconfig "$LAB_KUBECONFIG"
-  local id
-  for id in $(docker ps -aq --filter "name=^$CLUSTER_NAME-fx-"); do docker rm -f "$id"; done
+  node "$guard" n2-down
 }
 
 case "${1:-}" in
