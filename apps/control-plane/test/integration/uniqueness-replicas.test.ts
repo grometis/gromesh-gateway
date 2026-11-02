@@ -1,3 +1,4 @@
+import { ADMIN_URL, integrationDatabaseName, createIntegrationDatabase, dropIntegrationDatabase } from "./databases.js";
 import { generateKeyPairSync } from "node:crypto";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -9,14 +10,13 @@ import { type ApiResponse, startHarness, uniq, type Harness } from "./harness.js
 // What Kong looks up across the node is unique in the instance (decision H-5) with several control-plane replicas on
 // one Postgres: while an instance index is not in force (a repetition blocks it, or a busy table postponed it), the
 // replicas serialize the writers of the kind on a Postgres advisory lock; once in force, the index decides.
-const ADMIN_URL = process.env.TEST_DATABASE_URL ?? "postgres://gromesh:gromesh@127.0.0.1:5432/gromesh";
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const KINDS = ["jwt-key", "basic-auth-username", "sni"] as const;
 type Kind = (typeof KINDS)[number];
 const RSA_PUBLIC = generateKeyPairSync("rsa", { modulusLength: 2048 }).publicKey.export({ type: "spki", format: "pem" }) as string;
 
 describe("instance uniqueness with two control-plane replicas on one database", () => {
-  const name = `gromesh_uq_replicas_${Date.now()}_${process.pid}`;
+  const name = integrationDatabaseName("uq_replicas");
   let url: string;
   let sql: pg.Pool;
   const replicas: Harness[] = [];
@@ -61,10 +61,7 @@ describe("instance uniqueness with two control-plane replicas on one database", 
   const start = () => startHarness({ databaseUrl: url, uniqueConflictMax: 1_000_000 });
 
   beforeAll(async () => {
-    const admin = new pg.Client({ connectionString: ADMIN_URL });
-    await admin.connect();
-    await admin.query(`CREATE DATABASE "${name}"`);
-    await admin.end();
+    await createIntegrationDatabase(name);
     const u = new URL(ADMIN_URL);
     u.pathname = `/${name}`;
     url = u.toString();
@@ -80,10 +77,7 @@ describe("instance uniqueness with two control-plane replicas on one database", 
   afterAll(async () => {
     await Promise.all(replicas.map((r) => r.close()));
     await sql?.end();
-    const admin = new pg.Client({ connectionString: ADMIN_URL });
-    await admin.connect();
-    await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
-    await admin.end();
+    await dropIntegrationDatabase(name);
   });
 
   it("starts a second replica while another one writes (the activation times out), and still lets one writer win", async () => {
@@ -178,14 +172,11 @@ describe("instance uniqueness with two control-plane replicas on one database", 
 });
 
 describe("a replica starting while another fills in the key-auth fingerprints (an interrupted 0005)", () => {
-  const name = `gromesh_uq_fp_${Date.now()}_${process.pid}`;
+  const name = integrationDatabaseName("uq_fp");
   let url: string;
 
   beforeAll(async () => {
-    const admin = new pg.Client({ connectionString: ADMIN_URL });
-    await admin.connect();
-    await admin.query(`CREATE DATABASE "${name}"`);
-    await admin.end();
+    await createIntegrationDatabase(name);
     const u = new URL(ADMIN_URL);
     u.pathname = `/${name}`;
     url = u.toString();
@@ -199,10 +190,7 @@ describe("a replica starting while another fills in the key-auth fingerprints (a
   });
 
   afterAll(async () => {
-    const admin = new pg.Client({ connectionString: ADMIN_URL });
-    await admin.connect();
-    await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
-    await admin.end();
+    await dropIntegrationDatabase(name);
   });
 
   it("does not serve while another replica completes 0005 (fingerprints, then the index per workspace), and starts after", async () => {

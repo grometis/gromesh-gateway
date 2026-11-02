@@ -1,3 +1,4 @@
+import { ADMIN_URL, integrationDatabaseName, createIntegrationDatabase, dropIntegrationDatabase } from "./databases.js";
 import pg from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -12,7 +13,6 @@ import { startHarness, uniq, type Harness } from "./harness.js";
 // N1-X3: consumer names are unique in the workspace (decision H-5); what Kong looks up across the node — key-auth key,
 // JWT key, basic-auth username, SNI — is unique in the instance, with a generic conflict that never names the other
 // workspace, audited and limited.
-const ADMIN_URL = process.env.TEST_DATABASE_URL ?? "postgres://gromesh:gromesh@127.0.0.1:5432/gromesh";
 
 describe("uniqueness in the workspace and in the instance", () => {
   let h: Harness;
@@ -257,14 +257,11 @@ describe("uniqueness in the workspace and in the instance", () => {
 });
 
 describe("two replicas putting the instance indexes in force at once", () => {
-  const name = `gromesh_uq_race_${Date.now()}_${process.pid}`;
+  const name = integrationDatabaseName("uq_race");
   let url: string;
 
   beforeAll(async () => {
-    const admin = new pg.Client({ connectionString: ADMIN_URL });
-    await admin.connect();
-    await admin.query(`CREATE DATABASE "${name}"`);
-    await admin.end();
+    await createIntegrationDatabase(name);
     const u = new URL(ADMIN_URL);
     u.pathname = `/${name}`;
     url = u.toString();
@@ -272,10 +269,7 @@ describe("two replicas putting the instance indexes in force at once", () => {
   });
 
   afterAll(async () => {
-    const admin = new pg.Client({ connectionString: ADMIN_URL });
-    await admin.connect();
-    await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
-    await admin.end();
+    await dropIntegrationDatabase(name);
   });
 
   it("lets the second wait for the first and find the indexes built, instead of failing on a duplicate", async () => {
@@ -311,17 +305,14 @@ describe("two replicas putting the instance indexes in force at once", () => {
 describe("an instance migrated with credentials repeated across environments", () => {
   let url: string;
   let h: Harness;
-  const name = `gromesh_uq_${Date.now()}_${process.pid}`;
+  const name = integrationDatabaseName("uq");
   const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
   let pool: pg.Pool;
   const db = () => drizzle(pool, { schema });
   const report = () => migrationReport(db(), h.app.get<Encryptor>(ENCRYPTOR));
 
   beforeAll(async () => {
-    const admin = new pg.Client({ connectionString: ADMIN_URL });
-    await admin.connect();
-    await admin.query(`CREATE DATABASE "${name}"`);
-    await admin.end();
+    await createIntegrationDatabase(name);
     const u = new URL(ADMIN_URL);
     u.pathname = `/${name}`;
     url = u.toString();
@@ -343,10 +334,7 @@ describe("an instance migrated with credentials repeated across environments", (
   afterAll(async () => {
     await pool?.end();
     await h?.close();
-    const admin = new pg.Client({ connectionString: ADMIN_URL });
-    await admin.connect();
-    await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
-    await admin.end();
+    await dropIntegrationDatabase(name);
   });
 
   const indexes = async () => (await h.sql.query(`select indexname from pg_indexes where indexname like '%instance_uq' order by indexname`)).rows.map((r) => r.indexname);
@@ -480,16 +468,13 @@ describe("an instance migrated with credentials repeated across environments", (
 });
 
 describe("an instance whose key-auth fingerprints were not all filled in (an interrupted 0005)", () => {
-  const name = `gromesh_fp_${Date.now()}_${process.pid}`;
+  const name = integrationDatabaseName("fp");
   let url: string;
   let h: Harness;
   const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 
   beforeAll(async () => {
-    const admin = new pg.Client({ connectionString: ADMIN_URL });
-    await admin.connect();
-    await admin.query(`CREATE DATABASE "${name}"`);
-    await admin.end();
+    await createIntegrationDatabase(name);
     const u = new URL(ADMIN_URL);
     u.pathname = `/${name}`;
     url = u.toString();
@@ -505,10 +490,7 @@ describe("an instance whose key-auth fingerprints were not all filled in (an int
 
   afterAll(async () => {
     await h?.close();
-    const admin = new pg.Client({ connectionString: ADMIN_URL });
-    await admin.connect();
-    await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
-    await admin.end();
+    await dropIntegrationDatabase(name);
   });
 
   it("starts, fills the fingerprints first and leaves the repeated key a blocker, not an instance index", async () => {

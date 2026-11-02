@@ -1,3 +1,4 @@
+import { ADMIN_URL, integrationDatabaseName, createIntegrationDatabase, dropIntegrationDatabase } from "./databases.js";
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,7 +7,6 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { MIGRATIONS_DIR, runMigrations } from "../../src/db/migrate.js";
 
 // N3-C2: releases and deployments persisted beside v1, which the migration leaves exactly as it was.
-const ADMIN_URL = process.env.TEST_DATABASE_URL ?? "postgres://gromesh:gromesh@127.0.0.1:5432/gromesh";
 const journal = JSON.parse(readFileSync(join(MIGRATIONS_DIR, "meta/_journal.json"), "utf8")) as { entries: { idx: number; tag: string }[] };
 const N3 = journal.entries.find((e) => e.tag.endsWith("_releases_deployments"))!.idx;
 const NEW_TABLES = ["content_activations", "content_revocations", "deployment_lease", "deployments", "releases", "workspace_active_release"];
@@ -16,11 +16,8 @@ const created: string[] = [];
 const folders: string[] = [];
 
 async function freshDatabase(label: string): Promise<string> {
-  const name = `gromesh_n3c2_${label}_${Date.now()}_${process.pid}`;
-  const admin = new pg.Client({ connectionString: ADMIN_URL });
-  await admin.connect();
-  await admin.query(`CREATE DATABASE "${name}"`);
-  await admin.end();
+  const name = integrationDatabaseName("n3c2");
+  await createIntegrationDatabase(name);
   created.push(name);
   const url = new URL(ADMIN_URL);
   url.pathname = `/${name}`;
@@ -116,10 +113,7 @@ describe("N3-C2 releases and deployments persistence", () => {
   }, 120_000);
 
   afterAll(async () => {
-    const admin = new pg.Client({ connectionString: ADMIN_URL });
-    await admin.connect();
-    for (const name of created) await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
-    await admin.end();
+    for (const name of created) await dropIntegrationDatabase(name);
     for (const dir of folders) rmSync(dir, { recursive: true, force: true });
   });
 

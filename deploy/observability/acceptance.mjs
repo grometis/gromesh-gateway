@@ -47,7 +47,7 @@ function admin(path, body) {
   });
 }
 
-async function inside() {
+export async function inside() {
   const { config, environmentId, clusterId, base, secrets, keys, ids } = JSON.parse(readFileSync(0, "utf8"));
   const sql = async (query, timeout = 5000) => {
     const response = await request("http://clickhouse:8123/", {
@@ -218,6 +218,8 @@ async function inside() {
 }
 
 async function host() {
+  const { assertStack, composeFiles } = await import("../../scripts/stack-guard.mjs");
+  await assertStack("acceptance");
   // observability-acceptance runs this image (deploy/compose): pulled first, so the 90 s below cover only the run.
   // Imported here, not at the top: this file also runs inside that container, where e2e/ is not mounted.
   const { NODE_IMAGE, pullImages } = await import("../../e2e/docker-images.mjs");
@@ -243,11 +245,12 @@ async function host() {
   const config = compile(state, { platformPlugins: platformPlugins({
     httpLogEndpoint: "http://gromesh-collector:8080/kong", environmentId,
   }) });
-  const compose = ["compose", "-f", "deploy/compose/docker-compose.yml", "--profile", "observability", "--profile", "observability-tools"];
+  const compose = ["compose", ...composeFiles("deploy/compose/docker-compose.yml").flatMap(f => ["-f", f]), "--profile", "observability", "--profile", "observability-tools"];
   let output;
   let failure;
   try {
-    output = run("docker", [...compose, "run", "--rm", "--no-deps", "-T", "observability-acceptance"],
+    output = run("docker", [...compose, "run", "--rm", "--no-deps", "-T", "observability-acceptance", "node", "--input-type=module", "-e",
+      'const { inside } = await import("/repo/deploy/observability/acceptance.mjs"); await inside();'],
       JSON.stringify({ config, environmentId, clusterId, base, secrets, keys, ids }));
   } catch (error) {
     noSecrets(`${error.stdout ?? ""}${error.stderr ?? ""}`, secrets, "Acceptance diagnostics");
@@ -261,14 +264,7 @@ async function host() {
   console.log(`Acceptance OK: ${output.trim()}; no credentials in any ClickHouse column or Vector logs`);
 }
 
-if (process.argv.includes("--help")) {
-  console.log("POSTGRES_PORT=55433 node deploy/observability/acceptance.mjs\nRequires pnpm dependencies and the running compose observability profile. Replaces Kong config; leaves the stack up.");
-} else {
-  try {
-    if (process.argv.includes("--inside")) await inside();
-    else await host();
-  } catch (error) {
-    console.error(`Acceptance failed: ${error.message}`);
-    process.exitCode = 1;
-  }
+if (process.argv[1] && import.meta.url === new URL(process.argv[1], "file:").href) {
+  try { await host(); }
+  catch (error) { console.error(error?.code === "ERR_ASSERTION" ? error.message : "Acceptance failed (details suppressed to protect credentials)"); process.exitCode = 1; }
 }

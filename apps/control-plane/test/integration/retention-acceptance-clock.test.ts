@@ -1,5 +1,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 
+vi.mock("../../../../scripts/stack-guard.mjs", () => ({ assertStack: async () => {} }));
+
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 test("the TTL acceptance uses one old UTC timestamp and its partition even across midnight", async () => {

@@ -101,7 +101,7 @@ services:
       KONG_ADMIN_ERROR_LOG: /dev/stderr
       KONG_NGINX_WORKER_PROCESSES: "1"
     ports:
-      - "127.0.0.1:8011:8001"
+      - "127.0.0.1:${KONG_VALIDATOR_PORT:-8011}:8001"
     healthcheck:
       test: ["CMD", "kong", "health"]
       interval: 5s
@@ -216,7 +216,7 @@ services:
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-gromesh-dev-observability}
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
     ports:
-      - "127.0.0.1:8123:8123"
+      - "127.0.0.1:${CLICKHOUSE_PORT:-8123}:8123"
     volumes:
       - clickhouse-data:/var/lib/clickhouse
       - ../observability/clickhouse:/docker-entrypoint-initdb.d:ro
@@ -316,7 +316,7 @@ services:
     environment:
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-gromesh-dev-observability}
       GROMESH_COLLECTOR_TOKEN: ${GROMESH_COLLECTOR_TOKEN:-gromesh-dev-collector-token-not-a-secret}
-    command: ["node", "/repo/deploy/observability/acceptance.mjs", "--inside"]
+    command: ["node", "/repo/deploy/observability/acceptance.mjs"]
     depends_on:
       kong:
         condition: service_healthy

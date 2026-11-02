@@ -3,6 +3,7 @@ import { defineConfig, devices } from "@playwright/test";
 // The kind scenario: run through e2e/kind/run.sh, which sets UI_URL, CP_URL, KONG_PROXY_URL and the E2E_* ids.
 export default defineConfig({
   testDir: ".",
+  globalSetup: "./stack-guard.setup.ts",
   testMatch: "mvp.spec.ts",
   timeout: 180_000,
   expect: { timeout: 15_000 },

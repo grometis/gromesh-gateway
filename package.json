@@ -7,13 +7,14 @@
   },
   "scripts": {
     "build": "turbo run build",
-    "test": "turbo run test",
+    "test": "pnpm test:guard && turbo run test",
     "typecheck": "turbo run typecheck",
     "test:e2e": "pnpm --filter @gromesh/e2e test:e2e",
     "lint:contracts": "redocly lint contracts/control-plane.openapi.yaml contracts/agent-protocol.openapi.yaml contracts/control-plane-v2.openapi.yaml contracts/agent-protocol-v2.openapi.yaml",
-    "dev:up": "docker compose -f deploy/compose/docker-compose.yml up -d",
-    "dev:down": "docker compose -f deploy/compose/docker-compose.yml down",
-    "smoke": "docker compose -f deploy/compose/docker-compose.yml run --rm smoke"
+    "dev:up": "node scripts/compose.mjs up -d",
+    "dev:down": "node scripts/compose.mjs down",
+    "smoke": "node scripts/smoke.mjs",
+    "test:guard": "node --test scripts/stack-guard.test.mjs scripts/stack-entrypoints.test.mjs scripts/integration-databases.test.mjs scripts/kind-stack-guard.test.mjs scripts/disposable-docker.test.mjs"
   },
   "devDependencies": {
     "@redocly/cli": "1.34.21",

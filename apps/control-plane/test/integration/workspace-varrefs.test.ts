@@ -1,7 +1,7 @@
+import { ADMIN_URL, integrationDatabaseName, createIntegrationDatabase, dropIntegrationDatabase } from "./databases.js";
 import { formatWithOptions } from "node:util";
 import type { GatewayState } from "@gromesh/compiler";
 import { Logger } from "@nestjs/common";
-import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { deploymentContext, ENCRYPTOR, releaseContext, type Encryptor } from "../../src/crypto/crypto.js";
 import { runMigrations } from "../../src/db/migrate.js";
@@ -11,21 +11,17 @@ import { type ApiClient, type ApiResponse, startHarness, uniq, type Harness } fr
 // resolves it from this instance's values, checks the value as the field it fills, and refuses before any node when a
 // value is missing or refused. Values never show in responses, releases or the audit.
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 180_000 });
-const ADMIN_URL = process.env.TEST_DATABASE_URL ?? "postgres://gromesh:gromesh@127.0.0.1:5432/gromesh";
 const LAB = { stage: "dev" as const, convergenceDeadlineMs: 600_000 };
 const v2 = (client: ApiClient, method: string, path: string, body?: unknown): Promise<ApiResponse> => client(method, `/../v2${path}`, body);
 const SECRET_PATH = "/s3cr3t-path-never-in-responses";
 
 describe("VarRef resolution (WS-V2)", () => {
-  const dbName = `gromesh_wsv2_${Date.now()}_${process.pid}`;
+  const dbName = integrationDatabaseName("wsv2");
   let h: Harness;
   let a: string;
   let b: string;
   beforeAll(async () => {
-    const admin = new pg.Client({ connectionString: ADMIN_URL });
-    await admin.connect();
-    await admin.query(`CREATE DATABASE "${dbName}"`);
-    await admin.end();
+    await createIntegrationDatabase(dbName);
     const url = new URL(ADMIN_URL);
     url.pathname = `/${dbName}`;
     await runMigrations(url.toString());
@@ -39,10 +35,7 @@ describe("VarRef resolution (WS-V2)", () => {
   });
   afterAll(async () => {
     await h?.close();
-    const admin = new pg.Client({ connectionString: ADMIN_URL });
-    await admin.connect();
-    await admin.query(`DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`);
-    await admin.end();
+    await dropIntegrationDatabase(dbName);
   });
 
   const svc = (over: Record<string, unknown> = {}) => ({ name: uniq("svc"), protocol: { $var: "SCHEME" }, host: { $var: "ORDERS_HOST" }, port: { $var: "ORDERS_PORT" }, path: { $var: "BASE_PATH" }, ...over });

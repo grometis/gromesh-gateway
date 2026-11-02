@@ -1,6 +1,6 @@
+import { ADMIN_URL, integrationDatabaseName, createIntegrationDatabase, dropIntegrationDatabase } from "./databases.js";
 import { createHash, generateKeyPairSync, type KeyObject, randomUUID, sign } from "node:crypto";
 import { readFileSync } from "node:fs";
-import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { parse } from "yaml";
 import { canonicalJson, jcs } from "@gromesh/compiler";
@@ -17,7 +17,6 @@ import { type ApiClient, startHarness, uniq, type Harness } from "./harness.js";
 type Doc = Record<string, any>;
 // Migrated databases and several harnesses: generous limits on a busy machine.
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 240_000 });
-const ADMIN_URL = process.env.TEST_DATABASE_URL ?? "postgres://gromesh:gromesh@127.0.0.1:5432/gromesh";
 const LAB = { stage: "dev" as const, convergenceDeadlineMs: 600_000 };
 const v2doc = parse(readFileSync(new URL("../../../../contracts/control-plane-v2.openapi.yaml", import.meta.url), "utf8")) as Doc;
 const MACHINE = v2doc.components.schemas.DeploymentState["x-gromesh-transitions"] as { initial: string[]; transitions: [string, string, string][] };
@@ -27,11 +26,8 @@ const b64 = (value: string | Buffer) => Buffer.from(value).toString("base64url")
 const KONG_B = "b".repeat(32);
 
 async function freshDatabase(label: string): Promise<string> {
-  const name = `gromesh_n3c4_${label}_${Date.now()}_${process.pid}`;
-  const admin = new pg.Client({ connectionString: ADMIN_URL });
-  await admin.connect();
-  await admin.query(`CREATE DATABASE "${name}"`);
-  await admin.end();
+  const name = integrationDatabaseName("n3c4");
+  await createIntegrationDatabase(name);
   created.push(name);
   const url = new URL(ADMIN_URL);
   url.pathname = `/${name}`;
@@ -40,10 +36,7 @@ async function freshDatabase(label: string): Promise<string> {
 }
 
 afterAll(async () => {
-  const admin = new pg.Client({ connectionString: ADMIN_URL });
-  await admin.connect();
-  for (const name of created) await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
-  await admin.end();
+  for (const name of created) await dropIntegrationDatabase(name);
 });
 
 /** A pod's isolation-probe: its key, seq and chain (as in isolation-admissions.test.ts). */

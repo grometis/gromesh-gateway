@@ -25,7 +25,7 @@ interface Pod {
 }
 
 async function dataPlanePod(): Promise<Pod> {
-  const { stdout } = await exec("kubectl", ["-n", namespace, "get", "pods", "-l", selector, "-o", "json"], { timeout: 15_000 });
+  const { stdout } = await exec("kubectl", ["--context", `kind-${process.env.KIND_CLUSTER_NAME!}`, "-n", namespace, "get", "pods", "-l", selector, "-o", "json"], { timeout: 15_000 });
   const { items } = JSON.parse(stdout) as { items: Pod[] };
   expect(items).toHaveLength(1);
   return items[0]!;
@@ -38,6 +38,7 @@ async function restartAgent() {
   expect(agent.containerID).toMatch(/^containerd:\/\//);
   // The agent uses scratch (no shell/kill). Stop only its container through kind's CRI;
   // kubelet restarts it in the same pod, preserving emptyDir and the running gateway.
+  if (before.spec.nodeName !== `${process.env.KIND_CLUSTER_NAME!}-control-plane`) throw new Error("Unproven kind node");
   await exec("docker", ["exec", before.spec.nodeName, "crictl", "stop", "--timeout", "1", agent.containerID.replace(/^containerd:\/\//, "")], { timeout: 30_000 });
   await expect.poll(async () => {
     const after = await dataPlanePod();

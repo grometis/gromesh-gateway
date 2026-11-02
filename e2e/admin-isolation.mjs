@@ -9,6 +9,9 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { NODE_IMAGE, pullImages } from "./docker-images.mjs";
+import { assertStack } from "../scripts/stack-guard.mjs";
+
+await assertStack("acceptance");
 
 const exec = promisify(execFile);
 const root = fileURLToPath(new URL("../", import.meta.url));

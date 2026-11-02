@@ -7,6 +7,7 @@ export default defineConfig({
   resolve: { alias: { "@gromesh/compiler": fileURLToPath(new URL("../../packages/compiler/src/index.ts", import.meta.url)) } },
   test: {
     include: ["test/e2e/**/*.e2e-spec.ts"],
+    globalSetup: ["test/e2e/global-setup.ts"],
     testTimeout: 60_000,
     // Every spec owns the compose agent while it runs: one file at a time.
     fileParallelism: false,
