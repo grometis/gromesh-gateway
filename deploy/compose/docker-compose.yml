@@ -221,7 +221,8 @@ services:
       - clickhouse-data:/var/lib/clickhouse
       - ../observability/clickhouse:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8123/ping"]
+      # The initdb server listens only on loopback; the container hostname reaches the final server.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://$$(hostname):8123/ping"]
       interval: 2s
       timeout: 3s
       retries: 30
