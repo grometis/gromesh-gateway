@@ -26,8 +26,18 @@ jobs:
       run:
         shell: bash
     env:
-      COMPOSE_FILE: deploy/compose/docker-compose.yml
-      COMPOSE_PROJECT_NAME: gromesh-kong-image
+      COMPOSE_PROJECT_NAME: gromesh-kong-image-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
+      UI_URL: http://127.0.0.1:5174
+      CP_URL: http://127.0.0.1:3000/api/v1
+      CLICKHOUSE_URL: http://127.0.0.1:8123
+      POSTGRES_PORT: "55442"
+      KONG_PROXY_URL: http://127.0.0.1:8000
+      KONG_STATUS_URL: http://127.0.0.1:8100/status/ready
+      KONG_METRICS_URL: http://127.0.0.1:8100
+      ECHO_URL: http://127.0.0.1:8080
+      KONG_VALIDATOR_URL: http://127.0.0.1:8011
+      KONG_PROXY_TLS_PORT: "8443"
+      BOOTSTRAP_ADMIN_EMAIL: ci@example.test
       TARGET_ARCH: ${{ matrix.arch }}
       # A caller grants permissions; this switch cannot enable publication on a pull request.
       PUBLISH: ${{ inputs.publish && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
@@ -36,6 +46,22 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Configure disposable acceptance run
+        run: |
+          echo "COMPOSE_FILE=$GITHUB_WORKSPACE/deploy/compose/docker-compose.yml:$GITHUB_WORKSPACE/deploy/compose/disposable.yml" >> "$GITHUB_ENV"
+          echo "GROMESH_DISPOSABLE_ID=$(openssl rand -hex 16)" >> "$GITHUB_ENV"
+          for key in POSTGRES_PASSWORD BOOTSTRAP_ADMIN_PASSWORD CLICKHOUSE_PASSWORD CLICKHOUSE_READER_PASSWORD CLICKHOUSE_WRITER_PASSWORD GROMESH_COLLECTOR_TOKEN; do
+            value="$(openssl rand -hex 24)"
+            echo "::add-mask::$value"
+            echo "$key=$value" >> "$GITHUB_ENV"
+          done
+          encryption="ci:$(openssl rand -base64 32)"
+          fingerprint="$(openssl rand -base64 32)"
+          echo "::add-mask::$encryption"
+          echo "::add-mask::$fingerprint"
+          echo "GROMESH_ENCRYPTION_KEY=$encryption" >> "$GITHUB_ENV"
+          echo "GROMESH_FINGERPRINT_KEY=$fingerprint" >> "$GITHUB_ENV"
 
       - name: Set up Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -132,11 +158,18 @@ jobs:
           test "$uid" -ne 0
 
       - name: Compose acceptance test with the built image
-        # The Admin API is not published on the host: the smoke runs inside the gateway's network namespace.
+        # The host guard requires the full acceptance stack and image metadata for inactive profiles.
+        # Only smokeInside runs in the gateway's namespace; the Admin API remains on a Unix socket.
         run: |
+          set -o pipefail
           mkdir -p "$KONG_EVIDENCE"
-          KONG_IMAGE="$KONG_IMAGE" docker compose up -d --wait kong echo 2>&1 | tee "$KONG_EVIDENCE/smoke.log"
-          KONG_IMAGE="$KONG_IMAGE" docker compose --profile tools run --rm --no-deps smoke 2>&1 | tee -a "$KONG_EVIDENCE/smoke.log"
+          docker compose --profile '*' pull --ignore-buildable --policy missing 2>&1 | tee "$KONG_EVIDENCE/smoke.log"
+          docker compose --profile '*' build 2>&1 | tee -a "$KONG_EVIDENCE/smoke.log"
+          docker compose up -d --wait kong echo ui 2>&1 | tee -a "$KONG_EVIDENCE/smoke.log"
+          docker compose --profile observability up -d --wait clickhouse 2>&1 | tee -a "$KONG_EVIDENCE/smoke.log"
+          docker compose --profile observability run --rm --no-deps clickhouse-init 2>&1 | tee -a "$KONG_EVIDENCE/smoke.log"
+          docker compose --profile observability up -d --wait --no-deps vector 2>&1 | tee -a "$KONG_EVIDENCE/smoke.log"
+          KONG_IMAGE="$KONG_IMAGE" node scripts/smoke.mjs 2>&1 | tee -a "$KONG_EVIDENCE/smoke.log"
 
       - name: Scan image (block CRITICAL vulnerabilities)
         run: |
@@ -176,7 +209,7 @@ jobs:
         if: failure()
         run: |
           mkdir -p "$KONG_EVIDENCE"
-          docker compose logs --no-color kong echo 2>&1 | tee "$KONG_EVIDENCE/compose.log"
+          docker compose --profile '*' logs --no-color 2>&1 | tee "$KONG_EVIDENCE/compose.log"
 
       - name: Upload candidate evidence
         if: always() && env.PUBLISH != 'true'
@@ -189,5 +222,5 @@ jobs:
 
       - name: Clean up acceptance stack
         if: always()
-        run: docker compose down --volumes --remove-orphans
+        run: docker compose --profile '*' down -v --remove-orphans
 
