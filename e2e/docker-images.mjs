@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 const exec = promisify(execFile);
 
 export const VECTOR_IMAGE = "timberio/vector:0.57.0-alpine@sha256:19e3526faf4d4b1ed0c28a0d68d4cc3a1e13e437099986a5b7a768707907497c";
-export const NODE_IMAGE = "node:24.18.0-alpine";
+export const NODE_IMAGE = "node:26.13.0-alpine@sha256:c6ad9e9c1d80f6eb607c26b4b0a132ff7a2344fad1c78ea3baa2a7d4c8de6d94";
 // The same ClickHouse as deploy/compose: bumped together.
 export const CLICKHOUSE_IMAGE = "clickhouse/clickhouse-server:25.8.33.6-alpine@sha256:87e0a5b72f5465b18eacca7c76850e7ff551c9795c50e451f5646299e5e24146";
 
