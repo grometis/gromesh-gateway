@@ -241,21 +241,26 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @gromesh/ui exec playwright install --with-deps chromium
       - name: UI acceptance against Prism
+        id: ui
         run: pnpm --filter @gromesh/ui test:e2e
-      - uses: actions/upload-artifact@v7
-        if: failure()
-        with:
-          name: ui-acceptance-failure
-          path: apps/ui/test-results/
-          retention-days: 7
-      # Services and the publish strip at 1440 and 390 (e2e/visual.spec.ts), for design review.
-      - uses: actions/upload-artifact@v7
+      # Preserve the existing reporter: record the outcome without inventing test counts.
+      - name: Generate structured UI acceptance evidence
+        id: generate-ui
         if: always()
+        env:
+          EVIDENCE_OUTCOME: ${{ steps.ui.outcome }}
+        run: node scripts/ci-evidence.mjs generate ui-acceptance
+      - name: Validate UI acceptance artifact allowlist
+        id: validate-ui
+        if: always() && steps.generate-ui.outcome == 'success'
+        run: node scripts/ci-evidence.mjs validate ui-acceptance
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.validate-ui.outcome == 'success'
         with:
-          name: ui-screenshots
-          path: apps/ui/test-results/screenshots/
+          name: ui-acceptance
+          path: evidence/ui-acceptance.json
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 7
 
   agent:
     needs: changes

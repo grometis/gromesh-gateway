@@ -2,7 +2,7 @@ import { isUtf8 } from "node:buffer";
 import { constants, closeSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
-const suites = ["product-e2e", "mvp-e2e", "kind-diagnostics", "kong-image-build"];
+const suites = ["product-e2e", "mvp-e2e", "kind-diagnostics", "kong-image-build", "ui-acceptance"];
 const tools = ["node", "pnpm", "playwright", "helm", "kind", "kubectl", "kong", "trivy"];
 const count = { type: "integer", minimum: 0, maximum: 1_000_000 };
 const id = { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER };

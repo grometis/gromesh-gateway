@@ -14,16 +14,16 @@ const env = {
   GITHUB_SHA: "a".repeat(40), RUNNER_ARCH: "X64", EVIDENCE_OUTCOME: "success",
   SYNTHETIC_PASSWORD: secret,
 };
-const minimal = () => ({
-  suite: "product-e2e", runId: 1234, runAttempt: 2, sha: "a".repeat(40),
+const minimal = (suite = "product-e2e") => ({
+  suite, runId: 1234, runAttempt: 2, sha: "a".repeat(40),
   status: "PASS", runnerArch: "amd64", toolVersions: { node: "26.13.0" },
 });
-function fixture(t) {
+function fixture(t, suite = "product-e2e") {
   const root = mkdtempSync(join(realpathSync(tmpdir()), "ci-evidence-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const directory = join(root, "evidence");
   mkdirSync(directory);
-  return { root, directory, file: join(directory, "product-e2e.json") };
+  return { root, directory, file: join(directory, `${suite}.json`) };
 }
 function run(args, extraEnv = {}, cwd) {
   const result = spawnSync(process.execPath, [script, ...args], {
@@ -56,6 +56,47 @@ test("generates deterministic minimal evidence from the step outcome without inv
   rmSync(file);
   assert.equal(run(["generate", "product-e2e", "--directory", directory]).status, 0);
   assert.deepEqual(readFileSync(file), bytes);
+});
+
+for (const [outcome, status, failureCategory] of [
+  ["success", "PASS", undefined], ["failure", "FAIL", "UNKNOWN"],
+  ["skipped", "BLOCKED", "SETUP"], ["cancelled", "BLOCKED", "INFRA"],
+]) {
+  test(`generates and validates deterministic UI acceptance evidence for ${outcome} without counts`, t => {
+    const { root, directory, file } = fixture(t, "ui-acceptance");
+    const generate = () => run(["generate", "ui-acceptance"], { EVIDENCE_OUTCOME: outcome }, root);
+    assert.equal(generate().status, 0);
+    assert.deepEqual(readdirSync(directory), ["ui-acceptance.json"]);
+    const bytes = readFileSync(file);
+    assert.deepEqual(JSON.parse(bytes), {
+      ...minimal("ui-acceptance"), status, toolVersions: { node: process.versions.node },
+      ...(failureCategory === undefined ? {} : { failureCategory }),
+    });
+    assert.equal(validate(directory, ["ui-acceptance"]).status, 0);
+    rejected(validate(directory));
+    rmSync(file);
+    assert.equal(generate().status, 0);
+    assert.deepEqual(readFileSync(file), bytes);
+  });
+}
+
+test("UI acceptance validation rejects raw attachments and mismatched evidence", t => {
+  const { directory, file } = fixture(t, "ui-acceptance");
+  rejected(validate(directory, ["ui-acceptance"]));
+  writeFileSync(file, JSON.stringify(minimal("ui-acceptance")));
+  assert.equal(validate(directory, ["ui-acceptance"]).status, 0);
+  for (const name of ["trace.zip", "screenshot.png", "report.html"]) {
+    const attachment = join(directory, name);
+    writeFileSync(attachment, secret);
+    rejected(validate(directory, ["ui-acceptance"]));
+    rmSync(file);
+    rejected(run(["generate", "ui-acceptance", "--directory", directory]));
+    assert.deepEqual(readdirSync(directory), [name]);
+    rmSync(attachment);
+    writeFileSync(file, JSON.stringify(minimal("ui-acceptance")));
+  }
+  writeFileSync(file, JSON.stringify(minimal()));
+  rejected(validate(directory, ["ui-acceptance"]));
 });
 
 test("reads only numeric Playwright statistics, dropping all messages and attachments", t => {
@@ -138,11 +179,13 @@ const hostile = {
   "oversized file": " ".repeat(8193) + JSON.stringify(minimal()),
 };
 for (const [label, bytes] of Object.entries(hostile)) {
-  test(`validator refuses ${label} without echoing input`, t => {
-    const { directory, file } = fixture(t);
-    writeFileSync(file, bytes);
-    rejected(validate(directory));
-  });
+  for (const suite of ["product-e2e", "ui-acceptance"]) {
+    test(`${suite} validator refuses ${label} without echoing input`, t => {
+      const { directory, file } = fixture(t, suite);
+      writeFileSync(file, typeof bytes === "string" ? bytes.replaceAll("product-e2e", suite) : bytes);
+      rejected(validate(directory, [suite]));
+    });
+  }
 }
 
 for (const extra of ["compose.log", "trace.zip", "report.html", "unknown.json", "product-e2e.JSON", secret]) {
@@ -225,7 +268,7 @@ test("generator refuses dirty directories, existing outputs and symlink reports"
 });
 test("all canonical suites and controlled optional fields validate", t => {
   const { directory } = fixture(t);
-  const suites = ["product-e2e", "mvp-e2e", "kind-diagnostics", "kong-image-build"];
+  const suites = ["product-e2e", "mvp-e2e", "kind-diagnostics", "kong-image-build", "ui-acceptance"];
   for (const suite of suites) {
     writeFileSync(join(directory, `${suite}.json`), JSON.stringify({
       ...minimal(), suite, jobId: 123, counts: { total: 1, passed: 1, failed: 0, skipped: 0, flaky: 0 },
