@@ -4,6 +4,7 @@
 // SCAN_PLATFORM selects the native platform. SBOM identity uses GITHUB_SHA, TARGET_ARCH, RUNNER_ARCH and the local image ID.
 // Usage: SCAN_PLATFORM=linux/arm64 TARGET_ARCH=arm64 node scripts/scan-changed-images.mjs <base-ref>
 import { execFileSync, spawnSync } from "node:child_process";
+import { rejectionLine } from "./ci-evidence.mjs";
 import { applicationBuilds, validatePrImageSbom } from "./ci-pr-sbom.mjs";
 
 const TRIVY = "aquasec/trivy:0.58.1@sha256:ab70a02200597efa04748f210f793936eb647cbcdb0ea69cc30b226d6f5a22c7";
@@ -61,6 +62,7 @@ if (builds.length === 0 && pulls.size === 0) {
 }
 const run = (cmd, args) => spawnSync(cmd, args, { stdio: "inherit" }).status === 0;
 const failures = [];
+let sbomRejected = false;
 const skipped = [];
 const scanned = [];
 const scan = (image) => {
@@ -78,9 +80,9 @@ for (const b of builds) {
   if (b.name !== "kong") {
     try {
       validatePrImageSbom(tag, b.name);
-    } catch {
-      console.error("CI supply chain rejected.");
-      failures.push(`${tag} (SBOM rejected)`);
+    } catch (error) {
+      console.error(rejectionLine(error, { artifact: "sbom", image: b.name, mode: "pr" }));
+      sbomRejected = true;
     }
   }
   scan(tag);
@@ -107,6 +109,7 @@ for (const ref of pulls) {
 }
 console.log(`\nScanned for ${platform}: ${scanned.join(", ") || "nothing"}`);
 if (skipped.length > 0) console.log(`Not published for ${platform} (third-party, skipped): ${skipped.join(", ")}`);
+if (sbomRejected) process.exitCode = 1;
 if (failures.length > 0) {
   console.error(`CRITICAL vulnerabilities, SBOM rejections or failures in: ${failures.join(", ")}`);
   process.exit(1);

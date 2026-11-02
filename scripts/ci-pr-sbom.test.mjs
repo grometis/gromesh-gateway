@@ -95,5 +95,7 @@ test('image-scan runs for dependency and validator changes and validates before 
   const scan = readFileSync(new URL('./scan-changed-images.mjs', import.meta.url), 'utf8');
   assert.match(scan, /applicationBuilds\(changed\)/);
   assert.match(scan, /validatePrImageSbom\(tag, b.name\)/);
-  assert.match(scan, /failures\.push\(`\$\{tag\} \(SBOM rejected\)`\)/);
+  assert.match(scan, /rejectionLine\(error, \{ artifact: "sbom", image: b.name, mode: "pr" \}\)/);
+  assert.match(scan, /if \(sbomRejected\) process.exitCode = 1/);
+  assert.doesNotMatch(scan, /SBOM rejected|CI supply chain rejected/);
 });

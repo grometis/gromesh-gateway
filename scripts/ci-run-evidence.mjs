@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
 import { writeFileSync } from 'node:fs';
-import { requireValid } from './ci-evidence.mjs';
+import { requireValid, RejectionCode, rejectionLine } from './ci-evidence.mjs';
 
 // Counts are command outcomes, explicitly distinguished from assertion/test counts.
 export function runEvidence(command, args, { file, execute = spawnSync, now = () => performance.now() } = {}) {
@@ -17,7 +17,7 @@ export function runEvidence(command, args, { file, execute = spawnSync, now = ()
 if (import.meta.main) {
   try {
     const [file, command, ...args] = process.argv.slice(2);
-    requireValid(file && command);
+    requireValid(file && command, RejectionCode.CLI_ARGUMENTS);
     process.exitCode = runEvidence(command, args, { file });
-  } catch { console.error('CI evidence rejected.'); process.exitCode = 1; }
+  } catch (error) { console.error(rejectionLine(error)); process.exitCode = 1; }
 }

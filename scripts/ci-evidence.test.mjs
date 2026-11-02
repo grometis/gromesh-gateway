@@ -1,4 +1,5 @@
-import { installedToolVersions } from "./ci-evidence.mjs";
+import './ci-rejection-cases.mjs';
+import { installedToolVersions, RejectionCode } from "./ci-evidence.mjs";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { linkSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, mkdirSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
@@ -19,6 +20,23 @@ const minimal = (suite = "product-e2e") => ({
   suite, jobId: "e2e:1234:2", runId: 1234, runAttempt: 2, sha: "a".repeat(40),
   status: "PASS", counts: { total: 1, passed: 1, failed: 0, skipped: 0, flaky: 0 }, durationMs: 1, countUnit: "tests", runnerArch: "amd64", toolVersions: { node: "26.13.0" },
 });
+function assertDiagnostics(output) {
+  assert.ok(output.endsWith('\n'));
+  for (const line of output.trimEnd().split('\n')) {
+    const record = JSON.parse(line);
+    assert.ok(Object.hasOwn(RejectionCode, record.code));
+    assert.ok(['sbom', 'digest', 'evidence'].includes(record.artifact));
+    assert.ok(Object.keys(record).every(key => ['code', 'artifact', 'image', 'arch', 'mode', 'jobId'].includes(key)));
+    if ('image' in record) assert.ok(['agent', 'control-plane', 'ui', 'kong'].includes(record.image));
+    if ('arch' in record) assert.ok(['amd64', 'arm64'].includes(record.arch));
+    if ('mode' in record) assert.ok(['images', 'pr', 'kong-digest'].includes(record.mode));
+    if ('jobId' in record) assert.equal(record.jobId, 'e2e:1234:2');
+    assert.equal(line.includes(secret), false);
+    for (const fragment of ['spdxVersion', 'referenceLocator', 'SYNTHETIC', 'sha256:', '/tmp/', 'CI ']) {
+      assert.equal(line.includes(fragment), false);
+    }
+  }
+}
 function fixture(t, suite = "product-e2e") {
   const root = mkdtempSync(join(realpathSync(tmpdir()), "ci-evidence-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -36,7 +54,8 @@ function run(args, extraEnv = {}, cwd) {
   // Check every CLI result, including success, without printing its potentially hostile output.
   assert.equal(`${result.stdout}${result.stderr}`.includes(secret), false, "CLI leaked synthetic input");
   assert.equal(result.stdout, "");
-  assert.ok(["", "CI evidence rejected.\n"].includes(result.stderr), "CLI output must be constant");
+  if (result.status !== 0) assertDiagnostics(result.stderr);
+  else assert.equal(result.stderr, "");
   return result;
 }
 function validate(directory, suites = ["product-e2e"]) {
@@ -45,7 +64,7 @@ function validate(directory, suites = ["product-e2e"]) {
 function rejected(result) {
   assert.equal(result.status, 1);
   assert.equal(result.stdout, "");
-  assert.equal(result.stderr, "CI evidence rejected.\n");
+  assertDiagnostics(result.stderr);
 }
 
 test("generates deterministic measured evidence", t => {
@@ -377,14 +396,15 @@ function supplyFixture(t) {
     });
     assert.ifError(result.error);
     assert.equal(result.stdout, '');
-    assert.ok(['', 'CI supply chain rejected.\n'].includes(result.stderr), 'constant rejection only');
+    if (result.status !== 0) assertDiagnostics(result.stderr);
+    else assert.equal(result.stderr, '');
     return result;
   };
   return { root, sbomDirectory, digestDirectory, sbomFile, digestFile, runSupply };
 }
 function rejectSupply(result) {
   assert.equal(result.status, 1);
-  assert.equal(result.stderr, 'CI supply chain rejected.\n');
+  assertDiagnostics(result.stderr);
 }
 function changeSbom(f, mutate) {
   const doc = JSON.parse(sbomFixture);
@@ -697,7 +717,8 @@ test('real shell gate invokes no upload on either validation failure, and both o
     });
     assert.ifError(result.error);
     assert.equal(result.stdout, '');
-    assert.equal(result.stderr, corrupt ? 'CI supply chain rejected.\n' : '');
+    if (corrupt) assertDiagnostics(result.stderr);
+    else assert.equal(result.stderr, '');
     assert.equal(result.status, corrupt ? 1 : 0);
     if (corrupt) assert.equal(readdirSync(f.root).includes('uploads'), false);
     else assert.equal(readFileSync(marker, 'utf8'), 'sbom\ndigest\n');

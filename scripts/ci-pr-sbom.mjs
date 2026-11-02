@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { directoryPath, requireValid } from './ci-evidence.mjs';
+import { directoryPath, requireValid, RejectionCode, checkedOperation, rejectionArtifact } from './ci-evidence.mjs';
 import { localImageIdentity } from './ci-image-identity.mjs';
 import { jobContext, validateSupplyChain } from './ci-supply-chain.mjs';
 
@@ -19,23 +19,25 @@ export function applicationBuilds(changed) {
 }
 
 export function validatePrImageSbom(image, name, { env = process.env, execute = spawnSync } = {}) {
-  const metadata = localImageIdentity(image, { env, execute });
-  const contextEnv = { ...env, IMAGE_NAME: name, LOCAL_IMAGE_ID: metadata.id,
-    LOCAL_SBOM_DIGEST: metadata.sbomDigest, LOCAL_IDENTITY_KIND: metadata.kind };
-  const context = jobContext(contextEnv, false, 'pr');
-  requireValid(metadata.arch === context.arch);
-  // Each image gets a fresh exact-file gate. Never mix another build's files or publish PR artifacts.
-  const workspace = mkdtempSync(join(directoryPath(env.RUNNER_TEMP), 'pr-sbom-'));
-  try {
-    const output = join(workspace, 'dist', 'sbom');
-    mkdirSync(output, { recursive: true });
-    const syft = execute('docker', ['run', '--rm',
-      '-v', '/var/run/docker.sock:/var/run/docker.sock:ro', '-v', `${output}:/out`,
-      SYFT, `docker:${metadata.id}`, '--source-name', context.sourceName, '--source-version', context.sha,
-      '-o', `spdx-json=/out/gromesh-${name}-${context.arch}.spdx.json`], { stdio: 'inherit' });
-    requireValid(syft.status === 0);
-    validateSupplyChain({ command: 'pr', workspace, env: contextEnv });
-  } finally {
-    rmSync(workspace, { recursive: true, force: true });
-  }
+  return rejectionArtifact('sbom', () => {
+    const metadata = localImageIdentity(image, { env, execute });
+    const contextEnv = { ...env, IMAGE_NAME: name, LOCAL_IMAGE_ID: metadata.id,
+      LOCAL_SBOM_DIGEST: metadata.sbomDigest, LOCAL_IDENTITY_KIND: metadata.kind };
+    const context = jobContext(contextEnv, false, 'pr');
+    requireValid(metadata.arch === context.arch, RejectionCode.PR_ARCH);
+    // Each image gets a fresh exact-file gate. Never mix another build's files or publish PR artifacts.
+    const workspace = mkdtempSync(join(directoryPath(env.RUNNER_TEMP), 'pr-sbom-'));
+    try {
+      const output = join(workspace, 'dist', 'sbom');
+      mkdirSync(output, { recursive: true });
+      const syft = checkedOperation(RejectionCode.SYFT_COMMAND, () => execute('docker', ['run', '--rm',
+        '-v', '/var/run/docker.sock:/var/run/docker.sock:ro', '-v', `${output}:/out`,
+        SYFT, `docker:${metadata.id}`, '--source-name', context.sourceName, '--source-version', context.sha,
+        '-o', `spdx-json=/out/gromesh-${name}-${context.arch}.spdx.json`], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 }));
+      requireValid(syft.status === 0, RejectionCode.SYFT_COMMAND);
+      validateSupplyChain({ command: 'pr', workspace, env: contextEnv });
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
 }
