@@ -69,7 +69,7 @@ probe_file probe.json "$work/workspaces.yaml" > "$work/probe.json"
 probe_file instance-keys.json "$work/workspaces.yaml" > "$work/instance-keys.json"
 probe_file instance-keys.json "$work/wrong-kid.yaml" > "$work/wrong-kid.json"
 docker run --rm -v "$PWD/apps/isolation:/src:ro" -v "$work:/work:ro" -w /src -e GOTOOLCHAIN=local -e GOCACHE=/tmp/go-cache \
-  golang:1.27.2-alpine sh -ec '
+  golang:1.27.3-alpine@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb sh -ec '
     go build -o /tmp/isolation-probe ./cmd/isolation-probe
     /tmp/isolation-probe check-config /work/probe.json
     /tmp/isolation-probe check-trust-set /work/instance-keys.json

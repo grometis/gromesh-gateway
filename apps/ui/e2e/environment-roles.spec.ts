@@ -50,6 +50,49 @@ test("a global editor who is viewer in one environment only reads there", async 
   await expect(page.getByRole("button", { name: "Novo consumer" })).toBeVisible();
 });
 
+for (const key of ["Enter", "Space"]) {
+  test(`user row actions keep their visible labels and open environment roles with ${key}`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const viewer = person("viewer");
+    const users = [admin, viewer];
+    await page.route("**/api/v1/users?*", (route) => route.fulfill({ json: { items: users, nextCursor: null } }));
+    await page.route("**/api/v1/users", (route) => route.fulfill({ json: { items: users, nextCursor: null } }));
+    await page.route(`**/api/v1/users/${viewer.id}/environment-roles`, (route) => route.fulfill({ json: { items: [] } }));
+    await signIn(page, admin);
+    await page.getByRole("link", { name: "Usuários", exact: true }).click();
+    const table = page.getByRole("table", { name: "Usuários", exact: true });
+    await expect(table).toBeVisible();
+    await page.getByRole("button", { name: "Novo usuário", exact: true }).focus();
+
+    for (const user of users) {
+      const row = table.getByRole("row").filter({ hasText: user.email });
+      const buttons = row.getByRole("button");
+      await expect(buttons).toHaveCount(4);
+      for (const button of await buttons.all()) {
+        await page.keyboard.press("Tab");
+        await expect(button).toBeFocused();
+        const text = (await button.innerText()).trim();
+        if (text === "⋯") {
+          await expect(button).toHaveAccessibleName(`Mais ações para ${user.name}`);
+        } else {
+          await expect(button).toHaveAccessibleName(new RegExp(`^${text}`));
+        }
+        if (text === "Environments") {
+          await expect(button).toHaveAccessibleName(`Environments de ${user.name}`);
+          await page.keyboard.press(key);
+          const dialog = page.getByRole("dialog", { name: `Environments de ${user.name}`, exact: true });
+          await expect(dialog).toBeVisible();
+          await expect(dialog).toContainText(user.role === "admin" ? "Administradores globais" : "Papel global: Leitor");
+          await page.keyboard.press("Escape");
+          await expect(dialog).toBeHidden();
+          // Resume the row walk after the removed dialog's focused control.
+          await button.focus();
+        }
+      }
+    }
+  });
+}
+
 test("a global admin sets roles per environment; leaving one on the global role sends nothing for it", async ({ page }) => {
   const viewer = person("viewer");
   const puts: unknown[] = [];
@@ -64,7 +107,7 @@ test("a global admin sets roles per environment; leaving one on the global role 
   });
   await signIn(page, admin);
   await page.getByRole("link", { name: "Usuários", exact: true }).click();
-  await page.getByRole("button", { name: "Papéis de Rui Prado por environment" }).click();
+  await page.getByRole("button", { name: "Environments de Rui Prado" }).click();
   const dialog = page.getByRole("dialog", { name: "Environments de Rui Prado" });
   await expect(dialog).toContainText("Papel global: Leitor");
   await expect(dialog.getByLabel("Papel em Produção")).toHaveValue("global");
@@ -89,14 +132,14 @@ test("a 422 names the environment's row; a global admin has no environment roles
     : route.fulfill({ json: { items: [] } }));
   await signIn(page, admin);
   await page.getByRole("link", { name: "Usuários", exact: true }).click();
-  await page.getByRole("button", { name: "Papéis de Rui Prado por environment" }).click();
+  await page.getByRole("button", { name: "Environments de Rui Prado" }).click();
   const dialog = page.getByRole("dialog", { name: "Environments de Rui Prado" });
   await dialog.getByLabel("Papel em Sandbox").selectOption({ label: "Editor" });
   await dialog.getByRole("button", { name: "Salvar" }).click();
   await expect(dialog.getByRole("alert")).toContainText("Sandbox: não é mais um environment");
   await dialog.getByRole("button", { name: "Cancelar" }).click();
 
-  await page.getByRole("button", { name: "Papéis de Ana Souza por environment" }).click();
+  await page.getByRole("button", { name: "Environments de Ana Souza" }).click();
   const adminDialog = page.getByRole("dialog", { name: "Environments de Ana Souza" });
   await expect(adminDialog).toContainText("administradores em todos os environments");
   await expect(adminDialog.getByRole("combobox")).toHaveCount(0);
@@ -115,12 +158,12 @@ test("Salvar stays off when the roles cannot be read again: a stale set never re
   });
   await signIn(page, admin);
   await page.getByRole("link", { name: "Usuários", exact: true }).click();
-  await page.getByRole("button", { name: "Papéis de Rui Prado por environment" }).click();
+  await page.getByRole("button", { name: "Environments de Rui Prado" }).click();
   const dialog = page.getByRole("dialog", { name: "Environments de Rui Prado" });
   await expect(dialog.getByRole("button", { name: "Salvar" })).toBeEnabled();
   await dialog.getByRole("button", { name: "Cancelar" }).click();
   fail = true;
-  await page.getByRole("button", { name: "Papéis de Rui Prado por environment" }).click();
+  await page.getByRole("button", { name: "Environments de Rui Prado" }).click();
   await expect(dialog.getByRole("alert")).toBeVisible();
   await expect(dialog.getByRole("button", { name: "Salvar" })).toBeDisabled();
   expect(puts).toEqual([]);
@@ -143,7 +186,7 @@ for (const viewport of [{ name: "desktop-1440", width: 1440, height: 900 }, { na
     await page.route(`**/api/v1/users/${viewer.id}/environment-roles`, (route) => route.fulfill({ json: { items: [{ environmentId: prod.id, role: "editor" }, { environmentId: sandbox.id, role: "none" }] } }));
     await signIn(page, admin);
     await page.getByRole("link", { name: "Usuários", exact: true }).click();
-    await page.getByRole("button", { name: "Papéis de Rui Prado por environment" }).click();
+    await page.getByRole("button", { name: "Environments de Rui Prado" }).click();
     const dialog = page.getByRole("dialog", { name: "Environments de Rui Prado" });
     await expect(dialog.getByLabel("Papel em Sandbox")).toHaveValue("none");
     await page.evaluate(() => document.fonts.ready);
