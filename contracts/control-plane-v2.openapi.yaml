@@ -192,7 +192,8 @@ info:
         is a platform-administered instance for an exact route or service of one workspace (full configuration,
         digest, reason, expiry), created and changed only by platform-admin and audited; at expiry a persistent
         schedule creates a deployment (reason mandatory-plugins) without it, retrying while the lease is busy.
-        Names gromesh-* are reserved. Workspace-wide plugins (L9) are emulated by one instance per route or service:
+        Names gromesh-* are reserved. Workspace-wide plugins (L9) are logical draft records, emulated only by the
+        compiler with one instance per route of that Workspace (never a node-global instance):
         stateless request plugins (cors, ip-restriction, bot-detection, request-size-limiting, request-termination,
         request/response-transformer, correlation-id, redirect, grpc-gateway, grpc-web, standard-webhooks, key-auth,
         basic-auth, jwt, acl, ai-prompt-decorator, ai-prompt-guard, ai-prompt-template and the ai-* transformers
@@ -200,7 +201,34 @@ info:
         datadog, statsd, opentelemetry, zipkin, prometheus; endpoints under the destination rules) are allowed;
         rate-limiting, response-ratelimiting and proxy-cache change meaning (counter or cache per route), so their
         workspace-wide use is decided by H-8 before L9 and refused (422) until then; ldap-auth and session are L10;
-        acme and the privileged capabilities are platform-only; oauth2 is not supported.
+        acme and the privileged capabilities are platform-only; oauth2 is not supported. hmac-auth lacks a modelled
+        credential. aws-lambda and azure-functions are not admitted as Workspace globals in L9 pending an explicit
+        policy decision; accepting either at another scope does not authorize it here.
+      - L9 composition. For each plugin name, enabled route+service > route > service > Workspace global.
+        These are complete replacements, never a merge of config objects. A disabled record is omitted and does
+        not suppress an enabled broader record. The compiler omits a global's derived route instance where an
+        enabled route/service instance of that name applies. Consumer scopes retain the native selection order:
+        route+service+consumer > route+consumer > service+consumer > route+service > consumer > route > service >
+        global; the materialized Workspace fallback occupies route, not node-global. No consumer scope suppresses
+        the fallback for other consumers. Protocol applicability must be validated so shadowing cannot silently
+        remove coverage. Different plugin names execute by the data plane's phases/priorities, never array order.
+        Eligibility covers the same per-request policy on matched Workspace routes, not node-wide metrics, an
+        aggregate queue budget, pre-routing effects or traffic without a route. Logging/tracing configs must preserve
+        their required phases, propagation and consumer semantics when scoped to routes; a config requiring shared
+        or pre-routing state that this emulation cannot preserve is 422 invalid-plugin at the config field.
+        A duplicate (name, serviceId, routeId, consumerId), including a disabled record, conflicts; two logical
+        globals of the same name in one Workspace conflict (409 plugin-scope-conflict at name). The same name in
+        another Workspace is independent. Derived IDs are stable from logical plugin id and route id; entities
+        sort by id and tags are deduplicated/sorted, so input ordering cannot change the composed hash. Empty
+        Workspaces retain logical globals and emit no derived instances; new routes inherit them on compilation.
+        For each route at most one enabled effective authenticator (key-auth, basic-auth or jwt) is allowed across
+        all scopes; a different mechanism at a narrower scope is not an override (422 unsafe-auth-composition).
+        Authenticators cannot be consumer-scoped. anonymous resolves only in the same Workspace. ACL requires an
+        effective authenticator yielding a same-Workspace consumer on every affected route (422 consumer-required);
+        ACL groups keep Workspace namespacing. gromesh-route-guard runs before authentication and gromesh-workspace
+        validates the final consumer afterwards; neither is replaceable. Mandatory platform names (currently
+        prometheus and http-log) remain reserved at every scope even for enabled false: 422 reserved-plugin.
+        L9 never creates a platform exception or grants platform permissions through workspace.admin.
       - Environment values. Only these fields accept a VarRef: service protocol, host, port and path; upstream
         target; certificate cert and key; plugin fields marked secret or referenceable by the plugin catalog, and
         logging endpoints. Anywhere else 422 (a value never changes policy, e.g. rate-limiting config.minute).
@@ -1633,13 +1661,20 @@ paths:
     get:
       tags: [ workspaces ]
       operationId: listWorkspaceGlobalPlugins
-      x-gromesh-requirements: [ GW-PLG-04 ]
+      x-gromesh-requirements: [ GW-PLG-04, GW-WS-02, GW-WS-03, GW-WS-16 ]
       x-required-permission: workspace.read
       x-scope: workspace
       x-gromesh-planned: true
       x-gromesh-phase: L9
+      description: |
+        Lists logical Workspace-global draft records (including disabled ones), ordered by name then id, with
+        cursor pagination. Never returns platform globals, another Workspace's records, or derived route instances.
+        Secret config fields are REDACTED for every caller. Reading neither publishes nor deploys.
+      parameters:
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/Limit
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/Cursor
       responses:
-        "200": { description: Plugins applied to every route of the workspace, content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: "#/components/schemas/WorkspaceGlobalPlugin" } } } } } } }
+        "200": { description: Logical Workspace globals, content: { application/json: { schema: { $ref: "#/components/schemas/WorkspaceGlobalPluginPage" }, examples: { page: { $ref: ./examples/workspace-global-plugins.example.json#/responses/page } } } } }
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403": { $ref: "#/components/responses/Forbidden" }
@@ -1647,18 +1682,63 @@ paths:
     post:
       tags: [ workspaces ]
       operationId: createWorkspaceGlobalPlugin
-      x-gromesh-requirements: [ GW-PLG-04 ]
+      x-gromesh-requirements: [ GW-PLG-04, GW-PLG-02, GW-PLG-05, GW-WS-02, GW-WS-03, GW-WS-16 ]
       x-required-permission: workspace.admin
       x-scope: workspace
       x-gromesh-planned: true
       x-gromesh-phase: L9
-      description: Emulated by one instance per route or service, by the plugin classes in info ("Plugins"); rate-limiting, response-ratelimiting and proxy-cache answer 422 until H-8 is decided; privileged capabilities stay platform-admin only.
+      description: |
+        Creates one logical Workspace-global plugin; composition follows info "Plugins" and "L9 composition".
+        Edits the draft only (no publish, no deployment): in an environment that auto-publishes its draft through v1
+        (publishMode auto) it answers 409 auto-publish and writes nothing (D3). workspace.admin is required in this
+        Workspace, with a session and CSRF; gateway.write alone does not authorize this operation, nor does it grant
+        any platform capability. Privileged capabilities require platform administration (403), but even platform
+        administration cannot bypass L9's reserved names, unsupported semantics, or composition validation (422).
+        The writer takes the shared Workspace transaction lock before entity/uniqueness locks, rechecks archive,
+        publishMode, duplicate names, references and effective composition under that lock, and atomically creates
+        the record, marks the draft changed and audits workspace.global-plugin.create with the logical id,
+        Workspace, actor and redacted after state. It serializes with route/service/consumer/plugin writes, imports,
+        publication and archive. A bounded retry exhausted or lock timeout returns 409 concurrent-update with no
+        partial record, draft change or success audit. Archived Workspaces return 409 workspace-archived.
+        New routes and later edits must preserve the same invariants; publication revalidates the complete candidate.
+        Config is validated against the pinned catalog, including protocols, destinations, secret/reference fields
+        and reserved tags. REDACTED cannot initialize a secret. No generated route ids or Kong JSON are API inputs.
+        rate-limiting, response-ratelimiting and proxy-cache return 422 plugin-not-workspace-global until H-8 is
+        decided; no per-route quota/cache is silently advertised as a shared Workspace policy.
       security: [ { cookieAuth: [], csrfToken: [] } ]
-      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/WorkspaceGlobalPluginWrite" } } } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WorkspaceGlobalPluginWrite" }
+            examples:
+              cors: { $ref: ./examples/workspace-global-plugins.example.json#/requests/cors }
+              authenticatedAcl: { $ref: ./examples/workspace-global-plugins.example.json#/requests/authenticatedAcl }
       responses:
-        "201": { description: Created }
+        "201": { description: Logical plugin created in the draft, content: { application/json: { schema: { $ref: "#/components/schemas/WorkspaceGlobalPlugin" }, examples: { created: { $ref: ./examples/workspace-global-plugins.example.json#/responses/created } } } } }
+        "409":
+          description: auto-publish, workspace-archived, concurrent-update or plugin-scope-conflict; nothing written
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/WorkspaceGlobalPluginConflict" }
+              examples:
+                duplicate: { $ref: ./examples/workspace-global-plugins.example.json#/conflicts/duplicate }
+                autoPublish: { $ref: ./examples/workspace-global-plugins.example.json#/conflicts/autoPublish }
+                concurrentUpdate: { $ref: ./examples/workspace-global-plugins.example.json#/conflicts/concurrentUpdate }
+                archived: { $ref: ./examples/workspace-global-plugins.example.json#/conflicts/archived }
         "403": { $ref: "#/components/responses/Forbidden" }
-        "422": { $ref: "#/components/responses/ValidationError" }
+        "422":
+          description: Invalid plugin, reserved name, unsupported Workspace-global semantics, unsafe authentication or consumer dependency
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/WorkspaceGlobalPluginValidationProblem" }
+              examples:
+                sharedCounter: { $ref: ./examples/workspace-global-plugins.example.json#/validation/sharedCounter }
+                reserved: { $ref: ./examples/workspace-global-plugins.example.json#/validation/reserved }
+                unsafeAuth: { $ref: ./examples/workspace-global-plugins.example.json#/validation/unsafeAuth }
+                consumerRequired: { $ref: ./examples/workspace-global-plugins.example.json#/validation/consumerRequired }
+                foreignConsumer: { $ref: ./examples/workspace-global-plugins.example.json#/validation/foreignConsumer }
+                invalidConfig: { $ref: ./examples/workspace-global-plugins.example.json#/validation/invalidConfig }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
   /roles:
@@ -5793,18 +5873,114 @@ components:
           minLength: 1
           not:
             pattern: ^gromesh-
+          enum:
+            - cors
+            - ip-restriction
+            - bot-detection
+            - request-size-limiting
+            - request-termination
+            - request-transformer
+            - response-transformer
+            - correlation-id
+            - redirect
+            - grpc-gateway
+            - grpc-web
+            - standard-webhooks
+            - key-auth
+            - basic-auth
+            - jwt
+            - acl
+            - ai-prompt-decorator
+            - ai-prompt-guard
+            - ai-prompt-template
+            - ai-request-transformer
+            - ai-response-transformer
+            - ai-proxy
+            - http-log
+            - tcp-log
+            - udp-log
+            - syslog
+            - loggly
+            - datadog
+            - statsd
+            - opentelemetry
+            - zipkin
+            - prometheus
+          description: Eligibility is necessary but not sufficient; mandatory platform names and privileged config remain forbidden to L9 as described in info.
         enabled:
           type: boolean
           default: true
         config:
           type: object
+          description: Pinned catalog schema and semantic validation apply; secrets are write-only and references may resolve only within this Workspace. A new secret cannot be REDACTED.
         protocols:
           type: array
+          minItems: 1
+          uniqueItems: true
           items:
             type: string
+            enum: [ http, https, grpc, grpcs, tcp, tls, tls_passthrough, udp ]
+          description: Omission uses the pinned plugin defaults; supplied protocols must be supported by that plugin and preserve the effective per-route coverage.
         tags:
           $ref: ./control-plane.openapi.yaml#/components/schemas/Tags
-      description: A plugin that applies to every route of the workspace, emulated by the compiler (info, "Plugins").
+      description: |
+        A logical fallback for every current and future route of this Workspace, emulated only by the compiler
+        (info, "Plugins" and "L9 composition"). No scope/serviceId/routeId/consumerId/workspaceId is accepted in
+        the body: the URL owns the scope. One name per Workspace, including disabled records. enabled false
+        disables only this logical record, never a mandatory platform plugin or a more specific instance.
+    WorkspaceGlobalPluginConflict:
+      allOf:
+        - $ref: "#/components/schemas/Problem"
+        - type: object
+          required: [ code ]
+          properties:
+            status: { const: 409 }
+            code:
+              enum: [ auto-publish, workspace-archived, concurrent-update, plugin-scope-conflict ]
+              description: "auto-publish: v1 publishMode auto (switch to manual); workspace-archived: read-only; concurrent-update: bounded Workspace lock/retry exhausted (retry the request); plugin-scope-conflict: name already exists in this Workspace, enabled or disabled. No other Workspace is disclosed."
+          if: { properties: { code: { const: plugin-scope-conflict } } }
+          then:
+            required: [ errors ]
+            properties:
+              errors:
+                type: array
+                minItems: 1
+                items:
+                  type: object
+                  required: [ path, message ]
+                  properties:
+                    path: { const: name }
+                    message: { type: string }
+    WorkspaceGlobalPluginValidationProblem:
+      allOf:
+        - $ref: "#/components/schemas/Problem"
+        - type: object
+          required: [ code, errors ]
+          properties:
+            status: { const: 422 }
+            code:
+              enum: [ invalid-plugin, plugin-not-workspace-global, reserved-plugin, unsafe-auth-composition, consumer-required, foreign-consumer ]
+              description: |
+                invalid-plugin: body, pinned config/protocol/schema, tag, destination, reference or secret error;
+                path is the offending field (config.<field>, protocols[i], tags[i], scope or name).
+                plugin-not-workspace-global: name cannot preserve the admitted L9 semantics (path name), including
+                rate-limiting, response-ratelimiting, proxy-cache, hmac-auth, ldap-auth/session (L10), oauth2,
+                aws-lambda/azure-functions pending policy. reserved-plugin: mandatory platform name, gromesh-* or
+                acme (path name), even when disabled; privileged capabilities separately require platform admin (403).
+                unsafe-auth-composition: more than one effective mechanism on an affected route (path name);
+                consumer-required: ACL has no effective same-Workspace consumer authenticator (path name).
+                foreign-consumer: anonymous cannot resolve within this Workspace (path config.anonymous); the
+                response never confirms whether a consumer exists in another Workspace. Paths use dot/index
+                notation, never Kong's derived route ids; messages and paths contain no secret values.
+            errors:
+              type: array
+              minItems: 1
+              items:
+                type: object
+                required: [ path, message ]
+                properties:
+                  path: { type: string, minLength: 1 }
+                  message: { type: string }
     ClusterAnalytics:
       type: object
       additionalProperties: false
@@ -6438,6 +6614,8 @@ components:
           format: date-time
     WorkspaceGlobalPlugin:
       type: object
+      additionalProperties: false
+      description: Logical Workspace-global draft record, never a materialized Kong instance. Config secrets are REDACTED in reads, audit and diffs. No platform plugins are included.
       required:
         - id
         - name
@@ -6467,6 +6645,13 @@ components:
         updatedAt:
           type: string
           format: date-time
+    WorkspaceGlobalPluginPage:
+      type: object
+      additionalProperties: false
+      required: [ items, nextCursor ]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/WorkspaceGlobalPlugin" } }
+        nextCursor: { type: [ string, "null" ] }
     WorkspaceHealthchecks:
       allOf:
         - $ref: ./control-plane.openapi.yaml#/components/schemas/Healthchecks
