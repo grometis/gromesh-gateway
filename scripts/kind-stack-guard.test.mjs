@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { kindClusterName, kindProblems, listeningPorts, assertKindStack } from "./kind-stack-guard.mjs";
+import { kindClusterName, kindProblems, listeningPorts, assertKindStack, N2Lab } from "./kind-stack-guard.mjs";
 function fixture() {
   const env = { KIND_CLUSTER_NAME: kindClusterName("kind-fixture-run-123"), KUBECONFIG: "/tmp/owned-kubeconfig", GROMESH_DISPOSABLE_ID: "kind-fixture-run-123" };
   const current = { "current-context": "kind-" + env.KIND_CLUSTER_NAME, contexts: [{ context: { cluster: "kind-" + env.KIND_CLUSTER_NAME } }], clusters: [{ cluster: { server: "https://127.0.0.1:12345", "certificate-authority-data": "fixture-ca" } }] };
@@ -27,4 +27,11 @@ test("a different run ID cannot adopt an otherwise matching kind node/context", 
   const f = fixture();
   f.env.GROMESH_DISPOSABLE_ID = "other-valid-run-456";
   assert.ok(kindProblems(f.env, f.node, f.current, f.exported).length > 0);
+});
+
+test("N2 refuses absent creation identity before invoking any executable", async () => {
+  let calls = 0;
+  const lab = new N2Lab({ env: {}, execute: async () => { calls++; throw Error("unexpected executor"); } });
+  await assert.rejects(lab.assertIdentity(), /N2 lab refused/);
+  assert.equal(calls, 0);
 });
