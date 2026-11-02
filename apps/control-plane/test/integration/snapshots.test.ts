@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { runMigrations } from "../../src/db/migrate.js";
 import { AutoPublisher, maskConfigFor, SnapshotsService } from "../../src/snapshots/snapshots.js";
+import { integrationDatabaseName, createIntegrationDatabase, dropIntegrationDatabase } from "./databases.js";
 import { startHarness, uniq, type Harness } from "./harness.js";
 
 let h: Harness;
@@ -325,18 +327,26 @@ describe("auto publish", () => {
 });
 
 describe("auto publish failures", () => {
-  // One replica with the poller off and no debounce, so the test drives each tick.
+  // Fault injection is local to one replica; foreign pollers must not publish its eligible drafts.
+  const database = integrationDatabaseName("snap_fail");
+  const applicationName = `snapshot-failures-${process.pid}`;
   let r: Harness;
   let service: SnapshotsService;
   let publisher: AutoPublisher;
   beforeAll(async () => {
-    r = await startHarness({ autoPublishPollMs: 0, autoPublishDelayMs: 0 });
+    const url = await createIntegrationDatabase(database, { applicationName });
+    await runMigrations(url);
+    r = await startHarness({ databaseUrl: url, autoPublishPollMs: 0, autoPublishDelayMs: 0 });
     service = r.app.get(SnapshotsService);
     publisher = r.app.get(AutoPublisher);
   });
   afterAll(async () => {
-    vi.restoreAllMocks();
-    await r?.close();
+    try {
+      vi.restoreAllMocks();
+      await r?.close();
+    } finally {
+      await dropIntegrationDatabase(database);
+    }
   });
 
   const currentVersion = async (envId: string) => (await r.api("GET", `/environments/${envId}`)).body.currentVersion as number | null;
@@ -370,10 +380,36 @@ describe("auto publish failures", () => {
 
     prepare.mockRejectedValueOnce(transient);
     await publisher.tick();
-    expect(await currentVersion(envId)).toBeNull();
+    // A healthy replica on the suite database must not publish this fault-injection fixture.
+    const foreign = await startHarness({ autoPublishPollMs: 0, autoPublishDelayMs: 0 });
+    try {
+      const otherEnv = await newEnv(foreign.api, { publishMode: "auto" });
+      await newService(otherEnv, {}, foreign.api);
+      await foreign.app.get(AutoPublisher).tick();
+      expect((await foreign.api("GET", `/environments/${otherEnv}`)).body.currentVersion).toBe(1);
+      expect(await currentVersion(envId)).toBeNull();
+      await foreign.app.get(AutoPublisher).tick();
+      expect((await foreign.sql.query("select version from snapshots where environment_id = $1", [otherEnv])).rows)
+        .toEqual([{ version: 1 }]);
+      expect((await foreign.sql.query(
+        "select environment_id, entity_id, actor->>'name' as actor from audit_events where environment_id = any($1::uuid[]) and action = 'snapshot.publish'",
+        [[otherEnv, envId]],
+      )).rows).toEqual([{ environment_id: otherEnv, entity_id: "1", actor: "auto-publish" }]);
+      expect((await r.sql.query("select id from audit_events where environment_id = $1 and action = 'snapshot.publish'", [envId])).rows)
+        .toEqual([]);
+    } finally {
+      await foreign.close();
+    }
 
     await publisher.tick();
     expect(await currentVersion(envId)).toBe(1);
+    await publisher.tick();
+    expect((await r.sql.query("select version from snapshots where environment_id = $1", [envId])).rows)
+      .toEqual([{ version: 1 }]);
+    expect((await r.sql.query(
+      "select entity_id, actor->>'name' as actor from audit_events where environment_id = $1 and action = 'snapshot.publish'",
+      [envId],
+    )).rows).toEqual([{ entity_id: "1", actor: "auto-publish" }]);
     prepare.mockRestore();
   });
 });
