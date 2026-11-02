@@ -1,17 +1,9 @@
 // Pure checks of the N2 lab runner, kept apart so each protection can be exercised without a cluster.
-import { lstatSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { N2Lab } from "../../../scripts/kind-stack-guard.mjs";
 import { verdict } from "./fixtures.mjs";
 
-// One explicit file, never a list, never a link, never the user's kubeconfig (same inode also catches a hard link).
 export function assertLabKubeconfig(path, home) {
-  if (!path) throw new Error("set LAB_KUBECONFIG to the lab kubeconfig file");
-  if (path.includes(":")) throw new Error("LAB_KUBECONFIG must be a single file, not a list");
-  if (lstatSync(path).isSymbolicLink()) throw new Error("LAB_KUBECONFIG must not be a symlink");
-  const lab = statSync(path);
-  let user;
-  try { user = statSync(join(home, ".kube/config")); } catch { return; }
-  if (lab.dev === user.dev && lab.ino === user.ino) throw new Error("LAB_KUBECONFIG must not be ~/.kube/config");
+  new N2Lab({ env: { LAB_KUBECONFIG: path, HOME: home } }).pathProof();
 }
 
 const sameSet = (a = [], b = []) => JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());

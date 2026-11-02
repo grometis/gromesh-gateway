@@ -20,36 +20,36 @@ source "$n2/versions.env"
 KONG_REF="${KONG_REF:-$KONG_IMAGE_REF}"
 [[ "$KONG_REF" =~ @sha256:[0-9a-f]{64}$ ]] || { echo "KONG_REF must be pinned by digest" >&2; exit 1; }
 SUITES="${SUITES:-env components f3 f3-residual4 f3-neg collector v2}"
+export LAB_EVIDENCE_DIR="$OUT"
 export LAB_KUBECONFIG
-RUN_ID="run-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+RUN_ID="n2-$(node -p 'require("node:crypto").randomUUID()')"
+export LAB_RUN_ID="$RUN_ID"
+guard="$root/scripts/kind-stack-guard.mjs"
+CLUSTER_NAME="$(node "$guard" n2-name)"
 owned=0 creating=0 failed=0 work="" sampler_pid=""
 built=() trees=()
 
-# The run id lives in the cluster itself and is read and written only through the kubeconfig kind exports for the named
-# cluster on this host's (checked) Docker daemon, never through LAB_KUBECONFIG, whatever that file names. Any error
-# reads as "not this run's".
-kind_kc() { local f="$work/kind.kubeconfig"; kind get kubeconfig --name "$CLUSTER_NAME" >"$f" 2>/dev/null && echo "$f"; }
-marker() { local f; f="$(kind_kc)" || return 0
-  kubectl --kubeconfig "$f" -n kube-system get configmap gromesh-lab-run -o jsonpath='{.data.runId}' 2>/dev/null || true; }
 # Defined before the EXIT trap: the image sampler (started per suite, further down) leads its own process group.
 stop_sampler() { [[ -n "$sampler_pid" ]] || return 0
   kill -TERM -- "-$sampler_pid" 2>/dev/null || true; wait "$sampler_pid" 2>/dev/null || true; sampler_pid=""; }
 cleanup() {
-  local code=$? t id
+  local code=$? t preserve_work=0
   trap - EXIT
   stop_sampler
-  for t in ${built[@]+"${built[@]}"}; do docker image rm "$t" >/dev/null 2>&1 || true; done
-  for t in ${trees[@]+"${trees[@]}"}; do git -C "$root" worktree remove --force "$t" >/dev/null 2>&1 || true; done
   if (( owned )) && [[ "${LAB_KEEP:-}" != 1 ]]; then
-    id="$(marker)"
-    if [[ "$id" == "$RUN_ID" ]]; then bash "$n2/cluster.sh" down || code=1
-    else echo "cluster $CLUSTER_NAME does not carry this run's id ($RUN_ID; read '${id}'): left alone" >&2; code=1; fi
-  elif (( creating )) && kind get clusters 2>/dev/null | grep -qx "$CLUSTER_NAME"; then
-    # `up` failed before the cluster was marked: deleting it would rest on an unproven ownership.
-    echo "cluster $CLUSTER_NAME was not marked as this run's: left in place; remove it with 'kind delete cluster --name $CLUSTER_NAME' after checking it" >&2
+    if node "$guard" n2-preflight-down && node "$guard" n2-image clean && bash "$n2/cluster.sh" down; then
+      for t in ${trees[@]+"${trees[@]}"}; do
+        if [[ -e "$t" ]] && ! git -C "$root" worktree remove "$t" >/dev/null 2>&1; then code=1; preserve_work=1; fi
+      done
+      if [[ -n "$work" && "$preserve_work" == 0 ]]; then rm -rf "$work"; fi
+    else
+      echo "ownership cleanup refused; cluster, work directory ($work), kubeconfig receipt and evidence preserved" >&2
+      code=1
+    fi
+  elif (( creating )); then
+    echo "cluster creation incomplete; all ownership receipts, work directory ($work) and evidence preserved" >&2
     code=1
   fi
-  [[ -z "$work" ]] || rm -rf "$work"
   (( code != 0 || ! failed )) || code=1
   exit "$code"
 }
@@ -72,9 +72,7 @@ if grep -qx "$CLUSTER_NAME" <<<"$clusters"; then
 fi
 creating=1
 bash "$n2/cluster.sh" up
-kc="$(kind_kc)" || { echo "kind exported no kubeconfig for $CLUSTER_NAME" >&2; exit 1; }
-kubectl --kubeconfig "$kc" -n kube-system create configmap gromesh-lab-run --from-literal=runId="$RUN_ID" >/dev/null
-[[ "$(marker)" == "$RUN_ID" ]] || { echo "could not mark $CLUSTER_NAME with $RUN_ID" >&2; exit 1; }
+node "$guard" n2-assert
 owned=1 creating=0
 load "cluster up"
 
@@ -85,30 +83,30 @@ build() {
   tree="$work/$name"
   trees+=("$tree")
   git -C "$root" worktree add --detach "$tree" "$rev" >/dev/null
-  docker build -q -f "$tree/apps/control-plane/Dockerfile" --label "org.opencontainers.image.revision=$rev" -t "gromesh-lab-cp:$name-${rev:0:12}" "$tree" >/dev/null
-  built+=("gromesh-lab-cp:$name-${rev:0:12}")
-  docker build -q -f "$tree/apps/agent/Dockerfile" --label "org.opencontainers.image.revision=$rev" -t "gromesh-lab-agent:$name-${rev:0:12}" "$tree" >/dev/null
-  built+=("gromesh-lab-agent:$name-${rev:0:12}")
-  git -C "$root" worktree remove --force "$tree"
-  printf -v "CP_$name" '%s' "gromesh-lab-cp:$name-${rev:0:12}"
-  printf -v "AGENT_$name" '%s' "gromesh-lab-agent:$name-${rev:0:12}"
+  node "$guard" n2-image build -q -f "$tree/apps/control-plane/Dockerfile" --label "org.opencontainers.image.revision=$rev" -t "gromesh-lab-cp:$name-$RUN_ID-${rev:0:12}" "$tree" >/dev/null
+  built+=("gromesh-lab-cp:$name-$RUN_ID-${rev:0:12}")
+  node "$guard" n2-image build -q -f "$tree/apps/agent/Dockerfile" --label "org.opencontainers.image.revision=$rev" -t "gromesh-lab-agent:$name-$RUN_ID-${rev:0:12}" "$tree" >/dev/null
+  built+=("gromesh-lab-agent:$name-$RUN_ID-${rev:0:12}")
+  git -C "$root" worktree remove "$tree"
+  printf -v "CP_$name" '%s' "gromesh-lab-cp:$name-$RUN_ID-${rev:0:12}"
+  printf -v "AGENT_$name" '%s' "gromesh-lab-agent:$name-$RUN_ID-${rev:0:12}"
   printf -v "REV_$name" '%s' "$rev"
 }
 
 build admission "$ADMISSION_REF"
 build neg "$NEG_REF"
 build v2 "$V2_REF"
-docker pull -q "$KONG_REF" >/dev/null
-KONG_IMAGE="gromesh-lab-kong:${KONG_REF##*@sha256:}"; KONG_IMAGE="${KONG_IMAGE:0:31}"
-docker tag "$KONG_REF" "$KONG_IMAGE"
+node "$guard" n2-pull "$KONG_REF" >/dev/null
+KONG_IMAGE="gromesh-lab-kong:$RUN_ID"
+node "$guard" n2-image tag "$KONG_REF" "$KONG_IMAGE"
 built+=("$KONG_IMAGE")
 # By digest, never whatever postgres:16-alpine the host already has; re-tagged locally because the suites run it with
 # imagePullPolicy Never and kind loads images by name.
-docker pull -q "$PG_IMAGE" >/dev/null
-PG_LOCAL="gromesh-lab-pg:${PG_IMAGE##*@sha256:}"; PG_LOCAL="${PG_LOCAL:0:28}"
-docker tag "$PG_IMAGE" "$PG_LOCAL"
+node "$guard" n2-pull "$PG_IMAGE" >/dev/null
+PG_LOCAL="gromesh-lab-pg:$RUN_ID"
+node "$guard" n2-image tag "$PG_IMAGE" "$PG_LOCAL"
 built+=("$PG_LOCAL")
-for image in "${built[@]}"; do kind load docker-image --name "$CLUSTER_NAME" "$image" >/dev/null; done
+for image in "${built[@]}"; do node "$guard" n2-load "$image" >/dev/null; done
 # What actually ran: each image by id, repo digests and source revision (ClickHouse, Vector and the fixtures are
 # pulled by digest inside the cluster).
 for image in "$KONG_REF" "$PG_IMAGE" "${built[@]}"; do
@@ -118,13 +116,13 @@ load "images loaded"
 # What the cluster actually ran (ClickHouse, Vector and the fixtures are pulled there by digest): every container's
 # image and resolved image id, sampled from the cluster itself while the suite runs, since the suites delete their pods
 # before they return. A failed sample is recorded as ERROR, never dropped.
-sample() { local f="$work/sampler.kubeconfig"
-  kind get kubeconfig --name "$CLUSTER_NAME" >"$f" 2>/dev/null || { echo "ERROR kind get kubeconfig"; return; }
-  kubectl --kubeconfig "$f" --request-timeout=10s get pods -A -o jsonpath='{range .items[*]}{range .status.containerStatuses[*]}{.image}{" "}{.imageID}{"\n"}{end}{range .status.initContainerStatuses[*]}{.image}{" "}{.imageID}{"\n"}{end}{end}' 2>/dev/null \
+sample() {
+  kubectl --kubeconfig "$LAB_KUBECONFIG" --context "kind-$CLUSTER_NAME" --request-timeout=10s get pods -A -o jsonpath='{range .items[*]}{range .status.containerStatuses[*]}{.image}{" "}{.imageID}{"\n"}{end}{range .status.initContainerStatuses[*]}{.image}{" "}{.imageID}{"\n"}{end}{end}' 2>/dev/null \
     || echo "ERROR kubectl get pods"; }
+
 sampler() { while :; do sample >>"$1"; sleep 5; done; }
 # setsid: stop_sampler then also stops the sampler's sleep, kind or kubectl.
-start_sampler() { export -f sample sampler; export work CLUSTER_NAME
+start_sampler() { export -f sample sampler; export LAB_KUBECONFIG CLUSTER_NAME
   setsid bash -c 'sampler "$1"' _ "$1" & sampler_pid=$!; }
 # A suite passes only with evidence that each expected image ran (a name the run built or a pinned digest), counted
 # only on lines that carry the resolved image id: a container not yet started has its image but no imageID.

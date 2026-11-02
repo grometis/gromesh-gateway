@@ -1,9 +1,10 @@
 // Infrastructure of the N2 components suite: the lab guard, kubectl/helm/docker on the lab context only, the control
 // plane's API through a port-forward (session + CSRF, API tokens) and its Postgres, and the objects the suite installs.
+import { N2Lab, n2ClusterName } from "../../../../scripts/kind-stack-guard.mjs";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, lstatSync, statSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -11,30 +12,22 @@ import { fileURLToPath } from "node:url";
 
 export const here = fileURLToPath(new URL(".", import.meta.url));
 export const root = fileURLToPath(new URL("../../../../", import.meta.url));
-export const CLUSTER = "gromesh-n2-lab";
+export const CLUSTER = n2ClusterName(process.env.LAB_RUN_ID);
 export const CONTEXT = `kind-${CLUSTER}`;
 export const NS = { cp: "gromesh-n2-cp", dp: "gromesh-n2-comp", fx: "gromesh-n2-fixtures" };
 export { scrubKong } from "./scrub.mjs";
 export const NODES = { cp: `${CLUSTER}-control-plane`, workers: [`${CLUSTER}-worker`, `${CLUSTER}-worker2`] };
 
-// One explicit file, never a list, never a link, never the user's kubeconfig (same inode also catches a hard link).
-export function assertLabKubeconfig(path, home) {
-  if (!path) throw new Error("set LAB_KUBECONFIG to the lab kubeconfig file");
-  if (path.includes(":")) throw new Error("LAB_KUBECONFIG must be a single file, not a list");
-  if (lstatSync(path).isSymbolicLink()) throw new Error("LAB_KUBECONFIG must not be a symlink");
-  const lab = statSync(path);
-  let user;
-  try { user = statSync(join(home, ".kube/config")); } catch { return; }
-  if (lab.dev === user.dev && lab.ino === user.ino) throw new Error("LAB_KUBECONFIG must not be ~/.kube/config");
-}
+export { assertLabKubeconfig } from "../checks.mjs";
+import { assertLabKubeconfig } from "../checks.mjs";
 
 export const kubeconfig = process.env.LAB_KUBECONFIG;
 assertLabKubeconfig(kubeconfig, homedir());
 const env = { ...process.env, KUBECONFIG: kubeconfig };
 
-export function run(command, args, { input, timeout = 180_000, allowFail = false } = {}) {
+export function rawRun(command, args, { input, timeout = 180_000, allowFail = false, env: extra = {} } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { env, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(command, args, { env: { ...env, ...extra }, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     const timer = setTimeout(() => child.kill("SIGKILL"), timeout);
@@ -48,8 +41,13 @@ export function run(command, args, { input, timeout = 180_000, allowFail = false
     child.stdin.end(input ?? "");
   });
 }
-export const kubectl = (args, options) => run("kubectl", ["--kubeconfig", kubeconfig, "--context", CONTEXT, ...args], options);
-export const helm = (args, options) => run("helm", ["--kubeconfig", kubeconfig, "--kube-context", CONTEXT, ...args], options);
+export const ownership = new N2Lab({ env, execute: rawRun });
+export function run(command, args, options) {
+  if (command === "docker") return ownership.docker(args, options);
+  return rawRun(command, args, options);
+}
+export const kubectl = (args, options) => ownership.kubectl(args, options);
+export const helm = (args, options) => ownership.helm(args, options);
 export const docker = (args, options) => run("docker", args, options);
 export const json = async (args) => JSON.parse((await kubectl([...args, "-o", "json"])).stdout);
 export const apply = (objects) => kubectl(["apply", "-f", "-"], { input: JSON.stringify({ apiVersion: "v1", kind: "List", items: objects }) });
@@ -74,9 +72,10 @@ export class Forward {
   constructor(port) { this.port = port; this.child = null; }
 
   async start() {
+    await ownership.preflightResources([{ type: "service", name: "control-plane", namespace: NS.cp }], true);
     this.stop();
     for (let attempt = 0; attempt < 30; attempt++) {
-      const child = spawn("kubectl", ["--kubeconfig", kubeconfig, "--context", CONTEXT, "-n", NS.cp, "port-forward", "--address", "127.0.0.1", "svc/control-plane", `${this.port}:3000`], { env, stdio: ["ignore", "pipe", "pipe"] });
+      const child = spawn("kubectl", ["--kubeconfig", ownership.verifiedKubeconfig(), "--context", CONTEXT, "-n", NS.cp, "port-forward", "--address", "127.0.0.1", "svc/control-plane", `${this.port}:3000`], { env: { ...env, KUBECONFIG: ownership.verifiedKubeconfig() }, stdio: ["ignore", "pipe", "pipe"] });
       const ready = await new Promise((resolve) => {
         let out = "";
         const timer = setTimeout(() => resolve(false), 10_000);
@@ -99,6 +98,7 @@ export class Api {
 
   /** One request; `auth` is a session ({cookie, csrf}, csrf: false leaves the header out) or a bearer token. */
   async req(method, path, { body, session, csrf = true, token, timeoutMs = 15_000 } = {}) {
+    await ownership.assertIdentity();
     const headers = { accept: "application/json" };
     if (body !== undefined) headers["content-type"] = "application/json";
     if (session) {
@@ -252,12 +252,13 @@ export function denyPolicies(net) {
 }
 
 /** Everything this suite installs, and nothing else: its two namespaces (release included) and its cluster-wide policies. */
-export async function removeSuiteObjects() {
-  // Both are attempted whatever the other does; any failure is reported.
-  const results = await Promise.allSettled([
-    kubectl(["delete", "namespace", NS.dp, NS.cp, "--ignore-not-found", "--wait", "--timeout=240s"], { timeout: 260_000 }),
-    kubectl(["delete", "ciliumclusterwidenetworkpolicy", ...POLICIES, "--ignore-not-found"]),
-  ]);
-  const failed = results.filter((r) => r.status === "rejected").map((r) => r.reason.message);
-  if (failed.length) throw new Error(failed.join("; "));
+export async function removeSuiteObjects(extraNamespaces = [], beforeDelete = async () => {}) {
+  // Preflight every namespace/policy together, before deleting any of them.
+  await ownership.preflightResources([
+    ...[NS.dp, NS.cp, ...extraNamespaces].map(name => ({ type: 'namespace', name })),
+    ...POLICIES.map(name => ({ type: 'ciliumclusterwidenetworkpolicy', name })),
+  ], false, { deleting: true });
+  await beforeDelete();
+  await kubectl(["delete", "namespace", NS.dp, NS.cp, ...extraNamespaces, "--ignore-not-found", "--wait=true", "--timeout=240s"], { timeout: 260_000 });
+  await kubectl(["delete", "ciliumclusterwidenetworkpolicy", ...POLICIES, "--ignore-not-found"]);
 }

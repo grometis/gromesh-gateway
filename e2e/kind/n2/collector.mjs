@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // N2-X4 in the reference lab (B §3.5.2, aceite r, exposure part): the data plane chart in Workspaces mode with the
 // collector as a native sidecar, Cilium enforcing the chart's NetworkPolicy, ClickHouse in the cluster.
-//   LAB_KUBECONFIG=<file> AGENT_IMAGE=<local tag> KONG_IMAGE=<local tag> [LAB_OUT=<dir>] node e2e/kind/n2/collector.mjs
+//   LAB_RUN_ID=<exclusive-run-id> LAB_KUBECONFIG=<file> AGENT_IMAGE=<local tag> KONG_IMAGE=<local tag> [LAB_OUT=<dir>] node e2e/kind/n2/collector.mjs
 // Requires the cluster from cluster.sh. No control plane: Kong never gets a lease here, the sidecars run regardless.
 // Never prints the collector token or the ClickHouse passwords.
+import { N2Lab, n2ClusterName } from "../../../scripts/kind-stack-guard.mjs";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -20,7 +21,7 @@ const versions = Object.fromEntries(readFileSync(join(here, "versions.env"), "ut
   .filter((line) => /^[A-Z0-9_]+=/.test(line)).map((line) => line.split(/=(.*)/s).slice(0, 2)));
 const kubeconfig = process.env.LAB_KUBECONFIG;
 assertLabKubeconfig(kubeconfig, homedir());
-const context = `kind-${versions.CLUSTER_NAME}`;
+const context = `kind-${n2ClusterName(process.env.LAB_RUN_ID)}`;
 const work = mkdtempSync(join(tmpdir(), "gromesh-x4-kind-"));
 const out = process.env.LAB_OUT ?? work;
 const AGENT_IMAGE = process.env.AGENT_IMAGE;
@@ -34,7 +35,7 @@ assert.ok(AGENT_IMAGE && KONG_IMAGE, "set AGENT_IMAGE and KONG_IMAGE to local ta
 const DP = "gromesh-x4";
 const OBS = "gromesh-x4-obs";
 const FX = "gromesh-x4-fx";
-const env = { ...process.env, KUBECONFIG: kubeconfig };
+const env = { ...process.env, KUBECONFIG: kubeconfig, LAB_OUT: out };
 const secrets = [];
 const results = [];
 // Errors carry command lines and output: every credential is redacted before anything can print it.
@@ -44,9 +45,9 @@ const record = (item, ok, detail) => {
   assert.ok(ok, `${item}: ${detail}`);
 };
 
-function run(command, args, { input, timeout = 180_000, allowFail = false } = {}) {
+function rawRun(command, args, { input, timeout = 180_000, allowFail = false, env: extra = {} } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { env, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(command, args, { env: { ...env, ...extra }, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     const timer = setTimeout(() => child.kill("SIGKILL"), timeout);
@@ -61,8 +62,13 @@ function run(command, args, { input, timeout = 180_000, allowFail = false } = {}
     child.stdin.end(input ?? "");
   });
 }
-const kubectl = (args, options) => run("kubectl", ["--kubeconfig", kubeconfig, "--context", context, ...args], options);
-const helm = (args, options) => run("helm", ["--kubeconfig", kubeconfig, "--kube-context", context, ...args], options);
+const ownership = new N2Lab({ env, execute: rawRun });
+function run(command, args, options) {
+  if (command === "docker") return ownership.docker(args, options);
+  return rawRun(command, args, options);
+}
+const kubectl = (args, options) => ownership.kubectl(args, options);
+const helm = (args, options) => ownership.helm(args, options);
 const apply = (objects) => kubectl(["apply", "-f", "-"], { input: JSON.stringify({ apiVersion: "v1", kind: "List", items: objects }) });
 const json = async (args) => JSON.parse((await kubectl([...args, "-o", "json"])).stdout);
 
@@ -182,9 +188,10 @@ async function fromOutside(ip) {
   await kubectl(["delete", "pod", "-n", FX, name, "--wait=false"]);
   return phase === "Succeeded" ? JSON.parse(stdout.trim()) : { error: stdout };
 }
-async function fromNode(ip) {
-  const node = `${versions.CLUSTER_NAME}-worker`;
-  const r = await run("docker", ["exec", node, "bash", "-c", `for p in 8080 9598; do (exec 3<>/dev/tcp/${ip}/$p) 2>/dev/null && echo "$p open" || echo "$p refused"; done`], { allowFail: true });
+async function fromNode(p) {
+  const node = `${n2ClusterName(process.env.LAB_RUN_ID)}-worker`;
+  const target = await ownership.containerTarget(DP, p.metadata.name, "collector");
+  const r = await ownership.collectorProbe(node, target);
   return r.stdout.trim().replaceAll("\n", ", ");
 }
 
@@ -192,7 +199,6 @@ async function main() {
   const status = await run("bash", [join(here, "cluster.sh"), "status"], { allowFail: true, env: { LAB_KUBECONFIG: kubeconfig } });
   assert.equal(status.code, 0, `the lab is not the pinned kind cluster: ${status.stderr.trim()}`);
   // A fresh start: a rerun would otherwise meet ClickHouse users created with an earlier run's passwords.
-  await helm(["uninstall", "dp", "-n", DP], { allowFail: true });
   await kubectl(["delete", "namespace", DP, OBS, FX, "--ignore-not-found", "--wait=true"], { timeout: 300_000 });
   await clickhouse();
   await apply([{ apiVersion: "v1", kind: "Namespace", metadata: { name: DP } },
@@ -223,7 +229,7 @@ async function main() {
         ports: [{ protocol: "TCP", port: 8080 }, { protocol: "TCP", port: 9598 }] }] } }]);
   const ip = p.status.podIP;
   record("other pod cannot connect", JSON.stringify(await fromOutside(ip)) === JSON.stringify({ intake: "ECONNREFUSED", metrics: "ECONNREFUSED" }), "intake and metrics refused at the pod IP");
-  const node = await fromNode(ip);
+  const node = await fromNode(p);
   record("node cannot connect", node === "8080 refused, 9598 refused", node);
 
   record("no token -> 401", (await postInPod(p, { body: event(randomBytes(16).toString("hex")) })) === "401", "POST from inside the pod");

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # N2 reference lab (environment A): kind dual-stack without kindnet, kube-proxy kept, Cilium pinned in versions.env.
-#   LAB_KUBECONFIG=<file> bash e2e/kind/n2/cluster.sh up|down|status
+#   LAB_RUN_ID=<exclusive-run-id> LAB_KUBECONFIG=<file> bash e2e/kind/n2/cluster.sh up|down|status
 # Every kubectl/helm call uses only LAB_KUBECONFIG and the lab context: the user's kubeconfig is never read or written.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -8,6 +8,8 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$here/versions.env"
 : "${LAB_KUBECONFIG:?set LAB_KUBECONFIG to the lab kubeconfig file (never ~/.kube/config)}"
 WORKERS="${WORKERS:-2}"
+: "${LAB_RUN_ID:?set LAB_RUN_ID to the exclusive execution id}"
+CLUSTER_NAME="$(node "$here/../../../scripts/kind-stack-guard.mjs" n2-name)"
 context="kind-$CLUSTER_NAME"
 # One explicit file, never a list, never a link, never the user's kubeconfig (-ef also catches a hard link).
 [[ "$LAB_KUBECONFIG" != *:* ]] || { echo "LAB_KUBECONFIG must be a single file, not a list" >&2; exit 1; }
@@ -18,23 +20,19 @@ if [[ "$LAB_KUBECONFIG" -ef "$HOME/.kube/config" || "$(cd -P "$(dirname "$LAB_KU
 fi
 # kind, kubectl and helm see only the lab file, whatever the caller's environment says.
 export KUBECONFIG="$LAB_KUBECONFIG"
-k() { kubectl --kubeconfig "$LAB_KUBECONFIG" --context "$context" "$@"; }
-h() { helm --kubeconfig "$LAB_KUBECONFIG" --kube-context "$context" "$@"; }
-
-# Refuses any mutation unless the lab context is the named kind cluster: same API endpoint and same CA as the
-# kubeconfig kind itself exports for it (a loopback address alone could be a tunnel to any cluster).
-identity() { kubectl --kubeconfig "$1" config view --raw --minify --flatten ${2:+--context "$2"} \
-  -o jsonpath='{.clusters[0].cluster.server} {.clusters[0].cluster.certificate-authority-data}'; }
-assert_lab() {
-  local exported lab want got
-  kind get clusters | grep -qx "$CLUSTER_NAME" || { echo "kind cluster $CLUSTER_NAME not found" >&2; exit 1; }
-  exported="$(mktemp)"
-  kind get kubeconfig --name "$CLUSTER_NAME" >"$exported"
-  want="$(identity "$exported")"
-  rm -f "$exported"
-  got="$(identity "$LAB_KUBECONFIG" "$context" 2>/dev/null || true)"
-  [[ "$want" =~ ^https://127\.0\.0\.1:[0-9]+\ [A-Za-z0-9+/=]{100,}$ ]] || { echo "kind exported no usable kubeconfig for $CLUSTER_NAME" >&2; exit 1; }
-  [[ "$got" == "$want" ]] || { echo "context $context (${got%% *}) is not kind cluster $CLUSTER_NAME (${want%% *}): endpoint or CA differ" >&2; exit 1; }
+guard="$here/../../../scripts/kind-stack-guard.mjs"
+assert_lab() { node "$guard" n2-assert; }
+# Every installation and resumed upgrade shares the resource/receipt policy with the suites.
+h() {
+  if [[ "${1:-}" == install || "${1:-}" == upgrade ]] && [[ " $* " != *" --dry-run=client "* ]]; then
+    node "$guard" n2-helm "$@"
+  else helm --kubeconfig "$LAB_KUBECONFIG" --kube-context "$context" "$@"; fi
+}
+k() {
+  case " $* " in
+    *" rollout restart "*|*" exec "*) node "$guard" n2-kubectl "$@" ;;
+    *) kubectl --kubeconfig "$LAB_KUBECONFIG" --context "$context" "$@" ;;
+  esac
 }
 
 # A reused cluster or release must be the pinned one: Kubernetes, node and Cilium images, and Cilium's effective config.
@@ -142,8 +140,9 @@ up() {
     image: $NODE_IMAGE
 "; done
   t0=$(date +%s)
-  # Resumable: an existing lab cluster is kept (only Cilium is installed if missing), if it is the pinned one.
-  kind get clusters | grep -qx "$CLUSTER_NAME" || kind create cluster --name "$CLUSTER_NAME" --kubeconfig "$LAB_KUBECONFIG" --wait 0s --config - <<EOF
+  # A receipt from this creation is mandatory; an old cluster is never adopted by name.
+  if [[ -f "$LAB_KUBECONFIG.n2-owner.json" ]]; then assert_lab
+  else node "$guard" n2-create <<EOF
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 networking:
@@ -154,16 +153,16 @@ nodes:
     image: $NODE_IMAGE
 $workers
 EOF
+  fi
   t1=$(date +%s)
   assert_lab
   assert_nodes $((WORKERS + 1))
   local chart chart_dir
   pinned_chart
   trap 'rm -rf "$chart_dir"' RETURN
-  if h status cilium -n kube-system >/dev/null 2>&1; then assert_cilium_release "$chart"
-  else h install cilium "$chart" --namespace kube-system -f "$here/cilium-values.yaml" \
+  h upgrade cilium "$chart" --install --namespace kube-system -f "$here/cilium-values.yaml" \
     --set image.digest="$CILIUM_IMAGE_DIGEST" --set operator.image.genericDigest="$CILIUM_OPERATOR_GENERIC_DIGEST"
-  fi
+
   k -n kube-system rollout status daemonset/cilium --timeout=600s
   k -n kube-system rollout status deployment/cilium-operator --timeout=300s
   k wait --for=condition=Ready nodes --all --timeout=300s
@@ -199,9 +198,7 @@ status() {
 }
 
 down() {
-  kind delete cluster --name "$CLUSTER_NAME" --kubeconfig "$LAB_KUBECONFIG"
-  local id
-  for id in $(docker ps -aq --filter "name=^$CLUSTER_NAME-fx-"); do docker rm -f "$id"; done
+  node "$guard" n2-down
 }
 
 case "${1:-}" in

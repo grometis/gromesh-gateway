@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // N2 environment acceptance (E §7, ENV-0..ENV-7 without our components): from a pod with the data plane's labels and
 // the chart's NetworkPolicy, proves CAP-1..CAP-4 and that each protection is load-bearing (negative controls).
-//   LAB_KUBECONFIG=<file> [LAB_OUT=<dir>] [DATA_PLANE_CHART=<chart dir>] node e2e/kind/n2/run.mjs
+//   LAB_RUN_ID=<exclusive-run-id> LAB_KUBECONFIG=<file> [LAB_OUT=<dir>] [DATA_PLANE_CHART=<chart dir>] node e2e/kind/n2/run.mjs
 // Requires the cluster from cluster.sh. Only the lab context of LAB_KUBECONFIG is ever used.
+import { N2Lab, n2ClusterName } from "../../../scripts/kind-stack-guard.mjs";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -18,16 +19,16 @@ const versions = Object.fromEntries(readFileSync(join(here, "versions.env"), "ut
   .filter((line) => /^[A-Z0-9_]+=/.test(line)).map((line) => line.split(/=(.*)/s).slice(0, 2)));
 const kubeconfig = process.env.LAB_KUBECONFIG;
 assertLabKubeconfig(kubeconfig, homedir());
-const cluster = versions.CLUSTER_NAME;
+const cluster = n2ClusterName(process.env.LAB_RUN_ID);
 const context = `kind-${cluster}`;
 const chart = process.env.DATA_PLANE_CHART ?? join(root, "deploy/helm/data-plane");
 const out = process.env.LAB_OUT ?? mkdtempSync(join(tmpdir(), "gromesh-n2-lab-"));
 const DP = "gromesh-dp";
 const FX = "gromesh-n2-fixtures";
 const ZONE = "lab.gromesh.test";
-const env = { ...process.env, KUBECONFIG: kubeconfig };
+const env = { ...process.env, KUBECONFIG: kubeconfig, LAB_OUT: out };
 
-function run(command, args, { input, timeout = 180_000, allowFail = false, env: extra = {} } = {}) {
+function rawRun(command, args, { input, timeout = 180_000, allowFail = false, env: extra = {} } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { env: { ...env, ...extra }, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
@@ -43,7 +44,12 @@ function run(command, args, { input, timeout = 180_000, allowFail = false, env: 
     child.stdin.end(input ?? "");
   });
 }
-const kubectl = (args, options) => run("kubectl", ["--kubeconfig", kubeconfig, "--context", context, ...args], options);
+const ownership = new N2Lab({ env, execute: rawRun });
+function run(command, args, options) {
+  if (command === "docker") return ownership.docker(args, options);
+  return rawRun(command, args, options);
+}
+const kubectl = (args, options) => ownership.kubectl(args, options);
 const docker = (args, options) => run("docker", args, options);
 const json = async (args) => JSON.parse((await kubectl([...args, "-o", "json"])).stdout);
 const apply = (objects) => kubectl(["apply", "-f", "-"], { input: JSON.stringify({ apiVersion: "v1", kind: "List", items: objects }) });
@@ -108,17 +114,19 @@ async function externalFixtures(topo) {
     { role: "imds", ip: net.imdsHost, cap: true,
       setup: [...IMDS.v4.map((a) => `ip addr add ${a}/32 dev eth0`), ...IMDS.v6.map((a) => `ip -6 addr add ${a}/128 dev eth0`)].join(" && ") + " && " },
   ];
+  await ownership.preflightFixtures(fixtures.map(f => `${cluster}-fx-${f.role}`));
   for (const f of fixtures) {
     const name = `${cluster}-fx-${f.role}`;
     await docker(["rm", "-f", name], { allowFail: true });
     await docker(["run", "-d", "--name", name, "--network", "kind", "--ip", f.ip.v4, "--ip6", f.ip.v6,
-      ...(f.cap ? ["--cap-add", "NET_ADMIN"] : []), "-v", `${join(here, "fixtures.mjs")}:/lab/fixtures.mjs:ro`,
-      versions.FIXTURE_IMAGE, "sh", "-c", `${f.setup}exec node /lab/fixtures.mjs serve ext:${f.role} 8080 80`]);
+      ...(f.cap ? ["--cap-add", "NET_ADMIN"] : []),
+      versions.FIXTURE_IMAGE, "sh", "-c", `set -eu; mkdir -p /lab; printf '%s' "$1" > /lab/fixtures.mjs; ${f.setup}exec node /lab/fixtures.mjs serve ext:${f.role} 8080 80`,
+      "sh", readFileSync(join(here, "fixtures.mjs"), "utf8")]);
   }
   for (const n of topo.nodes) {
     const node = n.name;
-    for (const a of IMDS.v4) await docker(["exec", node, "ip", "route", "replace", `${a}/32`, "via", net.imdsHost.v4]);
-    for (const a of IMDS.v6) await docker(["exec", node, "ip", "-6", "route", "replace", `${a}/128`, "via", net.imdsHost.v6]);
+    for (const a of IMDS.v4) await ownership.addRoute(node, a, net.imdsHost.v4);
+    for (const a of IMDS.v6) await ownership.addRoute(node, a, net.imdsHost.v6);
   }
 }
 
@@ -426,7 +434,9 @@ async function rebinding(topo, ips, scenario) {
 // ENV-7: time from the policy change (client clock, before kubectl) to the first probe attempt in the new state.
 async function effectLatency(target, removePolicy, restorePolicy, repetitions = 5) {
   const watch = async (state, action) => {
-    const child = spawn("kubectl", ["--kubeconfig", kubeconfig, "--context", context, "-n", DP, "exec", "probe", "--", "node", "/lab/fixtures.mjs", "watch", target.ip, String(target.port), state, "60000", ...(target.server ? [target.server] : [])], { env });
+    await ownership.preflightResources([{ type: "pod", name: "probe", namespace: DP }], true);
+    const container = await ownership.containerTarget(DP, "probe");
+    const child = await ownership.spawnContainer(container, ["node", "/lab/fixtures.mjs", "watch", target.ip, String(target.port), state, "60000", ...(target.server ? [target.server] : [])]);
     let text = "";
     const done = new Promise((resolve) => child.on("close", resolve));
     const ready = new Promise((resolve) => child.stdout.on("data", (d) => { text += d; if (text.includes("ready\n")) resolve(); }));
@@ -437,6 +447,7 @@ async function effectLatency(target, removePolicy, restorePolicy, repetitions = 
     await action();
     const t1 = Date.now();
     await done;
+    await child.verified;
     const last = text.trim().split("\n").at(-1);
     assert.ok(/^\d+$/.test(last), `watch ${state} on ${target.ip}:${target.port} did not observe the change: ${text}`);
     return { ms: Number(last) - t0, kubectlMs: t1 - t0 };
@@ -456,7 +467,7 @@ const environment = await assertLab();
 const startedAt = new Date().toISOString();
 const topo = await topology();
 const bootIds = {};
-for (const n of topo.nodes) bootIds[n.name] = (await docker(["exec", n.name, "cat", "/proc/sys/kernel/random/boot_id"])).stdout.trim();
+for (const n of topo.nodes) bootIds[n.name] = (await ownership.nodeRead(n.name, ["cat", "/proc/sys/kernel/random/boot_id"])).stdout.trim();
 await externalFixtures(topo);
 const ips = await clusterFixtures(topo);
 await setZone(zoneRecords(topo, topo.net.backend));

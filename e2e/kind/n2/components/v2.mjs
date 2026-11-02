@@ -13,13 +13,14 @@ import { setTimeout as sleep } from "node:timers/promises";
 import {
   Api, apply, assertLab, CLUSTER, CONTEXT, controlPlaneObjects, controlPlaneSecret, cpSecrets, createSecret, dbSkew, denyPolicies, docker, Forward, helm, here, json,
   kubeconfig, kubectl, NODES, NS, registrationSecret, relayObjects, removeSuiteObjects, root, run, sql,
-  scrubKong,
+  ownership, scrubKong,
 } from "./lab.mjs";
 import { CLIENT } from "./client-script.mjs";
 import { privilegedAfterLoss, privilegedRequestsBetween, scenarioRequestLines } from "./privileged.mjs";
 import { bootToWall, groupFromEvents, itemResult, keepaliveBlocked, kFromLiveness, ksFromDeletion, kxFromEvents, overall, rfc3339CeilMs, runExitCode } from "./budgets.mjs";
 
 const out = process.env.LAB_OUT ?? mkdtempSync(join(tmpdir(), "gromesh-n2-comp-"));
+ownership.evidenceDir = out;
 // Every image this suite pulls is pinned by digest in versions.env (a mutable tag would not reproduce the run).
 const VERSIONS = Object.fromEntries(readFileSync(join(here, "../versions.env"), "utf8").split("\n")
   .filter((line) => /^[A-Z0-9_]+=/.test(line)).map((line) => line.split(/=(.*)/s).slice(0, 2)));
@@ -104,7 +105,7 @@ async function topology() {
     return { name: n.metadata.name, v4: ips.find((ip) => !ip.includes(":")), v6: ips.find((ip) => ip.includes(":")) };
   });
   const fixture = async (role) => {
-    const [c] = JSON.parse((await docker(["inspect", `gromesh-n2-lab-fx-${role}`])).stdout);
+    const [c] = JSON.parse((await docker(["inspect", `${ownership.cluster}-fx-${role}`])).stdout);
     if (!c?.State?.Running) throw new Error(`N2-E1 fixture ${role} is not running: run e2e/kind/n2/run.mjs first`);
     const n = c.NetworkSettings.Networks.kind;
     return { v4: n.IPAddress, v6: n.GlobalIPv6Address };
@@ -213,7 +214,7 @@ class NginxSampler {
 class Follower {
   constructor(pod, container) {
     this.lines = [];
-    this.child = spawn("kubectl", ["--kubeconfig", kubeconfig, "--context", CONTEXT, "-n", NS.dp, "logs", "-f", "--timestamps", pod, "-c", container], { stdio: ["ignore", "pipe", "pipe"] });
+    this.child = spawn("kubectl", ["--kubeconfig", ownership.verifiedKubeconfig(), "--context", CONTEXT, "-n", NS.dp, "logs", "-f", "--timestamps", pod, "-c", container], { stdio: ["ignore", "pipe", "pipe"] });
     let buffer = "";
     this.child.stdout.on("data", (d) => {
       buffer += d;
@@ -241,36 +242,22 @@ async function logs(pod, container) {
 }
 const firstLine = (lines, pattern) => lines.find((l) => pattern.test(l.text));
 
-/** The host pid of a container of a data plane pod, checked against the binary it must be. */
+/** Signals are resolved by the runtime's immutable container ID, after pod/namespace/node proof. */
 async function containerPid(podName, container, comm) {
-  const p = await json(["-n", NS.dp, "get", "pod", podName]);
-  const st = [...(p.status.initContainerStatuses ?? []), ...(p.status.containerStatuses ?? [])].find((x) => x.name === container);
-  const id = st.containerID.replace(/^containerd:\/\//, "");
-  const pid = Number((await docker(["exec", p.spec.nodeName, "crictl", "inspect", "-o", "go-template", "--template", "{{.info.pid}}", id])).stdout.trim());
-  const actual = (await docker(["exec", p.spec.nodeName, "cat", `/proc/${pid}/comm`])).stdout.trim();
-  if (actual !== comm) throw new Error(`pid ${pid} of ${podName}/${container} is ${actual}, not ${comm}`);
-  return { node: p.spec.nodeName, pid, comm };
+  const target = await ownership.containerTarget(NS.dp, podName, container);
+  return { target, comm, pid: null };
 }
-
-// Every process the suite stops is continued again, whatever happens to the run (thawAll runs on every exit path).
 const frozen = new Set();
 async function freeze(podName, container, comm) {
-  const target = await containerPid(podName, container, comm);
-  frozen.add(target);
-  await docker(["exec", target.node, "kill", "-STOP", String(target.pid)]);
-  return target;
+  const held = await containerPid(podName, container, comm);
+  frozen.add(held);
+  const result = await ownership.signalContainer(held.target, "STOP", comm);
+  held.pid = result.pid;
+  return held;
 }
-async function thaw(target) {
-  // A pid that died with its pod may have been reused: only the same binary is continued.
-  const comm = await docker(["exec", target.node, "cat", `/proc/${target.pid}/comm`], { allowFail: true });
-  // Only the kernel saying the pid does not exist proves the process ended; any other failure keeps it listed.
-  if (comm.code !== 0 && /No such file or directory/.test(comm.stderr)) { frozen.delete(target); return "gone"; }
-  if (comm.code !== 0) return `unknown: ${comm.stderr.trim()}`;
-  if (comm.stdout.trim() !== target.comm) { frozen.delete(target); return `pid reused by ${comm.stdout.trim()}`; }
-  const cont = await docker(["exec", target.node, "kill", "-CONT", String(target.pid)], { allowFail: true });
-  // A failed SIGCONT keeps the process listed: the run cannot end clean with it still stopped.
-  if (cont.code !== 0) return `SIGCONT failed: ${cont.stderr.trim()}`;
-  frozen.delete(target);
+async function thaw(held) {
+  await ownership.signalContainer(held.target, "CONT", held.comm);
+  frozen.delete(held);
   return "continued";
 }
 const thawAll = async () => Promise.all([...frozen].map(thaw));
@@ -283,7 +270,7 @@ const thawAll = async () => Promise.all([...frozen].map(thaw));
  */
 async function lastHeartbeat(podName, node) {
   const state = await kubectl(["-n", NS.dp, "exec", podName, "-c", "kong", "--", "cat", "/gromesh/kong-state/kong-state.json"], { allowFail: true });
-  const clock = await docker(["exec", node, "sh", "-c", "date +%s%3N; cat /proc/uptime; date +%s%3N"], { allowFail: true });
+  const clock = await ownership.nodeClock(node);
   try {
     const [before, uptime, after] = clock.stdout.trim().split("\n");
     return bootToWall({ bootMs: Number(JSON.parse(state.stdout).heartbeatBoottimeNs) / 1e6, uptimeMs: Number(uptime.split(" ")[0]) * 1000,
@@ -298,11 +285,9 @@ async function markServer(role, scenario, phase) {
 }
 
 /** crictl state of a pod's containers, polled on its node until all exited: finishedAt with nanoseconds, the exit codes. */
-function watchExits(node, ids, timeoutS) {
-  const script = `end=$(( $(date +%s) + ${timeoutS} )); while [ "$(date +%s)" -lt "$end" ]; do all=1; for id in "$@"; do
-st=$(crictl inspect -o go-template --template '{{.status.state}} {{.status.finishedAt}} {{.status.exitCode}}' "$id" 2>/dev/null) || st=GONE; echo "$id $st";
-case "$st" in CONTAINER_EXITED*) ;; *) all=0 ;; esac; done; [ "$all" = 1 ] && exit 0; sleep 0.05; done; exit 3`;
-  return docker(["exec", node, "sh", "-c", script, "sh", ...Object.values(ids)], { allowFail: true, timeout: (timeoutS + 15) * 1000 }).then(({ code, stdout }) => {
+function watchExits(targets, timeoutS) {
+  const ids = Object.fromEntries(Object.entries(targets).map(([name, target]) => [name, target.containerID]));
+  return ownership.watchContainerExits(targets, timeoutS).then(({ code, stdout }) => {
     const last = {};
     for (const line of stdout.split("\n").filter(Boolean)) { const [id, ...rest] = line.split(" "); last[id] = rest; }
     const states = Object.fromEntries(Object.entries(ids).map(([name, id]) => {
@@ -372,9 +357,9 @@ const V2_BUDGET = { detection: 18_000, block503: 19_000, kongStopSupervisor: 20_
   probeDown503: 34_000, probeDownStopSupervisor: 35_000, probeDownStopIndependent: 39_000, drainSignal: 1_000, drainExit: 20_000 };
 report.v2Budgets = V2_BUDGET;
 const vm = { loads: [] };
-const vmNow = async () => Number((await docker(["exec", NODES.workers[0], "date", "+%s%3N"])).stdout.trim());
+const vmNow = async () => Number((await ownership.nodeRead(NODES.workers[0], ["date", "+%s%3N"])).stdout.trim());
 async function vmLoad(label) {
-  const { stdout } = await docker(["exec", NODES.cp, "cat", "/proc/loadavg"]);
+  const { stdout } = await ownership.nodeRead(NODES.cp, ["cat", "/proc/loadavg"]);
   const one = Number(stdout.split(" ")[0]);
   vm.loads.push({ label, one, at: new Date().toISOString() });
   report.vmLoads = vm.loads;
@@ -426,9 +411,16 @@ s.listen(${BACKEND_PORT}, "::");`;
 
 
 let Client = class {
-  constructor(label, args) {
+  static async start(...args) {
+    await ownership.preflightResources([{ type: "pod", name: "observer", namespace: NS.fx }], true);
+    const target = await ownership.containerTarget(NS.fx, "observer");
+    const child = await ownership.spawnContainer(target, ["node", "--input-type=module", "-"]);
+    return new Client(...args, target, child);
+  }
+  constructor(label, args, target, child) {
+    this.target = target;
     this.events = [];
-    this.child = spawn("kubectl", ["--kubeconfig", kubeconfig, "--context", CONTEXT, "-n", NS.fx, "exec", "-i", "observer", "--", "node", "--input-type=module", "-"], { stdio: ["pipe", "pipe", "pipe"] });
+    this.child = child;
     this.child.stdin.end(`globalThis.ARGS = ${JSON.stringify(JSON.stringify(args))};\n${CLIENT}`);
     let buffer = "";
     this.child.stdout.on("data", (d) => { buffer += d; const parts = buffer.split("\n"); buffer = parts.pop(); for (const l of parts) { try { this.events.push(JSON.parse(l)); } catch { /* partial */ } } });
@@ -436,7 +428,10 @@ let Client = class {
   }
   async stop() {
     this.child.kill("SIGKILL");
-    await kubectl(["-n", NS.fx, "exec", "observer", "--", "sh", "-c", "pkill -f 'input-type=module' || true"], { allowFail: true });
+    try {
+      await this.child.verified;
+      await ownership.execContainer(this.target, ["sh", "-c", "pkill -f 'input-type=module' || true"], { allowFail: true });
+    } catch (error) { this.events = []; throw error; }
   }
   since(t) { return this.events.filter((e) => e.t >= t); }
 }
@@ -505,7 +500,8 @@ async function nodesOf() {
 const clusterProtocol = async () => (await sql(`select delivery_protocol from clusters where id = '${ctx.clusterId}'`))[0].delivery_protocol;
 async function handoffApplied(pod) {
   const p = await json(["-n", NS.dp, "get", "pod", pod.name]);
-  const r = await docker(["exec", p.spec.nodeName, "cat", `/var/lib/kubelet/pods/${p.metadata.uid}/volumes/kubernetes.io~empty-dir/isolation-handoff/applied.json`], { allowFail: true });
+  const target = await ownership.containerTarget(NS.dp, p.metadata.name, "isolation-probe");
+  const r = await ownership.readPodFile(target, "isolation-handoff", "applied.json", { allowFail: true });
   return r.code === 0 ? JSON.parse(r.stdout) : null;
 }
 async function latestReport(pod) {
@@ -525,8 +521,7 @@ async function setupV2() {
   ctx.topo = topo;
   ctx.checks = [...probeChecks(topo).filter((c) => c.capability !== "CAP-7"), CAP7];
   ctx.owned = true;
-  await removeSuiteObjects();
-  await kubectl(["delete", "namespace", OBS, "--ignore-not-found", "--wait", "--timeout=240s"], { timeout: 260_000 });
+  await removeSuiteObjects([OBS]);
   const secrets = cpSecrets();
   ctx.secrets = secrets;
   await apply([{ apiVersion: "v1", kind: "Namespace", metadata: { name: NS.cp } }]);
@@ -556,7 +551,7 @@ async function setupV2() {
   const k1 = await api.ok("POST", "/api/v2/instance/signing-keys", { session: ctx.admin, body: { validUntil } });
   ctx.k1 = { kid: k1.kid, publicKey: k1.publicKey };
   // The backend: HTTP + WebSocket on the allowed external fixture, beside its TCP servers.
-  await docker(["exec", "-d", "gromesh-n2-lab-fx-backend", "node", "-e", BACKEND]);
+  await docker(["exec", "-d", `${ownership.cluster}-fx-backend`, "node", "-e", BACKEND]);
   await clickhouse();
   await apply([{ apiVersion: "v1", kind: "Namespace", metadata: { name: NS.dp } }, ...denyPolicies(topo.net),
     { apiVersion: "v1", kind: "Secret", metadata: { name: "clickhouse-writer", namespace: NS.dp }, stringData: { "writer-password": ctx.chWriter } }]);
@@ -795,13 +790,13 @@ async function chartBlocksImds() {
   // Control 2: every node routes the IMDS aliases to the lab's imds fixture (run.mjs), never to a real metadata service.
   for (const node of [NODES.cp, ...NODES.workers]) {
     for (const [ip, via] of [["169.254.169.254", ctx.topo.ext.imds.v4], ["169.254.170.2", ctx.topo.ext.imds.v4], ["fd00:ec2::254", ctx.topo.ext.imds.v6]]) {
-      const route = (await docker(["exec", node, "ip", ...(ip.includes(":") ? ["-6"] : []), "route", "get", ip], { allowFail: true })).stdout;
+      const route = (await ownership.nodeRead(node, ["ip", ...(ip.includes(":") ? ["-6"] : []), "route", "get", ip], { allowFail: true })).stdout;
       expect(it, route.includes(`via ${via}`), `${node}: ${ip} is not routed to the lab's imds fixture (${route.trim()})`);
     }
   }
   const scenario = `${RUN_ID}-chart-imds`;
   await markServer("imds", scenario, "start");
-  const client = new Client("chart-imds", [ctx.proxy.host, String(ctx.proxy.port), `/${ctx.ws.A.slug}/api`, ctx.ws.A.key, `/${ctx.ws.A.slug}/api/ws`, `/${ctx.ws.A.slug}${PRIVILEGED_PATH}`]);
+  const client = await Client.start("chart-imds", [ctx.proxy.host, String(ctx.proxy.port), `/${ctx.ws.A.slug}/api`, ctx.ws.A.key, `/${ctx.ws.A.slug}/api/ws`, `/${ctx.ws.A.slug}${PRIVILEGED_PATH}`]);
   const t0 = await vmNow();
   await kubectl(["delete", "ciliumclusterwidenetworkpolicy", "n2c-deny-imds"]);
   await sleep(12_000);
@@ -835,7 +830,7 @@ async function containmentN({ frozenSupervisor = false } = {}) {
   const scenario = `${RUN_ID}-${id}`;
   await markServer("imds", scenario, "start");
   const clientArgs = [ctx.proxy.host, String(ctx.proxy.port), `/${ctx.ws.A.slug}/api`, ctx.ws.A.key, `/${ctx.ws.A.slug}/api/ws`, `/${ctx.ws.A.slug}${PRIVILEGED_PATH}`];
-  const client = new Client(id, clientArgs);
+  const client = await Client.start(id, clientArgs);
   await sleep(6000);
   const warm = client.events.slice(-40);
   it.measures.warmup = { ok: warm.filter((e) => e.s === 200).length, ws: client.events.filter((e) => e.k === "ws").map((e) => e.ev).slice(0, 4) };
@@ -851,7 +846,7 @@ async function containmentN({ frozenSupervisor = false } = {}) {
   })) : [];
   const heartbeat = {};
   if (frozenSupervisor) for (const p of pods) { await freeze(p.name, "kong", "kong-supervisor"); heartbeat[p.name] = await lastHeartbeat(p.name, kongIds.find((k) => k.pod === p.name).node); }
-  const kongExits = kongIds.map((k) => ({ pod: k.pod, exits: watchExits(k.node, { kong: k.id }, 60) }));
+  const kongExits = await Promise.all(kongIds.map(async (k) => ({ pod: k.pod, exits: watchExits(await ownership.exitTargets(NS.dp, k.pod, { kong: k.id }), 60) })));
   const loadStart = await vmLoad(`${id} start`);
   // The loss is taken at its earliest.
   const lossEarliest = await vmNow();
@@ -925,7 +920,7 @@ async function containmentN({ frozenSupervisor = false } = {}) {
   // marks, on the reference node's kernel (same boot id), from the earliest possible loss.
   await markServer("imds", scenario, "end");
   const imdsLog = (await docker(["logs", `${CLUSTER}-fx-imds`], { allowFail: true })).stdout.split("\n").filter(Boolean);
-  const refBoot = (await docker(["exec", NODES.workers[0], "cat", "/proc/sys/kernel/random/boot_id"], { allowFail: true })).stdout.trim();
+  const refBoot = (await ownership.nodeRead(NODES.workers[0], ["cat", "/proc/sys/kernel/random/boot_id"], { allowFail: true })).stdout.trim();
   const sources = (await Promise.all(pods.map(async (p) => (await json(["-n", NS.dp, "get", "pod", p.name])).status.podIPs.map((x) => x.ip)))).flat();
   // Every flow of the scenario's client (new and keepalive HTTP, WebSocket upgrade, the privileged route) by the first
   // line Kong forwards (stripPath false: the full path reaches the upstream).
@@ -940,7 +935,7 @@ async function containmentN({ frozenSupervisor = false } = {}) {
   // Blocked → reachable → blocked: with the deny back, the recovered pods' requests on the route never reach it.
   const recovered = `${scenario}-recovered`;
   await markServer("imds", recovered, "start");
-  const after = new Client(`${id}-recovered`, clientArgs);
+  const after = await Client.start(`${id}-recovered`, clientArgs);
   await sleep(5000);
   await after.stop();
   await markServer("imds", recovered, "end");
@@ -985,7 +980,7 @@ async function probeDown() {
 /** Aceite o: the agent frozen on a serving pod (communication failure): no containment of a pod that proves isolation. */
 async function agentDown() {
   const it = item("V2-o-agent-down", "Agent frozen 90 s on a serving pod: no 503 and no Kong stop (the probe keeps proving isolation), communication-failure opened, closed on SIGCONT without a release", {});
-  const client = new Client("agent-down", [ctx.proxy.host, String(ctx.proxy.port), `/${ctx.ws.A.slug}/api`, ctx.ws.A.key, `/${ctx.ws.A.slug}/api/ws`]);
+  const client = await Client.start("agent-down", [ctx.proxy.host, String(ctx.proxy.port), `/${ctx.ws.A.slug}/api`, ctx.ws.A.key, `/${ctx.ws.A.slug}/api/ws`]);
   await sleep(4000);
   const [p] = await live();
   const target = await freeze(p.name, "agent", "gromesh-agent");
@@ -1060,10 +1055,10 @@ async function revisionMismatch() {
   const it = item("V2-revision-mismatch", "applied.json rewritten with another revision (same hash): the probe reports it (canary hash matches), the CP evidence leaves verified (revision mismatch); restored → verified", {});
   const [p] = await live();
   const pj = await json(["-n", NS.dp, "get", "pod", p.name]);
-  const dir = `/var/lib/kubelet/pods/${pj.metadata.uid}/volumes/kubernetes.io~empty-dir/isolation-handoff`;
-  const original = (await docker(["exec", pj.spec.nodeName, "cat", `${dir}/applied.json`])).stdout;
+  const target = await ownership.containerTarget(NS.dp, pj.metadata.name, "isolation-probe");
+  const original = (await ownership.readPodFile(target, "isolation-handoff", "applied.json")).stdout;
   const forged = JSON.stringify({ ...JSON.parse(original), revision: JSON.parse(original).revision + 7 });
-  const write = (bytes) => docker(["exec", "-i", pj.spec.nodeName, "sh", "-c", `cat > ${dir}/.a && chown --reference=${dir}/applied.json ${dir}/.a && chmod --reference=${dir}/applied.json ${dir}/.a && mv ${dir}/.a ${dir}/applied.json`], { input: bytes });
+  const write = (bytes) => ownership.writePodFile(target, "isolation-handoff", "applied.json", bytes);
   const t0 = await vmNow();
   await write(forged);
   const seen = await waitFor("CP evidence leaves verified", async () => { const n = (await nodesOf()).find((x) => x.node_id === p.name); return n?.evidence !== "verified" ? n : null; }, { timeoutMs: 90_000, intervalMs: 2000 }).catch(() => null);
@@ -1112,7 +1107,7 @@ async function rollbackV2() {
  * the replacement is admitted (F3 path) and the deployment converges; the stale node's effect is recorded. */
 async function drainAndReplace() {
   const it = item("V2-p-drain", "Serving pod deleted with traffic and an open WebSocket: supervisor signal (Ks), nginx exit (Kx after SIGKILL if the drain runs out), kong exits before the sidecars; replacement admitted and converged; stale node of the deleted pod measured", V2_BUDGET);
-  const client = new Client("drain", [ctx.proxy.host, String(ctx.proxy.port), `/${ctx.ws.A.slug}/api`, ctx.ws.A.key, `/${ctx.ws.A.slug}/api/ws`]);
+  const client = await Client.start("drain", [ctx.proxy.host, String(ctx.proxy.port), `/${ctx.ws.A.slug}/api`, ctx.ws.A.key, `/${ctx.ws.A.slug}/api/ws`]);
   await sleep(5000);
   const [p] = await live();
   const pj = await json(["-n", NS.dp, "get", "pod", p.name]);
@@ -1121,7 +1116,7 @@ async function drainAndReplace() {
   followers.push(follow);
   const known = new Set((await pods()).map((x) => x.uid));
   const loadStart = await vmLoad("drain start");
-  const exits = watchExits(pj.spec.nodeName, ids, 60);
+  const exits = watchExits(await ownership.exitTargets(NS.dp, p.name, ids), 60);
   const t0 = await vmNow();
   await kubectl(["-n", NS.dp, "delete", "pod", p.name, "--wait=false"]);
   const t0b = await vmNow();
@@ -1171,14 +1166,14 @@ let finishedV2 = false;
 async function finishV2() {
   if (finishedV2) return;
   finishedV2 = true;
-  report.thawed = await thawAll();
+  report.thawed = await thawAll().catch(error => { report.cleanupFailed = true; return [error.message]; });
   for (const f of followers) f.stop();
   for (const c of clients) await c.stop().catch(() => {});
   ctx.forward?.stop();
-  if (process.env.LAB_KEEP === "1") report.cleanup = "kept (LAB_KEEP=1)";
+  if (ownership.refused) { report.cleanup = "refused; ownership receipt and evidence preserved"; report.cleanupFailed = true; }
+  else if (process.env.LAB_KEEP === "1") report.cleanup = "kept (LAB_KEEP=1)";
   else if (ctx.owned) {
-    await docker(["exec", "gromesh-n2-lab-fx-backend", "pkill", "-f", `listen\\(${BACKEND_PORT}`], { allowFail: true });
-    await Promise.all([removeSuiteObjects(), kubectl(["delete", "namespace", OBS, "--ignore-not-found", "--wait", "--timeout=240s"], { timeout: 260_000 })])
+    await removeSuiteObjects([OBS], () => docker(["exec", `${ownership.cluster}-fx-backend`, "pkill", "-f", `listen\\(${BACKEND_PORT}`], { allowFail: true }))
       .then(() => { report.cleanup = "namespaces, policies and the backend server removed"; }, (e) => { report.cleanup = `failed: ${e.message}`; report.cleanupFailed = true; });
   }
   if (frozen.size) { report.cleanupFailed = true; report.stillFrozen = [...frozen]; }

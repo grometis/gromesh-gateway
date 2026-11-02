@@ -200,7 +200,7 @@ test("the containment scenario is wired: route created, marks before the client,
   const body = src.slice(src.indexOf("async function containmentN"), src.indexOf("/** Aceite o:"));
   assert.match(src, /routes`, \{ session: ctx\.admin, body: \{ name: "meta", serviceId: meta\.id, paths: \[PRIVILEGED_PATH\]/);
   assert.match(src, /PRIVILEGED_HOST = "imds\.lab\.gromesh\.test"/);
-  assert.ok(body.indexOf('markServer("imds", scenario, "start")') < body.indexOf("new Client(id, clientArgs)"), "the start mark precedes the client");
+  assert.ok(body.indexOf('markServer("imds", scenario, "start")') < body.indexOf("await Client.start(id, clientArgs)"), "the start mark precedes the client");
   assert.match(body, /clientArgs = \[[^\]]*PRIVILEGED_PATH/);
   assert.ok(body.indexOf("await recover(it, id)") < body.indexOf("privilegedRequestsBetween("), "the recovery check follows the recovery");
   // The lab exception is its own NetworkPolicy, never the chart's values, created only after the chart-only proof.
