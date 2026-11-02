@@ -140,7 +140,7 @@ services:
   # (the data-plane Admin API only listens on a Unix socket in the kong-admin volume).
   smoke:
     profiles: [tools]
-    image: node:24-alpine
+    image: node:26.13.0-alpine@sha256:c6ad9e9c1d80f6eb607c26b4b0a132ff7a2344fad1c78ea3baa2a7d4c8de6d94
     network_mode: "service:kong"
     user: "1001:1001"
     volumes:
@@ -307,7 +307,7 @@ services:
   observability-acceptance:
     # Own profile: with only `tools` active (pnpm smoke) its dependency on vector would make the project invalid.
     profiles: [observability-tools]
-    image: node:24.18.0-alpine
+    image: node:26.13.0-alpine@sha256:c6ad9e9c1d80f6eb607c26b4b0a132ff7a2344fad1c78ea3baa2a7d4c8de6d94
     network_mode: "service:kong"
     user: "1001:1001"
     volumes:
