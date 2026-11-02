@@ -1,7 +1,7 @@
-import pg from "pg";
-import { afterAll, beforeAll, describe, expect, inject, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { runMigrations } from "../../src/db/migrate.js";
 import { AutoPublisher, maskConfigFor, SnapshotsService } from "../../src/snapshots/snapshots.js";
+import { integrationDatabaseName, createIntegrationDatabase, dropIntegrationDatabase } from "./databases.js";
 import { startHarness, uniq, type Harness } from "./harness.js";
 
 let h: Harness;
@@ -328,25 +328,15 @@ describe("auto publish", () => {
 
 describe("auto publish failures", () => {
   // Fault injection is local to one replica; foreign pollers must not publish its eligible drafts.
-  const database = `gromesh_snap_fail_${Date.now()}_${process.pid}`;
-  let databaseCreated = false;
+  const database = integrationDatabaseName("snap_fail");
+  const applicationName = `snapshot-failures-${process.pid}`;
   let r: Harness;
   let service: SnapshotsService;
   let publisher: AutoPublisher;
   beforeAll(async () => {
-    const url = new URL(inject("databaseUrl"));
-    const admin = new pg.Client({ connectionString: url.toString() });
-    await admin.connect();
-    try {
-      await admin.query(`CREATE DATABASE "${database}"`);
-      databaseCreated = true;
-    } finally {
-      await admin.end();
-    }
-    url.pathname = `/${database}`;
-    url.searchParams.set("application_name", `snapshot-failures-${process.pid}`);
-    await runMigrations(url.toString());
-    r = await startHarness({ databaseUrl: url.toString(), autoPublishPollMs: 0, autoPublishDelayMs: 0 });
+    const url = await createIntegrationDatabase(database, { applicationName });
+    await runMigrations(url);
+    r = await startHarness({ databaseUrl: url, autoPublishPollMs: 0, autoPublishDelayMs: 0 });
     service = r.app.get(SnapshotsService);
     publisher = r.app.get(AutoPublisher);
   });
@@ -355,12 +345,7 @@ describe("auto publish failures", () => {
       vi.restoreAllMocks();
       await r?.close();
     } finally {
-      if (databaseCreated) {
-        const admin = new pg.Client({ connectionString: inject("databaseUrl") });
-        await admin.connect();
-        try { await admin.query(`DROP DATABASE "${database}" WITH (FORCE)`); }
-        finally { await admin.end(); }
-      }
+      await dropIntegrationDatabase(database);
     }
   });
 
@@ -403,12 +388,28 @@ describe("auto publish failures", () => {
       await foreign.app.get(AutoPublisher).tick();
       expect((await foreign.api("GET", `/environments/${otherEnv}`)).body.currentVersion).toBe(1);
       expect(await currentVersion(envId)).toBeNull();
+      await foreign.app.get(AutoPublisher).tick();
+      expect((await foreign.sql.query("select version from snapshots where environment_id = $1", [otherEnv])).rows)
+        .toEqual([{ version: 1 }]);
+      expect((await foreign.sql.query(
+        "select environment_id, entity_id, actor->>'name' as actor from audit_events where environment_id = any($1::uuid[]) and action = 'snapshot.publish'",
+        [[otherEnv, envId]],
+      )).rows).toEqual([{ environment_id: otherEnv, entity_id: "1", actor: "auto-publish" }]);
+      expect((await r.sql.query("select id from audit_events where environment_id = $1 and action = 'snapshot.publish'", [envId])).rows)
+        .toEqual([]);
     } finally {
       await foreign.close();
     }
 
     await publisher.tick();
     expect(await currentVersion(envId)).toBe(1);
+    await publisher.tick();
+    expect((await r.sql.query("select version from snapshots where environment_id = $1", [envId])).rows)
+      .toEqual([{ version: 1 }]);
+    expect((await r.sql.query(
+      "select entity_id, actor->>'name' as actor from audit_events where environment_id = $1 and action = 'snapshot.publish'",
+      [envId],
+    )).rows).toEqual([{ entity_id: "1", actor: "auto-publish" }]);
     prepare.mockRestore();
   });
 });
