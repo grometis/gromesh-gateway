@@ -1,5 +1,5 @@
 # Build context: repository root. Runtime owns the writable snapshot volume (Kong mounts it read-only).
-FROM golang:1.27.2-alpine AS build
+FROM golang:1.27.3-alpine AS build
 WORKDIR /src
 COPY apps/agent/go.mod ./
 COPY apps/agent/cmd ./cmd
