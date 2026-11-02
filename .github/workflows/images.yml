@@ -127,15 +127,15 @@ jobs:
         env:
           IMAGE_NAME: ${{ matrix.name }}
           PUBLISHED_DIGEST: ${{ steps.publish.outputs.digest }}
-          LOCAL_IMAGE_ID: ${{ steps.publish.outputs.local-id }}
+          IMAGE_ARCHIVE: ${{ steps.identity.outputs.image-archive }}
         run: |
           mkdir -p dist/sbom
           # A simple explicit source name makes Syft's name/namespace bind to this exact publication.
           sbom_source="gromesh-${IMAGE_NAME}-${TARGET_ARCH}-${GITHUB_SHA}-${PUBLISHED_DIGEST#sha256:}"
           docker run --rm \
-            -v /var/run/docker.sock:/var/run/docker.sock:ro \
+            -v "$IMAGE_ARCHIVE:/image/image.tar:ro" \
             -v "$PWD/dist/sbom:/out" \
-            anchore/syft:v1.18.1@sha256:b8c170b8e51bfc4779ec3ef4399942c57290f5ce76a9c3af564c9d00d4946a6b "docker:${LOCAL_IMAGE_ID}" \
+            anchore/syft:v1.18.1@sha256:b8c170b8e51bfc4779ec3ef4399942c57290f5ce76a9c3af564c9d00d4946a6b "docker-archive:/image/image.tar" \
             --source-name "$sbom_source" --source-version "$GITHUB_SHA" \
             -o "spdx-json=/out/gromesh-${IMAGE_NAME}-${TARGET_ARCH}.spdx.json"
       - name: Validate all supply chain artifacts before any upload
@@ -151,6 +151,11 @@ jobs:
           LOCAL_IDENTITY_KIND: ${{ steps.identity.outputs.identity-kind }}
           PUBLISHED_CONFIG_ID: ${{ steps.identity.outputs.published-config }}
         run: node scripts/ci-supply-chain.mjs images
+      - name: Remove private image archive
+        if: always() && steps.identity.outputs.image-archive != ''
+        env:
+          IMAGE_ARCHIVE: ${{ steps.identity.outputs.image-archive }}
+        run: rm -f -- "$IMAGE_ARCHIVE"
       - name: Attach SBOM
         if: success() && steps.validate-supply-chain.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

@@ -375,7 +375,7 @@ const supplyEnv = {
   ...env, IMAGE_NAME: 'ui', TARGET_ARCH: 'amd64', GITHUB_REPOSITORY_OWNER: 'Gromesh',
   LOCAL_IMAGE_ID: `sha256:${capturedSubset.packages.at(-1).checksums[0].checksumValue}`,
   LOCAL_SBOM_DIGEST: `sha256:${capturedSubset.packages.at(-1).checksums[0].checksumValue}`,
-  LOCAL_IDENTITY_KIND: 'classic-config', PUBLISHED_CONFIG_ID: `sha256:${capturedSubset.packages.at(-1).checksums[0].checksumValue}`,
+  LOCAL_IDENTITY_KIND: 'docker-daemon', PUBLISHED_CONFIG_ID: `sha256:${capturedSubset.packages.at(-1).checksums[0].checksumValue}`,
   EXPECTED_DIGEST: digest, PUBLISHED_SHA: env.GITHUB_SHA, PUBLISHED_ARCH: 'amd64',
   PUBLISHED_IMAGE: `ghcr.io/gromesh/gromesh-ui:${env.GITHUB_SHA}-amd64`,
 };
@@ -788,11 +788,12 @@ test('CPE profile rejects embedded wildcards and invalid language tags', t => {
   }
 });
 
-// All six unmodified Syft inventories total 2,639,586 bytes (2.52 MiB).
+// All six unmodified daemon-source Syft inventories total 2,639,586 bytes (2.52 MiB).
 // The small excess over ~2.5 MB buys complete cross-architecture npm/Go/APK regressions.
+// Synthetic context for historical validator regressions; the captured checksum does not establish the original config ID.
 function fixtureInspection(doc) {
   const id = `sha256:${doc.packages.find(pkg => pkg.primaryPackagePurpose === 'CONTAINER').checksums[0].checksumValue}`;
-  return { LOCAL_IMAGE_ID: id, LOCAL_SBOM_DIGEST: id, LOCAL_IDENTITY_KIND: 'classic-config', PUBLISHED_CONFIG_ID: id };
+  return { LOCAL_IMAGE_ID: id, LOCAL_SBOM_DIGEST: id, LOCAL_IDENTITY_KIND: 'docker-daemon', PUBLISHED_CONFIG_ID: id };
 }
 const realFixtureDirectory = new URL('./fixtures/sbom/b43bee3/', import.meta.url);
 function realContext(name, arch) {
@@ -1091,7 +1092,7 @@ function prSupplyFixture(t) {
   rmSync(f.digestDirectory, { recursive: true });
   const run = f.runSupply;
   f.runSupply = (extra = {}) => run('pr', { EXPECTED_DIGEST: '', PUBLISHED_SHA: '', PUBLISHED_ARCH: '',
-    PUBLISHED_IMAGE: '', GITHUB_REPOSITORY_OWNER: '', RUNNER_TEMP: '', LOCAL_IMAGE_ID: localImageId, LOCAL_SBOM_DIGEST: localImageId, LOCAL_IDENTITY_KIND: 'classic-config', ...extra });
+    PUBLISHED_IMAGE: '', GITHUB_REPOSITORY_OWNER: '', RUNNER_TEMP: '', LOCAL_IMAGE_ID: localImageId, LOCAL_SBOM_DIGEST: localImageId, LOCAL_IDENTITY_KIND: 'docker-daemon', ...extra });
   return f;
 }
 test('PR mode validates SHA, arch and local image without publication or digest artifact', t => {
@@ -1160,13 +1161,13 @@ for (const [label, mutate] of [
 });
 
 
-// The config ID and manifest digest here are the two distinct observations supplied
-// with the blocker report. No production identity is learned from the SBOM itself.
+// The config ID and checksum are the distinct observations from the blocker report;
+// preserve this historical docker-daemon source instead of claiming it was an archive scan.
 const capturedPrContext = {
   GITHUB_SHA: '820bb3a2c5c7563c4ed16824db94fd5c2b979457', IMAGE_NAME: 'agent', TARGET_ARCH: 'arm64', RUNNER_ARCH: 'ARM64',
   LOCAL_IMAGE_ID: 'sha256:4085cdfd221d3cbc588ef61757a8dc5f8e7f9c7956add9c746a18cfd6353cf27',
   LOCAL_SBOM_DIGEST: 'sha256:4a86506b873e98e8872ee5e61682682752cdbc6a415ee26423caf2195928f6f3',
-  LOCAL_IDENTITY_KIND: 'containerd-manifest',
+  LOCAL_IDENTITY_KIND: 'docker-daemon',
 };
 for (const [label, extra] of [
   ['reported distinct config and manifest', {}],
@@ -1214,4 +1215,26 @@ test('aggregates measured command reports and permits absent unexecuted commands
   rmSync(file);
   rejected(run(args));
   rejected(run(['generate', 'kong-image-build', '--directory', directory, '--report', report, '--report', report]));
+});
+
+for (const [label, change, code] of [
+  ['archive shape', () => {}, undefined],
+  ['PURL digest', pkg => { pkg.externalRefs[0].referenceLocator = pkg.externalRefs[0].referenceLocator.replace(/@sha256:[a-f0-9]{64}/, `@sha256:${'e'.repeat(64)}`); }, 'OCI_PURL_DIGEST'],
+  ['checksum', pkg => { pkg.checksums[0].checksumValue = 'e'.repeat(64); }, 'OCI_ROOT_CHECKSUM'],
+  ['source name', pkg => { pkg.name = 'other'; }, 'OCI_SOURCE_NAME'],
+  ['unexpected tag', pkg => { pkg.externalRefs[0].referenceLocator += '&tag=' + 'e'.repeat(64); }, 'OCI_SOURCE_TAG'],
+  ['unexpected arch', pkg => { pkg.externalRefs[0].referenceLocator += 'arm64'; }, 'OCI_PURL_ARCH'],
+]) test(`images archive identity independently validates ${label}`, t => {
+  const f = supplyFixture(t);
+  changeSbom(f, doc => {
+    const pkg = doc.packages.find(pkg => pkg.primaryPackagePurpose === 'CONTAINER');
+    pkg.externalRefs[0].referenceLocator = pkg.externalRefs[0].referenceLocator.replace(/\?arch=.*$/, '?arch=');
+    change(pkg);
+  });
+  const result = f.runSupply('images', { LOCAL_IDENTITY_KIND: 'docker-archive' });
+  if (code === undefined) assert.equal(result.status, 0, result.stderr);
+  else {
+    rejectSupply(result);
+    assert.equal(JSON.parse(result.stderr).code, code);
+  }
 });

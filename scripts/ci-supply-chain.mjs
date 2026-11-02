@@ -192,13 +192,20 @@ function externalRef(value, context, pkg) {
   text(value.referenceLocator, 512);
   if (value.referenceType === "purl") {
     requireValid(value.referenceCategory === "PACKAGE-MANAGER", RejectionCode.PURL_CATEGORY);
-    // Syft reports the platform manifest with containerd, the config with classic Docker.
+    // The root checksum and PURL must independently bind to the selected source.
     if (value.referenceLocator.startsWith("pkg:oci/")) {
-      requireValid(pkg.name === context.sourceName && pkg.primaryPackagePurpose === "CONTAINER", RejectionCode.OCI_PACKAGE);
+      requireValid(pkg.primaryPackagePurpose === "CONTAINER", RejectionCode.OCI_PACKAGE);
+      requireValid(pkg.name === context.sourceName, RejectionCode.OCI_SOURCE_NAME);
       const imageChecksum = pkg.checksums?.find(item => item.algorithm === "SHA256")?.checksumValue;
       requireValid(typeof imageChecksum === "string" && /^[0-9a-f]{64}$/.test(imageChecksum), RejectionCode.OCI_CHECKSUM);
-      requireValid(imageChecksum === context.sbomDigest.slice(7), RejectionCode.OCI_IDENTITY);
-      requireValid(value.referenceLocator === `pkg:oci/${context.sourceName}@sha256:${imageChecksum}?arch=${context.arch}&tag=${context.digest.slice(7)}`, RejectionCode.OCI_LOCATOR);
+      requireValid(imageChecksum === context.sbomDigest.slice(7), RejectionCode.OCI_ROOT_CHECKSUM);
+      const locator = /^pkg:oci\/([^@?]+)@(sha256:[0-9a-f]{64})\?arch=([^&]*)(?:&tag=([^&]+))?$/.exec(value.referenceLocator);
+      requireValid(locator !== null, RejectionCode.OCI_LOCATOR);
+      requireValid(locator[1] === context.sourceName, RejectionCode.OCI_SOURCE_NAME);
+      requireValid(locator[2] === context.sbomDigest, RejectionCode.OCI_PURL_DIGEST);
+      // The archive provider in stereoscope v0.0.11 leaves arch empty; the saved config supplies the platform check.
+      requireValid(locator[3] === (context.sourceKind === "docker-archive" ? "" : context.arch), RejectionCode.OCI_PURL_ARCH);
+      requireValid(locator[4] === (context.sourceKind === "docker-archive" ? undefined : context.digest.slice(7)), RejectionCode.OCI_SOURCE_TAG);
       return;
     }
     // Parse delimiters before decoding components: %2f and %26 cannot create
@@ -345,8 +352,7 @@ function optionalMetadata(value, licenseIds, inventory = false) {
 function localIdentity(env) {
   exactDigest(env.LOCAL_IMAGE_ID);
   exactDigest(env.LOCAL_SBOM_DIGEST);
-  requireValid(["classic-config", "containerd-manifest"].includes(env.LOCAL_IDENTITY_KIND), RejectionCode.LOCAL_IDENTITY_KIND);
-  if (env.LOCAL_IDENTITY_KIND === "classic-config") requireValid(env.LOCAL_SBOM_DIGEST === env.LOCAL_IMAGE_ID, RejectionCode.LOCAL_CLASSIC_IDENTITY);
+  requireValid(["docker-archive", "docker-daemon"].includes(env.LOCAL_IDENTITY_KIND), RejectionCode.LOCAL_IDENTITY_KIND);
   return env.LOCAL_SBOM_DIGEST;
 }
 
@@ -360,7 +366,7 @@ export function jobContext(env = process.env, kong = false, mode = "images") {
   if (mode === "pr") {
     requireValid(!kong, RejectionCode.JOB_PR_KONG);
     const sbomDigest = localIdentity(env);
-    return { name, arch, sha, mode, sbomDigest, digest: env.LOCAL_IMAGE_ID,
+    return { name, arch, sha, mode, sbomDigest, sourceKind: env.LOCAL_IDENTITY_KIND, digest: env.LOCAL_IMAGE_ID,
       sourceName: `gromesh-${name}-${arch}-${sha}-${env.LOCAL_IMAGE_ID.slice(7)}` };
   }
   requireValid(mode === "images", RejectionCode.JOB_MODE);
@@ -371,7 +377,7 @@ export function jobContext(env = process.env, kong = false, mode = "images") {
   requireValid(env.PUBLISHED_IMAGE === image, RejectionCode.PUBLISHED_IMAGE);
   const sbomDigest = kong ? undefined : localIdentity(env);
   if (!kong) requireValid(env.PUBLISHED_CONFIG_ID === env.LOCAL_IMAGE_ID, RejectionCode.PUBLISHED_CONFIG);
-  return { name, arch, sha, mode, sbomDigest, digest: env.EXPECTED_DIGEST,
+  return { name, arch, sha, mode, sbomDigest, sourceKind: env.LOCAL_IDENTITY_KIND, digest: env.EXPECTED_DIGEST,
     sourceName: `gromesh-${name}-${arch}-${sha}-${env.EXPECTED_DIGEST.slice(7)}` };
 }
 function exactFile(directory, name, maximum) {
@@ -443,6 +449,7 @@ export function validateSbom(directory, context) {
       requireValid(Array.isArray(pkg.externalRefs) && pkg.externalRefs.some(ref => ref?.referenceType === "purl" && typeof ref.referenceLocator === "string" && ref.referenceLocator.startsWith("pkg:npm/")), RejectionCode.HOMEPAGE_PACKAGE);
       homepageLocation(pkg.homepage);
     }
+    if (pkg.primaryPackagePurpose === "CONTAINER") requireValid(pkg.name === context.sourceName, RejectionCode.OCI_SOURCE_NAME);
     if (pkg.name === context.sourceName) {
       requireValid(pkg.versionInfo === context.sha, RejectionCode.ROOT_VERSION);
     } else {

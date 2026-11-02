@@ -24,12 +24,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { validateSbom, validateDigest, validateSupplyChain, jobContext, safeText } from './ci-supply-chain.mjs';
 import { localImageIdentity, publishedImageIdentity, manifestConfig, sha256 } from './ci-image-identity.mjs';
+import { archiveConfig, writeDockerSave } from './fixtures/docker-save.mjs';
 import { validatePrImageSbom } from './ci-pr-sbom.mjs';
 
 const C = evidence.RejectionCode;
 const id = `sha256:${'b'.repeat(64)}`;
 const env = { IMAGE_NAME: 'agent', TARGET_ARCH: 'arm64', RUNNER_ARCH: 'ARM64',
-  GITHUB_SHA: 'a'.repeat(40), LOCAL_IMAGE_ID: id, LOCAL_SBOM_DIGEST: id, LOCAL_IDENTITY_KIND: 'classic-config',
+  GITHUB_SHA: 'a'.repeat(40), LOCAL_IMAGE_ID: id, LOCAL_SBOM_DIGEST: id, LOCAL_IDENTITY_KIND: 'docker-daemon',
   GITHUB_JOB: 'image-scan', GITHUB_RUN_ID: '1234', GITHUB_RUN_ATTEMPT: '2', SYNTHETIC_PASSWORD: secret };
 const context = jobContext(env, false, 'pr');
 const publication = { ...env, EXPECTED_DIGEST: id, PUBLISHED_SHA: env.GITHUB_SHA,
@@ -104,7 +105,11 @@ for (const [code, mutate] of [
   ['PURL_CATEGORY', d => { d.packages[0].externalRefs[0].referenceCategory = 'SECURITY'; }],
   ['OCI_PACKAGE', d => { d.packages[0].externalRefs = [purl('pkg:oci/lib')]; }],
   ['OCI_CHECKSUM', d => { delete d.packages[1].checksums; }],
-  ['OCI_IDENTITY', d => { d.packages[1].checksums[0].checksumValue = 'c'.repeat(64); }],
+  ['OCI_ROOT_CHECKSUM', d => { d.packages[1].checksums[0].checksumValue = 'c'.repeat(64); }],
+  ['OCI_PURL_DIGEST', d => { d.packages[1].externalRefs[0].referenceLocator = d.packages[1].externalRefs[0].referenceLocator.replace(id, `sha256:${'c'.repeat(64)}`); }],
+  ['OCI_SOURCE_NAME', d => { d.packages[1].externalRefs[0].referenceLocator = d.packages[1].externalRefs[0].referenceLocator.replace(context.sourceName, 'other'); }],
+  ['OCI_SOURCE_TAG', d => { d.packages[1].externalRefs[0].referenceLocator = d.packages[1].externalRefs[0].referenceLocator.replace(/tag=.*/, 'tag=' + 'c'.repeat(64)); }],
+  ['OCI_PURL_ARCH', d => { d.packages[1].externalRefs[0].referenceLocator = d.packages[1].externalRefs[0].referenceLocator.replace('arch=arm64', 'arch=amd64'); }],
   ['OCI_LOCATOR', d => { d.packages[1].externalRefs[0].referenceLocator += '&unknown=value'; }],
   ['PURL_ENCODING', d => { d.packages[0].externalRefs = [purl('pkg:apk/alpine/%zz@1')]; }],
   ['PURL_COMPONENT', d => { d.packages[0].externalRefs = [purl('pkg:apk/alpine/%2f@1')]; }],
@@ -191,7 +196,6 @@ for (const [code, extra, mode = 'images', kong = false] of [
   ['JOB_IMAGE_ARCH', { IMAGE_NAME: secret }], ['JOB_RUNNER_ARCH', { RUNNER_ARCH: 'X64' }],
   ['JOB_MODE', {}, secret], ['JOB_PR_KONG', { IMAGE_NAME: 'kong' }, 'pr', true],
   ['LOCAL_IDENTITY_KIND', { LOCAL_IDENTITY_KIND: secret }, 'pr'],
-  ['LOCAL_CLASSIC_IDENTITY', { LOCAL_SBOM_DIGEST: `sha256:${'c'.repeat(64)}` }, 'pr'],
   ['PUBLISHED_CONTEXT', { PUBLISHED_SHA: secret }], ['PUBLISHED_IMAGE', { PUBLISHED_IMAGE: secret }],
   ['PUBLISHED_CONFIG', { PUBLISHED_CONFIG_ID: secret }], ['DIGEST_FORMAT', { EXPECTED_DIGEST: secret }],
 ]) add(code, () => jobContext({ ...publication, ...extra }, kong, mode));
@@ -268,40 +272,31 @@ for (const [code, args] of [
   // Exercise the real CLI and feed its code-only failure through the same non-disclosure checks below.
   throw new evidence.Rejection(value.code, value.artifact);
 }, 'evidence');
-const config = JSON.stringify({ architecture: 'arm64', os: 'linux' });
+const config = archiveConfig('arm64');
 const configId = sha256(config);
 const manifest = JSON.stringify({ schemaVersion: 2, layers: [], config: { digest: configId } });
 const manifestId = sha256(manifest);
 add('MANIFEST_DIGEST', () => manifestConfig(manifest + secret, manifestId), 'digest');
 add('MANIFEST_SHAPE', () => manifestConfig('{}', sha256('{}')), 'digest');
-// Transport doubles return private bytes; no Docker, tar, registry or network is invoked.
-function identityTransport({ metadata = {}, index, blob = manifest, commandFailure = false, blobFailure = false, published = manifest } = {}) {
+// Transport doubles write real private archives; no Docker, registry or network is invoked.
+function identityTransport({ metadata = {}, archive = {}, commandFailure = false, published = manifest } = {}) {
   return (command, args) => {
-    if (command === 'docker') {
-      if (args[1] === 'inspect') return { status: commandFailure ? 1 : 0, stdout: JSON.stringify({ Id: configId, Os: 'linux', Architecture: 'arm64', ...metadata }) };
-      if (args[1] === 'save') return { status: 0, stdout: '' };
-      return { status: 0, stdout: published };
-    }
-    assert.equal(command, 'tar');
-    const digest = args.at(-1).split('/').at(-1);
-    return { status: blobFailure ? 1 : 0, stdout: digest === sha256(index ?? '').slice(7) ? index : digest === sha256(blob).slice(7) ? blob : config };
+    assert.equal(command, 'docker');
+    if (args[1] === 'inspect') return { status: commandFailure ? 1 : 0, stdout: JSON.stringify({ Id: configId, Os: 'linux', Architecture: 'arm64', ...metadata }) };
+    if (args[0] === 'save') { writeDockerSave(args[3], archive); return { status: 0 }; }
+    assert.equal(args[0], 'buildx');
+    return { status: 0, stdout: published };
   };
 }
 add('DOCKER_COMMAND', root => localImageIdentity('image', { env: { RUNNER_TEMP: root }, execute: identityTransport({ commandFailure: true }) }), 'digest');
 add('IMAGE_PLATFORM', root => localImageIdentity('image', { env: { RUNNER_TEMP: root }, execute: identityTransport({ metadata: { Os: 'windows' } }) }), 'digest');
-add('IMAGE_BLOB', root => localImageIdentity('image', { env: { RUNNER_TEMP: root }, execute: identityTransport({ metadata: { Descriptor: { digest: manifestId } }, blobFailure: true }) }), 'digest');
-add('IMAGE_PLATFORM_MATCH', root => {
-  const index = JSON.stringify({ manifests: [] });
-  localImageIdentity('image', { env: { RUNNER_TEMP: root }, execute: identityTransport({ metadata: { Descriptor: { digest: sha256(index) } }, index }) });
-}, 'digest');
-add('IMAGE_CONFIG', root => {
-  const blob = manifest.replace(configId, id);
-  localImageIdentity('image', { env: { RUNNER_TEMP: root }, execute: identityTransport({ metadata: { Descriptor: { digest: sha256(blob) } }, blob }) });
-}, 'digest');
-add('PUBLISHED_ARCH', () => publishedImageIdentity('image:tag', { env: { ...publication, TARGET_ARCH: 'amd64' }, execute: identityTransport() }), 'digest');
-add('PUBLISHED_MANIFEST', () => {
+add('IMAGE_BLOB', root => localImageIdentity('image', { env: { RUNNER_TEMP: root }, execute: identityTransport({ archive: { missingConfig: true } }) }), 'digest');
+add('IMAGE_PLATFORM_MATCH', root => localImageIdentity('image', { env: { RUNNER_TEMP: root }, execute: identityTransport({ metadata: { Architecture: 'amd64' } }) }), 'digest');
+add('IMAGE_CONFIG', root => localImageIdentity('image', { env: { RUNNER_TEMP: root }, execute: identityTransport({ archive: { config: config + ' ' } }) }), 'digest');
+add('PUBLISHED_ARCH', root => publishedImageIdentity('image:tag', { env: { ...publication, RUNNER_TEMP: root, TARGET_ARCH: 'amd64' }, execute: identityTransport() }), 'digest');
+add('PUBLISHED_MANIFEST', root => {
   const published = manifest.replace(configId, id);
-  publishedImageIdentity('image:tag', { env: { ...publication, EXPECTED_DIGEST: sha256(published) }, execute: identityTransport({ published }) });
+  publishedImageIdentity('image:tag', { env: { ...publication, RUNNER_TEMP: root, EXPECTED_DIGEST: sha256(published) }, execute: identityTransport({ published }) });
 }, 'digest');
 add('PR_ARCH', root => validatePrImageSbom('image', 'agent', { env: { ...env, TARGET_ARCH: 'amd64', RUNNER_ARCH: 'X64', RUNNER_TEMP: root }, execute: identityTransport() }));
 add('SYFT_COMMAND', root => validatePrImageSbom('image', 'agent', { env: { ...env, RUNNER_TEMP: root }, execute: (command, args, options) => {
@@ -366,9 +361,9 @@ test('identity rejects JSON scalars and malformed index structures with a rule c
   }
   const root = mkdtempSync(join(realpathSync(tmpdir()), 'rejection-index-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const index = JSON.stringify({ manifests: { hidden: secret } });
+  const manifests = { hidden: secret };
   assert.throws(() => localImageIdentity('image', { env: { RUNNER_TEMP: root }, execute: identityTransport({
-    metadata: { Descriptor: { digest: sha256(index) } }, index,
+    archive: { manifests },
   }) }), error => error.code === C.MANIFEST_SHAPE);
 });
 
@@ -425,7 +420,7 @@ test('native transport exceptions preserve the operation code without the native
     if (args[0] === 'run') return fail();
     return identityTransport()(command, args);
   } }), error => error.code === C.SYFT_COMMAND && !error.message.includes(secret));
-  assert.throws(() => publishedImageIdentity('image:tag', { env: publication, execute: (command, args) => {
+  assert.throws(() => publishedImageIdentity('image:tag', { env: { ...publication, RUNNER_TEMP: root }, execute: (command, args) => {
     if (args[0] === 'buildx') return fail();
     return identityTransport()(command, args);
   } }), error => error.code === C.PUBLISHED_MANIFEST && !error.message.includes(secret));
