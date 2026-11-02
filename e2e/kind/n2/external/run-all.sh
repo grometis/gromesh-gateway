@@ -20,6 +20,7 @@ source "$n2/versions.env"
 KONG_REF="${KONG_REF:-$KONG_IMAGE_REF}"
 [[ "$KONG_REF" =~ @sha256:[0-9a-f]{64}$ ]] || { echo "KONG_REF must be pinned by digest" >&2; exit 1; }
 SUITES="${SUITES:-env components f3 f3-residual4 f3-neg collector v2}"
+export LAB_EVIDENCE_DIR="$OUT"
 export LAB_KUBECONFIG
 RUN_ID="n2-$(node -p 'require("node:crypto").randomUUID()')"
 export LAB_RUN_ID="$RUN_ID"

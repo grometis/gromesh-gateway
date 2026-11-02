@@ -20,14 +20,17 @@ fi
 export KUBECONFIG="$LAB_KUBECONFIG"
 guard="$here/../../../scripts/kind-stack-guard.mjs"
 assert_lab() { node "$guard" n2-assert; }
-# Installation is a mutation too: recheck the creation identity immediately before Helm writes.
+# Every installation and resumed upgrade shares the resource/receipt policy with the suites.
 h() {
-  if [[ "${1:-}" == install && " $* " != *" --dry-run=client "* ]]; then assert_lab; fi
-  helm --kubeconfig "$LAB_KUBECONFIG" --kube-context "$context" "$@"
+  if [[ "${1:-}" == install || "${1:-}" == upgrade ]] && [[ " $* " != *" --dry-run=client "* ]]; then
+    node "$guard" n2-helm "$@"
+  else helm --kubeconfig "$LAB_KUBECONFIG" --kube-context "$context" "$@"; fi
 }
 k() {
-  case " $* " in *" rollout restart "*|*" exec "*) assert_lab ;; esac
-  kubectl --kubeconfig "$LAB_KUBECONFIG" --context "$context" "$@"
+  case " $* " in
+    *" rollout restart "*|*" exec "*) node "$guard" n2-kubectl "$@" ;;
+    *) kubectl --kubeconfig "$LAB_KUBECONFIG" --context "$context" "$@" ;;
+  esac
 }
 
 # A reused cluster or release must be the pinned one: Kubernetes, node and Cilium images, and Cilium's effective config.
@@ -155,10 +158,9 @@ EOF
   local chart chart_dir
   pinned_chart
   trap 'rm -rf "$chart_dir"' RETURN
-  if h status cilium -n kube-system >/dev/null 2>&1; then assert_cilium_release "$chart"
-  else h install cilium "$chart" --namespace kube-system -f "$here/cilium-values.yaml" \
+  h upgrade cilium "$chart" --install --namespace kube-system -f "$here/cilium-values.yaml" \
     --set image.digest="$CILIUM_IMAGE_DIGEST" --set operator.image.genericDigest="$CILIUM_OPERATOR_GENERIC_DIGEST"
-  fi
+
   k -n kube-system rollout status daemonset/cilium --timeout=600s
   k -n kube-system rollout status deployment/cilium-operator --timeout=300s
   k wait --for=condition=Ready nodes --all --timeout=300s

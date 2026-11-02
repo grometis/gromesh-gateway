@@ -15,6 +15,7 @@ import {
 } from "./lab.mjs";
 
 const out = process.env.LAB_OUT ?? mkdtempSync(join(tmpdir(), "gromesh-n2-comp-"));
+ownership.evidenceDir = out;
 const IMAGES = {
   cp: process.env.CP_IMAGE ?? "gromesh-n2c-cp:41db8aa",
   agent: process.env.AGENT_IMAGE ?? "gromesh-n2c-agent:13e340c",

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync, chmodSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync, chmodSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -12,7 +12,7 @@ const lab = 'com.grometis.gromesh.lab';
 function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), 'n2-ownership-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const env = { LAB_KUBECONFIG: join(dir, 'config'), LAB_RUN_ID: 'run-123456789abc', HOME: join(dir, 'home') };
+  const env = { LAB_KUBECONFIG: join(dir, 'config'), LAB_RUN_ID: 'run-123456789abc', HOME: join(dir, 'home'), LAB_EVIDENCE_DIR: join(dir, 'evidence') };
   const calls = [], objects = new Map(), containers = new Map(), images = new Map(), volumes = new Map();
   let failOn = null, helmManifest = [];
   let created = false, ca = 'Y2E=', uid = 'system-original', context = 'kind-gromesh-n2-lab';
@@ -35,10 +35,10 @@ function fixture(t) {
       else if (args[0] === 'image') {
         if (args[1] === 'ls') stdout = [...images.keys()].join('\n');
         else if (args[1] === 'inspect') stdout = JSON.stringify([images.get(args[2]) ?? { Id: 'source', Config: {} }]);
-        else if (args[1] === 'rm') images.delete(args[2]);
+        else if (args[1] === 'rm') { for (const [tag, image] of images) if (image.Id === args[2]) images.delete(tag); }
         else throw Error('unexpected image call');
       } else if (args[0] === 'pull') stdout = '';
-      else if (args[0] === 'tag') images.set(args[2], structuredClone(images.get(args[1]) ?? { Id: 'source', Config: {} }));
+      else if (args[0] === 'tag') images.set(args[2], structuredClone(images.get(args[1]) ?? [...images.values()].find(i => i.Id === args[1]) ?? { Id: 'source', Config: {} }));
       else if (args[0] === 'build') {
         const tag = args[args.indexOf('-t') + 1];
         images.set(tag, { Id: 'built-' + tag, Config: { Labels: Object.fromEntries(args.flatMap((a, i) => a === '--label' ? [args[i + 1].split('=')] : [])) } });
@@ -61,13 +61,21 @@ function fixture(t) {
       const a = args.slice(args.indexOf('--context') + 2);
       if (a[0] === 'config') stdout = JSON.stringify({ 'current-context': context, contexts: [{ name: context, context: { cluster: context } }], clusters: [{ name: context, cluster: { server: 'https://127.0.0.1:12345', 'certificate-authority-data': ca } }] });
       else if (a[0] === 'get') {
-        const type = a[1], name = a[2]?.startsWith('-') ? undefined : a[2];
+        const type = ({ namespaces: 'namespace', 'ciliumclusterwidenetworkpolicies.cilium.io': 'ciliumclusterwidenetworkpolicy', 'clusterroles.rbac.authorization.k8s.io': 'clusterrole' })[a[1]] ?? a[1], name = a[2]?.startsWith('-') ? undefined : a[2];
         if (type === 'namespace' && name === 'kube-system') stdout = JSON.stringify({ kind: 'Namespace', metadata: metadata('kube-system', uid) });
         else if (type === 'namespace' && !name) stdout = JSON.stringify({ items: [{ kind: 'Namespace', metadata: metadata('kube-system', uid) }, ...[...objects.values()].filter(o => o.kind === 'Namespace')] });
         else if (type === 'pvc') stdout = JSON.stringify({ items: [...objects.values()].filter(o => o.kind === 'PersistentVolumeClaim') });
-        else if (type === 'configmap' || type === 'deployment') stdout = JSON.stringify({ kind: type, metadata: metadata(name) });
+        else if (type === 'configmap' || type === 'deployment') stdout = JSON.stringify(objects.get(`${type}/${name}`) ?? (name === 'coredns' ? { kind: type, metadata: metadata(name) } : null));
         else stdout = JSON.stringify(name ? objects.get(`${type.toLowerCase()}/${name}`) ?? null : { items: [...objects.values()].filter(o => o.kind.toLowerCase() === type.toLowerCase()) });
-      } else if (a.includes('--dry-run=client')) stdout = options.input;
+      } else if (a[0] === 'api-resources') stdout = 'namespaces\nciliumclusterwidenetworkpolicies.cilium.io\nclusterroles.rbac.authorization.k8s.io';
+      else if (a.includes('--dry-run=client')) {
+        const parsed = JSON.parse(options.input);
+        for (const o of parsed.kind === 'List' ? parsed.items : [parsed]) {
+          if (!['Namespace', 'ClusterRole', 'ClusterRoleBinding', 'CustomResourceDefinition', 'CiliumClusterwideNetworkPolicy'].includes(o.kind))
+            o.metadata.namespace ??= a[a.indexOf('-n') + 1] && a.includes('-n') ? a[a.indexOf('-n') + 1] : 'default';
+        }
+        stdout = JSON.stringify(parsed);
+      }
       else if (['create', 'apply'].includes(a[0])) {
         const obj = JSON.parse(options.input);
         obj.metadata.uid ??= 'created-' + obj.metadata.name;
@@ -121,12 +129,13 @@ test('foreign PVC prevents namespace and cluster deletion before either mutates'
   assert.equal(mutations(f.calls).length, 0);
 });
 test('global kubeconfig and wrong run id refuse before any subprocess', async t => {
-  const f = fixture(t);
-  for (const config of [join(f.env.HOME, '.kube/config'), '/tmp/config:/tmp/other']) {
+  for (const bad of ['global', 'list']) {
+    const f = fixture(t);
+    const config = bad === 'global' ? join(f.env.HOME, '.kube/config') : join(f.dir, 'config:other');
     const o = new guard.N2Lab({ env: { ...f.env, LAB_KUBECONFIG: config }, execute: async () => { throw Error('must not execute'); } });
     await assert.rejects(o.createCluster('fixture'), /N2.*refused/);
   }
-  const owner = f.owner(); await owner.createCluster('fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
   f.calls.length = 0;
   await assert.rejects(new guard.N2Lab({ env: { ...f.env, LAB_RUN_ID: 'other-123456789' }, execute: async () => { throw Error('must not execute'); } }).assertIdentity(), /N2.*refused/);
 });
@@ -136,7 +145,8 @@ test('happy path creates labelled resources, proves ownership and cleans its nam
   assert.equal(f.objects.get('namespace/gromesh-dp').metadata.labels[label], f.env.LAB_RUN_ID);
   await owner.kubectl(['delete', 'namespace', 'gromesh-dp']);
   await owner.destroyCluster();
-  assert.ok(f.calls.some(c => c.cmd === 'kind' && c.args[0] === 'delete'));
+  assert.deepEqual(f.calls.findLast(c => c.cmd === 'docker' && c.args[0] === 'rm').args, ['rm', '-f', 'node-original']);
+  assert.ok(!f.calls.some(c => c.cmd === 'kind' && c.args[0] === 'delete'));
 });
 
 test('a namespace with copied run labels but no creation receipt is also refused', async t => {
@@ -172,13 +182,13 @@ test('preexisting image aliases are refused without overwriting or deleting them
   assert.equal(mutations(f.calls).length, 0);
   assert.equal(f.images.get(tag).Id, 'preexisting');
 });
-test('image cleanup removes only recorded aliases and keeps the original source image', async t => {
+test('image cleanup removes built IDs and retains borrowed aliases and the original source image', async t => {
   const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
   f.images.set('source', { Id: 'source', RepoTags: ['source'], Config: {} });
   await owner.image(['tag', 'source', 'lab:' + f.env.LAB_RUN_ID]);
   await owner.image(['build', '-t', 'built:' + f.env.LAB_RUN_ID, '.']);
   await owner.image(['clean']);
-  assert.deepEqual([...f.images.keys()], ['source']);
+  assert.deepEqual([...f.images.keys()], ['source', 'lab:' + f.env.LAB_RUN_ID]);
   assert.ok(f.calls.filter(c => c.cmd === 'docker' && c.args[1] === 'rm').every(c => !c.args.includes('--force') && !c.args.includes('source')));
 });
 test('an image alias replaced after creation refuses cleanup and preserves the receipt', async t => {
@@ -232,13 +242,16 @@ const json = o => console.log(JSON.stringify(o));
 if (cmd === 'docker' && args[0] === 'context') json([{ Endpoints: { docker: { Host: 'unix:///var/run/docker.sock' } } }]);
 else if (cmd === 'docker' && args[0] === 'ps') console.log('node-original');
 else if (cmd === 'docker' && args[0] === 'inspect') json([f.node]);
+else if (cmd === 'docker' && args[0] === 'rm') console.log('deleted own node ID');
 else if (cmd === 'kind' && args[0] === 'get') console.log('kind fixture');
 else if (cmd === 'kind' && args[0] === 'delete') console.log('deleted own fixture cluster');
+else if (cmd === 'kubectl' && args.includes('api-resources')) console.log('namespaces\nclusterroles.rbac.authorization.k8s.io');
 else if (cmd === 'kubectl' && args.includes('config')) json(f.config);
 else if (cmd === 'kubectl' && args.includes('get')) {
   const a = args.slice(args.indexOf('get') + 1);
   if (a[0] === 'namespace') json(a[1] === 'kube-system' ? f.system : a[1] === 'gromesh-dp' ? f.namespaces.find(n => n.metadata.name === a[1]) : { items: f.namespaces });
   else if (a[0] === 'pvc') json({ items: f.pvcs });
+  else if (a[0] === 'clusterroles.rbac.authorization.k8s.io') json({ items: [] });
   else throw Error('unexpected resource ' + a[0]);
 } else throw Error('unexpected fixture executable call ' + cmd + ' ' + args);
 `;
@@ -381,4 +394,294 @@ test('cleanup keeps the last alias of a borrowed digest-only image so Docker can
   await owner.image(['clean']);
   assert.ok(f.images.has(source)); assert.ok(f.images.has(tag));
   assert.equal(mutations(f.calls).length, 0);
+});
+
+
+test('foreign global policy refusal persists across guard processes and blocks cleanup even after it disappears', async t => {
+  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  f.objects.set('ciliumclusterwidenetworkpolicy/n2c-deny-imds', { apiVersion: 'cilium.io/v2', kind: 'CiliumClusterwideNetworkPolicy', metadata: { name: 'n2c-deny-imds', uid: 'foreign' } });
+  await assert.rejects(owner.preflightResources([{ type: 'ciliumclusterwidenetworkpolicy', name: 'n2c-deny-imds' }]), /refused/);
+  assert.ok(existsSync(join(f.env.LAB_EVIDENCE_DIR, 'n2-refused.json')));
+  f.objects.clear(); f.calls.length = 0;
+  await assert.rejects(f.owner().preflightDestroyCluster(), /refused/);
+  await assert.rejects(f.owner().destroyCluster(), /refused/);
+  assert.equal(f.calls.length, 0);
+});
+
+test('cluster destruction discovers foreign cluster-scoped policies without a previous refusal', async t => {
+  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  f.objects.set('clusterrole/foreign', { apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'ClusterRole', metadata: { name: 'foreign', uid: 'foreign' } });
+  f.calls.length = 0;
+  await assert.rejects(owner.destroyCluster(), /refused/);
+  assert.equal(mutations(f.calls).length, 0);
+});
+
+test('Helm and YAML conversion use the intended namespace instead of kubectl default', async t => {
+  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  await owner.kubectl(['create', '-f', '-'], { input: JSON.stringify(ns('intended')) });
+  const object = { apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: 'rendered' } };
+  const converted = await owner.helmObjects(JSON.stringify(object), 'intended');
+  assert.equal(converted[0].metadata.namespace, 'intended');
+  const yamlOwner = new guard.N2Lab({ env: f.env, execute: (cmd, args, options) => f.execute(cmd, args,
+    options?.input === 'yaml fixture' ? { ...options, input: JSON.stringify(object) } : options) });
+  await yamlOwner.kubectl(['-n', 'intended', 'apply', '-f', '-'], { input: 'yaml fixture' });
+  assert.equal(f.objects.get('configmap/rendered').metadata.namespace, 'intended');
+});
+
+test('docker exec pins the proved container ID when its name is replaced after inspection', async t => {
+  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  let inspections = 0;
+  const racing = new guard.N2Lab({ env: f.env, execute: async (cmd, args, options) => {
+    if (cmd === 'docker' && args[0] === 'exec') {
+      f.calls.push({ cmd, args }); return { code: 0, stdout: '', stderr: '' };
+    }
+    const result = await f.execute(cmd, args, options);
+    if (cmd === 'docker' && args[0] === 'inspect' && args[1] === 'gromesh-n2-lab-control-plane' && ++inspections === 2) {
+      f.node.Name = '/old-node';
+      f.containers.set('gromesh-n2-lab-control-plane', { Name: '/gromesh-n2-lab-control-plane', Id: 'foreign', Config: { Labels: {} } });
+    }
+    if (cmd === 'docker' && args[0] === 'exec') return { code: 0, stdout: '', stderr: '' };
+    return result;
+  } });
+  await racing.docker(['exec', 'gromesh-n2-lab-control-plane', 'true']);
+  assert.deepEqual(f.calls.findLast(c => c.cmd === 'docker' && c.args[0] === 'exec').args, ['exec', 'node-original', 'true']);
+});
+
+test('fixture set preflight refuses the second foreign fixture before replacing the first', async t => {
+  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const backend = 'gromesh-n2-lab-fx-backend';
+  await owner.docker(['run', '-d', '--name', backend, 'fixture@sha256:' + 'a'.repeat(64), 'node']);
+  f.containers.set('gromesh-n2-lab-fx-nodecidr', { Id: 'foreign', Name: '/gromesh-n2-lab-fx-nodecidr', Config: { Labels: {} } });
+  const source = readFileSync(new URL('./run.mjs', import.meta.url), 'utf8');
+  const body = source.slice(source.indexOf('async function externalFixtures('), source.indexOf('\nfunction pod('));
+  const ip = { v4: '192.0.2.1', v6: '2001:db8::1' }; f.calls.length = 0;
+  await assert.rejects(runInNewContext(body + '\nexternalFixtures({ net: { backend: ip, nodeCidrTarget: ip, deniedTarget: ip, imdsHost: ip }, nodes: [] })', {
+    ownership: owner, docker: (a, o) => owner.docker(a, o), cluster: 'gromesh-n2-lab', ip, IMDS: { v4: [], v6: [] },
+    versions: { FIXTURE_IMAGE: 'fixture@sha256:' + 'a'.repeat(64) }, here: '/fixture', join,
+  }), /refused/);
+  assert.equal(mutations(f.calls).length, 0);
+  assert.equal(f.containers.get(backend).Id, 'created-' + backend);
+});
+
+test('Cilium Helm refuses preexisting objects in kube-system without the same run receipt', async t => {
+  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const o = { apiVersion: 'v1', kind: 'ServiceAccount', metadata: { name: 'cilium', namespace: 'kube-system' } };
+  f.helm([o]);
+  f.objects.set('serviceaccount/cilium', { ...o, metadata: { ...o.metadata, ...f.metadata('cilium', 'foreign') } });
+  f.calls.length = 0;
+  await assert.rejects(owner.helm(['upgrade', 'cilium', 'chart', '-n', 'kube-system', '--install']), /refused/);
+  assert.equal(mutations(f.calls).length, 0);
+  assert.ok(f.calls.some(c => c.cmd === 'helm' && c.args.includes('template')), 'must inspect the chart, not refuse all kube-system releases');
+});
+
+test('image cleanup targets an immutable ID and keeps borrowed aliases whose atomic removal is unavailable', async t => {
+  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const tag = 'built:' + f.env.LAB_RUN_ID;
+  await owner.image(['build', '-t', tag, '.']);
+  const original = f.images.get(tag).Id;
+  let inspected = 0;
+  const racing = new guard.N2Lab({ env: f.env, execute: async (cmd, args, options) => {
+    const result = await f.execute(cmd, args, options);
+    if (cmd === 'docker' && args[0] === 'image' && args[1] === 'inspect' && args[2] === tag && ++inspected === 2) { f.images.set(tag, { Id: 'foreign', Config: {} });
+    }
+    return result;
+  } });
+  await racing.image(['clean']);
+  assert.equal(f.images.get(tag)?.Id, 'foreign');
+  assert.deepEqual(f.calls.filter(c => c.cmd === 'docker' && c.args[0] === 'image' && c.args[1] === 'rm').map(c => c.args), [['image', 'rm', original]]);
+});
+
+for (const change of ['namespace', 'PVC', 'UID', 'CA']) {
+  test(`cluster deletion repeats inventory and identity proof at the action boundary: ${change}`, async t => {
+    const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+    let armed = true;
+    const racing = new guard.N2Lab({ env: f.env, execute: async (cmd, args, options) => {
+      const result = await f.execute(cmd, args, options);
+      if (armed && cmd === 'kubectl' && args.includes('get') && args.includes('pvc')) {
+        armed = false;
+        if (change === 'namespace') f.objects.set('namespace/late', { ...ns('late'), metadata: { name: 'late', uid: 'foreign' } });
+        if (change === 'PVC') f.objects.set('persistentvolumeclaim/late', { apiVersion: 'v1', kind: 'PersistentVolumeClaim', metadata: { name: 'late', namespace: 'kube-system', uid: 'foreign' } });
+        if (change === 'UID') f.setUID('foreign');
+        if (change === 'CA') f.setCA('Zm9yZWlnbg==');
+      }
+      return result;
+    } });
+    f.calls.length = 0;
+    await assert.rejects(racing.destroyCluster(), /refused/);
+    assert.equal(mutations(f.calls).length, 0);
+  });
+}
+
+test('Cilium install and resumed upgrade stamp and record both namespaced and global objects', async t => {
+  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const manifests = [
+    { apiVersion: 'v1', kind: 'ServiceAccount', metadata: { name: 'cilium' } },
+    { apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'ClusterRole', metadata: { name: 'cilium-role' } },
+  ];
+  f.helm(manifests);
+  const execute = async (cmd, args, options) => {
+    if (cmd === 'helm' && (args.includes('install') || args.includes('upgrade')) && !args.includes('template')) {
+      // Model Helm's post-renderer as a separate guard, as in the real process boundary.
+      const renderer = new guard.N2Lab({ env: f.env, execute: f.execute });
+      const rendered = await renderer.helmObjects(JSON.stringify({ kind: 'List', items: manifests }), 'kube-system');
+      for (const o of rendered) {
+        o.metadata.uid = f.objects.get(`${o.kind.toLowerCase()}/${o.metadata.name}`)?.metadata.uid ?? 'created-' + o.metadata.name;
+        f.objects.set(`${o.kind.toLowerCase()}/${o.metadata.name}`, o);
+      }
+    }
+    return f.execute(cmd, args, options);
+  };
+  const installer = new guard.N2Lab({ env: f.env, execute });
+  await installer.helm(['upgrade', 'cilium', 'chart', '-n', 'kube-system', '--install']);
+  const receipt = JSON.parse(readFileSync(owner.statePath, 'utf8'));
+  assert.equal(receipt.resources['serviceaccount/kube-system/cilium'], 'created-cilium');
+  assert.equal(receipt.resources['clusterrole//cilium-role'], 'created-cilium-role');
+  assert.equal(f.objects.get('clusterrole/cilium-role').metadata.namespace, undefined);
+  assert.equal(f.objects.get('serviceaccount/cilium').metadata.labels[label], f.env.LAB_RUN_ID);
+  await installer.helm(['upgrade', 'cilium', 'chart', '-n', 'kube-system', '--install']);
+  f.objects.get('clusterrole/cilium-role').metadata.uid = 'replacement'; f.calls.length = 0;
+  await assert.rejects(installer.helm(['upgrade', 'cilium', 'chart', '-n', 'kube-system', '--install']), /refused/);
+  assert.equal(mutations(f.calls).length, 0);
+});
+
+test('a namespace delete rechecks PVC inventory after the final identity check and uses a UID precondition', async t => {
+  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  await owner.kubectl(['create', '-f', '-'], { input: JSON.stringify(ns('own')) });
+  let pvcChecks = 0;
+  const racing = new guard.N2Lab({ env: f.env, execute: async (cmd, args, options) => {
+    const result = await f.execute(cmd, args, options);
+    if (cmd === 'kubectl' && args.includes('pvc') && ++pvcChecks === 1)
+      f.objects.set('persistentvolumeclaim/late', { apiVersion: 'v1', kind: 'PersistentVolumeClaim', metadata: { name: 'late', namespace: 'own', uid: 'foreign' } });
+    return result;
+  } });
+  f.calls.length = 0;
+  await assert.rejects(racing.kubectl(['delete', 'namespace', 'own']), /refused/);
+  assert.equal(mutations(f.calls).length, 0);
+});
+
+for (const entrypoint of ['down', 'run-all cleanup']) {
+  test(`${entrypoint} in a fresh process preserves evidence and cluster after a global policy refusal`, async t => {
+    const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+    f.objects.set('ciliumclusterwidenetworkpolicy/n2c-deny-imds', { apiVersion: 'cilium.io/v2', kind: 'CiliumClusterwideNetworkPolicy', metadata: { name: 'n2c-deny-imds', uid: 'foreign' } });
+    await assert.rejects(owner.preflightResources([{ type: 'ciliumclusterwidenetworkpolicy', name: 'n2c-deny-imds' }]));
+    const record = join(f.dir, 'unexpected');
+    const bin = join(f.dir, 'bin'); mkdirSync(bin);
+    for (const cmd of ['docker', 'kind', 'kubectl', 'git', 'helm']) {
+      const file = join(bin, cmd);
+      writeFileSync(file, `#!/bin/bash\nprintf '%s\\n' '${cmd}' >> '${record}'\nexit 99\n`); chmodSync(file, 0o755);
+    }
+    const evidence = join(f.env.LAB_EVIDENCE_DIR, 'results.json'); writeFileSync(evidence, 'retained evidence');
+    let command;
+    if (entrypoint === 'down') command = ['bash', [new URL('./cluster.sh', import.meta.url).pathname, 'down']];
+    else {
+      const source = readFileSync(new URL('./external/run-all.sh', import.meta.url), 'utf8');
+      const cleanup = source.slice(source.indexOf('cleanup() {'), source.indexOf('\ntrap cleanup EXIT'));
+      command = ['bash', ['-c', `set -euo pipefail
+        guard="$1"; n2="$2"; owned=1; creating=0; failed=0; work="$3"; sampler_pid=""; trees=()
+        stop_sampler() { :; }
+        ${cleanup}
+        cleanup`, 'test', new URL('../../../scripts/kind-stack-guard.mjs', import.meta.url).pathname, new URL('.', import.meta.url).pathname, f.dir]];
+    }
+    assert.throws(() => execFileSync(...command, { env: { ...process.env, ...f.env, PATH: bin + ':' + process.env.PATH }, stdio: 'pipe' }), e => e.status === 1);
+    assert.equal(existsSync(record), false, 'refusal must precede every external executable');
+    assert.equal(readFileSync(evidence, 'utf8'), 'retained evidence');
+    assert.ok(existsSync(owner.statePath));
+  });
+}
+
+test('cluster.sh routes both Cilium install and upgrade through the central resource guard', t => {
+  const f = fixture(t), bin = join(f.dir, 'bin'); mkdirSync(bin);
+  const record = join(f.dir, 'calls');
+  for (const cmd of ['node', 'helm']) {
+    const file = join(bin, cmd);
+    writeFileSync(file, `#!/bin/bash\nprintf '%s ' '${cmd}' >> '${record}'\nprintf '%s ' "$@" >> '${record}'\nprintf '\\n' >> '${record}'\n`); chmodSync(file, 0o755);
+  }
+  const source = readFileSync(new URL('./cluster.sh', import.meta.url), 'utf8');
+  const h = source.slice(source.indexOf('h() {'), source.indexOf('\nk() {'));
+  execFileSync('bash', ['-c', `guard=central-guard; context=fixture; ${h}\nh install cilium chart -n kube-system\nh upgrade cilium chart --install -n kube-system`], { env: { ...process.env, ...f.env, PATH: bin + ':' + process.env.PATH } });
+  const calls = readFileSync(record, 'utf8').trim().split('\n');
+  assert.equal(calls.length, 2);
+  assert.ok(calls.every(c => c.startsWith('node central-guard n2-helm ')));
+});
+
+test('image load validates the exported digest and imports only into the recorded node IDs', async t => {
+  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const tag = 'lab:' + f.env.LAB_RUN_ID, id = 'sha256:' + 'c'.repeat(64);
+  f.images.set('source', { Id: id, Config: {} });
+  await owner.image(['tag', 'source', tag]);
+  const execute = async (cmd, args, options) => {
+    if (cmd === 'kind' && args[0] === 'load') { f.calls.push({ cmd, args }); return { code: 0, stdout: '', stderr: '' }; }
+    if (cmd === 'docker' && args[0] === 'image' && args[1] === 'save') {
+      f.calls.push({ cmd, args }); writeFileSync(args[args.indexOf('--output') + 1], 'validated archive');
+      return { code: 0, stdout: '', stderr: '' };
+    }
+    if (cmd === 'tar') return { code: 0, stdout: JSON.stringify([{ Config: 'blobs/sha256/' + 'c'.repeat(64), RepoTags: [tag] }]), stderr: '' };
+    if (cmd === 'docker' && args[0] === 'exec') { f.calls.push({ cmd, args, input: options.input }); return { code: 0, stdout: '', stderr: '' }; }
+    return f.execute(cmd, args, options);
+  };
+  const loader = new guard.N2Lab({ env: f.env, execute }); f.calls.length = 0;
+  await loader.loadImage(tag);
+  const imports = f.calls.filter(c => c.cmd === 'docker' && c.args.includes('import'));
+  assert.equal(imports.length, 1);
+  assert.equal(imports[0].args[2], 'node-original');
+  assert.equal(imports[0].input.toString(), 'validated archive');
+  assert.ok(!f.calls.some(c => c.cmd === 'kind' && c.args[0] === 'load'));
+});
+
+test('kubectl mutation rechecks the target UID at the action boundary', async t => {
+  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  await owner.kubectl(['create', '-f', '-'], { input: JSON.stringify(ns('own')) });
+  const pod = { apiVersion: 'v1', kind: 'Pod', metadata: { name: 'probe', namespace: 'own' } };
+  await owner.kubectl(['create', '-f', '-'], { input: JSON.stringify(pod) });
+  let inspections = 0;
+  const racing = new guard.N2Lab({ env: f.env, execute: async (cmd, args, options) => {
+    if (cmd === 'kubectl' && args.includes('exec')) { f.calls.push({ cmd, args }); return { code: 0, stdout: '', stderr: '' }; }
+    const result = await f.execute(cmd, args, options);
+    if (cmd === 'kubectl' && args.includes('get') && args.includes('pod') && args.includes('probe') && ++inspections === 1)
+      f.objects.get('pod/probe').metadata.uid = 'foreign';
+    if (cmd === 'kubectl' && args.includes('exec')) return { code: 0, stdout: '', stderr: '' };
+    return result;
+  } });
+  // The fake must model exec without reaching an external process.
+  f.calls.length = 0;
+  await assert.rejects(racing.kubectl(['exec', '-n', 'own', 'probe', '--', 'true']), /refused/);
+  assert.ok(!f.calls.some(c => c.cmd === 'kubectl' && c.args.includes('exec')));
+});
+
+test('refusal evidence is written in the current suite directory as well as the creation run directory', async t => {
+  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const suiteDir = join(f.dir, 'suite-evidence');
+  const suite = new guard.N2Lab({ env: { ...f.env, LAB_EVIDENCE_DIR: suiteDir }, execute: f.execute });
+  await assert.rejects(suite.preflightResources([{ type: 'pod', name: 'missing', namespace: 'own' }], true), /refused/);
+  assert.ok(existsSync(join(suiteDir, 'n2-refused.json')));
+  assert.ok(existsSync(join(f.env.LAB_EVIDENCE_DIR, 'n2-refused.json')));
+});
+
+test('rollout restart carries the proved resource UID and version into the write', async t => {
+  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  await owner.kubectl(['create', '-f', '-'], { input: JSON.stringify(ns('own')) });
+  const deployment = { apiVersion: 'apps/v1', kind: 'Deployment', metadata: { name: 'app', namespace: 'own', resourceVersion: '17' }, spec: { template: { metadata: {}, spec: {} } } };
+  await owner.kubectl(['create', '-f', '-'], { input: JSON.stringify(deployment) });
+  const racer = new guard.N2Lab({ env: f.env, execute: async (cmd, args, options) => {
+    if (cmd === 'kubectl' && args.includes('restart')) { f.calls.push({ cmd, args }); return { code: 0, stdout: '', stderr: '' }; }
+    return f.execute(cmd, args, options);
+  } });
+  f.calls.length = 0;
+  await racer.kubectl(['-n', 'own', 'rollout', 'restart', 'deployment/app']);
+  const write = f.calls.find(c => c.input && !c.args.includes('--dry-run=client'));
+  assert.ok(write, 'restart must use a conditional object write');
+  const object = JSON.parse(write.input);
+  assert.equal(object.metadata.uid, 'created-app');
+  assert.equal(object.metadata.resourceVersion, '17');
+  assert.ok(object.spec.template.metadata.annotations['kubectl.kubernetes.io/restartedAt']);
+});
+
+test('refusing a global kubeconfig preserves its directory and records only run evidence', async t => {
+  const f = fixture(t), global = join(f.env.HOME, '.kube/config');
+  mkdirSync(join(f.env.HOME, '.kube'), { recursive: true }); writeFileSync(global, 'user config');
+  const owner = new guard.N2Lab({ env: { ...f.env, LAB_KUBECONFIG: global }, execute: f.execute });
+  await assert.rejects(owner.createCluster('fixture'), /refused/);
+  assert.equal(existsSync(global + '.n2-owner.json.refused'), false);
+  assert.equal(readFileSync(global, 'utf8'), 'user config');
+  assert.ok(existsSync(join(f.env.LAB_EVIDENCE_DIR, 'n2-refused.json')));
 });

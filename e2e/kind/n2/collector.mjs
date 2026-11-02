@@ -35,7 +35,7 @@ assert.ok(AGENT_IMAGE && KONG_IMAGE, "set AGENT_IMAGE and KONG_IMAGE to local ta
 const DP = "gromesh-x4";
 const OBS = "gromesh-x4-obs";
 const FX = "gromesh-x4-fx";
-const env = { ...process.env, KUBECONFIG: kubeconfig };
+const env = { ...process.env, KUBECONFIG: kubeconfig, LAB_OUT: out };
 const secrets = [];
 const results = [];
 // Errors carry command lines and output: every credential is redacted before anything can print it.

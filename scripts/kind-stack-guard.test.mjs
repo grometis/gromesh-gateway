@@ -35,3 +35,17 @@ test("N2 refuses absent creation identity before invoking any executable", async
   await assert.rejects(lab.assertIdentity(), /N2 lab refused/);
   assert.equal(calls, 0);
 });
+
+test('the standard guard command and N2 CI step discover the ownership regression suite', async () => {
+  const { readFileSync } = await import('node:fs');
+  const { existsSync } = await import('node:fs');
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  const n2Step = ci.slice(ci.indexOf('- name: "N2 lab:'), ci.indexOf('# Plugin configs'));
+  for (const command of [pkg.scripts['test:guard'], n2Step]) {
+    const files = command.match(/[\w./-]+\.test\.mjs/g) ?? [];
+    assert.ok(files.includes('e2e/kind/n2/ownership.test.mjs'));
+    assert.ok(files.includes('scripts/kind-stack-guard.test.mjs'));
+    assert.ok(files.every(file => existsSync(new URL('../' + file, import.meta.url))), 'every configured test must exist');
+  }
+});

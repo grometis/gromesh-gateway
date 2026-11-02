@@ -26,7 +26,7 @@ const out = process.env.LAB_OUT ?? mkdtempSync(join(tmpdir(), "gromesh-n2-lab-")
 const DP = "gromesh-dp";
 const FX = "gromesh-n2-fixtures";
 const ZONE = "lab.gromesh.test";
-const env = { ...process.env, KUBECONFIG: kubeconfig };
+const env = { ...process.env, KUBECONFIG: kubeconfig, LAB_OUT: out };
 
 function rawRun(command, args, { input, timeout = 180_000, allowFail = false, env: extra = {} } = {}) {
   return new Promise((resolve, reject) => {
@@ -114,6 +114,7 @@ async function externalFixtures(topo) {
     { role: "imds", ip: net.imdsHost, cap: true,
       setup: [...IMDS.v4.map((a) => `ip addr add ${a}/32 dev eth0`), ...IMDS.v6.map((a) => `ip -6 addr add ${a}/128 dev eth0`)].join(" && ") + " && " },
   ];
+  await ownership.preflightFixtures(fixtures.map(f => `${cluster}-fx-${f.role}`));
   for (const f of fixtures) {
     const name = `${cluster}-fx-${f.role}`;
     await docker(["rm", "-f", name], { allowFail: true });

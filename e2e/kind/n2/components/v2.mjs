@@ -20,6 +20,7 @@ import { privilegedAfterLoss, privilegedRequestsBetween, scenarioRequestLines } 
 import { bootToWall, groupFromEvents, itemResult, keepaliveBlocked, kFromLiveness, ksFromDeletion, kxFromEvents, overall, rfc3339CeilMs, runExitCode } from "./budgets.mjs";
 
 const out = process.env.LAB_OUT ?? mkdtempSync(join(tmpdir(), "gromesh-n2-comp-"));
+ownership.evidenceDir = out;
 // Every image this suite pulls is pinned by digest in versions.env (a mutable tag would not reproduce the run).
 const VERSIONS = Object.fromEntries(readFileSync(join(here, "../versions.env"), "utf8").split("\n")
   .filter((line) => /^[A-Z0-9_]+=/.test(line)).map((line) => line.split(/=(.*)/s).slice(0, 2)));
