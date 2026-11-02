@@ -40,15 +40,12 @@ updates:
       # Majors are planned work (backlog 21), not weekly updates.
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
-      # Base-image line changes are planned (backlog 22): only patches and digests of Ubuntu 24.04 and nginx 1.28 stable.
+      # Base-image line changes are planned (backlog 22): only patches and digests of Ubuntu 24.04 and nginx 1.30 stable.
       # node keeps minor/patch: 26.x is one LTS line.
       - dependency-name: "ubuntu"
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
-      - dependency-name: "nginxinc/nginx-unprivileged"
+      - dependency-name: "nginx/nginx-unprivileged"
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
-      # 1.28.1 and 1.28.2 carry CVE-2026-42945 (CRITICAL): skip them; 1.28.3 and later patches are proposed.
-      - dependency-name: "nginxinc/nginx-unprivileged"
-        versions: [">=1.28.1, <1.28.3"]
     groups:
       docker:
         patterns: ["*"]
