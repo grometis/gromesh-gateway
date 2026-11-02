@@ -211,8 +211,51 @@ jobs:
           mkdir -p "$KONG_EVIDENCE"
           docker compose --profile '*' logs --no-color 2>&1 | tee "$KONG_EVIDENCE/compose.log"
 
-      - name: Upload candidate evidence
+      - name: Redact candidate evidence
+        id: redact
         if: always() && env.PUBLISH != 'true'
+        run: |
+          # Runner masks do not redact files written by tee before artifact upload.
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const root = process.env.KONG_EVIDENCE;
+          if (!root || !fs.existsSync(root)) process.exit(0);
+          const secrets = [
+            'POSTGRES_PASSWORD', 'BOOTSTRAP_ADMIN_PASSWORD', 'CLICKHOUSE_PASSWORD',
+            'CLICKHOUSE_READER_PASSWORD', 'CLICKHOUSE_WRITER_PASSWORD',
+            'GROMESH_COLLECTOR_TOKEN', 'GROMESH_ENCRYPTION_KEY', 'GROMESH_FINGERPRINT_KEY',
+          ].map(key => process.env[key]).filter(Boolean).map(value => Buffer.from(value));
+          const replacement = Buffer.from('REDACTED');
+          function redact(directory) {
+            for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+              const file = path.join(directory, entry.name);
+              if (entry.isDirectory()) {
+                redact(file);
+              } else if (entry.isFile()) {
+                let data = fs.readFileSync(file);
+                for (const secret of secrets) {
+                  const parts = [];
+                  let start = 0;
+                  let index;
+                  while ((index = data.indexOf(secret, start)) !== -1) {
+                    parts.push(data.subarray(start, index), replacement);
+                    start = index + secret.length;
+                  }
+                  parts.push(data.subarray(start));
+                  data = Buffer.concat(parts);
+                }
+                fs.writeFileSync(file, data);
+                const saved = fs.readFileSync(file);
+                if (secrets.some(secret => saved.includes(secret))) process.exit(1);
+              }
+            }
+          }
+          redact(root);
+          NODE
+
+      - name: Upload candidate evidence
+        if: always() && env.PUBLISH != 'true' && steps.redact.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: kong-candidate-${{ matrix.arch }}
