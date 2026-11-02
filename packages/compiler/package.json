@@ -24,8 +24,8 @@
     "@types/node": "24.19.2",
     "ajv": "8.20.0",
     "ajv-formats": "3.0.1",
-    "typescript": "5.7.2",
-    "vite": "6.4.4",
+    "typescript": "5.9.3",
+    "vite": "6.4.5",
     "vitest": "4.1.12"
   }
 }
