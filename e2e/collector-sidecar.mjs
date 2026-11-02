@@ -21,7 +21,7 @@ await assertStack("acceptance");
 const exec = promisify(execFile);
 const root = fileURLToPath(new URL("../", import.meta.url));
 const KONG_IMAGE = process.env.KONG_IMAGE ?? "ghcr.io/grometis/gromesh-kong@sha256:ffe28812ade7f8aaec8ff1303b5c5f2e614453b87e1b3bd917401f6ad8b74faf";
-const GO_IMAGE = "golang:1.27.2-alpine";
+const GO_IMAGE = "golang:1.27.3-alpine@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb";
 const id = randomUUID();
 const net = `gromesh-x4-${id}`;
 const names = { ch: `x4-ch-${id}`, pod: `x4-pod-${id}`, collector: `x4-collector-${id}`, kong: `x4-kong-${id}`, outsider: `x4-outsider-${id}` };

@@ -154,7 +154,7 @@ function CertificateForm({ envId, certificate, onClose }: { envId: string; certi
           {(id, invalid) => <textarea id={id} aria-invalid={invalid} rows={6} className="mono" value={form.cert} onChange={(e) => set("cert", e.target.value)} />}
         </Field>
         <label className="certificate-file">
-          Carregar arquivo do certificado <input type="file" accept=".pem,.crt,.cer" aria-label="Arquivo do certificado" onChange={(e) => readFile(e, (t) => set("cert", t))} />
+          Carregar arquivo do certificado <input type="file" accept=".pem,.crt,.cer" onChange={(e) => readFile(e, (t) => set("cert", t))} />
         </label>
         <Field
           label="Chave privada (PEM)"
@@ -176,7 +176,7 @@ function CertificateForm({ envId, certificate, onClose }: { envId: string; certi
           )}
         </Field>
         <label className="certificate-file">
-          Carregar arquivo da chave <input type="file" accept=".pem,.key" aria-label="Arquivo da chave" onChange={(e) => readFile(e, (t) => set("key", t))} />
+          Carregar arquivo da chave <input type="file" accept=".pem,.key" onChange={(e) => readFile(e, (t) => set("key", t))} />
         </label>
         <Field label="SNIs" errors={errors.fields.snis} hint="Nomes separados por vírgula; curinga só como prefixo, ex.: *.exemplo.com">
           {(id, invalid) => <input id={id} aria-invalid={invalid} value={form.snis} onChange={(e) => set("snis", e.target.value)} />}

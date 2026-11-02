@@ -1,9 +1,10 @@
 # Build context: repository root.  docker build -f apps/control-plane/Dockerfile .
-FROM node:24.22.0-alpine AS build
-RUN corepack enable
+FROM node:26.13.0-alpine@sha256:c6ad9e9c1d80f6eb607c26b4b0a132ff7a2344fad1c78ea3baa2a7d4c8de6d94 AS build
 WORKDIR /app
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
+# Node 26 no longer ships Corepack: the bundled npm installs the pnpm pinned in packageManager.
+RUN npm install -g --ignore-scripts "$(node -p 'require("./package.json").packageManager')"
 COPY packages/compiler/package.json packages/compiler/
 COPY apps/control-plane/package.json apps/control-plane/
 RUN pnpm install --frozen-lockfile --filter @gromesh/control-plane...
@@ -18,7 +19,7 @@ RUN pnpm --filter @gromesh/compiler build && pnpm --filter @gromesh/control-plan
 RUN node --input-type=module -e 'import fs from "node:fs"; for (const dir of ["apps/control-plane", "packages/compiler"]) { const file = `${dir}/package.json`; const pkg = JSON.parse(fs.readFileSync(file, "utf8")); pkg.files = ["dist"]; fs.writeFileSync(file, JSON.stringify(pkg)); }' \
     && pnpm --filter @gromesh/control-plane deploy --prod --legacy /prod/control-plane
 
-FROM node:24.22.0-alpine AS runtime
+FROM node:26.13.0-alpine@sha256:c6ad9e9c1d80f6eb607c26b4b0a132ff7a2344fad1c78ea3baa2a7d4c8de6d94 AS runtime
 RUN apk upgrade --no-cache \
     && rm -rf /usr/local/lib/node_modules /opt/yarn* /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg
 WORKDIR /app/apps/control-plane
