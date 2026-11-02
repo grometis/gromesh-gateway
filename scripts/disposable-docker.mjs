@@ -45,7 +45,7 @@ export function disposableDocker(execute, run = randomUUID(), strict) {
     if (cmd === "run" || cmd === "create") {
       if (strict) {
         const targets = new Set();
-        const valued = new Set(["--name", "--network", "--network-alias", "-v", "--volume", "--tmpfs", "-p", "--publish", "--entrypoint", "--user", "-u", "--env-file", "-e", "--env", "--label", "-w", "--workdir"]);
+        const valued = new Set(["--name", "--network", "--network-alias", "-v", "--volume", "--tmpfs", "-p", "--publish", "--entrypoint", "--user", "-u", "--env-file", "-e", "--env", "--label", "-w", "--workdir", "--health-cmd", "--health-interval", "--health-timeout", "--health-retries"]);
         const switches = new Set(["-d", "--detach", "--rm", "--read-only", "-i", "-t"]);
         let at = 1;
         while (args[at]?.startsWith("-")) {
