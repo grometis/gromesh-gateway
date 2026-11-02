@@ -65,7 +65,7 @@ for (const width of [390, 1440]) {
             await expect(page.getByRole("dialog", { name: "Desativar usuário" })).toBeVisible();
           }
         } else if (screen === "user-roles") {
-          await table.getByRole("button", { name: /^Papéis de/ }).first().click();
+          await table.getByRole("button", { name: /^Environments de/ }).first().click();
           await expect(page.getByRole("table", { name: "Papéis por environment" })).toBeVisible();
         } else if (screen === "user-delete") {
           await table.getByRole("button", { name: "Excluir", exact: true }).first().click();
@@ -138,8 +138,8 @@ for (const width of [390, 1440]) {
           if (screen === "certificate-upload") await page.getByRole("button", { name: "Novo certificado", exact: true }).click();
           else await table.getByRole("button", { name: "Editar", exact: true }).first().click();
           const dialog = page.getByRole("dialog", { name: screen === "certificate-upload" ? "Novo certificado" : "Editar certificado" });
-          await expect(dialog.getByLabel("Arquivo do certificado")).toBeVisible();
-          await expect(dialog.getByLabel("Arquivo da chave")).toBeVisible();
+          await expect(dialog.getByLabel("Carregar arquivo do certificado")).toBeVisible();
+          await expect(dialog.getByLabel("Carregar arquivo da chave")).toBeVisible();
           await expect(dialog.getByLabel("Chave privada (PEM)")).toHaveValue("");
         }
       } else if (screen === "services" || screen === "consumers") {
