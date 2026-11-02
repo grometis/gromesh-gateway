@@ -1,3 +1,13 @@
+// Model H invariants: run-created ephemeral EXCLUSIVE cluster, dedicated kubeconfig/context,
+// creation receipts (run/name/kube-system UID/CA), complete expected-kind + run inventory, no
+// third-party principals/controllers/storage. Any unexpected identity/activity => persistent STOP;
+// preserve evidence, forbid retries and ALL further mutations (including cleanup). Controller
+// descendants need creation receipts + template/hash/image proof; labels/ownerReferences alone fail.
+// Namespace CREATE and rollout descendants have no atomic UID/inventory fence: checks before/after
+// detect races; H assumes a trusted operator and no independent writers, not a hostile administrator.
+// Shared clusters (including the existing N2 VM) are forbidden. Product Model P/W0 is unchanged;
+// harness tests approve no gate. Cascade/storage deletion remains forbidden; no degraded mode.
+import { AsyncLocalStorage } from "node:async_hooks";
 import { gunzipSync } from "node:zlib";
 import { isIP } from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -117,10 +127,19 @@ export async function assertKindStack(scope = "cluster", env = process.env) {
   }
 }
 
+export const n2ClusterName = runId => `gromesh-n2-${sha256(runId ?? '').slice(0, 24)}`;
 export const n2RunLabel = 'com.grometis.gromesh.n2-run';
 export const n2LabLabel = 'com.grometis.gromesh.lab';
 const n2Refused = reason => new Error(`N2 lab refused before mutation: ${reason}; ownership proof and evidence preserved`);
 const sha256 = value => createHash('sha256').update(value).digest('hex');
+const n2SystemAccounts = Object.freeze(['coredns', 'kube-proxy', 'bootstrap-signer', 'token-cleaner',
+          'attachdetach-controller', 'certificate-controller', 'clusterrole-aggregation-controller', 'cronjob-controller', 'daemon-set-controller',
+          'deployment-controller', 'disruption-controller', 'endpoint-controller', 'endpointslice-controller', 'endpointslicemirroring-controller',
+          'ephemeral-volume-controller', 'expand-controller', 'generic-garbage-collector', 'horizontal-pod-autoscaler', 'job-controller',
+          'namespace-controller', 'node-controller', 'persistent-volume-binder', 'pod-garbage-collector', 'pv-protection-controller',
+          'pvc-protection-controller', 'replicaset-controller', 'replication-controller', 'resourcequota-controller', 'root-ca-cert-publisher',
+          'service-account-controller', 'service-controller', 'statefulset-controller', 'ttl-after-finished-controller', 'ttl-controller',
+          'validatingadmissionpolicy-status-controller', 'legacy-service-account-token-cleaner', 'service-cidrs-controller', 'selinux-warning-controller']);
 const pinnedDirectories = new Set();
 process.once('exit', () => { for (const dir of pinnedDirectories) rmSync(dir, { recursive: true, force: true }); });
 const resourceKey = o => `${o.kind.toLowerCase()}/${o.metadata.namespace ?? ''}/${o.metadata.name}`;
@@ -157,11 +176,12 @@ export class N2Lab {
     this.spawnProcess = spawnProcess;
     this.env = { ...env, KUBECONFIG: env.LAB_KUBECONFIG };
     this.execute = (command, args, options = {}) => {
+      this.assertNotRefused();
       if (this.pinnedConfig) this.verifyPinnedConfig();
       return execute(command, args, { ...options, env: { ...this.env, ...options.env, HELM_DRIVER: 'secret',
         ...(this.pinnedConfig ? { KUBECONFIG: this.pinnedConfig, LAB_N2_PINNED_CONFIG: this.pinnedConfig } : {}) } });
     };
-    this.cluster = 'gromesh-n2-lab';
+    this.cluster = n2ClusterName(env.LAB_RUN_ID);
     this.context = `kind-${this.cluster}`;
     this.kubeconfig = env.LAB_KUBECONFIG;
     this.statePath = `${this.kubeconfig}.n2-owner.json`;
@@ -171,6 +191,35 @@ export class N2Lab {
     this.refused = false;
     this.queue = Promise.resolve();
     this.exitBindings = new WeakSet();
+    this.operationContext = new AsyncLocalStorage();
+    this.operationQueue = Promise.resolve();
+  }
+  async withOperation(fn, creating = false) {
+    this.assertNotRefused();
+    if (this.operationContext.getStore() === this) return fn();
+    const run = async () => {
+      this.assertNotRefused();
+      try { this.pathProof(creating); } catch (error) { if (error.message?.startsWith('N2 lab refused')) throw error; this.refuse('exclusive path proof unavailable'); }
+      const lock = `${this.statePath}.active`;
+      try { mkdirSync(lock, { mode: 0o700 }); }
+      catch { this.refuse('concurrent or interrupted operation; preserve evidence'); }
+      try {
+        return await this.operationContext.run(this, async () => {
+          const result = await fn();
+          await this.assertIdentity();
+          return result;
+        });
+      }
+      finally { if (!this.refused && !existsSync(this.refusalPath)) rmSync(lock, { recursive: true }); }
+    };
+    const result = this.operationQueue.then(run);
+    this.operationQueue = result.catch(() => {});
+    return result;
+  }
+  recordResource(o, state) {
+    state.resources[resourceKey(o)] = o.metadata.uid;
+    state.resourceOwners ??= {}; state.resourceOwners[resourceKey(o)] = o.metadata.ownerReferences ?? [];
+    state.resourceProofs ??= {}; state.resourceProofs[resourceKey(o)] = this.baselineProof(o);
   }
   refuse(reason) {
     this.refused = true;
@@ -246,7 +295,8 @@ export class N2Lab {
     if (!st.isFile() || st.nlink !== 1 || st.isSymbolicLink()) this.refuse('invalid creation receipt');
     const state = JSON.parse(readFileSync(this.statePath, 'utf8'));
     const source = this.sourceConfig;
-    if (state.phase !== 'ready' || state.cluster !== this.cluster || state.context !== this.context || state.kubeconfig !== source.path
+    if (state.creation?.model !== 'H' || state.creation?.exclusive !== true || state.creation?.runId !== state.runId
+      || state.creation?.cluster !== this.cluster || state.phase !== 'ready' || state.cluster !== this.cluster || state.context !== this.context || state.kubeconfig !== source.path
       || (!source.inherited && state.kubeconfigInode !== source.inode) || state.kubeconfigHash !== source.hash || !/^[a-z0-9-]{12,63}$/.test(state.runId ?? '')
       || (this.env.LAB_RUN_ID && this.env.LAB_RUN_ID !== state.runId)) this.refuse('creation receipt does not match this execution');
     return state;
@@ -286,6 +336,8 @@ export class N2Lab {
     if (current.clusters?.some(c => c.cluster?.['certificate-authority'] || c.cluster?.['insecure-skip-tls-verify'])
       || current.users?.some(u => ['client-certificate', 'client-key', 'exec', 'auth-provider', 'tokenFile'].some(k => u.user?.[k])))
       this.refuse('kubeconfig must contain self-contained credentials');
+    if (current.users?.length !== 1 || !current.users[0]?.user?.['client-certificate-data'] || !current.users[0]?.user?.['client-key-data']
+      || current.contexts?.[0]?.context?.user !== current.users[0].name) this.refuse('one dedicated creation credential required');
     const endpoint = JSON.stringify(current.clusters);
     if (this.provedEndpoint && endpoint !== this.provedEndpoint) this.refuse('private kubeconfig server or CA changed');
     const yaml = (await this.execute('kind', ['get', 'kubeconfig', '--name', this.cluster])).stdout;
@@ -303,13 +355,16 @@ export class N2Lab {
     if (!system?.metadata?.uid) this.refuse('kube-system UID missing');
     return { marker: system.metadata.labels?.[n2RunLabel], uid: system.metadata.uid, caHash: sha256(Buffer.from(current.clusters[0].cluster['certificate-authority-data'], 'base64')) };
   }
-  async assertIdentity() {
+  async assertIdentity(pendingState) {
     try {
       this.assertNotRefused();
-      const state = this.load();
+      const persisted = this.load();
+      if (pendingState && (pendingState.runId !== persisted.runId || pendingState.uid !== persisted.uid)) this.refuse('pending operation identity changed');
+      const state = pendingState ?? persisted;
       if (state.evidenceDir && existsSync(join(state.evidenceDir, 'n2-refused.json'))) this.refuse('previous run refusal');
       await this.daemon();
       const identity = await this.identity();
+      this.proofEvidence('identity', { expected: { uid: state.uid, caHash: state.caHash, runId: state.runId }, actual: identity });
       if (identity.uid !== state.uid || identity.caHash !== state.caHash || identity.marker !== state.runId) this.refuse('cluster UID or CA differs from creation');
       const ids = (await this.execute('docker', ['ps', '-aq', '--filter', `label=io.x-k8s.kind.cluster=${this.cluster}`])).stdout.trim().split(/\s+/).filter(Boolean);
       const nodes = ids.length ? JSON.parse((await this.execute('docker', ['inspect', ...ids])).stdout) : [];
@@ -324,21 +379,180 @@ export class N2Lab {
         const actual = JSON.parse((await this.execute('docker', ['volume', 'inspect', name])).stdout)[0];
         if (JSON.stringify(actual) !== JSON.stringify(volume)) this.refuse('node volume identity changed');
       }
+      await this.assertExclusive(state, { persist: !pendingState });
       return state;
-    } catch (error) { this.refuse(error.message?.startsWith('N2 lab refused') ? 'identity or ownership mismatch' : 'identity proof unavailable'); }
+    } catch (error) { if (error.message?.startsWith('N2 lab refused')) throw error; this.refuse('identity proof unavailable'); }
+  }
+  proofEvidence(phase, value) {
+    if (!this.evidenceDir) this.refuse('evidence directory required');
+    mkdirSync(this.evidenceDir, { recursive: true });
+    const bytes = JSON.stringify(value, null, 2);
+    const file = join(this.evidenceDir, `n2-${phase}-${sha256(bytes)}.json`);
+    try { writeFileSync(file, bytes, { flag: 'wx', mode: 0o600 }); } catch (error) { if (error.code !== 'EEXIST') throw error; }
+  }
+  inventoryEvidence(phase, inventory) {
+    if (!this.evidenceDir) this.refuse('evidence directory required');
+    mkdirSync(this.evidenceDir, { recursive: true });
+    const objects = inventory.map(o => ({ key: resourceKey(o), uid: o.metadata.uid,
+      resourceVersion: o.metadata.resourceVersion, owners: o.metadata.ownerReferences ?? [], proof: this.unrelatedProof(o) }));
+    const bytes = JSON.stringify(objects, null, 2), first = join(this.evidenceDir, `n2-inventory-${phase}.json`);
+    const file = existsSync(first) ? join(this.evidenceDir, `n2-inventory-${phase}-${sha256(bytes)}.json`) : first;
+    try { writeFileSync(file, bytes, { flag: 'wx', mode: 0o600 }); } catch (error) { if (error.code !== 'EEXIST') throw error; }
+  }
+  systemCoordination(o, state) {
+    if (o.kind !== 'Lease' || o.apiVersion !== 'coordination.k8s.io/v1') return false;
+    const { name, namespace } = o.metadata;
+    if (namespace === 'kube-node-lease') return state ? state.nodes.some(n => n.nodeName === name) : true;
+    return namespace === 'kube-system' && ['kube-controller-manager', 'kube-scheduler'].includes(name);
+  }
+  expectedPrincipals(o, state, baseline = false) {
+    if (!['RoleBinding', 'ClusterRoleBinding'].includes(o.kind)) return true;
+    return (o.subjects ?? []).every(subject => {
+      if (subject.kind === 'ServiceAccount') {
+        if (baseline) return (subject.namespace === 'kube-system' && n2SystemAccounts.includes(subject.name))
+          || (subject.namespace === 'local-path-storage' && subject.name === 'local-path-provisioner-service-account');
+        return Boolean(state.resources[`serviceaccount/${subject.namespace}/${subject.name}`] || subject.name === 'default' && state.resources[`namespace//${subject.namespace}`]);
+      }
+      if (!baseline) return false;
+      if (subject.kind === 'Group') return ['system:authenticated', 'system:unauthenticated', 'system:masters', 'kubeadm:cluster-admins',
+        'system:serviceaccounts', 'system:serviceaccounts:kube-system', 'system:nodes', 'system:bootstrappers:kubeadm:default-node-token'].includes(subject.name);
+      return subject.kind === 'User' && ['system:kube-controller-manager', 'system:kube-scheduler', 'system:kube-proxy',
+        'kube-apiserver-kubelet-client', 'kubernetes-admin', 'kubernetes-super-admin'].includes(subject.name);
+    });
+  }
+  checkManifestStorage(o, state) {
+    if (o.kind === 'PersistentVolume') this.refuse('PV provisioning has no exclusive storage receipt; preserve storage');
+    if (o.kind === 'StorageClass' && (o.metadata.name !== 'standard' || o.provisioner !== 'rancher.io/local-path')) this.refuse('external storage provisioner forbidden');
+    if (o.kind === 'PersistentVolumeClaim' && (o.spec?.volumeName || o.spec?.dataSource || o.spec?.dataSourceRef || o.spec?.storageClassName && o.spec.storageClassName !== 'standard')) this.refuse('PVC cannot borrow or clone external storage');
+    const specs = [o.kind === 'Pod' ? o.spec : undefined, o.spec?.template?.spec, o.spec?.jobTemplate?.spec?.template?.spec].filter(Boolean);
+    for (const spec of specs) for (const volume of spec.volumes ?? []) {
+      // Cilium's node-local paths are inside the new kind node, whose Docker mounts were proved
+      // exclusive. Arbitrary host paths and network/storage drivers are never admitted.
+      const cilium = o.metadata?.namespace === 'kube-system' && ['cilium', 'cilium-envoy', 'cilium-operator'].includes(o.metadata.name);
+      const localPaths = ['/proc', '/sys', '/sys/fs/bpf', '/sys/fs/cgroup', '/var/run/cilium', '/var/run/netns', '/var/run/cilium/envoy/sockets',
+        '/var/lib/cni/networks', '/etc/cni/net.d', '/opt/cni/bin', '/lib/modules', '/run/xtables.lock'];
+      if (volume.hostPath && !(cilium && localPaths.includes(volume.hostPath.path))) this.refuse('unproved hostPath volume');
+      if (['csi', 'nfs', 'flexVolume', 'iscsi', 'rbd', 'cephfs', 'awsElasticBlockStore', 'gcePersistentDisk', 'azureDisk', 'azureFile'].some(k => volume[k])) this.refuse('shared or external volume forbidden');
+      if (volume.persistentVolumeClaim && !state.resources[`persistentvolumeclaim/${o.metadata.namespace}/${volume.persistentVolumeClaim.claimName}`]) this.refuse('unproved pod PVC');
+    }
+  }
+  templateImages(spec) {
+    return JSON.stringify(['containers', 'initContainers'].map(type => (spec?.[type] ?? []).map(c => [c.name, c.image])));
+  }
+  controllerReceipt(o, state) {
+    const receipt = state.controllerReceipts?.[resourceKey(o)];
+    return receipt?.uid === o.metadata.uid && receipt.proof === this.baselineProof(o);
+  }
+  async recordControllerChild(o, state, inventory) {
+    if (state.resources[resourceKey(o)] || this.controllerReceipt(o, state)) return false;
+    const refs = o.metadata.ownerReferences ?? [], ref = refs[0];
+    if (refs.length !== 1 || ref.controller !== true || !this.owns(o, state) || o.metadata.finalizers?.length) return false;
+    const parent = inventory.find(p => p.kind === ref.kind && p.apiVersion === ref.apiVersion && p.metadata.uid === ref.uid
+      && p.metadata.name === ref.name && p.metadata.namespace === o.metadata.namespace);
+    if (!parent || !await this.createdObject(parent, state)) return false;
+    // Under H only the expected system controller may create descendants. This observation is a
+    // receipt in the exclusive cluster, not a cryptographic attribution against a hostile API writer.
+    if (!o.metadata.managedFields?.some(f => f.manager === 'kube-controller-manager' && f.operation === 'Update')
+      || !o.metadata.creationTimestamp || Date.parse(o.metadata.creationTimestamp) < Date.parse(state.createdAt)) return false;
+    let template;
+    if (o.kind === 'ReplicaSet' && parent.kind === 'Deployment') template = parent.spec?.template;
+    else if (o.kind === 'Pod' && ['ReplicaSet', 'DaemonSet', 'StatefulSet', 'Job'].includes(parent.kind)) template = parent.spec?.template;
+    else if (o.kind === 'Job' && parent.kind === 'CronJob') template = parent.spec?.jobTemplate;
+    else return false;
+    const spec = o.kind === 'Pod' ? o.spec : o.spec?.template?.spec;
+    const expectedSpec = o.kind === 'Job' ? template?.spec?.template?.spec : template?.spec;
+    if (!expectedSpec || this.templateImages(spec) !== this.templateImages(expectedSpec)) return false;
+    const templateHash = o.metadata.labels?.['pod-template-hash'];
+    if (parent.kind === 'ReplicaSet' || o.kind === 'ReplicaSet') {
+      const expectedHash = parent.kind === 'ReplicaSet' ? parent.spec?.template?.metadata?.labels?.['pod-template-hash'] : o.spec?.template?.metadata?.labels?.['pod-template-hash'];
+      if (!templateHash || templateHash !== expectedHash) return false;
+    }
+    state.controllerReceipts ??= {};
+    state.controllerReceipts[resourceKey(o)] = { uid: o.metadata.uid, controllerUid: parent.metadata.uid,
+      templateHash: templateHash ?? null, images: this.templateImages(expectedSpec), proof: this.baselineProof(o) };
+    return true;
+  }
+  expectedGenerated(o, state, inventory) {
+    const { namespace, name, uid } = o.metadata;
+    const refs = o.metadata.ownerReferences ?? [];
+    if (o.metadata.finalizers?.length || !uid) return false;
+    if (o.kind === 'Event') {
+      const ref = o.involvedObject ?? o.regarding;
+      const subject = ref && inventory.find(p => p.metadata.uid === ref.uid && p.kind === ref.kind && p.metadata.name === ref.name && p.metadata.namespace === ref.namespace);
+      const known = subject && (state.resources[resourceKey(subject)] === subject.metadata.uid || this.controllerReceipt(subject, state)
+        || state.baselineNamespacedResources?.[resourceKey(subject)] === this.baselineProof(subject) || state.baselineClusterResources?.[resourceKey(subject)] === this.baselineProof(subject));
+      return Boolean(known && ['kubelet', 'default-scheduler', 'kube-controller-manager', 'replicaset-controller', 'deployment-controller', 'daemonset-controller', 'statefulset-controller', 'job-controller'].includes(o.reportingController ?? o.source?.component));
+    }
+    if (!namespace || !state.resources[`namespace//${namespace}`] || refs.length > 1) return false;
+    const manager = o.metadata.managedFields?.some(f => ['kube-controller-manager', 'endpoint-controller', 'endpointslice-controller'].includes(f.manager) && f.operation === 'Update');
+    if (!manager || !o.metadata.creationTimestamp || Date.parse(o.metadata.creationTimestamp) < Date.parse(state.createdAt)) return false;
+    if (o.kind === 'ServiceAccount') return name === 'default' && !refs.length && !o.secrets?.length && !o.imagePullSecrets?.length;
+    if (o.kind === 'ConfigMap') return name === 'kube-root-ca.crt' && !refs.length && typeof o.data?.['ca.crt'] === 'string'
+      && sha256(o.data['ca.crt']) === state.caHash && Object.keys(o.data).length === 1;
+    if (['Endpoints', 'EndpointSlice'].includes(o.kind)) {
+      const serviceName = o.kind === 'Endpoints' ? name : o.metadata.labels?.['kubernetes.io/service-name'];
+      const service = inventory.find(p => p.kind === 'Service' && p.metadata.namespace === namespace && p.metadata.name === serviceName);
+      if (!service || state.resources[resourceKey(service)] !== service.metadata.uid || !service.spec?.selector) return false;
+      return o.kind === 'Endpoints' ? !refs.length : refs.length === 1 && refs[0].kind === 'Service' && refs[0].uid === service.metadata.uid && refs[0].controller === true;
+    }
+    return false;
+  }
+  async exclusiveDockerVolumes(state) {
+      const allIds = (await this.execute('docker', ['ps', '-aq'])).stdout.trim().split(/\s+/).filter(Boolean);
+      const allContainers = allIds.length ? JSON.parse((await this.execute('docker', ['inspect', ...allIds])).stdout) : [];
+      for (const container of allContainers) {
+        const ownedNode = state.nodes.some(n => n.id === container.Id);
+        const fixtureName = container.Name?.replace(/^\//, '');
+        if (fixtureName?.startsWith(`${this.cluster}-fx-`) && (state.containers[fixtureName] !== container.Id || container.Config?.Labels?.[n2RunLabel] !== state.runId || container.Config?.Labels?.[n2LabLabel] !== 'n2')) this.refuse('unexpected fixture container or lost ownership');
+        if (!ownedNode && (container.Mounts ?? []).some(m => state.volumes[m.Name] || state.nodes.some(n => n.mounts.some(own => own[2] === m.Source)))) this.refuse('node volume is shared with another container');
+      }
+  }
+  async assertExclusive(state, { persist = true } = {}) {
+    this.assertNotRefused();
+    if (state.creation?.model !== 'H' || !state.creation.exclusive || state.cluster !== this.cluster || state.creation.runId !== state.runId)
+      this.refuse('exclusive run-created cluster receipt required');
+    await this.exclusiveDockerVolumes(state);
+    const namespaces = (await this.get('namespace')).items;
+    const inventory = [...await this.namespacedResources(), ...await this.clusterResources()];
+    this.inventoryEvidence('exclusive', [...namespaces, ...inventory]);
+    for (const ns of namespaces) {
+      if (state.baselineNamespaces?.[ns.metadata.name] === ns.metadata.uid && !ns.metadata.ownerReferences?.length && !ns.metadata.finalizers?.length) continue;
+      if (!await this.createdObject(ns, state)) this.refuse('exclusivity lost: unexpected namespace');
+    }
+    let recorded = false;
+    for (let pass = 0; pass < 4; pass++) {
+      for (const o of inventory) recorded = await this.recordControllerChild(o, state, inventory) || recorded;
+    }
+    for (const o of inventory) {
+      if (!o.metadata?.uid) this.refuse('inventory identity unavailable');
+      const baseline = state.baselineNamespacedResources?.[resourceKey(o)] ?? state.baselineClusterResources?.[resourceKey(o)];
+      if (baseline && baseline === this.baselineProof(o) && this.expectedPrincipals(o, state, true)) continue;
+      if (this.expectedGenerated(o, state, inventory)) continue;
+      if (!await this.createdObject(o, state) || !this.expectedPrincipals(o, state)) this.refuse('exclusivity lost: foreign resource, controller, storage or principal');
+      if (o.kind === 'Pod' && state.controllerReceipts?.[resourceKey(o)]) {
+        const parent = inventory.find(p => p.metadata.uid === state.controllerReceipts[resourceKey(o)].controllerUid);
+        this.checkManifestStorage(parent ?? o, state);
+      } else this.checkManifestStorage(o, state);
+    }
+    if (recorded && persist) this.save(state);
+    return inventory;
   }
   async createCluster(config) {
+    return this.withOperation(() => this.createClusterOperation(config), true);
+  }
+  async createClusterOperation(config) {
     try {
       this.assertNotRefused();
       const path = this.pathProof(true);
-      const runId = this.env.LAB_RUN_ID ?? `n2-${randomUUID()}`;
-      if (!/^[a-z0-9-]{12,63}$/.test(runId)) this.refuse('invalid LAB_RUN_ID');
+      const runId = this.env.LAB_RUN_ID;
+      if (!runId || !/^[a-z0-9-]{12,63}$/.test(runId)) this.refuse('invalid LAB_RUN_ID');
+      if (/\b(extraMounts|extraPortMappings|kubeadmConfigPatches|kubeadmConfigPatchesJSON6902)\s*:/.test(config)) this.refuse('unproved shared mounts or bootstrap patches');
       await this.daemon();
       const clusters = (await this.execute('kind', ['get', 'clusters'])).stdout.trim().split(/\s+/);
       const ids = (await this.execute('docker', ['ps', '-aq', '--filter', `label=io.x-k8s.kind.cluster=${this.cluster}`])).stdout.trim();
       if (clusters.includes(this.cluster) || ids) this.refuse('preexisting cluster or kind nodes');
       const oldVolumes = new Set((await this.execute('docker', ['volume', 'ls', '-q'])).stdout.trim().split(/\s+/));
-      const state = { phase: 'creating', runId, cluster: this.cluster, context: this.context, kubeconfig: path, evidenceDir: this.evidenceDir, resources: {}, containers: {}, images: {} };
+      const state = { phase: 'creating', createdAt: new Date().toISOString(), creation: { model: 'H', runId, cluster: this.cluster, exclusive: false }, runId, cluster: this.cluster, context: this.context, kubeconfig: path, evidenceDir: this.evidenceDir, resources: {}, containers: {}, images: {} };
       writeFileSync(this.statePath, JSON.stringify(state, null, 2), { flag: 'wx', mode: 0o600 });
       writeFileSync(this.kubeconfig, '', { flag: 'wx', mode: 0o600 });
       await this.execute('kind', ['create', 'cluster', '--name', this.cluster, '--kubeconfig', this.kubeconfig, '--wait', '0s', '--config', '-'], { input: config });
@@ -357,17 +571,24 @@ export class N2Lab {
         state.nodes.push({ id: n.Id, nodeName: name, nodeUid: kn.metadata.uid, nodeProviderId: kn.spec.providerID,
           mounts: (n.Mounts ?? []).map(m => [m.Type, m.Name, m.Source, m.Destination]) });
       }
-      if (nodes.some(n => (n.Mounts ?? []).some(m => m.Type === 'volume' && oldVolumes.has(m.Name)))) this.refuse('node mounted a preexisting volume');
+      if (nodes.some(n => (n.Mounts ?? []).some(m => m.Type !== 'volume' || oldVolumes.has(m.Name)))) this.refuse('node mounted a preexisting volume');
       state.volumes = {};
       for (const name of nodes.flatMap(n => (n.Mounts ?? []).filter(m => m.Type === 'volume').map(m => m.Name))) {
         state.volumes[name] = JSON.parse((await this.execute('docker', ['volume', 'inspect', name])).stdout)[0];
       }
       Object.assign(state, identity, { phase: 'ready', kubeconfigInode: this.sourceConfig.inode, kubeconfigHash: this.sourceConfig.hash });
-      state.baselineClusterResources = Object.fromEntries((await this.clusterResources()).filter(o => this.knownClusterBaseline(o, state)).map(o => [resourceKey(o), this.baselineProof(o)]));
-      const baseline = await this.namespacedResources();
-      state.baselineNamespacedResources = Object.fromEntries(baseline.filter(o => this.knownSystemBaseline(o, state, baseline)).map(o => [resourceKey(o), this.baselineProof(o)]));
-      state.baselineNamespaces = Object.fromEntries(((await this.get('namespace')).items)
-        .filter(n => ['default', 'kube-system', 'kube-public', 'kube-node-lease'].includes(n.metadata.name)).map(n => [n.metadata.name, n.metadata.uid]));
+      const clusterObjects = await this.clusterResources(), baseline = await this.namespacedResources();
+      const namespaces = (await this.get('namespace')).items;
+      this.inventoryEvidence('creation', [...namespaces, ...clusterObjects, ...baseline]);
+      if (namespaces.some(n => !['default', 'kube-system', 'kube-public', 'kube-node-lease', 'local-path-storage'].includes(n.metadata.name)
+        || !n.metadata.uid || n.metadata.ownerReferences?.length || n.metadata.finalizers?.length)) this.refuse('unexpected namespace at creation');
+      for (const o of clusterObjects) if (!this.knownClusterBaseline(o, state) || !this.expectedPrincipals(o, state, true)) this.refuse('unexpected cluster baseline or RBAC subject');
+      const eventState = { ...state, baselineClusterResources: Object.fromEntries(clusterObjects.map(o => [resourceKey(o), this.baselineProof(o)])), baselineNamespacedResources: Object.fromEntries(baseline.filter(o => o.kind !== 'Event' && this.knownSystemBaseline(o, state, baseline)).map(o => [resourceKey(o), this.baselineProof(o)])) };
+      for (const o of baseline) if (!(this.knownSystemBaseline(o, state, baseline) || this.expectedGenerated(o, eventState, [...clusterObjects, ...baseline])) || !this.expectedPrincipals(o, state, true)) this.refuse('unexpected namespaced creation baseline');
+      state.baselineClusterResources = Object.fromEntries(clusterObjects.map(o => [resourceKey(o), this.baselineProof(o)]));
+      state.baselineNamespacedResources = Object.fromEntries(baseline.map(o => [resourceKey(o), this.baselineProof(o)]));
+      state.baselineNamespaces = Object.fromEntries(namespaces.map(n => [n.metadata.name, n.metadata.uid]));
+      state.creation.exclusive = true;
       state.system = {};
       for (const [type, name] of [['configmap', 'coredns'], ['deployment', 'coredns']]) {
         const o = await this.get(type, name, 'kube-system');
@@ -377,7 +598,8 @@ export class N2Lab {
       this.save(state);
       const beforeMark = await this.identity();
       if (beforeMark.uid !== state.uid || beforeMark.caHash !== state.caHash) this.refuse('identity changed before marking');
-      await this.rawK(['label', 'namespace', 'kube-system', `${n2LabLabel}=n2`, `${n2RunLabel}=${runId}`]);
+      await this.assertExclusive(state);
+      await this.rawK(['label', 'namespace', 'kube-system', `${n2LabLabel}=n2`, `${n2RunLabel}=${runId}`, `--resource-version=${(await this.get('namespace', 'kube-system')).metadata.resourceVersion}`]);
       await this.assertIdentity();
       return state;
     } catch (error) { this.refuse(`cluster creation incomplete or refused (${error.code ?? 'ownership'}); no automatic deletion`); }
@@ -421,7 +643,9 @@ export class N2Lab {
     }
     if (!this.owns(o, state)) return false;
     const receipt = state.resources[resourceKey(o)];
+    if (receipt && state.resourceProofs?.[resourceKey(o)] && state.resourceProofs[resourceKey(o)] !== this.baselineProof(o)) return false;
     if (receipt && (receipt !== o.metadata.uid || JSON.stringify(refs) !== JSON.stringify(state.resourceOwners?.[resourceKey(o)] ?? []))) return false;
+    if (!receipt && !this.controllerReceipt(o, state)) return false;
     if (!receipt && (!o.metadata.namespace || o.kind === 'PersistentVolumeClaim' || refs.length !== 1)) return false;
     if (!receipt && !({ Pod: ['ReplicaSet', 'Job', 'DaemonSet', 'StatefulSet'], ReplicaSet: ['Deployment'], Job: ['CronJob'] }[o.kind] ?? []).includes(refs[0]?.kind)) return false;
     if (!receipt && refs[0]?.controller !== true) return false;
@@ -469,9 +693,7 @@ export class N2Lab {
     if (!this.evidenceDir) return;
     mkdirSync(this.evidenceDir, { recursive: true });
     // Keep identity and content fingerprints, never Secret payloads or credentials.
-    const objects = inventory.map(o => ({ key: resourceKey(o), uid: o.metadata.uid,
-      owners: o.metadata.ownerReferences ?? [], proof: this.unrelatedProof(o) }));
-    writeFileSync(join(this.evidenceDir, `n2-rollout-${phase}.json`), JSON.stringify(objects, null, 2), { mode: 0o600 });
+    this.inventoryEvidence(`rollout-${phase}`, inventory);
   }
   async rolloutInventory(workloads, state, phase = 'before') {
     const inventory = [...await this.namespacedResources(), ...await this.clusterResources()];
@@ -491,40 +713,51 @@ export class N2Lab {
         if (!affected.has(o.metadata.uid)) { affected.add(o.metadata.uid); changed = true; }
       }
     }
-    const foreign = [];
+    const unrelated = [];
     for (const o of inventory.filter(o => !affected.has(o.metadata.uid))) {
       const key = resourceKey(o);
       const baseline = state.baselineNamespacedResources?.[key] ?? state.baselineClusterResources?.[key];
       const node = o.kind === 'Node' && state.nodes.some(n => n.nodeUid === o.metadata.uid);
-      if (node || (baseline && baseline === this.baselineProof(o)) || await this.createdObject(o, state)) continue;
-      foreign.push({ key, uid: o.metadata.uid, proof: this.unrelatedProof(o) });
+      const generated = this.expectedGenerated(o, state, inventory);
+      if (!(node || (baseline && baseline === this.baselineProof(o)) || generated || await this.createdObject(o, state))) this.refuse('exclusivity lost: foreign object in rollout inventory');
+      if (this.systemCoordination(o, state) || generated && ['Event', 'Endpoints', 'EndpointSlice'].includes(o.kind)) continue;
+      unrelated.push({ key, uid: o.metadata.uid, proof: this.baselineProof(o) });
     }
-    return { workloads, foreign };
+    return { workloads, unrelated };
   }
   async verifyRollout(before, state) {
-    await this.assertIdentity();
+    await this.assertIdentity(state);
     const after = [...await this.namespacedResources(), ...await this.clusterResources()];
     this.rolloutEvidence('after', after);
-    for (const object of before.foreign) {
+    for (const object of before.unrelated) {
       const current = after.find(o => resourceKey(o) === object.key);
-      if (!current || current.metadata.uid !== object.uid || this.unrelatedProof(current) !== object.proof)
+      if (!current || current.metadata.uid !== object.uid || this.baselineProof(current) !== object.proof)
         this.refuse('rollout affected an unrelated object; preserve evidence');
     }
     await this.rolloutInventory(before.workloads, state, 'after');
   }
   async mutateWorkload(current, state, write) {
+    this.assertNotRefused();
+    await this.assertExclusive(state);
     if (!this.workload(current)) return write();
     const before = await this.rolloutInventory([current], state);
+    await this.assertExclusive(state);
+    const latest = await this.get(current.kind, current.metadata.name, current.metadata.namespace);
+    if (!latest || latest.metadata.uid !== current.metadata.uid || latest.metadata.resourceVersion !== current.metadata.resourceVersion) this.refuse('rollout target UID or resourceVersion changed');
+    await this.rolloutInventory([current], state, 'boundary');
     const result = await write();
     const system = current.metadata.namespace === 'kube-system' && state.system?.[`${current.kind.toLowerCase()}/${current.metadata.name}`] === current.metadata.uid;
+    if (result.stdout?.trim().startsWith('{')) {
+      const actual = JSON.parse(result.stdout);
+      if (actual.metadata?.uid === current.metadata.uid) this.recordResource(actual, state);
+    }
     if (system) {
       const actual = JSON.parse(result.stdout);
       if (actual.metadata?.uid !== current.metadata.uid || !this.owns(actual, state)) this.refuse('system workload mutation lost its UID binding');
-      state.resources[resourceKey(actual)] = actual.metadata.uid;
-      state.resourceOwners ??= {}; state.resourceOwners[resourceKey(actual)] = actual.metadata.ownerReferences ?? [];
+      this.recordResource(actual, state);
     }
     await this.verifyRollout(before, state);
-    if (system) this.save(state);
+    this.save(state);
     return result;
   }
   serialized(fn) {
@@ -534,7 +767,7 @@ export class N2Lab {
   }
   kubectl(args, options = {}) {
     return this.serialized(async () => {
-      try { return await this.kubeOperation(args, options); }
+      try { return await this.withOperation(() => this.kubeOperation(args, options)); }
       catch (error) {
         if (error.message?.startsWith('N2 lab refused')) throw error;
         this.refuse('resource ownership inspection or mutation failed');
@@ -562,6 +795,7 @@ export class N2Lab {
       // Preflight the whole batch before the first write.
       for (const o of objects) {
         if (namespace) o.metadata.namespace ??= namespace;
+        this.checkManifestStorage(o, state);
         const existing = await this.get(o.kind, o.metadata.name, o.metadata.namespace);
         if (existing) await this.checkObject(existing, state);
         else if (o.metadata.namespace && !objects.some(n => n.kind === 'Namespace' && n.metadata.name === o.metadata.namespace)) await this.ownedNamespace(o.metadata.namespace, state);
@@ -569,33 +803,34 @@ export class N2Lab {
       let result;
       for (const o of objects) {
         await this.assertIdentity();
+        const namespaceProof = o.metadata.namespace ? await this.ownedNamespace(o.metadata.namespace, state) : undefined;
+        if (namespaceProof) {
+          o.metadata.labels = { ...o.metadata.labels, 'com.grometis.gromesh.n2-namespace-uid': namespaceProof.metadata.uid };
+          o.metadata.annotations = { ...o.metadata.annotations, 'gromesh.io/n2-namespace-uid': namespaceProof.metadata.uid };
+        }
         const existing = await this.get(o.kind, o.metadata.name, o.metadata.namespace);
         if (existing) {
           await this.checkObject(existing, state);
           o.metadata.uid = existing.metadata.uid;
           o.metadata.resourceVersion = existing.metadata.resourceVersion;
         }
-        result = await this.mutateWorkload(existing, state, () => this.rawK([existing ? 'apply' : 'create', '-f', '-', '-o', 'json'], { ...options, input: JSON.stringify(this.decorate(o, state)), allowFail: false }));
+        result = await this.mutateWorkload(existing, state, async () => {
+          if (namespaceProof && (await this.ownedNamespace(o.metadata.namespace, state)).metadata.uid !== namespaceProof.metadata.uid) this.refuse('namespace UID changed before create');
+          return this.rawK([existing ? 'apply' : 'create', '-f', '-', '-o', 'json'], { ...options, input: JSON.stringify(this.decorate(o, state)), allowFail: false });
+        });
+        if (namespaceProof && (await this.ownedNamespace(o.metadata.namespace, state)).metadata.uid !== namespaceProof.metadata.uid) this.refuse('namespace UID changed after create; preserve evidence');
         const actual = JSON.parse(result.stdout);
         if (!actual.metadata?.uid) this.refuse('created resource has no UID receipt');
-        state.resources[resourceKey(actual)] = actual.metadata.uid;
-        state.resourceOwners ??= {}; state.resourceOwners[resourceKey(actual)] = actual.metadata.ownerReferences ?? [];
+        this.recordResource(actual, state);
+        await this.assertIdentity(state);
         this.save(state);
       }
       return result;
     }
     if (verb === 'run') {
-      await this.ownedNamespace(namespace, state);
-      const labels = `${n2LabLabel}=n2,${n2RunLabel}=${state.runId}`;
-      const boundary = args.indexOf('--');
-      const labelled = [...args]; labelled.splice(boundary < 0 ? args.length : boundary, 0, `--labels=${labels}`);
-      labelled.splice(labelled.indexOf('--') < 0 ? labelled.length : labelled.indexOf('--'), 0, '-o', 'json');
-      const result = await this.rawK(labelled, { ...options, allowFail: false });
-      const actual = JSON.parse(result.stdout);
-      if (!this.owns(actual, state)) this.refuse('created pod has no ownership receipt');
-      state.resources[resourceKey(actual)] = actual.metadata.uid;
-      state.resourceOwners ??= {}; state.resourceOwners[resourceKey(actual)] = actual.metadata.ownerReferences ?? []; this.save(state);
-      return result;
+      if (args.includes('--rm') || args.includes('--attach') || args.includes('-i') || args.includes('-t')) this.refuse('interactive run forbidden; use a guarded pod manifest');
+      const generated = await this.rawK([...args, '--dry-run=client', '-o', 'json'], options);
+      return this.kubeOperation(['create', '-f', '-', ...(namespace ? ['-n', namespace] : [])], { ...options, input: generated.stdout });
     }
     if (verb === 'delete') {
       const at = args.indexOf('delete'), type = args[at + 1];
@@ -665,16 +900,17 @@ export class N2Lab {
     }
     if (verb === 'set') {
       const generated = JSON.parse((await this.rawK([...args, '--dry-run=client', '-o', 'json'], options)).stdout);
+      this.checkManifestStorage(generated, state);
       generated.metadata.uid = current.metadata.uid;
       generated.metadata.resourceVersion = current.metadata.resourceVersion;
       return this.mutateWorkload(current, state, () => this.rawK(['apply', '-f', '-', '-o', 'json'], { ...options, input: JSON.stringify(this.decorate(generated, state)), allowFail: false }));
     }
-    if (verb === 'scale') return this.mutateWorkload(current, state, () => this.rawK([...args, `--resource-version=${current.metadata.resourceVersion}`], options));
+    if (verb === 'scale') return this.mutateWorkload(current, state, () => this.rawK([...args, `--resource-version=${current.metadata.resourceVersion}`, '-o', 'json'], options));
     if (verb === 'patch') this.refuse('patch requires a guarded object manifest');
     return this.rawK(args, options);
   }
   async docker(args, options = {}) {
-    try { return await this.dockerOperation(args, options); }
+    try { return await this.withOperation(() => this.dockerOperation(args, options)); }
     catch (error) { this.refuse(error.message?.startsWith('N2 lab refused') ? 'Docker ownership refused' : 'Docker preflight or mutation failed'); }
   }
   async dockerOperation(args, options = {}) {
@@ -686,10 +922,10 @@ export class N2Lab {
     }
     if (args[0] === 'run') {
       const name = flagValue(args, '--name');
-      for (let i = 0; i < args.length; i++) {
-        if (args[i] === '-v' && !args[i + 1]?.endsWith(':ro')) this.refuse('fixture mounts must be read-only');
-        if (['--mount', '--volumes-from', '--privileged'].includes(args[i])) this.refuse('unproved fixture mount or privilege');
+      for (const arg of args) {
+        if (/^(?:-v|--volume|--mount|--volumes-from|--privileged)(?:=|$)/.test(arg)) this.refuse('fixture shared mounts or privilege forbidden');
       }
+      if (['host', 'container'].some(mode => [flagValue(args, '--network'), flagValue(args, '--pid'), flagValue(args, '--ipc')].some(v => v?.split(':')[0] === mode))) this.refuse('fixture host or borrowed namespaces forbidden');
       if (!name?.startsWith(`${this.cluster}-fx-`)) this.refuse('fixture name required');
       const all = (await this.execute('docker', ['ps', '-aq'])).stdout.trim().split(/\s+/).filter(Boolean);
       if (all.length) {
@@ -703,6 +939,7 @@ export class N2Lab {
       if (Object.keys(info.Config?.Volumes ?? {}).length) this.refuse('fixture image declares implicit volumes');
       const result = await this.execute('docker', ['run', '--label', `${n2LabLabel}=n2`, '--label', `${n2RunLabel}=${state.runId}`, ...args.slice(1).map(a => a === image ? info.Id : a)], options);
       const c = JSON.parse((await this.execute('docker', ['inspect', result.stdout.trim()])).stdout)[0];
+      if (c.Mounts?.length) this.refuse('fixture acquired an unexpected volume');
       if (c.Config?.Labels?.[n2RunLabel] !== state.runId || c.Config?.Labels?.[n2LabLabel] !== 'n2') this.refuse('fixture creation label missing');
       state.containers[name] = c.Id; this.save(state);
       return result;
@@ -713,7 +950,9 @@ export class N2Lab {
       if (!ids.length) return { code: 0, stdout: '', stderr: '' };
       const c = JSON.parse((await this.execute('docker', ['inspect', ...ids])).stdout)[0];
       if (c.Id !== state.containers[name] || c.Config?.Labels?.[n2RunLabel] !== state.runId || c.Config?.Labels?.[n2LabLabel] !== 'n2') this.refuse('fixture container is not owned');
-      return this.execute('docker', ['rm', '-f', c.Id], { ...options, allowFail: false });
+      const result = await this.execute('docker', ['rm', '-f', c.Id], { ...options, allowFail: false });
+      delete state.containers[name]; this.save(state);
+      return result;
     }
     if (args[0] === 'exec') {
       const target = args.slice(1).find(a => !a.startsWith('-'));
@@ -748,7 +987,7 @@ export class N2Lab {
     const selected = container ? statuses.filter(c => c.name === container) : statuses.filter(c => pod.spec?.containers?.some(s => s.name === c.name));
     if (selected.length !== 1 || !/^containerd:\/\/[a-f0-9]{64}$/.test(selected[0].containerID ?? '')) this.refuse('unambiguous container ID required');
     const node = await this.proveNode(pod.spec?.nodeName, state);
-    return Object.freeze({ namespace, namespaceUid: ns.metadata.uid, podName, podUid: pod.metadata.uid,
+    return Object.freeze({ namespace, namespaceUid: ns.metadata.uid, podName, podUid: pod.metadata.uid, podResourceVersion: pod.metadata.resourceVersion,
       container: selected[0].name, containerID: selected[0].containerID.slice('containerd://'.length), node: node.nodeName, nodeUid: node.nodeUid, nodeID: node.id });
   }
   async validateContainer(target) {
@@ -767,6 +1006,9 @@ export class N2Lab {
     return info;
   }
   async execContainer(target, command, options = {}) {
+    return this.withOperation(() => this.execContainerOperation(target, command, options));
+  }
+  async execContainerOperation(target, command, options = {}) {
     try {
       if (!command.length) this.refuse('empty container command');
       await this.inspectContainer(target);
@@ -810,6 +1052,9 @@ export class N2Lab {
     return false;
   }
   async spawnContainer(target, command) {
+    return this.withOperation(() => this.spawnContainerOperation(target, command));
+  }
+  async spawnContainerOperation(target, command) {
     await this.inspectContainer(target);
     const child = this.spawnProcess('docker', ['exec', '-i', target.nodeID, 'crictl', 'exec', '-i', target.containerID, ...command],
       { env: { ...this.env, KUBECONFIG: this.verifiedKubeconfig(), LAB_N2_PINNED_CONFIG: this.pinnedConfig }, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -833,6 +1078,9 @@ export class N2Lab {
     return this.execute('docker', ['exec', node.id, ...command], options);
   }
   async addRoute(name, address, gateway) {
+    return this.withOperation(() => this.addRouteOperation(name, address, gateway));
+  }
+  async addRouteOperation(name, address, gateway) {
     if (!['169.254.169.254', '169.254.170.2', 'fd00:ec2::254'].includes(address)
       || !isIP(gateway) || isIP(address) !== isIP(gateway)) this.refuse('unsupported IMDS route');
     const state = await this.assertIdentity();
@@ -928,6 +1176,9 @@ export class N2Lab {
     return result;
   }
   async writePodFile(target, volume, file, input) {
+    return this.withOperation(() => this.writePodFileOperation(target, volume, file, input));
+  }
+  async writePodFileOperation(target, volume, file, input) {
     if (volume !== 'isolation-handoff' || typeof input !== 'string' || Buffer.byteLength(input) > 1024 * 1024) this.refuse('unsupported handoff write');
     const path = await this.podFile(target, volume, file);
     const temporary = `${path}.n2-${randomUUID()}`;
@@ -937,6 +1188,9 @@ export class N2Lab {
     return result;
   }
   async signalContainer(target, signal, comm) {
+    return this.withOperation(() => this.signalContainerOperation(target, signal, comm));
+  }
+  async signalContainerOperation(target, signal, comm) {
     if (!['STOP', 'CONT'].includes(signal) || !/^[a-zA-Z0-9_-]+$/.test(comm)) this.refuse('unsupported container signal');
     const info = await this.inspectContainer(target);
     const pid = info.info?.pid;
@@ -950,8 +1204,8 @@ export class N2Lab {
     return { ...result, pid };
   }
   async helm(args, options = {}) {
-    try { return await this.helmOperation(args, options); }
-    catch (error) { this.refuse(error.message?.startsWith('N2 lab refused') ? 'Helm ownership refused' : 'Helm preflight or mutation failed'); }
+    try { return await this.withOperation(() => this.helmOperation(args, options)); }
+    catch (error) { if (error.message?.startsWith('N2 lab refused')) throw error; this.refuse('Helm preflight or mutation failed'); }
   }
   async helmOperation(args, options = {}) {
     this.clusterFlags(args);
@@ -1012,10 +1266,16 @@ export class N2Lab {
     await this.helmObjects(rendered.stdout, ns);
     const crds = objects.filter(o => o.kind === 'CustomResourceDefinition');
     if (crds.length) await this.kubectl(['apply', '-f', '-'], { input: JSON.stringify({ apiVersion: 'v1', kind: 'List', items: crds }) });
+    await this.assertExclusive(state);
+    const helmNamespace = await this.ownedNamespace(ns, state);
     const effects = await this.rolloutInventory(oldObjects, state);
     const beforeUids = new Set([...await this.namespacedResources(), ...await this.clusterResources()].map(o => o.metadata.uid));
+    await this.assertExclusive(state);
+    if ((await this.ownedNamespace(ns, state)).metadata.uid !== helmNamespace.metadata.uid) this.refuse('Helm namespace changed');
+    await this.rolloutInventory(oldObjects, state, 'helm-boundary');
     const result = await helm([...args, '--skip-crds', '--no-hooks', '--post-renderer', process.execPath, '--post-renderer-args', resolve(import.meta.dirname, 'kind-stack-guard.mjs'), '--post-renderer-args', 'n2-helm-render'],
       { ...options, allowFail: false, env: { LAB_HELM_NAMESPACE: ns } });
+    if ((await this.ownedNamespace(ns, state)).metadata.uid !== helmNamespace.metadata.uid) this.refuse('Helm namespace changed after write');
     this.rolloutEvidence('helm-after', [...await this.namespacedResources(), ...await this.clusterResources()]);
     state = this.load();
     state.releases ??= {};
@@ -1060,8 +1320,7 @@ export class N2Lab {
       receipts.push(actual);
     }
     for (const actual of receipts) {
-      state.resources[resourceKey(actual)] = actual.metadata.uid;
-      state.resourceOwners ??= {}; state.resourceOwners[resourceKey(actual)] = actual.metadata.ownerReferences ?? [];
+      this.recordResource(actual, state);
     }
     await this.verifyRollout(effects, state);
     this.save(state);
@@ -1097,12 +1356,13 @@ export class N2Lab {
         o.metadata.uid = existing.metadata.uid;
         o.metadata.resourceVersion = existing.metadata.resourceVersion;
       }
+      this.checkManifestStorage(o, state);
       this.decorate(o, state);
     }
     return objects;
   }
   async image(args) {
-    try { return await this.imageOperation(args); }
+    try { return await this.withOperation(() => this.imageOperation(args)); }
     catch (error) { this.refuse(error.message?.startsWith('N2 lab refused') ? 'image ownership refused' : 'image preflight or mutation failed'); }
   }
   async imageOperation(args) {
@@ -1143,11 +1403,17 @@ export class N2Lab {
     return result;
   }
   async pullImage(image) {
+    return this.withOperation(() => this.pullImageOperation(image));
+  }
+  async pullImageOperation(image) {
     await this.assertIdentity();
     if (!/@sha256:[0-9a-f]{64}$/.test(image)) this.refuse('pull requires a pinned digest');
     return this.execute('docker', ['pull', '-q', image]);
   }
   async loadImage(image) {
+    return this.withOperation(() => this.loadImageOperation(image));
+  }
+  async loadImageOperation(image) {
     const state = await this.assertIdentity();
     const current = JSON.parse((await this.execute('docker', ['image', 'inspect', image])).stdout)[0];
     if (!state.images[image]?.id || state.images[image].id !== current.Id) this.refuse('image not created by this execution');
@@ -1200,9 +1466,21 @@ export class N2Lab {
     if (!o?.metadata?.uid || o.metadata.finalizers?.length || o.metadata.ownerReferences?.length) return false;
     const name = o.metadata.name;
     if (o.kind === 'Node') return state.nodes.some(n => n.nodeName === name && n.nodeUid === o.metadata.uid && n.nodeProviderId === o.spec?.providerID);
-    if (['ClusterRole', 'ClusterRoleBinding'].includes(o.kind)) return name.startsWith('system:')
+    if (['ClusterRole', 'ClusterRoleBinding'].includes(o.kind)) return n2SystemAccounts.some(account => name === `system:controller:${account}`)
       || ['admin', 'cluster-admin', 'edit', 'view', 'kubeadm:node-autoapprove-bootstrap', 'kubeadm:node-autoapprove-certificate-rotation',
-        'kubeadm:kubelet-bootstrap', 'kubeadm:get-nodes', 'kind:local-path-provisioner'].includes(name);
+        'kubeadm:kubelet-bootstrap', 'kubeadm:get-nodes', 'kubeadm:cluster-admins', 'kind:local-path-provisioner',
+        'system:aggregate-to-admin', 'system:aggregate-to-edit', 'system:aggregate-to-view', 'system:auth-delegator', 'system:basic-user',
+        'system:certificates.k8s.io:certificatesigningrequests:nodeclient', 'system:certificates.k8s.io:certificatesigningrequests:selfnodeclient',
+        'system:certificates.k8s.io:kube-apiserver-client-approver', 'system:certificates.k8s.io:kube-apiserver-client-kubelet-approver',
+        'system:certificates.k8s.io:kubelet-serving-approver', 'system:certificates.k8s.io:legacy-unknown-approver',
+        'system:certificates.k8s.io:kube-apiserver-client-signer', 'system:certificates.k8s.io:kube-apiserver-client-kubelet-signer',
+        'system:certificates.k8s.io:kubelet-serving-signer', 'system:certificates.k8s.io:legacy-unknown-signer',
+        'system:coredns', 'system:discovery', 'system:heapster', 'system:kube-aggregator', 'system:kube-controller-manager', 'system:kube-dns',
+        'system:kube-scheduler', 'system:kubelet-api-admin', 'system:monitoring', 'system:node', 'system:node-bootstrapper',
+        'system:node-problem-detector', 'system:node-proxier', 'system:persistent-volume-provisioner', 'system:public-info-viewer',
+        'system:service-account-issuer-discovery', 'system:volume-scheduler'].includes(name);
+    if (o.kind === 'StorageClass') return name === 'standard' && o.provisioner === 'rancher.io/local-path';
+    if (o.kind === 'APIService') return !o.spec?.service && ['v1.', 'v1.admissionregistration.k8s.io', 'v1.apiextensions.k8s.io', 'v1.apps', 'v1.authentication.k8s.io', 'v1.authorization.k8s.io', 'v1.autoscaling', 'v2.autoscaling', 'v1.batch', 'v1.certificates.k8s.io', 'v1.coordination.k8s.io', 'v1.discovery.k8s.io', 'v1.events.k8s.io', 'v1.flowcontrol.apiserver.k8s.io', 'v1.networking.k8s.io', 'v1.node.k8s.io', 'v1.policy', 'v1.rbac.authorization.k8s.io', 'v1.scheduling.k8s.io', 'v1.storage.k8s.io', 'v1.storagemigration.k8s.io', 'v1.resource.k8s.io', 'v1beta1.resource.k8s.io', 'v1beta2.resource.k8s.io'].includes(name);
     const known = { StorageClass: ['standard'], PriorityClass: ['system-cluster-critical', 'system-node-critical'],
       PriorityLevelConfiguration: ['catch-all', 'exempt', 'global-default', 'leader-election', 'node-high', 'system', 'workload-high', 'workload-low'],
       FlowSchema: ['catch-all', 'exempt', 'global-default', 'kube-controller-manager', 'kube-scheduler', 'kube-system-service-accounts',
@@ -1213,7 +1491,7 @@ export class N2Lab {
   knownSystemBaseline(o, state, inventory, seen = new Set()) {
     if (!o?.metadata?.uid || seen.has(o.metadata.uid) || o.metadata.finalizers?.length) return false;
     const { namespace, name } = o.metadata;
-    if (!['kube-system', 'kube-public', 'kube-node-lease', 'default'].includes(namespace)) return false;
+    if (!['kube-system', 'kube-public', 'kube-node-lease', 'default', 'local-path-storage'].includes(namespace)) return false;
     seen = new Set([...seen, o.metadata.uid]);
     const refs = o.metadata.ownerReferences ?? [];
     if (refs.length > 1 || (refs.length === 1 && refs[0].controller !== true)) return false;
@@ -1226,13 +1504,17 @@ export class N2Lab {
       const parent = inventory.find(p => p.metadata.uid === ref.uid && p.kind === ref.kind && p.apiVersion === ref.apiVersion && p.metadata.namespace === namespace);
       return parent && this.knownSystemBaseline(parent, state, inventory, seen);
     });
-    if (o.kind === 'Lease' && namespace === 'kube-node-lease') return state.nodes.some(n => n.nodeName === name);
+    if (this.systemCoordination(o, state)) return true;
+    if (o.kind === 'ServiceAccount' && name === 'default') return true;
     if (namespace === 'default') return ['Service', 'Endpoints'].includes(o.kind) && name === 'kubernetes';
     if (o.kind === 'ConfigMap' && name === 'kube-root-ca.crt') return true;
     if (namespace === 'kube-public') return o.kind === 'ConfigMap' && name === 'cluster-info';
+    if (namespace === 'local-path-storage') return ({ Deployment: ['local-path-provisioner'], ServiceAccount: ['local-path-provisioner-service-account'], ConfigMap: ['local-path-config'], Role: ['local-path-provisioner-role'], RoleBinding: ['local-path-provisioner-bind'] }[o.kind] ?? []).includes(name);
     if (namespace !== 'kube-system') return false;
     const known = { ConfigMap: ['coredns', 'kube-proxy', 'kubeadm-config', 'kubelet-config', 'extension-apiserver-authentication'],
-      Deployment: ['coredns'], DaemonSet: ['kube-proxy'], Service: ['kube-dns'], ServiceAccount: ['default', 'coredns', 'kube-proxy'] };
+      Deployment: ['coredns'], DaemonSet: ['kube-proxy'], Service: ['kube-dns'], Role: ['extension-apiserver-authentication-reader', 'system:controller:bootstrap-signer', 'system:controller:token-cleaner', 'system::leader-locking-kube-controller-manager', 'system::leader-locking-kube-scheduler', 'kubeadm:kubelet-config', 'kube-proxy'],
+      RoleBinding: ['kubeadm:kubelet-config', 'kube-proxy', 'system::extension-apiserver-authentication-reader', 'system::leader-locking-kube-controller-manager', 'system::leader-locking-kube-scheduler', 'system:controller:bootstrap-signer', 'system:controller:token-cleaner'],
+      ServiceAccount: ['default', ...n2SystemAccounts] };
     return known[o.kind]?.includes(name) === true;
   }
   baselineProof(o) {
@@ -1240,6 +1522,10 @@ export class N2Lab {
     delete value.status;
     delete value.metadata.resourceVersion;
     delete value.metadata.managedFields;
+    delete value.metadata.annotations?.['deployment.kubernetes.io/revision'];
+    if (this.systemCoordination(o)) {
+      for (const key of ['renewTime', 'acquireTime', 'leaseTransitions']) delete value.spec?.[key];
+    }
     return sha256(JSON.stringify(value));
   }
   async namespacedResources(namespace) {
@@ -1260,6 +1546,7 @@ export class N2Lab {
       const baseline = state.baselineNamespacedResources?.[resourceKey(o)];
       const system = ['kube-system', 'kube-public', 'kube-node-lease', 'default'].includes(o.metadata.namespace);
       if (system && baseline && baseline === this.baselineProof(o)) continue;
+      if (this.expectedGenerated(o, state, objects)) continue;
       if (!await this.createdObject(o, state)) this.refuse('foreign namespaced object or unproved controller chain');
     }
     return objects;
@@ -1342,7 +1629,10 @@ export class N2Lab {
 
 async function n2Command([command, ...args]) {
   const lab = new N2Lab();
-  if (command === 'n2-create') await lab.createCluster(readFileSync(0, 'utf8'));
+  if (command === 'n2-name') {
+    if (!/^[a-z0-9-]{12,63}$/.test(process.env.LAB_RUN_ID ?? '')) lab.refuse('LAB_RUN_ID required');
+    console.log(lab.cluster);
+  } else if (command === 'n2-create') await lab.createCluster(readFileSync(0, 'utf8'));
   else if (command === 'n2-helm') await lab.helm(args);
   else if (command === 'n2-kubectl') { const result = await lab.kubectl(args); process.stdout.write(result.stdout); }
   else if (command === 'n2-assert') await lab.assertIdentity();

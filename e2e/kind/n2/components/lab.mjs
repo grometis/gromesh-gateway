@@ -1,6 +1,6 @@
 // Infrastructure of the N2 components suite: the lab guard, kubectl/helm/docker on the lab context only, the control
 // plane's API through a port-forward (session + CSRF, API tokens) and its Postgres, and the objects the suite installs.
-import { N2Lab } from "../../../../scripts/kind-stack-guard.mjs";
+import { N2Lab, n2ClusterName } from "../../../../scripts/kind-stack-guard.mjs";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 
 export const here = fileURLToPath(new URL(".", import.meta.url));
 export const root = fileURLToPath(new URL("../../../../", import.meta.url));
-export const CLUSTER = "gromesh-n2-lab";
+export const CLUSTER = n2ClusterName(process.env.LAB_RUN_ID);
 export const CONTEXT = `kind-${CLUSTER}`;
 export const NS = { cp: "gromesh-n2-cp", dp: "gromesh-n2-comp", fx: "gromesh-n2-fixtures" };
 export { scrubKong } from "./scrub.mjs";

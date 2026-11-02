@@ -96,7 +96,7 @@ async function topology() {
     return { name: n.metadata.name, v4: ips.find((ip) => !ip.includes(":")), v6: ips.find((ip) => ip.includes(":")) };
   });
   const fixture = async (role) => {
-    const [c] = JSON.parse((await docker(["inspect", `gromesh-n2-lab-fx-${role}`])).stdout);
+    const [c] = JSON.parse((await docker(["inspect", `${ownership.cluster}-fx-${role}`])).stdout);
     if (!c?.State?.Running) throw new Error(`N2-E1 fixture ${role} is not running: run e2e/kind/n2/run.mjs first`);
     const n = c.NetworkSettings.Networks.kind;
     return { v4: n.IPAddress, v6: n.GlobalIPv6Address };

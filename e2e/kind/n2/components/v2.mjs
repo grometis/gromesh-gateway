@@ -105,7 +105,7 @@ async function topology() {
     return { name: n.metadata.name, v4: ips.find((ip) => !ip.includes(":")), v6: ips.find((ip) => ip.includes(":")) };
   });
   const fixture = async (role) => {
-    const [c] = JSON.parse((await docker(["inspect", `gromesh-n2-lab-fx-${role}`])).stdout);
+    const [c] = JSON.parse((await docker(["inspect", `${ownership.cluster}-fx-${role}`])).stdout);
     if (!c?.State?.Running) throw new Error(`N2-E1 fixture ${role} is not running: run e2e/kind/n2/run.mjs first`);
     const n = c.NetworkSettings.Networks.kind;
     return { v4: n.IPAddress, v6: n.GlobalIPv6Address };
@@ -551,7 +551,7 @@ async function setupV2() {
   const k1 = await api.ok("POST", "/api/v2/instance/signing-keys", { session: ctx.admin, body: { validUntil } });
   ctx.k1 = { kid: k1.kid, publicKey: k1.publicKey };
   // The backend: HTTP + WebSocket on the allowed external fixture, beside its TCP servers.
-  await docker(["exec", "-d", "gromesh-n2-lab-fx-backend", "node", "-e", BACKEND]);
+  await docker(["exec", "-d", `${ownership.cluster}-fx-backend`, "node", "-e", BACKEND]);
   await clickhouse();
   await apply([{ apiVersion: "v1", kind: "Namespace", metadata: { name: NS.dp } }, ...denyPolicies(topo.net),
     { apiVersion: "v1", kind: "Secret", metadata: { name: "clickhouse-writer", namespace: NS.dp }, stringData: { "writer-password": ctx.chWriter } }]);
@@ -1173,7 +1173,7 @@ async function finishV2() {
   if (ownership.refused) { report.cleanup = "refused; ownership receipt and evidence preserved"; report.cleanupFailed = true; }
   else if (process.env.LAB_KEEP === "1") report.cleanup = "kept (LAB_KEEP=1)";
   else if (ctx.owned) {
-    await removeSuiteObjects([OBS], () => docker(["exec", "gromesh-n2-lab-fx-backend", "pkill", "-f", `listen\\(${BACKEND_PORT}`], { allowFail: true }))
+    await removeSuiteObjects([OBS], () => docker(["exec", `${ownership.cluster}-fx-backend`, "pkill", "-f", `listen\\(${BACKEND_PORT}`], { allowFail: true }))
       .then(() => { report.cleanup = "namespaces, policies and the backend server removed"; }, (e) => { report.cleanup = `failed: ${e.message}`; report.cleanupFailed = true; });
   }
   if (frozen.size) { report.cleanupFailed = true; report.stillFrozen = [...frozen]; }

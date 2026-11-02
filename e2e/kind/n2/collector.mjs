@@ -4,7 +4,7 @@
 //   LAB_KUBECONFIG=<file> AGENT_IMAGE=<local tag> KONG_IMAGE=<local tag> [LAB_OUT=<dir>] node e2e/kind/n2/collector.mjs
 // Requires the cluster from cluster.sh. No control plane: Kong never gets a lease here, the sidecars run regardless.
 // Never prints the collector token or the ClickHouse passwords.
-import { N2Lab } from "../../../scripts/kind-stack-guard.mjs";
+import { N2Lab, n2ClusterName } from "../../../scripts/kind-stack-guard.mjs";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -21,7 +21,7 @@ const versions = Object.fromEntries(readFileSync(join(here, "versions.env"), "ut
   .filter((line) => /^[A-Z0-9_]+=/.test(line)).map((line) => line.split(/=(.*)/s).slice(0, 2)));
 const kubeconfig = process.env.LAB_KUBECONFIG;
 assertLabKubeconfig(kubeconfig, homedir());
-const context = `kind-${versions.CLUSTER_NAME}`;
+const context = `kind-${n2ClusterName(process.env.LAB_RUN_ID)}`;
 const work = mkdtempSync(join(tmpdir(), "gromesh-x4-kind-"));
 const out = process.env.LAB_OUT ?? work;
 const AGENT_IMAGE = process.env.AGENT_IMAGE;
@@ -189,7 +189,7 @@ async function fromOutside(ip) {
   return phase === "Succeeded" ? JSON.parse(stdout.trim()) : { error: stdout };
 }
 async function fromNode(p) {
-  const node = `${versions.CLUSTER_NAME}-worker`;
+  const node = `${n2ClusterName(process.env.LAB_RUN_ID)}-worker`;
   const target = await ownership.containerTarget(DP, p.metadata.name, "collector");
   const r = await ownership.collectorProbe(node, target);
   return r.stdout.trim().replaceAll("\n", ", ");

@@ -25,6 +25,7 @@ export LAB_KUBECONFIG
 RUN_ID="n2-$(node -p 'require("node:crypto").randomUUID()')"
 export LAB_RUN_ID="$RUN_ID"
 guard="$root/scripts/kind-stack-guard.mjs"
+CLUSTER_NAME="$(node "$guard" n2-name)"
 owned=0 creating=0 failed=0 work="" sampler_pid=""
 built=() trees=()
 

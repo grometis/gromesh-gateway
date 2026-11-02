@@ -8,6 +8,8 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$here/versions.env"
 : "${LAB_KUBECONFIG:?set LAB_KUBECONFIG to the lab kubeconfig file (never ~/.kube/config)}"
 WORKERS="${WORKERS:-2}"
+: "${LAB_RUN_ID:?set LAB_RUN_ID to the exclusive execution id}"
+CLUSTER_NAME="$(node "$here/../../../scripts/kind-stack-guard.mjs" n2-name)"
 context="kind-$CLUSTER_NAME"
 # One explicit file, never a list, never a link, never the user's kubeconfig (-ef also catches a hard link).
 [[ "$LAB_KUBECONFIG" != *:* ]] || { echo "LAB_KUBECONFIG must be a single file, not a list" >&2; exit 1; }

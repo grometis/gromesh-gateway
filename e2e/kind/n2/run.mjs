@@ -3,7 +3,7 @@
 // the chart's NetworkPolicy, proves CAP-1..CAP-4 and that each protection is load-bearing (negative controls).
 //   LAB_KUBECONFIG=<file> [LAB_OUT=<dir>] [DATA_PLANE_CHART=<chart dir>] node e2e/kind/n2/run.mjs
 // Requires the cluster from cluster.sh. Only the lab context of LAB_KUBECONFIG is ever used.
-import { N2Lab } from "../../../scripts/kind-stack-guard.mjs";
+import { N2Lab, n2ClusterName } from "../../../scripts/kind-stack-guard.mjs";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -19,7 +19,7 @@ const versions = Object.fromEntries(readFileSync(join(here, "versions.env"), "ut
   .filter((line) => /^[A-Z0-9_]+=/.test(line)).map((line) => line.split(/=(.*)/s).slice(0, 2)));
 const kubeconfig = process.env.LAB_KUBECONFIG;
 assertLabKubeconfig(kubeconfig, homedir());
-const cluster = versions.CLUSTER_NAME;
+const cluster = n2ClusterName(process.env.LAB_RUN_ID);
 const context = `kind-${cluster}`;
 const chart = process.env.DATA_PLANE_CHART ?? join(root, "deploy/helm/data-plane");
 const out = process.env.LAB_OUT ?? mkdtempSync(join(tmpdir(), "gromesh-n2-lab-"));
@@ -119,8 +119,9 @@ async function externalFixtures(topo) {
     const name = `${cluster}-fx-${f.role}`;
     await docker(["rm", "-f", name], { allowFail: true });
     await docker(["run", "-d", "--name", name, "--network", "kind", "--ip", f.ip.v4, "--ip6", f.ip.v6,
-      ...(f.cap ? ["--cap-add", "NET_ADMIN"] : []), "-v", `${join(here, "fixtures.mjs")}:/lab/fixtures.mjs:ro`,
-      versions.FIXTURE_IMAGE, "sh", "-c", `${f.setup}exec node /lab/fixtures.mjs serve ext:${f.role} 8080 80`]);
+      ...(f.cap ? ["--cap-add", "NET_ADMIN"] : []),
+      versions.FIXTURE_IMAGE, "sh", "-c", `set -eu; mkdir -p /lab; printf '%s' "$1" > /lab/fixtures.mjs; ${f.setup}exec node /lab/fixtures.mjs serve ext:${f.role} 8080 80`,
+      "sh", readFileSync(join(here, "fixtures.mjs"), "utf8")]);
   }
   for (const n of topo.nodes) {
     const node = n.name;
