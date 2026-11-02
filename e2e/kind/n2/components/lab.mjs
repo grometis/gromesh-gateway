@@ -257,7 +257,7 @@ export async function removeSuiteObjects(extraNamespaces = [], beforeDelete = as
   await ownership.preflightResources([
     ...[NS.dp, NS.cp, ...extraNamespaces].map(name => ({ type: 'namespace', name })),
     ...POLICIES.map(name => ({ type: 'ciliumclusterwidenetworkpolicy', name })),
-  ]);
+  ], false, { deleting: true });
   await beforeDelete();
   await kubectl(["delete", "namespace", NS.dp, NS.cp, ...extraNamespaces, "--ignore-not-found", "--wait=true", "--timeout=240s"], { timeout: 260_000 });
   await kubectl(["delete", "ciliumclusterwidenetworkpolicy", ...POLICIES, "--ignore-not-found"]);

@@ -242,36 +242,22 @@ async function logs(pod, container) {
 }
 const firstLine = (lines, pattern) => lines.find((l) => pattern.test(l.text));
 
-/** The host pid of a container of a data plane pod, checked against the binary it must be. */
+/** Signals are resolved by the runtime's immutable container ID, after pod/namespace/node proof. */
 async function containerPid(podName, container, comm) {
-  const p = await json(["-n", NS.dp, "get", "pod", podName]);
-  const st = [...(p.status.initContainerStatuses ?? []), ...(p.status.containerStatuses ?? [])].find((x) => x.name === container);
-  const id = st.containerID.replace(/^containerd:\/\//, "");
-  const pid = Number((await docker(["exec", p.spec.nodeName, "crictl", "inspect", "-o", "go-template", "--template", "{{.info.pid}}", id])).stdout.trim());
-  const actual = (await docker(["exec", p.spec.nodeName, "cat", `/proc/${pid}/comm`])).stdout.trim();
-  if (actual !== comm) throw new Error(`pid ${pid} of ${podName}/${container} is ${actual}, not ${comm}`);
-  return { node: p.spec.nodeName, pid, comm };
+  const target = await ownership.containerTarget(NS.dp, podName, container);
+  return { target, comm, pid: null };
 }
-
-// Every process the suite stops is continued again, whatever happens to the run (thawAll runs on every exit path).
 const frozen = new Set();
 async function freeze(podName, container, comm) {
-  const target = await containerPid(podName, container, comm);
-  frozen.add(target);
-  await docker(["exec", target.node, "kill", "-STOP", String(target.pid)]);
-  return target;
+  const held = await containerPid(podName, container, comm);
+  frozen.add(held);
+  const result = await ownership.signalContainer(held.target, "STOP", comm);
+  held.pid = result.pid;
+  return held;
 }
-async function thaw(target) {
-  // A pid that died with its pod may have been reused: only the same binary is continued.
-  const comm = await docker(["exec", target.node, "cat", `/proc/${target.pid}/comm`], { allowFail: true });
-  // Only the kernel saying the pid does not exist proves the process ended; any other failure keeps it listed.
-  if (comm.code !== 0 && /No such file or directory/.test(comm.stderr)) { frozen.delete(target); return "gone"; }
-  if (comm.code !== 0) return `unknown: ${comm.stderr.trim()}`;
-  if (comm.stdout.trim() !== target.comm) { frozen.delete(target); return `pid reused by ${comm.stdout.trim()}`; }
-  const cont = await docker(["exec", target.node, "kill", "-CONT", String(target.pid)], { allowFail: true });
-  // A failed SIGCONT keeps the process listed: the run cannot end clean with it still stopped.
-  if (cont.code !== 0) return `SIGCONT failed: ${cont.stderr.trim()}`;
-  frozen.delete(target);
+async function thaw(held) {
+  await ownership.signalContainer(held.target, "CONT", held.comm);
+  frozen.delete(held);
   return "continued";
 }
 const thawAll = async () => Promise.all([...frozen].map(thaw));
@@ -373,9 +359,9 @@ const V2_BUDGET = { detection: 18_000, block503: 19_000, kongStopSupervisor: 20_
   probeDown503: 34_000, probeDownStopSupervisor: 35_000, probeDownStopIndependent: 39_000, drainSignal: 1_000, drainExit: 20_000 };
 report.v2Budgets = V2_BUDGET;
 const vm = { loads: [] };
-const vmNow = async () => Number((await docker(["exec", NODES.workers[0], "date", "+%s%3N"])).stdout.trim());
+const vmNow = async () => Number((await ownership.nodeRead(NODES.workers[0], ["date", "+%s%3N"])).stdout.trim());
 async function vmLoad(label) {
-  const { stdout } = await docker(["exec", NODES.cp, "cat", "/proc/loadavg"]);
+  const { stdout } = await ownership.nodeRead(NODES.cp, ["cat", "/proc/loadavg"]);
   const one = Number(stdout.split(" ")[0]);
   vm.loads.push({ label, one, at: new Date().toISOString() });
   report.vmLoads = vm.loads;
@@ -429,11 +415,14 @@ s.listen(${BACKEND_PORT}, "::");`;
 let Client = class {
   static async start(...args) {
     await ownership.preflightResources([{ type: "pod", name: "observer", namespace: NS.fx }], true);
-    return new Client(...args);
+    const target = await ownership.containerTarget(NS.fx, "observer");
+    const child = await ownership.spawnContainer(target, ["node", "--input-type=module", "-"]);
+    return new Client(...args, target, child);
   }
-  constructor(label, args) {
+  constructor(label, args, target, child) {
+    this.target = target;
     this.events = [];
-    this.child = spawn("kubectl", ["--kubeconfig", kubeconfig, "--context", CONTEXT, "-n", NS.fx, "exec", "-i", "observer", "--", "node", "--input-type=module", "-"], { stdio: ["pipe", "pipe", "pipe"] });
+    this.child = child;
     this.child.stdin.end(`globalThis.ARGS = ${JSON.stringify(JSON.stringify(args))};\n${CLIENT}`);
     let buffer = "";
     this.child.stdout.on("data", (d) => { buffer += d; const parts = buffer.split("\n"); buffer = parts.pop(); for (const l of parts) { try { this.events.push(JSON.parse(l)); } catch { /* partial */ } } });
@@ -441,7 +430,10 @@ let Client = class {
   }
   async stop() {
     this.child.kill("SIGKILL");
-    await kubectl(["-n", NS.fx, "exec", "observer", "--", "sh", "-c", "pkill -f 'input-type=module' || true"], { allowFail: true });
+    try {
+      await this.child.verified;
+      await ownership.execContainer(this.target, ["sh", "-c", "pkill -f 'input-type=module' || true"], { allowFail: true });
+    } catch (error) { this.events = []; throw error; }
   }
   since(t) { return this.events.filter((e) => e.t >= t); }
 }
@@ -799,7 +791,7 @@ async function chartBlocksImds() {
   // Control 2: every node routes the IMDS aliases to the lab's imds fixture (run.mjs), never to a real metadata service.
   for (const node of [NODES.cp, ...NODES.workers]) {
     for (const [ip, via] of [["169.254.169.254", ctx.topo.ext.imds.v4], ["169.254.170.2", ctx.topo.ext.imds.v4], ["fd00:ec2::254", ctx.topo.ext.imds.v6]]) {
-      const route = (await docker(["exec", node, "ip", ...(ip.includes(":") ? ["-6"] : []), "route", "get", ip], { allowFail: true })).stdout;
+      const route = (await ownership.nodeRead(node, ["ip", ...(ip.includes(":") ? ["-6"] : []), "route", "get", ip], { allowFail: true })).stdout;
       expect(it, route.includes(`via ${via}`), `${node}: ${ip} is not routed to the lab's imds fixture (${route.trim()})`);
     }
   }
@@ -929,7 +921,7 @@ async function containmentN({ frozenSupervisor = false } = {}) {
   // marks, on the reference node's kernel (same boot id), from the earliest possible loss.
   await markServer("imds", scenario, "end");
   const imdsLog = (await docker(["logs", `${CLUSTER}-fx-imds`], { allowFail: true })).stdout.split("\n").filter(Boolean);
-  const refBoot = (await docker(["exec", NODES.workers[0], "cat", "/proc/sys/kernel/random/boot_id"], { allowFail: true })).stdout.trim();
+  const refBoot = (await ownership.nodeRead(NODES.workers[0], ["cat", "/proc/sys/kernel/random/boot_id"], { allowFail: true })).stdout.trim();
   const sources = (await Promise.all(pods.map(async (p) => (await json(["-n", NS.dp, "get", "pod", p.name])).status.podIPs.map((x) => x.ip)))).flat();
   // Every flow of the scenario's client (new and keepalive HTTP, WebSocket upgrade, the privileged route) by the first
   // line Kong forwards (stripPath false: the full path reaches the upstream).

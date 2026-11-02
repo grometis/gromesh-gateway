@@ -434,7 +434,8 @@ async function rebinding(topo, ips, scenario) {
 async function effectLatency(target, removePolicy, restorePolicy, repetitions = 5) {
   const watch = async (state, action) => {
     await ownership.preflightResources([{ type: "pod", name: "probe", namespace: DP }], true);
-    const child = spawn("kubectl", ["--kubeconfig", kubeconfig, "--context", context, "-n", DP, "exec", "probe", "--", "node", "/lab/fixtures.mjs", "watch", target.ip, String(target.port), state, "60000", ...(target.server ? [target.server] : [])], { env });
+    const container = await ownership.containerTarget(DP, "probe");
+    const child = await ownership.spawnContainer(container, ["node", "/lab/fixtures.mjs", "watch", target.ip, String(target.port), state, "60000", ...(target.server ? [target.server] : [])]);
     let text = "";
     const done = new Promise((resolve) => child.on("close", resolve));
     const ready = new Promise((resolve) => child.stdout.on("data", (d) => { text += d; if (text.includes("ready\n")) resolve(); }));
@@ -445,6 +446,7 @@ async function effectLatency(target, removePolicy, restorePolicy, repetitions = 
     await action();
     const t1 = Date.now();
     await done;
+    await child.verified;
     const last = text.trim().split("\n").at(-1);
     assert.ok(/^\d+$/.test(last), `watch ${state} on ${target.ip}:${target.port} did not observe the change: ${text}`);
     return { ms: Number(last) - t0, kubectlMs: t1 - t0 };
@@ -464,7 +466,7 @@ const environment = await assertLab();
 const startedAt = new Date().toISOString();
 const topo = await topology();
 const bootIds = {};
-for (const n of topo.nodes) bootIds[n.name] = (await docker(["exec", n.name, "cat", "/proc/sys/kernel/random/boot_id"])).stdout.trim();
+for (const n of topo.nodes) bootIds[n.name] = (await ownership.nodeRead(n.name, ["cat", "/proc/sys/kernel/random/boot_id"])).stdout.trim();
 await externalFixtures(topo);
 const ips = await clusterFixtures(topo);
 await setZone(zoneRecords(topo, topo.net.backend));

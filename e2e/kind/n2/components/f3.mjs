@@ -228,36 +228,22 @@ async function logs(pod, container) {
 }
 const firstLine = (lines, pattern) => lines.find((l) => pattern.test(l.text));
 
-/** The host pid of a container of a data plane pod, checked against the binary it must be. */
+/** Signals are resolved by the runtime's immutable container ID, after pod/namespace/node proof. */
 async function containerPid(podName, container, comm) {
-  const p = await json(["-n", NS.dp, "get", "pod", podName]);
-  const st = [...(p.status.initContainerStatuses ?? []), ...(p.status.containerStatuses ?? [])].find((x) => x.name === container);
-  const id = st.containerID.replace(/^containerd:\/\//, "");
-  const pid = Number((await docker(["exec", p.spec.nodeName, "crictl", "inspect", "-o", "go-template", "--template", "{{.info.pid}}", id])).stdout.trim());
-  const actual = (await docker(["exec", p.spec.nodeName, "cat", `/proc/${pid}/comm`])).stdout.trim();
-  if (actual !== comm) throw new Error(`pid ${pid} of ${podName}/${container} is ${actual}, not ${comm}`);
-  return { node: p.spec.nodeName, pid, comm };
+  const target = await ownership.containerTarget(NS.dp, podName, container);
+  return { target, comm, pid: null };
 }
-
-// Every process the suite stops is continued again, whatever happens to the run (thawAll runs on every exit path).
 const frozen = new Set();
 async function freeze(podName, container, comm) {
-  const target = await containerPid(podName, container, comm);
-  frozen.add(target);
-  await docker(["exec", target.node, "kill", "-STOP", String(target.pid)]);
-  return target;
+  const held = await containerPid(podName, container, comm);
+  frozen.add(held);
+  const result = await ownership.signalContainer(held.target, "STOP", comm);
+  held.pid = result.pid;
+  return held;
 }
-async function thaw(target) {
-  // A pid that died with its pod may have been reused: only the same binary is continued.
-  const comm = await docker(["exec", target.node, "cat", `/proc/${target.pid}/comm`], { allowFail: true });
-  // Only the kernel saying the pid does not exist proves the process ended; any other failure keeps it listed.
-  if (comm.code !== 0 && /No such file or directory/.test(comm.stderr)) { frozen.delete(target); return "gone"; }
-  if (comm.code !== 0) return `unknown: ${comm.stderr.trim()}`;
-  if (comm.stdout.trim() !== target.comm) { frozen.delete(target); return `pid reused by ${comm.stdout.trim()}`; }
-  const cont = await docker(["exec", target.node, "kill", "-CONT", String(target.pid)], { allowFail: true });
-  // A failed SIGCONT keeps the process listed: the run cannot end clean with it still stopped.
-  if (cont.code !== 0) return `SIGCONT failed: ${cont.stderr.trim()}`;
-  frozen.delete(target);
+async function thaw(held) {
+  await ownership.signalContainer(held.target, "CONT", held.comm);
+  frozen.delete(held);
   return "continued";
 }
 const thawAll = async () => Promise.all([...frozen].map(thaw));
@@ -363,7 +349,7 @@ async function preflight() {
   const ids = {};
   for (const [name, nodes] of Object.entries(where)) {
     for (const node of nodes) {
-      const r = await docker(["exec", node, "crictl", "inspecti", "-o", "go-template", "--template", "{{.status.id}}", refs[name]], { allowFail: true });
+      const r = await ownership.nodeRead(node, ["crictl", "inspecti", "-o", "go-template", "--template", "{{.status.id}}", refs[name]], { allowFail: true });
       if (r.code !== 0) throw new Error(`image ${refs[name]} is not on ${node}: load it first (kind load docker-image)`);
       ids[name] = r.stdout.trim();
     }
@@ -779,7 +765,7 @@ const F2_FIX = "3b8bccb949987f70a2f2feee32685b75c3bd59fd";
 async function f2Proof() {
   const labels = [];
   for (const node of NODES.workers) {
-    const r = await docker(["exec", node, "crictl", "inspecti", "-o", "go-template", "--template", '{{index .info.imageSpec.config.Labels "org.opencontainers.image.revision"}}', IMAGES.agent], { allowFail: true });
+    const r = await ownership.nodeRead(node, ["crictl", "inspecti", "-o", "go-template", "--template", '{{index .info.imageSpec.config.Labels "org.opencontainers.image.revision"}}', IMAGES.agent], { allowFail: true });
     labels.push(r.code === 0 ? r.stdout.trim() : "");
   }
   const rev = labels[0];
