@@ -205,7 +205,7 @@ class NginxSampler {
 class Follower {
   constructor(pod, container) {
     this.lines = [];
-    this.child = spawn("kubectl", ["--kubeconfig", kubeconfig, "--context", CONTEXT, "-n", NS.dp, "logs", "-f", "--timestamps", pod, "-c", container], { stdio: ["ignore", "pipe", "pipe"] });
+    this.child = spawn("kubectl", ["--kubeconfig", ownership.verifiedKubeconfig(), "--context", CONTEXT, "-n", NS.dp, "logs", "-f", "--timestamps", pod, "-c", container], { stdio: ["ignore", "pipe", "pipe"] });
     let buffer = "";
     this.child.stdout.on("data", (d) => {
       buffer += d;
@@ -254,11 +254,9 @@ async function thaw(held) {
 const thawAll = async () => Promise.all([...frozen].map(thaw));
 
 /** crictl state of a pod's containers, polled on its node until all exited: finishedAt with nanoseconds, the exit codes. */
-function watchExits(node, ids, timeoutS) {
-  const script = `end=$(( $(date +%s) + ${timeoutS} )); while [ "$(date +%s)" -lt "$end" ]; do all=1; for id in "$@"; do
-st=$(crictl inspect -o go-template --template '{{.status.state}} {{.status.finishedAt}} {{.status.exitCode}}' "$id" 2>/dev/null) || st=GONE; echo "$id $st";
-case "$st" in CONTAINER_EXITED*) ;; *) all=0 ;; esac; done; [ "$all" = 1 ] && exit 0; sleep 0.05; done; exit 3`;
-  return docker(["exec", node, "sh", "-c", script, "sh", ...Object.values(ids)], { allowFail: true, timeout: (timeoutS + 15) * 1000 }).then(({ code, stdout }) => {
+function watchExits(targets, timeoutS) {
+  const ids = Object.fromEntries(Object.entries(targets).map(([name, target]) => [name, target.containerID]));
+  return ownership.watchContainerExits(targets, timeoutS).then(({ code, stdout }) => {
     const last = {};
     for (const line of stdout.split("\n").filter(Boolean)) { const [id, ...rest] = line.split(" "); last[id] = rest; }
     const states = Object.fromEntries(Object.entries(ids).map(([name, id]) => {
@@ -554,7 +552,8 @@ async function registration(it, pod, { agentLogs, granted, nginxStart }) {
   const env = Object.fromEntries((agent.env ?? []).map((e) => [e.name, e.value ?? "(valueFrom)"]));
   const tag = IMAGES.kong.split(":")[1];
   // The emptyDir seed-config wrote, read from the node: the agent's image has no shell.
-  const file = await docker(["exec", spec.spec.nodeName, "cat", `/var/lib/kubelet/pods/${pod.uid}/volumes/kubernetes.io~empty-dir/kong-version/version`], { allowFail: true });
+  const target = await ownership.containerTarget(NS.dp, pod.name, "seed-config");
+  const file = await ownership.readPodFile(target, "kong-version", "version", { allowFail: true });
   const kong = await kubectl(["-n", NS.dp, "exec", pod.name, "-c", "kong", "--", "kong", "version"], { allowFail: true, timeout: 60_000 });
   const kongReports = /(\d+\.\d+\.\d+)/.exec(kong.stdout)?.[1] ?? null;
   const nodes = await sql(`select node_id, hostname, kong_version, agent_version from cluster_nodes where cluster_id = '${ctx.clusterId}'`);
@@ -700,7 +699,7 @@ async function gracefulDeletion() {
   followers.push(...Object.values(follow));
   const nginxNow = await kubectl(["-n", NS.dp, "exec", pod.name, "-c", "kong", "--", "sh", "-c", NGINX_SAMPLE], { timeout: 10_000 });
   const nginxAtDeletion = Number(nginxNow.stdout.trim().split(" ")[0]);
-  const exits = watchExits(status.spec.nodeName, ids, 90);
+  const exits = watchExits(await ownership.exitTargets(NS.dp, pod.name, ids), 90);
   await sleep(1000);
   const t0 = Date.now();
   await kubectl(["-n", NS.dp, "delete", "pod", pod.name, "--wait=false"]);

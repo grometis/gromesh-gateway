@@ -1,7 +1,10 @@
+import { gunzipSync } from "node:zlib";
+import { isIP } from "node:net";
+import { setTimeout as sleep } from "node:timers/promises";
 import { execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { assertLocalDaemon, daemonProblems } from "./stack-guard.mjs";
-import { mkdtempSync, writeFileSync, rmSync, readFileSync, readdirSync, readlinkSync, existsSync, lstatSync, statSync, realpathSync, renameSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, readFileSync, readdirSync, readlinkSync, existsSync, lstatSync, statSync, realpathSync, renameSync, mkdirSync, openSync, closeSync, fstatSync, constants } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 const fail = () => new Error("Kind test stack refused before any write: ownership, kubeconfig or port-forward proof missing");
@@ -118,6 +121,8 @@ export const n2RunLabel = 'com.grometis.gromesh.n2-run';
 export const n2LabLabel = 'com.grometis.gromesh.lab';
 const n2Refused = reason => new Error(`N2 lab refused before mutation: ${reason}; ownership proof and evidence preserved`);
 const sha256 = value => createHash('sha256').update(value).digest('hex');
+const pinnedDirectories = new Set();
+process.once('exit', () => { for (const dir of pinnedDirectories) rmSync(dir, { recursive: true, force: true }); });
 const resourceKey = o => `${o.kind.toLowerCase()}/${o.metadata.namespace ?? ''}/${o.metadata.name}`;
 const flagValue = (args, ...flags) => {
   for (const flag of flags) {
@@ -151,7 +156,11 @@ export class N2Lab {
   constructor({ env = process.env, execute = n2Execute, spawnProcess = spawn } = {}) {
     this.spawnProcess = spawnProcess;
     this.env = { ...env, KUBECONFIG: env.LAB_KUBECONFIG };
-    this.execute = (command, args, options = {}) => execute(command, args, { ...options, env: { ...this.env, ...options.env } });
+    this.execute = (command, args, options = {}) => {
+      if (this.pinnedConfig) this.verifyPinnedConfig();
+      return execute(command, args, { ...options, env: { ...this.env, ...options.env, HELM_DRIVER: 'secret',
+        ...(this.pinnedConfig ? { KUBECONFIG: this.pinnedConfig, LAB_N2_PINNED_CONFIG: this.pinnedConfig } : {}) } });
+    };
     this.cluster = 'gromesh-n2-lab';
     this.context = `kind-${this.cluster}`;
     this.kubeconfig = env.LAB_KUBECONFIG;
@@ -161,6 +170,7 @@ export class N2Lab {
     this.evidenceDir = this.explicitEvidence ?? (this.kubeconfig ? dirname(resolve(this.kubeconfig)) : undefined);
     this.refused = false;
     this.queue = Promise.resolve();
+    this.exitBindings = new WeakSet();
   }
   refuse(reason) {
     this.refused = true;
@@ -199,14 +209,45 @@ export class N2Lab {
     this.validatedPath = true;
     return canonical;
   }
+  pinKubeconfig() {
+    if (this.pinnedConfig) return;
+    const inherited = this.env.LAB_N2_PINNED_CONFIG;
+    const path = inherited ?? this.pathProof();
+    if (inherited) {
+      const dir = lstatSync(dirname(path)), file = lstatSync(path);
+      if (!dirname(path).split('/').at(-1).startsWith('gromesh-n2-config-') || path.split('/').at(-1) !== 'config'
+        || dir.isSymbolicLink() || !dir.isDirectory() || (dir.mode & 0o777) !== 0o700 || (file.mode & 0o777) !== 0o600)
+        this.refuse('inherited kubeconfig is not a private execution copy');
+    }
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    let bytes, st;
+    try {
+      st = fstatSync(fd);
+      if (!st.isFile() || st.nlink !== 1) this.refuse('kubeconfig source is not exclusive');
+      bytes = readFileSync(fd);
+    } finally { closeSync(fd); }
+    this.sourceConfig = { path: inherited ? join(realpathSync(dirname(resolve(this.kubeconfig))), resolve(this.kubeconfig).split('/').at(-1)) : path, inode: `${st.dev}:${st.ino}`, hash: sha256(bytes), inherited: Boolean(inherited) };
+    const dir = mkdtempSync(join(tmpdir(), 'gromesh-n2-config-'));
+    pinnedDirectories.add(dir);
+    this.pinnedConfig = join(dir, 'config');
+    writeFileSync(this.pinnedConfig, bytes, { mode: 0o600, flag: 'wx' });
+    this.pinnedHash = sha256(bytes);
+    this.validatedPath = true;
+  }
+  verifyPinnedConfig() {
+    const st = lstatSync(this.pinnedConfig), dir = lstatSync(dirname(this.pinnedConfig));
+    if (!st.isFile() || st.isSymbolicLink() || st.nlink !== 1 || (st.mode & 0o777) !== 0o600
+      || !dir.isDirectory() || dir.isSymbolicLink() || (dir.mode & 0o777) !== 0o700
+      || sha256(readFileSync(this.pinnedConfig)) !== this.pinnedHash) this.refuse('private kubeconfig changed');
+  }
   load() {
-    const path = this.pathProof();
+    this.pinKubeconfig();
     const st = lstatSync(this.statePath);
     if (!st.isFile() || st.nlink !== 1 || st.isSymbolicLink()) this.refuse('invalid creation receipt');
     const state = JSON.parse(readFileSync(this.statePath, 'utf8'));
-    const kc = statSync(this.kubeconfig);
-    if (state.phase !== 'ready' || state.cluster !== this.cluster || state.context !== this.context || state.kubeconfig !== path
-      || state.kubeconfigInode !== `${kc.dev}:${kc.ino}` || state.kubeconfigHash !== sha256(readFileSync(this.kubeconfig)) || !/^[a-z0-9-]{12,63}$/.test(state.runId ?? '')
+    const source = this.sourceConfig;
+    if (state.phase !== 'ready' || state.cluster !== this.cluster || state.context !== this.context || state.kubeconfig !== source.path
+      || (!source.inherited && state.kubeconfigInode !== source.inode) || state.kubeconfigHash !== source.hash || !/^[a-z0-9-]{12,63}$/.test(state.runId ?? '')
       || (this.env.LAB_RUN_ID && this.env.LAB_RUN_ID !== state.runId)) this.refuse('creation receipt does not match this execution');
     return state;
   }
@@ -215,8 +256,20 @@ export class N2Lab {
     writeFileSync(temp, JSON.stringify(state, null, 2), { mode: 0o600, flag: 'wx' });
     renameSync(temp, this.statePath);
   }
+  verifiedKubeconfig() {
+    this.assertNotRefused();
+    if (!this.provedEndpoint) this.refuse('cluster identity has not been proved');
+    this.verifyPinnedConfig();
+    return this.pinnedConfig;
+  }
+  clusterFlags(args) {
+    if (args.some(a => /^(--kubeconfig|--context|--kube-context|--server|--kube-apiserver|--certificate-authority|--insecure-skip-tls-verify|--token|--kube-token)(=|$)/.test(a)))
+      this.refuse('cluster configuration override forbidden');
+  }
   async rawK(args, options) {
-    return this.execute('kubectl', ['--kubeconfig', this.kubeconfig, '--context', this.context, ...args], options);
+    this.clusterFlags(args);
+    this.pinKubeconfig();
+    return this.execute('kubectl', ['--kubeconfig', this.pinnedConfig, '--context', this.context, ...args], options);
   }
   async get(type, name, namespace) {
     const { stdout } = await this.rawK(['get', type, ...(name ? [name] : []), ...(namespace ? ['-n', namespace] : []), '--ignore-not-found', '-o', 'json']);
@@ -228,7 +281,13 @@ export class N2Lab {
     if (daemonProblems(this.env, context).length) this.refuse('Docker daemon is not local');
   }
   async identity() {
-    const current = JSON.parse((await this.rawK(['config', 'view', '--raw', '--flatten', '-o', 'json'])).stdout);
+    const current = JSON.parse((await this.rawK(['config', 'view', '--raw', '-o', 'json'])).stdout);
+    // kind exports self-contained credentials. External files/plugins would restore a mutable dependency.
+    if (current.clusters?.some(c => c.cluster?.['certificate-authority'] || c.cluster?.['insecure-skip-tls-verify'])
+      || current.users?.some(u => ['client-certificate', 'client-key', 'exec', 'auth-provider', 'tokenFile'].some(k => u.user?.[k])))
+      this.refuse('kubeconfig must contain self-contained credentials');
+    const endpoint = JSON.stringify(current.clusters);
+    if (this.provedEndpoint && endpoint !== this.provedEndpoint) this.refuse('private kubeconfig server or CA changed');
     const yaml = (await this.execute('kind', ['get', 'kubeconfig', '--name', this.cluster])).stdout;
     const dir = mkdtempSync(join(tmpdir(), 'gromesh-kind-proof-'));
     let exported;
@@ -239,6 +298,7 @@ export class N2Lab {
     const node = JSON.parse((await this.execute('docker', ['inspect', `${this.cluster}-control-plane`])).stdout)[0];
     if (current.contexts?.length !== 1 || current.clusters?.length !== 1
       || clusterIdentityProblems(this.cluster, node, current, exported).length) this.refuse('cluster context, endpoint or CA differs');
+    this.provedEndpoint = endpoint;
     const system = await this.get('namespace', 'kube-system');
     if (!system?.metadata?.uid) this.refuse('kube-system UID missing');
     return { marker: system.metadata.labels?.[n2RunLabel], uid: system.metadata.uid, caHash: sha256(Buffer.from(current.clusters[0].cluster['certificate-authority-data'], 'base64')) };
@@ -302,8 +362,7 @@ export class N2Lab {
       for (const name of nodes.flatMap(n => (n.Mounts ?? []).filter(m => m.Type === 'volume').map(m => m.Name))) {
         state.volumes[name] = JSON.parse((await this.execute('docker', ['volume', 'inspect', name])).stdout)[0];
       }
-      const kc = statSync(this.kubeconfig);
-      Object.assign(state, identity, { phase: 'ready', kubeconfigInode: `${kc.dev}:${kc.ino}`, kubeconfigHash: sha256(readFileSync(this.kubeconfig)) });
+      Object.assign(state, identity, { phase: 'ready', kubeconfigInode: this.sourceConfig.inode, kubeconfigHash: this.sourceConfig.hash });
       state.baselineClusterResources = Object.fromEntries((await this.clusterResources()).filter(o => this.knownClusterBaseline(o, state)).map(o => [resourceKey(o), this.baselineProof(o)]));
       const baseline = await this.namespacedResources();
       state.baselineNamespacedResources = Object.fromEntries(baseline.filter(o => this.knownSystemBaseline(o, state, baseline)).map(o => [resourceKey(o), this.baselineProof(o)]));
@@ -387,6 +446,87 @@ export class N2Lab {
       if (o.kind.toLowerCase() === 'persistentvolumeclaim' && state.resources[resourceKey(o)] !== o.metadata.uid) this.refuse('preexisting PVC');
     }
   }
+  workload(o) { return ['Deployment', 'ReplicaSet', 'DaemonSet', 'StatefulSet', 'Job', 'CronJob'].includes(o?.kind); }
+  matchesSelector(object, selector) {
+    if (!selector || (!selector.matchLabels && !selector.matchExpressions)) this.refuse('controller selector unavailable');
+    const labels = object.metadata.labels ?? {};
+    if (!Object.entries(selector.matchLabels ?? {}).every(([k, v]) => labels[k] === v)) return false;
+    return (selector.matchExpressions ?? []).every(e => {
+      if (e.operator === 'In') return e.values?.includes(labels[e.key]);
+      if (e.operator === 'NotIn') return !e.values?.includes(labels[e.key]);
+      if (e.operator === 'Exists') return Object.hasOwn(labels, e.key);
+      if (e.operator === 'DoesNotExist') return !Object.hasOwn(labels, e.key);
+      this.refuse('unsupported controller selector');
+    });
+  }
+  unrelatedProof(o) {
+    const object = structuredClone(o);
+    delete object.metadata.resourceVersion;
+    delete object.metadata.managedFields;
+    return sha256(JSON.stringify(object));
+  }
+  rolloutEvidence(phase, inventory) {
+    if (!this.evidenceDir) return;
+    mkdirSync(this.evidenceDir, { recursive: true });
+    // Keep identity and content fingerprints, never Secret payloads or credentials.
+    const objects = inventory.map(o => ({ key: resourceKey(o), uid: o.metadata.uid,
+      owners: o.metadata.ownerReferences ?? [], proof: this.unrelatedProof(o) }));
+    writeFileSync(join(this.evidenceDir, `n2-rollout-${phase}.json`), JSON.stringify(objects, null, 2), { mode: 0o600 });
+  }
+  async rolloutInventory(workloads, state, phase = 'before') {
+    const inventory = [...await this.namespacedResources(), ...await this.clusterResources()];
+    this.rolloutEvidence(phase, inventory);
+    const affected = new Set(workloads.map(o => o.metadata.uid).filter(Boolean));
+    for (let changed = true; changed;) {
+      changed = false;
+      const controllers = [...workloads.filter(o => this.workload(o)), ...inventory.filter(o => affected.has(o.metadata.uid) && this.workload(o))];
+      for (const o of inventory) {
+        const selected = controllers.some(w => o.metadata.namespace === w.metadata.namespace
+          && ['Pod', 'ReplicaSet'].includes(o.kind) && w.kind !== 'CronJob'
+          && !(w.kind === 'Job' && !w.spec?.selector && !w.spec?.manualSelector) && this.matchesSelector(o, w.spec?.selector));
+        if (!selected && !o.metadata.ownerReferences?.some(r => affected.has(r.uid))) continue;
+        const baseline = state.baselineNamespacedResources?.[resourceKey(o)];
+        if (!(baseline && baseline === this.baselineProof(o)) && !await this.createdObject(o, state))
+          this.refuse('rollout may replace an object without creation ownership');
+        if (!affected.has(o.metadata.uid)) { affected.add(o.metadata.uid); changed = true; }
+      }
+    }
+    const foreign = [];
+    for (const o of inventory.filter(o => !affected.has(o.metadata.uid))) {
+      const key = resourceKey(o);
+      const baseline = state.baselineNamespacedResources?.[key] ?? state.baselineClusterResources?.[key];
+      const node = o.kind === 'Node' && state.nodes.some(n => n.nodeUid === o.metadata.uid);
+      if (node || (baseline && baseline === this.baselineProof(o)) || await this.createdObject(o, state)) continue;
+      foreign.push({ key, uid: o.metadata.uid, proof: this.unrelatedProof(o) });
+    }
+    return { workloads, foreign };
+  }
+  async verifyRollout(before, state) {
+    await this.assertIdentity();
+    const after = [...await this.namespacedResources(), ...await this.clusterResources()];
+    this.rolloutEvidence('after', after);
+    for (const object of before.foreign) {
+      const current = after.find(o => resourceKey(o) === object.key);
+      if (!current || current.metadata.uid !== object.uid || this.unrelatedProof(current) !== object.proof)
+        this.refuse('rollout affected an unrelated object; preserve evidence');
+    }
+    await this.rolloutInventory(before.workloads, state, 'after');
+  }
+  async mutateWorkload(current, state, write) {
+    if (!this.workload(current)) return write();
+    const before = await this.rolloutInventory([current], state);
+    const result = await write();
+    const system = current.metadata.namespace === 'kube-system' && state.system?.[`${current.kind.toLowerCase()}/${current.metadata.name}`] === current.metadata.uid;
+    if (system) {
+      const actual = JSON.parse(result.stdout);
+      if (actual.metadata?.uid !== current.metadata.uid || !this.owns(actual, state)) this.refuse('system workload mutation lost its UID binding');
+      state.resources[resourceKey(actual)] = actual.metadata.uid;
+      state.resourceOwners ??= {}; state.resourceOwners[resourceKey(actual)] = actual.metadata.ownerReferences ?? [];
+    }
+    await this.verifyRollout(before, state);
+    if (system) this.save(state);
+    return result;
+  }
   serialized(fn) {
     const result = this.queue.then(fn);
     this.queue = result.catch(() => {});
@@ -412,6 +552,7 @@ export class N2Lab {
       || (['apply', 'create', 'run'].includes(verb) && head.includes('--dry-run=client'))) return this.rawK(args, options);
     const namespace = flagValue(args, '-n', '--namespace');
     if (verb === 'exec') return this.containerExecArgs(args, options);
+    if (verb === 'rollout' && !args.includes('restart')) this.refuse('unsupported rollout mutation');
     if (['apply', 'create'].includes(verb)) {
       if (!args.includes('-f') || flagValue(args, '-f') !== '-') this.refuse('manifests must go through guarded stdin');
       let parsed;
@@ -434,7 +575,7 @@ export class N2Lab {
           o.metadata.uid = existing.metadata.uid;
           o.metadata.resourceVersion = existing.metadata.resourceVersion;
         }
-        result = await this.rawK([existing ? 'apply' : 'create', '-f', '-', '-o', 'json'], { ...options, input: JSON.stringify(this.decorate(o, state)), allowFail: false });
+        result = await this.mutateWorkload(existing, state, () => this.rawK([existing ? 'apply' : 'create', '-f', '-', '-o', 'json'], { ...options, input: JSON.stringify(this.decorate(o, state)), allowFail: false }));
         const actual = JSON.parse(result.stdout);
         if (!actual.metadata?.uid) this.refuse('created resource has no UID receipt');
         state.resources[resourceKey(actual)] = actual.metadata.uid;
@@ -520,15 +661,15 @@ export class N2Lab {
       const object = structuredClone(current);
       object.spec.template.metadata ??= {};
       object.spec.template.metadata.annotations = { ...object.spec.template.metadata.annotations, 'kubectl.kubernetes.io/restartedAt': new Date().toISOString() };
-      return this.rawK(['apply', '-f', '-', '-o', 'json'], { ...options, input: JSON.stringify(object), allowFail: false });
+      return this.mutateWorkload(current, state, () => this.rawK(['apply', '-f', '-', '-o', 'json'], { ...options, input: JSON.stringify(this.decorate(object, state)), allowFail: false }));
     }
     if (verb === 'set') {
       const generated = JSON.parse((await this.rawK([...args, '--dry-run=client', '-o', 'json'], options)).stdout);
       generated.metadata.uid = current.metadata.uid;
       generated.metadata.resourceVersion = current.metadata.resourceVersion;
-      return this.rawK(['apply', '-f', '-', '-o', 'json'], { ...options, input: JSON.stringify(generated), allowFail: false });
+      return this.mutateWorkload(current, state, () => this.rawK(['apply', '-f', '-', '-o', 'json'], { ...options, input: JSON.stringify(this.decorate(generated, state)), allowFail: false }));
     }
-    if (verb === 'scale') return this.rawK([...args, `--resource-version=${current.metadata.resourceVersion}`], options);
+    if (verb === 'scale') return this.mutateWorkload(current, state, () => this.rawK([...args, `--resource-version=${current.metadata.resourceVersion}`], options));
     if (verb === 'patch') this.refuse('patch requires a guarded object manifest');
     return this.rawK(args, options);
   }
@@ -671,7 +812,7 @@ export class N2Lab {
   async spawnContainer(target, command) {
     await this.inspectContainer(target);
     const child = this.spawnProcess('docker', ['exec', '-i', target.nodeID, 'crictl', 'exec', '-i', target.containerID, ...command],
-      { env: this.env, stdio: ['pipe', 'pipe', 'pipe'] });
+      { env: { ...this.env, KUBECONFIG: this.verifiedKubeconfig(), LAB_N2_PINNED_CONFIG: this.pinnedConfig }, stdio: ['pipe', 'pipe', 'pipe'] });
     child.verified = new Promise((resolve, reject) => {
       child.once('error', reject);
       child.once('close', () => this.validateContainer(target).then(resolve, reject));
@@ -691,6 +832,110 @@ export class N2Lab {
     const node = await this.proveNode(name, state);
     return this.execute('docker', ['exec', node.id, ...command], options);
   }
+  async addRoute(name, address, gateway) {
+    if (!['169.254.169.254', '169.254.170.2', 'fd00:ec2::254'].includes(address)
+      || !isIP(gateway) || isIP(address) !== isIP(gateway)) this.refuse('unsupported IMDS route');
+    const state = await this.assertIdentity();
+    const fixture = `${this.cluster}-fx-imds`, id = state.containers[fixture];
+    if (!id) this.refuse('IMDS fixture creation receipt missing');
+    const actual = JSON.parse((await this.execute('docker', ['inspect', id])).stdout)[0];
+    const network = actual?.NetworkSettings?.Networks?.kind;
+    if (actual?.Id !== id || actual.Config?.Labels?.[n2RunLabel] !== state.runId || actual.Config?.Labels?.[n2LabLabel] !== 'n2'
+      || ![network?.IPAddress, network?.GlobalIPv6Address].includes(gateway)) this.refuse('IMDS route gateway is not the owned fixture');
+    const node = await this.proveNode(name, state);
+    const result = await this.execute('docker', ['exec', node.id, 'ip', ...(isIP(address) === 6 ? ['-6'] : []),
+      'route', 'replace', `${address}/${isIP(address) === 6 ? 128 : 32}`, 'via', gateway]);
+    await this.proveNode(name, state);
+    return result;
+  }
+  async nodeClock(name) {
+    const before = await this.nodeRead(name, ['date', '+%s%3N']);
+    const uptime = await this.nodeRead(name, ['cat', '/proc/uptime']);
+    const after = await this.nodeRead(name, ['date', '+%s%3N']);
+    return { code: 0, stdout: [before.stdout.trim(), uptime.stdout.trim(), after.stdout.trim()].join('\n'), stderr: '' };
+  }
+  async collectorProbe(name, target) {
+    if (target.container !== 'collector') this.refuse('collector capability required');
+    await this.inspectContainer(target);
+    const pod = await this.get('pod', target.podName, target.namespace);
+    const ip = pod.status?.podIP;
+    if (!isIP(ip)) this.refuse('collector pod IP missing');
+    const state = await this.assertIdentity(), node = await this.proveNode(name, state);
+    await this.inspectContainer(target);
+    // Ports and command are fixed; only a parsed IP from the proved collector pod becomes an argument.
+    const script = `for p in 8080 9598; do (timeout 3 bash -c 'exec 3<>/dev/tcp/$1/$2' sh "$1" "$p") 2>/dev/null && echo "$p open" || echo "$p refused"; done`;
+    const result = await this.execute('docker', ['exec', node.id, 'bash', '-c', script, 'sh', ip]);
+    await this.validateContainer(target);
+    await this.proveNode(name, state);
+    return result;
+  }
+  async exitTargets(namespace, podName, ids) {
+    const targets = {};
+    for (const [name, id] of Object.entries(ids)) {
+      const target = await this.containerTarget(namespace, podName, name);
+      if (id !== target.containerID) this.refuse('exit observer container changed');
+      await this.inspectContainer(target);
+      this.exitBindings.add(target);
+      targets[name] = target;
+    }
+    if (!Object.keys(targets).length) this.refuse('exit observer requires containers');
+    return Object.freeze(targets);
+  }
+  async watchContainerExits(targets, timeoutS) {
+    if (!Number.isInteger(timeoutS) || timeoutS < 1 || timeoutS > 180 || !Object.keys(targets).length) this.refuse('invalid exit observer');
+    if (Object.values(targets).some(target => !this.exitBindings.has(target))) this.refuse('exit observer lacks a bound container capability');
+    // Bound before deletion. Afterwards this read-only observer may inspect the same CRI IDs even when the pod is gone.
+    const deadline = Date.now() + timeoutS * 1000;
+    let stdout = '';
+    do {
+      const state = await this.assertIdentity();
+      let allExited = true; stdout = '';
+      for (const target of Object.values(targets)) {
+        if (!/^[a-f0-9]{64}$/.test(target.containerID)) this.refuse('invalid exit container ID');
+        await this.ownedNamespace(target.namespace, state);
+        const node = await this.proveNode(target.node, state);
+        if (node.id !== target.nodeID || node.nodeUid !== target.nodeUid) this.refuse('exit observer node changed');
+        const result = await this.execute('docker', ['exec', node.id, 'crictl', 'inspect', '--output', 'json', target.containerID], { allowFail: true });
+        if (result.code !== 0) { allExited = false; stdout += `${target.containerID} GONE\n`; continue; }
+        const status = JSON.parse(result.stdout).status, labels = status?.labels;
+        if (status?.id !== target.containerID || status.metadata?.name !== target.container
+          || labels?.['io.kubernetes.pod.uid'] !== target.podUid || labels?.['io.kubernetes.pod.namespace'] !== target.namespace
+          || labels?.['io.kubernetes.pod.name'] !== target.podName) this.refuse('exit observer CRI identity changed');
+        allExited &&= status.state === 'CONTAINER_EXITED';
+        stdout += `${target.containerID} ${status.state} ${status.finishedAt} ${status.exitCode}\n`;
+      }
+      if (allExited) return { code: 0, stdout, stderr: '' };
+      if (Date.now() < deadline) await sleep(50);
+    } while (Date.now() < deadline);
+    return { code: 3, stdout, stderr: '' };
+  }
+  async podFile(target, volume, file) {
+    if (!({ 'kong-version': ['version'], 'isolation-handoff': ['applied.json', 'admission.jws'] }[volume] ?? []).includes(file)) this.refuse('unsupported pod volume file');
+    const info = await this.inspectContainer(target);
+    const pod = await this.get('pod', target.podName, target.namespace);
+    const container = [...(pod.spec.initContainers ?? []), ...(pod.spec.containers ?? [])].find(c => c.name === target.container);
+    const mount = container?.volumeMounts?.find(m => m.name === volume);
+    const source = `/var/lib/kubelet/pods/${target.podUid}/volumes/kubernetes.io~empty-dir/${volume}`;
+    if (!pod.spec.volumes?.some(v => v.name === volume && v.emptyDir) || !mount || mount.subPath || mount.subPathExpr
+      || !info.info?.runtimeSpec?.mounts?.some(m => m.destination === mount.mountPath && m.source === source)) this.refuse('pod volume runtime binding missing');
+    await this.inspectContainer(target);
+    return `${source}/${file}`;
+  }
+  async readPodFile(target, volume, file, options = {}) {
+    const path = await this.podFile(target, volume, file);
+    const result = await this.execute('docker', ['exec', target.nodeID, 'cat', '--', path], options);
+    await this.validateContainer(target);
+    return result;
+  }
+  async writePodFile(target, volume, file, input) {
+    if (volume !== 'isolation-handoff' || typeof input !== 'string' || Buffer.byteLength(input) > 1024 * 1024) this.refuse('unsupported handoff write');
+    const path = await this.podFile(target, volume, file);
+    const temporary = `${path}.n2-${randomUUID()}`;
+    const script = 'set -eu; test ! -L "$1"; test -f "$1"; (umask 077; set -C; cat > "$2"); chown --reference="$1" "$2"; chmod --reference="$1" "$2"; mv -T -- "$2" "$1"';
+    const result = await this.execute('docker', ['exec', '-i', target.nodeID, 'sh', '-c', script, 'sh', path, temporary], { input });
+    await this.validateContainer(target);
+    return result;
+  }
   async signalContainer(target, signal, comm) {
     if (!['STOP', 'CONT'].includes(signal) || !/^[a-zA-Z0-9_-]+$/.test(comm)) this.refuse('unsupported container signal');
     const info = await this.inspectContainer(target);
@@ -709,18 +954,28 @@ export class N2Lab {
     catch (error) { this.refuse(error.message?.startsWith('N2 lab refused') ? 'Helm ownership refused' : 'Helm preflight or mutation failed'); }
   }
   async helmOperation(args, options = {}) {
+    this.clusterFlags(args);
     let state = await this.assertIdentity();
-    const helm = (argv, opts = options) => this.execute('helm', ['--kubeconfig', this.kubeconfig, '--kube-context', this.context, ...argv], opts);
+    const helm = (argv, opts = options) => this.execute('helm', ['--kubeconfig', this.pinnedConfig, '--kube-context', this.context, ...argv], opts);
     if (['template', 'list', 'status', 'pull'].includes(args[0])) return helm(args);
     if (!['install', 'upgrade'].includes(args[0])) this.refuse('unsupported Helm mutation');
+    if (args.some(a => /^(--force|--atomic|--cleanup-on-fail|--take-ownership|--replace)(=|$)/.test(a))) this.refuse('unconditional Helm replacement forbidden');
     const ns = flagValue(args, '-n', '--namespace');
     await this.ownedNamespace(ns, state);
     await this.pvcs(ns, state);
     const release = args.slice(1).find(a => !a.startsWith('-'));
+    if (!/^[a-z0-9](?:[a-z0-9-]{0,51}[a-z0-9])?$/.test(release ?? '')) this.refuse('invalid Helm release name');
     const releaseSecrets = async () => JSON.parse((await this.rawK(['get', 'secret', '-n', ns, '-l', `owner=helm,name=${release}`, '-o', 'json'])).stdout).items;
-    for (const secret of await releaseSecrets()) {
+    const initialSecrets = await releaseSecrets();
+    for (const secret of initialSecrets) {
       if (!this.owns(secret, state) || state.resources[resourceKey(secret)] !== secret.metadata.uid) this.refuse('preexisting Helm release');
+      await this.checkObject(secret, state);
     }
+    const versions = initialSecrets.map(o => Number(o.metadata.labels?.version));
+    if (versions.some(v => !Number.isSafeInteger(v) || v < 1)) this.refuse('invalid Helm revision inventory');
+    const revision = Math.max(0, ...versions) + 1;
+    const storageName = `sh.helm.release.v1.${release}.v${revision}`;
+    if (await this.get('secret', storageName, ns)) this.refuse('preexisting next Helm storage revision');
     for (const o of state.releases?.[`${ns}/${release}`] ?? []) {
       const existing = await this.get(o.kind, o.metadata.name, o.metadata.namespace);
       if (existing) await this.checkObject(existing, state);
@@ -729,10 +984,21 @@ export class N2Lab {
     // then execute its schema Job through the same UID/ownership guard; Helm must never delete hooks by name.
     const rendered = await helm(['template', '--include-crds', ...args.slice(1).filter(a => a !== '--install'), ...(args[0] === 'upgrade' ? ['--is-upgrade'] : [])]);
     const objects = await this.helmObjects(rendered.stdout, ns, state);
+    const beforeObjects = new Map();
+    for (const o of objects) beforeObjects.set(resourceKey(o), await this.get(o.kind, o.metadata.name, o.metadata.namespace));
+    const beforeSecrets = new Map(initialSecrets.map(o => [resourceKey(o), o.metadata.uid]));
     const hooks = objects.filter(o => o.metadata.annotations?.['helm.sh/hook']);
     for (const hook of hooks) {
       if (hook.kind !== 'Job' || !/^(pre-install|pre-upgrade)(,pre-upgrade)?$/.test(hook.metadata.annotations['helm.sh/hook'])) this.refuse('unsupported Helm hook');
     }
+    const oldObjects = [];
+    for (const o of [...objects, ...(state.releases?.[`${ns}/${release}`] ?? [])]) {
+      const existing = await this.get(o.kind, o.metadata.name, o.metadata.namespace);
+      if (existing) oldObjects.push(existing);
+      else if (this.workload(o)) oldObjects.push(o);
+    }
+    oldObjects.push(...await releaseSecrets());
+    await this.rolloutInventory(oldObjects, state);
     for (const hook of hooks) {
       await this.kubectl(['delete', 'job', hook.metadata.name, '-n', ns, '--ignore-not-found']);
       delete hook.metadata.annotations['helm.sh/hook'];
@@ -746,25 +1012,73 @@ export class N2Lab {
     await this.helmObjects(rendered.stdout, ns);
     const crds = objects.filter(o => o.kind === 'CustomResourceDefinition');
     if (crds.length) await this.kubectl(['apply', '-f', '-'], { input: JSON.stringify({ apiVersion: 'v1', kind: 'List', items: crds }) });
+    const effects = await this.rolloutInventory(oldObjects, state);
+    const beforeUids = new Set([...await this.namespacedResources(), ...await this.clusterResources()].map(o => o.metadata.uid));
     const result = await helm([...args, '--skip-crds', '--no-hooks', '--post-renderer', process.execPath, '--post-renderer-args', resolve(import.meta.dirname, 'kind-stack-guard.mjs'), '--post-renderer-args', 'n2-helm-render'],
       { ...options, allowFail: false, env: { LAB_HELM_NAMESPACE: ns } });
+    this.rolloutEvidence('helm-after', [...await this.namespacedResources(), ...await this.clusterResources()]);
     state = this.load();
     state.releases ??= {};
     state.releases[`${ns}/${release}`] = objects.filter(o => !hooks.includes(o)).map(o => ({ kind: o.kind, metadata: { name: o.metadata.name, namespace: o.metadata.namespace } }));
+    const newStorage = [];
+    // The successful Helm create can prove only the exact next revision, absent before the command.
+    // Validate its encoded release/manifest as well; arbitrary selector matches never receive labels or receipts.
     for (const secret of await releaseSecrets()) {
-      await this.assertIdentity();
-      await this.rawK(['label', 'secret', secret.metadata.name, '-n', ns, `${n2LabLabel}=n2`, `${n2RunLabel}=${state.runId}`,
-        `--resource-version=${secret.metadata.resourceVersion}`, '--overwrite']);
-      state.resources[resourceKey(secret)] = secret.metadata.uid;
+      if (beforeSecrets.get(resourceKey(secret)) === secret.metadata.uid) continue;
+      if (beforeUids.has(secret.metadata.uid) || secret.metadata.name !== storageName || secret.metadata.namespace !== ns
+        || secret.type !== 'helm.sh/release.v1' || secret.metadata.labels?.version !== String(revision)
+        || secret.metadata.labels?.owner !== 'helm' || secret.metadata.labels?.name !== release || secret.metadata.labels?.status !== 'deployed')
+        this.refuse('unproved new Helm storage Secret; preserve evidence');
+      const encoded = Buffer.from(secret.data?.release ?? '', 'base64').toString();
+      const stored = JSON.parse(gunzipSync(Buffer.from(encoded, 'base64'), { maxOutputLength: 16 * 1024 * 1024 }).toString());
+      if (stored.name !== release || stored.namespace !== ns || stored.version !== revision || stored.info?.status !== 'deployed'
+        || typeof stored.manifest !== 'string') this.refuse('Helm storage release identity differs');
+      const parsed = JSON.parse((await this.rawK(['create', '--dry-run=client', '-n', ns, '-f', '-', '-o', 'json'], { input: stored.manifest })).stdout);
+      const manifest = parsed.kind === 'List' ? parsed.items : [parsed];
+      if (this.releaseManifestProof(manifest) !== this.releaseManifestProof(objects.filter(o => !hooks.includes(o) && o.kind !== 'CustomResourceDefinition')))
+        this.refuse('Helm storage manifest differs from the proved release');
+      newStorage.push(secret);
     }
+    if (newStorage.length !== 1) this.refuse('new Helm storage revision was not demonstrated');
+    const receipts = [];
     for (const o of objects.filter(o => !hooks.includes(o))) {
       const actual = await this.get(o.kind, o.metadata.name, o.metadata.namespace);
-      if (!this.owns(actual, state)) this.refuse('Helm resource receipt unavailable');
+      const previous = beforeObjects.get(resourceKey(o));
+      const annotations = actual?.metadata?.annotations;
+      const directReceipt = actual && state.resources[resourceKey(actual)] === actual.metadata.uid;
+      if (!this.owns(actual, state) || !actual.metadata.uid || (!previous && !directReceipt && beforeUids.has(actual.metadata.uid))
+        || (previous ? actual.metadata.uid !== previous.metadata.uid
+          : !directReceipt && (annotations?.['meta.helm.sh/release-name'] !== release || annotations?.['meta.helm.sh/release-namespace'] !== ns)))
+        this.refuse('Helm resource creation is not demonstrated; preserve evidence');
+      receipts.push(actual);
+    }
+    for (const secret of newStorage) {
+      await this.rawK(['label', 'secret', secret.metadata.name, '-n', ns, `${n2LabLabel}=n2`, `${n2RunLabel}=${state.runId}`,
+        `--resource-version=${secret.metadata.resourceVersion}`, '--overwrite'], { allowFail: false });
+      const actual = await this.get('secret', secret.metadata.name, ns);
+      if (!this.owns(actual, state) || actual.metadata.uid !== secret.metadata.uid) this.refuse('Helm storage revision changed');
+      receipts.push(actual);
+    }
+    for (const actual of receipts) {
       state.resources[resourceKey(actual)] = actual.metadata.uid;
       state.resourceOwners ??= {}; state.resourceOwners[resourceKey(actual)] = actual.metadata.ownerReferences ?? [];
     }
+    await this.verifyRollout(effects, state);
     this.save(state);
     return result;
+  }
+  releaseManifestProof(objects) {
+    const normalize = value => Array.isArray(value) ? value.map(normalize) : value && typeof value === 'object'
+      ? Object.fromEntries(Object.keys(value).sort().map(k => [k, normalize(value[k])])) : value;
+    return sha256(JSON.stringify(objects.map(o => {
+      const object = structuredClone(o);
+      delete object.status;
+      for (const field of ['uid', 'resourceVersion', 'managedFields', 'creationTimestamp']) delete object.metadata[field];
+      delete object.metadata.annotations?.['meta.helm.sh/release-name'];
+      delete object.metadata.annotations?.['meta.helm.sh/release-namespace'];
+      delete object.metadata.labels?.['app.kubernetes.io/managed-by'];
+      return normalize(object);
+    }).sort((a, b) => resourceKey(a).localeCompare(resourceKey(b)))));
   }
   async helmObjects(input, namespace, state = undefined) {
     try { return await this.renderHelmObjects(input, namespace, state); }

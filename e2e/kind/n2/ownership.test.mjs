@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync, chmodSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync, chmodSync, existsSync, lstatSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { gzipSync } from 'node:zlib';
 import { runInNewContext } from 'node:vm';
 import * as guard from '../../../scripts/kind-stack-guard.mjs';
 
@@ -99,9 +100,33 @@ function fixture(t) {
         const key = [...objects.keys()].find(k => k.endsWith('/' + name));
         assert.equal(JSON.parse(options.input).preconditions.uid, objects.get(key)?.metadata.uid);
         objects.delete(key);
-      } else if (!['label', 'annotate', 'patch', 'wait'].includes(a[0])) throw Error('unexpected kubectl call ' + a.join(' '));
-    } else if (cmd === 'helm') stdout = JSON.stringify({ apiVersion: 'v1', kind: 'List', items: helmManifest });
+      } else if (a[0] === 'label' && a[1] === 'secret') {
+        const o = objects.get('secret/' + a[2]);
+        for (const pair of a.filter(v => v.startsWith('com.grometis.'))) { const at = pair.indexOf('='); o.metadata.labels[pair.slice(0, at)] = pair.slice(at + 1); }
+      } else if (!['label', 'annotate', 'patch', 'wait', 'rollout'].includes(a[0])) throw Error('unexpected kubectl call ' + a.join(' '));
+    } else if (cmd === 'helm') {
+      stdout = JSON.stringify({ apiVersion: 'v1', kind: 'List', items: helmManifest });
+      const verb = args.findIndex(a => ['install', 'upgrade'].includes(a));
+      if (verb >= 0 && !args.includes('template')) {
+        const release = args.slice(verb + 1).find(a => !a.startsWith('-')), namespace = args[args.indexOf('-n') + 1];
+        const version = Math.max(0, ...[...objects.values()].filter(o => o.kind === 'Secret' && o.metadata.labels?.owner === 'helm' && o.metadata.labels?.name === release).map(o => Number(o.metadata.labels.version))) + 1;
+        const chart = structuredClone(helmManifest).filter(o => !o.metadata.annotations?.['helm.sh/hook'] && o.kind !== 'CustomResourceDefinition');
+        for (const o of chart) o.metadata.annotations = { ...o.metadata.annotations, 'meta.helm.sh/release-name': release, 'meta.helm.sh/release-namespace': namespace };
+        const renderer = new guard.N2Lab({ env: { ...env, ...options.env }, execute });
+        const rendered = await renderer.helmObjects(JSON.stringify({ apiVersion: 'v1', kind: 'List', items: chart }), namespace);
+        const manifest = JSON.stringify({ apiVersion: 'v1', kind: 'List', items: rendered });
+        for (const o of rendered) { o.metadata.uid ??= 'created-' + o.metadata.name; objects.set(`${o.kind.toLowerCase()}/${o.metadata.name}`, o); }
+        const name = `sh.helm.release.v1.${release}.v${version}`;
+        const payload = { name: release, namespace, version, info: { status: 'deployed' }, manifest };
+        const data = Buffer.from(gzipSync(JSON.stringify(payload)).toString('base64')).toString('base64');
+        objects.set('secret/' + name, { apiVersion: 'v1', kind: 'Secret', type: 'helm.sh/release.v1', metadata: { name, namespace, uid: 'created-' + name, resourceVersion: '7', labels: { owner: 'helm', name: release, version: String(version), status: 'deployed' } }, data: { release: data } });
+      }
+    }
     else throw Error('unexpected executable ' + cmd);
+    if (cmd === 'kubectl' && args.includes('get') && args.includes('-l')) {
+      const list = JSON.parse(stdout);
+      if (list?.items) { const pairs = args[args.indexOf('-l') + 1].split(',').map(p => p.split('=')); list.items = list.items.filter(o => pairs.every(([k, v]) => o.metadata.labels?.[k] === v)); stdout = JSON.stringify(list); }
+    }
     return { code: 0, stdout, stderr: '' };
   };
   const owner = () => new guard.N2Lab({ env, execute });
@@ -301,7 +326,7 @@ test('an owned PVC is recorded but preserved with its namespace without an atomi
 test('Helm hook name collision refuses before a Job or release can be changed', async t => {
   const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
   await owner.kubectl(['apply', '-f', '-'], { input: JSON.stringify(ns('gromesh-dp')) });
-  const hook = { apiVersion: 'batch/v1', kind: 'Job', metadata: { name: 'schema', namespace: 'gromesh-dp', annotations: { 'helm.sh/hook': 'pre-install,pre-upgrade' } }, spec: { template: { metadata: {}, spec: {} } } };
+  const hook = { apiVersion: 'batch/v1', kind: 'Job', metadata: { name: 'schema', namespace: 'gromesh-dp', annotations: { 'helm.sh/hook': 'pre-install,pre-upgrade' } }, spec: { selector: { matchLabels: { app: 'target' } }, template: { metadata: {}, spec: {} } } };
   f.helm([hook]);
   f.objects.set('job/schema', { ...hook, metadata: { ...hook.metadata, uid: 'foreign' } });
   f.calls.length = 0;
@@ -311,7 +336,7 @@ test('Helm hook name collision refuses before a Job or release can be changed', 
 test('Helm stamps pod templates and runs its schema Job with guarded UID cleanup', async t => {
   const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
   await owner.kubectl(['apply', '-f', '-'], { input: JSON.stringify(ns('gromesh-dp')) });
-  const hook = { apiVersion: 'batch/v1', kind: 'Job', metadata: { name: 'schema', namespace: 'gromesh-dp', annotations: { 'helm.sh/hook': 'pre-install,pre-upgrade' } }, spec: { template: { metadata: {}, spec: {} } } };
+  const hook = { apiVersion: 'batch/v1', kind: 'Job', metadata: { name: 'schema', namespace: 'gromesh-dp', annotations: { 'helm.sh/hook': 'pre-install,pre-upgrade' } }, spec: { selector: { matchLabels: { app: 'target' } }, template: { metadata: {}, spec: {} } } };
   f.helm([hook]);
   await owner.helm(['install', 'dp', 'chart', '-n', 'gromesh-dp']);
   const create = f.calls.find(c => c.cmd === 'kubectl' && c.input?.includes('"kind":"Job"') && !c.args.includes('--dry-run=client'));
@@ -336,7 +361,7 @@ test('editing the exclusive kubeconfig invalidates the receipt before any execut
   const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
   writeFileSync(f.env.LAB_KUBECONFIG, 'a different context or authentication plugin');
   f.calls.length = 0;
-  await assert.rejects(owner.assertIdentity(), /N2.*refused/);
+  await assert.rejects(f.owner().assertIdentity(), /N2.*refused/);
   assert.equal(f.calls.length, 0);
 });
 test('a changed kind node ID refuses mutations even if endpoint, CA and namespace UID still match', async t => {
@@ -532,19 +557,7 @@ test('Cilium install and resumed upgrade stamp and record both namespaced and gl
     { apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'ClusterRole', metadata: { name: 'cilium-role' } },
   ];
   f.helm(manifests);
-  const execute = async (cmd, args, options) => {
-    if (cmd === 'helm' && (args.includes('install') || args.includes('upgrade')) && !args.includes('template')) {
-      // Model Helm's post-renderer as a separate guard, as in the real process boundary.
-      const renderer = new guard.N2Lab({ env: f.env, execute: f.execute });
-      const rendered = await renderer.helmObjects(JSON.stringify({ kind: 'List', items: manifests }), 'kube-system');
-      for (const o of rendered) {
-        o.metadata.uid = f.objects.get(`${o.kind.toLowerCase()}/${o.metadata.name}`)?.metadata.uid ?? 'created-' + o.metadata.name;
-        f.objects.set(`${o.kind.toLowerCase()}/${o.metadata.name}`, o);
-      }
-    }
-    return f.execute(cmd, args, options);
-  };
-  const installer = new guard.N2Lab({ env: f.env, execute });
+  const installer = f.owner();
   await installer.helm(['upgrade', 'cilium', 'chart', '-n', 'kube-system', '--install']);
   const receipt = JSON.parse(readFileSync(owner.statePath, 'utf8'));
   assert.equal(receipt.resources['serviceaccount/kube-system/cilium'], 'created-cilium');
@@ -673,7 +686,7 @@ test('refusal evidence is written in the current suite directory as well as the 
 test('rollout restart carries the proved resource UID and version into the write', async t => {
   const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
   await owner.kubectl(['create', '-f', '-'], { input: JSON.stringify(ns('own')) });
-  const deployment = { apiVersion: 'apps/v1', kind: 'Deployment', metadata: { name: 'app', namespace: 'own', resourceVersion: '17' }, spec: { template: { metadata: {}, spec: {} } } };
+  const deployment = { apiVersion: 'apps/v1', kind: 'Deployment', metadata: { name: 'app', namespace: 'own', resourceVersion: '17' }, spec: { selector: { matchLabels: { app: 'target' } }, template: { metadata: {}, spec: {} } } };
   await owner.kubectl(['create', '-f', '-'], { input: JSON.stringify(deployment) });
   const racer = new guard.N2Lab({ env: f.env, execute: async (cmd, args, options) => {
     if (cmd === 'kubectl' && args.includes('restart')) { f.calls.push({ cmd, args }); return { code: 0, stdout: '', stderr: '' }; }
@@ -944,4 +957,275 @@ test('multi-object deletion refuses atomically instead of risking partial cleanu
   await assert.rejects(owner.kubectl(['delete', 'pod', 'target', 'second', '-n', 'own']), /refused/);
   assert.equal(mutations(f.calls).length, 0);
   assert.ok(f.objects.has('pod/target')); assert.ok(f.objects.has('pod/second'));
+});
+
+// R6 review regressions use only the in-memory executors above.
+test('mutation pins the proved kubeconfig even when the original is replaced at the write boundary', async t => {
+  const f = fixture(t); await f.owner().createCluster('fixture');
+  let writeConfig;
+  const owner = new guard.N2Lab({ env: f.env, execute: async (cmd, args, options) => {
+    if (cmd === 'kubectl' && args.includes('create') && !args.includes('--dry-run=client')) {
+      writeFileSync(f.env.LAB_KUBECONFIG, 'foreign cluster');
+      const path = args[args.indexOf('--kubeconfig') + 1];
+      writeConfig = { path, bytes: readFileSync(path, 'utf8') };
+      assert.equal(lstatSync(path).mode & 0o777, 0o600);
+      assert.equal(lstatSync(dirname(path)).mode & 0o777, 0o700);
+      assert.equal(options.env.KUBECONFIG, path);
+    }
+    return f.execute(cmd, args, options);
+  } });
+  await owner.kubectl(['create', '-f', '-'], { input: JSON.stringify(ns('own')) });
+  assert.notEqual(writeConfig.path, f.env.LAB_KUBECONFIG);
+  assert.notEqual(writeConfig.bytes, 'foreign cluster');
+  await owner.assertIdentity(); // A proved execution never reopens the replaced source.
+});
+
+async function ownedDeployment(f, owner) {
+  await owner.kubectl(['create', '-f', '-'], { input: JSON.stringify(ns('own')) });
+  await owner.kubectl(['create', '-f', '-'], { input: JSON.stringify({ apiVersion: 'apps/v1', kind: 'Deployment',
+    metadata: { name: 'app', namespace: 'own', resourceVersion: '17' },
+    spec: { selector: { matchLabels: { app: 'target' } }, template: { metadata: { labels: { app: 'target' } }, spec: {} } } }) });
+  return f.objects.get('deployment/app');
+}
+for (const operation of ['restart', 'upgrade']) for (const scenario of ['malicious pod', 'orphan pod', 'orphan replicaset']) {
+  test(`${operation} refuses ${scenario} selected by its controller before mutation`, async t => {
+    const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture'); const deployment = await ownedDeployment(f, owner);
+    const ref = { apiVersion: 'apps/v1', kind: 'Deployment', name: 'app', uid: deployment.metadata.uid, controller: true };
+    f.objects.set('replicaset/owned-rs', { apiVersion: 'apps/v1', kind: 'ReplicaSet', metadata: { ...f.metadata('owned-rs'), namespace: 'own', ownerReferences: [ref] }, spec: { selector: deployment.spec.selector } });
+    const kind = scenario === 'orphan replicaset' ? 'ReplicaSet' : 'Pod';
+    f.objects.set(`${kind.toLowerCase()}/foreign`, { apiVersion: kind === 'Pod' ? 'v1' : 'apps/v1', kind,
+      metadata: { name: 'foreign', namespace: 'own', uid: 'foreign', labels: { app: 'target' },
+        ...(scenario === 'malicious pod' ? { ownerReferences: [{ apiVersion: 'apps/v1', kind: 'ReplicaSet', name: 'owned-rs', uid: 'owned-rs', controller: true }] } : {}) }, spec: {} });
+    f.helm([structuredClone(deployment)]); f.calls.length = 0;
+    await assert.rejects(operation === 'restart' ? owner.kubectl(['-n', 'own', 'rollout', 'restart', 'deployment/app']) : owner.helm(['upgrade', 'dp', 'chart', '-n', 'own']), /refused/);
+    assert.equal(mutations(f.calls).length, 0);
+    assert.ok(f.objects.has(`${kind.toLowerCase()}/foreign`));
+  });
+}
+
+test('post-upgrade refuses a foreign Helm-selector secret without labeling or adopting it', async t => {
+  const f = fixture(t); await f.owner().createCluster('fixture');
+  await f.owner().kubectl(['create', '-f', '-'], { input: JSON.stringify(ns('own')) });
+  const owner = new guard.N2Lab({ env: f.env, execute: async (cmd, args, options) => {
+    const result = await f.execute(cmd, args, options);
+    if (cmd === 'helm' && args.includes('upgrade')) f.objects.set('secret/foreign', { apiVersion: 'v1', kind: 'Secret', metadata: { name: 'foreign', namespace: 'own', uid: 'foreign-secret', resourceVersion: '23', labels: { owner: 'helm', name: 'dp' } } });
+    return result;
+  } });
+  f.calls.length = 0;
+  await assert.rejects(owner.helm(['upgrade', 'dp', 'chart', '-n', 'own']), /refused/);
+  assert.ok(!f.calls.some(c => c.cmd === 'kubectl' && c.args.includes('label')));
+  assert.equal(JSON.parse(readFileSync(owner.statePath)).resources['secret/own/foreign'], undefined);
+  assert.ok(existsSync(join(f.env.LAB_EVIDENCE_DIR, 'n2-refused.json')));
+});
+
+test('named IMDS route operation validates addresses and binds both fixture and node IDs', async t => {
+  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  await owner.docker(['run', '-d', '--name', 'gromesh-n2-lab-fx-imds', '--network', 'kind', 'fixture@sha256:' + 'a'.repeat(64), 'node']);
+  f.containers.get('gromesh-n2-lab-fx-imds').NetworkSettings = { Networks: { kind: { IPAddress: '172.18.0.9', GlobalIPv6Address: 'fd00::9' } } };
+  await owner.addRoute('gromesh-n2-lab-control-plane', '169.254.169.254', '172.18.0.9');
+  assert.deepEqual(f.calls.findLast(c => c.cmd === 'docker' && c.args.includes('replace')).args,
+    ['exec', 'node-original', 'ip', 'route', 'replace', '169.254.169.254/32', 'via', '172.18.0.9']);
+  f.calls.length = 0;
+  await assert.rejects(owner.addRoute('gromesh-n2-lab-control-plane', '1.2.3.4;kill', '172.18.0.9'), /refused/);
+  assert.equal(execMutations(f.calls).length, 0);
+});
+
+test('named node clock uses only bracketed fixed reads on the proved node ID', async t => {
+  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture'); f.calls.length = 0;
+  await owner.nodeClock('gromesh-n2-lab-control-plane');
+  assert.deepEqual(execMutations(f.calls).map(c => c.args), [
+    ['exec', 'node-original', 'date', '+%s%3N'], ['exec', 'node-original', 'cat', '/proc/uptime'], ['exec', 'node-original', 'date', '+%s%3N'],
+  ]);
+});
+
+test('pod volume capability rejects an unrelated runtime mount before reading or rewriting host files', async t => {
+  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture'); const p = await ownedPod(f, owner);
+  p.spec.volumes = [{ name: 'isolation-handoff', emptyDir: {} }];
+  p.spec.containers[0].volumeMounts = [{ name: 'isolation-handoff', mountPath: '/gromesh/handoff' }];
+  const target = await owner.containerTarget('own', 'target', 'app');
+  const racing = new guard.N2Lab({ env: f.env, execute: async (cmd, args, options) => {
+    const result = await f.execute(cmd, args, options);
+    if (cmd === 'docker' && args.includes('inspect') && args.includes('crictl')) {
+      const info = JSON.parse(result.stdout); info.info.runtimeSpec = { mounts: [{ destination: '/gromesh/handoff', source: '/foreign/volume' }] }; result.stdout = JSON.stringify(info);
+    }
+    return result;
+  } });
+  f.calls.length = 0;
+  await assert.rejects(racing.writePodFile(target, 'isolation-handoff', 'applied.json', '{}'), /refused/);
+  assert.equal(execMutations(f.calls).length, 0);
+});
+
+test('exit observation binds runtime container labels before polling by ID and refuses mismatched IDs', async t => {
+  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture'); await ownedPod(f, owner);
+  const observer = new guard.N2Lab({ env: f.env, execute: async (cmd, args, options) => {
+    const result = await f.execute(cmd, args, options);
+    if (cmd === 'docker' && args.includes('crictl') && args.includes('inspect')) {
+      const info = JSON.parse(result.stdout); info.status.state = 'CONTAINER_EXITED'; info.status.finishedAt = '1234567890123456789'; info.status.exitCode = 0; result.stdout = JSON.stringify(info);
+    }
+    return result;
+  } });
+  f.calls.length = 0;
+  const targets = await observer.exitTargets('own', 'target', { app: 'a'.repeat(64) });
+  const result = await observer.watchContainerExits(targets, 1);
+  assert.equal(result.code, 0);
+  assert.equal(result.stdout, 'a'.repeat(64) + ' CONTAINER_EXITED 1234567890123456789 0\n');
+  assert.ok(f.calls.filter(c => c.cmd === 'docker' && c.args[0] === 'exec').every(c => c.args[1] === 'node-original' && c.args.includes('inspect')));
+  await assert.rejects(owner.exitTargets('own', 'target', { app: 'b'.repeat(64) }), /refused/);
+});
+
+for (const operation of ['restart', 'upgrade']) for (const effect of ['deletion', 'status change']) {
+  test(`post-${operation} detects unrelated ${effect} and preserves the ownership receipt`, async t => {
+    const f = fixture(t), base = f.owner(); await base.createCluster('fixture'); const deployment = await ownedDeployment(f, base);
+    f.helm([structuredClone(deployment)]);
+    f.objects.set('pod/unrelated', { apiVersion: 'v1', kind: 'Pod', metadata: { name: 'unrelated', namespace: 'own', uid: 'foreign', labels: { app: 'other' } }, status: { phase: 'Running' } });
+    const receipt = readFileSync(base.statePath, 'utf8');
+    const owner = new guard.N2Lab({ env: f.env, execute: async (cmd, args, options) => {
+      const result = await f.execute(cmd, args, options);
+      if ((operation === 'restart' && cmd === 'kubectl' && args.includes('apply')) || (operation === 'upgrade' && cmd === 'helm' && args.includes('upgrade'))) {
+        if (effect === 'deletion') f.objects.delete('pod/unrelated');
+        else f.objects.get('pod/unrelated').status.phase = 'Failed';
+      }
+      return result;
+    } });
+    await assert.rejects(operation === 'restart' ? owner.kubectl(['rollout', 'restart', '-n', 'own', 'deployment/app']) : owner.helm(['upgrade', 'dp', 'chart', '-n', 'own']), /refused/);
+    assert.equal(readFileSync(base.statePath, 'utf8'), receipt);
+    assert.ok(existsSync(join(f.env.LAB_EVIDENCE_DIR, 'n2-refused.json')));
+  });
+}
+
+test('a new Helm storage revision needs its exact absent name and release payload, not selector labels', async t => {
+  const { gzipSync } = await import('node:zlib');
+  const f = fixture(t); await f.owner().createCluster('fixture'); await f.owner().kubectl(['create', '-f', '-'], { input: JSON.stringify(ns('own')) });
+  const owner = new guard.N2Lab({ env: f.env, execute: async (cmd, args, options) => {
+    const result = await f.execute(cmd, args, options);
+    if (cmd === 'helm' && args.includes('upgrade')) {
+      const release = { name: 'dp', namespace: 'own', version: 1, info: { status: 'deployed' }, manifest: JSON.stringify({ apiVersion: 'v1', kind: 'List', items: [] }) };
+      const data = Buffer.from(gzipSync(JSON.stringify(release)).toString('base64')).toString('base64');
+      f.objects.set('secret/sh.helm.release.v1.dp.v1', { apiVersion: 'v1', kind: 'Secret', type: 'helm.sh/release.v1',
+        metadata: { name: 'sh.helm.release.v1.dp.v1', namespace: 'own', uid: 'created-revision-1', resourceVersion: '7', labels: { owner: 'helm', name: 'dp', version: '1', status: 'deployed' } }, data: { release: data } });
+    }
+    return result;
+  } });
+  await owner.helm(['upgrade', '--install', 'dp', 'chart', '-n', 'own']);
+  assert.equal(JSON.parse(readFileSync(owner.statePath)).resources['secret/own/sh.helm.release.v1.dp.v1'], 'created-revision-1');
+});
+
+test('Helm success without a demonstrable new storage revision refuses to save release receipts', async t => {
+  const f = fixture(t); await f.owner().createCluster('fixture'); await f.owner().kubectl(['create', '-f', '-'], { input: JSON.stringify(ns('own')) });
+  const owner = new guard.N2Lab({ env: f.env, execute: async (cmd, args, options) => {
+    const result = await f.execute(cmd, args, options);
+    if (cmd === 'helm' && args.includes('upgrade')) for (const key of f.objects.keys()) if (key.startsWith('secret/sh.helm.release.')) f.objects.delete(key);
+    return result;
+  } });
+  await assert.rejects(owner.helm(['upgrade', 'dp', 'chart', '-n', 'own']), /refused/);
+  assert.equal(JSON.parse(readFileSync(owner.statePath)).releases?.['own/dp'], undefined);
+});
+
+test('CoreDNS restart proves its creation baseline and labels replacement descendants for later checks', async t => {
+  const f = fixture(t);
+  f.objects.set('deployment/coredns', { apiVersion: 'apps/v1', kind: 'Deployment', metadata: { name: 'coredns', namespace: 'kube-system', uid: 'core-created', resourceVersion: '3' },
+    spec: { selector: { matchLabels: { app: 'dns' } }, template: { metadata: { labels: { app: 'dns' } }, spec: {} } } });
+  await f.owner().createCluster('fixture');
+  const owner = new guard.N2Lab({ env: f.env, execute: async (cmd, args, options) => {
+    const result = await f.execute(cmd, args, options);
+    if (cmd === 'kubectl' && args.includes('apply')) {
+      const parent = f.objects.get('deployment/coredns');
+      f.objects.set('replicaset/new-dns', { apiVersion: 'apps/v1', kind: 'ReplicaSet', metadata: { name: 'new-dns', namespace: 'kube-system', uid: 'new-dns', labels: parent.spec.template.metadata.labels,
+        ownerReferences: [{ apiVersion: 'apps/v1', kind: 'Deployment', name: 'coredns', uid: 'core-created', controller: true }] }, spec: { selector: parent.spec.selector } });
+    }
+    return result;
+  } });
+  await owner.kubectl(['rollout', 'restart', '-n', 'kube-system', 'deployment/coredns']);
+  assert.equal(owner.load().resources['deployment/kube-system/coredns'], 'core-created');
+  assert.equal(f.objects.get('replicaset/new-dns').metadata.labels[label], f.env.LAB_RUN_ID);
+});
+
+test('Helm and its separate renderer inherit the proved copy after the original kubeconfig changes', async t => {
+  const f = fixture(t); await f.owner().createCluster('fixture'); await f.owner().kubectl(['create', '-f', '-'], { input: JSON.stringify(ns('own')) });
+  f.helm([{ apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: 'chart-config' }, data: { mode: 'test' } }]);
+  const owner = new guard.N2Lab({ env: f.env, execute: async (cmd, args, options) => {
+    if (cmd === 'helm' && args.includes('upgrade')) {
+      writeFileSync(f.env.LAB_KUBECONFIG, 'replacement cluster');
+      const path = args[args.indexOf('--kubeconfig') + 1];
+      assert.notEqual(path, f.env.LAB_KUBECONFIG);
+      assert.equal(options.env.KUBECONFIG, path);
+      assert.equal(options.env.LAB_N2_PINNED_CONFIG, path);
+      assert.equal(readFileSync(path, 'utf8'), 'exclusive config');
+    }
+    return f.execute(cmd, args, options);
+  } });
+  await owner.helm(['upgrade', '--install', 'dp', 'chart', '-n', 'own']);
+  assert.equal(owner.load().resources['configmap/own/chart-config'], 'created-chart-config');
+});
+
+for (const mismatch of ['release-name', 'release-namespace', 'missing annotations', 'previous UID']) {
+  test(`post-upgrade refuses a chart object with ${mismatch} before granting ownership`, async t => {
+    const f = fixture(t); await f.owner().createCluster('fixture'); await f.owner().kubectl(['create', '-f', '-'], { input: JSON.stringify(ns('own')) });
+    f.helm([{ apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: 'chart-config' } }]);
+    if (mismatch === 'previous UID') f.objects.set('configmap/unrelated', { apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: 'unrelated', namespace: 'own', uid: 'foreign-old' } });
+    const owner = new guard.N2Lab({ env: f.env, execute: async (cmd, args, options) => {
+      const result = await f.execute(cmd, args, options);
+      if (cmd === 'helm' && args.includes('upgrade')) {
+        const o = f.objects.get('configmap/chart-config');
+        if (mismatch === 'missing annotations') delete o.metadata.annotations;
+        else if (mismatch === 'previous UID') o.metadata.uid = 'foreign-old';
+        else o.metadata.annotations['meta.helm.sh/' + mismatch] = 'foreign';
+      }
+      return result;
+    } });
+    f.calls.length = 0;
+    await assert.rejects(owner.helm(['upgrade', 'dp', 'chart', '-n', 'own']), /refused/);
+    assert.equal(JSON.parse(readFileSync(owner.statePath)).resources['configmap/own/chart-config'], undefined);
+    assert.ok(!f.calls.some(c => c.cmd === 'kubectl' && c.args.includes('label')));
+  });
+}
+
+test('collector probe resolves the owned pod IP and uses fixed ports on the bound Docker node ID', async t => {
+  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture'); const p = await ownedPod(f, owner);
+  p.spec.containers[0].name = 'collector'; p.status.containerStatuses[0].name = 'collector'; p.status.podIP = '10.0.0.7';
+  const target = await owner.containerTarget('own', 'target', 'collector'); f.calls.length = 0;
+  await owner.collectorProbe('gromesh-n2-lab-control-plane', target);
+  const call = f.calls.find(c => c.cmd === 'docker' && c.args.includes('bash'));
+  assert.equal(call.args[1], 'node-original');
+  assert.equal(call.args.at(-1), '10.0.0.7');
+  assert.match(call.args[4], /for p in 8080 9598/);
+  p.metadata.uid = 'replaced'; f.calls.length = 0;
+  await assert.rejects(owner.collectorProbe('gromesh-n2-lab-control-plane', target), /refused/);
+  assert.equal(execMutations(f.calls).length, 0);
+});
+
+test('a proved handoff write binds the runtime mount and refuses traversal', async t => {
+  const f = fixture(t); await f.owner().createCluster('fixture'); const base = f.owner(), p = await ownedPod(f, base);
+  p.spec.volumes = [{ name: 'isolation-handoff', emptyDir: {} }];
+  p.spec.containers[0].volumeMounts = [{ name: 'isolation-handoff', mountPath: '/gromesh/handoff' }];
+  const owner = new guard.N2Lab({ env: f.env, execute: async (cmd, args, options) => {
+    const result = await f.execute(cmd, args, options);
+    if (cmd === 'docker' && args.includes('inspect') && args.includes('crictl')) {
+      const info = JSON.parse(result.stdout); info.info.runtimeSpec = { mounts: [{ destination: '/gromesh/handoff', source: '/var/lib/kubelet/pods/created-target/volumes/kubernetes.io~empty-dir/isolation-handoff' }] }; result.stdout = JSON.stringify(info);
+    }
+    return result;
+  } });
+  const target = await owner.containerTarget('own', 'target', 'app'); f.calls.length = 0;
+  await owner.writePodFile(target, 'isolation-handoff', 'applied.json', '{"revision":7}');
+  const call = f.calls.find(c => c.cmd === 'docker' && c.args.includes('sh'));
+  assert.equal(call.args[2], 'node-original');
+  assert.equal(call.args.at(-2), '/var/lib/kubelet/pods/created-target/volumes/kubernetes.io~empty-dir/isolation-handoff/applied.json');
+  assert.equal(call.input, '{"revision":7}');
+  f.calls.length = 0;
+  await assert.rejects(owner.readPodFile(target, 'isolation-handoff', '../foreign'), /refused/);
+  assert.equal(execMutations(f.calls).length, 0);
+});
+
+test('streamed logs use the proved private configuration after the source is replaced', async t => {
+  const { EventEmitter } = await import('node:events');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  writeFileSync(f.env.LAB_KUBECONFIG, 'other cluster');
+  const source = readFileSync(new URL('./components/run.mjs', import.meta.url), 'utf8');
+  const body = source.slice(source.indexOf('class Follower'), source.indexOf('// Every instant'));
+  let selected;
+  const child = new EventEmitter(); child.stdout = new EventEmitter();
+  runInNewContext(body + '\nnew Follower("target", "app")', { ownership: owner, kubeconfig: f.env.LAB_KUBECONFIG, CONTEXT: owner.context, NS: { dp: 'own' },
+    spawn: (cmd, args) => { selected = args[args.indexOf('--kubeconfig') + 1]; return child; }, parseLine: () => {} });
+  assert.notEqual(selected, f.env.LAB_KUBECONFIG);
+  assert.equal(readFileSync(selected, 'utf8'), 'exclusive config');
 });

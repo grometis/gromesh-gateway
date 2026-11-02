@@ -188,9 +188,10 @@ async function fromOutside(ip) {
   await kubectl(["delete", "pod", "-n", FX, name, "--wait=false"]);
   return phase === "Succeeded" ? JSON.parse(stdout.trim()) : { error: stdout };
 }
-async function fromNode(ip) {
+async function fromNode(p) {
   const node = `${versions.CLUSTER_NAME}-worker`;
-  const r = await run("docker", ["exec", node, "bash", "-c", `for p in 8080 9598; do (exec 3<>/dev/tcp/${ip}/$p) 2>/dev/null && echo "$p open" || echo "$p refused"; done`], { allowFail: true });
+  const target = await ownership.containerTarget(DP, p.metadata.name, "collector");
+  const r = await ownership.collectorProbe(node, target);
   return r.stdout.trim().replaceAll("\n", ", ");
 }
 
@@ -228,7 +229,7 @@ async function main() {
         ports: [{ protocol: "TCP", port: 8080 }, { protocol: "TCP", port: 9598 }] }] } }]);
   const ip = p.status.podIP;
   record("other pod cannot connect", JSON.stringify(await fromOutside(ip)) === JSON.stringify({ intake: "ECONNREFUSED", metrics: "ECONNREFUSED" }), "intake and metrics refused at the pod IP");
-  const node = await fromNode(ip);
+  const node = await fromNode(p);
   record("node cannot connect", node === "8080 refused, 9598 refused", node);
 
   record("no token -> 401", (await postInPod(p, { body: event(randomBytes(16).toString("hex")) })) === "401", "POST from inside the pod");

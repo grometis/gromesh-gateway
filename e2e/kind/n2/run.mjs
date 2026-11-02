@@ -124,8 +124,8 @@ async function externalFixtures(topo) {
   }
   for (const n of topo.nodes) {
     const node = n.name;
-    for (const a of IMDS.v4) await docker(["exec", node, "ip", "route", "replace", `${a}/32`, "via", net.imdsHost.v4]);
-    for (const a of IMDS.v6) await docker(["exec", node, "ip", "-6", "route", "replace", `${a}/128`, "via", net.imdsHost.v6]);
+    for (const a of IMDS.v4) await ownership.addRoute(node, a, net.imdsHost.v4);
+    for (const a of IMDS.v6) await ownership.addRoute(node, a, net.imdsHost.v6);
   }
 }
 

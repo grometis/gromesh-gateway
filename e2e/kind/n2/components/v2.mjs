@@ -214,7 +214,7 @@ class NginxSampler {
 class Follower {
   constructor(pod, container) {
     this.lines = [];
-    this.child = spawn("kubectl", ["--kubeconfig", kubeconfig, "--context", CONTEXT, "-n", NS.dp, "logs", "-f", "--timestamps", pod, "-c", container], { stdio: ["ignore", "pipe", "pipe"] });
+    this.child = spawn("kubectl", ["--kubeconfig", ownership.verifiedKubeconfig(), "--context", CONTEXT, "-n", NS.dp, "logs", "-f", "--timestamps", pod, "-c", container], { stdio: ["ignore", "pipe", "pipe"] });
     let buffer = "";
     this.child.stdout.on("data", (d) => {
       buffer += d;
@@ -270,7 +270,7 @@ const thawAll = async () => Promise.all([...frozen].map(thaw));
  */
 async function lastHeartbeat(podName, node) {
   const state = await kubectl(["-n", NS.dp, "exec", podName, "-c", "kong", "--", "cat", "/gromesh/kong-state/kong-state.json"], { allowFail: true });
-  const clock = await docker(["exec", node, "sh", "-c", "date +%s%3N; cat /proc/uptime; date +%s%3N"], { allowFail: true });
+  const clock = await ownership.nodeClock(node);
   try {
     const [before, uptime, after] = clock.stdout.trim().split("\n");
     return bootToWall({ bootMs: Number(JSON.parse(state.stdout).heartbeatBoottimeNs) / 1e6, uptimeMs: Number(uptime.split(" ")[0]) * 1000,
@@ -285,11 +285,9 @@ async function markServer(role, scenario, phase) {
 }
 
 /** crictl state of a pod's containers, polled on its node until all exited: finishedAt with nanoseconds, the exit codes. */
-function watchExits(node, ids, timeoutS) {
-  const script = `end=$(( $(date +%s) + ${timeoutS} )); while [ "$(date +%s)" -lt "$end" ]; do all=1; for id in "$@"; do
-st=$(crictl inspect -o go-template --template '{{.status.state}} {{.status.finishedAt}} {{.status.exitCode}}' "$id" 2>/dev/null) || st=GONE; echo "$id $st";
-case "$st" in CONTAINER_EXITED*) ;; *) all=0 ;; esac; done; [ "$all" = 1 ] && exit 0; sleep 0.05; done; exit 3`;
-  return docker(["exec", node, "sh", "-c", script, "sh", ...Object.values(ids)], { allowFail: true, timeout: (timeoutS + 15) * 1000 }).then(({ code, stdout }) => {
+function watchExits(targets, timeoutS) {
+  const ids = Object.fromEntries(Object.entries(targets).map(([name, target]) => [name, target.containerID]));
+  return ownership.watchContainerExits(targets, timeoutS).then(({ code, stdout }) => {
     const last = {};
     for (const line of stdout.split("\n").filter(Boolean)) { const [id, ...rest] = line.split(" "); last[id] = rest; }
     const states = Object.fromEntries(Object.entries(ids).map(([name, id]) => {
@@ -502,7 +500,8 @@ async function nodesOf() {
 const clusterProtocol = async () => (await sql(`select delivery_protocol from clusters where id = '${ctx.clusterId}'`))[0].delivery_protocol;
 async function handoffApplied(pod) {
   const p = await json(["-n", NS.dp, "get", "pod", pod.name]);
-  const r = await docker(["exec", p.spec.nodeName, "cat", `/var/lib/kubelet/pods/${p.metadata.uid}/volumes/kubernetes.io~empty-dir/isolation-handoff/applied.json`], { allowFail: true });
+  const target = await ownership.containerTarget(NS.dp, p.metadata.name, "isolation-probe");
+  const r = await ownership.readPodFile(target, "isolation-handoff", "applied.json", { allowFail: true });
   return r.code === 0 ? JSON.parse(r.stdout) : null;
 }
 async function latestReport(pod) {
@@ -847,7 +846,7 @@ async function containmentN({ frozenSupervisor = false } = {}) {
   })) : [];
   const heartbeat = {};
   if (frozenSupervisor) for (const p of pods) { await freeze(p.name, "kong", "kong-supervisor"); heartbeat[p.name] = await lastHeartbeat(p.name, kongIds.find((k) => k.pod === p.name).node); }
-  const kongExits = kongIds.map((k) => ({ pod: k.pod, exits: watchExits(k.node, { kong: k.id }, 60) }));
+  const kongExits = await Promise.all(kongIds.map(async (k) => ({ pod: k.pod, exits: watchExits(await ownership.exitTargets(NS.dp, k.pod, { kong: k.id }), 60) })));
   const loadStart = await vmLoad(`${id} start`);
   // The loss is taken at its earliest.
   const lossEarliest = await vmNow();
@@ -1056,10 +1055,10 @@ async function revisionMismatch() {
   const it = item("V2-revision-mismatch", "applied.json rewritten with another revision (same hash): the probe reports it (canary hash matches), the CP evidence leaves verified (revision mismatch); restored → verified", {});
   const [p] = await live();
   const pj = await json(["-n", NS.dp, "get", "pod", p.name]);
-  const dir = `/var/lib/kubelet/pods/${pj.metadata.uid}/volumes/kubernetes.io~empty-dir/isolation-handoff`;
-  const original = (await docker(["exec", pj.spec.nodeName, "cat", `${dir}/applied.json`])).stdout;
+  const target = await ownership.containerTarget(NS.dp, pj.metadata.name, "isolation-probe");
+  const original = (await ownership.readPodFile(target, "isolation-handoff", "applied.json")).stdout;
   const forged = JSON.stringify({ ...JSON.parse(original), revision: JSON.parse(original).revision + 7 });
-  const write = (bytes) => docker(["exec", "-i", pj.spec.nodeName, "sh", "-c", `cat > ${dir}/.a && chown --reference=${dir}/applied.json ${dir}/.a && chmod --reference=${dir}/applied.json ${dir}/.a && mv ${dir}/.a ${dir}/applied.json`], { input: bytes });
+  const write = (bytes) => ownership.writePodFile(target, "isolation-handoff", "applied.json", bytes);
   const t0 = await vmNow();
   await write(forged);
   const seen = await waitFor("CP evidence leaves verified", async () => { const n = (await nodesOf()).find((x) => x.node_id === p.name); return n?.evidence !== "verified" ? n : null; }, { timeoutMs: 90_000, intervalMs: 2000 }).catch(() => null);
@@ -1117,7 +1116,7 @@ async function drainAndReplace() {
   followers.push(follow);
   const known = new Set((await pods()).map((x) => x.uid));
   const loadStart = await vmLoad("drain start");
-  const exits = watchExits(pj.spec.nodeName, ids, 60);
+  const exits = watchExits(await ownership.exitTargets(NS.dp, p.name, ids), 60);
   const t0 = await vmNow();
   await kubectl(["-n", NS.dp, "delete", "pod", p.name, "--wait=false"]);
   const t0b = await vmNow();

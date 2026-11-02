@@ -75,7 +75,7 @@ export class Forward {
     await ownership.preflightResources([{ type: "service", name: "control-plane", namespace: NS.cp }], true);
     this.stop();
     for (let attempt = 0; attempt < 30; attempt++) {
-      const child = spawn("kubectl", ["--kubeconfig", kubeconfig, "--context", CONTEXT, "-n", NS.cp, "port-forward", "--address", "127.0.0.1", "svc/control-plane", `${this.port}:3000`], { env, stdio: ["ignore", "pipe", "pipe"] });
+      const child = spawn("kubectl", ["--kubeconfig", ownership.verifiedKubeconfig(), "--context", CONTEXT, "-n", NS.cp, "port-forward", "--address", "127.0.0.1", "svc/control-plane", `${this.port}:3000`], { env: { ...env, KUBECONFIG: ownership.verifiedKubeconfig() }, stdio: ["ignore", "pipe", "pipe"] });
       const ready = await new Promise((resolve) => {
         let out = "";
         const timer = setTimeout(() => resolve(false), 10_000);
