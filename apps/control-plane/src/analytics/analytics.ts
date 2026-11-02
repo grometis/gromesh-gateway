@@ -158,6 +158,21 @@ interface RequestRow {
   response_size: number;
 }
 
+/** Every stored column of a row: two copies of one id that differ in any of them are a conflict. */
+const CONTENT = "tuple(ts, environment_id, cluster_id, service_id, route_id, consumer_id, method, path, status, latency_kong_ms, latency_upstream_ms, latency_total_ms, client_ip, request_size, response_size, retention_days)";
+
+/**
+ * The rows of `where`, one per request id (agent protocol v2 "Analytics guarantees"). Kong's queue and the collector
+ * retry, so the table may hold copies of a request: identical copies count once, without relying on a merge having
+ * run. An id whose copies differ anywhere in the table (another route, environment, cluster or any other column) is a
+ * conflict and is left out before anything is counted or filtered, so no copy is ever chosen for this environment and
+ * no filter can reveal it; it belongs only to the instance's unattributed totals.
+ */
+const deduped = (where: string) =>
+  `(SELECT * FROM requests WHERE ${where} AND id NOT IN (` +
+  `SELECT id FROM requests WHERE id IN (SELECT id FROM requests WHERE ${where}) GROUP BY id HAVING uniqExact(${CONTENT}) > 1` +
+  `) LIMIT 1 BY id)`;
+
 /** ClickHouse renders DateTime64 as "YYYY-MM-DD hh:mm:ss.SSS" in UTC. */
 const isoFromClickHouse = (ts: string) => new Date(`${ts.replace(" ", "T")}Z`).toISOString();
 
@@ -193,13 +208,13 @@ export class AnalyticsService implements OnApplicationShutdown {
         `SELECT intDiv(toUnixTimestamp64Milli(ts) - {fromMs:Int64}, {bucketMs:Int64}) AS b, count() AS requests,
                 countIf(status >= 400 AND status < 500) AS errors4xx, countIf(status >= 500) AS errors5xx,
                 quantilesExact(0.5, 0.95, 0.99)(latency_total_ms) AS q
-         FROM requests WHERE ${where} GROUP BY b ORDER BY b`,
+         FROM ${deduped(where)} GROUP BY b ORDER BY b`,
         { ...params, bucketMs },
       ),
       this.rows<Omit<BucketRow, "b">>(
         `SELECT count() AS requests, countIf(status >= 400 AND status < 500) AS errors4xx, countIf(status >= 500) AS errors5xx,
                 quantilesExact(0.5, 0.95, 0.99)(latency_total_ms) AS q
-         FROM requests WHERE ${where}`,
+         FROM ${deduped(where)}`,
         params,
       ),
     ]);
@@ -229,7 +244,7 @@ export class AnalyticsService implements OnApplicationShutdown {
               countIf(status >= 400 AND status < 500) AS errors4xx, countIf(status >= 500) AS errors5xx,
               countIf(status >= 400) AS errors, quantileExact(0.95)(latency_total_ms) AS p95,
               quantilesExact(0.5, 0.95, 0.99)(latency_total_ms) AS q
-       FROM requests WHERE ${where} GROUP BY route_id
+       FROM ${deduped(where)} GROUP BY route_id
        ORDER BY ${TOP_BY[by]}, requests DESC, route_id ASC NULLS LAST LIMIT {limit:UInt32}`,
       { ...params, limit },
     );
@@ -263,7 +278,7 @@ export class AnalyticsService implements OnApplicationShutdown {
     const rows = await this.rows<RequestRow>(
       `SELECT id, ts, environment_id, cluster_id, service_id, route_id, consumer_id, method, path, status,
               latency_kong_ms, latency_upstream_ms, latency_total_ms, client_ip, request_size, response_size
-       FROM requests WHERE ${where}${cursor ? " AND (ts, id) < (fromUnixTimestamp64Milli({cursorMs:Int64}), {cursorId:UUID})" : ""}
+       FROM ${deduped(where)}${cursor ? " WHERE (ts, id) < (fromUnixTimestamp64Milli({cursorMs:Int64}), {cursorId:UUID})" : ""}
        ORDER BY ts DESC, id DESC LIMIT {limit:UInt32}`,
       { ...params, limit: limit + 1, ...(cursor ? { cursorMs, cursorId: cursor.id } : {}) },
     );
@@ -301,7 +316,9 @@ export class AnalyticsService implements OnApplicationShutdown {
       password: this.config.clickhouse.password,
       database: this.config.clickhouse.database,
       request_timeout: 10_000,
-      clickhouse_settings: { output_format_json_quote_64bit_integers: 0 },
+      // A budget on the server too (the conflict lookup reads every stored copy of the candidate ids): exceeding it is
+      // an error (502), never a truncated set or aggregate that could hide a conflict.
+      clickhouse_settings: { output_format_json_quote_64bit_integers: 0, max_execution_time: 10, timeout_overflow_mode: "throw", max_memory_usage: "1000000000" },
     });
     try {
       const result = await this.client.query({ query, query_params: params, format: "JSONEachRow" });

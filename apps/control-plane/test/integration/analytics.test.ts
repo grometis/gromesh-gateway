@@ -11,9 +11,12 @@ const admin = createClient({ url: CLICKHOUSE.url, username: CLICKHOUSE_ADMIN.use
 beforeAll(async () => {
   const ping = await admin.ping();
   if (!ping.success) throw new Error(`These tests read a real ClickHouse at ${CLICKHOUSE.url}: run the compose \`observability\` profile or set TEST_CLICKHOUSE_URL`);
-  // The compose ClickHouse applies this on first start; a bare CI service does not.
-  const ddl = readFileSync(new URL("../../../../deploy/observability/clickhouse/001-requests.sql", import.meta.url), "utf8");
-  for (const statement of ddl.split(";").map((s) => s.trim()).filter(Boolean)) await admin.command({ query: statement });
+  // The compose ClickHouse applies these on first start; a bare CI service does not. Both are idempotent, and the
+  // reads compare every column of a row, retention_days (002) included.
+  for (const file of ["001-requests.sql", "002-retention.sql"]) {
+    const ddl = readFileSync(new URL(`../../../../deploy/observability/clickhouse/${file}`, import.meta.url), "utf8");
+    for (const statement of ddl.split(";").map((s) => s.trim()).filter(Boolean)) await admin.command({ query: statement });
+  }
   h = await startHarness();
 });
 afterAll(async () => {
@@ -266,6 +269,154 @@ describe("request explorer", () => {
         await isolated.close();
       }
     }
+  });
+});
+
+describe("a request stored more than once (at-least-once delivery)", () => {
+  it("counts each request id once in the summary, the ranking and the explorer, while the table keeps every copy", async () => {
+    const env = await h.api("POST", "/environments", { name: uniq("dedup") });
+    const envId = env.body.id as string;
+    const once = row(envId, 10_000, 200, 10);
+    const twice = row(envId, 20_000, 500, 100);
+    // A Kong queue retry or a collector restart delivers the same request again: same id, same content, other insert.
+    await admin.insert({ table: "requests", values: [once, twice], format: "JSONEachRow" });
+    await admin.insert({ table: "requests", values: [twice], format: "JSONEachRow" });
+    await admin.insert({ table: "requests", values: [twice], format: "JSONEachRow" });
+    // The control: the copies are really stored (no merge, no engine dedup is relied on).
+    const stored = await (await admin.query({ query: "SELECT count() AS n FROM requests WHERE environment_id = {env:UUID}", query_params: { env: envId }, format: "JSONEachRow" })).json<{ n: string }>();
+    expect(Number(stored[0]!.n)).toBe(4);
+
+    const summary = await h.api("GET", `/environments/${envId}/analytics/summary?${period()}&interval=5m`);
+    expect(summary.status, JSON.stringify(summary.body)).toBe(200);
+    expect(summary.body.totals).toMatchObject({ requests: 2, errors4xx: 0, errors5xx: 1, errorRate: 0.5 });
+    expect(summary.body.series.reduce((n: number, p: { requests: number }) => n + p.requests, 0)).toBe(2);
+    const top = await h.api("GET", `/environments/${envId}/analytics/top-routes?${period()}`);
+    expect(top.body.items).toEqual([expect.objectContaining({ routeId: once.route_id, requests: 2, errors5xx: 1 })]);
+    const explorer = await h.api("GET", `/environments/${envId}/requests?${period()}&limit=10`);
+    expect(explorer.body.items.map((r: { id: string }) => r.id).sort()).toEqual([once.id, twice.id].sort());
+    expect(explorer.body.nextCursor).toBeNull();
+  });
+
+  it("keeps percentiles and pages of one request per id, also for distinct requests at the same instant", async () => {
+    const env = await h.api("POST", "/environments", { name: uniq("dedup-q") });
+    const envId = env.body.id as string;
+    // Nine fast requests and one slow one at the same instant: p50 10 ms. Copies of the slow one would move p50 to 100.
+    const fast = Array.from({ length: 9 }, () => row(envId, 30_000, 200, 10));
+    const slow = row(envId, 30_000, 200, 100);
+    await admin.insert({ table: "requests", values: [...fast, slow], format: "JSONEachRow" });
+    for (let i = 0; i < 9; i++) await admin.insert({ table: "requests", values: [slow], format: "JSONEachRow" });
+    const totals = (await h.api("GET", `/environments/${envId}/analytics/summary?${period()}&interval=5m`)).body.totals;
+    expect(totals).toMatchObject({ requests: 10, p50Ms: 10 });
+    // Pages of 3 over the ten distinct ids (same ts, ordered by id): every id once, no copy, no gap.
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const page: ApiResponse = await h.api("GET", `/environments/${envId}/requests?${period()}&limit=3${cursor ? `&cursor=${cursor}` : ""}`);
+      expect(page.status, JSON.stringify(page.body)).toBe(200);
+      seen.push(...page.body.items.map((r: { id: string }) => r.id));
+      cursor = page.body.nextCursor;
+    } while (cursor);
+    expect(seen.length).toBe(10);
+    expect(new Set(seen)).toEqual(new Set([...fast, slow].map((r) => r.id)));
+  });
+});
+
+describe("copies of one request id that disagree (agent protocol v2, Analytics guarantees: conflicting copies)", () => {
+  const R1 = "00000000-0000-4000-8000-0000000000b1", R2 = "00000000-0000-4000-8000-0000000000b2";
+  const total = async (envId: string, extra = "") => (await h.api("GET", `/environments/${envId}/analytics/summary?${period()}&interval=5m${extra}`)).body.totals.requests as number;
+  const ids = async (envId: string, extra = "") => (await h.api("GET", `/environments/${envId}/requests?${period()}&limit=50${extra}`)).body.items.map((r: { id: string }) => r.id) as string[];
+  const routes = async (envId: string) => (await h.api("GET", `/environments/${envId}/analytics/top-routes?${period()}`)).body.items.map((r: { routeId: string | null; requests: number }) => [r.routeId, r.requests]);
+
+  it("never attributes an id whose copies name different routes, in any insertion order, nor leaks it through a filter", async () => {
+    for (const order of ["R1 first", "R2 first"]) {
+      const envId = (await h.api("POST", "/environments", { name: uniq("conflict") })).body.id as string;
+      const clean = row(envId, 10_000, 200, 10, { route_id: R1 });
+      const a = row(envId, 20_000, 200, 10, { route_id: R1 });
+      const b = { ...a, route_id: R2 };
+      await admin.insert({ table: "requests", values: [clean], format: "JSONEachRow" });
+      for (const copy of order === "R1 first" ? [a, b] : [b, a]) await admin.insert({ table: "requests", values: [copy], format: "JSONEachRow" });
+      // Negative control: the former read (LIMIT 1 BY id) keeps one of the two copies and attributes it to a route.
+      const former = await (await admin.query({ query: "SELECT count() AS n FROM (SELECT * FROM requests WHERE environment_id = {env:UUID} LIMIT 1 BY id)", query_params: { env: envId }, format: "JSONEachRow" })).json<{ n: string }>();
+      expect(Number(former[0]!.n), order).toBe(2);
+      // Now: the conflicted id counts for this environment nowhere; the clean one stays.
+      expect(await total(envId), order).toBe(1);
+      expect(await ids(envId), order).toEqual([clean.id]);
+      expect(await routes(envId), order).toEqual([[R1, 1]]);
+      // A filter on either route never reveals the conflicted id.
+      expect(await total(envId, `&routeId=${R1}`), order).toBe(1);
+      expect(await total(envId, `&routeId=${R2}`), order).toBe(0);
+      expect(await ids(envId, `&routeId=${R2}`), order).toEqual([]);
+    }
+  });
+
+  it("never mixes environments: one id stored for two environments is attributed to neither", async () => {
+    const e1 = (await h.api("POST", "/environments", { name: uniq("cross-a") })).body.id as string;
+    const e2 = (await h.api("POST", "/environments", { name: uniq("cross-b") })).body.id as string;
+    const shared = row(e1, 20_000, 200, 10);
+    await admin.insert({ table: "requests", values: [shared, { ...shared, environment_id: e2 }, row(e2, 30_000, 200, 10)], format: "JSONEachRow" });
+    expect(await total(e1)).toBe(0);
+    expect(await total(e2)).toBe(1);
+    expect(await ids(e2)).not.toContain(shared.id);
+  });
+
+  it("leaves out a conflict on any column, outside the period too, behind every filter, in series and cursor pages", async () => {
+    const envId = (await h.api("POST", "/environments", { name: uniq("conflict-cols") })).body.id as string;
+    const clean = row(envId, 10_000, 200, 10);
+    const cluster = row(envId, 20_000, 200, 10), byCluster = { ...cluster, cluster_id: "00000000-0000-4000-8000-0000000000c2" };
+    const nullable = row(envId, 30_000, 200, 10, { consumer_id: null }), toValue = { ...nullable, consumer_id: "00000000-0000-4000-8000-0000000000d1" };
+    const status = row(envId, 40_000, 200, 10), byStatus = { ...status, status: 500 };
+    // The other copy lies outside the queried period (another ts): still the same id, still a conflict.
+    const early = row(envId, 50_000, 200, 10), earlyCopy = { ...early, ts: at(-3 * 60 * 60_000) };
+    await admin.insert({ table: "requests", values: [clean, cluster, byCluster, nullable, toValue, status, byStatus, early, earlyCopy], format: "JSONEachRow" });
+    expect(await total(envId)).toBe(1);
+    const series = (await h.api("GET", `/environments/${envId}/analytics/summary?${period()}&interval=1m`)).body.series as { requests: number }[];
+    expect(series.reduce((n, p) => n + p.requests, 0)).toBe(1);
+    for (const filter of ["&status=200", "&status=500", "&consumerId=00000000-0000-4000-8000-0000000000d1", "&serviceId=00000000-0000-4000-8000-0000000000a1"]) {
+      const listed = await ids(envId, filter);
+      for (const conflicted of [cluster.id, nullable.id, status.id, early.id]) expect(listed, filter).not.toContain(conflicted);
+    }
+    // Pages of one through the explorer's cursor never surface a conflicted id.
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const page: ApiResponse = await h.api("GET", `/environments/${envId}/requests?${period()}&limit=1${cursor ? `&cursor=${cursor}` : ""}`);
+      seen.push(...page.body.items.map((r: { id: string }) => r.id));
+      cursor = page.body.nextCursor;
+    } while (cursor);
+    expect(seen).toEqual([clean.id]);
+  });
+
+  it("keeps conflicts out across cursor pages and across services, querying either side", async () => {
+    const envId = (await h.api("POST", "/environments", { name: uniq("conflict-pages") })).body.id as string;
+    const S1 = "00000000-0000-4000-8000-0000000000a1", S2 = "00000000-0000-4000-8000-0000000000a2";
+    // Clean events at 10, 30 and 50 s; conflicts at 20 and 40 s, on both sides of every page boundary (pages of 1).
+    const clean = [10_000, 30_000, 50_000].map((t) => row(envId, t, 200, 10, { service_id: S1 }));
+    const c1 = row(envId, 20_000, 200, 10, { service_id: S1 }), c2 = row(envId, 40_000, 200, 10, { service_id: S1 });
+    await admin.insert({ table: "requests", values: [...clean, c1, { ...c1, service_id: S2 }, c2, { ...c2, status: 503 }], format: "JSONEachRow" });
+    const seen: string[] = [];
+    let cursor: string | null = null, calls = 0;
+    do {
+      const page: ApiResponse = await h.api("GET", `/environments/${envId}/requests?${period()}&limit=1${cursor ? `&cursor=${cursor}` : ""}`);
+      expect(page.status, JSON.stringify(page.body)).toBe(200);
+      seen.push(...page.body.items.map((r: { id: string }) => r.id));
+      cursor = page.body.nextCursor;
+      calls++;
+    } while (cursor);
+    expect(calls).toBeGreaterThanOrEqual(3);
+    expect(seen.sort()).toEqual(clean.map((r) => r.id).sort());
+    // The copies of c1 sit in two services: filtering on either one never reveals it, in the explorer or the summary.
+    for (const service of [S1, S2]) {
+      expect(await ids(envId, `&serviceId=${service}`), service).not.toContain(c1.id);
+      expect(await total(envId, `&serviceId=${service}`), service).toBe(service === S1 ? 3 : 0);
+    }
+  });
+
+  it("still counts identical copies once and distinct ids separately", async () => {
+    const envId = (await h.api("POST", "/environments", { name: uniq("legit") })).body.id as string;
+    const one = row(envId, 10_000, 200, 10), two = row(envId, 10_000, 200, 10);
+    await admin.insert({ table: "requests", values: [one, one, one, two], format: "JSONEachRow" });
+    expect(await total(envId)).toBe(2);
+    expect((await ids(envId)).sort()).toEqual([one.id, two.id].sort());
   });
 });
 
