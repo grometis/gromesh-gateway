@@ -1,0 +1,555 @@
+{
+ "spdxVersion": "SPDX-2.3",
+ "dataLicense": "CC0-1.0",
+ "SPDXID": "SPDXRef-DOCUMENT",
+ "name": "gromesh-ui-arm64-b43bee3d26f9ef0add1260fc5e317c01fb5f066f-f753a886d77b52bb56cdff2ab23cb09d64aa2e710af0a8c0a8d642d5c8c0d4bd",
+ "documentNamespace": "https://anchore.com/syft/image/gromesh-ui-arm64-b43bee3d26f9ef0add1260fc5e317c01fb5f066f-f753a886d77b52bb56cdff2ab23cb09d64aa2e710af0a8c0a8d642d5c8c0d4bd-c145dce8-ddc2-4acc-b5da-f732178a2984",
+ "creationInfo": {
+  "licenseListVersion": "3.25",
+  "creators": [
+   "Organization: Anchore, Inc",
+   "Tool: syft-1.18.1"
+  ],
+  "created": "2026-11-02T20:17:46Z"
+ },
+ "packages": [
+  {
+   "name": "musl",
+   "SPDXID": "SPDXRef-Package-apk-musl-3b3695e8a77104bb",
+   "versionInfo": "1.2.5-r12",
+   "supplier": "Person: Natanael Copa (ncopa@alpinelinux.org)",
+   "originator": "Person: Natanael Copa (ncopa@alpinelinux.org)",
+   "downloadLocation": "https://musl.libc.org/",
+   "filesAnalyzed": true,
+   "packageVerificationCode": {
+    "packageVerificationCodeValue": "fd45645156b2a9d753ec489a3dc9650ac1d8023d"
+   },
+   "sourceInfo": "acquired package info from APK DB: /lib/apk/db/installed",
+   "licenseConcluded": "NOASSERTION",
+   "licenseDeclared": "MIT",
+   "copyrightText": "NOASSERTION",
+   "description": "the musl c library (libc) implementation",
+   "externalRefs": [
+    {
+     "referenceCategory": "SECURITY",
+     "referenceType": "cpe23Type",
+     "referenceLocator": "cpe:2.3:a:musl-libc:musl:1.2.5-r12:*:*:*:*:*:*:*"
+    },
+    {
+     "referenceCategory": "PACKAGE-MANAGER",
+     "referenceType": "purl",
+     "referenceLocator": "pkg:apk/alpine/musl@1.2.5-r12?arch=aarch64&distro=alpine-3.21.9"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceType": "cpe23Type",
+     "referenceLocator": "cpe:2.3:a:musl_libc:musl:1.2.5-r12:*:*:*:*:*:*:*"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceType": "cpe23Type",
+     "referenceLocator": "cpe:2.3:a:musl:musl:1.2.5-r12:*:*:*:*:*:*:*"
+    }
+   ]
+  },
+  {
+   "name": "alpine-baselayout-data",
+   "SPDXID": "SPDXRef-Package-apk-alpine-baselayout-data-94beb1c86d74fed6",
+   "versionInfo": "3.6.8-r1",
+   "supplier": "Person: Natanael Copa (ncopa@alpinelinux.org)",
+   "originator": "Person: Natanael Copa (ncopa@alpinelinux.org)",
+   "downloadLocation": "https://git.alpinelinux.org/cgit/aports/tree/main/alpine-baselayout",
+   "filesAnalyzed": true,
+   "packageVerificationCode": {
+    "packageVerificationCodeValue": "e86bb1bdeacb4af1ddb0de8fd3fb94368ca996dd"
+   },
+   "sourceInfo": "acquired package info from APK DB: /lib/apk/db/installed",
+   "licenseConcluded": "NOASSERTION",
+   "licenseDeclared": "GPL-2.0-only",
+   "copyrightText": "NOASSERTION",
+   "description": "Alpine base dir structure and init scripts",
+   "externalRefs": [
+    {
+     "referenceCategory": "SECURITY",
+     "referenceType": "cpe23Type",
+     "referenceLocator": "cpe:2.3:a:alpine-baselayout-data:alpine-baselayout-data:3.6.8-r1:*:*:*:*:*:*:*"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceType": "cpe23Type",
+     "referenceLocator": "cpe:2.3:a:alpine-baselayout-data:alpine_baselayout_data:3.6.8-r1:*:*:*:*:*:*:*"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceType": "cpe23Type",
+     "referenceLocator": "cpe:2.3:a:alpine_baselayout_data:alpine-baselayout-data:3.6.8-r1:*:*:*:*:*:*:*"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceType": "cpe23Type",
+     "referenceLocator": "cpe:2.3:a:alpine_baselayout_data:alpine_baselayout_data:3.6.8-r1:*:*:*:*:*:*:*"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceType": "cpe23Type",
+     "referenceLocator": "cpe:2.3:a:alpine-baselayout:alpine-baselayout-data:3.6.8-r1:*:*:*:*:*:*:*"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceType": "cpe23Type",
+     "referenceLocator": "cpe:2.3:a:alpine-baselayout:alpine_baselayout_data:3.6.8-r1:*:*:*:*:*:*:*"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceType": "cpe23Type",
+     "referenceLocator": "cpe:2.3:a:alpine_baselayout:alpine-baselayout-data:3.6.8-r1:*:*:*:*:*:*:*"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceType": "cpe23Type",
+     "referenceLocator": "cpe:2.3:a:alpine_baselayout:alpine_baselayout_data:3.6.8-r1:*:*:*:*:*:*:*"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceType": "cpe23Type",
+     "referenceLocator": "cpe:2.3:a:alpine:alpine-baselayout-data:3.6.8-r1:*:*:*:*:*:*:*"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceType": "cpe23Type",
+     "referenceLocator": "cpe:2.3:a:alpine:alpine_baselayout_data:3.6.8-r1:*:*:*:*:*:*:*"
+    },
+    {
+     "referenceCategory": "PACKAGE-MANAGER",
+     "referenceType": "purl",
+     "referenceLocator": "pkg:apk/alpine/alpine-baselayout-data@3.6.8-r1?arch=aarch64&distro=alpine-3.21.9&upstream=alpine-baselayout"
+    }
+   ]
+  },
+  {
+   "name": "libmd",
+   "SPDXID": "SPDXRef-Package-apk-libmd-1de96218320ec7f0",
+   "versionInfo": "1.1.0-r0",
+   "supplier": "Person: omni (omni+alpine@hack.org)",
+   "originator": "Person: omni (omni+alpine@hack.org)",
+   "downloadLocation": "https://www.hadrons.org/software/libmd/",
+   "filesAnalyzed": true,
+   "packageVerificationCode": {
+    "packageVerificationCodeValue": "42f1cde268398a02ad77e405d19e5c3a38e7174f"
+   },
+   "sourceInfo": "acquired package info from APK DB: /lib/apk/db/installed",
+   "licenseConcluded": "NOASSERTION",
+   "licenseDeclared": "LicenseRef-AND AND BSD-2-Clause AND BSD-3-Clause AND Beerware AND LicenseRef-Domain AND ISC AND LicenseRef-Public",
+   "copyrightText": "NOASSERTION",
+   "description": "Message Digest functions from BSD systems",
+   "externalRefs": [
+    {
+     "referenceCategory": "SECURITY",
+     "referenceType": "cpe23Type",
+     "referenceLocator": "cpe:2.3:a:libmd:libmd:1.1.0-r0:*:*:*:*:*:*:*"
+    },
+    {
+     "referenceCategory": "PACKAGE-MANAGER",
+     "referenceType": "purl",
+     "referenceLocator": "pkg:apk/alpine/libmd@1.1.0-r0?arch=aarch64&distro=alpine-3.21.9"
+    }
+   ]
+  },
+  {
+   "name": "nginx",
+   "SPDXID": "SPDXRef-Package-apk-nginx-770750fd1cb0bf8f",
+   "versionInfo": "1.28.0-r1",
+   "supplier": "Person: NGINX Packaging (nginx-packaging@f5.com)",
+   "originator": "Person: NGINX Packaging (nginx-packaging@f5.com)",
+   "downloadLocation": "https://nginx.org/",
+   "filesAnalyzed": true,
+   "packageVerificationCode": {
+    "packageVerificationCodeValue": "0284069e573531de2f85768d751e760698b3fa31"
+   },
+   "sourceInfo": "acquired package info from APK DB: /lib/apk/db/installed",
+   "licenseConcluded": "NOASSERTION",
+   "licenseDeclared": "LicenseRef-2-clause AND LicenseRef-BSD-like AND LicenseRef-license",
+   "copyrightText": "NOASSERTION",
+   "description": "High performance web server",
+   "externalRefs": [
+    {
+     "referenceCategory": "SECURITY",
+     "referenceType": "cpe23Type",
+     "referenceLocator": "cpe:2.3:a:nginx:nginx:1.28.0-r1:*:*:*:*:*:*:*"
+    },
+    {
+     "referenceCategory": "PACKAGE-MANAGER",
+     "referenceType": "purl",
+     "referenceLocator": "pkg:apk/alpine/nginx@1.28.0-r1?arch=aarch64&distro=alpine-3.21.9"
+    }
+   ]
+  },
+  {
+   "name": "gromesh-ui-arm64-b43bee3d26f9ef0add1260fc5e317c01fb5f066f-f753a886d77b52bb56cdff2ab23cb09d64aa2e710af0a8c0a8d642d5c8c0d4bd",
+   "SPDXID": "SPDXRef-DocumentRoot-Image-gromesh-ui-arm64-b43bee3d26f9ef0add1260fc5e317c01fb5f066f-f753a886d77b52bb56cdff2ab23cb09d64aa2e710af0a8c0a8d642d5c8c0d4bd",
+   "versionInfo": "b43bee3d26f9ef0add1260fc5e317c01fb5f066f",
+   "supplier": "NOASSERTION",
+   "downloadLocation": "NOASSERTION",
+   "filesAnalyzed": false,
+   "checksums": [
+    {
+     "algorithm": "SHA256",
+     "checksumValue": "bd4b347f28baae2f2de3e799aa6e68d3d82cb64d6ba0d3ea188b0cd68b4c52bd"
+    }
+   ],
+   "licenseConcluded": "NOASSERTION",
+   "licenseDeclared": "NOASSERTION",
+   "copyrightText": "NOASSERTION",
+   "externalRefs": [
+    {
+     "referenceCategory": "PACKAGE-MANAGER",
+     "referenceType": "purl",
+     "referenceLocator": "pkg:oci/gromesh-ui-arm64-b43bee3d26f9ef0add1260fc5e317c01fb5f066f-f753a886d77b52bb56cdff2ab23cb09d64aa2e710af0a8c0a8d642d5c8c0d4bd@sha256:bd4b347f28baae2f2de3e799aa6e68d3d82cb64d6ba0d3ea188b0cd68b4c52bd?arch=arm64&tag=f753a886d77b52bb56cdff2ab23cb09d64aa2e710af0a8c0a8d642d5c8c0d4bd"
+    }
+   ],
+   "primaryPackagePurpose": "CONTAINER"
+  }
+ ],
+ "files": [
+  {
+   "fileName": "bin/busybox",
+   "SPDXID": "SPDXRef-File-bin-busybox-26174363207ed4e4",
+   "fileTypes": [
+    "APPLICATION",
+    "BINARY"
+   ],
+   "checksums": [
+    {
+     "algorithm": "SHA1",
+     "checksumValue": "6cd97afd6bc6acc474b683c7b77e7f482c284203"
+    },
+    {
+     "algorithm": "SHA256",
+     "checksumValue": "f35a45f702095d9c2a718deb42c1cf4efa6d2919f212d273c4ea569d0bd03dcb"
+    }
+   ],
+   "licenseConcluded": "NOASSERTION",
+   "licenseInfoInFiles": [
+    "NOASSERTION"
+   ],
+   "copyrightText": "NOASSERTION",
+   "comment": "layerID: sha256:148df66880d3bb07cc26d5d2a751eec5b4ea8c613a162afaf57c6bcc81f44eff"
+  },
+  {
+   "fileName": "etc/shadow",
+   "SPDXID": "SPDXRef-File-etc-shadow-4b2ad673590d83ba",
+   "fileTypes": [
+    "TEXT"
+   ],
+   "checksums": [
+    {
+     "algorithm": "SHA1",
+     "checksumValue": "f66071ba1578140a22ca23f20466eb111e34c705"
+    },
+    {
+     "algorithm": "SHA256",
+     "checksumValue": "ad2d91822cdccd612fb0b8662da2d3ac834be3d13e3e6121785ca0210aae507d"
+    }
+   ],
+   "licenseConcluded": "NOASSERTION",
+   "licenseInfoInFiles": [
+    "NOASSERTION"
+   ],
+   "copyrightText": "NOASSERTION",
+   "comment": "layerID: sha256:148df66880d3bb07cc26d5d2a751eec5b4ea8c613a162afaf57c6bcc81f44eff"
+  },
+  {
+   "fileName": "lib/apk/db/installed",
+   "SPDXID": "SPDXRef-File-lib-apk-db-installed-8577ac0fbc0c7c0f",
+   "fileTypes": [
+    "TEXT"
+   ],
+   "checksums": [
+    {
+     "algorithm": "SHA1",
+     "checksumValue": "58e546ef3a52043080de002394700f9afcf8a09b"
+    },
+    {
+     "algorithm": "SHA256",
+     "checksumValue": "e928c7f7ff4bae14b53920fd52e131135e252c412bf35a5aaf48882692c5034e"
+    }
+   ],
+   "licenseConcluded": "NOASSERTION",
+   "licenseInfoInFiles": [
+    "NOASSERTION"
+   ],
+   "copyrightText": "NOASSERTION",
+   "comment": "layerID: sha256:148df66880d3bb07cc26d5d2a751eec5b4ea8c613a162afaf57c6bcc81f44eff"
+  },
+  {
+   "fileName": "usr/sbin/nginx",
+   "SPDXID": "SPDXRef-File-usr-sbin-nginx-854027d5fd616120",
+   "fileTypes": [
+    "APPLICATION",
+    "BINARY"
+   ],
+   "checksums": [
+    {
+     "algorithm": "SHA1",
+     "checksumValue": "cf66fccc092030d24ee2bc30f6ec0aeccf84dd18"
+    },
+    {
+     "algorithm": "SHA256",
+     "checksumValue": "5a4effc86800929890272f06f183056bacc552773e62e0d8b67bfd052abc414b"
+    }
+   ],
+   "licenseConcluded": "NOASSERTION",
+   "licenseInfoInFiles": [
+    "NOASSERTION"
+   ],
+   "copyrightText": "NOASSERTION",
+   "comment": "layerID: sha256:9797487c353f6e8b4b2755834b47e62e9be3a37fc36d4e0ec129f21e2c0d8606"
+  },
+  {
+   "fileName": "usr/share/ca-certificates/mozilla/NetLock_Arany_=Class_Gold=_Főtanúsítvány.crt",
+   "SPDXID": "SPDXRef-File-...NetLock-Arany--Class-Gold--F-tan-s-tv-ny.crt-5d2f35e86c338ee0",
+   "fileTypes": [
+    "TEXT"
+   ],
+   "checksums": [
+    {
+     "algorithm": "SHA1",
+     "checksumValue": "3c1c0175e7f82dfa6aa6f6cc32aaed15ac50f42d"
+    },
+    {
+     "algorithm": "SHA256",
+     "checksumValue": "40f60f2e2f83fb6c63ddefeba7939a7852b2d468183ea939cc4dcac8fe4cc87d"
+    }
+   ],
+   "licenseConcluded": "NOASSERTION",
+   "licenseInfoInFiles": [
+    "NOASSERTION"
+   ],
+   "copyrightText": "NOASSERTION",
+   "comment": "layerID: sha256:148df66880d3bb07cc26d5d2a751eec5b4ea8c613a162afaf57c6bcc81f44eff"
+  },
+  {
+   "fileName": "usr/share/zoneinfo/Asia/Irkutsk",
+   "SPDXID": "SPDXRef-File-usr-share-zoneinfo-Asia-Irkutsk-229f2ae4bbdf8123",
+   "fileTypes": [
+    "APPLICATION"
+   ],
+   "checksums": [
+    {
+     "algorithm": "SHA1",
+     "checksumValue": "2864270b9246fbd64432723540b5d0c645773f26"
+    },
+    {
+     "algorithm": "SHA256",
+     "checksumValue": "215ba85c2c1d788f8a2147c5904b7ac818ea60fdd5f464eb17efd62e77df1739"
+    }
+   ],
+   "licenseConcluded": "NOASSERTION",
+   "licenseInfoInFiles": [
+    "NOASSERTION"
+   ],
+   "copyrightText": "NOASSERTION",
+   "comment": "layerID: sha256:148df66880d3bb07cc26d5d2a751eec5b4ea8c613a162afaf57c6bcc81f44eff"
+  },
+  {
+   "fileName": "usr/share/zoneinfo/Europe/Minsk",
+   "SPDXID": "SPDXRef-File-usr-share-zoneinfo-Europe-Minsk-43ace067cf1c7127",
+   "fileTypes": [
+    "APPLICATION"
+   ],
+   "checksums": [
+    {
+     "algorithm": "SHA1",
+     "checksumValue": "4d76a2c501c44525f7a4afba02107be94266aaac"
+    },
+    {
+     "algorithm": "SHA256",
+     "checksumValue": "2a03e6d1f1f2727b60777c5b4e69839783b5dd787ff5edb352777c5c5494dbda"
+    }
+   ],
+   "licenseConcluded": "NOASSERTION",
+   "licenseInfoInFiles": [
+    "NOASSERTION"
+   ],
+   "copyrightText": "NOASSERTION",
+   "comment": "layerID: sha256:148df66880d3bb07cc26d5d2a751eec5b4ea8c613a162afaf57c6bcc81f44eff"
+  },
+  {
+   "fileName": "etc/terminfo/a/alacritty",
+   "SPDXID": "SPDXRef-File-etc-terminfo-a-alacritty-e8a63ac0423c3353",
+   "fileTypes": [
+    "APPLICATION"
+   ],
+   "checksums": [
+    {
+     "algorithm": "SHA1",
+     "checksumValue": "6a5a2600af2fce7184286b246a7a40a5229c0b47"
+    },
+    {
+     "algorithm": "SHA256",
+     "checksumValue": "72306a68422c977d78d7e84c48396b047ff30cd5880d0138cc88482dcb40f14d"
+    }
+   ],
+   "licenseConcluded": "NOASSERTION",
+   "licenseInfoInFiles": [
+    "NOASSERTION"
+   ],
+   "copyrightText": "NOASSERTION",
+   "comment": "layerID: sha256:7868fb7884d80e55cc69c1f84a44115588076797de46ab45fafea438811026fe"
+  },
+  {
+   "fileName": "usr/share/X11/locale/C/Compose",
+   "SPDXID": "SPDXRef-File-usr-share-X11-locale-C-Compose-0b2130d872e1661e",
+   "fileTypes": [
+    "OTHER"
+   ],
+   "checksums": [
+    {
+     "algorithm": "SHA1",
+     "checksumValue": "0000000000000000000000000000000000000000"
+    }
+   ],
+   "licenseConcluded": "NOASSERTION",
+   "licenseInfoInFiles": [
+    "NOASSERTION"
+   ],
+   "copyrightText": "NOASSERTION",
+   "comment": "layerID: sha256:7868fb7884d80e55cc69c1f84a44115588076797de46ab45fafea438811026fe"
+  },
+  {
+   "fileName": "usr/share/man/man8/nginx.8.gz",
+   "SPDXID": "SPDXRef-File-usr-share-man-man8-nginx.8.gz-13ca7274ef4cfe9c",
+   "fileTypes": [
+    "APPLICATION",
+    "ARCHIVE"
+   ],
+   "checksums": [
+    {
+     "algorithm": "SHA1",
+     "checksumValue": "b830789ac20774552e55aa8ba700f7f13d96c425"
+    },
+    {
+     "algorithm": "SHA256",
+     "checksumValue": "69f50888f98ce0cbf52a25fcd4d69440bfb574e9bb9070e08e0d683d7fd91a8a"
+    }
+   ],
+   "licenseConcluded": "NOASSERTION",
+   "licenseInfoInFiles": [
+    "NOASSERTION"
+   ],
+   "copyrightText": "NOASSERTION",
+   "comment": "layerID: sha256:9797487c353f6e8b4b2755834b47e62e9be3a37fc36d4e0ec129f21e2c0d8606"
+  }
+ ],
+ "hasExtractedLicensingInfos": [
+  {
+   "licenseId": "LicenseRef-2-clause",
+   "extractedText": "2-clause"
+  },
+  {
+   "licenseId": "LicenseRef-AND",
+   "extractedText": "AND"
+  },
+  {
+   "licenseId": "LicenseRef-BSD-like",
+   "extractedText": "BSD-like"
+  },
+  {
+   "licenseId": "LicenseRef-Domain",
+   "extractedText": "Domain"
+  },
+  {
+   "licenseId": "LicenseRef-Public",
+   "extractedText": "Public"
+  },
+  {
+   "licenseId": "LicenseRef-Public-Domain",
+   "extractedText": "Public-Domain"
+  },
+  {
+   "licenseId": "LicenseRef-custom",
+   "extractedText": "custom"
+  },
+  {
+   "licenseId": "LicenseRef-license",
+   "extractedText": "license"
+  }
+ ],
+ "relationships": [
+  {
+   "spdxElementId": "SPDXRef-DOCUMENT",
+   "relatedSpdxElement": "SPDXRef-DocumentRoot-Image-gromesh-ui-arm64-b43bee3d26f9ef0add1260fc5e317c01fb5f066f-f753a886d77b52bb56cdff2ab23cb09d64aa2e710af0a8c0a8d642d5c8c0d4bd",
+   "relationshipType": "DESCRIBES"
+  },
+  {
+   "spdxElementId": "SPDXRef-Package-apk-nginx-770750fd1cb0bf8f",
+   "relatedSpdxElement": "SPDXRef-File-usr-share-man-man8-nginx.8.gz-13ca7274ef4cfe9c",
+   "relationshipType": "CONTAINS"
+  },
+  {
+   "spdxElementId": "SPDXRef-Package-apk-nginx-770750fd1cb0bf8f",
+   "relatedSpdxElement": "SPDXRef-File-usr-sbin-nginx-854027d5fd616120",
+   "relationshipType": "CONTAINS"
+  },
+  {
+   "spdxElementId": "SPDXRef-Package-apk-alpine-baselayout-data-94beb1c86d74fed6",
+   "relatedSpdxElement": "SPDXRef-File-etc-shadow-4b2ad673590d83ba",
+   "relationshipType": "CONTAINS"
+  },
+  {
+   "spdxElementId": "SPDXRef-Package-apk-musl-3b3695e8a77104bb",
+   "relatedSpdxElement": "SPDXRef-Package-apk-libmd-1de96218320ec7f0",
+   "relationshipType": "DEPENDENCY_OF"
+  },
+  {
+   "spdxElementId": "SPDXRef-Package-apk-musl-3b3695e8a77104bb",
+   "relatedSpdxElement": "SPDXRef-Package-apk-nginx-770750fd1cb0bf8f",
+   "relationshipType": "DEPENDENCY_OF"
+  },
+  {
+   "spdxElementId": "SPDXRef-Package-apk-libmd-1de96218320ec7f0",
+   "relatedSpdxElement": "SPDXRef-File-lib-apk-db-installed-8577ac0fbc0c7c0f",
+   "relationshipType": "OTHER",
+   "comment": "evident-by: indicates the package's existence is evident by the given file"
+  },
+  {
+   "spdxElementId": "SPDXRef-Package-apk-musl-3b3695e8a77104bb",
+   "relatedSpdxElement": "SPDXRef-File-lib-apk-db-installed-8577ac0fbc0c7c0f",
+   "relationshipType": "OTHER",
+   "comment": "evident-by: indicates the package's existence is evident by the given file"
+  },
+  {
+   "spdxElementId": "SPDXRef-Package-apk-nginx-770750fd1cb0bf8f",
+   "relatedSpdxElement": "SPDXRef-File-lib-apk-db-installed-8577ac0fbc0c7c0f",
+   "relationshipType": "OTHER",
+   "comment": "evident-by: indicates the package's existence is evident by the given file"
+  },
+  {
+   "spdxElementId": "SPDXRef-Package-apk-alpine-baselayout-data-94beb1c86d74fed6",
+   "relatedSpdxElement": "SPDXRef-File-lib-apk-db-installed-8577ac0fbc0c7c0f",
+   "relationshipType": "OTHER",
+   "comment": "evident-by: indicates the package's existence is evident by the given file"
+  },
+  {
+   "spdxElementId": "SPDXRef-DocumentRoot-Image-gromesh-ui-arm64-b43bee3d26f9ef0add1260fc5e317c01fb5f066f-f753a886d77b52bb56cdff2ab23cb09d64aa2e710af0a8c0a8d642d5c8c0d4bd",
+   "relatedSpdxElement": "SPDXRef-Package-apk-alpine-baselayout-data-94beb1c86d74fed6",
+   "relationshipType": "CONTAINS"
+  },
+  {
+   "spdxElementId": "SPDXRef-DocumentRoot-Image-gromesh-ui-arm64-b43bee3d26f9ef0add1260fc5e317c01fb5f066f-f753a886d77b52bb56cdff2ab23cb09d64aa2e710af0a8c0a8d642d5c8c0d4bd",
+   "relatedSpdxElement": "SPDXRef-Package-apk-libmd-1de96218320ec7f0",
+   "relationshipType": "CONTAINS"
+  },
+  {
+   "spdxElementId": "SPDXRef-DocumentRoot-Image-gromesh-ui-arm64-b43bee3d26f9ef0add1260fc5e317c01fb5f066f-f753a886d77b52bb56cdff2ab23cb09d64aa2e710af0a8c0a8d642d5c8c0d4bd",
+   "relatedSpdxElement": "SPDXRef-Package-apk-musl-3b3695e8a77104bb",
+   "relationshipType": "CONTAINS"
+  },
+  {
+   "spdxElementId": "SPDXRef-DocumentRoot-Image-gromesh-ui-arm64-b43bee3d26f9ef0add1260fc5e317c01fb5f066f-f753a886d77b52bb56cdff2ab23cb09d64aa2e710af0a8c0a8d642d5c8c0d4bd",
+   "relatedSpdxElement": "SPDXRef-Package-apk-nginx-770750fd1cb0bf8f",
+   "relationshipType": "CONTAINS"
+  }
+ ],
+ "comment": "Derived from real Syft 1.18.1 UI arm64 build b43bee3. Inventory subset."
+}

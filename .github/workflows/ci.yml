@@ -106,10 +106,22 @@ jobs:
               - apps/control-plane/drizzle/**
               - apps/control-plane/src/agent-gateway/**
               - contracts/agent-protocol.openapi.yaml
-            # Dockerfiles, the Kong build and every pinned image reference: the image-scan job builds or pulls what
-            # changed and runs Trivy with the images workflow's rule.
+            # Application inputs rebuild native images for Trivy and the same Syft content gate as publication.
+            # Pinned third-party references keep the Trivy check.
             images:
-              - apps/*/Dockerfile
+              - apps/**
+              - packages/compiler/**
+              - contracts/**
+              - package.json
+              - pnpm-lock.yaml
+              - pnpm-workspace.yaml
+              - tsconfig.base.json
+              - .nvmrc
+              - .dockerignore
+              - scripts/ci-pr-sbom.mjs
+              - scripts/ci-supply-chain.mjs
+              - scripts/ci-evidence.mjs
+              - .github/workflows/images.yml
               - images/**
               - deploy/compose/docker-compose.yml
               - deploy/helm/*/values.yaml
@@ -202,7 +214,7 @@ jobs:
         run: node --test e2e/kind/n2/components/budgets.test.mjs e2e/kind/n2/components/scrub.test.mjs e2e/kind/n2/components/privileged.test.mjs
       - name: Structured CI evidence policy tests
         if: env.RUN_CODE == 'true'
-        run: node --test scripts/ci-evidence.test.mjs
+        run: node --test scripts/ci-evidence.test.mjs scripts/ci-pr-sbom.test.mjs
       # Plugin configs are validated by a real Kong (control-plane integration tests). A step, not a service: the
       # image is read from the compose default so image-digests never has to edit this workflow.
       - name: Start the Kong validator (compose default image)
@@ -612,8 +624,8 @@ jobs:
 
   # One check that is green when every job that had to run passed (skipped jobs are fine): what a ruleset should
   # require, since the per-job checks are skipped on docs-only PRs.
-  # The images workflow only scans after the merge: a base image with a CRITICAL vulnerability must fail the PR instead.
-  # Runs on pull requests that touch an image (Dependabot's included) and on the digest bot's branches.
+  # Native image builds must pass both Trivy and SBOM content validation before merge.
+  # Runs on application/build/dependency/validator changes (Dependabot included) and digest bot branches.
   image-scan:
     needs: changes
     if: needs.changes.outputs.images == 'true' || needs.changes.outputs.bot == 'true'
@@ -641,10 +653,11 @@ jobs:
           node-version-file: .nvmrc
       # Pinned gromesh-* references are private on GHCR.
       - run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-      - name: Build or pull the images this change touches and fail on CRITICAL (Trivy, as in the images workflow)
+      - name: Build or pull changed images; gate CRITICAL and validate local Syft SBOMs (no upload)
         env:
           BASE: ${{ github.event.pull_request.base.sha || 'origin/main' }}
           SCAN_PLATFORM: linux/${{ matrix.arch }}
+          TARGET_ARCH: ${{ matrix.arch }}
         run: node scripts/scan-changed-images.mjs "$BASE"
 
   # The N1 migration against what the previous version wrote: every earlier schema, the database the pre-N1 code

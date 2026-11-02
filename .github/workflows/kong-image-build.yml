@@ -185,6 +185,7 @@ jobs:
 
       # Push the exact local image that passed version, smoke and vulnerability checks.
       - name: Publish tested image
+        id: publish
         if: env.PUBLISH == 'true'
         run: |
           docker push "$KONG_IMAGE"
@@ -193,9 +194,21 @@ jobs:
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "Unexpected image digest: ${digest}" >&2; exit 1; }
           mkdir -p "$RUNNER_TEMP/kong-digests"
           printf '%s\n' "$digest" > "$RUNNER_TEMP/kong-digests/${TARGET_ARCH}.txt"
+          printf 'digest=%s\nsha=%s\narch=%s\nimage=%s\n' "$digest" "$GITHUB_SHA" "$TARGET_ARCH" "$KONG_IMAGE" >> "$GITHUB_OUTPUT"
+
+      - name: Validate published digest before any upload
+        id: validate-supply-chain
+        if: env.PUBLISH == 'true'
+        env:
+          IMAGE_NAME: kong
+          EXPECTED_DIGEST: ${{ steps.publish.outputs.digest }}
+          PUBLISHED_SHA: ${{ steps.publish.outputs.sha }}
+          PUBLISHED_ARCH: ${{ steps.publish.outputs.arch }}
+          PUBLISHED_IMAGE: ${{ steps.publish.outputs.image }}
+        run: node scripts/ci-supply-chain.mjs kong-digest
 
       - name: Upload image digest
-        if: env.PUBLISH == 'true'
+        if: success() && env.PUBLISH == 'true' && steps.validate-supply-chain.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: kong-digest-${{ matrix.arch }}
@@ -219,7 +232,7 @@ jobs:
         run: node scripts/ci-evidence.mjs validate kong-image-build
 
       - name: Upload candidate evidence
-        if: always() && env.PUBLISH != 'true' && steps.validate-evidence.outcome == 'success'
+        if: always() && env.PUBLISH != 'true' && steps.validate-evidence.outcome == 'success' && steps.validate-supply-chain.outcome != 'failure'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: kong-candidate-${{ matrix.arch }}

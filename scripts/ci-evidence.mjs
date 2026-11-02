@@ -34,7 +34,7 @@ export const evidenceSchema = {
   },
 };
 
-function requireValid(condition) {
+export function requireValid(condition) {
   // Never attach paths, field values or native/parser errors to a rejection.
   if (!condition) throw new Error("CI evidence rejected.");
 }
@@ -67,14 +67,14 @@ export function validateEvidence(value) {
   requireValid(value.status === "PASS" ? value.failureCategory === undefined : value.failureCategory !== undefined);
 }
 
-function directoryPath(directory) {
+export function directoryPath(directory) {
   const path = resolve(directory);
   // Check parents too: an ordinary file underneath a linked directory is still unsafe to upload.
   requireValid(realpathSync(path) === path && lstatSync(path).isDirectory());
   return path;
 }
 
-function readRegularFile(file, maximum) {
+export function readRegularFile(file, maximum) {
   requireValid(!lstatSync(file).isSymbolicLink());
   const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
