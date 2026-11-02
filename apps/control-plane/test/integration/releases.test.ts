@@ -1,3 +1,4 @@
+import { ADMIN_URL, integrationDatabaseName, createIntegrationDatabase, dropIntegrationDatabase } from "./databases.js";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import pg from "pg";
@@ -18,17 +19,13 @@ type Doc = Record<string, any>;
 // Several harnesses and migrated databases per file: generous limits on a busy machine.
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 180_000 });
 const v2 = parse(readFileSync(new URL("../../../../contracts/control-plane-v2.openapi.yaml", import.meta.url), "utf8")) as Doc;
-const ADMIN_URL = process.env.TEST_DATABASE_URL ?? "postgres://gromesh:gromesh@127.0.0.1:5432/gromesh";
 const created: string[] = [];
 const LAB = { stage: "dev" as const, convergenceDeadlineMs: 600_000 };
 
 /** The instance row and the deployments are instance-wide: each case group gets its own migrated database. */
 async function freshDatabase(label: string): Promise<string> {
-  const name = `gromesh_n3c3_${label}_${Date.now()}_${process.pid}`;
-  const admin = new pg.Client({ connectionString: ADMIN_URL });
-  await admin.connect();
-  await admin.query(`CREATE DATABASE "${name}"`);
-  await admin.end();
+  const name = integrationDatabaseName("n3c3");
+  await createIntegrationDatabase(name);
   created.push(name);
   const url = new URL(ADMIN_URL);
   url.pathname = `/${name}`;
@@ -37,10 +34,7 @@ async function freshDatabase(label: string): Promise<string> {
 }
 
 afterAll(async () => {
-  const admin = new pg.Client({ connectionString: ADMIN_URL });
-  await admin.connect();
-  for (const name of created) await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
-  await admin.end();
+  for (const name of created) await dropIntegrationDatabase(name);
 });
 
 const RELEASE = contractsV2.validator("#/components/schemas/Release");

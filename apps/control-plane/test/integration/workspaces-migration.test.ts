@@ -1,3 +1,4 @@
+import { ADMIN_URL, integrationDatabaseName, createIntegrationDatabase, dropIntegrationDatabase } from "./databases.js";
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,7 +12,6 @@ import { backfillWorkspaces } from "../../src/workspaces/workspaces.js";
 import { startHarness, uniq, type Harness } from "./harness.js";
 
 // N1-X1: each environment becomes the workspace with the same id, and nothing the data plane receives changes.
-const ADMIN_URL = process.env.TEST_DATABASE_URL ?? "postgres://gromesh:gromesh@127.0.0.1:5432/gromesh";
 const journal = JSON.parse(readFileSync(join(MIGRATIONS_DIR, "meta/_journal.json"), "utf8")) as { entries: { idx: number; tag: string }[] };
 const N1 = journal.entries.find((e) => e.tag.endsWith("_workspaces"))!.idx;
 
@@ -19,11 +19,8 @@ const created: string[] = [];
 const folders: string[] = [];
 
 async function freshDatabase(label: string): Promise<string> {
-  const name = `gromesh_mig_${label}_${Date.now()}_${process.pid}`;
-  const admin = new pg.Client({ connectionString: ADMIN_URL });
-  await admin.connect();
-  await admin.query(`CREATE DATABASE "${name}"`);
-  await admin.end();
+  const name = integrationDatabaseName("mig");
+  await createIntegrationDatabase(name);
   created.push(name);
   const url = new URL(ADMIN_URL);
   url.pathname = `/${name}`;
@@ -125,10 +122,7 @@ describe("N1 workspaces migration", () => {
   afterAll(async () => {
     await hMigrated?.close();
     await hNative?.close();
-    const admin = new pg.Client({ connectionString: ADMIN_URL });
-    await admin.connect();
-    for (const name of created) await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
-    await admin.end();
+    for (const name of created) await dropIntegrationDatabase(name);
     for (const dir of folders) rmSync(dir, { recursive: true, force: true });
   });
 
@@ -225,10 +219,7 @@ const VERSION_SEED: { since: number; table: string; sql: string }[] = [
 
 describe("N1 migration from every earlier version", () => {
   afterAll(async () => {
-    const admin = new pg.Client({ connectionString: ADMIN_URL });
-    await admin.connect();
-    for (const name of created) await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
-    await admin.end();
+    for (const name of created) await dropIntegrationDatabase(name);
     for (const dir of folders) rmSync(dir, { recursive: true, force: true });
   });
 
@@ -315,10 +306,7 @@ describe("N1 migration of a database written by the pre-N1 code", () => {
 
   afterAll(async () => {
     await h?.close();
-    const admin = new pg.Client({ connectionString: ADMIN_URL });
-    await admin.connect();
-    for (const name of created) await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
-    await admin.end();
+    for (const name of created) await dropIntegrationDatabase(name);
   });
 
   it("keeps every row", async () => {
@@ -373,10 +361,7 @@ describe("N1 migration of a database written by the pre-N1 code", () => {
 
 describe("N1 slug backfill under interruption, concurrency and an older replica", () => {
   afterAll(async () => {
-    const admin = new pg.Client({ connectionString: ADMIN_URL });
-    await admin.connect();
-    for (const name of created) await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
-    await admin.end();
+    for (const name of created) await dropIntegrationDatabase(name);
   });
 
   /** The SQL migrations only, as a process killed before the backfill would leave them. */
@@ -429,10 +414,7 @@ describe("N1 slug backfill under interruption, concurrency and an older replica"
 
 describe("N1 slug reconciliation while running", () => {
   afterAll(async () => {
-    const admin = new pg.Client({ connectionString: ADMIN_URL });
-    await admin.connect();
-    for (const name of created) await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
-    await admin.end();
+    for (const name of created) await dropIntegrationDatabase(name);
   });
 
   it("fills in the slug of an environment an older replica creates while the new replicas are running", async () => {

@@ -1,3 +1,5 @@
+import { assertClickhouseOverride, integrationInputs } from "../../../../scripts/integration-databases.mjs";
+import { assertIntegrationDatabase } from "./databases.js";
 import type { INestApplication } from "@nestjs/common";
 import { inject } from "vitest";
 import pg from "pg";
@@ -38,7 +40,7 @@ export interface Harness {
 }
 
 /** Plugin configs are validated by a real Kong: the compose one unless overridden. */
-export const KONG_VALIDATOR_URL = process.env.KONG_VALIDATOR_URL ?? "http://127.0.0.1:8011";
+export const KONG_VALIDATOR_URL = integrationInputs(process.env).validatorUrl;
 
 export const BOOTSTRAP_ADMIN = { email: "admin@harness.test", password: "harness-admin-password" };
 
@@ -49,25 +51,17 @@ export const ENCRYPTION_KEYS = {
   fingerprint: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
 };
 
-/** Analytics read the compose ClickHouse (observability profile) with the SELECT-only user unless overridden. */
-export const CLICKHOUSE = {
-  url: process.env.TEST_CLICKHOUSE_URL ?? "http://127.0.0.1:8123",
-  user: process.env.TEST_CLICKHOUSE_USER ?? "gromesh_reader",
-  password: process.env.TEST_CLICKHOUSE_PASSWORD ?? "gromesh-dev-reader",
-  database: process.env.TEST_CLICKHOUSE_DATABASE ?? "gromesh",
-};
-/** Admin credentials the tests use to create the table (CI) and insert fixtures. */
-export const CLICKHOUSE_ADMIN = {
-  user: process.env.TEST_CLICKHOUSE_ADMIN_USER ?? "gromesh",
-  password: process.env.TEST_CLICKHOUSE_ADMIN_PASSWORD ?? "gromesh-dev-observability",
-};
+/** Credentials scoped to the exclusively created database of this run. */
+export const CLICKHOUSE = inject("clickhouse");
+export const CLICKHOUSE_ADMIN = inject("clickhouseWriter");
 
 /** Each call is one more control-plane replica on the shared test database. */
 export async function startHarness(overrides: Partial<AppConfig> = {}): Promise<Harness> {
   // A test may bring its own database (the migration tests); every other one shares the run's.
-  const databaseUrl = overrides.databaseUrl ?? inject("databaseUrl");
+  const databaseUrl = assertIntegrationDatabase(overrides.databaseUrl ?? inject("databaseUrl"));
+  assertClickhouseOverride(CLICKHOUSE, overrides.clickhouse);
   // The harness sets its own bootstrap admin: the shell's variables must not win.
-  const env: NodeJS.ProcessEnv = { ...process.env, DATABASE_URL: databaseUrl, BOOTSTRAP_ADMIN_EMAIL: undefined, BOOTSTRAP_ADMIN_PASSWORD: undefined };
+  const env: NodeJS.ProcessEnv = { ...process.env, DATABASE_URL: databaseUrl, CLICKHOUSE_URL: CLICKHOUSE.url, CLICKHOUSE_DATABASE: CLICKHOUSE.database, CLICKHOUSE_USER: CLICKHOUSE.user, CLICKHOUSE_PASSWORD: CLICKHOUSE.password, BOOTSTRAP_ADMIN_EMAIL: undefined, BOOTSTRAP_ADMIN_PASSWORD: undefined };
   const app: INestApplication = await createApp(
     {
       ...loadConfig(env),

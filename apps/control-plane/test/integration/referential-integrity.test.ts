@@ -1,3 +1,4 @@
+import { ADMIN_URL, integrationDatabaseName, createIntegrationDatabase, dropIntegrationDatabase } from "./databases.js";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { runMigrations } from "../../src/db/migrate.js";
@@ -52,8 +53,7 @@ describe("referential integrity between workspaces", () => {
   let privateDb: string;
   let pa: Fixture;
   let pb: Fixture;
-  const ADMIN_URL = process.env.TEST_DATABASE_URL ?? "postgres://gromesh:gromesh@127.0.0.1:5432/gromesh";
-  const privateName = `gromesh_ri_${Date.now()}_${process.pid}`;
+  const privateName = integrationDatabaseName("ri");
   async function privateFixture(n: number): Promise<Fixture> {
     const id = (k: number) => `00000000-0000-4000-8000-${String(n * 100 + k).padStart(12, "0")}`;
     const f: Fixture = { env: id(1), service: id(2), route: id(3), upstream: id(4), target: id(5), consumer: id(6), keyAuth: id(7), certificate: id(8), plugin: id(9) };
@@ -76,10 +76,7 @@ describe("referential integrity between workspaces", () => {
     h = await startHarness();
     a = await fixture();
     b = await fixture();
-    const admin = new pg.Client({ connectionString: ADMIN_URL });
-    await admin.connect();
-    await admin.query(`CREATE DATABASE "${privateName}"`);
-    await admin.end();
+    await createIntegrationDatabase(privateName);
     const url = new URL(ADMIN_URL);
     url.pathname = `/${privateName}`;
     privateDb = url.toString();
@@ -90,10 +87,7 @@ describe("referential integrity between workspaces", () => {
 
   afterAll(async () => {
     await h?.close();
-    const admin = new pg.Client({ connectionString: ADMIN_URL });
-    await admin.connect();
-    await admin.query(`DROP DATABASE IF EXISTS "${privateName}" WITH (FORCE)`);
-    await admin.end();
+    await dropIntegrationDatabase(privateName);
   });
 
   it("refuses through the API a reference to an entity of another workspace", async () => {

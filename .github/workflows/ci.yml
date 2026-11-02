@@ -95,6 +95,7 @@ jobs:
               - apps/agent/**
               - apps/isolation/**
               - e2e/kind/**
+              - scripts/kind-stack-guard*
               - images/**
               - apps/*/Dockerfile
               - apps/control-plane/src/config.ts
@@ -140,7 +141,7 @@ jobs:
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U gromesh" --health-interval 5s --health-timeout 3s --health-retries 20
-      # Analytics are read from a real ClickHouse (control-plane integration tests create the table themselves).
+      # Integration setup creates a fresh database and scoped reader/writer users in this dedicated CI service.
       clickhouse:
         image: clickhouse/clickhouse-server:25.8.33.6-alpine@sha256:87e0a5b72f5465b18eacca7c76850e7ff551c9795c50e451f5646299e5e24146
         env:
@@ -154,9 +155,9 @@ jobs:
     env:
       TEST_DATABASE_URL: postgres://gromesh:gromesh@127.0.0.1:5432/gromesh
       KONG_VALIDATOR_URL: http://127.0.0.1:8011
-      # No init scripts in a CI service: the tests create the table and read it with the admin user.
-      TEST_CLICKHOUSE_USER: gromesh
-      TEST_CLICKHOUSE_PASSWORD: gromesh-dev-observability
+      TEST_CLICKHOUSE_URL: http://127.0.0.1:8123
+      TEST_CLICKHOUSE_ADMIN_USER: gromesh
+      TEST_CLICKHOUSE_ADMIN_PASSWORD: gromesh-dev-observability
       RUN_CODE: ${{ needs.changes.outputs.all == 'true' || needs.changes.outputs.code == 'true' }}
       RUN_CHARTS: ${{ needs.changes.outputs.all == 'true' || needs.changes.outputs.charts == 'true' }}
     steps:
@@ -292,8 +293,37 @@ jobs:
     permissions:
       contents: read
       packages: read
+    env:
+      COMPOSE_PROJECT_NAME: gromesh-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      UI_URL: http://127.0.0.1:5174
+      CP_URL: http://127.0.0.1:3000/api/v1
+      CLICKHOUSE_URL: http://127.0.0.1:8123
+      POSTGRES_PORT: "55442"
+      KONG_PROXY_URL: http://127.0.0.1:8000
+      KONG_STATUS_URL: http://127.0.0.1:8100/status/ready
+      KONG_METRICS_URL: http://127.0.0.1:8100
+      ECHO_URL: http://127.0.0.1:8080
+      KONG_VALIDATOR_URL: http://127.0.0.1:8011
+      KONG_PROXY_TLS_PORT: "8443"
+      BOOTSTRAP_ADMIN_EMAIL: ci@example.test
     steps:
       - uses: actions/checkout@v7
+      - name: Configure disposable acceptance run
+        shell: bash
+        run: |
+          echo "COMPOSE_FILE=$GITHUB_WORKSPACE/deploy/compose/docker-compose.yml:$GITHUB_WORKSPACE/deploy/compose/disposable.yml" >> "$GITHUB_ENV"
+          echo "GROMESH_DISPOSABLE_ID=$(openssl rand -hex 16)" >> "$GITHUB_ENV"
+          for key in POSTGRES_PASSWORD BOOTSTRAP_ADMIN_PASSWORD CLICKHOUSE_PASSWORD CLICKHOUSE_READER_PASSWORD CLICKHOUSE_WRITER_PASSWORD GROMESH_COLLECTOR_TOKEN; do
+            value="$(openssl rand -hex 24)"
+            echo "::add-mask::$value"
+            echo "$key=$value" >> "$GITHUB_ENV"
+          done
+          encryption="ci:$(openssl rand -base64 32)"
+          fingerprint="$(openssl rand -base64 32)"
+          echo "::add-mask::$encryption"
+          echo "::add-mask::$fingerprint"
+          echo "GROMESH_ENCRYPTION_KEY=$encryption" >> "$GITHUB_ENV"
+          echo "GROMESH_FINGERPRINT_KEY=$fingerprint" >> "$GITHUB_ENV"
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
@@ -313,7 +343,7 @@ jobs:
           file: apps/control-plane/Dockerfile
           load: true
           push: false
-          tags: gromesh-control-plane
+          tags: ${{ env.COMPOSE_PROJECT_NAME }}-control-plane
           # The images workflow fills images-<name> on main; PR runs read it and keep their own scope.
           cache-from: |
             type=gha,scope=images-control-plane
@@ -326,7 +356,7 @@ jobs:
           file: apps/ui/Dockerfile
           load: true
           push: false
-          tags: gromesh-ui
+          tags: ${{ env.COMPOSE_PROJECT_NAME }}-ui
           # The images workflow fills images-<name> on main; PR runs read it and keep their own scope.
           cache-from: |
             type=gha,scope=images-ui
@@ -339,7 +369,7 @@ jobs:
           file: apps/agent/Dockerfile
           load: true
           push: false
-          tags: gromesh-agent
+          tags: ${{ env.COMPOSE_PROJECT_NAME }}-agent
           # The images workflow fills images-<name> on main; PR runs read it and keep their own scope.
           cache-from: |
             type=gha,scope=images-agent
@@ -347,15 +377,17 @@ jobs:
           cache-to: type=gha,mode=max,scope=ci-agent,ignore-error=true
       # The compose default Kong image is our own build, published privately on GHCR.
       - run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-      # The three images above carry compose's default names, so up does not rebuild them.
-      - run: docker compose -f deploy/compose/docker-compose.yml up -d --wait
+      # The tags above match this run's Compose project, so up uses the images just built.
+      - run: docker compose up -d --wait
       # The gateway caches a failed lookup of gromesh-collector for about a minute, and the steps below send traffic
       # right away (the control-plane e2e even restarts the gateway): the collector must exist before any of them.
       - name: Start the collector before any gateway traffic
         run: |
-          docker compose -f deploy/compose/docker-compose.yml --profile observability up -d --wait clickhouse
-          docker compose -f deploy/compose/docker-compose.yml --profile observability run --rm --no-deps clickhouse-init
-          docker compose -f deploy/compose/docker-compose.yml --profile observability up -d --wait --no-deps vector
+          docker compose --profile observability up -d --wait clickhouse
+          docker compose --profile observability run --rm --no-deps clickhouse-init
+          docker compose --profile observability up -d --wait --no-deps vector
+      - name: Fetch one-shot image metadata before guarded execution
+        run: docker compose --profile '*' pull --ignore-buildable
       - name: Kong accepts the compiler output (contract example)
         run: pnpm smoke
       - name: Walking skeleton (API → compiler → Kong → upstream)
@@ -366,7 +398,7 @@ jobs:
         if: failure()
         run: |
           mkdir -p e2e/test-results
-          docker compose -f deploy/compose/docker-compose.yml --profile observability logs --no-color > e2e/test-results/compose.log 2>&1
+          docker compose --profile observability logs --no-color > e2e/test-results/compose.log 2>&1
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
@@ -377,7 +409,7 @@ jobs:
           retention-days: 7
       - name: Stop acceptance stack
         if: always()
-        run: docker compose -f deploy/compose/docker-compose.yml down
+        run: docker compose down
 
   # The Helm install in kind (formerly also helm-e2e, whose extra checks now live in e2e/kind/run.sh).
   mvp-e2e:
@@ -388,12 +420,17 @@ jobs:
     permissions:
       contents: read
       packages: read
-    env:
-      KIND_CLUSTER_NAME: gromesh-mvp
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Configure disposable kind run
+        shell: bash
+        run: |
+          echo "KUBECONFIG=$RUNNER_TEMP/kind-kubeconfig" >> "$GITHUB_ENV"
+          run_id="$(openssl rand -hex 16)"
+          echo "GROMESH_DISPOSABLE_ID=$run_id" >> "$GITHUB_ENV"
+          echo "KIND_CLUSTER_NAME=$(GROMESH_DISPOSABLE_ID="$run_id" node scripts/kind-stack-guard.mjs name)" >> "$GITHUB_ENV"
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
@@ -480,7 +517,7 @@ jobs:
           docker tag timberio/vector:0.57.0-alpine@sha256:19e3526faf4d4b1ed0c28a0d68d4cc3a1e13e437099986a5b7a768707907497c timberio/vector:0.57.0-alpine
       - name: Create kind cluster and preload images
         run: |
-          kind create cluster --name "$KIND_CLUSTER_NAME" --image kindest/node:v1.32.2 --wait 120s
+          kind create cluster --name "$KIND_CLUSTER_NAME" --kubeconfig "$KUBECONFIG" --image kindest/node:v1.32.2 --wait 120s
           images="gromesh-control-plane:ci gromesh-ui:ci gromesh-agent:ci $KONG_TAG postgres:16-alpine traefik/whoami:v1.10.3 clickhouse/clickhouse-server:25.8.33.6-alpine timberio/vector:0.57.0-alpine"
           # shellcheck disable=SC2086
           if ! kind load docker-image --name "$KIND_CLUSTER_NAME" $images; then
@@ -515,7 +552,7 @@ jobs:
           retention-days: 7
       - name: Delete throwaway cluster
         if: always()
-        run: kind delete cluster --name "$KIND_CLUSTER_NAME"
+        run: kind delete cluster --name "$KIND_CLUSTER_NAME" --kubeconfig "$KUBECONFIG"
 
   # One check that is green when every job that had to run passed (skipped jobs are fine): what a ruleset should
   # require, since the per-job checks are skipped on docs-only PRs.
@@ -572,9 +609,23 @@ jobs:
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U gromesh" --health-interval 5s --health-timeout 3s --health-retries 20
+      clickhouse:
+        image: clickhouse/clickhouse-server:25.8.33.6-alpine@sha256:87e0a5b72f5465b18eacca7c76850e7ff551c9795c50e451f5646299e5e24146
+        env:
+          CLICKHOUSE_DB: gromesh
+          CLICKHOUSE_USER: gromesh
+          CLICKHOUSE_PASSWORD: gromesh-dev-observability
+          CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+        ports: ["127.0.0.1:8123:8123"]
+        options: >-
+          --health-cmd "wget -q -O /dev/null http://127.0.0.1:8123/ping" --health-interval 5s --health-timeout 5s --health-retries 20
     env:
       TEST_DATABASE_URL: postgres://gromesh:gromesh@127.0.0.1:5432/gromesh
+      TEST_CLICKHOUSE_URL: http://127.0.0.1:8123
+      TEST_CLICKHOUSE_ADMIN_USER: gromesh
+      TEST_CLICKHOUSE_ADMIN_PASSWORD: gromesh-dev-observability
       MIGRATION_REGRESSION: "1"
+      KONG_VALIDATOR_URL: http://127.0.0.1:8011
       MIGRATION_SCALE: "500"
     steps:
       - uses: actions/checkout@v7
@@ -585,12 +636,17 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter "@gromesh/control-plane^..." build
-      # pg_dump and psql of the server's own version: run inside the service container.
-      - name: Point the tests at the server's pg_dump and psql
-        run: echo "GROMESH_PG_TOOLS=docker exec -i $(docker ps -q --filter ancestor=postgres:16-alpine)" >> "$GITHUB_ENV"
+      - name: Install PostgreSQL 16 client for exact-URL backup and restore
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes postgresql-client-16
+          /usr/lib/postgresql/16/bin/pg_dump --version | grep -E '^pg_dump \(PostgreSQL\) 16\.'
+          /usr/lib/postgresql/16/bin/psql --version | grep -E '^psql \(PostgreSQL\) 16\.'
+          echo "/usr/lib/postgresql/16/bin" >> "$GITHUB_PATH"
       - name: Migration regression
         working-directory: apps/control-plane
-        run: pnpm exec vitest run --config vitest.config.ts test/integration/migration-regression.test.ts test/integration/workspaces-migration.test.ts
+        run: pnpm exec vitest run --config vitest.config.ts --project integration test/integration/migration-regression.test.ts test/integration/workspaces-migration.test.ts
 
   ci-ok:
     needs: [changes, checks, ui-acceptance, agent, isolation, e2e, mvp-e2e, image-scan, migration-regression]

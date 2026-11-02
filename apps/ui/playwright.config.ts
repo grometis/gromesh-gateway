@@ -8,7 +8,7 @@ export default defineConfig({
   use: { baseURL: "http://127.0.0.1:5173", trace: "retain-on-failure" },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: [
-    { command: "pnpm mock", url: "http://127.0.0.1:4010/me", ignoreHTTPSErrors: true, reuseExistingServer: !process.env.CI, timeout: 60_000 },
-    { command: "pnpm dev --host 127.0.0.1", url: "http://127.0.0.1:5173", reuseExistingServer: !process.env.CI, timeout: 60_000 },
+    { command: "pnpm mock", url: "http://127.0.0.1:4010/me", ignoreHTTPSErrors: true, reuseExistingServer: false, timeout: 60_000 },
+    { command: "pnpm dev --host 127.0.0.1 --strictPort --mode mock", env: { MOCK_URL: "http://127.0.0.1:4010" }, url: "http://127.0.0.1:5173", reuseExistingServer: false, timeout: 60_000 },
   ],
 });

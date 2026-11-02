@@ -2,8 +2,10 @@
 // ClickHouse-only acceptance: never changes the gateway or collector, and deletes only its own test rows.
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { assertStack } from "../scripts/stack-guard.mjs";
 
 export async function retentionAcceptance() {
+  await assertStack("acceptance");
   const environmentId = randomUUID();
   const shortRoute = randomUUID();
   const defaultRoute = randomUUID();
@@ -48,5 +50,6 @@ export async function retentionAcceptance() {
 if (process.argv.includes("--help")) {
   console.log("node e2e/route-retention.mjs: test the migrated compose ClickHouse TTL with isolated rows; no service restarts");
 } else if (import.meta.url === new URL(process.argv[1], "file:").href) {
+  // Run as a script against a stack (the integration test imports the function with a stubbed fetch).
   console.log(await retentionAcceptance());
 }

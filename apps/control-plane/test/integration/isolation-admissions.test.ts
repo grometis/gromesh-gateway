@@ -1,3 +1,4 @@
+import { ADMIN_URL, integrationDatabaseName, createIntegrationDatabase, dropIntegrationDatabase } from "./databases.js";
 import { readFileSync } from "node:fs";
 import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, type KeyObject, randomUUID, sign, verify } from "node:crypto";
 import pg from "pg";
@@ -11,8 +12,7 @@ import { type ApiClient, startHarness, uniq, type Harness } from "./harness.js";
 // N2-D3a: isolation admissions, probe report chains, pendencies and releases in the control plane (agent protocol v2,
 // control-plane-v2 getClusterIsolation and releaseIsolationContainment). A database of its own: the instance keys are
 // instance-wide and the tests revoke them.
-const ADMIN_URL = process.env.TEST_DATABASE_URL ?? "postgres://gromesh:gromesh@127.0.0.1:5432/gromesh";
-const name = `gromesh_isolation_${Date.now()}_${process.pid}`;
+const name = integrationDatabaseName("isolation");
 const justification = "isolation drill of the test suite";
 const text = (b64: string) => Buffer.from(b64, "base64url").toString("utf8");
 const b64 = (value: string | Buffer) => Buffer.from(value).toString("base64url");
@@ -149,10 +149,7 @@ describe("isolation admissions and reports (N2-D3a)", () => {
   const reportCount = async (admissionId: string) => (await h.sql.query("select count(*)::int as n from isolation_reports where admission_id = $1", [admissionId])).rows[0].n as number;
 
   beforeAll(async () => {
-    const admin = new pg.Client({ connectionString: ADMIN_URL });
-    await admin.connect();
-    await admin.query(`CREATE DATABASE "${name}"`);
-    await admin.end();
+    await createIntegrationDatabase(name);
     const url = new URL(ADMIN_URL);
     url.pathname = `/${name}`;
     dbUrl = url.toString();
@@ -167,10 +164,7 @@ describe("isolation admissions and reports (N2-D3a)", () => {
   afterAll(async () => {
     await replica?.close();
     await h?.close();
-    const admin = new pg.Client({ connectionString: ADMIN_URL });
-    await admin.connect();
-    await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
-    await admin.end();
+    await dropIntegrationDatabase(name);
   }, 60_000);
 
   it("records the request with a new challenge before deciding, then grants it signed after recording", async () => {
