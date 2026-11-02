@@ -19,7 +19,7 @@ spec:
       annotations:
         checksum/kong-listeners: {{ .Files.Get "files/kong/listeners.conf" | sha256sum | trunc 16 }}
         {{- if and .Values.collector.enabled (eq .Values.collector.mode "sidecar") }}
-        checksum/collector: {{ print (.Files.Get "files/vector/vector.yaml") (.Files.Get "files/vector/entrypoint.sh") | sha256sum | trunc 16 }}
+        checksum/collector: {{ print (.Files.Get "files/vector/vector.yaml") (.Files.Get "files/vector/entrypoint.sh") (.Files.Get "files/vector/config.sh") | sha256sum | trunc 16 }}
         {{- end }}
         {{- if .Values.metrics.enabled }}
         prometheus.io/scrape: "true"

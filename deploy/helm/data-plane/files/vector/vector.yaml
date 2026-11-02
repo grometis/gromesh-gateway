@@ -1,6 +1,14 @@
 # Keep deploy/observability/vector/vector.yaml and deploy/helm/data-plane/files/vector/vector.yaml identical.
 data_dir: /var/lib/vector
 
+# No environment interpolation (Vector 0.57 gates it behind --dangerously-allow-env-var-interpolation): the few
+# values taken from the environment are @@<name>@@ (filled by "config.sh render" in entrypoint.sh) or SECRET[env.*];
+# config.sh checks each one, defaults included. Run this file through "config.sh render" before Vector reads it.
+secret:
+  env:
+    type: exec
+    command: [/bin/sh, /etc/vector/config.sh, secret]
+
 # The API/tap is disabled: it could expose events before sanitization.
 api:
   enabled: false
@@ -14,7 +22,7 @@ sources:
   kong:
     type: http_server
     # Workspaces mode (sidecar in the Kong pod): 127.0.0.1 only, no Service; the token still decides (B §3.5.2).
-    address: "${GROMESH_COLLECTOR_ADDRESS:-0.0.0.0:8080}"
+    address: "@@collector_address@@"
     path: /kong
     strict_path: true
     decoding:
@@ -172,14 +180,13 @@ sinks:
   metrics:
     type: prometheus_exporter
     inputs: [internal_metrics]
-    address: "${GROMESH_COLLECTOR_METRICS_ADDRESS:-0.0.0.0:9598}"
+    address: "@@metrics_address@@"
 
   requests:
     type: clickhouse
     inputs: [dedupe]
-    # Vector 0.57 requires --dangerously-allow-env-var-interpolation (entrypoint and test runners).
-    endpoint: "${CLICKHOUSE_ENDPOINT:-http://clickhouse:8123}"
-    database: "${CLICKHOUSE_DATABASE:-gromesh}"
+    endpoint: "@@clickhouse_endpoint@@"
+    database: "@@clickhouse_database@@"
     table: requests
     acknowledgements:
       enabled: true
@@ -187,7 +194,7 @@ sinks:
       strategy: basic
       # INSERT-only user created by clickhouse/002-users.sh.
       user: gromesh_writer
-      password: "${CLICKHOUSE_PASSWORD}"
+      password: "SECRET[env.clickhouse_password]"
     skip_unknown_fields: false
     date_time_best_effort: true
     batch:

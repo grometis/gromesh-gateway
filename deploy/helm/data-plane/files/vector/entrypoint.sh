@@ -20,6 +20,8 @@ fi
 if [ -n "${GROMESH_COLLECTOR_TOKEN_PREVIOUS:-}" ] && [ "${#GROMESH_COLLECTOR_TOKEN_PREVIOUS}" -lt 32 ]; then
   echo "GROMESH_COLLECTOR_TOKEN_PREVIOUS must be empty or hold the previous token (at least 32 characters)" >&2; exit 64
 fi
-# This repository-owned config uses env defaults and the writer password in the sink.
-# Vector 0.57 requires explicit opt-in to preserve that interpolation.
-exec vector --dangerously-allow-env-var-interpolation --config /etc/vector/vector.yaml --log-format json "$@"
+# Environment values reach the config only through config.sh (checked formats), never through Vector's interpolation.
+# The rendered file holds no secret (the password is resolved in memory); it is still readable by this user only.
+umask 077
+sh /etc/vector/config.sh render /etc/vector/vector.yaml > /var/lib/vector/vector.yaml
+exec vector --config /var/lib/vector/vector.yaml --log-format json "$@"

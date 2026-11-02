@@ -1,4 +1,4 @@
-# Run with vector test --dangerously-allow-env-var-interpolation vector.yaml path-masking.tests.yaml (see e2e/path-masking.mjs).
+# Unit tests of vector.yaml after "config.sh render" (VECTOR_TEST in e2e/docker-images.mjs; see e2e/path-masking.mjs).
 tests:
   - name: punctuated-cpf
     inputs:

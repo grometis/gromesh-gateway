@@ -1,4 +1,4 @@
-# Run with vector test --dangerously-allow-env-var-interpolation vector.yaml key-names.tests.yaml (see e2e/key-names.mjs).
+# Unit tests of vector.yaml after "config.sh render" (VECTOR_TEST in e2e/docker-images.mjs; see e2e/key-names.mjs).
 # The acceptance runner sets GROMESH_KEY_NAMES to ["legacy-key"] for this suite.
 tests:
   - name: published-names-and-cluster-fallback

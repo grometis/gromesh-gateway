@@ -11,6 +11,8 @@ data:
 {{ .Files.Get "files/vector/vector.yaml" | indent 4 }}
   entrypoint.sh: |
 {{ .Files.Get "files/vector/entrypoint.sh" | indent 4 }}
+  config.sh: |
+{{ .Files.Get "files/vector/config.sh" | indent 4 }}
 {{- if eq .Values.collector.mode "deployment" }}
 ---
 apiVersion: v1
@@ -55,7 +57,7 @@ spec:
         prometheus.io/port: "9598"
         prometheus.io/path: /metrics
         {{- end }}
-        checksum/config: {{ print (.Files.Get "files/vector/vector.yaml") (.Files.Get "files/vector/entrypoint.sh") | sha256sum | trunc 16 }}
+        checksum/config: {{ print (.Files.Get "files/vector/vector.yaml") (.Files.Get "files/vector/entrypoint.sh") (.Files.Get "files/vector/config.sh") | sha256sum | trunc 16 }}
     spec:
       automountServiceAccountToken: false
       {{- with .Values.imagePullSecrets }}
