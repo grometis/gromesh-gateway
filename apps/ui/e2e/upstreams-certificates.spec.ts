@@ -99,9 +99,9 @@ test("certificates: upload PEM files and the key is never shown again", async ({
   const dialog = page.getByRole("dialog", { name: "Novo certificado" });
   const cert = "-----BEGIN CERTIFICATE-----\nMIIBleaf\n-----END CERTIFICATE-----\n";
   const key = "-----BEGIN PRIVATE KEY-----\nMIGHsecret\n-----END PRIVATE KEY-----\n";
-  await dialog.getByLabel("Arquivo do certificado").setInputFiles({ name: "tls.pem", mimeType: "application/x-pem-file", buffer: Buffer.from(cert) });
+  await dialog.getByLabel("Carregar arquivo do certificado").setInputFiles({ name: "tls.pem", mimeType: "application/x-pem-file", buffer: Buffer.from(cert) });
   await expect(dialog.getByLabel("Certificado (PEM)")).toHaveValue(cert);
-  await dialog.getByLabel("Arquivo da chave").setInputFiles({ name: "tls.key", mimeType: "application/x-pem-file", buffer: Buffer.from(key) });
+  await dialog.getByLabel("Carregar arquivo da chave").setInputFiles({ name: "tls.key", mimeType: "application/x-pem-file", buffer: Buffer.from(key) });
   await dialog.getByLabel("SNIs").fill("API.example.com, *.example.com");
   const created = page.waitForRequest((r) => r.method() === "POST" && r.url().endsWith("/certificates"));
   await dialog.getByRole("button", { name: "Salvar" }).click();

@@ -70,7 +70,7 @@ export function UsersPage() {
                     <Button variant="quiet" onClick={() => setEditing(user)}>
                       Editar
                     </Button>
-                    <button type="button" aria-label={`Papéis de ${user.name} por environment`} onClick={() => setScoping(user)}>
+                    <button type="button" aria-label={`Environments de ${user.name}`} onClick={() => setScoping(user)}>
                       Environments
                     </button>
                     <button type="button" className="danger" onClick={() => setDeleting(user)}>
