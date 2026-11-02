@@ -3,7 +3,7 @@
 # Requires Node >=24, Docker and the running compose stack. Owns its compose agent
 # while running; refuses to replace an existing agent. Uses grafana/k6:0.57.0.
 # If docker pull fails with EOF, import that image using skopeo as below:
-# work=$(mktemp -d); docker run --rm -v "$work:/out" node:24-alpine sh -ec \
+# work=$(mktemp -d); docker run --rm -v "$work:/out" node:26.13.0-alpine@sha256:c6ad9e9c1d80f6eb607c26b4b0a132ff7a2344fad1c78ea3baa2a7d4c8de6d94 sh -ec \
 #   'apk add -q skopeo; skopeo --override-arch arm64 copy docker://docker.io/grafana/k6:0.57.0 docker-archive:/out/k6.tar:grafana/k6:0.57.0'
 # docker load -i "$work/k6.tar"; rm -rf "$work"
 set -euo pipefail
