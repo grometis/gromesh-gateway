@@ -10,6 +10,10 @@
 # From the repo root: bash e2e/kind/run.sh
 set -euo pipefail
 umask 077
+node scripts/kind-stack-guard.mjs cluster
+# Pin every command, including Helm hooks and diagnostics, to the verified cluster.
+kubectl() { command kubectl --context "kind-$KIND_CLUSTER_NAME" "$@"; }
+helm() { command helm --kube-context "kind-$KIND_CLUSTER_NAME" "$@"; }
 namespace=gromesh-mvp
 cp_chart=deploy/helm/control-plane
 dp_chart=deploy/helm/data-plane
@@ -33,6 +37,7 @@ mask() { if [[ "${GITHUB_ACTIONS:-}" == true ]]; then echo "::add-mask::$1"; fi;
 secret() { local s; s="$(openssl rand -hex 24)"; mask "$s" >&2; printf '%s' "$s"; }
 
 kubectl create namespace "$namespace"
+kubectl label namespace "$namespace" "com.grometis.gromesh.disposable=$GROMESH_DISPOSABLE_ID"
 db_password="$(secret)"
 admin_password="$(secret)"
 ch_admin="$(secret)"
@@ -71,11 +76,19 @@ k wait --for=condition=Available deployment/cp-control-plane --timeout=60s
 
 forward() {
   local service="$1" port="$2" remote="$3" pid
-  k port-forward "svc/$service" "$port:$remote" > "$work/forward-$port.log" 2>&1 &
+  command kubectl --context "kind-$KIND_CLUSTER_NAME" -n "$namespace" port-forward --address 127.0.0.1 "svc/$service" "$port:$remote" > "$work/forward-$port.log" 2>&1 &
   pid=$!
   forwards+=("$pid")
   for ((attempt=0; attempt<30; attempt++)); do
-    if grep -q 'Forwarding from' "$work/forward-$port.log"; then return; fi
+    if grep -q 'Forwarding from 127.0.0.1' "$work/forward-$port.log"; then
+      kill -0 "$pid" 2>/dev/null || return 1
+      case "$service" in
+        control-plane) export KIND_CP_FORWARD_PID="$pid" ;;
+        cp-control-plane-ui) export KIND_UI_FORWARD_PID="$pid" ;;
+        mvp-data-plane) export KIND_PROXY_FORWARD_PID="$pid" ;;
+      esac
+      return
+    fi
     kill -0 "$pid" 2>/dev/null || { cat "$work/forward-$port.log"; return 1; }
     sleep 1
   done
@@ -173,7 +186,7 @@ for ((attempt=0; attempt<90; attempt++)); do
 done
 [[ "$converged2" == true ]]
 kubectl -n "$ns2" wait --for=condition=Ready pod -l app.kubernetes.io/instance=dp-defaults --timeout=90s
-kubectl -n "$ns2" port-forward svc/dp-defaults-data-plane 18001:8000 > "$work/forward-18001.log" 2>&1 &
+command kubectl --context "kind-$KIND_CLUSTER_NAME" -n "$ns2" port-forward --address 127.0.0.1 svc/dp-defaults-data-plane 18001:8000 > "$work/forward-18001.log" 2>&1 &
 forwards+=("$!")
 curl --fail --silent --show-error --retry 15 --retry-all-errors --retry-delay 1 --max-time 10 \
   http://127.0.0.1:18001/defaults > "$work/defaults"

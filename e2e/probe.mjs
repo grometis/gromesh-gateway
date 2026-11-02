@@ -12,6 +12,9 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { NODE_IMAGE } from "./docker-images.mjs";
 import { docker, Harness, instanceJws, instanceKey, root } from "./isolation-harness.mjs";
+import { assertStack } from "../scripts/stack-guard.mjs";
+
+await assertStack("acceptance");
 
 const { composeWorkspaces } = await import(pathToFileURL(join(root, "packages/compiler/dist/index.js")).href);
 const blind = process.env.PROBE === "blind";

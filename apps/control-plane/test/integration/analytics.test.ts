@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { createClient } from "@clickhouse/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { maskClientIp } from "../../src/analytics/analytics.js";
@@ -11,9 +10,6 @@ const admin = createClient({ url: CLICKHOUSE.url, username: CLICKHOUSE_ADMIN.use
 beforeAll(async () => {
   const ping = await admin.ping();
   if (!ping.success) throw new Error(`These tests read a real ClickHouse at ${CLICKHOUSE.url}: run the compose \`observability\` profile or set TEST_CLICKHOUSE_URL`);
-  // The compose ClickHouse applies this on first start; a bare CI service does not.
-  const ddl = readFileSync(new URL("../../../../deploy/observability/clickhouse/001-requests.sql", import.meta.url), "utf8");
-  for (const statement of ddl.split(";").map((s) => s.trim()).filter(Boolean)) await admin.command({ query: statement });
   h = await startHarness();
 });
 afterAll(async () => {

@@ -1,3 +1,5 @@
+import { postgresToolContext } from "../../../../scripts/integration-databases.mjs";
+import { ADMIN_URL, integrationDatabaseName, createIntegrationDatabase, dropIntegrationDatabase, assertIntegrationDatabase } from "./databases.js";
 import { execFileSync } from "node:child_process";
 import { appendFileSync, cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,7 +20,6 @@ import { startHarness } from "./harness.js";
 
 // N1-C4: the N1 migration against what the previous version wrote — the access matrix it decided, the way back
 // (the backup taken before the migration, restored on a copy) and the time it takes on a large database.
-const ADMIN_URL = process.env.TEST_DATABASE_URL ?? "postgres://gromesh:gromesh@127.0.0.1:5432/gromesh";
 const journal = JSON.parse(readFileSync(join(MIGRATIONS_DIR, "meta/_journal.json"), "utf8")) as { entries: { idx: number; tag: string }[] };
 const N1 = journal.entries.find((e) => e.tag.endsWith("_workspaces"))!.idx;
 
@@ -31,11 +32,8 @@ const created: string[] = [];
 const folders: string[] = [];
 
 async function freshDatabase(label: string): Promise<string> {
-  const name = `gromesh_reg_${label}_${Date.now()}_${process.pid}`;
-  const admin = new pg.Client({ connectionString: ADMIN_URL });
-  await admin.connect();
-  await admin.query(`CREATE DATABASE "${name}"`);
-  await admin.end();
+  const name = integrationDatabaseName("reg");
+  await createIntegrationDatabase(name);
   created.push(name);
   const url = new URL(ADMIN_URL);
   url.pathname = `/${name}`;
@@ -62,16 +60,11 @@ function previousVersionFolder(): string {
   return dir;
 }
 
-/**
- * pg_dump and psql of the server's own version: on PATH (CI), or through GROMESH_PG_TOOLS, a command prefix such as
- * "docker exec -i gromesh-postgres-1" that runs them next to the server (they then use its local socket).
- */
+/** Native tools preserve the proven host and database; arbitrary command prefixes cannot prove that. */
 function pgTool(tool: "pg_dump" | "psql", url: string, args: string[], input?: string): string {
-  const u = new URL(url);
-  const prefix = (process.env.GROMESH_PG_TOOLS ?? "").split(" ").filter(Boolean);
-  const connection = prefix.length > 0 ? ["-U", decodeURIComponent(u.username)] : ["-h", u.hostname, "-p", u.port || "5432", "-U", decodeURIComponent(u.username)];
-  const [cmd, ...rest] = [...prefix, tool, ...connection, "-d", u.pathname.slice(1), ...args];
-  return execFileSync(cmd!, rest, { input, env: { ...process.env, PGPASSWORD: decodeURIComponent(u.password) }, maxBuffer: 1 << 30, encoding: "utf8" });
+  const { url: u, env } = postgresToolContext(url, process.env, assertIntegrationDatabase);
+  const connection = ["-h", u.hostname, "-p", u.port || "5432", "-U", decodeURIComponent(u.username)];
+  return execFileSync(tool, [...connection, "-d", u.pathname.slice(1), ...args], { input, env, maxBuffer: 1 << 30, encoding: "utf8" });
 }
 /** A plain dump, without the random \restrict line pg_dump adds: two dumps of the same data compare equal. */
 const backup = (url: string) => pgTool("pg_dump", url, ["--format=plain", "--no-owner", "--no-privileges"]);
@@ -105,10 +98,7 @@ async function seedAccess(url: string): Promise<{ id: string; role: Role; overri
 }
 
 afterAll(async () => {
-  const admin = new pg.Client({ connectionString: ADMIN_URL });
-  await admin.connect();
-  for (const name of created) await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
-  await admin.end();
+  for (const name of created) await dropIntegrationDatabase(name);
   for (const dir of folders) rmSync(dir, { recursive: true, force: true });
 });
 

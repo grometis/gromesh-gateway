@@ -8,8 +8,9 @@
 set -euo pipefail
 umask 077
 cd "$(dirname "$0")/.."
+node scripts/assert-test-stack.mjs || exit 1
 export POSTGRES_PORT="${POSTGRES_PORT:-55433}"
-compose=(docker compose -f "${COMPOSE_FILE:-deploy/compose/docker-compose.yml}" exec -T postgres)
+compose=(node scripts/compose.mjs exec -T postgres)
 source_db="${SOURCE_DATABASE:-gromesh}"
 pguser="${PGUSER:-gromesh}"
 work="$(mktemp -d)"

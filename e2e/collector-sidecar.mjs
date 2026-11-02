@@ -13,24 +13,29 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { CLICKHOUSE_IMAGE, NODE_IMAGE, pullImages, VECTOR_IMAGE } from "./docker-images.mjs";
+import { disposableDocker } from "../scripts/disposable-docker.mjs";
+import { assertStack } from "../scripts/stack-guard.mjs";
+
+await assertStack("acceptance");
 
 const exec = promisify(execFile);
 const root = fileURLToPath(new URL("../", import.meta.url));
 const KONG_IMAGE = process.env.KONG_IMAGE ?? "ghcr.io/grometis/gromesh-kong@sha256:ffe28812ade7f8aaec8ff1303b5c5f2e614453b87e1b3bd917401f6ad8b74faf";
 const GO_IMAGE = "golang:1.27.2-alpine";
-const id = randomBytes(4).toString("hex");
+const id = randomUUID();
 const net = `gromesh-x4-${id}`;
 const names = { ch: `x4-ch-${id}`, pod: `x4-pod-${id}`, collector: `x4-collector-${id}`, kong: `x4-kong-${id}`, outsider: `x4-outsider-${id}` };
 const work = mkdtempSync(join(tmpdir(), "gromesh-x4-"));
 chmodSync(work, 0o755);
 const out = process.env.X4_OUT ?? work;
+const volumes = [`x4-ch-data-${id}`, `x4-ch-logs-${id}`];
 const results = [];
 const secrets = [];
 // A failed execFile carries its command line and output: redact every credential before it can reach a terminal.
 const redact = (text) => secrets.reduce((t, secret) => t.replaceAll(secret, "REDACTED"), String(text ?? ""));
-const docker = (args, timeout = 120_000) => exec("docker", args, { cwd: root, timeout, maxBuffer: 16 * 1024 * 1024 }).catch((e) => {
+const docker = disposableDocker((args, timeout = 120_000) => exec("docker", args, { cwd: root, timeout, maxBuffer: 16 * 1024 * 1024 }).catch((e) => {
   throw Object.assign(new Error(redact(`docker ${args[0]} failed: ${e.stderr || e.message}`)), { stdout: redact(e.stdout), stderr: redact(e.stderr) });
-});
+}));
 const record = (item, ok, detail) => {
   results.push({ item, ok, detail });
   assert.ok(ok, `${item}: ${detail}`);
@@ -129,9 +134,10 @@ async function probe(url, expect) {
 async function main() {
   await pullImages([VECTOR_IMAGE, NODE_IMAGE, CLICKHOUSE_IMAGE, KONG_IMAGE, GO_IMAGE]);
   await docker(["network", "create", net]);
+  for (const volume of volumes) await docker(["volume", "create", volume]);
   process.env.CLICKHOUSE_PASSWORD = chAdmin;
   // ClickHouse with the repository's schema and the INSERT-only writer the collector uses.
-  await docker(["run", "-d", "--name", names.ch, "--network", net, "-e", "CLICKHOUSE_DB=gromesh", "-e", "CLICKHOUSE_USER=admin",
+  await docker(["run", "-d", "--name", names.ch, "--network", net, "-v", `${volumes[0]}:/var/lib/clickhouse`, "-v", `${volumes[1]}:/var/log/clickhouse-server`, "-e", "CLICKHOUSE_DB=gromesh", "-e", "CLICKHOUSE_USER=admin",
     "-e", "CLICKHOUSE_PASSWORD", "-e", "CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1",
     "-v", `${root}deploy/observability/clickhouse:/docker-entrypoint-initdb.d:ro`, CLICKHOUSE_IMAGE], 120_000);
   for (let i = 0; ; i++) {
@@ -299,6 +305,7 @@ try {
   throw new Error(redact(error?.stack ?? error));
 } finally {
   for (const n of Object.values(names)) await docker(["rm", "-f", n]).catch(() => {});
+  for (const volume of volumes) await docker(["volume", "rm", volume]).catch(() => {});
   await docker(["network", "rm", net]).catch(() => {});
   const text = JSON.stringify({ kongImage: KONG_IMAGE, vectorImage: VECTOR_IMAGE, results }, null, 2);
   assert.ok(secrets.every((s) => !text.includes(s)), "evidence must not carry a secret");
