@@ -26,6 +26,7 @@ jobs:
       run:
         shell: bash
     env:
+      DOCKER_BUILD_RECORD_UPLOAD: "false"
       COMPOSE_PROJECT_NAME: gromesh-kong-image-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
       UI_URL: http://127.0.0.1:5174
       CP_URL: http://127.0.0.1:3000/api/v1
@@ -76,7 +77,6 @@ jobs:
           esac
           owner="${GITHUB_REPOSITORY_OWNER,,}"
           echo "KONG_IMAGE=ghcr.io/${owner}/gromesh-kong:3.9.4-${GITHUB_SHA}-${TARGET_ARCH}" >> "$GITHUB_ENV"
-          echo "KONG_EVIDENCE=$RUNNER_TEMP/kong-candidate-${TARGET_ARCH}" >> "$GITHUB_ENV"
 
       - name: Set up Buildx
         id: buildx
@@ -88,14 +88,13 @@ jobs:
       - name: Record candidate base image provenance
         if: env.PUBLISH != 'true'
         run: |
-          mkdir -p "$KONG_EVIDENCE"
           while IFS= read -r from; do
             printf '%s\n' "$from"
             base="$(awk '{print $2}' <<< "$from")"
             [[ "$base" =~ ^ubuntu:[0-9]+\.[0-9]+@sha256:[0-9a-f]{64}$ ]] || { echo "Expected a digest-pinned Ubuntu FROM" >&2; exit 1; }
             docker buildx imagetools inspect "$base"
             printf 'base index digest: %s\n' "${base##*@}"
-          done < <(awk 'toupper($1) == "FROM"' images/kong/Dockerfile) 2>&1 | tee "$KONG_EVIDENCE/provenance.log"
+          done < <(awk 'toupper($1) == "FROM"' images/kong/Dockerfile)
 
       # PRs may restore trusted branch caches, but never save Bazel or BuildKit caches.
       - name: Restore candidate Bazel cache (read only)
@@ -145,7 +144,7 @@ jobs:
         if: env.PUBLISH != 'true'
         run: |
           # A loaded image's Id is its local config digest, not a registry manifest digest.
-          docker image inspect "$KONG_IMAGE" --format '{{.Id}}' | tee "$KONG_EVIDENCE/image-id.txt"
+          docker image inspect "$KONG_IMAGE" --format '{{.Id}}'
 
       - name: Verify image architecture, Kong version and non-root user
         run: |
@@ -161,22 +160,20 @@ jobs:
         # The host guard requires the full acceptance stack and image metadata for inactive profiles.
         # Only smokeInside runs in the gateway's namespace; the Admin API remains on a Unix socket.
         run: |
-          set -o pipefail
-          mkdir -p "$KONG_EVIDENCE"
-          docker compose --profile '*' pull --ignore-buildable --policy missing 2>&1 | tee "$KONG_EVIDENCE/smoke.log"
-          docker compose --profile '*' build 2>&1 | tee -a "$KONG_EVIDENCE/smoke.log"
-          docker compose up -d --wait kong echo ui 2>&1 | tee -a "$KONG_EVIDENCE/smoke.log"
-          docker compose --profile observability up -d --wait clickhouse 2>&1 | tee -a "$KONG_EVIDENCE/smoke.log"
-          docker compose --profile observability run --rm --no-deps clickhouse-init 2>&1 | tee -a "$KONG_EVIDENCE/smoke.log"
-          docker compose --profile observability up -d --wait --no-deps vector 2>&1 | tee -a "$KONG_EVIDENCE/smoke.log"
-          KONG_IMAGE="$KONG_IMAGE" node scripts/smoke.mjs 2>&1 | tee -a "$KONG_EVIDENCE/smoke.log"
+          docker compose --profile '*' pull --ignore-buildable --policy missing
+          docker compose --profile '*' build
+          docker compose up -d --wait kong echo ui
+          docker compose --profile observability up -d --wait clickhouse
+          docker compose --profile observability run --rm --no-deps clickhouse-init
+          docker compose --profile observability up -d --wait --no-deps vector
+          KONG_IMAGE="$KONG_IMAGE" node scripts/smoke.mjs
 
       - name: Scan image (block CRITICAL vulnerabilities)
         run: |
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
             aquasec/trivy:0.69.3@sha256:bcc376de8d77cfe086a917230e818dc9f8528e3c852f7b1aff648949b6258d1c \
-            image --scanners vuln --severity CRITICAL --exit-code 1 "$KONG_IMAGE" 2>&1 | tee "$KONG_EVIDENCE/trivy.log"
+            image --scanners vuln --severity CRITICAL --exit-code 1 "$KONG_IMAGE"
 
       - name: Login to GHCR
         if: env.PUBLISH == 'true'
@@ -205,61 +202,28 @@ jobs:
           path: ${{ runner.temp }}/kong-digests/${{ matrix.arch }}.txt
           if-no-files-found: error
 
-      - name: Compose logs
+      - name: Compose diagnostics in the masked job log
         if: failure()
-        run: |
-          mkdir -p "$KONG_EVIDENCE"
-          docker compose --profile '*' logs --no-color 2>&1 | tee "$KONG_EVIDENCE/compose.log"
+        run: docker compose --profile '*' logs --no-color
 
-      - name: Redact candidate evidence
-        id: redact
+      - name: Generate structured candidate evidence
+        id: generate-evidence
         if: always() && env.PUBLISH != 'true'
-        run: |
-          # Runner masks do not redact files written by tee before artifact upload.
-          node <<'NODE'
-          const fs = require('node:fs');
-          const path = require('node:path');
-          const root = process.env.KONG_EVIDENCE;
-          if (!root || !fs.existsSync(root)) process.exit(0);
-          const secrets = [
-            'POSTGRES_PASSWORD', 'BOOTSTRAP_ADMIN_PASSWORD', 'CLICKHOUSE_PASSWORD',
-            'CLICKHOUSE_READER_PASSWORD', 'CLICKHOUSE_WRITER_PASSWORD',
-            'GROMESH_COLLECTOR_TOKEN', 'GROMESH_ENCRYPTION_KEY', 'GROMESH_FINGERPRINT_KEY',
-          ].map(key => process.env[key]).filter(Boolean).map(value => Buffer.from(value));
-          const replacement = Buffer.from('REDACTED');
-          function redact(directory) {
-            for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-              const file = path.join(directory, entry.name);
-              if (entry.isDirectory()) {
-                redact(file);
-              } else if (entry.isFile()) {
-                let data = fs.readFileSync(file);
-                for (const secret of secrets) {
-                  const parts = [];
-                  let start = 0;
-                  let index;
-                  while ((index = data.indexOf(secret, start)) !== -1) {
-                    parts.push(data.subarray(start, index), replacement);
-                    start = index + secret.length;
-                  }
-                  parts.push(data.subarray(start));
-                  data = Buffer.concat(parts);
-                }
-                fs.writeFileSync(file, data);
-                const saved = fs.readFileSync(file);
-                if (secrets.some(secret => saved.includes(secret))) process.exit(1);
-              }
-            }
-          }
-          redact(root);
-          NODE
+        env:
+          EVIDENCE_OUTCOME: ${{ job.status }}
+        run: node scripts/ci-evidence.mjs generate kong-image-build
+
+      - name: Validate candidate artifact allowlist
+        id: validate-evidence
+        if: always() && env.PUBLISH != 'true' && steps.generate-evidence.outcome == 'success'
+        run: node scripts/ci-evidence.mjs validate kong-image-build
 
       - name: Upload candidate evidence
-        if: always() && env.PUBLISH != 'true' && steps.redact.outcome == 'success'
+        if: always() && env.PUBLISH != 'true' && steps.validate-evidence.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: kong-candidate-${{ matrix.arch }}
-          path: ${{ runner.temp }}/kong-candidate-${{ matrix.arch }}/
+          path: evidence/kong-image-build.json
           if-no-files-found: error
           retention-days: 7
 
