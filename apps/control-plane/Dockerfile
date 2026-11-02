@@ -1,5 +1,5 @@
 # Build context: repository root.  docker build -f apps/control-plane/Dockerfile .
-FROM node:24.22.0-alpine AS build
+FROM node:24.22.1-alpine AS build
 RUN corepack enable
 WORKDIR /app
 
@@ -18,7 +18,7 @@ RUN pnpm --filter @gromesh/compiler build && pnpm --filter @gromesh/control-plan
 RUN node --input-type=module -e 'import fs from "node:fs"; for (const dir of ["apps/control-plane", "packages/compiler"]) { const file = `${dir}/package.json`; const pkg = JSON.parse(fs.readFileSync(file, "utf8")); pkg.files = ["dist"]; fs.writeFileSync(file, JSON.stringify(pkg)); }' \
     && pnpm --filter @gromesh/control-plane deploy --prod --legacy /prod/control-plane
 
-FROM node:24.22.0-alpine AS runtime
+FROM node:24.22.1-alpine AS runtime
 RUN apk upgrade --no-cache \
     && rm -rf /usr/local/lib/node_modules /opt/yarn* /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg
 WORKDIR /app/apps/control-plane
