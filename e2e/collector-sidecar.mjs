@@ -77,7 +77,7 @@ const post = (url, sendToken, body) => (process.env.X4_SEND_TOKEN = sendToken, i
 
 // The admin password is the ClickHouse container's own CLICKHOUSE_PASSWORD: never an argument.
 async function query(sql) {
-  const { stdout } = await docker(["exec", names.ch, "sh", "-c", 'clickhouse-client -u admin --password "$CLICKHOUSE_PASSWORD" -q "$1"', "sh", sql]);
+  const { stdout } = await docker(["exec", names.ch, "sh", "-c", 'clickhouse-client --host "$(hostname)" -u admin --password "$CLICKHOUSE_PASSWORD" -q "$1"', "sh", sql]);
   return stdout.trim();
 }
 const rows = async (instance = instanceId) => Number(await query(`SELECT count() FROM gromesh.requests WHERE environment_id = '${instance}'`));
@@ -146,15 +146,8 @@ async function main() {
     await sleep(1000);
   }
   process.env.X4_CH_WRITER = chWriter;
-  // The image restarts the server after its init scripts: the first answer may come from the temporary one.
-  for (let i = 0, ok = 0; ; i++) {
-    const created = await docker(["exec", "-e", "X4_CH_WRITER", names.ch, "sh", "-c", `clickhouse-client -u admin --password "$CLICKHOUSE_PASSWORD" -n -q "CREATE USER IF NOT EXISTS gromesh_writer IDENTIFIED WITH sha256_password BY '$X4_CH_WRITER'; GRANT INSERT ON gromesh.requests TO gromesh_writer;"`])
-      .then(() => true, () => false);
-    ok = created ? ok + 1 : 0;
-    if (ok >= 3) break;
-    assert.ok(i < 120, "ClickHouse writer could not be created");
-    await sleep(1000);
-  }
+  // The schema query above uses the container interface, so initdb has finished before this mutation.
+  await docker(["exec", "-e", "X4_CH_WRITER", names.ch, "sh", "-c", `clickhouse-client --host "$(hostname)" -u admin --password "$CLICKHOUSE_PASSWORD" -n -q "CREATE USER IF NOT EXISTS gromesh_writer IDENTIFIED WITH sha256_password BY '$X4_CH_WRITER'; GRANT INSERT ON gromesh.requests TO gromesh_writer;"`]);
   process.env.CLICKHOUSE_PASSWORD = chWriter;
 
   // The pod: a network namespace holder, the collector sidecar and Kong.
