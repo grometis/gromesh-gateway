@@ -2,9 +2,9 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { isAbsolute } from "node:path";
+import { isAbsolute, resolve, join } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, lstatSync } from "node:fs";
 
 const refuse = message => { throw new Error(`Scoped rollout refused: ${message}`); };
 const sha256 = value => createHash("sha256").update(value).digest("hex");
@@ -15,11 +15,15 @@ const valueFlags = {
   "--release": "release", "--namespace": "namespace", "--kube-context": "kubeContext", "--kubeconfig": "kubeconfig",
   "--expected-cluster": "expectedCluster", "--expected-uid": "expectedUid", "--expected-ca-sha256": "expectedCaSha256",
   "--chart": "chart", "--deployment": "deployment", "--container": "container", "--image": "image",
-  "--image-values-prefix": "imageValuesPrefix", "--rollback-revision": "rollbackRevision", "--verify-image-command": "verifyImageCommand",
+  "--object-uids": "objectUids", "--image-values-prefix": "imageValuesPrefix", "--rollback-revision": "rollbackRevision", "--verify-image-command": "verifyImageCommand",
 };
 
 // The only writable path authorized by this operation is one named Deployment container's image.
 // Example: --deployment cp-control-plane-ui --container ui --image repo@sha256:<64 hex>.
+// --object-uids is a JSON array of {kind,name,namespace,uid} from the approved baseline.
+// Helm manifests normally omit UID: never trust a first live observation as proof against recreation.
+// --authorize-hook is repeatable JSON: {kind,name,events,classification,manifestSha256}.
+// manifestSha256 hashes the exact UTF-8 hook.manifest returned by Helm's JSON dry-run.
 // --verify-image-command is a JSON argv array; the four placeholders below must be whole arguments.
 export function parseArgs(argv) {
   const options = { mode: "plan", noHooks: false, authorizedHooks: [], overrides: [], imageValuesPrefix: "ui.image" };
@@ -37,7 +41,7 @@ export function parseArgs(argv) {
     if (!valueFlags[flag] && !["--authorize-hook", "--set-string"].includes(flag)) refuse("unknown argument");
     const value = argv[++i];
     if (!value || value.startsWith("-")) refuse(`missing value for ${flag}`);
-    if (flag === "--authorize-hook") options.authorizedHooks.push(value);
+    if (flag === "--authorize-hook") options.authorizedHooks.push(json(value, "hook authorization"));
     else if (flag === "--set-string") options.overrides.push(value);
     else {
       if (seen.has(flag)) refuse(`duplicate ${flag}`);
@@ -50,6 +54,7 @@ export function parseArgs(argv) {
     options.rollbackRevision = Number(options.rollbackRevision);
   }
   if (options.verifyImageCommand !== undefined) options.verifyImageCommand = json(options.verifyImageCommand, "image verification command");
+  if (options.objectUids !== undefined) options.objectUids = json(options.objectUids, "object UIDs");
   validateOptions(options);
   return options;
 }
@@ -71,7 +76,25 @@ function validateOptions(o) {
   if (!Number.isSafeInteger(o.rollbackRevision) || o.rollbackRevision < 1) refuse("explicit rollback revision is required");
   if (!["plan", "apply"].includes(o.mode)) refuse("invalid mode");
   if (typeof o.noHooks !== "boolean" || !Array.isArray(o.authorizedHooks) || !Array.isArray(o.overrides)) refuse("invalid hook/override policy");
-  if (new Set(o.authorizedHooks).size !== o.authorizedHooks.length || o.authorizedHooks.some(h => !/^[A-Za-z][A-Za-z0-9]*\/[a-z0-9][a-z0-9.-]*$/.test(h))) refuse("authorize each hook explicitly as Kind/name");
+  const authIds = new Set();
+  for (const h of o.authorizedHooks) {
+    if (!h || typeof h !== "object" || !namePattern.test(h.name ?? "") || !/^[A-Za-z][A-Za-z0-9]*$/.test(h.kind ?? "")
+      || !Array.isArray(h.events) || !h.events.length || h.events.some(e => !hookEvents.has(e))
+      || new Set(h.events).size !== h.events.length || !/^[a-f0-9]{64}$/.test(h.manifestSha256 ?? "")
+      || !["migration/job", "backup", "test"].includes(h.classification)) refuse("invalid explicit hook authorization");
+    const id = `${h.kind}/${h.name}`;
+    if (authIds.has(id)) refuse("duplicate hook authorization");
+    authIds.add(id);
+  }
+  if (!Array.isArray(o.objectUids) || !o.objectUids.length) refuse("explicit baseline object UIDs are required");
+  const uidIds = new Set();
+  for (const v of o.objectUids) {
+    if (!v || !namePattern.test(v.name ?? "") || !/^[A-Za-z][A-Za-z0-9]*$/.test(v.kind ?? "")
+      || v.namespace !== o.namespace || typeof v.uid !== "string" || !v.uid.trim()) refuse("invalid baseline object UID");
+    const id = `${v.kind}/${v.namespace}/${v.name}`;
+    if (uidIds.has(id)) refuse("duplicate baseline object UID");
+    uidIds.add(id);
+  }
   if (!o.authorizedHooks.length && !o.noHooks) refuse("--no-hooks is required without authorized hooks");
   if (o.authorizedHooks.length && o.noHooks) refuse("--no-hooks conflicts with authorized hooks");
   if (!/^[a-zA-Z][a-zA-Z0-9]*(?:\.[a-zA-Z][a-zA-Z0-9]*)*$/.test(o.imageValuesPrefix ?? "")) refuse("invalid image values prefix");
@@ -102,7 +125,7 @@ const helmScope = o => ["--namespace", o.namespace, "--kube-context", o.kubeCont
 const kubeScope = o => ["--namespace", o.namespace, "--context", o.kubeContext, "--kubeconfig", o.kubeconfig];
 function upgradeArgs(o) {
   const { repository, digest } = imageParts(o.image);
-  return ["upgrade", o.release, o.chart, ...helmScope(o), "--reuse-values", ...o.overrides.flatMap(v => ["--set-string", v]),
+  return ["upgrade", o.release, resolve(o.chart), ...helmScope(o), "--reuse-values", ...o.overrides.flatMap(v => ["--set-string", v]),
     "--set-string", `${o.imageValuesPrefix}.repository=${repository}`, "--set-string", `${o.imageValuesPrefix}.digest=${digest}`,
     "--set-string", `${o.imageValuesPrefix}.tag=`, ...(o.noHooks ? ["--no-hooks"] : []), "--wait", "--timeout", "5m"];
 }
@@ -182,11 +205,18 @@ function compare(current, target, o, stage) {
   return previousImage;
 }
 function classification(object, events = []) {
-  if (events.some(e => e.startsWith("test")) && !events.some(e => ["pre-upgrade", "post-upgrade"].includes(e))) return "test";
-  const text = JSON.stringify(object).toLowerCase();
-  if (/migrat|db:migrate/.test(text)) return "migration/job";
-  if (/backup|pg_dump|pg-dump|pg_restore/.test(text)) return "backup";
-  return object.kind === "Job" ? "migration/job" : "other";
+  // Inspect all workload shapes, including init containers, shell scripts and env values.
+  const strings = [];
+  const visit = v => {
+    if (typeof v === "string") strings.push(v);
+    else if (v && typeof v === "object") Object.values(v).forEach(visit);
+  };
+  visit(object);
+  const text = strings.join("\n").toLowerCase();
+  if (/migrat|db:migrate|drizzle|\bpsql\b|\bmysql\b|pg_restore|liquibase|flyway|\b(?:alter|create|drop|truncate)\s+(?:table|schema|database|index)\b/.test(text)) return "migration/job";
+  if (readOnlyBackup(object)) return "backup";
+  if (events.length && events.every(e => e.startsWith("test"))) return "test";
+  return "unknown";
 }
 
 function readOnlyBackup(object) {
@@ -200,7 +230,7 @@ async function hooks(inventory, o, run) {
   if (!Array.isArray(inventory)) refuse("chart hook inventory missing from Helm JSON dry-run output");
   const seen = new Set(), result = [];
   for (const hook of inventory) {
-    if (!hook || !Array.isArray(hook.events) || !hook.events.length || hook.events.some(e => !hookEvents.has(e))) refuse("invalid/unknown chart hook events");
+    if (!hook || !Array.isArray(hook.events) || !hook.events.length || hook.events.some(e => !hookEvents.has(e)) || new Set(hook.events).size !== hook.events.length) refuse("invalid/unknown chart hook events");
     const map = await objects(hook.manifest, o, run, "hook");
     if (map.size !== 1) refuse("hook manifest must contain exactly one object");
     const object = [...map.values()][0], id = `${object.kind}/${object.metadata.name}`;
@@ -211,16 +241,153 @@ async function hooks(inventory, o, run) {
     const type = classification(object, hook.events);
     const upgrade = hook.events.some(e => ["pre-upgrade", "post-upgrade"].includes(e));
     const action = o.noHooks ? "suppressed" : upgrade ? "authorized" : "not-run-on-upgrade";
+    const manifestSha256 = sha256(hook.manifest);
     if (!o.noHooks && upgrade) {
-      if (!o.authorizedHooks.includes(id)) refuse(`upgrade hook ${id} lacks explicit authorization`);
-      if (type === "migration/job") refuse(`migration/unknown Job hook ${id} cannot run in a scoped rollout`);
-      if (type === "backup" && !readOnlyBackup(object)) refuse(`backup hook ${id} is not a direct read-only pg_dump operation`);
+      const auth = o.authorizedHooks.find(h => h.kind === object.kind && h.name === object.metadata.name);
+      if (!auth || auth.manifestSha256 !== manifestSha256 || auth.classification !== type
+        || !isDeepStrictEqual([...auth.events].sort(), [...hook.events].sort())) refuse(`upgrade hook ${id} lacks matching explicit authorization`);
+      if (type === "unknown") refuse(`unknown hook ${id} cannot run in a scoped rollout`);
     }
-    result.push({ id, classification: type, events: hook.events, action });
+    result.push({ id, classification: type, events: [...hook.events].sort(), manifestSha256, action });
   }
-  for (const id of o.authorizedHooks)
-    if (!result.some(h => h.id === id && h.action === "authorized")) refuse(`authorized hook ${id} does not run on upgrade`);
+  for (const auth of o.authorizedHooks)
+    if (!result.some(h => h.id === `${auth.kind}/${auth.name}` && h.action === "authorized")) refuse("authorized hook does not run on upgrade");
   return result;
+}
+
+function canonical(value) {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value && typeof value === "object") return Object.fromEntries(Object.keys(value).sort().map(k => [k, canonical(value[k])]));
+  return value;
+}
+function omitDefault(object, field, value) {
+  if (object && isDeepStrictEqual(object[field], value)) delete object[field];
+}
+function omitEmpty(object, field) {
+  if (object?.[field] && !Object.keys(object[field]).length) delete object[field];
+}
+function allocatedFields(object) {
+  // Only fields absent from the stored manifest may be treated as server allocated.
+  const paths = [];
+  const add = path => {
+    if (path.reduce((v, k) => v?.[k], object) === undefined) paths.push(path);
+  };
+  if (object.kind === "Service") {
+    for (const field of ["clusterIP", "clusterIPs", "ipFamilies", "healthCheckNodePort"]) add(["spec", field]);
+    object.spec?.ports?.forEach((_, i) => add(["spec", "ports", i, "nodePort"]));
+  }
+  if (object.kind === "PersistentVolumeClaim") for (const field of ["volumeName", "storageClassName"]) add(["spec", field]);
+  return paths;
+}
+function relevantObject(object, namespace, ignoredPaths = []) {
+  // Ignore server bookkeeping, never workload fields or added containers/env/Secret data.
+  // Only known API defaults/allocations normalize; unknown added fields fail closed.
+  const value = structuredClone(object);
+  delete value.status;
+  value.metadata = { ...value.metadata, namespace: object.metadata.namespace ?? namespace,
+    labels: { ...object.metadata.labels }, annotations: { ...object.metadata.annotations } };
+  for (const field of ["uid", "resourceVersion", "generation", "creationTimestamp", "managedFields", "selfLink"]) delete value.metadata[field];
+  for (const annotation of ["kubectl.kubernetes.io/last-applied-configuration", "deployment.kubernetes.io/revision",
+    "meta.helm.sh/release-name", "meta.helm.sh/release-namespace"]) delete value.metadata.annotations[annotation];
+  delete value.metadata.labels["app.kubernetes.io/managed-by"];
+  for (const path of ignoredPaths) {
+    const parent = path.slice(0, -1).reduce((v, k) => v?.[k], value);
+    if (parent) delete parent[path.at(-1)];
+  }
+  const spec = value.spec;
+  if (value.kind === "Secret") omitDefault(value, "type", "Opaque");
+  if (value.kind === "Deployment") {
+    omitDefault(spec, "replicas", 1);
+    omitDefault(spec, "revisionHistoryLimit", 10);
+    omitDefault(spec, "progressDeadlineSeconds", 600);
+    const strategy = spec?.strategy;
+    omitDefault(strategy?.rollingUpdate, "maxSurge", "25%");
+    omitDefault(strategy?.rollingUpdate, "maxUnavailable", "25%");
+    omitEmpty(strategy, "rollingUpdate");
+    omitDefault(strategy, "type", "RollingUpdate");
+    omitEmpty(spec, "strategy");
+  }
+  if (value.kind === "Service") {
+    for (const [field, fallback] of Object.entries({ type: "ClusterIP", sessionAffinity: "None", internalTrafficPolicy: "Cluster", ipFamilyPolicy: "SingleStack" })) omitDefault(spec, field, fallback);
+    for (const port of spec?.ports ?? []) { omitDefault(port, "protocol", "TCP"); omitDefault(port, "targetPort", port.port); }
+  }
+  if (value.kind === "PersistentVolumeClaim") omitDefault(spec, "volumeMode", "Filesystem");
+  if (value.kind === "CronJob") {
+    for (const [field, fallback] of Object.entries({ concurrencyPolicy: "Allow", suspend: false, successfulJobsHistoryLimit: 3, failedJobsHistoryLimit: 1 })) omitDefault(spec, field, fallback);
+    omitDefault(spec?.jobTemplate?.metadata, "creationTimestamp", null);
+    omitEmpty(spec?.jobTemplate, "metadata");
+  }
+  const template = value.kind === "CronJob" ? spec?.jobTemplate?.spec?.template : spec?.template;
+  omitDefault(template?.metadata, "creationTimestamp", null);
+  omitEmpty(template, "metadata");
+  const pod = value.kind === "Pod" ? spec : template?.spec;
+  if (pod) {
+    for (const [field, fallback] of Object.entries({ restartPolicy: "Always", terminationGracePeriodSeconds: 30,
+      dnsPolicy: "ClusterFirst", schedulerName: "default-scheduler", enableServiceLinks: true })) omitDefault(pod, field, fallback);
+    omitEmpty(pod, "securityContext");
+    for (const c of [...pod.containers ?? [], ...pod.initContainers ?? [], ...pod.ephemeralContainers ?? []]) {
+      omitDefault(c, "terminationMessagePath", "/dev/termination-log");
+      omitDefault(c, "terminationMessagePolicy", "File");
+      for (const port of c.ports ?? []) omitDefault(port, "protocol", "TCP");
+      for (const probe of [c.livenessProbe, c.readinessProbe, c.startupProbe]) {
+        for (const [field, fallback] of Object.entries({ timeoutSeconds: 1, periodSeconds: 10, successThreshold: 1, failureThreshold: 3, initialDelaySeconds: 0 })) omitDefault(probe, field, fallback);
+        omitDefault(probe?.httpGet, "scheme", "HTTP");
+      }
+      for (const env of c.env ?? []) omitDefault(env.valueFrom?.fieldRef, "apiVersion", "v1");
+    }
+    for (const volume of pod.volumes ?? []) for (const source of [volume.configMap, volume.secret, volume.projected]) omitDefault(source, "defaultMode", 420);
+  }
+  return value;
+}
+function baselineObjects(current, o) {
+  const authorized = authorizedObject(current, o);
+  const result = [];
+  for (const object of current.values()) {
+    if (object === authorized) continue;
+    const expected = o.objectUids.find(v => v.kind === object.kind && v.name === object.metadata.name && v.namespace === o.namespace);
+    if (!expected || (object.metadata.uid && object.metadata.uid !== expected.uid)) refuse("missing/mismatched baseline object UID");
+    const ignoredPaths = allocatedFields(object);
+    result.push({ ignoredPaths, apiVersion: object.apiVersion, kind: object.kind, name: object.metadata.name, namespace: o.namespace,
+      uid: expected.uid, specSha256: sha256(JSON.stringify(canonical(relevantObject(object, o.namespace, ignoredPaths)))) });
+  }
+  if (result.length !== o.objectUids.length) refuse("baseline object UIDs differ from out-of-scope inventory");
+  return result;
+}
+async function liveObjects(proofs, o, run) {
+  if (!Array.isArray(proofs) || !proofs.length) refuse("live object proof missing");
+  for (const expected of proofs) {
+    const live = json(await run("live object", "kubectl", [...kubeScope(o), "get", expected.kind, expected.name, "-o", "json"]), "live object");
+    if (live.apiVersion !== expected.apiVersion || live.kind !== expected.kind || live.metadata?.name !== expected.name
+      || live.metadata.namespace !== expected.namespace || live.metadata.uid !== expected.uid || live.metadata.deletionTimestamp)
+      refuse(`live object missing/recreated/deleting: ${expected.kind}/${expected.name}`);
+    if (sha256(JSON.stringify(canonical(relevantObject(live, o.namespace, expected.ignoredPaths)))) !== expected.specSha256)
+      refuse(`live object differs from stored manifest: ${expected.kind}/${expected.name}`);
+  }
+}
+function chartHash(path, deterministicHooks = false) {
+  const entries = [];
+  const visit = (dir, prefix = "") => {
+    for (const name of readdirSync(dir).sort()) {
+      const file = join(dir, name), rel = `${prefix}${name}`, stat = lstatSync(file);
+      if (stat.isSymbolicLink()) refuse("chart symlinks are not supported");
+      if (stat.isDirectory()) visit(file, `${rel}/`);
+      else if (stat.isFile()) {
+        const content = readFileSync(file);
+        if (deterministicHooks) {
+          if (/\.(?:tgz|gz)$/.test(name)) refuse("hook authorization requires unpacked deterministic chart dependencies");
+          // Hooks bypass Helm's post-renderer. Re-render checks alone cannot pin lookup/random/tpl output.
+          const directives = content.toString("utf8").match(/{{[\s\S]*?}}/g) ?? [];
+          if (directives.some(v => /\b(?:lookup|rand[A-Za-z]*|uuidv4|now|ago|genCA|genSelfSignedCert|genSignedCert|genPrivateKey|encryptAES|bcrypt|htpasswd|shuffle|getHostByName|tpl)\b|\.Release\.Time\b/.test(v)))
+            refuse("volatile chart template: hook authorization requires deterministic local rendering; use --no-hooks");
+        }
+        entries.push([rel, sha256(content)]);
+      }
+      else refuse("invalid local chart entry");
+    }
+  };
+  try { visit(path); }
+  catch (error) { if (error.message?.startsWith("Scoped rollout refused:")) throw error; refuse("readable local chart required for pinned hook rendering"); }
+  return sha256(JSON.stringify(entries));
 }
 
 export async function scopedRollout(input, { execute: executor = execute, emit = value => console.log(JSON.stringify(value, null, 2)) } = {}) {
@@ -243,13 +410,16 @@ export async function scopedRollout(input, { execute: executor = execute, emit =
   if (latest.status !== "deployed" || !rollbackRevision || !["deployed", "superseded"].includes(rollbackRevision.status)) refuse("rollback revision unavailable or release not deployed");
   const currentRaw = await run("current manifest", "helm", ["get", "manifest", o.release, ...helmScope(o)]);
   const current = await objects(currentRaw, o, run, "current");
+  const liveProof = baselineObjects(current, o);
+  await liveObjects(liveProof, o, run);
+  o.chart = resolve(o.chart);
+  const chartSha256 = chartHash(o.chart, !o.noHooks);
   const command = { file: "helm", args: upgradeArgs(o) };
   assertUpgradeCommand(command.args, o);
   // Helm's release JSON contains BOTH manifest and hooks. helm get manifest alone omits hooks.
   const rendered = json(await run("target render", "helm", [...command.args, "--dry-run=server", "--output", "json"]), "target render");
   if (rendered?.name !== o.release || rendered.namespace !== o.namespace || rendered.version !== latest.revision + 1) refuse("rendered release identity/revision mismatch");
   const inventory = await hooks(rendered.hooks, o, run);
-  if (o.mode === "apply" && !o.noHooks) refuse("hook-enabled apply cannot be verified by Helm's post-renderer; --no-hooks is required for apply");
   const target = await objects(rendered.manifest, o, run, "target");
   const previousImage = compare(current, target, o, "upgrade");
   imageParts(previousImage);
@@ -276,14 +446,24 @@ export async function scopedRollout(input, { execute: executor = execute, emit =
   const [verifyFile, ...verifyArgs] = o.verifyImageCommand.map(a => substitutions[a] ?? a);
   await run("previous image availability", verifyFile, verifyArgs);
   const renderProof = { manifestSha256: sha256(rendered.manifest), baselineSha256: sha256(currentRaw), revision: latest.revision,
+    liveObjects: liveProof, chart: o.chart, chartSha256,
+    hookOptions: Object.fromEntries(["noHooks", "authorizedHooks", "namespace", "kubeconfig", "kubeContext"].map(k => [k, o[k]])),
+    hookInventory: inventory, upgradeArgs: upgradeArgs(o),
     scope: Object.fromEntries(["release", "namespace", "kubeContext", "kubeconfig", "expectedCluster", "expectedUid", "expectedCaSha256"].map(k => [k, o[k]])) };
   command.args.push(...postRendererArgs(renderProof));
   assertUpgradeCommand(command.args, o, renderProof);
+  if (chartHash(o.chart, !o.noHooks) !== chartSha256) refuse("chart changed during preparation");
+  if (!o.noHooks) {
+    const finalRender = json(await run("hook render recheck", "helm", [...upgradeArgs(o), "--dry-run=server", "--output", "json"]), "hook render recheck");
+    if (finalRender.manifest !== rendered.manifest || !isDeepStrictEqual(await hooks(finalRender.hooks, o, run), inventory)) refuse("hook render changed before apply");
+  }
+  await liveObjects(liveProof, o, run);
   const plan = { mode: o.mode, release: o.release, namespace: o.namespace, context: o.kubeContext,
     cluster: { name: o.expectedCluster, uid: o.expectedUid, caSha256: o.expectedCaSha256 },
     changes: [{ kind: "Deployment", name: o.deployment, namespace: o.namespace,
       path: `.spec.template.spec.containers[name=${o.container}].image`, before: previousImage, after: o.image }],
-    hooks: inventory, migrations: "none executed; control-plane unchanged", rollbackRevision: o.rollbackRevision,
+    liveObjects: liveProof, hooks: inventory,
+    migrations: inventory.some(h => h.classification === "migration/job" && h.action === "authorized") ? "explicitly authorized hook migrations" : "none authorized", rollbackRevision: o.rollbackRevision,
     renderProof, command, rollback };
   emit(plan);
   if (o.mode === "apply") await run("apply", command.file, command.args);
@@ -296,8 +476,8 @@ async function checkRender(proof) {
   const raw = readFileSync(0);
   if (sha256(raw) !== proof.manifestSha256) refuse("final Helm render differs from validated target");
   const o = proof.scope;
-  const run = async (stage, file, args) => {
-    try { return await execute(file, args, { env: scopedEnvironment(o.kubeconfig) }); }
+  const run = async (stage, file, args, input) => {
+    try { return await execute(file, args, { input, env: scopedEnvironment(o.kubeconfig) }); }
     catch { refuse(`${stage} command failed`); }
   };
   // This runs inside Helm after it loaded its baseline, before it creates the pending revision or executes hooks.
@@ -308,6 +488,15 @@ async function checkRender(proof) {
   if (latest.revision !== proof.revision || latest.status !== "deployed") refuse("release changed before final render");
   const baseline = await run("post-render baseline", "helm", ["get", "manifest", o.release, ...helmScope(o)]);
   if (sha256(baseline) !== proof.baselineSha256) refuse("release baseline changed before final render");
+  if (chartHash(proof.chart, !proof.hookOptions.noHooks) !== proof.chartSha256) refuse("chart changed before final render");
+  // Helm omits hooks from post-renderer stdin. Re-inventory the pinned local chart before any hook runs.
+  if (!proof.hookOptions.noHooks) {
+    const rendered = json(await run("post-render hooks", "helm", [...proof.upgradeArgs, "--dry-run=server", "--output", "json"]), "post-render hooks");
+    if (sha256(rendered.manifest ?? "") !== proof.manifestSha256
+      || !isDeepStrictEqual(await hooks(rendered.hooks, proof.hookOptions, run), proof.hookInventory)) refuse("hooks changed before final render");
+  }
+  if (chartHash(proof.chart, !proof.hookOptions.noHooks) !== proof.chartSha256) refuse("chart changed during final hook render");
+  await liveObjects(proof.liveObjects, o, run);
   process.stdout.write(raw);
 }
 
