@@ -1,0 +1,24 @@
+name: kong-image-candidate
+
+on:
+  pull_request:
+    paths:
+      - images/kong/**
+      - .github/workflows/kong-image.yml
+      - .github/workflows/kong-image-build.yml
+      - .github/workflows/kong-image-candidate.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kong-image-candidate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  candidate:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/kong-image-build.yml
+    with:
+      publish: false
