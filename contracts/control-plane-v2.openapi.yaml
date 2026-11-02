@@ -3800,7 +3800,6 @@ paths:
       operationId: listClusters
       x-required-permission: instance.read
       x-scope: instance
-      x-gromesh-planned: true
       x-gromesh-requirements:
         - GW-ENV-01
       responses:
