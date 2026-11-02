@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // N2 environment acceptance (E §7, ENV-0..ENV-7 without our components): from a pod with the data plane's labels and
 // the chart's NetworkPolicy, proves CAP-1..CAP-4 and that each protection is load-bearing (negative controls).
-//   LAB_KUBECONFIG=<file> [LAB_OUT=<dir>] [DATA_PLANE_CHART=<chart dir>] node e2e/kind/n2/run.mjs
+//   LAB_RUN_ID=<exclusive-run-id> LAB_KUBECONFIG=<file> [LAB_OUT=<dir>] [DATA_PLANE_CHART=<chart dir>] node e2e/kind/n2/run.mjs
 // Requires the cluster from cluster.sh. Only the lab context of LAB_KUBECONFIG is ever used.
 import { N2Lab, n2ClusterName } from "../../../scripts/kind-stack-guard.mjs";
 import assert from "node:assert/strict";

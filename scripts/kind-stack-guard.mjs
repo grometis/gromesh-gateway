@@ -1,12 +1,26 @@
-// Model H invariants: run-created ephemeral EXCLUSIVE cluster, dedicated kubeconfig/context,
-// creation receipts (run/name/kube-system UID/CA), complete expected-kind + run inventory, no
-// third-party principals/controllers/storage. Any unexpected identity/activity => persistent STOP;
-// preserve evidence, forbid retries and ALL further mutations (including cleanup). Controller
-// descendants need creation receipts + template/hash/image proof; labels/ownerReferences alone fail.
-// Namespace CREATE and rollout descendants have no atomic UID/inventory fence: checks before/after
-// detect races; H assumes a trusted operator and no independent writers, not a hostile administrator.
-// Shared clusters (including the existing N2 VM) are forbidden. Product Model P/W0 is unchanged;
-// harness tests approve no gate. Cascade/storage deletion remains forbidden; no degraded mode.
+// Model H: only a run-created ephemeral EXCLUSIVE kind cluster; dedicated kubeconfig/context,
+// creation receipts (run/name/kube-system UID/CA), expected-kind + run inventory; no third parties.
+// Bootstrap parses YAML/JSON and validates a closed v1alpha4 subset BEFORE kind create, forwarding
+// only validated JSON (kind/apiVersion, networking ipFamily/disableDefaultCNI, nodes role/image).
+// Descendants require controller receipts, template hash where applicable and a canonical hash of
+// the ENTIRE normalized Pod spec, including container behavior/security and storage. Only exact
+// known API/admission defaults and proved scheduler/DaemonSet placement normalize; all other
+// injected fields STOP. Admission token projection also requires a proved service account.
+// Storage inspection uses the actual Pod; Cilium's exact node-local allowlist requires its proved
+// controller chain. Labels/ownerReferences alone never prove creation; trusted controllers are H's TCB.
+// Guarded exceptions after dispatch latch persistent STOP BEFORE lock release; failed operations
+// retain the lock too. Abrupt process death retains the lock; the next operation latches STOP.
+// Helm permits only a proved prior revision's deployed -> superseded transition, preserving UID,
+// owner/release/version and decoded content. Unrelated Secrets remain fully checked.
+// Namespace CREATE and rollout have NON-ATOMIC UID/inventory windows: checks before/after may
+// detect races only AFTER a write. These windows are acceptable ONLY under proved exclusivity H
+// plus operator custody of host/credentials; inventories cannot exclude a hostile independent writer.
+// STOP preserves evidence and forbids retries/ALL mutations, including cleanup; no degraded mode.
+// Existing/shared clusters (including the N2 VM), cascade/storage deletion remain forbidden.
+// Product Model P/W0 is unchanged; offline harness tests approve no gate or live-lab compatibility.
+// Example (new private path each run): LAB_RUN_ID=<exclusive-run-id> LAB_KUBECONFIG=<new-file>
+//   node scripts/kind-stack-guard.mjs n2-create < approved-kind-config.yaml
+import { createRequire } from "node:module";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { gunzipSync } from "node:zlib";
 import { isIP } from "node:net";
@@ -17,6 +31,33 @@ import { assertLocalDaemon, daemonProblems } from "./stack-guard.mjs";
 import { mkdtempSync, writeFileSync, rmSync, readFileSync, readdirSync, readlinkSync, existsSync, lstatSync, statSync, realpathSync, renameSync, mkdirSync, openSync, closeSync, fstatSync, constants } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join, resolve, dirname } from "node:path";
+// Reuse the exact YAML parser already pinned by the control-plane package (as other scripts do).
+const { parseDocument } = createRequire(new URL('../apps/control-plane/package.json', import.meta.url))('yaml');
+const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
+  ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
+const canonicalJSON = value => JSON.stringify(canonical(value));
+// Closed, deliberately small subset of kind v1alpha4 used by this harness. Forward JSON from this
+// parsed object, never the original YAML: kind must consume precisely the configuration we checked.
+function kindConfiguration(source) {
+  const doc = parseDocument(source, { uniqueKeys: true });
+  if (doc.errors.length || doc.warnings.length) throw new Error('invalid kind YAML');
+  const config = doc.toJS({ maxAliasCount: 0 });
+  const closed = (value, keys) => value && !Array.isArray(value) && typeof value === 'object'
+    && Object.keys(value).every(key => keys.includes(key));
+  if (!closed(config, ['kind', 'apiVersion', 'networking', 'nodes']) || config.kind !== 'Cluster'
+    || config.apiVersion !== 'kind.x-k8s.io/v1alpha4') throw new Error('invalid kind Cluster');
+  if (config.networking !== undefined) {
+    const net = config.networking;
+    if (!closed(net, ['ipFamily', 'disableDefaultCNI'])
+      || net.ipFamily !== undefined && !['ipv4', 'ipv6', 'dual'].includes(net.ipFamily)
+      || net.disableDefaultCNI !== undefined && typeof net.disableDefaultCNI !== 'boolean') throw new Error('unproved kind networking');
+  }
+  if (config.nodes !== undefined && (!Array.isArray(config.nodes) || !config.nodes.length
+    || !config.nodes.some(n => n?.role === 'control-plane') || config.nodes.some(n => !closed(n, ['role', 'image'])
+      || !['control-plane', 'worker'].includes(n.role) || n.image !== undefined && (typeof n.image !== 'string' || !n.image.trim()))))
+    throw new Error('unproved kind nodes');
+  return canonicalJSON(config);
+}
 const fail = () => new Error("Kind test stack refused before any write: ownership, kubeconfig or port-forward proof missing");
 export function kindClusterName(run) {
   return `gromesh-mvp-${createHash("sha256").update(run).digest("hex").slice(0, 32)}`;
@@ -130,7 +171,7 @@ export async function assertKindStack(scope = "cluster", env = process.env) {
 export const n2ClusterName = runId => `gromesh-n2-${sha256(runId ?? '').slice(0, 24)}`;
 export const n2RunLabel = 'com.grometis.gromesh.n2-run';
 export const n2LabLabel = 'com.grometis.gromesh.lab';
-const n2Refused = reason => new Error(`N2 lab refused before mutation: ${reason}; ownership proof and evidence preserved`);
+const n2Refused = reason => new Error(`N2 lab refused: ${reason}; ownership proof and evidence preserved`);
 const sha256 = value => createHash('sha256').update(value).digest('hex');
 const n2SystemAccounts = Object.freeze(['coredns', 'kube-proxy', 'bootstrap-signer', 'token-cleaner',
           'attachdetach-controller', 'certificate-controller', 'clusterrole-aggregation-controller', 'cronjob-controller', 'daemon-set-controller',
@@ -178,6 +219,8 @@ export class N2Lab {
     this.execute = (command, args, options = {}) => {
       this.assertNotRefused();
       if (this.pinnedConfig) this.verifyPinnedConfig();
+      const operation = this.operationContext.getStore();
+      if (operation?.lab === this) operation.dispatched = true;
       return execute(command, args, { ...options, env: { ...this.env, ...options.env, HELM_DRIVER: 'secret',
         ...(this.pinnedConfig ? { KUBECONFIG: this.pinnedConfig, LAB_N2_PINNED_CONFIG: this.pinnedConfig } : {}) } });
     };
@@ -196,21 +239,29 @@ export class N2Lab {
   }
   async withOperation(fn, creating = false) {
     this.assertNotRefused();
-    if (this.operationContext.getStore() === this) return fn();
+    if (this.operationContext.getStore()?.lab === this) return fn();
     const run = async () => {
       this.assertNotRefused();
       try { this.pathProof(creating); } catch (error) { if (error.message?.startsWith('N2 lab refused')) throw error; this.refuse('exclusive path proof unavailable'); }
       const lock = `${this.statePath}.active`;
       try { mkdirSync(lock, { mode: 0o700 }); }
       catch { this.refuse('concurrent or interrupted operation; preserve evidence'); }
+      const operation = { lab: this, dispatched: false, proven: false };
       try {
-        return await this.operationContext.run(this, async () => {
+        return await this.operationContext.run(operation, async () => {
           const result = await fn();
           await this.assertIdentity();
+          operation.proven = true;
           return result;
         });
       }
-      finally { if (!this.refused && !existsSync(this.refusalPath)) rmSync(lock, { recursive: true }); }
+      finally {
+        // This decision must precede lock removal, including transport/timeout/parse exceptions.
+        // Preserve the lock too: even a failure to write the STOP marker must not permit a retry.
+        if (!operation.proven && !this.refused) this.refuse(operation.dispatched
+          ? 'operation failed after dispatch; result unproved' : 'operation interrupted before dispatch');
+        if (operation.proven && !this.refused && !existsSync(this.refusalPath)) rmSync(lock, { recursive: true });
+      }
     };
     const result = this.operationQueue.then(run);
     this.operationQueue = result.catch(() => {});
@@ -420,7 +471,7 @@ export class N2Lab {
         'kube-apiserver-kubelet-client', 'kubernetes-admin', 'kubernetes-super-admin'].includes(subject.name);
     });
   }
-  checkManifestStorage(o, state) {
+  checkManifestStorage(o, state, storageOwner = o) {
     if (o.kind === 'PersistentVolume') this.refuse('PV provisioning has no exclusive storage receipt; preserve storage');
     if (o.kind === 'StorageClass' && (o.metadata.name !== 'standard' || o.provisioner !== 'rancher.io/local-path')) this.refuse('external storage provisioner forbidden');
     if (o.kind === 'PersistentVolumeClaim' && (o.spec?.volumeName || o.spec?.dataSource || o.spec?.dataSourceRef || o.spec?.storageClassName && o.spec.storageClassName !== 'standard')) this.refuse('PVC cannot borrow or clone external storage');
@@ -428,7 +479,7 @@ export class N2Lab {
     for (const spec of specs) for (const volume of spec.volumes ?? []) {
       // Cilium's node-local paths are inside the new kind node, whose Docker mounts were proved
       // exclusive. Arbitrary host paths and network/storage drivers are never admitted.
-      const cilium = o.metadata?.namespace === 'kube-system' && ['cilium', 'cilium-envoy', 'cilium-operator'].includes(o.metadata.name);
+      const cilium = storageOwner.metadata?.namespace === 'kube-system' && ['cilium', 'cilium-envoy', 'cilium-operator'].includes(storageOwner.metadata.name);
       const localPaths = ['/proc', '/sys', '/sys/fs/bpf', '/sys/fs/cgroup', '/var/run/cilium', '/var/run/netns', '/var/run/cilium/envoy/sockets',
         '/var/lib/cni/networks', '/etc/cni/net.d', '/opt/cni/bin', '/lib/modules', '/run/xtables.lock'];
       if (volume.hostPath && !(cilium && localPaths.includes(volume.hostPath.path))) this.refuse('unproved hostPath volume');
@@ -436,12 +487,111 @@ export class N2Lab {
       if (volume.persistentVolumeClaim && !state.resources[`persistentvolumeclaim/${o.metadata.namespace}/${volume.persistentVolumeClaim.claimName}`]) this.refuse('unproved pod PVC');
     }
   }
-  templateImages(spec) {
-    return JSON.stringify(['containers', 'initContainers'].map(type => (spec?.[type] ?? []).map(c => [c.name, c.image])));
+  normalizedPodSpec(spec) {
+    const value = structuredClone(spec);
+    // Only explicit API defaults are equivalent to omission. Unknown fields and all behavioral
+    // container, volume, security, account, host namespace and scheduling fields remain in the hash.
+    const defaults = { restartPolicy: 'Always', dnsPolicy: 'ClusterFirst', schedulerName: 'default-scheduler',
+      terminationGracePeriodSeconds: 30, enableServiceLinks: true, preemptionPolicy: 'PreemptLowerPriority',
+      hostNetwork: false, hostPID: false, hostIPC: false, securityContext: {} };
+    for (const [key, fallback] of Object.entries(defaults)) value[key] ??= fallback;
+    value.serviceAccountName ??= 'default';
+    if (value.serviceAccount === value.serviceAccountName) delete value.serviceAccount;
+    for (const type of ['containers', 'initContainers', 'ephemeralContainers']) for (const c of value[type] ?? []) {
+      c.terminationMessagePath ??= '/dev/termination-log';
+      c.terminationMessagePolicy ??= 'File';
+      c.imagePullPolicy ??= c.image?.includes('@') || c.image?.split('/').at(-1)?.includes(':') && !c.image.endsWith(':latest') ? 'IfNotPresent' : 'Always';
+    }
+    return value;
+  }
+  childSpecHash(spec, expectedSpec, { pod = false, parent, state, inventory = [], namespace } = {}) {
+    const actual = this.normalizedPodSpec(spec), expected = this.normalizedPodSpec(expectedSpec);
+    const templateHash = sha256(canonicalJSON(expected));
+    if (pod) {
+      // The scheduler adds only nodeName here; proveNode separately binds it to this run's node.
+      if (expected.nodeName === undefined) delete actual.nodeName;
+      if (expected.priority === undefined && actual.priority !== undefined) {
+        const priority = inventory.find(o => o.kind === 'PriorityClass' && o.metadata.name === expected.priorityClassName);
+        const proved = priority && (state.baselineClusterResources?.[resourceKey(priority)] === this.baselineProof(priority)
+          || state.resourceProofs?.[resourceKey(priority)] === this.baselineProof(priority));
+        if (actual.priority === (expected.priorityClassName ? proved ? priority.value : undefined : 0)) delete actual.priority;
+      }
+      const defaults = ['not-ready', 'unreachable'].map(key => ({ key: `node.kubernetes.io/${key}`, operator: 'Exists', effect: 'NoExecute', tolerationSeconds: 300 }));
+      if (parent?.kind === 'DaemonSet') {
+        defaults.splice(0, defaults.length, ...['not-ready', 'unreachable'].map(key => ({ key: `node.kubernetes.io/${key}`, operator: 'Exists', effect: 'NoExecute' })),
+          ...['disk-pressure', 'memory-pressure', 'pid-pressure', 'unschedulable', ...(expected.hostNetwork ? ['network-unavailable'] : [])]
+            .map(key => ({ key: `node.kubernetes.io/${key}`, operator: 'Exists', effect: 'NoSchedule' })));
+        const required = actual.affinity?.nodeAffinity?.requiredDuringSchedulingIgnoredDuringExecution;
+        const target = required?.nodeSelectorTerms?.[0]?.matchFields?.[0]?.values?.[0];
+        const placement = spec.nodeName ?? target;
+        const injected = { nodeSelectorTerms: [{ matchFields: [{ key: 'metadata.name', operator: 'In', values: [placement] }] }] };
+        // Only the exact node placement generated by the DS controller is equivalent. Templates
+        // with original required affinity are conservatively refused rather than dropping its rules.
+        if (!expected.affinity?.nodeAffinity?.requiredDuringSchedulingIgnoredDuringExecution && target
+          && canonicalJSON(required) === canonicalJSON(injected)) {
+          delete actual.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution;
+          if (!Object.keys(actual.affinity.nodeAffinity).length && !expected.affinity?.nodeAffinity) delete actual.affinity.nodeAffinity;
+          if (!Object.keys(actual.affinity).length && !expected.affinity) delete actual.affinity;
+        }
+      }
+      if (actual.tolerations) {
+        actual.tolerations = actual.tolerations.filter(t => !defaults.some(d => canonicalJSON(t) === canonicalJSON(d))
+          || expected.tolerations?.some(tpl => canonicalJSON(tpl) === canonicalJSON(t)));
+        if (!actual.tolerations.length && expected.tolerations === undefined) delete actual.tolerations;
+      }
+      const account = inventory.find(o => o.kind === 'ServiceAccount' && o.metadata.namespace === namespace && o.metadata.name === expected.serviceAccountName);
+      const accountProved = account && (this.expectedGenerated(account, state, inventory)
+        || state.baselineNamespacedResources?.[resourceKey(account)] === this.baselineProof(account)
+        || state.resourceProofs?.[resourceKey(account)] === this.baselineProof(account));
+      if (expected.automountServiceAccountToken !== false && accountProved && account.automountServiceAccountToken !== false) {
+        const injected = actual.volumes?.filter(v => /^kube-api-access-[a-z0-9]{5}$/.test(v.name)
+          && !expected.volumes?.some(e => e.name === v.name));
+        if (injected?.length === 1) {
+          const volume = injected[0], mount = { name: volume.name, readOnly: true, mountPath: '/var/run/secrets/kubernetes.io/serviceaccount' };
+          const projection = { name: volume.name, projected: { defaultMode: 420, sources: [
+            { serviceAccountToken: { expirationSeconds: 3607, path: 'token' } },
+            { configMap: { name: 'kube-root-ca.crt', items: [{ key: 'ca.crt', path: 'ca.crt' }] } },
+            { downwardAPI: { items: [{ path: 'namespace', fieldRef: { apiVersion: 'v1', fieldPath: 'metadata.namespace' } }] } },
+          ] } };
+          const mountsProved = ['containers', 'initContainers'].every(type => (actual[type] ?? []).every(c => {
+            const template = expected[type]?.find(t => t.name === c.name);
+            if (!template) return false;
+            // Admission skips a container that already mounts this path; otherwise the exact
+            // read-only token mount must be present, not merely an unused projected volume.
+            return template.volumeMounts?.some(m => m.mountPath === mount.mountPath)
+              ? !c.volumeMounts?.some(m => m.name === volume.name)
+              : c.volumeMounts?.filter(m => canonicalJSON(m) === canonicalJSON(mount)).length === 1;
+          }));
+          if (canonicalJSON(volume) === canonicalJSON(projection) && mountsProved) {
+            actual.volumes = actual.volumes.filter(v => v !== volume);
+            if (!actual.volumes.length && expected.volumes === undefined) delete actual.volumes;
+            for (const type of ['containers', 'initContainers']) for (const c of actual[type] ?? []) {
+              if (c.volumeMounts) {
+                c.volumeMounts = c.volumeMounts.filter(m => canonicalJSON(m) !== canonicalJSON(mount));
+                const template = expected[type]?.find(t => t.name === c.name);
+                if (!c.volumeMounts.length && template?.volumeMounts === undefined) delete c.volumeMounts;
+              }
+            }
+          }
+        }
+      }
+    }
+    return canonicalJSON(actual) === canonicalJSON(expected) ? templateHash : undefined;
+  }
+  storageOwner(o, state, inventory) {
+    let current = o;
+    for (let depth = 0; depth < 8; depth++) {
+      const ref = current.metadata.ownerReferences?.[0];
+      const parent = ref && inventory.find(p => p.metadata.uid === ref.uid && p.kind === ref.kind
+        && p.apiVersion === ref.apiVersion && p.metadata.name === ref.name && p.metadata.namespace === current.metadata.namespace);
+      if (!parent || !(state.resources[resourceKey(parent)] === parent.metadata.uid || this.controllerReceipt(parent, state))) break;
+      current = parent;
+    }
+    return current;
   }
   controllerReceipt(o, state) {
     const receipt = state.controllerReceipts?.[resourceKey(o)];
-    return receipt?.uid === o.metadata.uid && receipt.proof === this.baselineProof(o);
+    return receipt?.uid === o.metadata.uid && typeof receipt.specHash === 'string' && receipt.proof === this.baselineProof(o);
   }
   async recordControllerChild(o, state, inventory) {
     if (state.resources[resourceKey(o)] || this.controllerReceipt(o, state)) return false;
@@ -461,15 +611,23 @@ export class N2Lab {
     else return false;
     const spec = o.kind === 'Pod' ? o.spec : o.spec?.template?.spec;
     const expectedSpec = o.kind === 'Job' ? template?.spec?.template?.spec : template?.spec;
-    if (!expectedSpec || this.templateImages(spec) !== this.templateImages(expectedSpec)) return false;
+    if (!spec || !expectedSpec) return false;
+    const specHash = this.childSpecHash(spec, expectedSpec, { pod: o.kind === 'Pod', parent, state, inventory, namespace: o.metadata.namespace });
+    if (!specHash) return false;
+    if (o.kind === 'Pod') {
+      const node = o.spec.nodeName ?? (parent.kind === 'DaemonSet'
+        ? o.spec.affinity?.nodeAffinity?.requiredDuringSchedulingIgnoredDuringExecution?.nodeSelectorTerms?.[0]?.matchFields?.[0]?.values?.[0] : undefined);
+      if (node) await this.proveNode(node, state);
+    }
     const templateHash = o.metadata.labels?.['pod-template-hash'];
-    if (parent.kind === 'ReplicaSet' || o.kind === 'ReplicaSet') {
-      const expectedHash = parent.kind === 'ReplicaSet' ? parent.spec?.template?.metadata?.labels?.['pod-template-hash'] : o.spec?.template?.metadata?.labels?.['pod-template-hash'];
+    if (parent.kind === 'ReplicaSet' || o.kind === 'ReplicaSet' || template?.metadata?.labels?.['pod-template-hash']) {
+      const expectedHash = o.kind === 'ReplicaSet' ? o.spec?.template?.metadata?.labels?.['pod-template-hash'] : template?.metadata?.labels?.['pod-template-hash'];
       if (!templateHash || templateHash !== expectedHash) return false;
     }
+    this.checkManifestStorage(o, state, this.storageOwner(o, state, inventory));
     state.controllerReceipts ??= {};
     state.controllerReceipts[resourceKey(o)] = { uid: o.metadata.uid, controllerUid: parent.metadata.uid,
-      templateHash: templateHash ?? null, images: this.templateImages(expectedSpec), proof: this.baselineProof(o) };
+      templateHash: templateHash ?? null, specHash, proof: this.baselineProof(o) };
     return true;
   }
   expectedGenerated(o, state, inventory) {
@@ -529,10 +687,7 @@ export class N2Lab {
       if (baseline && baseline === this.baselineProof(o) && this.expectedPrincipals(o, state, true)) continue;
       if (this.expectedGenerated(o, state, inventory)) continue;
       if (!await this.createdObject(o, state) || !this.expectedPrincipals(o, state)) this.refuse('exclusivity lost: foreign resource, controller, storage or principal');
-      if (o.kind === 'Pod' && state.controllerReceipts?.[resourceKey(o)]) {
-        const parent = inventory.find(p => p.metadata.uid === state.controllerReceipts[resourceKey(o)].controllerUid);
-        this.checkManifestStorage(parent ?? o, state);
-      } else this.checkManifestStorage(o, state);
+      this.checkManifestStorage(o, state, this.storageOwner(o, state, inventory));
     }
     if (recorded && persist) this.save(state);
     return inventory;
@@ -546,7 +701,7 @@ export class N2Lab {
       const path = this.pathProof(true);
       const runId = this.env.LAB_RUN_ID;
       if (!runId || !/^[a-z0-9-]{12,63}$/.test(runId)) this.refuse('invalid LAB_RUN_ID');
-      if (/\b(extraMounts|extraPortMappings|kubeadmConfigPatches|kubeadmConfigPatchesJSON6902)\s*:/.test(config)) this.refuse('unproved shared mounts or bootstrap patches');
+      config = kindConfiguration(config);
       await this.daemon();
       const clusters = (await this.execute('kind', ['get', 'clusters'])).stdout.trim().split(/\s+/);
       const ids = (await this.execute('docker', ['ps', '-aq', '--filter', `label=io.x-k8s.kind.cluster=${this.cluster}`])).stdout.trim();
@@ -1056,11 +1211,13 @@ export class N2Lab {
   }
   async spawnContainerOperation(target, command) {
     await this.inspectContainer(target);
+    this.operationContext.getStore().dispatched = true;
     const child = this.spawnProcess('docker', ['exec', '-i', target.nodeID, 'crictl', 'exec', '-i', target.containerID, ...command],
       { env: { ...this.env, KUBECONFIG: this.verifiedKubeconfig(), LAB_N2_PINNED_CONFIG: this.pinnedConfig }, stdio: ['pipe', 'pipe', 'pipe'] });
     child.verified = new Promise((resolve, reject) => {
-      child.once('error', reject);
-      child.once('close', () => this.validateContainer(target).then(resolve, reject));
+      const failed = () => { try { this.refuse('stream execution or verification failed after dispatch'); } catch (error) { reject(error); } };
+      child.once('error', failed);
+      child.once('close', () => this.validateContainer(target).then(resolve, failed));
     });
     // Callers must await verified before using collected output; handle early failure until they do so.
     child.verified.catch(() => {});
@@ -1240,7 +1397,7 @@ export class N2Lab {
     const objects = await this.helmObjects(rendered.stdout, ns, state);
     const beforeObjects = new Map();
     for (const o of objects) beforeObjects.set(resourceKey(o), await this.get(o.kind, o.metadata.name, o.metadata.namespace));
-    const beforeSecrets = new Map(initialSecrets.map(o => [resourceKey(o), o.metadata.uid]));
+    const beforeSecrets = new Map(initialSecrets.map(o => [resourceKey(o), o]));
     const hooks = objects.filter(o => o.metadata.annotations?.['helm.sh/hook']);
     for (const hook of hooks) {
       if (hook.kind !== 'Job' || !/^(pre-install|pre-upgrade)(,pre-upgrade)?$/.test(hook.metadata.annotations['helm.sh/hook'])) this.refuse('unsupported Helm hook');
@@ -1280,17 +1437,43 @@ export class N2Lab {
     state = this.load();
     state.releases ??= {};
     state.releases[`${ns}/${release}`] = objects.filter(o => !hooks.includes(o)).map(o => ({ kind: o.kind, metadata: { name: o.metadata.name, namespace: o.metadata.namespace } }));
-    const newStorage = [];
+    const newStorage = [], supersededStorage = [];
+    // A successful upgrade changes exactly the previous deployed revision. Validate the actual
+    // Secret, including its decoded payload, before refreshing its immutable configuration proof.
+    for (const previous of beforeSecrets.values()) {
+      const actual = await this.get('secret', previous.metadata.name, ns);
+      if (!actual || actual.metadata.uid !== previous.metadata.uid) this.refuse('previous Helm storage identity changed');
+      if (this.baselineProof(actual) === this.baselineProof(previous)) {
+        if (previous.metadata.labels?.status === 'deployed') this.refuse('previous Helm revision was not superseded');
+        continue;
+      }
+      if (previous.type !== 'helm.sh/release.v1' || previous.metadata.labels?.owner !== 'helm'
+        || previous.metadata.labels?.name !== release || previous.metadata.labels?.version !== String(revision - 1)
+        || previous.metadata.name !== `sh.helm.release.v1.${release}.v${revision - 1}`
+        || previous.metadata.labels?.status !== 'deployed' || actual.metadata.labels?.status !== 'superseded')
+        this.refuse('unexpected previous Helm storage transition');
+      const beforeRelease = this.helmStorageRelease(previous), afterRelease = this.helmStorageRelease(actual);
+      if (beforeRelease.name !== release || beforeRelease.namespace !== ns || beforeRelease.version !== revision - 1
+        || beforeRelease.info?.status !== 'deployed' || afterRelease.info?.status !== 'superseded')
+        this.refuse('previous Helm release identity differs');
+      afterRelease.info.status = 'deployed';
+      if (canonicalJSON(beforeRelease) !== canonicalJSON(afterRelease)) this.refuse('previous Helm release content changed');
+      const expected = structuredClone(previous), normalized = structuredClone(actual);
+      expected.metadata.labels.status = 'superseded';
+      // Compare every Secret field except the encoded release representation and API bookkeeping.
+      expected.data.release = normalized.data.release = 'REDACTED';
+      if (this.baselineProof(expected) !== this.baselineProof(normalized)) this.refuse('previous Helm Secret content changed');
+      supersededStorage.push(actual);
+    }
     // The successful Helm create can prove only the exact next revision, absent before the command.
     // Validate its encoded release/manifest as well; arbitrary selector matches never receive labels or receipts.
     for (const secret of await releaseSecrets()) {
-      if (beforeSecrets.get(resourceKey(secret)) === secret.metadata.uid) continue;
+      if (beforeSecrets.get(resourceKey(secret))?.metadata.uid === secret.metadata.uid) continue;
       if (beforeUids.has(secret.metadata.uid) || secret.metadata.name !== storageName || secret.metadata.namespace !== ns
         || secret.type !== 'helm.sh/release.v1' || secret.metadata.labels?.version !== String(revision)
         || secret.metadata.labels?.owner !== 'helm' || secret.metadata.labels?.name !== release || secret.metadata.labels?.status !== 'deployed')
         this.refuse('unproved new Helm storage Secret; preserve evidence');
-      const encoded = Buffer.from(secret.data?.release ?? '', 'base64').toString();
-      const stored = JSON.parse(gunzipSync(Buffer.from(encoded, 'base64'), { maxOutputLength: 16 * 1024 * 1024 }).toString());
+      const stored = this.helmStorageRelease(secret);
       if (stored.name !== release || stored.namespace !== ns || stored.version !== revision || stored.info?.status !== 'deployed'
         || typeof stored.manifest !== 'string') this.refuse('Helm storage release identity differs');
       const parsed = JSON.parse((await this.rawK(['create', '--dry-run=client', '-n', ns, '-f', '-', '-o', 'json'], { input: stored.manifest })).stdout);
@@ -1300,7 +1483,7 @@ export class N2Lab {
       newStorage.push(secret);
     }
     if (newStorage.length !== 1) this.refuse('new Helm storage revision was not demonstrated');
-    const receipts = [];
+    const receipts = [...supersededStorage];
     for (const o of objects.filter(o => !hooks.includes(o))) {
       const actual = await this.get(o.kind, o.metadata.name, o.metadata.namespace);
       const previous = beforeObjects.get(resourceKey(o));
@@ -1325,6 +1508,10 @@ export class N2Lab {
     await this.verifyRollout(effects, state);
     this.save(state);
     return result;
+  }
+  helmStorageRelease(secret) {
+    const encoded = Buffer.from(secret.data?.release ?? '', 'base64').toString();
+    return JSON.parse(gunzipSync(Buffer.from(encoded, 'base64'), { maxOutputLength: 16 * 1024 * 1024 }).toString());
   }
   releaseManifestProof(objects) {
     const normalize = value => Array.isArray(value) ? value.map(normalize) : value && typeof value === 'object'

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # N2 reference lab (environment A): kind dual-stack without kindnet, kube-proxy kept, Cilium pinned in versions.env.
-#   LAB_KUBECONFIG=<file> bash e2e/kind/n2/cluster.sh up|down|status
+#   LAB_RUN_ID=<exclusive-run-id> LAB_KUBECONFIG=<file> bash e2e/kind/n2/cluster.sh up|down|status
 # Every kubectl/helm call uses only LAB_KUBECONFIG and the lab context: the user's kubeconfig is never read or written.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

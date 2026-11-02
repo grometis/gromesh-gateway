@@ -4,10 +4,11 @@ import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync, chmodSync,
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { gzipSync } from 'node:zlib';
+import { gzipSync, gunzipSync } from 'node:zlib';
 import { runInNewContext } from 'node:vm';
 import * as guard from '../../../scripts/kind-stack-guard.mjs';
 
+const kindConfig = 'kind: Cluster\napiVersion: kind.x-k8s.io/v1alpha4\nnodes: [{role: control-plane}]';
 const label = 'com.grometis.gromesh.n2-run';
 const lab = 'com.grometis.gromesh.lab';
 function fixture(t) {
@@ -116,6 +117,14 @@ function fixture(t) {
         const rendered = await renderer.helmObjects(JSON.stringify({ apiVersion: 'v1', kind: 'List', items: chart }), namespace);
         const manifest = JSON.stringify({ apiVersion: 'v1', kind: 'List', items: rendered });
         for (const o of rendered) { o.metadata.uid ??= 'created-' + o.metadata.name; objects.set(`${o.kind.toLowerCase()}/${o.metadata.name}`, o); }
+        for (const previous of objects.values()) {
+          if (previous.kind !== 'Secret' || previous.metadata.namespace !== namespace || previous.metadata.labels?.owner !== 'helm'
+            || previous.metadata.labels?.name !== release || previous.metadata.labels?.status !== 'deployed') continue;
+          previous.metadata.labels.status = 'superseded';
+          const stored = JSON.parse(gunzipSync(Buffer.from(Buffer.from(previous.data.release, 'base64').toString(), 'base64')).toString());
+          stored.info.status = 'superseded';
+          previous.data.release = Buffer.from(gzipSync(JSON.stringify(stored)).toString('base64')).toString('base64');
+        }
         const name = `sh.helm.release.v1.${release}.v${version}`;
         const payload = { name: release, namespace, version, info: { status: 'deployed' }, manifest };
         const data = Buffer.from(gzipSync(JSON.stringify(payload)).toString('base64')).toString('base64');
@@ -138,7 +147,7 @@ const mutations = calls => calls.filter(c => !c.args.includes('--dry-run=client'
 for (const [name, change] of [['UID', f => f.setUID('replaced')], ['CA', f => f.setCA('Zm9yZWlnbg==')], ['context', f => f.setContext('wrong')]]) {
   test(`same cluster name with different ${name} refuses without mutation and preserves evidence`, async t => {
     const f = fixture(t), owner = f.owner();
-    await owner.createCluster('kind fixture');
+    await owner.createCluster(kindConfig);
     const evidence = join(f.dir, 'results.json'); writeFileSync(evidence, 'evidence');
     const proof = readFileSync(owner.statePath, 'utf8');
     f.calls.length = 0; change(f);
@@ -149,14 +158,14 @@ for (const [name, change] of [['UID', f => f.setUID('replaced')], ['CA', f => f.
   });
 }
 test('preexisting namespace without ownership is never adopted or deleted', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('kind fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   f.objects.set('namespace/gromesh-dp', { ...ns('gromesh-dp'), metadata: { name: 'gromesh-dp', uid: 'foreign' } });
   f.calls.length = 0;
   await assert.rejects(owner.kubectl(['delete', 'namespace', 'gromesh-dp', '--ignore-not-found']), /N2.*refused/);
   assert.equal(mutations(f.calls).length, 0);
 });
 test('foreign PVC prevents namespace and cluster deletion before either mutates', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('kind fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   await owner.kubectl(['apply', '-f', '-'], { input: JSON.stringify(ns('gromesh-dp')) });
   f.objects.set('persistentvolumeclaim/foreign', { kind: 'PersistentVolumeClaim', metadata: { name: 'foreign', namespace: 'gromesh-dp', uid: 'foreign' } });
   f.calls.length = 0;
@@ -170,14 +179,14 @@ test('global kubeconfig and wrong run id refuse before any subprocess', async t 
     const f = fixture(t);
     const config = bad === 'global' ? join(f.env.HOME, '.kube/config') : join(f.dir, 'config:other');
     const o = new guard.N2Lab({ env: { ...f.env, LAB_KUBECONFIG: config }, execute: async () => { throw Error('must not execute'); } });
-    await assert.rejects(o.createCluster('fixture'), /N2.*refused/);
+    await assert.rejects(o.createCluster(kindConfig), /N2.*refused/);
   }
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   f.calls.length = 0;
   await assert.rejects(new guard.N2Lab({ env: { ...f.env, LAB_RUN_ID: 'other-123456789' }, execute: async () => { throw Error('must not execute'); } }).assertIdentity(), /N2.*refused/);
 });
 test('owned namespace and cluster remain intact when cascade effects cannot be conditioned', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   await owner.kubectl(['apply', '-f', '-'], { input: JSON.stringify(ns('gromesh-dp')) });
   assert.equal(f.objects.get('namespace/gromesh-dp').metadata.labels[label], f.env.LAB_RUN_ID);
   f.calls.length = 0;
@@ -188,21 +197,21 @@ test('owned namespace and cluster remain intact when cascade effects cannot be c
 });
 
 test('a namespace with copied run labels but no creation receipt is also refused', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   f.objects.set('namespace/gromesh-dp', { ...ns('gromesh-dp'), metadata: f.metadata('gromesh-dp', 'copied') });
   f.calls.length = 0;
   await assert.rejects(owner.kubectl(['apply', '-f', '-'], { input: JSON.stringify(ns('gromesh-dp')) }), /N2.*refused/);
   assert.equal(mutations(f.calls).length, 0);
 });
 test('a preexisting fixture is never removed by its fixed name', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   f.containers.set('gromesh-n2-bafd0b463f146039e73843bd-fx-backend', { Id: 'foreign', Name: '/gromesh-n2-bafd0b463f146039e73843bd-fx-backend', Config: { Labels: {} } });
   f.calls.length = 0;
   await assert.rejects(owner.docker(['rm', '-f', 'gromesh-n2-bafd0b463f146039e73843bd-fx-backend'], { allowFail: true }), /N2.*refused/);
   assert.equal(mutations(f.calls).length, 0);
 });
 test('own fixture container is labelled, recorded and removed by ID', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   const name = 'gromesh-n2-bafd0b463f146039e73843bd-fx-backend';
   await owner.docker(['run', '-d', '--name', name, '--network', 'kind', 'fixture@sha256:' + 'a'.repeat(64), 'node']);
   assert.equal(f.containers.get(name).Config.Labels[label], f.env.LAB_RUN_ID);
@@ -212,7 +221,7 @@ test('own fixture container is labelled, recorded and removed by ID', async t =>
   assert.deepEqual(f.calls.findLast(c => c.cmd === 'docker' && c.args[0] === 'rm').args, ['rm', '-f', 'created-' + name]);
 });
 test('preexisting image aliases are refused without overwriting or deleting them', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   const tag = 'lab:' + f.env.LAB_RUN_ID;
   f.images.set(tag, { Id: 'preexisting', Config: {} });
   f.calls.length = 0;
@@ -221,7 +230,7 @@ test('preexisting image aliases are refused without overwriting or deleting them
   assert.equal(f.images.get(tag).Id, 'preexisting');
 });
 test('image cleanup removes built IDs and retains borrowed aliases and the original source image', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   f.images.set('source', { Id: 'source', RepoTags: ['source'], Config: {} });
   await owner.image(['tag', 'source', 'lab:' + f.env.LAB_RUN_ID]);
   await owner.image(['build', '-t', 'built:' + f.env.LAB_RUN_ID, '.']);
@@ -230,7 +239,7 @@ test('image cleanup removes built IDs and retains borrowed aliases and the origi
   assert.ok(f.calls.filter(c => c.cmd === 'docker' && c.args[1] === 'rm').every(c => !c.args.includes('--force') && !c.args.includes('source')));
 });
 test('an image alias replaced after creation refuses cleanup and preserves the receipt', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   const tag = 'lab:' + f.env.LAB_RUN_ID;
   await owner.image(['tag', 'source', tag]);
   f.images.set(tag, { Id: 'replacement', Config: {} });
@@ -240,14 +249,14 @@ test('an image alias replaced after creation refuses cleanup and preserves the r
   assert.equal(readFileSync(owner.statePath, 'utf8'), receipt);
 });
 test('changed node mounts refuse cluster deletion before any resource is touched', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   f.node.Mounts.push({ Type: 'volume', Name: 'foreign', Source: '/foreign', Destination: '/var' });
   f.calls.length = 0;
   await assert.rejects(owner.destroyCluster(), /N2.*refused/);
   assert.equal(mutations(f.calls).length, 0);
 });
 test('a failed PVC inspection is never interpreted as absence', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   await owner.kubectl(['apply', '-f', '-'], { input: JSON.stringify(ns('gromesh-dp')) });
   f.fail((cmd, args) => cmd === 'kubectl' && args.includes('pvc'));
   f.calls.length = 0;
@@ -257,7 +266,7 @@ test('a failed PVC inspection is never interpreted as absence', async t => {
 
 for (const scenario of ['UID', 'CA', 'context', 'namespace', 'PVC', 'happy']) {
   test(`cluster.sh down with fixture executables: ${scenario}`, async t => {
-    const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+    const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
     if (scenario === 'PVC') await owner.kubectl(['apply', '-f', '-'], { input: JSON.stringify(ns('gromesh-dp')) });
     const bin = join(f.dir, 'bin'); mkdirSync(bin);
     const record = join(f.dir, 'calls.jsonl'); writeFileSync(record, '');
@@ -314,7 +323,7 @@ else if (cmd === 'kubectl' && args.includes('get')) {
 }
 
 test('an owned PVC is recorded but preserved with its namespace without an atomic cascade fence', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   await owner.kubectl(['apply', '-f', '-'], { input: JSON.stringify(ns('gromesh-dp')) });
   const pvc = { apiVersion: 'v1', kind: 'PersistentVolumeClaim', metadata: { name: 'own', namespace: 'gromesh-dp' }, spec: {} };
   await owner.kubectl(['create', '-f', '-'], { input: JSON.stringify(pvc) });
@@ -324,7 +333,7 @@ test('an owned PVC is recorded but preserved with its namespace without an atomi
   assert.ok(f.objects.has('persistentvolumeclaim/own'));
 });
 test('Helm hook name collision refuses before a Job or release can be changed', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   await owner.kubectl(['apply', '-f', '-'], { input: JSON.stringify(ns('gromesh-dp')) });
   const hook = { apiVersion: 'batch/v1', kind: 'Job', metadata: { name: 'schema', namespace: 'gromesh-dp', annotations: { 'helm.sh/hook': 'pre-install,pre-upgrade' } }, spec: { selector: { matchLabels: { app: 'target' } }, template: { metadata: {}, spec: {} } } };
   f.helm([hook]);
@@ -334,7 +343,7 @@ test('Helm hook name collision refuses before a Job or release can be changed', 
   assert.equal(mutations(f.calls).length, 0);
 });
 test('Helm stamps pod templates and runs its schema Job with guarded UID cleanup', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   await owner.kubectl(['apply', '-f', '-'], { input: JSON.stringify(ns('gromesh-dp')) });
   const hook = { apiVersion: 'batch/v1', kind: 'Job', metadata: { name: 'schema', namespace: 'gromesh-dp', annotations: { 'helm.sh/hook': 'pre-install,pre-upgrade' } }, spec: { selector: { matchLabels: { app: 'target' } }, template: { metadata: {}, spec: {} } } };
   f.helm([hook]);
@@ -358,20 +367,20 @@ test('component finish preserves its report when identity refusal also prevents 
 });
 
 test('editing the exclusive kubeconfig invalidates the receipt before any executable runs', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   writeFileSync(f.env.LAB_KUBECONFIG, 'a different context or authentication plugin');
   f.calls.length = 0;
   await assert.rejects(f.owner().assertIdentity(), /N2.*refused/);
   assert.equal(f.calls.length, 0);
 });
 test('a changed kind node ID refuses mutations even if endpoint, CA and namespace UID still match', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   f.node.Id = 'replacement-node'; f.calls.length = 0;
   await assert.rejects(owner.destroyCluster(), /N2.*refused/);
   assert.equal(mutations(f.calls).length, 0);
 });
 test('a copied ownership label cannot authorize deletion of an unrecorded cluster policy', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   f.objects.set('ciliumclusterwidenetworkpolicy/policy', { apiVersion: 'cilium.io/v2', kind: 'CiliumClusterwideNetworkPolicy', metadata: f.metadata('policy', 'foreign') });
   f.calls.length = 0;
   await assert.rejects(owner.kubectl(['delete', 'ciliumclusterwidenetworkpolicy', 'policy']), /N2.*refused/);
@@ -379,10 +388,10 @@ test('a copied ownership label cannot authorize deletion of an unrecorded cluste
 });
 
 test('up refuses an existing cluster instead of adopting it with a fresh kubeconfig path', async t => {
-  const f = fixture(t); await f.owner().createCluster('fixture');
+  const f = fixture(t); await f.owner().createCluster(kindConfig);
   const other = new guard.N2Lab({ env: { ...f.env, LAB_KUBECONFIG: join(f.dir, 'fresh-config') }, execute: f.execute });
   f.calls.length = 0;
-  await assert.rejects(other.createCluster('fixture'), /N2.*refused/);
+  await assert.rejects(other.createCluster(kindConfig), /N2.*refused/);
   assert.equal(mutations(f.calls).length, 0);
 });
 test('node volumes are recorded at creation and replacement volumes refuse cleanup', async t => {
@@ -392,7 +401,7 @@ test('node volumes are recorded at creation and replacement volumes refuse clean
     if (cmd === 'kind' && args[0] === 'create') f.volumes.set('new-node-volume', { Name: 'new-node-volume', CreatedAt: 'original', Driver: 'local', Labels: {} });
     return f.execute(cmd, args, options);
   };
-  const owner = new guard.N2Lab({ env: f.env, execute }); await owner.createCluster('fixture');
+  const owner = new guard.N2Lab({ env: f.env, execute }); await owner.createCluster(kindConfig);
   assert.equal(JSON.parse(readFileSync(owner.statePath, 'utf8')).volumes['new-node-volume'].CreatedAt, 'original');
   f.volumes.get('new-node-volume').CreatedAt = 'replacement'; f.calls.length = 0;
   await assert.rejects(owner.destroyCluster(), /N2.*refused/);
@@ -403,7 +412,7 @@ test('incomplete creation that mounted a preexisting volume never attempts rollb
   f.volumes.set('foreign', { Name: 'foreign', Driver: 'local', CreatedAt: 'before' });
   f.node.Mounts = [{ Type: 'volume', Name: 'foreign', Source: '/docker/foreign', Destination: '/var' }];
   const owner = f.owner();
-  await assert.rejects(owner.createCluster('fixture'), /N2.*refused/);
+  await assert.rejects(owner.createCluster(kindConfig), /N2.*refused/);
   assert.ok(f.volumes.has('foreign'));
   assert.equal(JSON.parse(readFileSync(owner.statePath, 'utf8')).phase, 'creating');
   assert.ok(!f.calls.some(c => c.args.includes('delete') || c.args.includes('rm')));
@@ -411,7 +420,7 @@ test('incomplete creation that mounted a preexisting volume never attempts rollb
 
 for (const target of ['observer', 'probe', 'control-plane']) {
   test(`raw kubectl spawn refuses a foreign replacement ${target} inside an owned namespace`, async t => {
-    const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+    const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
     const namespace = 'own-namespace';
     await owner.kubectl(['apply', '-f', '-'], { input: JSON.stringify(ns(namespace)) });
     const kind = target === 'control-plane' ? 'Service' : 'Pod';
@@ -429,7 +438,7 @@ for (const target of ['observer', 'probe', 'control-plane']) {
 }
 
 test('cleanup keeps the last alias of a borrowed digest-only image so Docker cannot delete the source image', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   const source = 'borrowed@sha256:' + 'a'.repeat(64), tag = 'borrowed:' + f.env.LAB_RUN_ID;
   f.images.set(source, { Id: 'borrowed-id', RepoTags: [], RepoDigests: [source], Config: {} });
   await owner.image(['tag', source, tag]); f.calls.length = 0;
@@ -440,7 +449,7 @@ test('cleanup keeps the last alias of a borrowed digest-only image so Docker can
 
 
 test('foreign global policy refusal persists across guard processes and blocks cleanup even after it disappears', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   f.objects.set('ciliumclusterwidenetworkpolicy/n2c-deny-imds', { apiVersion: 'cilium.io/v2', kind: 'CiliumClusterwideNetworkPolicy', metadata: { name: 'n2c-deny-imds', uid: 'foreign' } });
   await assert.rejects(owner.preflightResources([{ type: 'ciliumclusterwidenetworkpolicy', name: 'n2c-deny-imds' }]), /refused/);
   assert.ok(existsSync(join(f.env.LAB_EVIDENCE_DIR, 'n2-refused.json')));
@@ -451,7 +460,7 @@ test('foreign global policy refusal persists across guard processes and blocks c
 });
 
 test('cluster destruction discovers foreign cluster-scoped policies without a previous refusal', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   f.objects.set('clusterrole/foreign', { apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'ClusterRole', metadata: { name: 'foreign', uid: 'foreign' } });
   f.calls.length = 0;
   await assert.rejects(owner.destroyCluster(), /refused/);
@@ -459,7 +468,7 @@ test('cluster destruction discovers foreign cluster-scoped policies without a pr
 });
 
 test('Helm and YAML conversion use the intended namespace instead of kubectl default', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   await owner.kubectl(['create', '-f', '-'], { input: JSON.stringify(ns('intended')) });
   const object = { apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: 'rendered' } };
   const converted = await owner.helmObjects(JSON.stringify(object), 'intended');
@@ -471,7 +480,7 @@ test('Helm and YAML conversion use the intended namespace instead of kubectl def
 });
 
 test('fixture exec pins the recorded ID then stops when its name is replaced after inspection', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   const name = 'gromesh-n2-bafd0b463f146039e73843bd-fx-backend';
   await owner.docker(['run', '-d', '--name', name, 'fixture@sha256:' + 'a'.repeat(64), 'node']);
   const id = f.containers.get(name).Id;
@@ -486,7 +495,7 @@ test('fixture exec pins the recorded ID then stops when its name is replaced aft
 });
 
 test('fixture set preflight refuses the second foreign fixture before replacing the first', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   const backend = 'gromesh-n2-bafd0b463f146039e73843bd-fx-backend';
   await owner.docker(['run', '-d', '--name', backend, 'fixture@sha256:' + 'a'.repeat(64), 'node']);
   f.containers.set('gromesh-n2-bafd0b463f146039e73843bd-fx-nodecidr', { Id: 'foreign', Name: '/gromesh-n2-bafd0b463f146039e73843bd-fx-nodecidr', Config: { Labels: {} } });
@@ -502,7 +511,7 @@ test('fixture set preflight refuses the second foreign fixture before replacing 
 });
 
 test('Cilium Helm refuses preexisting objects in kube-system without the same run receipt', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   const o = { apiVersion: 'v1', kind: 'ServiceAccount', metadata: { name: 'cilium', namespace: 'kube-system' } };
   f.helm([o]);
   f.objects.set('serviceaccount/cilium', { ...o, metadata: { ...o.metadata, ...f.metadata('cilium', 'foreign') } });
@@ -513,7 +522,7 @@ test('Cilium Helm refuses preexisting objects in kube-system without the same ru
 });
 
 test('image cleanup targets an immutable ID and keeps borrowed aliases whose atomic removal is unavailable', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   const tag = 'built:' + f.env.LAB_RUN_ID;
   await owner.image(['build', '-t', tag, '.']);
   const original = f.images.get(tag).Id;
@@ -531,7 +540,7 @@ test('image cleanup targets an immutable ID and keeps borrowed aliases whose ato
 
 for (const change of ['namespace', 'PVC', 'UID', 'CA']) {
   test(`cluster deletion repeats inventory and identity proof at the action boundary: ${change}`, async t => {
-    const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+    const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
     let armed = true;
     const racing = new guard.N2Lab({ env: f.env, execute: async (cmd, args, options) => {
       const result = await f.execute(cmd, args, options);
@@ -551,7 +560,7 @@ for (const change of ['namespace', 'PVC', 'UID', 'CA']) {
 }
 
 test('Cilium install and resumed upgrade stamp and record both namespaced and global objects', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   const manifests = [
     { apiVersion: 'v1', kind: 'ServiceAccount', metadata: { name: 'cilium' } },
     { apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'ClusterRole', metadata: { name: 'cilium-role' } },
@@ -571,7 +580,7 @@ test('Cilium install and resumed upgrade stamp and record both namespaced and gl
 });
 
 test('a namespace delete rechecks PVC inventory after the final identity check and uses a UID precondition', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   await owner.kubectl(['create', '-f', '-'], { input: JSON.stringify(ns('own')) });
   let pvcChecks = 0;
   const racing = new guard.N2Lab({ env: f.env, execute: async (cmd, args, options) => {
@@ -587,7 +596,7 @@ test('a namespace delete rechecks PVC inventory after the final identity check a
 
 for (const entrypoint of ['down', 'run-all cleanup']) {
   test(`${entrypoint} in a fresh process preserves evidence and cluster after a global policy refusal`, async t => {
-    const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+    const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
     f.objects.set('ciliumclusterwidenetworkpolicy/n2c-deny-imds', { apiVersion: 'cilium.io/v2', kind: 'CiliumClusterwideNetworkPolicy', metadata: { name: 'n2c-deny-imds', uid: 'foreign' } });
     await assert.rejects(owner.preflightResources([{ type: 'ciliumclusterwidenetworkpolicy', name: 'n2c-deny-imds' }]));
     const record = join(f.dir, 'unexpected');
@@ -631,7 +640,7 @@ test('cluster.sh routes both Cilium install and upgrade through the central reso
 });
 
 test('image load validates the exported digest and imports only into the recorded node IDs', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   const tag = 'lab:' + f.env.LAB_RUN_ID, id = 'sha256:' + 'c'.repeat(64);
   f.images.set('source', { Id: id, Config: {} });
   await owner.image(['tag', 'source', tag]);
@@ -655,7 +664,7 @@ test('image load validates the exported digest and imports only into the recorde
 });
 
 test('kubectl mutation rechecks the target UID at the action boundary', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   await owner.kubectl(['create', '-f', '-'], { input: JSON.stringify(ns('own')) });
   const pod = { apiVersion: 'v1', kind: 'Pod', metadata: { name: 'probe', namespace: 'own' } };
   await owner.kubectl(['create', '-f', '-'], { input: JSON.stringify(pod) });
@@ -675,7 +684,7 @@ test('kubectl mutation rechecks the target UID at the action boundary', async t 
 });
 
 test('refusal evidence is written in the current suite directory as well as the creation run directory', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   const suiteDir = join(f.dir, 'suite-evidence');
   const suite = new guard.N2Lab({ env: { ...f.env, LAB_EVIDENCE_DIR: suiteDir }, execute: f.execute });
   await assert.rejects(suite.preflightResources([{ type: 'pod', name: 'missing', namespace: 'own' }], true), /refused/);
@@ -684,7 +693,7 @@ test('refusal evidence is written in the current suite directory as well as the 
 });
 
 test('rollout restart carries the proved resource UID and version into the write', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   await owner.kubectl(['create', '-f', '-'], { input: JSON.stringify(ns('own')) });
   const deployment = { apiVersion: 'apps/v1', kind: 'Deployment', metadata: { name: 'app', namespace: 'own', resourceVersion: '17' }, spec: { selector: { matchLabels: { app: 'target' } }, template: { metadata: {}, spec: {} } } };
   await owner.kubectl(['create', '-f', '-'], { input: JSON.stringify(deployment) });
@@ -706,7 +715,7 @@ test('refusing a global kubeconfig preserves its directory and records only run 
   const f = fixture(t), global = join(f.env.HOME, '.kube/config');
   mkdirSync(join(f.env.HOME, '.kube'), { recursive: true }); writeFileSync(global, 'user config');
   const owner = new guard.N2Lab({ env: { ...f.env, LAB_KUBECONFIG: global }, execute: f.execute });
-  await assert.rejects(owner.createCluster('fixture'), /refused/);
+  await assert.rejects(owner.createCluster(kindConfig), /refused/);
   assert.equal(existsSync(global + '.n2-owner.json.refused'), false);
   assert.equal(readFileSync(global, 'utf8'), 'user config');
   assert.ok(existsSync(join(f.env.LAB_EVIDENCE_DIR, 'n2-refused.json')));
@@ -723,7 +732,7 @@ const execMutations = calls => calls.filter(c => c.cmd === 'kubectl' && c.args.i
 
 for (const change of ['pod UID', 'container ID', 'namespace UID', 'node UID', 'node cluster']) {
   test(`container capability rejects replaced ${change} before exec or signal`, async t => {
-    const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+    const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
     const p = await ownedPod(f, owner);
     const target = await owner.containerTarget('own', 'target', 'app');
     if (change === 'pod UID') p.metadata.uid = 'replacement';
@@ -738,7 +747,7 @@ for (const change of ['pod UID', 'container ID', 'namespace UID', 'node UID', 'n
 }
 
 test('exec uses CRI ID on Docker node ID, then discards output on a post-exec replacement', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   const p = await ownedPod(f, owner);
   const result = await owner.kubectl(['exec', '-n', 'own', 'target', '-c', 'app', '--', 'true']);
   assert.equal(result.stdout, 'owned output');
@@ -755,7 +764,7 @@ test('exec uses CRI ID on Docker node ID, then discards output on a post-exec re
 
 test('unbound node commands and kubectl deployment exec never fall back to names', async t => {
   for (const command of ['node', 'deployment']) {
-    const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture'); await ownedPod(f, owner); f.calls.length = 0;
+    const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig); await ownedPod(f, owner); f.calls.length = 0;
     await assert.rejects(command === 'node' ? owner.docker(['exec', f.node.Name.slice(1), 'kill', '-STOP', '123']) : owner.kubectl(['exec', '-n', 'own', 'deploy/unknown', '--', 'true']), /refused/);
     assert.equal(execMutations(f.calls).length, 0);
   }
@@ -763,7 +772,7 @@ test('unbound node commands and kubectl deployment exec never fall back to names
 
 for (const kind of ['Pod', 'Deployment', 'ReplicaSet', 'DaemonSet', 'StatefulSet', 'Job', 'CronJob', 'PersistentVolumeClaim', 'Service', 'ConfigMap', 'Secret']) {
   test(`cascade inventories foreign ${kind} in an existing namespace before any deletion`, async t => {
-    const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+    const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
     f.objects.set(`${kind.toLowerCase()}/foreign`, { apiVersion: 'v1', kind, metadata: { name: 'foreign', namespace: 'kube-system', uid: 'foreign' } }); f.calls.length = 0;
     await assert.rejects(owner.destroyCluster(), /refused/);
     assert.equal(mutations(f.calls).length, 0);
@@ -772,7 +781,7 @@ for (const kind of ['Pod', 'Deployment', 'ReplicaSet', 'DaemonSet', 'StatefulSet
 
 for (const unexpected of ['owner', 'finalizer', 'dependent']) {
   test(`receipt cannot authorize unexpected ${unexpected} deletion effects`, async t => {
-    const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture'); const p = await ownedPod(f, owner);
+    const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig); const p = await ownedPod(f, owner);
     if (unexpected === 'owner') p.metadata.ownerReferences = [{ apiVersion: 'apps/v1', kind: 'Deployment', name: 'foreign', uid: 'foreign', controller: true }];
     if (unexpected === 'finalizer') p.metadata.finalizers = ['foreign.example/delete'];
     if (unexpected === 'dependent') f.objects.set('secret/dependent', { apiVersion: 'v1', kind: 'Secret', metadata: { name: 'dependent', namespace: 'own', uid: 'foreign', ownerReferences: [{ apiVersion: 'v1', kind: 'Pod', name: 'target', uid: p.metadata.uid }] } });
@@ -783,7 +792,7 @@ for (const unexpected of ['owner', 'finalizer', 'dependent']) {
 
 test('controller CiliumNode requires the recorded Kubernetes Node UID, never its name alone', async t => {
   for (const valid of [true, false]) {
-    const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+    const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
     f.objects.set('ciliumnode/gromesh-n2-bafd0b463f146039e73843bd-control-plane', { apiVersion: 'cilium.io/v2', kind: 'CiliumNode', metadata: { name: 'gromesh-n2-bafd0b463f146039e73843bd-control-plane', uid: 'cilium-created', ownerReferences: [{ apiVersion: 'v1', kind: 'Node', name: 'gromesh-n2-bafd0b463f146039e73843bd-control-plane', uid: valid ? 'k8s-node-original' : 'foreign', controller: true }] } });
     f.calls.length = 0;
     if (valid) await owner.preflightDestroyCluster();
@@ -802,7 +811,7 @@ test('destruction preserves volumes with evidence because Docker has no conditio
     }
     return result;
   };
-  const owner = new guard.N2Lab({ env: f.env, execute }); await owner.createCluster('fixture'); f.calls.length = 0;
+  const owner = new guard.N2Lab({ env: f.env, execute }); await owner.createCluster(kindConfig); f.calls.length = 0;
   await assert.rejects(owner.destroyCluster(), /refused/);
   assert.ok(!f.calls.some(c => c.cmd === 'docker' && c.args[0] === 'volume' && c.args[1] === 'rm'));
   assert.equal(JSON.parse(readFileSync(join(f.env.LAB_EVIDENCE_DIR, 'n2-preserved.json'))).strategy, 'preserve-instead-of-delete');
@@ -810,7 +819,7 @@ test('destruction preserves volumes with evidence because Docker has no conditio
 });
 
 test('STOP and CONT are sent through the runtime by immutable task ID, never a host PID', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture'); await ownedPod(f, owner);
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig); await ownedPod(f, owner);
   const target = await owner.containerTarget('own', 'target', 'app'); f.calls.length = 0;
   await owner.signalContainer(target, 'STOP', 'gromesh-agent');
   await owner.signalContainer(target, 'CONT', 'gromesh-agent');
@@ -821,7 +830,7 @@ test('STOP and CONT are sent through the runtime by immutable task ID, never a h
 
 for (const kind of ['UID', 'containerID', 'namespace', 'CA', 'node']) {
   test(`last CRI preflight catches a concurrent ${kind} replacement before a signal`, async t => {
-    const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture'); const pod = await ownedPod(f, owner);
+    const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig); const pod = await ownedPod(f, owner);
     const target = await owner.containerTarget('own', 'target', 'app'); let armed = true;
     const racing = new guard.N2Lab({ env: f.env, execute: async (cmd, args, options) => {
       const result = await f.execute(cmd, args, options);
@@ -842,7 +851,7 @@ for (const kind of ['UID', 'containerID', 'namespace', 'CA', 'node']) {
 }
 
 test('CRI labels must match the complete pod identity before executing', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture'); await ownedPod(f, owner);
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig); await ownedPod(f, owner);
   const target = await owner.containerTarget('own', 'target', 'app');
   const racing = new guard.N2Lab({ env: f.env, execute: async (cmd, args, options) => {
     const result = await f.execute(cmd, args, options);
@@ -857,14 +866,14 @@ test('CRI labels must match the complete pod identity before executing', async t
 });
 
 test('exec arguments cannot bypass proof by including a dry-run string in the remote command', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture'); await ownedPod(f, owner);
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig); await ownedPod(f, owner);
   f.objects.get('pod/target').metadata.uid = 'foreign'; f.calls.length = 0;
   await assert.rejects(owner.kubectl(['exec', '-n', 'own', 'target', '--', 'echo', '--dry-run=client']), /refused/);
   assert.equal(execMutations(f.calls).length, 0);
 });
 
 test('a replaced streaming target refuses before spawning any process', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture'); await ownedPod(f, owner);
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig); await ownedPod(f, owner);
   const target = await owner.containerTarget('own', 'target', 'app'); let spawns = 0;
   const guarded = new guard.N2Lab({ env: f.env, execute: f.execute, spawnProcess: () => { spawns++; throw Error('must not spawn'); } });
   f.objects.get('pod/target').status.containerStatuses[0].containerID = 'containerd://' + 'b'.repeat(64); f.calls.length = 0;
@@ -875,7 +884,7 @@ test('a replaced streaming target refuses before spawning any process', async t 
 
 test('stream verification rejects collected evidence after identity changes, using a fake child only', async t => {
   const { EventEmitter } = await import('node:events');
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture'); await ownedPod(f, owner);
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig); await ownedPod(f, owner);
   const target = await owner.containerTarget('own', 'target', 'app'); const child = new EventEmitter();
   const guarded = new guard.N2Lab({ env: f.env, execute: f.execute, spawnProcess: (cmd, args) => {
     assert.equal(cmd, 'docker');
@@ -889,7 +898,7 @@ test('stream verification rejects collected evidence after identity changes, usi
 });
 
 test('leaf deletion sets Orphan explicitly and binds both UID and resourceVersion', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture'); const pod = await ownedPod(f, owner);
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig); const pod = await ownedPod(f, owner);
   pod.metadata.resourceVersion = '17';
   await owner.kubectl(['delete', 'pod', '-n', 'own', 'target', '--wait=false']);
   const deletion = f.calls.findLast(c => c.cmd === 'kubectl' && c.args.includes('delete') && c.args.includes('--raw'));
@@ -899,7 +908,7 @@ test('leaf deletion sets Orphan explicitly and binds both UID and resourceVersio
 test('new objects are never adopted as known system baseline solely by being in kube-system', async t => {
   const f = fixture(t);
   f.objects.set('pod/foreign', { apiVersion: 'v1', kind: 'Pod', metadata: { name: 'foreign', namespace: 'kube-system', uid: 'foreign' } });
-  const owner = f.owner(); await assert.rejects(owner.createCluster('fixture'), /refused/);
+  const owner = f.owner(); await assert.rejects(owner.createCluster(kindConfig), /refused/);
   assert.equal(JSON.parse(readFileSync(owner.statePath)).creation.exclusive, false);
   f.calls.length = 0;
   await assert.rejects(owner.preflightDestroyCluster(), /refused/);
@@ -908,7 +917,7 @@ test('new objects are never adopted as known system baseline solely by being in 
 
 test('Docker hostname and Kubernetes providerID must bind the recorded node, not merely match names', async t => {
   for (const change of ['hostname', 'providerID']) {
-    const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture'); await ownedPod(f, owner);
+    const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig); await ownedPod(f, owner);
     const target = await owner.containerTarget('own', 'target', 'app');
     const guarded = new guard.N2Lab({ env: f.env, execute: async (cmd, args, options) => {
       const result = await f.execute(cmd, args, options);
@@ -931,14 +940,14 @@ test('creation baseline cannot adopt a foreign namespace, cluster role or PVC', 
     { apiVersion: 'v1', kind: 'PersistentVolumeClaim', metadata: { name: 'foreign', namespace: 'kube-system', uid: 'foreign' } },
   ]) {
     const f = fixture(t); f.objects.set(`${object.kind.toLowerCase()}/foreign`, object);
-    const owner = f.owner(); await assert.rejects(owner.createCluster('fixture'), /refused/); f.calls.length = 0;
+    const owner = f.owner(); await assert.rejects(owner.createCluster(kindConfig), /refused/); f.calls.length = 0;
     await assert.rejects(owner.preflightDestroyCluster(), /refused/);
     assert.equal(mutations(f.calls).length, 0);
   }
 });
 
 test('suite cleanup refuses the cascade before invoking its fixture mutation callback', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   await owner.kubectl(['create', '-f', '-'], { input: JSON.stringify(ns('own')) });
   const source = readFileSync(new URL('./components/lab.mjs', import.meta.url), 'utf8');
   const body = source.slice(source.indexOf('export async function removeSuiteObjects')).replace('export async function', 'async function');
@@ -951,7 +960,7 @@ test('suite cleanup refuses the cascade before invoking its fixture mutation cal
 });
 
 test('multi-object deletion refuses atomically instead of risking partial cleanup on a later identity change', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture'); await ownedPod(f, owner);
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig); await ownedPod(f, owner);
   await owner.kubectl(['create', '-f', '-'], { input: JSON.stringify({ apiVersion: 'v1', kind: 'Pod', metadata: { name: 'second', namespace: 'own' } }) });
   f.calls.length = 0;
   await assert.rejects(owner.kubectl(['delete', 'pod', 'target', 'second', '-n', 'own']), /refused/);
@@ -961,7 +970,7 @@ test('multi-object deletion refuses atomically instead of risking partial cleanu
 
 // R6 review regressions use only the in-memory executors above.
 test('mutation pins the proved kubeconfig even when the original is replaced at the write boundary', async t => {
-  const f = fixture(t); await f.owner().createCluster('fixture');
+  const f = fixture(t); await f.owner().createCluster(kindConfig);
   let writeConfig;
   const owner = new guard.N2Lab({ env: f.env, execute: async (cmd, args, options) => {
     if (cmd === 'kubectl' && args.includes('create') && !args.includes('--dry-run=client')) {
@@ -989,7 +998,7 @@ async function ownedDeployment(f, owner) {
 }
 for (const operation of ['restart', 'upgrade']) for (const scenario of ['malicious pod', 'orphan pod', 'orphan replicaset']) {
   test(`${operation} refuses ${scenario} selected by its controller before mutation`, async t => {
-    const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture'); const deployment = await ownedDeployment(f, owner);
+    const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig); const deployment = await ownedDeployment(f, owner);
     const ref = { apiVersion: 'apps/v1', kind: 'Deployment', name: 'app', uid: deployment.metadata.uid, controller: true };
     f.objects.set('replicaset/owned-rs', { apiVersion: 'apps/v1', kind: 'ReplicaSet', metadata: { ...f.metadata('owned-rs'), namespace: 'own', ownerReferences: [ref] }, spec: { selector: deployment.spec.selector } });
     const kind = scenario === 'orphan replicaset' ? 'ReplicaSet' : 'Pod';
@@ -1004,7 +1013,7 @@ for (const operation of ['restart', 'upgrade']) for (const scenario of ['malicio
 }
 
 test('post-upgrade refuses a foreign Helm-selector secret without labeling or adopting it', async t => {
-  const f = fixture(t); await f.owner().createCluster('fixture');
+  const f = fixture(t); await f.owner().createCluster(kindConfig);
   await f.owner().kubectl(['create', '-f', '-'], { input: JSON.stringify(ns('own')) });
   const owner = new guard.N2Lab({ env: f.env, execute: async (cmd, args, options) => {
     const result = await f.execute(cmd, args, options);
@@ -1019,7 +1028,7 @@ test('post-upgrade refuses a foreign Helm-selector secret without labeling or ad
 });
 
 test('named IMDS route operation validates addresses and binds both fixture and node IDs', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   await owner.docker(['run', '-d', '--name', 'gromesh-n2-bafd0b463f146039e73843bd-fx-imds', '--network', 'kind', 'fixture@sha256:' + 'a'.repeat(64), 'node']);
   f.containers.get('gromesh-n2-bafd0b463f146039e73843bd-fx-imds').NetworkSettings = { Networks: { kind: { IPAddress: '172.18.0.9', GlobalIPv6Address: 'fd00::9' } } };
   await owner.addRoute('gromesh-n2-bafd0b463f146039e73843bd-control-plane', '169.254.169.254', '172.18.0.9');
@@ -1031,7 +1040,7 @@ test('named IMDS route operation validates addresses and binds both fixture and 
 });
 
 test('named node clock uses only bracketed fixed reads on the proved node ID', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture'); f.calls.length = 0;
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig); f.calls.length = 0;
   await owner.nodeClock('gromesh-n2-bafd0b463f146039e73843bd-control-plane');
   assert.deepEqual(execMutations(f.calls).map(c => c.args), [
     ['exec', 'node-original', 'date', '+%s%3N'], ['exec', 'node-original', 'cat', '/proc/uptime'], ['exec', 'node-original', 'date', '+%s%3N'],
@@ -1039,7 +1048,7 @@ test('named node clock uses only bracketed fixed reads on the proved node ID', a
 });
 
 test('pod volume capability rejects an unrelated runtime mount before reading or rewriting host files', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture'); const p = await ownedPod(f, owner, p => {
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig); const p = await ownedPod(f, owner, p => {
     p.spec.volumes = [{ name: 'isolation-handoff', emptyDir: {} }];
     p.spec.containers[0].volumeMounts = [{ name: 'isolation-handoff', mountPath: '/gromesh/handoff' }]; return p;
   });
@@ -1057,7 +1066,7 @@ test('pod volume capability rejects an unrelated runtime mount before reading or
 });
 
 test('exit observation binds runtime container labels before polling by ID and refuses mismatched IDs', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture'); await ownedPod(f, owner);
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig); await ownedPod(f, owner);
   const observer = new guard.N2Lab({ env: f.env, execute: async (cmd, args, options) => {
     const result = await f.execute(cmd, args, options);
     if (cmd === 'docker' && args.includes('crictl') && args.includes('inspect')) {
@@ -1076,7 +1085,7 @@ test('exit observation binds runtime container labels before polling by ID and r
 
 for (const operation of ['restart', 'upgrade']) for (const effect of ['deletion', 'status change']) {
   test(`post-${operation} detects unrelated ${effect} and preserves the ownership receipt`, async t => {
-    const f = fixture(t), base = f.owner(); await base.createCluster('fixture'); const deployment = await ownedDeployment(f, base);
+    const f = fixture(t), base = f.owner(); await base.createCluster(kindConfig); const deployment = await ownedDeployment(f, base);
     f.helm([structuredClone(deployment)]);
     f.objects.set('pod/unrelated', { apiVersion: 'v1', kind: 'Pod', metadata: { name: 'unrelated', namespace: 'own', uid: 'foreign', labels: { app: 'other' } }, status: { phase: 'Running' } });
     const receipt = readFileSync(base.statePath, 'utf8');
@@ -1096,7 +1105,7 @@ for (const operation of ['restart', 'upgrade']) for (const effect of ['deletion'
 
 test('a new Helm storage revision needs its exact absent name and release payload, not selector labels', async t => {
   const { gzipSync } = await import('node:zlib');
-  const f = fixture(t); await f.owner().createCluster('fixture'); await f.owner().kubectl(['create', '-f', '-'], { input: JSON.stringify(ns('own')) });
+  const f = fixture(t); await f.owner().createCluster(kindConfig); await f.owner().kubectl(['create', '-f', '-'], { input: JSON.stringify(ns('own')) });
   const owner = new guard.N2Lab({ env: f.env, execute: async (cmd, args, options) => {
     const result = await f.execute(cmd, args, options);
     if (cmd === 'helm' && args.includes('upgrade')) {
@@ -1112,7 +1121,7 @@ test('a new Helm storage revision needs its exact absent name and release payloa
 });
 
 test('Helm success without a demonstrable new storage revision refuses to save release receipts', async t => {
-  const f = fixture(t); await f.owner().createCluster('fixture'); await f.owner().kubectl(['create', '-f', '-'], { input: JSON.stringify(ns('own')) });
+  const f = fixture(t); await f.owner().createCluster(kindConfig); await f.owner().kubectl(['create', '-f', '-'], { input: JSON.stringify(ns('own')) });
   const owner = new guard.N2Lab({ env: f.env, execute: async (cmd, args, options) => {
     const result = await f.execute(cmd, args, options);
     if (cmd === 'helm' && args.includes('upgrade')) for (const key of f.objects.keys()) if (key.startsWith('secret/sh.helm.release.')) f.objects.delete(key);
@@ -1126,7 +1135,7 @@ test('CoreDNS restart proves its creation baseline and labels replacement descen
   const f = fixture(t);
   f.objects.set('deployment/coredns', { apiVersion: 'apps/v1', kind: 'Deployment', metadata: { name: 'coredns', namespace: 'kube-system', uid: 'core-created', resourceVersion: '3' },
     spec: { selector: { matchLabels: { app: 'dns' } }, template: { metadata: { labels: { app: 'dns' } }, spec: {} } } });
-  await f.owner().createCluster('fixture');
+  await f.owner().createCluster(kindConfig);
   const owner = new guard.N2Lab({ env: f.env, execute: async (cmd, args, options) => {
     const result = await f.execute(cmd, args, options);
     if (cmd === 'kubectl' && args.includes('apply')) {
@@ -1142,7 +1151,7 @@ test('CoreDNS restart proves its creation baseline and labels replacement descen
 });
 
 test('Helm and its separate renderer inherit the proved copy after the original kubeconfig changes', async t => {
-  const f = fixture(t); await f.owner().createCluster('fixture'); await f.owner().kubectl(['create', '-f', '-'], { input: JSON.stringify(ns('own')) });
+  const f = fixture(t); await f.owner().createCluster(kindConfig); await f.owner().kubectl(['create', '-f', '-'], { input: JSON.stringify(ns('own')) });
   f.helm([{ apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: 'chart-config' }, data: { mode: 'test' } }]);
   const owner = new guard.N2Lab({ env: f.env, execute: async (cmd, args, options) => {
     if (cmd === 'helm' && args.includes('upgrade')) {
@@ -1161,7 +1170,7 @@ test('Helm and its separate renderer inherit the proved copy after the original 
 
 for (const mismatch of ['release-name', 'release-namespace', 'missing annotations', 'previous UID']) {
   test(`post-upgrade refuses a chart object with ${mismatch} before granting ownership`, async t => {
-    const f = fixture(t); await f.owner().createCluster('fixture'); await f.owner().kubectl(['create', '-f', '-'], { input: JSON.stringify(ns('own')) });
+    const f = fixture(t); await f.owner().createCluster(kindConfig); await f.owner().kubectl(['create', '-f', '-'], { input: JSON.stringify(ns('own')) });
     f.helm([{ apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: 'chart-config' } }]);
     if (mismatch === 'previous UID') f.objects.set('configmap/unrelated', { apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: 'unrelated', namespace: 'own', uid: 'foreign-old' } });
     const owner = new guard.N2Lab({ env: f.env, execute: async (cmd, args, options) => {
@@ -1182,7 +1191,7 @@ for (const mismatch of ['release-name', 'release-namespace', 'missing annotation
 }
 
 test('collector probe resolves the owned pod IP and uses fixed ports on the bound Docker node ID', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture'); const p = await ownedPod(f, owner, p => { p.spec.containers[0].name = 'collector'; p.status.containerStatuses[0].name = 'collector'; return p; });
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig); const p = await ownedPod(f, owner, p => { p.spec.containers[0].name = 'collector'; p.status.containerStatuses[0].name = 'collector'; return p; });
   p.status.podIP = '10.0.0.7';
   const target = await owner.containerTarget('own', 'target', 'collector'); f.calls.length = 0;
   await owner.collectorProbe('gromesh-n2-bafd0b463f146039e73843bd-control-plane', target);
@@ -1196,7 +1205,7 @@ test('collector probe resolves the owned pod IP and uses fixed ports on the boun
 });
 
 test('a proved handoff write binds the runtime mount and refuses traversal', async t => {
-  const f = fixture(t); await f.owner().createCluster('fixture'); const base = f.owner(), p = await ownedPod(f, base, p => {
+  const f = fixture(t); await f.owner().createCluster(kindConfig); const base = f.owner(), p = await ownedPod(f, base, p => {
     p.spec.volumes = [{ name: 'isolation-handoff', emptyDir: {} }];
     p.spec.containers[0].volumeMounts = [{ name: 'isolation-handoff', mountPath: '/gromesh/handoff' }]; return p;
   });
@@ -1220,7 +1229,7 @@ test('a proved handoff write binds the runtime mount and refuses traversal', asy
 
 test('streamed logs use the proved private configuration after the source is replaced', async t => {
   const { EventEmitter } = await import('node:events');
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   writeFileSync(f.env.LAB_KUBECONFIG, 'other cluster');
   const source = readFileSync(new URL('./components/run.mjs', import.meta.url), 'utf8');
   const body = source.slice(source.indexOf('class Follower'), source.indexOf('// Every instant'));
@@ -1237,7 +1246,7 @@ test('R7 cluster name is unique to the run and rejects the preserved N2 lab', as
   const f = fixture(t), owner = f.owner();
   assert.notEqual(owner.cluster, 'gromesh-n2-lab');
   assert.notEqual(owner.cluster, new guard.N2Lab({ env: { ...f.env, LAB_RUN_ID: 'another-run-123456' }, execute: f.execute }).cluster);
-  await owner.createCluster('fixture');
+  await owner.createCluster(kindConfig);
   const state = owner.load();
   assert.equal(state.creation.model, 'H');
   assert.equal(state.creation.runId, f.env.LAB_RUN_ID);
@@ -1245,7 +1254,7 @@ test('R7 cluster name is unique to the run and rejects the preserved N2 lab', as
 });
 
 test('R7 namespace replacement at final identity check stops before create and latches retry', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   await owner.kubectl(['create', '-f', '-'], { input: JSON.stringify(ns('own')) });
   const racing = f.owner(), original = racing.assertIdentity.bind(racing); let checks = 0;
   racing.assertIdentity = async () => { const state = await original(); if (++checks === 2) f.objects.get('namespace/own').metadata.uid = 'foreign'; return state; };
@@ -1257,7 +1266,7 @@ test('R7 namespace replacement at final identity check stops before create and l
 });
 
 test('R7 foreign object anywhere stops an unrelated mutation and preserves first evidence', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   f.objects.set('pod/foreign', { apiVersion: 'v1', kind: 'Pod', metadata: { name: 'foreign', namespace: 'default', uid: 'foreign' } });
   f.calls.length = 0;
   await assert.rejects(owner.image(['tag', 'source', 'new:' + f.env.LAB_RUN_ID]), /refused/);
@@ -1271,7 +1280,7 @@ test('R7 foreign object anywhere stops an unrelated mutation and preserves first
 });
 
 test('R7 forged controller reference and copied labels with wrong template image never grant exec', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture'); const deployment = await ownedDeployment(f, owner);
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig); const deployment = await ownedDeployment(f, owner);
   const rs = { apiVersion: 'apps/v1', kind: 'ReplicaSet', metadata: { ...f.metadata('rs'), namespace: 'own', ownerReferences: [{ apiVersion: 'apps/v1', kind: 'Deployment', name: 'app', uid: deployment.metadata.uid, controller: true }] }, spec: { selector: deployment.spec.selector, template: deployment.spec.template } };
   await owner.kubectl(['create', '-f', '-'], { input: JSON.stringify(rs) });
   f.objects.set('pod/forged', { apiVersion: 'v1', kind: 'Pod', metadata: { ...f.metadata('forged'), namespace: 'own', ownerReferences: [{ apiVersion: 'apps/v1', kind: 'ReplicaSet', name: 'rs', uid: 'rs', controller: true }] }, spec: { nodeName: f.node.Config.Hostname, containers: [{ name: 'app', image: 'foreign' }] }, status: { containerStatuses: [{ name: 'app', containerID: 'containerd://' + 'b'.repeat(64) }] } });
@@ -1290,7 +1299,7 @@ test('R7 known system coordination renewals are excluded, third party Leases are
 
 for (const operation of ['restart', 'upgrade']) {
   test(`R7 ${operation} refuses a pod entering its ReplicaSet during the boundary inventory`, async t => {
-    const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture'); const deployment = await ownedDeployment(f, owner);
+    const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig); const deployment = await ownedDeployment(f, owner);
     await owner.kubectl(['create', '-f', '-'], { input: JSON.stringify({ apiVersion: 'apps/v1', kind: 'ReplicaSet', metadata: { name: 'rs', namespace: 'own', ownerReferences: [{ apiVersion: 'apps/v1', kind: 'Deployment', name: 'app', uid: deployment.metadata.uid, controller: true }] }, spec: { selector: deployment.spec.selector, template: deployment.spec.template } }) });
     f.helm([deployment]);
     const racing = f.owner(), original = racing.rolloutInventory.bind(racing); let armed = true;
@@ -1303,7 +1312,7 @@ for (const operation of ['restart', 'upgrade']) {
 }
 
 test('R7 namespace swapped inside CREATE preserves evidence and forbids every later write', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture'); await ownedPod(f, owner);
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig); await ownedPod(f, owner);
   const racing = new guard.N2Lab({ env: f.env, execute: async (cmd, args, opts) => {
     const result = await f.execute(cmd, args, opts);
     if (cmd === 'kubectl' && args.includes('create') && !args.includes('--dry-run=client')) f.objects.get('namespace/own').metadata.uid = 'replacement';
@@ -1318,7 +1327,7 @@ test('R7 namespace swapped inside CREATE preserves evidence and forbids every la
 
 for (const kind of ['PersistentVolume', 'CustomResourceDefinition', 'MutatingWebhookConfiguration', 'ValidatingWebhookConfiguration', 'ClusterRoleBinding', 'ServiceAccount', 'Lease', 'DaemonSet']) {
   test(`R7 exclusivity refuses unexpected ${kind} before any unrelated write`, async t => {
-    const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+    const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
     const namespaced = ['ServiceAccount', 'Lease', 'DaemonSet'].includes(kind);
     f.objects.set(kind.toLowerCase() + '/foreign', { apiVersion: kind === 'Lease' ? 'coordination.k8s.io/v1' : 'v1', kind, metadata: { name: 'foreign', uid: 'foreign', ...(namespaced ? { namespace: 'default' } : {}) }, ...(kind === 'ClusterRoleBinding' ? { subjects: [{ kind: 'User', name: 'external-user' }] } : {}) });
     f.calls.length = 0; await assert.rejects(owner.image(['tag', 'source', 't:' + f.env.LAB_RUN_ID]), /refused/); assert.equal(mutations(f.calls).length, 0);
@@ -1329,7 +1338,7 @@ test('R7 system Lease renewal during rollout passes; a third party Lease still s
   const f = fixture(t), base = f.owner();
   const lease = { apiVersion: 'coordination.k8s.io/v1', kind: 'Lease', metadata: { name: f.node.Config.Hostname, namespace: 'kube-node-lease', uid: 'system-lease' }, spec: { holderIdentity: f.node.Config.Hostname, renewTime: '0' } };
   f.objects.set('lease/' + lease.metadata.name, lease);
-  await base.createCluster('fixture'); await ownedDeployment(f, base);
+  await base.createCluster(kindConfig); await ownedDeployment(f, base);
   const owner = new guard.N2Lab({ env: f.env, execute: async (cmd, args, opts) => { const result = await f.execute(cmd, args, opts); if (cmd === 'kubectl' && args.includes('apply')) lease.spec.renewTime = 'renewed'; return result; } });
   await owner.kubectl(['rollout', 'restart', '-n', 'own', 'deployment/app']);
   assert.equal(lease.spec.renewTime, 'renewed');
@@ -1337,10 +1346,8 @@ test('R7 system Lease renewal during rollout passes; a third party Lease still s
   await assert.rejects(owner.kubectl(['rollout', 'restart', '-n', 'own', 'deployment/app']), /refused/); assert.equal(mutations(f.calls).length, 0);
 });
 
-test('R7 declared header invariants are exercised and remain H, with P and gates unchanged', async t => {
-  const header = readFileSync(new URL('../../../scripts/kind-stack-guard.mjs', import.meta.url), 'utf8').split('import ')[0];
-  for (const invariant of ['EXCLUSIVE', 'persistent STOP', 'ALL further mutations', 'including cleanup', 'template/hash/image', 'no atomic UID/inventory fence', 'trusted operator', 'Shared clusters', 'Model P/W0 is unchanged', 'approve no gate', 'no degraded mode']) assert.ok(header.includes(invariant), invariant);
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+test('R7 loss of exclusive creation proof blocks every later executor and preserves receipts', async t => {
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   const state = owner.load();
   assert.notEqual(state.cluster, 'gromesh-n2-lab'); assert.equal(state.creation.model, 'H');
   assert.equal(state.creation.exclusive, true); assert.equal(state.runId, f.env.LAB_RUN_ID);
@@ -1355,7 +1362,7 @@ test('R7 declared header invariants are exercised and remain H, with P and gates
 });
 
 test('R7 a second guard operation on the same run triggers STOP instead of concurrent mutation', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   let release; const pending = new Promise(resolve => { release = resolve; });
   const first = owner.withOperation(async () => { await pending; return owner.execute('docker', ['tag', 'source', 'x']); });
   await new Promise(resolve => setImmediate(resolve));
@@ -1366,14 +1373,14 @@ test('R7 a second guard operation on the same run triggers STOP instead of concu
 });
 
 test('R7 owned UID and labels do not hide an unexpected template change', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture'); const dep = await ownedDeployment(f, owner);
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig); const dep = await ownedDeployment(f, owner);
   dep.spec.template.spec.containers = [{ name: 'foreign', image: 'foreign' }];
   f.calls.length = 0;
   await assert.rejects(owner.image(['tag', 'source', 't:' + f.env.LAB_RUN_ID]), /refused/); assert.equal(mutations(f.calls).length, 0);
 });
 
 test('R7 controller-created ReplicaSet and pod receive template-bound receipts before exec', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture');
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
   const original = await ownedDeployment(f, owner), desired = structuredClone(original);
   desired.spec.template.spec.containers = [{ name: 'app', image: 'owned:fixture' }];
   await owner.kubectl(['apply', '-f', '-'], { input: JSON.stringify(desired) });
@@ -1393,7 +1400,7 @@ test('R7 controller-created ReplicaSet and pod receive template-bound receipts b
 });
 
 for (const shared of ['hostPath', 'nfs']) test(`R7 ${shared} manifests stop before resource creation`, async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture'); await owner.kubectl(['create', '-f', '-'], { input: JSON.stringify(ns('own')) });
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig); await owner.kubectl(['create', '-f', '-'], { input: JSON.stringify(ns('own')) });
   f.calls.length = 0;
   await assert.rejects(owner.kubectl(['create', '-f', '-'], { input: JSON.stringify({ apiVersion: 'v1', kind: 'Pod', metadata: { name: 'bad', namespace: 'own' }, spec: { volumes: [{ name: 'shared', [shared]: { path: '/foreign' } }] } }) }), /refused/);
   assert.equal(mutations(f.calls).length, 0);
@@ -1402,7 +1409,7 @@ for (const shared of ['hostPath', 'nfs']) test(`R7 ${shared} manifests stop befo
 test('R7 creation refuses an extra system-prefixed role rather than baselining its name', async t => {
   const f = fixture(t), owner = f.owner();
   f.objects.set('clusterrole/system:foreign', { apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'ClusterRole', metadata: { name: 'system:foreign', uid: 'foreign' } });
-  await assert.rejects(owner.createCluster('fixture'), /refused/);
+  await assert.rejects(owner.createCluster(kindConfig), /refused/);
   assert.ok(!f.calls.some(c => c.cmd === 'kubectl' && c.args.includes('label')));
 });
 
@@ -1413,7 +1420,7 @@ test('R7 provisioning rejects declared shared kind mounts before kind create', a
 });
 
 test('R7 namespace system outputs are expected only for this run and foreign accounts still stop', async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture'); await ownedPod(f, owner);
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig); await ownedPod(f, owner);
   f.objects.set('serviceaccount/default', { apiVersion: 'v1', kind: 'ServiceAccount', metadata: { name: 'default', namespace: 'own', uid: 'default-own', creationTimestamp: new Date().toISOString(), managedFields: [{ manager: 'kube-controller-manager', operation: 'Update' }] } });
   await owner.assertIdentity();
   f.objects.set('serviceaccount/extra', { apiVersion: 'v1', kind: 'ServiceAccount', metadata: { name: 'extra', namespace: 'own', uid: 'extra' } }); f.calls.length = 0;
@@ -1421,7 +1428,7 @@ test('R7 namespace system outputs are expected only for this run and foreign acc
 });
 
 test('R7 an unrelated recorded resource disappearing during rollout latches STOP after the write', async t => {
-  const f = fixture(t), base = f.owner(); await base.createCluster('fixture'); await ownedDeployment(f, base);
+  const f = fixture(t), base = f.owner(); await base.createCluster(kindConfig); await ownedDeployment(f, base);
   await base.kubectl(['create', '-f', '-'], { input: JSON.stringify({ apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: 'unrelated', namespace: 'own' } }) });
   const receipt = readFileSync(base.statePath, 'utf8');
   const racing = new guard.N2Lab({ env: f.env, execute: async (cmd, args, opts) => { const result = await f.execute(cmd, args, opts); if (cmd === 'kubectl' && args.includes('apply')) f.objects.delete('configmap/unrelated'); return result; } });
@@ -1430,7 +1437,7 @@ test('R7 an unrelated recorded resource disappearing during rollout latches STOP
 });
 
 test('R7 a mutation that loses exclusivity before returning discards success and blocks cleanup', async t => {
-  const f = fixture(t), base = f.owner(); await base.createCluster('fixture');
+  const f = fixture(t), base = f.owner(); await base.createCluster(kindConfig);
   const racing = new guard.N2Lab({ env: f.env, execute: async (cmd, args, options) => {
     const result = await f.execute(cmd, args, options);
     if (cmd === 'docker' && args[0] === 'tag') f.objects.set('pod/concurrent', { apiVersion: 'v1', kind: 'Pod', metadata: { name: 'concurrent', namespace: 'default', uid: 'foreign' } });
@@ -1444,6 +1451,273 @@ for (const object of [
   { apiVersion: 'v1', kind: 'PersistentVolume', metadata: { name: 'foreign-storage' }, spec: { nfs: { server: 'third-party', path: '/shared' } } },
   { apiVersion: 'storage.k8s.io/v1', kind: 'StorageClass', metadata: { name: 'external' }, provisioner: 'third-party.example/nfs' },
 ]) test(`R7 ${object.kind} cannot introduce external storage through an owned manifest`, async t => {
-  const f = fixture(t), owner = f.owner(); await owner.createCluster('fixture'); f.calls.length = 0;
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig); f.calls.length = 0;
   await assert.rejects(owner.kubectl(['create', '-f', '-'], { input: JSON.stringify(object) }), /refused/); assert.equal(mutations(f.calls).length, 0);
+});
+
+
+// PR #262: reproduce the review with all other ownership evidence valid.
+async function controllerPod(f, owner, kind = 'ReplicaSet', alter = () => {}) {
+  await owner.kubectl(['create', '-f', '-'], { input: JSON.stringify(ns('own')) });
+  const template = { metadata: { labels: { app: 'target', 'pod-template-hash': 'abc123' } }, spec: {
+    automountServiceAccountToken: false, serviceAccountName: 'default',
+    containers: [{ name: 'app', image: 'owned:fixture', command: ['sleep'], args: ['600'], env: [{ name: 'MODE', value: 'lab' }],
+      volumeMounts: [{ name: 'data', mountPath: '/data' }], securityContext: { allowPrivilegeEscalation: false } }],
+    volumes: [{ name: 'data', emptyDir: {} }], nodeSelector: { 'kubernetes.io/os': 'linux' },
+  } };
+  await owner.kubectl(['create', '-f', '-'], { input: JSON.stringify({ apiVersion: kind === 'Job' ? 'batch/v1' : 'apps/v1', kind,
+    metadata: { name: 'parent', namespace: 'own', labels: { 'pod-template-hash': 'abc123' } }, spec: { template } }) });
+  const parent = f.objects.get(kind.toLowerCase() + '/parent');
+  const pod = { apiVersion: 'v1', kind: 'Pod', metadata: { ...f.metadata('child'), namespace: 'own',
+    labels: { ...parent.spec.template.metadata.labels }, resourceVersion: '1', creationTimestamp: new Date().toISOString(),
+    managedFields: [{ manager: 'kube-controller-manager', operation: 'Update' }],
+    ownerReferences: [{ apiVersion: parent.apiVersion, kind, name: 'parent', uid: parent.metadata.uid, controller: true }] },
+    spec: { ...structuredClone(template.spec), nodeName: f.node.Config.Hostname },
+    status: { containerStatuses: [{ name: 'app', containerID: 'containerd://' + 'a'.repeat(64) }] } };
+  alter(pod);
+  f.objects.set('pod/child', pod);
+  return pod;
+}
+const divergentSpecs = [
+  ['command and hostPath', p => { p.spec.containers[0].command = ['foreign-command']; p.spec.volumes.push({ name: 'foreign', hostPath: { path: '/foreign' } }); }],
+  ['args', p => { p.spec.containers[0].args = ['foreign']; }],
+  ['env', p => { p.spec.containers[0].env[0].value = 'foreign'; }],
+  ['volumeMounts', p => { p.spec.containers[0].volumeMounts[0].mountPath = '/foreign'; }],
+  ['securityContext', p => { p.spec.containers[0].securityContext.privileged = true; }],
+  ['serviceAccount', p => { p.spec.serviceAccountName = 'foreign'; }],
+  ...['hostNetwork', 'hostPID', 'hostIPC'].map(k => [k, p => { p.spec[k] = true; }]),
+  ['nodeSelector', p => { p.spec.nodeSelector['kubernetes.io/os'] = 'foreign'; }],
+  ['ephemeralContainers', p => { p.spec.ephemeralContainers = [{ name: 'foreign', image: 'owned:fixture' }]; }],
+  ['new spec field', p => { p.spec.unrecognizedCapability = true; }],
+];
+for (const kind of ['ReplicaSet', 'Job']) for (const [field, alter] of divergentSpecs) {
+  test(`262 ${kind} same-image descendant with divergent ${field} stops before receipt or exec`, async t => {
+    const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
+    await controllerPod(f, owner, kind, alter); f.calls.length = 0;
+    await assert.rejects(owner.kubectl(['exec', '-n', 'own', 'child', '--', 'true']), /refused/);
+    assert.equal(owner.load().controllerReceipts?.['pod/own/child'], undefined);
+    assert.equal(execMutations(f.calls).length, 0);
+    assert.ok(existsSync(owner.refusalPath));
+  });
+}
+for (const kind of ['ReplicaSet', 'Job']) test(`262 ${kind} complete matching spec allows receipt and exec with canonical key order`, async t => {
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
+  await controllerPod(f, owner, kind, p => { p.spec.containers[0].securityContext = { ...p.spec.containers[0].securityContext }; p.spec = Object.fromEntries(Object.entries(p.spec).reverse()); });
+  const target = await owner.containerTarget('own', 'child');
+  assert.equal((await owner.execContainer(target, ['true'])).stdout, 'owned output');
+  assert.match(owner.load().controllerReceipts['pod/own/child'].specHash, /^[a-f0-9]{64}$/);
+});
+
+test('262 storage validation inspects the actual controller Pod before authorizing exec', async t => {
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
+  const pod = await controllerPod(f, owner, 'ReplicaSet');
+  const original = owner.checkManifestStorage.bind(owner), inspected = [];
+  owner.checkManifestStorage = (o, ...args) => { inspected.push(o); return original(o, ...args); };
+  const target = await owner.containerTarget('own', 'child');
+  assert.ok(inspected.some(o => o.kind === 'Pod' && o.metadata.uid === pod.metadata.uid && o.spec.volumes[0].emptyDir));
+  assert.equal((await owner.execContainer(target, ['true'])).stdout, 'owned output');
+});
+
+for (const key of ['extraMounts', 'extraPortMappings', 'kubeadmConfigPatches', 'kubeadmConfigPatchesJSON6902', 'containerdConfigPatches']) {
+  for (const form of ['JSON', 'quoted YAML', 'flow YAML', 'escaped JSON']) test(`262 kind config rejects ${key} in ${form} before provisioning`, async t => {
+    const f = fixture(t), owner = f.owner();
+    const node = { role: 'control-plane', [key]: key.includes('Patches') ? ['foreign'] : [{ hostPath: '/foreign', containerPath: '/data' }] };
+    const config = form === 'JSON' ? JSON.stringify({ kind: 'Cluster', apiVersion: 'kind.x-k8s.io/v1alpha4', nodes: [node] })
+      : form === 'escaped JSON' ? JSON.stringify({ kind: 'Cluster', apiVersion: 'kind.x-k8s.io/v1alpha4', nodes: [node] }).replace(key, '\\u' + key.charCodeAt(0).toString(16).padStart(4, '0') + key.slice(1))
+      : form === 'flow YAML' ? `kind: Cluster\napiVersion: kind.x-k8s.io/v1alpha4\nnodes: [{role: control-plane, "${key}": []}]`
+      : `kind: Cluster\napiVersion: kind.x-k8s.io/v1alpha4\nnodes:\n- role: control-plane\n  '${key}': []`;
+    await assert.rejects(owner.createCluster(config), /refused/);
+    assert.equal(mutations(f.calls).length, 0);
+    assert.equal(existsSync(owner.statePath), false);
+  });
+}
+for (const config of [
+  'fixture', 'kind: Cluster\napiVersion: kind.x-k8s.io/v1alpha4\nunknown: true',
+  'kind: Cluster\nkind: Cluster\napiVersion: kind.x-k8s.io/v1alpha4',
+  'kind: Cluster\napiVersion: kind.x-k8s.io/v1alpha4\nnodes: [{role: unexpected}]',
+  'kind: Cluster\napiVersion: kind.x-k8s.io/v1alpha4\nnetworking: {disableDefaultCNI: "true"}',
+  'kind: Cluster\napiVersion: kind.x-k8s.io/v1alpha4\nnetworking: {extraMounts: []}',
+  'kind: Cluster\napiVersion: kind.x-k8s.io/v1alpha4\n---\nkind: Cluster',
+]) test(`262 closed kind schema refuses ${JSON.stringify(config)} before dispatch`, async t => {
+  const f = fixture(t), owner = f.owner(); await assert.rejects(owner.createCluster(config), /refused/);
+  assert.equal(mutations(f.calls).length, 0);
+});
+for (const config of [kindConfig, JSON.stringify({ kind: 'Cluster', apiVersion: 'kind.x-k8s.io/v1alpha4', networking: { ipFamily: 'dual', disableDefaultCNI: true }, nodes: [{ role: 'control-plane', image: 'kindest/node@sha256:' + 'a'.repeat(64) }, { role: 'worker' }] })]) {
+  test('262 valid kind YAML/JSON is validated and the normalized config is dispatched', async t => {
+    const f = fixture(t), owner = f.owner(); await owner.createCluster(config);
+    const call = f.calls.find(c => c.cmd === 'kind' && c.args[0] === 'create');
+    assert.equal(JSON.parse(call.input).apiVersion, 'kind.x-k8s.io/v1alpha4');
+  });
+}
+
+for (const failure of ['transport', 'timeout', 'post-dispatch parse']) test(`262 SIGSTOP ${failure} latches STOP before releasing the operation lock`, async t => {
+  const f = fixture(t), base = f.owner(); await base.createCluster(kindConfig); await ownedPod(f, base);
+  const target = await base.containerTarget('own', 'target', 'app');
+  let dispatched = false;
+  const owner = new guard.N2Lab({ env: f.env, execute: async (cmd, args, opts) => {
+    if (cmd === 'docker' && args.includes('tasks')) {
+      dispatched = true;
+      if (failure !== 'post-dispatch parse') throw Object.assign(new Error(failure), { code: failure === 'timeout' ? 'ETIMEDOUT' : 'ECONNRESET' });
+    }
+    if (dispatched && failure === 'post-dispatch parse' && args.includes('inspect')) return { code: 0, stdout: '{', stderr: '' };
+    return f.execute(cmd, args, opts);
+  } });
+  await assert.rejects(owner.signalContainer(target, 'STOP', 'gromesh-agent'), /refused/);
+  assert.equal(dispatched, true);
+  assert.ok(existsSync(owner.refusalPath));
+  assert.ok(existsSync(owner.statePath + '.active'));
+  f.calls.length = 0;
+  await assert.rejects(f.owner().image(['tag', 'source', 'retry:' + f.env.LAB_RUN_ID]), /refused/);
+  assert.equal(mutations(f.calls).length, 0);
+});
+
+test('262 authorized Helm upgrade refreshes only the previous deployed revision to superseded', async t => {
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
+  await owner.helm(['upgrade', '--install', 'cilium', 'chart', '-n', 'kube-system']);
+  const previous = f.objects.get('secret/sh.helm.release.v1.cilium.v1'), uid = previous.metadata.uid;
+  await owner.helm(['upgrade', '--install', 'cilium', 'chart', '-n', 'kube-system']);
+  assert.equal(previous.metadata.uid, uid);
+  assert.equal(previous.metadata.labels.status, 'superseded');
+  await f.owner().assertIdentity();
+  assert.equal(existsSync(owner.refusalPath), false);
+  await owner.helm(['upgrade', '--install', 'cilium', 'chart', '-n', 'kube-system']);
+  await f.owner().assertIdentity();
+});
+for (const change of ['UID', 'release', 'version', 'owner', 'payload', 'third-party Secret']) test(`262 Helm superseded does not hide changed ${change}`, async t => {
+  const f = fixture(t), base = f.owner(); await base.createCluster(kindConfig);
+  await base.helm(['upgrade', '--install', 'cilium', 'chart', '-n', 'kube-system']);
+  const owner = new guard.N2Lab({ env: f.env, execute: async (cmd, args, opts) => {
+    const result = await f.execute(cmd, args, opts);
+    if (cmd === 'helm' && args.includes('upgrade')) {
+      const old = f.objects.get('secret/sh.helm.release.v1.cilium.v1');
+      if (change === 'UID') old.metadata.uid = 'foreign';
+      if (change === 'release') old.metadata.labels.name = 'foreign';
+      if (change === 'version') old.metadata.labels.version = '999';
+      if (change === 'owner') old.metadata.labels.owner = 'foreign';
+      if (change === 'payload') old.data.extra = 'foreign';
+      if (change === 'third-party Secret') f.objects.set('secret/third-party', { apiVersion: 'v1', kind: 'Secret', metadata: { name: 'third-party', namespace: 'kube-system', uid: 'foreign' } });
+    }
+    return result;
+  } });
+  await assert.rejects(owner.helm(['upgrade', '--install', 'cilium', 'chart', '-n', 'kube-system']), /refused/);
+  assert.ok(existsSync(owner.refusalPath));
+});
+
+for (const operation of ['route', 'handoff', 'pull']) test(`262 ${operation} transport failure latches STOP inside the operation boundary`, async t => {
+  const f = fixture(t), base = f.owner(); await base.createCluster(kindConfig);
+  let target;
+  if (operation === 'route') {
+    const name = `${base.cluster}-fx-imds`;
+    await base.docker(['run', '-d', '--name', name, '--network', 'kind', 'fixture@sha256:' + 'a'.repeat(64), 'node']);
+    f.containers.get(name).NetworkSettings = { Networks: { kind: { IPAddress: '172.18.0.4' } } };
+  }
+  if (operation === 'handoff') {
+    await ownedPod(f, base, p => { p.spec.volumes = [{ name: 'isolation-handoff', emptyDir: {} }];
+      p.spec.containers[0].volumeMounts = [{ name: 'isolation-handoff', mountPath: '/gromesh/handoff' }]; return p; });
+    target = await base.containerTarget('own', 'target', 'app');
+  }
+  let dispatched = false;
+  const owner = new guard.N2Lab({ env: f.env, execute: async (cmd, args, opts) => {
+    if (cmd === 'docker' && (operation === 'route' && args.includes('replace') || operation === 'handoff' && args.includes('sh') || operation === 'pull' && args[0] === 'pull')) {
+      dispatched = true; throw new Error('transport failure after dispatch');
+    }
+    const result = await f.execute(cmd, args, opts);
+    if (operation === 'handoff' && cmd === 'docker' && args.includes('inspect') && args.includes('crictl')) {
+      const info = JSON.parse(result.stdout); info.info.runtimeSpec = { mounts: [{ destination: '/gromesh/handoff', source: '/var/lib/kubelet/pods/created-target/volumes/kubernetes.io~empty-dir/isolation-handoff' }] };
+      result.stdout = JSON.stringify(info);
+    }
+    return result;
+  } });
+  await assert.rejects(operation === 'route' ? owner.addRoute(f.node.Config.Hostname, '169.254.169.254', '172.18.0.4')
+    : operation === 'handoff' ? owner.writePodFile(target, 'isolation-handoff', 'applied.json', '{}')
+      : owner.pullImage('fixture@sha256:' + 'a'.repeat(64)), /refused/);
+  assert.equal(dispatched, true);
+  assert.ok(existsSync(owner.refusalPath));
+  assert.ok(existsSync(owner.statePath + '.active'));
+  f.calls.length = 0; await assert.rejects(f.owner().image(['clean']), /refused/); assert.equal(f.calls.length, 0);
+});
+
+for (const failure of ['spawn throw', 'stream error']) test(`262 ${failure} persists STOP for another guard instance`, async t => {
+  const { EventEmitter } = await import('node:events');
+  const f = fixture(t), base = f.owner(); await base.createCluster(kindConfig); await ownedPod(f, base);
+  const target = await base.containerTarget('own', 'target', 'app'), child = new EventEmitter();
+  const owner = new guard.N2Lab({ env: f.env, execute: f.execute, spawnProcess: () => { if (failure === 'spawn throw') throw Error('spawn failed'); return child; } });
+  if (failure === 'spawn throw') await assert.rejects(owner.spawnContainer(target, ['true']), /refused/);
+  else { const stream = await owner.spawnContainer(target, ['true']); child.emit('error', Error('stream transport lost')); await assert.rejects(stream.verified, /refused/); }
+  assert.ok(existsSync(owner.refusalPath));
+  f.calls.length = 0; await assert.rejects(f.owner().image(['clean']), /refused/); assert.equal(f.calls.length, 0);
+});
+
+function injectServiceAccount(pod) {
+    const volume = 'kube-api-access-abcde';
+    pod.spec.volumes.push({ name: volume, projected: { defaultMode: 420, sources: [
+      { serviceAccountToken: { expirationSeconds: 3607, path: 'token' } },
+      { configMap: { name: 'kube-root-ca.crt', items: [{ key: 'ca.crt', path: 'ca.crt' }] } },
+      { downwardAPI: { items: [{ path: 'namespace', fieldRef: { apiVersion: 'v1', fieldPath: 'metadata.namespace' } }] } },
+    ] } });
+    pod.spec.containers[0].volumeMounts.push({ name: volume, mountPath: '/var/run/secrets/kubernetes.io/serviceaccount', readOnly: true });
+}
+
+for (const field of ['service account admission', 'default tolerations', 'default priority']) test(`262 known ${field} preserves matching descendant semantics`, async t => {
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
+  const pod = await controllerPod(f, owner, 'ReplicaSet');
+  const parent = f.objects.get('replicaset/parent');
+  if (field === 'service account admission') {
+    delete parent.spec.template.spec.automountServiceAccountToken; delete pod.spec.automountServiceAccountToken;
+    injectServiceAccount(pod);
+    f.objects.set('serviceaccount/default', { apiVersion: 'v1', kind: 'ServiceAccount', metadata: { name: 'default', namespace: 'own', uid: 'default-own',
+      creationTimestamp: new Date().toISOString(), managedFields: [{ manager: 'kube-controller-manager', operation: 'Update' }] } });
+  }
+  if (field === 'default tolerations') pod.spec.tolerations = [
+    { key: 'node.kubernetes.io/not-ready', operator: 'Exists', effect: 'NoExecute', tolerationSeconds: 300 },
+    { key: 'node.kubernetes.io/unreachable', operator: 'Exists', effect: 'NoExecute', tolerationSeconds: 300 },
+  ];
+  if (field === 'default priority') pod.spec.priority = 0;
+  const state = owner.load(); owner.recordResource(parent, state); owner.save(state);
+  const target = await owner.containerTarget('own', 'child');
+  assert.equal((await owner.execContainer(target, ['true'])).stdout, 'owned output');
+});
+
+for (const alteration of ['token audience', 'token path', 'configMap', 'mount writable', 'missing mount', 'hostPath', 'account unavailable']) test(`262 admission normalization refuses ${alteration}`, async t => {
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
+  const pod = await controllerPod(f, owner), parent = f.objects.get('replicaset/parent');
+  delete parent.spec.template.spec.automountServiceAccountToken; delete pod.spec.automountServiceAccountToken;
+  injectServiceAccount(pod);
+  if (alteration !== 'account unavailable') f.objects.set('serviceaccount/default', { apiVersion: 'v1', kind: 'ServiceAccount', metadata: {
+    name: 'default', namespace: 'own', uid: 'default-own', creationTimestamp: new Date().toISOString(), managedFields: [{ manager: 'kube-controller-manager', operation: 'Update' }] } });
+  const volume = pod.spec.volumes.at(-1);
+  if (alteration === 'token audience') volume.projected.sources[0].serviceAccountToken.audience = 'foreign';
+  if (alteration === 'token path') volume.projected.sources[0].serviceAccountToken.path = 'foreign';
+  if (alteration === 'configMap') volume.projected.sources[1].configMap.name = 'foreign';
+  if (alteration === 'mount writable') pod.spec.containers[0].volumeMounts.at(-1).readOnly = false;
+  if (alteration === 'missing mount') pod.spec.containers[0].volumeMounts.pop();
+  if (alteration === 'hostPath') pod.spec.volumes.push({ name: 'foreign', hostPath: { path: '/foreign' } });
+  const state = owner.load(); owner.recordResource(parent, state); owner.save(state); f.calls.length = 0;
+  await assert.rejects(owner.kubectl(['exec', '-n', 'own', 'child', '--', 'true']), /refused/);
+  assert.equal(execMutations(f.calls).length, 0);
+});
+for (const scheduled of [false, true]) test(`262 DaemonSet exact node placement and tolerations are proved (${scheduled ? 'scheduled' : 'pending'})`, async t => {
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
+  const pod = await controllerPod(f, owner, 'DaemonSet');
+  pod.spec.affinity = { nodeAffinity: { requiredDuringSchedulingIgnoredDuringExecution: { nodeSelectorTerms: [{ matchFields: [{ key: 'metadata.name', operator: 'In', values: [f.node.Config.Hostname] }] }] } } };
+  pod.spec.tolerations = [
+    ...['not-ready', 'unreachable'].map(k => ({ key: `node.kubernetes.io/${k}`, operator: 'Exists', effect: 'NoExecute' })),
+    ...['disk-pressure', 'memory-pressure', 'pid-pressure', 'unschedulable'].map(k => ({ key: `node.kubernetes.io/${k}`, operator: 'Exists', effect: 'NoSchedule' })),
+  ];
+  if (!scheduled) delete pod.spec.nodeName;
+  await owner.assertIdentity();
+  assert.ok(owner.load().controllerReceipts['pod/own/child']);
+  if (scheduled) { const target = await owner.containerTarget('own', 'child'); assert.equal((await owner.execContainer(target, ['true'])).stdout, 'owned output'); }
+});
+for (const alteration of ['foreign node', 'extra node term', 'extra toleration', 'longer toleration']) test(`262 scheduling normalization rejects ${alteration}`, async t => {
+  const f = fixture(t), owner = f.owner(); await owner.createCluster(kindConfig);
+  const pod = await controllerPod(f, owner, 'DaemonSet');
+  const values = [alteration === 'foreign node' ? 'foreign-node' : f.node.Config.Hostname];
+  pod.spec.affinity = { nodeAffinity: { requiredDuringSchedulingIgnoredDuringExecution: { nodeSelectorTerms: [{ matchFields: [{ key: 'metadata.name', operator: 'In', values }] }] } } };
+  if (alteration === 'extra node term') pod.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms.push({});
+  if (alteration === 'extra toleration') pod.spec.tolerations = [{ operator: 'Exists' }];
+  if (alteration === 'longer toleration') pod.spec.tolerations = [{ key: 'node.kubernetes.io/not-ready', operator: 'Exists', effect: 'NoExecute', tolerationSeconds: 999 }];
+  f.calls.length = 0;
+  await assert.rejects(owner.kubectl(['exec', '-n', 'own', 'child', '--', 'true']), /refused/);
+  assert.equal(execMutations(f.calls).length, 0);
 });

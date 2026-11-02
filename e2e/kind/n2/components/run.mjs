@@ -3,7 +3,7 @@
 // the control plane built from main (with its own Postgres), the data plane chart in Workspaces mode with the real
 // agent and isolation-probe, the probe's targets being the N2-E1 fixtures behind the protected policies. The agents
 // reach the control plane through relay.mjs, transparent except while item 3 withholds one report.
-//   LAB_KUBECONFIG=<file> [LAB_CLUSTER_SH=<e2e/kind/n2/cluster.sh>] [LAB_OUT=<dir>] [LAB_KEEP=1] node e2e/kind/n2/components/run.mjs
+//   LAB_RUN_ID=<exclusive-run-id> LAB_KUBECONFIG=<file> [LAB_CLUSTER_SH=<e2e/kind/n2/cluster.sh>] [LAB_OUT=<dir>] [LAB_KEEP=1] node e2e/kind/n2/components/run.mjs
 // Images (loaded beforehand into the nodes that run them): CP_IMAGE, AGENT_IMAGE, KONG_IMAGE (repo:tag), PG_IMAGE.
 // Known limit: until N3 the agent applies the v1 snapshot, so the guard canary never answers and every pod ends in
 // guard-missing (Kong stopped, fail-closed). What needs a serving pod is reported as blocked, never as passed.

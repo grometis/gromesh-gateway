@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // N2-X4 in the reference lab (B §3.5.2, aceite r, exposure part): the data plane chart in Workspaces mode with the
 // collector as a native sidecar, Cilium enforcing the chart's NetworkPolicy, ClickHouse in the cluster.
-//   LAB_KUBECONFIG=<file> AGENT_IMAGE=<local tag> KONG_IMAGE=<local tag> [LAB_OUT=<dir>] node e2e/kind/n2/collector.mjs
+//   LAB_RUN_ID=<exclusive-run-id> LAB_KUBECONFIG=<file> AGENT_IMAGE=<local tag> KONG_IMAGE=<local tag> [LAB_OUT=<dir>] node e2e/kind/n2/collector.mjs
 // Requires the cluster from cluster.sh. No control plane: Kong never gets a lease here, the sidecars run regardless.
 // Never prints the collector token or the ClickHouse passwords.
 import { N2Lab, n2ClusterName } from "../../../scripts/kind-stack-guard.mjs";
