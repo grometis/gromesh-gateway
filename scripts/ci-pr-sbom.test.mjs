@@ -50,7 +50,7 @@ for (const [revision, name, arch] of [
         if (args[0] === 'image') {
           assert.deepEqual(args.slice(0, 3), ['image', 'inspect', image]);
           return { status: corruption === 'inspect failure' ? 1 : 0,
-            stdout: JSON.stringify({ id, os: 'linux', arch: corruption === 'wrong arch' ? 's390x' : arch }) };
+            stdout: JSON.stringify({ Id: id, Os: 'linux', Architecture: corruption === 'wrong arch' ? 's390x' : arch }) };
         }
         generated = true;
         assert.equal(args[0], 'run');

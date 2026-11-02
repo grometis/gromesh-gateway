@@ -1,9 +1,10 @@
+import { spawnSync } from "node:child_process";
 import { isUtf8 } from "node:buffer";
 import { constants, closeSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
 const suites = ["product-e2e", "mvp-e2e", "kind-diagnostics", "kong-image-build", "ui-acceptance"];
-const tools = ["node", "pnpm", "playwright", "helm", "kind", "kubectl", "kong", "trivy"];
+const tools = ["node", "pnpm", "playwright", "helm", "kind", "kubectl", "kong", "trivy", "docker"];
 const count = { type: "integer", minimum: 0, maximum: 1_000_000 };
 const id = { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER };
 const duration = { type: "integer", minimum: 0, maximum: 604_800_000 };
@@ -13,10 +14,14 @@ const version = { type: "string", maxLength: 17, pattern: "^(0|[1-9][0-9]{0,4})\
 export const evidenceSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["suite", "runId", "runAttempt", "sha", "status", "runnerArch", "toolVersions"],
+  required: ["suite", "jobId", "runId", "runAttempt", "sha", "status", "runnerArch", "toolVersions"],
   properties: {
     suite: { type: "string", enum: suites, maxLength: 16 },
-    jobId: id, runId: id, runAttempt: id,
+    // GITHUB_JOB is not the numeric REST job ID. Scope it by run and attempt;
+    // runnerArch disambiguates the architecture matrices that emit this evidence.
+    jobId: { type: "string", maxLength: 160, pattern: "^[A-Za-z_][A-Za-z0-9_-]{0,99}:[1-9][0-9]{0,15}:[1-9][0-9]{0,15}$" },
+    runId: id, runAttempt: id,
+    countUnit: { type: "string", enum: ["tests", "commands"], maxLength: 8 },
     sha: { type: "string", pattern: "^[0-9a-fA-F]{40}$", maxLength: 40 },
     status: { type: "string", enum: ["PASS", "FAIL", "BLOCKED"], maxLength: 7 },
     counts: {
@@ -59,6 +64,15 @@ function matchesSchema(value, schema) {
 
 export function validateEvidence(value) {
   matchesSchema(value, evidenceSchema);
+  requireValid(Object.keys(value.toolVersions).length > 0);
+  const identity = value.jobId.split(":");
+  requireValid(identity[1] === String(value.runId) && identity[2] === String(value.runAttempt));
+  if (value.status === "BLOCKED") {
+    requireValid(value.counts === undefined && value.durationMs === undefined && value.countUnit === undefined);
+  } else {
+    requireValid(value.counts !== undefined && value.durationMs !== undefined && value.countUnit !== undefined);
+    requireValid(value.counts.total > 0);
+  }
   if (value.counts) {
     const { total, passed, failed, skipped, flaky } = value.counts;
     requireValid(total === passed + failed + skipped + flaky);
@@ -140,7 +154,32 @@ function reportStats(file) {
     passed: stats.expected, failed: stats.unexpected, skipped: stats.skipped, flaky: stats.flaky,
   };
   // No traversal of specs, titles, errors, stdout, attachments, config or environment.
-  return { counts, durationMs };
+  return { counts, durationMs, countUnit: report.countUnit ?? "tests" };
+}
+
+// Read installed executable versions, never arbitrary report/tool output. Failed setup
+// may leave only Node available; the artifact still identifies that real tool version.
+export function installedToolVersions(suite, execute = spawnSync) {
+  const commands = suite === "ui-acceptance" || suite === "product-e2e" ? [
+    ["pnpm", "pnpm", ["--version"]],
+    ["playwright", "pnpm", ["--filter", suite === "ui-acceptance" ? "@gromesh/ui" : "@gromesh/e2e", "exec", "playwright", "--version"]],
+  ] : suite === "kind-diagnostics" ? [["kubectl", "kubectl", ["version", "--client", "-o", "json"]]] : suite === "mvp-e2e" ? [
+    ["helm", "helm", ["version", "--template", "{{.Version}}"]],
+    ["kind", "kind", ["version"]], ["kubectl", "kubectl", ["version", "--client", "-o", "json"]],
+  ] : [["docker", "docker", ["version", "--format", "{{.Client.Version}}"]]];
+  const versions = { node: process.versions.node };
+  for (const [tool, command, args] of commands) {
+    const result = execute(command, args, { encoding: "utf8", timeout: 10_000, maxBuffer: 64 * 1024 });
+    if (result.status !== 0) continue;
+    let output = result.stdout;
+    if (tool === "kubectl") {
+      try { output = JSON.parse(output).clientVersion.gitVersion; } catch { continue; }
+    }
+    // A vendor suffix is not uploaded; the observed numeric release is sufficient.
+    const match = /(?:^|[ v])((?:0|[1-9][0-9]{0,4})\.(?:0|[1-9][0-9]{0,4})\.(?:0|[1-9][0-9]{0,4}))(?:$|[ +\n-])/.exec(output);
+    if (match) versions[tool] = match[1];
+  }
+  return versions;
 }
 
 export function generateEvidence({ suite, directory = "evidence", report, env = process.env }) {
@@ -149,14 +188,35 @@ export function generateEvidence({ suite, directory = "evidence", report, env = 
   requireValid(["success", "failure", "skipped", "cancelled"].includes(outcome));
   const runnerArch = { X64: "amd64", ARM64: "arm64" }[env.RUNNER_ARCH];
   const value = {
-    suite, runId: numericId(env.GITHUB_RUN_ID), runAttempt: numericId(env.GITHUB_RUN_ATTEMPT),
+    suite, jobId: `${env.GITHUB_JOB}:${env.GITHUB_RUN_ID}:${env.GITHUB_RUN_ATTEMPT}`, runId: numericId(env.GITHUB_RUN_ID), runAttempt: numericId(env.GITHUB_RUN_ATTEMPT),
     sha: env.GITHUB_SHA, status: outcome === "success" ? "PASS" : outcome === "failure" ? "FAIL" : "BLOCKED",
-    runnerArch, toolVersions: { node: process.versions.node },
+    runnerArch, toolVersions: env.EVIDENCE_TOOL_VERSIONS === undefined ? installedToolVersions(suite) : { node: process.versions.node },
   };
-  if (report !== undefined) Object.assign(value, reportStats(report));
+  const reports = report === undefined ? [] : Array.isArray(report) ? report : [report];
+  requireValid(reports.length <= 16 && new Set(reports).size === reports.length);
+  const measured = reports.map(file => reportStats(file));
+  if (outcome === "success") requireValid(measured.length > 0 && measured.every(Boolean));
+  const results = measured.filter(Boolean);
+  const statistics = results.length === 0 ? undefined : results.reduce((sum, item) => {
+    requireValid(sum.countUnit === item.countUnit);
+    return { countUnit: sum.countUnit, durationMs: sum.durationMs + item.durationMs,
+      counts: Object.fromEntries(Object.keys(sum.counts).map(key => [key, sum.counts[key] + item.counts[key]])) };
+  });
+  // A successful step without measured results must fail closed, never become PASS.
+  if (outcome === "success") requireValid(statistics !== undefined);
+  if (statistics === undefined || statistics.counts.total === 0) value.status = "BLOCKED";
+  else {
+    requireValid(!["skipped", "cancelled"].includes(outcome));
+    Object.assign(value, statistics);
+  }
+  if (env.EVIDENCE_TOOL_VERSIONS !== undefined) {
+    const versions = JSON.parse(env.EVIDENCE_TOOL_VERSIONS);
+    matchesSchema(versions, evidenceSchema.properties.toolVersions);
+    Object.assign(value.toolVersions, versions);
+  }
   if (value.status !== "PASS") {
     // Aggregate statistics cannot distinguish assertion failures from timeouts or infrastructure failures.
-    value.failureCategory = outcome === "skipped" ? "SETUP" : outcome === "cancelled" ? "INFRA" : "UNKNOWN";
+    value.failureCategory = outcome === "cancelled" ? "INFRA" : value.status === "BLOCKED" ? "SETUP" : "UNKNOWN";
   }
   validateEvidence(value);
   const bytes = Buffer.from(JSON.stringify(value));
@@ -182,10 +242,10 @@ if (import.meta.main) {
     for (let index = 0; index < args.length; index++) {
       const arg = args[index];
       if (arg === "--directory" || arg === "--report") {
-        requireValid(!options.has(arg) && index + 1 < args.length);
+        requireValid((arg === "--report" || !options.has(arg)) && index + 1 < args.length);
         options.add(arg);
         if (arg === "--directory") directory = args[++index];
-        else report = args[++index];
+        else { report ??= []; report.push(args[++index]); }
       } else {
         requireValid(!arg.startsWith("--"));
         names.push(arg);

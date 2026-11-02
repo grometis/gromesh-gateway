@@ -147,7 +147,9 @@ jobs:
           docker image inspect "$KONG_IMAGE" --format '{{.Id}}'
 
       - name: Verify image architecture, Kong version and non-root user
+        id: verify
         run: |
+          node scripts/ci-run-evidence.mjs "$RUNNER_TEMP/kong-verify.json" bash -e -o pipefail <<'VERIFY'
           platform="$(docker image inspect "$KONG_IMAGE" --format '{{.Os}}/{{.Architecture}}')"
           test "$platform" = "linux/${TARGET_ARCH}"
           version="$(docker run --rm "$KONG_IMAGE" kong version)"
@@ -156,10 +158,13 @@ jobs:
           uid="$(docker run --rm "$KONG_IMAGE" id -u)"
           test "$uid" -ne 0
 
+          VERIFY
+
       - name: Compose acceptance test with the built image
         # The host guard requires the full acceptance stack and image metadata for inactive profiles.
         # Only smokeInside runs in the gateway's namespace; the Admin API remains on a Unix socket.
         run: |
+          node scripts/ci-run-evidence.mjs "$RUNNER_TEMP/kong-acceptance.json" bash -e -o pipefail <<'ACCEPTANCE'
           docker compose --profile '*' pull --ignore-buildable --policy missing
           docker compose --profile '*' build
           docker compose up -d --wait kong echo ui
@@ -168,12 +173,17 @@ jobs:
           docker compose --profile observability up -d --wait --no-deps vector
           KONG_IMAGE="$KONG_IMAGE" node scripts/smoke.mjs
 
+          ACCEPTANCE
+
       - name: Scan image (block CRITICAL vulnerabilities)
         run: |
+          node scripts/ci-run-evidence.mjs "$RUNNER_TEMP/kong-scan.json" bash -e -o pipefail <<'SCAN'
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
             aquasec/trivy:0.69.3@sha256:bcc376de8d77cfe086a917230e818dc9f8528e3c852f7b1aff648949b6258d1c \
             image --scanners vuln --severity CRITICAL --exit-code 1 "$KONG_IMAGE"
+
+          SCAN
 
       - name: Login to GHCR
         if: env.PUBLISH == 'true'
@@ -224,7 +234,11 @@ jobs:
         if: always() && env.PUBLISH != 'true'
         env:
           EVIDENCE_OUTCOME: ${{ job.status }}
-        run: node scripts/ci-evidence.mjs generate kong-image-build
+        run: >-
+          node scripts/ci-evidence.mjs generate kong-image-build
+          --report "$RUNNER_TEMP/kong-verify.json"
+          --report "$RUNNER_TEMP/kong-acceptance.json"
+          --report "$RUNNER_TEMP/kong-scan.json"
 
       - name: Validate candidate artifact allowlist
         id: validate-evidence

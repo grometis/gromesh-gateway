@@ -19,6 +19,7 @@ on:
       - .nvmrc
       - .github/workflows/images.yml
       - scripts/ci-supply-chain.mjs
+      - scripts/ci-image-identity.mjs
       - scripts/ci-evidence.mjs
 
 permissions:
@@ -116,6 +117,11 @@ jobs:
           image_id="$(docker image inspect "$IMAGE" --format '{{.Id}}')"
           [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "Invalid local image ID" >&2; exit 1; }
           printf 'digest=%s\nsha=%s\narch=%s\nimage=%s\nlocal-id=%s\n' "$digest" "$GITHUB_SHA" "$TARGET_ARCH" "$IMAGE" "$image_id" >> "$GITHUB_OUTPUT"
+      - name: Bind local inventory to published manifest config
+        id: identity
+        env:
+          EXPECTED_DIGEST: ${{ steps.publish.outputs.digest }}
+        run: node scripts/ci-image-identity.mjs "$IMAGE"
       - name: Generate SPDX JSON SBOM
         id: syft
         env:
@@ -140,6 +146,10 @@ jobs:
           PUBLISHED_SHA: ${{ steps.publish.outputs.sha }}
           PUBLISHED_ARCH: ${{ steps.publish.outputs.arch }}
           PUBLISHED_IMAGE: ${{ steps.publish.outputs.image }}
+          LOCAL_IMAGE_ID: ${{ steps.publish.outputs.local-id }}
+          LOCAL_SBOM_DIGEST: ${{ steps.identity.outputs.sbom-digest }}
+          LOCAL_IDENTITY_KIND: ${{ steps.identity.outputs.identity-kind }}
+          PUBLISHED_CONFIG_ID: ${{ steps.identity.outputs.published-config }}
         run: node scripts/ci-supply-chain.mjs images
       - name: Attach SBOM
         if: success() && steps.validate-supply-chain.outcome == 'success'

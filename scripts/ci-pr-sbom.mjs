@@ -2,13 +2,14 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { directoryPath, requireValid } from './ci-evidence.mjs';
+import { localImageIdentity } from './ci-image-identity.mjs';
 import { jobContext, validateSupplyChain } from './ci-supply-chain.mjs';
 
 const SYFT = 'anchore/syft:v1.18.1@sha256:b8c170b8e51bfc4779ec3ef4399942c57290f5ce76a9c3af564c9d00d4946a6b';
 const applications = ['agent', 'control-plane', 'ui'];
 const sharedNodeInputs = ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'tsconfig.base.json', '.nvmrc'];
 const gateInputs = ['.dockerignore', '.github/workflows/ci.yml', '.github/workflows/images.yml',
-  'scripts/scan-changed-images.mjs', 'scripts/ci-pr-sbom.mjs', 'scripts/ci-supply-chain.mjs', 'scripts/ci-evidence.mjs'];
+  'scripts/scan-changed-images.mjs', 'scripts/ci-pr-sbom.mjs', 'scripts/ci-supply-chain.mjs', 'scripts/ci-image-identity.mjs', 'scripts/ci-evidence.mjs'];
 
 export function applicationBuilds(changed) {
   return applications.filter(name => changed.some(file => gateInputs.includes(file) || file.startsWith(`apps/${name}/`) ||
@@ -18,13 +19,11 @@ export function applicationBuilds(changed) {
 }
 
 export function validatePrImageSbom(image, name, { env = process.env, execute = spawnSync } = {}) {
-  const inspect = execute('docker', ['image', 'inspect', image, '--format',
-    '{"id":{{json .Id}},"arch":{{json .Architecture}},"os":{{json .Os}}}'], { encoding: 'utf8' });
-  requireValid(inspect.status === 0);
-  const metadata = JSON.parse(inspect.stdout);
-  const contextEnv = { ...env, IMAGE_NAME: name, LOCAL_IMAGE_ID: metadata.id };
+  const metadata = localImageIdentity(image, { env, execute });
+  const contextEnv = { ...env, IMAGE_NAME: name, LOCAL_IMAGE_ID: metadata.id,
+    LOCAL_SBOM_DIGEST: metadata.sbomDigest, LOCAL_IDENTITY_KIND: metadata.kind };
   const context = jobContext(contextEnv, false, 'pr');
-  requireValid(metadata.os === 'linux' && metadata.arch === context.arch);
+  requireValid(metadata.arch === context.arch);
   // Each image gets a fresh exact-file gate. Never mix another build's files or publish PR artifacts.
   const workspace = mkdtempSync(join(directoryPath(env.RUNNER_TEMP), 'pr-sbom-'));
   try {

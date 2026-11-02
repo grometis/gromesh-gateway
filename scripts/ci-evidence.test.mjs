@@ -1,3 +1,4 @@
+import { installedToolVersions } from "./ci-evidence.mjs";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { linkSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, mkdirSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
@@ -10,20 +11,22 @@ import { test } from "node:test";
 const script = fileURLToPath(new URL("./ci-evidence.mjs", import.meta.url));
 const secret = "SYNTHETIC_SECRET_do_not_publish_9X7";
 const env = {
-  ...process.env, GITHUB_RUN_ID: "1234", GITHUB_RUN_ATTEMPT: "2",
+  ...process.env, GITHUB_JOB: "e2e", GITHUB_RUN_ID: "1234", GITHUB_RUN_ATTEMPT: "2",
   GITHUB_SHA: "a".repeat(40), RUNNER_ARCH: "X64", EVIDENCE_OUTCOME: "success",
-  SYNTHETIC_PASSWORD: secret,
+  SYNTHETIC_PASSWORD: secret, EVIDENCE_TOOL_VERSIONS: "{}",
 };
 const minimal = (suite = "product-e2e") => ({
-  suite, runId: 1234, runAttempt: 2, sha: "a".repeat(40),
-  status: "PASS", runnerArch: "amd64", toolVersions: { node: "26.13.0" },
+  suite, jobId: "e2e:1234:2", runId: 1234, runAttempt: 2, sha: "a".repeat(40),
+  status: "PASS", counts: { total: 1, passed: 1, failed: 0, skipped: 0, flaky: 0 }, durationMs: 1, countUnit: "tests", runnerArch: "amd64", toolVersions: { node: "26.13.0" },
 });
 function fixture(t, suite = "product-e2e") {
   const root = mkdtempSync(join(realpathSync(tmpdir()), "ci-evidence-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const directory = join(root, "evidence");
   mkdirSync(directory);
-  return { root, directory, file: join(directory, `${suite}.json`) };
+  const report = join(root, 'results.json');
+  writeFileSync(report, JSON.stringify({ stats: { expected: 1, unexpected: 0, skipped: 0, flaky: 0, duration: 1 } }));
+  return { root, directory, report, file: join(directory, `${suite}.json`) };
 }
 function run(args, extraEnv = {}, cwd) {
   const result = spawnSync(process.execPath, [script, ...args], {
@@ -45,16 +48,16 @@ function rejected(result) {
   assert.equal(result.stderr, "CI evidence rejected.\n");
 }
 
-test("generates deterministic minimal evidence from the step outcome without inventing counts", t => {
-  const { directory, file } = fixture(t);
-  assert.equal(run(["generate", "product-e2e", "--directory", directory]).status, 0);
+test("generates deterministic measured evidence", t => {
+  const { directory, file, report } = fixture(t);
+  assert.equal(run(["generate", "product-e2e", "--directory", directory, "--report", report]).status, 0);
   const bytes = readFileSync(file);
   const evidence = JSON.parse(bytes);
   assert.deepEqual(evidence, { ...minimal(), toolVersions: { node: process.versions.node } });
   assert.equal(bytes.some(byte => byte < 32 || byte === 127), false);
   assert.equal(validate(directory).status, 0);
   rmSync(file);
-  assert.equal(run(["generate", "product-e2e", "--directory", directory]).status, 0);
+  assert.equal(run(["generate", "product-e2e", "--directory", directory, "--report", report]).status, 0);
   assert.deepEqual(readFileSync(file), bytes);
 });
 
@@ -62,16 +65,19 @@ for (const [outcome, status, failureCategory] of [
   ["success", "PASS", undefined], ["failure", "FAIL", "UNKNOWN"],
   ["skipped", "BLOCKED", "SETUP"], ["cancelled", "BLOCKED", "INFRA"],
 ]) {
-  test(`generates and validates deterministic UI acceptance evidence for ${outcome} without counts`, t => {
-    const { root, directory, file } = fixture(t, "ui-acceptance");
-    const generate = () => run(["generate", "ui-acceptance"], { EVIDENCE_OUTCOME: outcome }, root);
+  test(`generates and validates deterministic UI acceptance evidence for ${outcome}`, t => {
+    const { root, directory, file, report } = fixture(t, "ui-acceptance");
+    if (outcome === "failure") writeFileSync(report, JSON.stringify({ stats: { expected: 0, unexpected: 1, skipped: 0, flaky: 0, duration: 1 } }));
+    const executed = ["success", "failure"].includes(outcome);
+    const generate = () => run(["generate", "ui-acceptance", ...(executed ? ["--report", report] : [])], { EVIDENCE_OUTCOME: outcome }, root);
     assert.equal(generate().status, 0);
     assert.deepEqual(readdirSync(directory), ["ui-acceptance.json"]);
     const bytes = readFileSync(file);
-    assert.deepEqual(JSON.parse(bytes), {
-      ...minimal("ui-acceptance"), status, toolVersions: { node: process.versions.node },
-      ...(failureCategory === undefined ? {} : { failureCategory }),
-    });
+    const expected = { ...minimal("ui-acceptance"), status, toolVersions: { node: process.versions.node },
+      ...(failureCategory === undefined ? {} : { failureCategory }) };
+    if (!executed) for (const key of ["counts", "durationMs", "countUnit"]) delete expected[key];
+    else if (outcome === "failure") expected.counts = { total: 1, passed: 0, failed: 1, skipped: 0, flaky: 0 };
+    assert.deepEqual(JSON.parse(bytes), expected);
     assert.equal(validate(directory, ["ui-acceptance"]).status, 0);
     rejected(validate(directory));
     rmSync(file);
@@ -124,7 +130,7 @@ test("reads only numeric Playwright statistics, dropping all messages and attach
 });
 
 for (const [outcome, status, category] of [
-  ["failure", "FAIL", "UNKNOWN"], ["skipped", "BLOCKED", "SETUP"], ["cancelled", "BLOCKED", "INFRA"],
+  ["failure", "BLOCKED", "SETUP"], ["skipped", "BLOCKED", "SETUP"], ["cancelled", "BLOCKED", "INFRA"],
 ]) {
   test(`handles ${outcome} without a result report`, t => {
     const { directory, file } = fixture(t);
@@ -158,6 +164,14 @@ const hostile = {
   "free string in enum": JSON.stringify({ ...minimal(), status: secret }),
   "unknown suite": JSON.stringify({ ...minimal(), suite: secret }),
   "unknown architecture": JSON.stringify({ ...minimal(), runnerArch: secret }),
+  "missing jobId": JSON.stringify(Object.fromEntries(Object.entries(minimal()).filter(([key]) => key !== "jobId"))),
+  "unscoped jobId": JSON.stringify({ ...minimal(), jobId: "e2e" }),
+  "wrong job attempt": JSON.stringify({ ...minimal(), jobId: "e2e:1234:3" }),
+  "empty tools": JSON.stringify({ ...minimal(), toolVersions: {} }),
+  "missing counts": JSON.stringify(Object.fromEntries(Object.entries(minimal()).filter(([key]) => key !== "counts"))),
+  "missing duration": JSON.stringify(Object.fromEntries(Object.entries(minimal()).filter(([key]) => key !== "durationMs"))),
+  "missing count unit": JSON.stringify(Object.fromEntries(Object.entries(minimal()).filter(([key]) => key !== "countUnit"))),
+  "blocked with counts": JSON.stringify({ ...minimal(), status: "BLOCKED", failureCategory: "SETUP" }),
   "extra tool": JSON.stringify({ ...minimal(), toolVersions: { node: "26.13.0", authorization: secret } }),
   "non-semver tool version": JSON.stringify({ ...minimal(), toolVersions: { node: secret } }),
   "semver with arbitrary metadata": JSON.stringify({ ...minimal(), toolVersions: { node: `26.13.0+${secret}` } }),
@@ -271,7 +285,7 @@ test("all canonical suites and controlled optional fields validate", t => {
   const suites = ["product-e2e", "mvp-e2e", "kind-diagnostics", "kong-image-build", "ui-acceptance"];
   for (const suite of suites) {
     writeFileSync(join(directory, `${suite}.json`), JSON.stringify({
-      ...minimal(), suite, jobId: 123, counts: { total: 1, passed: 1, failed: 0, skipped: 0, flaky: 0 },
+      ...minimal(), suite, counts: { total: 1, passed: 1, failed: 0, skipped: 0, flaky: 0 },
       durationMs: 1, toolVersions: { node: "26.13.0", kong: "3.9.4" },
     }));
   }
@@ -279,10 +293,12 @@ test("all canonical suites and controlled optional fields validate", t => {
 });
 
 test("creates the default evidence directory and validates two independently generated kind files", t => {
-  const { root, directory } = fixture(t);
+  const { root, directory, report } = fixture(t);
   rmSync(directory, { recursive: true });
-  assert.equal(run(["generate", "mvp-e2e"], { EVIDENCE_OUTCOME: "failure" }, root).status, 0);
-  assert.equal(run(["generate", "kind-diagnostics"], {}, root).status, 0);
+  writeFileSync(report, JSON.stringify({ stats: { expected: 0, unexpected: 1, skipped: 0, flaky: 0, duration: 1 } }));
+  assert.equal(run(["generate", "mvp-e2e", "--report", report], { EVIDENCE_OUTCOME: "failure" }, root).status, 0);
+  writeFileSync(report, JSON.stringify({ stats: { expected: 1, unexpected: 0, skipped: 0, flaky: 0, duration: 1 } }));
+  assert.equal(run(["generate", "kind-diagnostics", "--report", report], {}, root).status, 0);
   assert.equal(validate(directory, ["mvp-e2e", "kind-diagnostics"]).status, 0);
 });
 test("refuses hard links and oversized reports before reading their contents", t => {
@@ -331,12 +347,16 @@ function bindSbomIdentity(doc, sourceName, sha, arch, manifestDigest) {
   return rebound;
 }
 const capturedSubset = JSON.parse(readFileSync(new URL('./fixtures/syft-1.18.1-minimal.fixture.spdx.json', import.meta.url), 'utf8'));
+delete capturedSubset.comment; // Fixture provenance is not Syft-emitted SBOM metadata.
 const sbomFixture = JSON.stringify(bindSbomIdentity(capturedSubset,
   `gromesh-ui-amd64-${env.GITHUB_SHA}-${'b'.repeat(64)}`, env.GITHUB_SHA, 'amd64', `sha256:${'b'.repeat(64)}`), null, 1);
 const supplyScript = fileURLToPath(new URL('./ci-supply-chain.mjs', import.meta.url));
 const digest = `sha256:${'b'.repeat(64)}`;
 const supplyEnv = {
   ...env, IMAGE_NAME: 'ui', TARGET_ARCH: 'amd64', GITHUB_REPOSITORY_OWNER: 'Gromesh',
+  LOCAL_IMAGE_ID: `sha256:${capturedSubset.packages.at(-1).checksums[0].checksumValue}`,
+  LOCAL_SBOM_DIGEST: `sha256:${capturedSubset.packages.at(-1).checksums[0].checksumValue}`,
+  LOCAL_IDENTITY_KIND: 'classic-config', PUBLISHED_CONFIG_ID: `sha256:${capturedSubset.packages.at(-1).checksums[0].checksumValue}`,
   EXPECTED_DIGEST: digest, PUBLISHED_SHA: env.GITHUB_SHA, PUBLISHED_ARCH: 'amd64',
   PUBLISHED_IMAGE: `ghcr.io/gromesh/gromesh-ui:${env.GITHUB_SHA}-amd64`,
 };
@@ -514,10 +534,10 @@ for (const [label, bytes] of [
     rejectSupply(f.runSupply());
   });
 }
-test('SBOM permits bounded benign comment and refuses oversized files before parsing', t => {
+test('SBOM rejects unrecognized prose comments and oversized files before parsing', t => {
   const f = supplyFixture(t);
   changeSbom(f, d => { d.comment = 'Generated image inventory.'; });
-  assert.equal(f.runSupply().status, 0);
+  rejectSupply(f.runSupply());
   truncateSync(f.sbomFile, 16 * 1024 * 1024 + 1);
   rejectSupply(f.runSupply());
 });
@@ -630,8 +650,6 @@ test('all application name/architecture pairs bind to the explicit Syft source n
 test('SBOM accepts bounded Syft annotations, npm scopes, cpe22 and image-root agent binaries', t => {
   const f = supplyFixture(t);
   changeSbom(f, d => {
-    d.annotations = [{ annotationDate: d.creationInfo.created, annotationType: 'OTHER',
-      annotator: 'Tool: syft-1.18.1', comment: 'Generated image inventory.' }];
     d.packages[0].externalRefs.push({ referenceCategory: 'SECURITY', referenceType: 'cpe22Type',
       referenceLocator: 'cpe:/a:musl-libc:musl:1.2.5-r9' });
     d.packages[0].externalRefs.push({ referenceCategory: 'PACKAGE-MANAGER', referenceType: 'purl',
@@ -686,14 +704,14 @@ test('real shell gate invokes no upload on either validation failure, and both o
   }
 });
 
-test('SBOM binds its container package to the explicit source name and job SHA', t => {
+test('SBOM rejects a duplicate root even with matching source name and SHA', t => {
   const f = supplyFixture(t);
   changeSbom(f, d => {
     d.packages.push({ SPDXID: 'SPDXRef-Container', name: d.name, versionInfo: env.GITHUB_SHA,
       downloadLocation: 'NOASSERTION', filesAnalyzed: false, primaryPackagePurpose: 'CONTAINER' });
     d.relationships.push({ spdxElementId: d.SPDXID, relatedSpdxElement: 'SPDXRef-Container', relationshipType: 'DESCRIBES' });
   });
-  assert.equal(f.runSupply().status, 0);
+  rejectSupply(f.runSupply());
 });
 test('SPDX file checksum and explicit filesAnalyzed are required by the upload profile', t => {
   for (const mutate of [d => { delete d.files[0].checksums; }, d => { delete d.packages[0].filesAnalyzed; }]) {
@@ -751,18 +769,23 @@ test('CPE profile rejects embedded wildcards and invalid language tags', t => {
 
 // All six unmodified Syft inventories total 2,639,586 bytes (2.52 MiB).
 // The small excess over ~2.5 MB buys complete cross-architecture npm/Go/APK regressions.
+function fixtureInspection(doc) {
+  const id = `sha256:${doc.packages.find(pkg => pkg.primaryPackagePurpose === 'CONTAINER').checksums[0].checksumValue}`;
+  return { LOCAL_IMAGE_ID: id, LOCAL_SBOM_DIGEST: id, LOCAL_IDENTITY_KIND: 'classic-config', PUBLISHED_CONFIG_ID: id };
+}
 const realFixtureDirectory = new URL('./fixtures/sbom/b43bee3/', import.meta.url);
 function realContext(name, arch) {
-  return Object.fromEntries(readFileSync(new URL(`gromesh-${name}-${arch}.context.env`, realFixtureDirectory), 'utf8')
+  const context = Object.fromEntries(readFileSync(new URL(`gromesh-${name}-${arch}.context.env`, realFixtureDirectory), 'utf8')
     .trim().split(/\s+/).map(pair => {
       const separator = pair.indexOf('=');
       assert.ok(separator > 0);
       return [pair.slice(0, separator), pair.slice(separator + 1)];
     }));
+  return { ...context, ...fixtureInspection(JSON.parse(readFileSync(new URL(`gromesh-${name}-${arch}.spdx.json`, realFixtureDirectory)))) };
 }
 for (const name of ['control-plane', 'ui', 'agent']) {
   for (const arch of ['amd64', 'arm64']) {
-    test(`complete unmodified Syft 1.18.1 published ${name} ${arch} passes the real CLI`, t => {
+    test(`unmodified Syft inventory ${name} ${arch} passes CLI with simulated config inspection`, t => {
       const f = supplyFixture(t);
       rmSync(f.sbomFile);
       rmSync(f.digestFile);
@@ -786,12 +809,12 @@ function realSupplyFixture(t) {
   writeFileSync(f.sbomFile, realSbom);
   writeFileSync(f.digestFile, `${realDigest}\n`);
   const run = f.runSupply;
-  f.runSupply = () => run('images', { TARGET_ARCH: 'arm64', RUNNER_ARCH: 'ARM64', GITHUB_SHA: realSha,
+  f.runSupply = () => run('images', { ...fixtureInspection(JSON.parse(realSbom)), TARGET_ARCH: 'arm64', RUNNER_ARCH: 'ARM64', GITHUB_SHA: realSha,
     PUBLISHED_SHA: realSha, PUBLISHED_ARCH: 'arm64', EXPECTED_DIGEST: realDigest,
     GITHUB_REPOSITORY_OWNER: 'grometis', PUBLISHED_IMAGE: `ghcr.io/grometis/gromesh-ui:${realSha}-arm64` });
   return f;
 }
-test('complete unmodified Syft 1.18.1 published UI arm64 SBOM passes the upload gate', t => {
+test('unmodified UI arm64 inventory passes gate with simulated independent inspection', t => {
   const f = realSupplyFixture(t);
   assert.equal(f.runSupply().status, 0);
 });
@@ -998,7 +1021,7 @@ for (const mismatch of ['name', 'versionInfo']) {
 }
 
 // A base/dependency bump must not require curating the upstream project's host.
-test('complete unmodified 431e1fe UI arm64 Syft inventory passes the real CLI', t => {
+test('unmodified 431e1fe UI arm64 inventory passes CLI with simulated config inspection', t => {
   const f = supplyFixture(t);
   const directory = new URL('./fixtures/sbom/431e1fe/', import.meta.url);
   const context = Object.fromEntries(readFileSync(new URL('gromesh-ui-arm64.context.env', directory), 'utf8')
@@ -1007,7 +1030,7 @@ test('complete unmodified 431e1fe UI arm64 Syft inventory passes the real CLI', 
   rmSync(f.digestFile);
   writeFileSync(join(f.sbomDirectory, 'gromesh-ui-arm64.spdx.json'), readFileSync(new URL('gromesh-ui-arm64.spdx.json', directory)));
   writeFileSync(join(f.digestDirectory, 'ui-arm64.txt'), `${context.EXPECTED_DIGEST}\n`);
-  assert.equal(f.runSupply('images', context).status, 0);
+  assert.equal(f.runSupply('images', { ...context, ...fixtureInspection(JSON.parse(readFileSync(new URL('gromesh-ui-arm64.spdx.json', directory)))) }).status, 0);
 });
 
 for (const host of ['chromium.googlesource.com', 'new-upstream.example', 'a.b', 'release-2.project.example',
@@ -1047,7 +1070,7 @@ function prSupplyFixture(t) {
   rmSync(f.digestDirectory, { recursive: true });
   const run = f.runSupply;
   f.runSupply = (extra = {}) => run('pr', { EXPECTED_DIGEST: '', PUBLISHED_SHA: '', PUBLISHED_ARCH: '',
-    PUBLISHED_IMAGE: '', GITHUB_REPOSITORY_OWNER: '', RUNNER_TEMP: '', LOCAL_IMAGE_ID: localImageId, ...extra });
+    PUBLISHED_IMAGE: '', GITHUB_REPOSITORY_OWNER: '', RUNNER_TEMP: '', LOCAL_IMAGE_ID: localImageId, LOCAL_SBOM_DIGEST: localImageId, LOCAL_IDENTITY_KIND: 'classic-config', ...extra });
   return f;
 }
 test('PR mode validates SHA, arch and local image without publication or digest artifact', t => {
@@ -1061,6 +1084,9 @@ for (const [label, extra] of [
   test(`PR mode refuses ${label}`, t => { rejectSupply(prSupplyFixture(t).runSupply(extra)); });
 }
 for (const [label, mutate] of [
+  ['short encoded comment', d => { d.packages[0].comment = 'dG9rZW49YWJjMTIz'; }],
+  ['password phrase', d => { d.packages[0].description = 'The password is hunter2'; }],
+  ['short encoded description', d => { d.packages[0].description = 'dG9rZW49YWJjMTIz'; }],
   ['unknown field', d => { d.password = 'short'; }],
   ['credential', d => { d.packages[0].comment = secret; }],
   ['missing root purl', d => { delete d.packages.at(-1).externalRefs; }],
@@ -1075,3 +1101,96 @@ for (const [label, mutate] of [
     rejectSupply(f.runSupply());
   });
 }
+
+
+test('success without a result report is rejected rather than inventing evidence', t => {
+  const { directory } = fixture(t);
+  rejected(run(["generate", "product-e2e", "--directory", directory]));
+  assert.deepEqual(readdirSync(directory), []);
+});
+for (const outcome of ['success', 'failure']) {
+  test(`zero executed tests are explicitly BLOCKED for ${outcome}`, t => {
+    const { directory, file, report } = fixture(t);
+    writeFileSync(report, JSON.stringify({ stats: { expected: 0, unexpected: 0, skipped: 0, flaky: 0, duration: 0 } }));
+    assert.equal(run(['generate', 'product-e2e', '--directory', directory, '--report', report], { EVIDENCE_OUTCOME: outcome }).status, 0);
+    const value = JSON.parse(readFileSync(file));
+    assert.equal(value.status, 'BLOCKED');
+    for (const key of ['counts', 'durationMs', 'countUnit']) assert.equal(key in value, false);
+  });
+}
+for (const [key, value] of [['LOCAL_IMAGE_ID', ''], ['LOCAL_SBOM_DIGEST', ''], ['LOCAL_IDENTITY_KIND', ''],
+  ['PUBLISHED_CONFIG_ID', ''], ['PUBLISHED_CONFIG_ID', `sha256:${'e'.repeat(64)}`]]) {
+  test(`images requires independent build identity ${key} ${value ? 'mismatch' : 'missing'}`, t => {
+    rejectSupply(supplyFixture(t).runSupply('images', { [key]: value }));
+  });
+}
+for (const [label, mutate] of [
+  ['missing root', doc => { doc.packages = doc.packages.filter(pkg => pkg.primaryPackagePurpose !== 'CONTAINER'); }],
+  ['missing root purl', doc => { delete doc.packages.at(-1).externalRefs; }],
+  ['missing root purpose', doc => { delete doc.packages.at(-1).primaryPackagePurpose; }],
+  ['describes another package', doc => { for (const r of doc.relationships) if (r.relationshipType === 'DESCRIBES') r.relatedSpdxElement = doc.packages[0].SPDXID; }],
+  ['self-consistent false checksum', doc => {
+    const root = doc.packages.at(-1);
+    root.checksums[0].checksumValue = 'e'.repeat(64);
+    root.externalRefs[0].referenceLocator = root.externalRefs[0].referenceLocator.replace(/@sha256:[a-f0-9]{64}/, `@sha256:${'e'.repeat(64)}`);
+  }],
+]) test(`images independently rejects ${label}`, t => {
+  const f = supplyFixture(t); changeSbom(f, mutate); rejectSupply(f.runSupply());
+});
+
+
+// The config ID and manifest digest here are the two distinct observations supplied
+// with the blocker report. No production identity is learned from the SBOM itself.
+const capturedPrContext = {
+  GITHUB_SHA: '820bb3a2c5c7563c4ed16824db94fd5c2b979457', IMAGE_NAME: 'agent', TARGET_ARCH: 'arm64', RUNNER_ARCH: 'ARM64',
+  LOCAL_IMAGE_ID: 'sha256:4085cdfd221d3cbc588ef61757a8dc5f8e7f9c7956add9c746a18cfd6353cf27',
+  LOCAL_SBOM_DIGEST: 'sha256:4a86506b873e98e8872ee5e61682682752cdbc6a415ee26423caf2195928f6f3',
+  LOCAL_IDENTITY_KIND: 'containerd-manifest',
+};
+for (const [label, extra] of [
+  ['reported distinct config and manifest', {}],
+  ['missing manifest', { LOCAL_SBOM_DIGEST: '' }],
+  ['config substituted for manifest', { LOCAL_SBOM_DIGEST: capturedPrContext.LOCAL_IMAGE_ID }],
+  ['wrong manifest', { LOCAL_SBOM_DIGEST: `sha256:${'e'.repeat(64)}` }],
+  ['wrong config', { LOCAL_IMAGE_ID: `sha256:${'e'.repeat(64)}` }],
+  ['unproven store', { LOCAL_IDENTITY_KIND: '' }],
+]) test(`unmodified real pr-agent CLI: ${label}`, t => {
+  const f = supplyFixture(t);
+  rmSync(f.sbomFile);
+  writeFileSync(join(f.sbomDirectory, 'gromesh-agent-arm64.spdx.json'),
+    readFileSync(new URL('./fixtures/sbom/pr-agent/gromesh-agent-arm64.spdx.json', import.meta.url)));
+  const result = f.runSupply('pr', { ...capturedPrContext, ...extra });
+  if (label === 'reported distinct config and manifest') assert.equal(result.status, 0);
+  else rejectSupply(result);
+});
+
+
+test('tool versions come from bounded installed executable versions without uploading output', () => {
+  const execute = (command, args) => {
+    if (command === 'pnpm' && args[0] === '--version') return { status: 0, stdout: '10.28.0\n' };
+    if (command === 'pnpm') return { status: 0, stdout: 'Version 1.58.2\n' };
+    if (command === 'helm') return { status: 0, stdout: 'v3.17.1+g123abc' };
+    if (command === 'kind') return { status: 0, stdout: 'kind v0.27.0 go1.24.0 linux/amd64\n' };
+    if (command === 'kubectl') return { status: 0, stdout: JSON.stringify({ clientVersion: { gitVersion: 'v1.32.2' }, secret }) };
+    return { status: 0, stdout: secret };
+  };
+  assert.deepEqual(installedToolVersions('ui-acceptance', execute), { node: process.versions.node, pnpm: '10.28.0', playwright: '1.58.2' });
+  assert.deepEqual(installedToolVersions('mvp-e2e', execute), { node: process.versions.node, helm: '3.17.1', kind: '0.27.0', kubectl: '1.32.2' });
+  assert.deepEqual(installedToolVersions('kong-image-build', execute), { node: process.versions.node });
+  assert.deepEqual(installedToolVersions('product-e2e', () => ({ status: 1, stdout: secret })), { node: process.versions.node });
+});
+test('aggregates measured command reports and permits absent unexecuted commands only on failure', t => {
+  const { root, report, directory, file } = fixture(t, 'kong-image-build');
+  const second = join(root, 'second.json');
+  writeFileSync(report, JSON.stringify({ countUnit: 'commands', stats: { expected: 1, unexpected: 0, skipped: 0, flaky: 0, duration: 10 } }));
+  writeFileSync(second, JSON.stringify({ countUnit: 'commands', stats: { expected: 0, unexpected: 1, skipped: 0, flaky: 0, duration: 20 } }));
+  const args = ['generate', 'kong-image-build', '--directory', directory, '--report', report, '--report', second, '--report', join(root, 'unexecuted.json')];
+  assert.equal(run(args, { EVIDENCE_OUTCOME: 'failure' }).status, 0);
+  const evidence = JSON.parse(readFileSync(file));
+  assert.equal(evidence.countUnit, 'commands');
+  assert.equal(evidence.durationMs, 30);
+  assert.deepEqual(evidence.counts, { total: 2, passed: 1, failed: 1, skipped: 0, flaky: 0 });
+  rmSync(file);
+  rejected(run(args));
+  rejected(run(['generate', 'kong-image-build', '--directory', directory, '--report', report, '--report', report]));
+});

@@ -120,6 +120,7 @@ jobs:
               - .dockerignore
               - scripts/ci-pr-sbom.mjs
               - scripts/ci-supply-chain.mjs
+              - scripts/ci-image-identity.mjs
               - scripts/ci-evidence.mjs
               - .github/workflows/images.yml
               - images/**
@@ -214,7 +215,7 @@ jobs:
         run: node --test e2e/kind/n2/components/budgets.test.mjs e2e/kind/n2/components/scrub.test.mjs e2e/kind/n2/components/privileged.test.mjs
       - name: Structured CI evidence policy tests
         if: env.RUN_CODE == 'true'
-        run: node --test scripts/ci-evidence.test.mjs scripts/ci-pr-sbom.test.mjs
+        run: node --test scripts/ci-evidence.test.mjs scripts/ci-pr-sbom.test.mjs scripts/ci-image-identity.test.mjs scripts/ci-run-evidence.test.mjs
       # Plugin configs are validated by a real Kong (control-plane integration tests). A step, not a service: the
       # image is read from the compose default so image-digests never has to edit this workflow.
       - name: Start the Kong validator (compose default image)
@@ -254,14 +255,16 @@ jobs:
       - run: pnpm --filter @gromesh/ui exec playwright install --with-deps chromium
       - name: UI acceptance against Prism
         id: ui
-        run: pnpm --filter @gromesh/ui test:e2e
-      # Preserve the existing reporter: record the outcome without inventing test counts.
+        env:
+          PLAYWRIGHT_JSON_OUTPUT_FILE: ${{ runner.temp }}/ui-results.json
+        run: pnpm --filter @gromesh/ui test:e2e --reporter=list,json
+      # Reports stay local; the allowlisted artifact contains measured numeric statistics only.
       - name: Generate structured UI acceptance evidence
         id: generate-ui
         if: always()
         env:
           EVIDENCE_OUTCOME: ${{ steps.ui.outcome }}
-        run: node scripts/ci-evidence.mjs generate ui-acceptance
+        run: node scripts/ci-evidence.mjs generate ui-acceptance --report "$RUNNER_TEMP/ui-results.json"
       - name: Validate UI acceptance artifact allowlist
         id: validate-ui
         if: always() && steps.generate-ui.outcome == 'success'
@@ -568,11 +571,12 @@ jobs:
           kubectl wait --for=condition=Ready nodes --all --timeout=60s
       - name: MVP acceptance (Helm install → UI → publish → converge → dashboard → rollback → audit)
         id: mvp
-        run: bash e2e/kind/run.sh
+        run: node scripts/ci-run-evidence.mjs "$RUNNER_TEMP/mvp-results.json" bash e2e/kind/run.sh
       - name: Kubernetes diagnostics in the masked job log
         id: kind-diagnostics
         if: failure()
         run: |
+          node scripts/ci-run-evidence.mjs "$RUNNER_TEMP/diagnostics-results.json" bash -e -o pipefail <<'DIAGNOSTICS'
           kubectl get nodes -o wide
           kubectl get pods -A -o wide
           kubectl get events -A --sort-by=.lastTimestamp
@@ -586,19 +590,20 @@ jobs:
               kubectl -n "$namespace" logs "$pod" -c "$container" --prefix --previous || true
             done
           done
-      # run.sh has no structured reporter: record its outcome without inventing test counts.
+          DIAGNOSTICS
+      # Shell suites count executed commands, not individual assertions inside run.sh.
       - name: Generate structured MVP evidence
         id: generate-mvp
         if: failure()
         env:
           EVIDENCE_OUTCOME: ${{ steps.mvp.outcome }}
-        run: node scripts/ci-evidence.mjs generate mvp-e2e
+        run: node scripts/ci-evidence.mjs generate mvp-e2e --report "$RUNNER_TEMP/mvp-results.json"
       - name: Generate structured diagnostics outcome
         id: generate-diagnostics
         if: failure()
         env:
           EVIDENCE_OUTCOME: ${{ steps.kind-diagnostics.outcome }}
-        run: node scripts/ci-evidence.mjs generate kind-diagnostics
+        run: node scripts/ci-evidence.mjs generate kind-diagnostics --report "$RUNNER_TEMP/diagnostics-results.json"
       - name: Validate kind artifact allowlist
         id: validate-kind
         if: failure() && steps.generate-mvp.outcome == 'success' && steps.generate-diagnostics.outcome == 'success'

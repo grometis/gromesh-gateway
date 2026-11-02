@@ -54,7 +54,17 @@ function safeText(value, maximum = 160) {
 function syftProse(value, unicode = false) {
   text(value, 160, /^[\p{L}\p{M}0-9 .,():/+_@=*~`'"!?&;[\]-]+$/u, unicode);
   requireValid(!value.includes("://") && !value.includes(".."));
-  requireValid(!/(?:password|passwd|authorization|cookie|credential|api[ _-]?key|private[ _-]?key|access[ _-]?key|token|bearer|secret)\s*[=:]/i.test(value));
+  // Project descriptions legitimately mention cookie parsing and tokenizers. Reject
+  // credential words/phrases, and short encoded credential markers regardless of entropy.
+  requireValid(!/\b(?:password|passwd|authorization|credentials?|api[ _-]?key|private[ _-]?key|access[ _-]?key|bearer|secret)\b/i.test(value));
+  const terminology = value.replace(/\btoken types\b/ig, "types")
+    .replace(/\bdefinition for [a-z0-9-]+ token$/ig, "definition")
+    .replace(/\bcookie parsing\b/ig, "parsing");
+  requireValid(!/\b(?:token|cookie)\b/i.test(terminology));
+  for (const encoded of value.match(/[A-Za-z0-9+/_-]{8,}={0,2}/g) ?? []) {
+    const decoded = Buffer.from(encoded, "base64url").toString("utf8");
+    requireValid(!sensitiveTextPattern.test(decoded) && !credentialPattern.test(decoded));
+  }
   for (const word of value.match(/[\p{L}\p{M}0-9_+/=-]+/gu) ?? []) {
     // Descriptions contain camelCase API identifiers; comments keep the stricter 3.5 budget.
     requireValid(word.length < 32 && (word.length < 20 || entropy(word) < 4));
@@ -182,13 +192,12 @@ function externalRef(value, context, pkg) {
   text(value.referenceLocator, 512);
   if (value.referenceType === "purl") {
     requireValid(value.referenceCategory === "PACKAGE-MANAGER");
-    // Syft uses the local image config digest here, while the job digest identifies
-    // the published manifest. Bind each to its own source instead of conflating them.
+    // Syft reports the platform manifest with containerd, the config with classic Docker.
     if (value.referenceLocator.startsWith("pkg:oci/")) {
       requireValid(pkg.name === context.sourceName && pkg.primaryPackagePurpose === "CONTAINER");
       const imageChecksum = pkg.checksums?.find(item => item.algorithm === "SHA256")?.checksumValue;
       requireValid(typeof imageChecksum === "string" && /^[0-9a-f]{64}$/.test(imageChecksum));
-      if (context.mode === "pr") requireValid(imageChecksum === context.digest.slice(7));
+      requireValid(imageChecksum === context.sbomDigest.slice(7));
       requireValid(value.referenceLocator === `pkg:oci/${context.sourceName}@sha256:${imageChecksum}?arch=${context.arch}&tag=${context.digest.slice(7)}`);
       return;
     }
@@ -262,13 +271,8 @@ function externalRef(value, context, pkg) {
   }
 }
 function annotations(value) {
-  list(value, 4);
-  for (const item of value) {
-    shape(item, ["annotationDate", "annotationType", "annotator", "comment"]);
-    timestamp(item.annotationDate);
-    requireValid(item.annotationType === "OTHER" && creators.includes(item.annotator));
-    safeText(item.comment);
-  }
+  // These Syft inventories have no annotations. No arbitrary text is uploadable here.
+  list(value, 0);
 }
 function licenseId(value) {
   structuredText(value, 100, /^[A-Za-z0-9][A-Za-z0-9.-]*\+?$/);
@@ -328,14 +332,22 @@ function optionalMetadata(value, licenseIds, inventory = false) {
   if (value.comment !== undefined) {
     if (inventory && value.comment.startsWith("layerID:")) {
       text(value.comment, 80, /^layerID: sha256:[0-9a-f]{64}$/);
-    } else safeText(value.comment);
+    } else requireValid(false);
   }
-  if (value.copyrightText !== undefined) safeText(value.copyrightText);
+  if (value.copyrightText !== undefined) requireValid(["NOASSERTION", "NONE"].includes(value.copyrightText));
   for (const key of ["licenseConcluded", "licenseDeclared"]) {
     if (value[key] !== undefined) licenseExpression(value[key], licenseIds);
   }
   if (value.annotations !== undefined) annotations(value.annotations);
   if (value.checksums !== undefined) checksums(value.checksums);
+}
+
+function localIdentity(env) {
+  exactDigest(env.LOCAL_IMAGE_ID);
+  exactDigest(env.LOCAL_SBOM_DIGEST);
+  requireValid(["classic-config", "containerd-manifest"].includes(env.LOCAL_IDENTITY_KIND));
+  if (env.LOCAL_IDENTITY_KIND === "classic-config") requireValid(env.LOCAL_SBOM_DIGEST === env.LOCAL_IMAGE_ID);
+  return env.LOCAL_SBOM_DIGEST;
 }
 
 export function jobContext(env = process.env, kong = false, mode = "images") {
@@ -347,9 +359,8 @@ export function jobContext(env = process.env, kong = false, mode = "images") {
   text(sha, 40, /^[0-9a-f]{40}$/);
   if (mode === "pr") {
     requireValid(!kong);
-    // A PR has no published manifest: bind the same source format to its inspected local config digest.
-    exactDigest(env.LOCAL_IMAGE_ID);
-    return { name, arch, sha, mode, digest: env.LOCAL_IMAGE_ID,
+    const sbomDigest = localIdentity(env);
+    return { name, arch, sha, mode, sbomDigest, digest: env.LOCAL_IMAGE_ID,
       sourceName: `gromesh-${name}-${arch}-${sha}-${env.LOCAL_IMAGE_ID.slice(7)}` };
   }
   requireValid(mode === "images");
@@ -358,7 +369,9 @@ export function jobContext(env = process.env, kong = false, mode = "images") {
   text(env.GITHUB_REPOSITORY_OWNER, 39, /^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/);
   const image = `ghcr.io/${env.GITHUB_REPOSITORY_OWNER.toLowerCase()}/gromesh-${name}:${kong ? "3.9.4-" : ""}${sha}-${arch}`;
   requireValid(env.PUBLISHED_IMAGE === image);
-  return { name, arch, sha, digest: env.EXPECTED_DIGEST,
+  const sbomDigest = kong ? undefined : localIdentity(env);
+  if (!kong) requireValid(env.PUBLISHED_CONFIG_ID === env.LOCAL_IMAGE_ID);
+  return { name, arch, sha, mode, sbomDigest, digest: env.EXPECTED_DIGEST,
     sourceName: `gromesh-${name}-${arch}-${sha}-${env.EXPECTED_DIGEST.slice(7)}` };
 }
 function exactFile(directory, name, maximum) {
@@ -463,7 +476,7 @@ export function validateSbom(directory, context) {
       for (const ref of pkg.externalRefs) externalRef(ref, context, pkg);
     }
   }
-  if (context.mode === "pr") {
+  {
     const roots = doc.packages.filter(pkg => pkg.name === context.sourceName);
     requireValid(roots.length === 1 && roots[0].primaryPackagePurpose === "CONTAINER");
     requireValid(roots[0].externalRefs?.some(ref => ref.referenceType === "purl" && ref.referenceLocator.startsWith("pkg:oci/")));
