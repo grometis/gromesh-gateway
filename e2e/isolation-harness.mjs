@@ -17,7 +17,7 @@ export const root = fileURLToPath(new URL("../", import.meta.url));
 const ownedDocker = disposableDocker((args) => exec("docker", args, { cwd: root, timeout: 300_000, maxBuffer: 16 * 1024 * 1024 }));
 export const docker = (...args) => ownedDocker(args);
 // The same toolchain as apps/agent/Dockerfile.
-const GO_IMAGE = "golang:1.27.2-alpine";
+const GO_IMAGE = "golang:1.27.3-alpine@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb";
 export const ECHO_IMAGE = "traefik/whoami:v1.10.3";
 
 export async function kongImage() {
