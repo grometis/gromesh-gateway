@@ -118,6 +118,20 @@ test("strict standalone proves new resources and rejects an implicit image volum
   assert.ok(f.calls.some(args => args[0] === "rm" && args.includes(result.stdout)));
 });
 
+test("strict standalone healthchecks still require owned networking and explicit image storage", async () => {
+  const f = fixture();
+  const run = disposableDocker(f.execute, f.run, {bindRoots: []});
+  f.objects.set("image", {Config: {Volumes: {"/data": {}}}});
+  const health = ["--health-cmd", "wget http://$(hostname):8123/ping", "--health-interval", "2s",
+    "--health-timeout", "3s", "--health-retries", "30"];
+  await assert.rejects(run(["run", ...health, "image"]), /ownership/);
+  await assert.rejects(run(["run", ...health, "--tmpfs", "/data", "--network", "foreign", "image"]), /ownership/);
+  await run(["network", "create", "health-net"]);
+  await run(["run", "-d", "--name", "healthy-own", ...health, "--tmpfs", "/data", "--network", "health-net", "image"]);
+  await run(["exec", "healthy-own", "true"]);
+  await run(["rm", "-f", "healthy-own"]);
+});
+
 test("real failed child cannot expose token/password through its rejection", async () => {
   const {execFile} = await import("node:child_process");
   const {promisify} = await import("node:util");

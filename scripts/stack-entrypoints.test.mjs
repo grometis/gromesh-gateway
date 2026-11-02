@@ -59,7 +59,7 @@ async function trapped(entry, env = {}, snapshot = fixture(), setup = false) {
     rmSync(dir, { recursive: true, force: true });
   }
 }
-const standalone = ["e2e/retention-upgrade.mjs", "e2e/v2-flow.mjs"];
+const standalone = ["e2e/retention-upgrade.mjs", "e2e/v2-flow.mjs", "e2e/clickhouse-readiness.mjs"];
 const entries = readdirSync(join(root, "e2e")).filter(f => f.endsWith(".mjs") && !["docker-images.mjs", "isolation-harness.mjs"].includes(f)).map(f => "e2e/" + f);
 entries.push("deploy/observability/acceptance.mjs", "scripts/smoke.mjs", "scripts/assert-test-stack.mjs");
 for (const entry of entries) {

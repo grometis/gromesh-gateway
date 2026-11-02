@@ -151,7 +151,7 @@ jobs:
           CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
         ports: ["127.0.0.1:8123:8123"]
         options: >-
-          --health-cmd "wget -q -O /dev/null http://127.0.0.1:8123/ping" --health-interval 5s --health-timeout 5s --health-retries 20
+          --health-cmd "wget -q -O /dev/null http://$(hostname):8123/ping" --health-interval 5s --health-timeout 5s --health-retries 20
     env:
       TEST_DATABASE_URL: postgres://gromesh:gromesh@127.0.0.1:5432/gromesh
       KONG_VALIDATOR_URL: http://127.0.0.1:8011
@@ -391,6 +391,8 @@ jobs:
           docker compose --profile observability up -d --wait --no-deps vector
       - name: Fetch one-shot image metadata before guarded execution
         run: docker compose --profile '*' pull --ignore-buildable
+      - name: ClickHouse health rejects the initdb server
+        run: node e2e/clickhouse-readiness.mjs
       - name: Kong accepts the compiler output (contract example)
         run: pnpm smoke
       - name: Walking skeleton (API → compiler → Kong → upstream)
@@ -663,7 +665,7 @@ jobs:
           CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
         ports: ["127.0.0.1:8123:8123"]
         options: >-
-          --health-cmd "wget -q -O /dev/null http://127.0.0.1:8123/ping" --health-interval 5s --health-timeout 5s --health-retries 20
+          --health-cmd "wget -q -O /dev/null http://$(hostname):8123/ping" --health-interval 5s --health-timeout 5s --health-retries 20
     env:
       TEST_DATABASE_URL: postgres://gromesh:gromesh@127.0.0.1:5432/gromesh
       TEST_CLICKHOUSE_URL: http://127.0.0.1:8123
