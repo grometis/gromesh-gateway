@@ -196,6 +196,9 @@ jobs:
       - name: "N2 lab: budget readings, evidence redaction and the privileged destination's log"
         if: env.RUN_CODE == 'true'
         run: node --test e2e/kind/n2/components/budgets.test.mjs e2e/kind/n2/components/scrub.test.mjs e2e/kind/n2/components/privileged.test.mjs
+      - name: Artifact evidence redaction tests
+        if: env.RUN_CODE == 'true'
+        run: node --test scripts/redact-evidence.test.mjs
       # Plugin configs are validated by a real Kong (control-plane integration tests). A step, not a service: the
       # image is read from the compose default so image-digests never has to edit this workflow.
       - name: Start the Kong validator (compose default image)
@@ -399,8 +402,29 @@ jobs:
         run: |
           mkdir -p e2e/test-results
           docker compose --profile observability logs --no-color > e2e/test-results/compose.log 2>&1
-      - uses: actions/upload-artifact@v7
+      # Runner masks apply to job logs, not to files uploaded as artifacts.
+      - name: Remove compressed product evidence
+        id: prune-product
         if: failure()
+        run: |
+          for root in e2e/test-results e2e/playwright-report; do
+            [ ! -L "$root" ] || exit 1
+            if [ -d "$root" ]; then
+              find "$root" -type f \( -iname '*.zip' -o -iname '*.gz' -o -iname '*.tgz' -o -iname '*.br' -o -iname '*.zst' -o -iname '*.7z' \) -delete
+            fi
+          done
+          # Playwright index.html embeds report data as a base64 ZIP; literal redaction cannot inspect it.
+          rm -f e2e/playwright-report/index.html
+      - name: Redact product evidence
+        id: redact-product
+        if: failure() && steps.prune-product.outcome == 'success'
+        run: >-
+          node scripts/redact-evidence.mjs e2e/test-results/ e2e/playwright-report/ --env
+          POSTGRES_PASSWORD BOOTSTRAP_ADMIN_PASSWORD CLICKHOUSE_PASSWORD
+          CLICKHOUSE_READER_PASSWORD CLICKHOUSE_WRITER_PASSWORD GROMESH_COLLECTOR_TOKEN
+          GROMESH_ENCRYPTION_KEY GROMESH_FINGERPRINT_KEY
+      - uses: actions/upload-artifact@v7
+        if: failure() && steps.redact-product.outcome == 'success'
         with:
           name: product-e2e-failure
           path: |
@@ -529,21 +553,42 @@ jobs:
           kubectl wait --for=condition=Ready nodes --all --timeout=60s
       - name: MVP acceptance (Helm install → UI → publish → converge → dashboard → rollback → audit)
         run: bash e2e/kind/run.sh
-      - uses: actions/upload-artifact@v7
+      - name: Dump Kubernetes diagnostics
         if: failure()
+        run: |
+          bash deploy/helm/control-plane/ci/diagnostics.sh gromesh-mvp "$RUNNER_TEMP/kind-diagnostics"
+          kind export logs --name "$KIND_CLUSTER_NAME" "$RUNNER_TEMP/kind-diagnostics/kind-logs" || true
+      - name: Remove compressed kind evidence
+        id: prune-kind
+        if: failure()
+        run: |
+          for root in e2e/test-results-kind e2e/playwright-report-kind "$RUNNER_TEMP/kind-diagnostics"; do
+            [ ! -L "$root" ] || exit 1
+            if [ -d "$root" ]; then
+              find "$root" -type f \( -iname '*.zip' -o -iname '*.gz' -o -iname '*.tgz' -o -iname '*.br' -o -iname '*.zst' -o -iname '*.7z' \) -delete
+            fi
+          done
+          # The HTML report contains an embedded base64 ZIP too.
+          rm -f e2e/playwright-report-kind/index.html
+      # run.sh owns these credentials in a child shell; recover and consume them in memory in this step.
+      - name: Recover kind Secrets and redact all kind evidence
+        id: redact-kind-evidence
+        if: failure() && steps.prune-kind.outcome == 'success'
+        run: >-
+          node scripts/redact-evidence.mjs
+          e2e/test-results-kind/ e2e/playwright-report-kind/ "$RUNNER_TEMP/kind-diagnostics/"
+          --env GROMESH_DISPOSABLE_ID
+          --kube-secrets "kind-$KIND_CLUSTER_NAME" gromesh-mvp gromesh-mvp-defaults
+      - uses: actions/upload-artifact@v7
+        if: failure() && steps.redact-kind-evidence.outcome == 'success'
         with:
           name: mvp-e2e-failure
           path: |
             e2e/test-results-kind/
             e2e/playwright-report-kind/
           retention-days: 7
-      - name: Dump Kubernetes diagnostics
-        if: failure()
-        run: |
-          bash deploy/helm/control-plane/ci/diagnostics.sh gromesh-mvp "$RUNNER_TEMP/kind-diagnostics"
-          kind export logs --name "$KIND_CLUSTER_NAME" "$RUNNER_TEMP/kind-diagnostics/kind-logs" || true
       - name: Upload Kubernetes diagnostics
-        if: failure()
+        if: failure() && steps.redact-kind-evidence.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mvp-e2e-kind-diagnostics
