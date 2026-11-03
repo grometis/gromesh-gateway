@@ -108,7 +108,7 @@ test("a service row opens its detail; Editar is quiet and Excluir lives in the k
   await page.mouse.click(target.x + target.width / 2, target.y + target.height / 2);
   await expect(page.getByRole("heading", { level: 1 })).toContainText("orders");
   await expect(page.getByText("https://orders.internal:8443/v2")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Plugins do service" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Plugins do serviço", exact: true })).toBeVisible();
 });
 
 for (const { label, nodes, status, color, words } of [

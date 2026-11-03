@@ -111,7 +111,7 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
       {routes.isError && <p className="error">{statusMessage(routes.error)}</p>}
       {routes.isSuccess && items.length === 0 && <EmptyState title="Nenhuma rota encontrada." />}
       {items.length > 0 && (
-        <Table label={service ? "Rotas do serviço" : "Routes"} cards>
+        <Table label={service ? "Rotas do serviço" : "Rotas"} cards>
           <thead>
             <tr>
               <th>Rota → configuração e publicação / serviço</th>

@@ -20,7 +20,7 @@ export const destinations: readonly Destination[] = [
   { id: "N02", label: "Serviços", shortLabel: "Serviços", path: "/e/:envId/services", scope: "workspace", group: "gateway" },
   { id: "N03", label: "Serviço", shortLabel: "Serviço", path: "/e/:envId/services/:serviceId", scope: "workspace", parentId: "N02" },
   { id: "N04", label: "Rotas", shortLabel: "Rotas", path: "/e/:envId/routes", scope: "workspace", group: "gateway" },
-  { id: "N05", label: "Consumidores", shortLabel: "Consumidor", path: "/e/:envId/consumers", scope: "workspace", group: "gateway" },
+  { id: "N05", label: "Consumidores", shortLabel: "Consumidores", path: "/e/:envId/consumers", scope: "workspace", group: "gateway" },
   { id: "N06", label: "Consumidor", shortLabel: "Consumidor", path: "/e/:envId/consumers/:consumerId", scope: "workspace", parentId: "N05" },
   { id: "N07", label: "Plugins", shortLabel: "Plugins", path: "/e/:envId/plugins", scope: "workspace", group: "gateway" },
   { id: "N08", label: "Upstreams", shortLabel: "Upstreams", path: "/e/:envId/upstreams", scope: "workspace", group: "gateway" },

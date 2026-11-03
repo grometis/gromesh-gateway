@@ -62,7 +62,7 @@ test("service detail keeps properties and actions, with scoped routes and plugin
   await expect(routes).toHaveClass("cards");
   await expect(routes.getByRole("row").last()).toContainText("orders-api");
   await expect(page.getByRole("table", { name: "Plugins", exact: true })).toHaveClass("cards");
-  await expect(page.getByRole("heading", { name: "Plugins do service" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Plugins do serviço", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Mais ações para orders", exact: true }).click();
   await page.getByRole("menuitem", { name: "Excluir" }).click();
   const confirm = page.getByRole("dialog", { name: "Excluir serviço" });

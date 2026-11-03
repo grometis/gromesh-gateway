@@ -53,9 +53,12 @@ for (const width of [390, 1440]) {
     await setup(page);
     await page.goto(`/e/${W}/overview`);
     await expect(page.getByRole("region", { name: "Identidade da instância" })).toContainText("Instância DEV");
-    await expect(menu(page).getByRole("heading", { level: 2 })).toHaveText([
+    const headings = menu(page).getByRole("heading", { level: 2 });
+    const groups = [
       "Plataforma", "Workspace selecionado", "Gateway", "Operações e publicações", "Administração da instância", "Minha conta",
-    ], { useInnerText: true });
+    ];
+    await expect(headings).toHaveCount(groups.length);
+    for (const [index, label] of groups.entries()) await expect(headings.nth(index)).toHaveAccessibleName(label);
     await expect(menu(page).getByRole("link")).toHaveCount(18);
     for (const [name, path] of workspaceLinks) {
       const link = menu(page).getByRole("link", { name, exact: true });
@@ -163,6 +166,29 @@ test("existing entry, parent and analytics alias retain their current destinatio
   await expect(page).toHaveURL(`/e/${W}/metrics?routeId=${S}#traffic`);
   await assertActive(page, "Métricas");
 });
+
+for (const section of ["releases", "plugins"]) {
+  test(`${section} keeps legacy review in navigation without a v1 publication CTA in content`, async ({ page }) => {
+    await setup(page);
+    await page.goto(`/e/${W}/${section}`);
+    await expect(menu(page).getByRole("link", { name: "Revisar snapshot (legado)", exact: true })).toHaveAttribute("href", `/e/${W}/publish`);
+    const main = page.getByRole("main");
+    await expect(main.locator(`a[href="/e/${W}/publish"]`)).toHaveCount(0);
+    await expect(main.getByRole("button", { name: /^Publicar v\d/ })).toHaveCount(0);
+    const strip = main.getByRole("region", { name: "Publicação", exact: true });
+    if (section === "releases") await expect(strip).toHaveCount(0);
+    else await expect(strip).toHaveClass("publish-strip read-only");
+  });
+
+  test(`${section} does not invent legacy review for a Workspace without a v1 environment`, async ({ page }) => {
+    await setup(page);
+    await page.route("**/api/v1/environments", (route) => route.fulfill({ json: { items: [] } }));
+    await page.goto(`/e/${W}/${section}`);
+    await expect(page.getByLabel("Workspace v2", { exact: true })).toHaveValue(W);
+    await expect(menu(page)).toContainText("Nenhum ambiente legado disponível.");
+    await expect(menu(page).getByRole("link", { name: "Revisar snapshot (legado)", exact: true })).toHaveCount(0);
+  });
+}
 
 for (const role of ["admin", "editor", "viewer"] as const) {
   test(`${role} keeps current navigation permissions and direct admin guards`, async ({ page }) => {

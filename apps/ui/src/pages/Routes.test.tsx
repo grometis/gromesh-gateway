@@ -239,6 +239,13 @@ async function screen(stored: WorkspaceRoute[] = [], options: {
 const pathless = () => route({ pathCompatibility: "legacy-preserved", paths: [], hosts: ["boletos.example"], methods: ["GET"], tags: ["legado"] });
 
 describe("routes screen", () => {
+  it("exposes the route list as Rotas to assistive technology", async () => {
+    const view = await screen([route()]);
+    const table = view.container.findAll((node) => node.tagName === "TABLE" && node.getAttribute("aria-label") === "Rotas");
+    expect(table).toHaveLength(1);
+    expect(table[0]!.textContent).toContain("recarga");
+  });
+
   it.each([
     ["create", "workspace"], ["create", "environment"],
     ["edit", "workspace"], ["edit", "environment"],

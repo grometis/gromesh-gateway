@@ -142,26 +142,28 @@ describe("workspace releases", () => {
     client.clear();
   });
 
-  it.each(["releases", "releases/", "services", "services/service-id", "routes", "variables", "consumers", "consumers/consumer-id", "plugins", "upstreams", "certificates", "publish", "publications", "publications/3", "clusters", "overview", "metrics", "analytics", "requests"])("keeps the v1 strip exclusively outside Releases (%s)", async (section) => {
+  it.each(["releases", "releases/", "services", "services/service-id", "routes", "variables", "consumers", "consumers/consumer-id", "plugins", "upstreams", "certificates", "publish", "publications", "publications/3", "clusters", "overview", "metrics", "analytics", "requests"])("keeps v1 publication out of Releases content and only informational on Plugins (%s)", async (section) => {
     await load(() => new Promise(() => {}));
     const { Shell } = await import("../components/Shell");
     const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity } } });
-    client.setQueryData(["environments"], { items: [] });
+    client.setQueryData(["environments"], { items: [{ id: W, name: "Cobrança" }] });
     client.setQueryData(["environment", W], { currentVersion: 3, hasUnpublishedChanges: true });
     const html = renderToStaticMarkup(<QueryClientProvider client={client}>
       <MemoryRouter initialEntries={[`/e/${W}/${section}`]}>
         <Routes><Route path="/e/:envId/*" element={<Shell />} /></Routes>
       </MemoryRouter>
     </QueryClientProvider>);
+    expect(html).toContain('aria-label="Revisar snapshot (legado)"');
+    const main = html.split("<main")[1]!.split("</main>")[0]!;
     if (section.startsWith("releases")) {
-      expect(html).not.toContain('aria-label="Publicação"');
-      expect(html).not.toContain(`/e/${W}/publish"`);
+      expect(main).not.toContain('aria-label="Publicação"');
+      expect(main).not.toContain(`/e/${W}/publish"`);
     } else {
-      expect(html).toContain('aria-label="Publicação"');
+      expect(main).toContain('aria-label="Publicação"');
       if (section === "plugins") {
-        expect(html).not.toContain(`/e/${W}/publish"`);
-        expect(html).not.toContain('class="publish"');
-      } else expect(html).toContain(`/e/${W}/publish"`);
+        expect(main).not.toContain(`/e/${W}/publish"`);
+        expect(main).not.toContain('class="publish"');
+      } else expect(main).toContain(`/e/${W}/publish"`);
     }
     client.clear();
   });

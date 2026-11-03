@@ -69,7 +69,8 @@ async function setup(page: Page, options: {
 test.afterEach(async ({ page }) => {
   await expect(page.getByRole("region", { name: "Publicação", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /^Publicar v\d/ })).toHaveCount(0);
-  await expect(page.locator(`a[href="/e/${W}/publish"], a[href="/e/${B}/publish"]`)).toHaveCount(0);
+  // C keeps N12 in navigation; Releases content must never offer v1 publication.
+  await expect(page.getByRole("main").locator(`a[href="/e/${W}/publish"], a[href="/e/${B}/publish"]`)).toHaveCount(0);
 });
 
 test("publishes an immutable release through v2 without deploying or calling v1 snapshots", async ({ page }) => {
