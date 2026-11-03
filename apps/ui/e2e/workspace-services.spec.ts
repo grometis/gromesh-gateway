@@ -51,6 +51,7 @@ async function setup(page: Page, options: {
       return route.fulfill({ status: 500, json: { title: "Unexpected mutation", status: 500 } });
     }
     if (path === "/api/v1/environments") return route.fulfill({ json: pageOf([environment, { ...environment, id: B, name: "Recargas", publishMode: "manual" }]) });
+    if (path === "/api/v2/workspaces") return route.fulfill({ json: pageOf([workspace, { ...workspace, id: B, key: B, name: "Recargas", slug: "recargas", status: "active" }]) });
     if (path === `/api/v1/environments/${W}`) {
       if (options.hold === "environment") await held;
       return route.fulfill({ json: environment });
@@ -261,7 +262,7 @@ test("switching workspace closes a service form and discards its input", async (
   await page.getByRole("button", { name: "Editar", exact: true }).click();
   await page.getByRole("dialog").getByLabel("Nome", { exact: true }).fill("nao-reaproveitar");
   // The selector sits behind the modal; force only the selection so the SPA stays mounted.
-  await page.getByLabel("Workspace", { exact: true }).selectOption(B, { force: true });
+  await page.getByLabel("Ambiente (legado)", { exact: true }).selectOption(B, { force: true });
   await expect(page).toHaveURL(`/e/${B}/services`);
   await expect(page.getByRole("heading", { name: "Services", exact: true })).toBeVisible();
   await expect(page.getByRole("dialog")).toHaveCount(0);

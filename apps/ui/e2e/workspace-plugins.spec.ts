@@ -43,6 +43,7 @@ async function setup(page: Page, options: { archived?: boolean; auto?: boolean; 
     }
     const environment = (id: string) => ({ id, name: id === A ? "Cobrança" : "Recargas", publishMode: options.auto && id === A ? "auto" : "manual", currentVersion: null, hasUnpublishedChanges: false, ...timestamps });
     if (path === "/api/v1/environments") return route.fulfill({ json: pageOf([environment(A), environment(B)]) });
+    if (path === "/api/v2/workspaces") return route.fulfill({ json: pageOf([A, B].map((id) => ({ id, key: id, name: environment(id).name, slug: id === A ? "billing" : "recargas", status: options.archived && id === A ? "archived" : "active", activeRelease: null }))) });
     if (path === "/api/v1/plugin-schemas") return route.fulfill({ json: { kongVersion: "3.9.4", items: [{ name: "rate-limiting", category: "traffic-control", supportedInDbless: true, source: "bundled" }] } });
     if (path === "/api/v1/plugin-schemas/rate-limiting") return route.fulfill({ json: schema });
     for (const id of [A, B]) {
@@ -137,7 +138,7 @@ test("requires an explicit workspace scope and isolates an open form when switch
   await expect(page.getByRole("alert")).toContainText("Escolha ao menos um escopo");
   expect(fake.writes).toEqual([]);
   await page.getByLabel("password", { exact: true }).fill("secret-of-A");
-  await page.getByLabel("Workspace", { exact: true }).selectOption(B, { force: true });
+  await page.getByLabel("Ambiente (legado)", { exact: true }).selectOption(B, { force: true });
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(page.getByText("Nenhum plugin neste Workspace.")).toBeVisible();
   await page.getByRole("button", { name: "Novo plugin" }).click();

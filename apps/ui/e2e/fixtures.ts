@@ -16,6 +16,12 @@ const hasSession = (cookie: string) => /(?:^|;\s*)gromesh_session=/.test(cookie)
 async function bridgeV2(route: Route) {
   const request = route.request();
   const url = new URL(request.url());
+  if (url.pathname === "/api/v2/workspaces" && request.method() === "GET") {
+    const response = await route.fetch({ url: new URL(`/api/v1/environments${url.search}`, url).toString() });
+    if (!response.ok()) return route.fulfill({ response });
+    const json = await response.json() as { items: { id: string; name: string; currentVersion?: number | null }[]; nextCursor?: string | null };
+    return route.fulfill({ response, json: { ...json, items: json.items.map((e) => ({ id: e.id, key: e.id, name: e.name, slug: normalizeSlug(e.name) || "workspace", status: "active", activeRelease: e.currentVersion ?? null })) } });
+  }
   const [, workspaceId, rest = ""] = /^\/api\/v2\/workspaces\/([^/]+)(\/.*)?$/.exec(url.pathname) ?? [];
   const kind = /^\/(services|routes|upstreams|consumers|plugins)\b/.exec(rest)?.[1];
   if (!workspaceId || (rest && !kind)) return route.fulfill({ status: 404, json: { title: "Not Found", status: 404 } });
@@ -40,8 +46,11 @@ async function bridgeV2(route: Route) {
 
 export const test = base.extend<{ cookieSession: void; gatewayV2: void }>({
   gatewayV2: [async ({ page }, use) => {
+    // Instance metadata needs an instance grant; workspace-only readers retain their contextual access.
+    await page.route("**/api/v2/workspace-creation-policy", (route) => route.fulfill({ status: 403, json: { title: "Forbidden", status: 403 } }));
     // A request still in flight when the test ends has no page left to answer.
     await page.route("**/api/v2/workspaces/**", (route) => bridgeV2(route).catch(() => {}));
+    await page.route(/^https?:\/\/[^/]+\/api\/v2\/workspaces(?:\?|$)/, (route) => bridgeV2(route).catch(() => {}));
     await use();
   }, { auto: true }],
   cookieSession: [async ({ page }, use) => {

@@ -596,3 +596,18 @@ table.numeric td, table.numeric th { white-space: nowrap; }
   .audit-event table.cards td { padding: 0; }
   .audit-event .service-properties { padding: 0; }
 }
+
+/* Context identities stay textual, including when no authorized stage is available. */
+.instance-context, .global-context, .workspace-context { font-size: var(--text-sm); overflow-wrap: anywhere; min-width: 0; }
+.instance-context { display: flex; flex-direction: column; gap: var(--space-1); }
+.instance-origin { overflow-wrap: anywhere; }
+.menu .instance-origin, .menu .workspace-context { color: var(--ink-muted); }
+.menu .env p, .global-context p { margin: var(--space-2) 0 0; }
+.menu .context-return { display: inline-flex; align-items: center; min-height: 40px; color: var(--ink-text); white-space: normal; }
+.login-origin { font-size: var(--text-sm); margin: var(--space-2) 0 var(--space-4); }
+@media (max-width: 900px) {
+  .menu .instance-context, .menu .global-context { flex-basis: 100%; }
+  .menu .env label { position: static; width: auto; height: auto; overflow: visible; clip: auto; }
+  .menu .account { flex-wrap: wrap; max-width: 100%; }
+  .menu .account .who { display: inline; overflow-wrap: anywhere; min-width: 0; }
+}

@@ -89,7 +89,7 @@ async function fakeApi(page: Page, fake: Fake) {
     const method = request.method();
     const body = (request.postData() ? request.postDataJSON() : null) as Record<string, unknown> | null;
     record(method, path, body);
-    if (path === "/workspace-creation-policy") {
+    if (path === "/workspace-creation-policy" && method === "GET") {
       return route.fulfill({ json: { mode: "autonomous", creatorBecomesAdmin: false, updatedAt: null, updatedBy: null, workspacesMode: "lab", stage: "dev", caller: { canCreate: true, canRequest: false, canDecide: false } } });
     }
     if (path === "/workspaces" && method === "GET") return route.fulfill({ json: { items: fake.workspaces, nextCursor: null } });
@@ -185,7 +185,7 @@ async function signIn(page: Page, fake: Fake) {
 }
 
 const menu = (page: Page) => page.getByRole("navigation", { name: "Menu principal" });
-const selector = (page: Page) => page.getByLabel("Workspace", { exact: true });
+const selector = (page: Page) => page.getByLabel("Workspace v2", { exact: true });
 
 function trackRouteWrites(page: Page) {
   const writes: string[] = [];

@@ -190,7 +190,7 @@ test("admin pagina usuários, cria, altera papel e ativo e confirma exclusão", 
   await login(page);
   await page.getByRole("link", { name: "Usuários", exact: true }).click();
   await expect(page.getByRole("table", { name: "Usuários", exact: true })).toHaveClass("cards");
-  await page.getByRole("button", { name: "Carregar mais" }).click();
+  await page.getByRole("button", { name: "Carregar mais", exact: true }).click();
   await expect(page.getByRole("row").filter({ hasText: viewer.email })).toBeVisible();
   await page.getByRole("button", { name: "Novo usuário" }).click();
   const form = page.getByRole("dialog", { name: "Novo usuário" });
@@ -282,7 +282,7 @@ test("audit mostra publicação com autor, antes/depois e filtra com cursor", as
   expect(queries.at(-1)?.get("limit")).toBe("25");
   expect(queries.at(-1)?.get("from")).toMatch(/^2026-10-15T\d{2}:00:00.000Z$/);
   expect(queries.at(-1)?.get("to")).toMatch(/^2026-10-16T\d{2}:00:00.000Z$/);
-  await page.getByRole("button", { name: "Carregar mais" }).click();
+  await page.getByRole("button", { name: "Carregar mais", exact: true }).click();
   await expect(page.getByText("old.internal", { exact: false })).toBeVisible();
   expect(queries.at(-1)?.get("cursor")).toBe("next-audit");
   expect(queries.at(-1)?.get("actorId")).toBe(admin.id);

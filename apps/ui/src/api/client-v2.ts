@@ -1,5 +1,5 @@
 import createClient from "openapi-fetch";
-import { ApiError, sessionMiddleware } from "./client";
+import { ApiError, sessionMiddleware, unwrap } from "./client";
 import type { components, paths } from "./schema-v2";
 
 type Schemas = components["schemas"];
@@ -45,3 +45,15 @@ export function problemCode(err: unknown): string | null {
   const { code } = problem as Record<string, unknown>;
   return typeof code === "string" ? code : null;
 }
+
+export const creationPolicyQuery = {
+  queryKey: ["workspace-creation-policy"],
+  queryFn: () => unwrap(apiV2.GET("/workspace-creation-policy")),
+};
+
+export const workspacesQuery = {
+  queryKey: ["workspaces"],
+  queryFn: ({ pageParam }: { pageParam: string }) => unwrap(apiV2.GET("/workspaces", { params: { query: pageParam ? { cursor: pageParam } : {} } })),
+  initialPageParam: "",
+  getNextPageParam: (page: WorkspacePage) => page.nextCursor ?? undefined,
+};

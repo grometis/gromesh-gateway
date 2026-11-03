@@ -1,10 +1,13 @@
+import { useEffect, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Navigate, NavLink, Outlet, useLocation, useMatch, useNavigate, useParams } from "react-router";
-import { api, unwrap } from "../api/client";
+import { api, ApiError, unwrap } from "../api/client";
 import { statusMessage } from "../api/errors";
 import { effectiveRole, useAuth } from "../auth";
 import { Brand } from "./Brand";
 import { PublishStrip } from "./PublishStrip";
+import { InstanceContext } from "./InstanceContext";
+import { WorkspaceContext, WorkspaceSelector } from "./WorkspaceContext";
 
 export const environmentsQuery = { queryKey: ["environments"], queryFn: () => unwrap(api.GET("/environments")) };
 
@@ -53,6 +56,8 @@ export function FirstEnvironment() {
   return <Navigate to={`/e/${first.id}/services`} replace />;
 }
 
+const ROLE_LABELS = { viewer: "Leitor", editor: "Editor", admin: "Administrador", none: "Sem acesso" } as const;
+
 const GATEWAY = [
   ["services", "Services"],
   ["routes", "Routes"],
@@ -74,14 +79,31 @@ const OPERATION = [
 export function Shell() {
   const { envId: routeEnvId } = useParams();
   const isReleasesRoute = useMatch("/e/:envId/releases");
+  const isAccountRoute = useMatch("/tokens");
+  const isWorkspacesRoute = useMatch("/workspaces");
+  const workspaceRoute = useMatch("/e/:envId/:section/*");
+  const workspaceSection = workspaceRoute?.params.section?.toLowerCase();
+  const hasWorkspaceSelector = !!isWorkspacesRoute || ["services", "routes", "variables", "plugins", "releases"].includes(workspaceSection ?? "");
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const envs = useVisibleEnvironments();
-  const envId = routeEnvId ?? envs.data?.[0]?.id ?? "";
+  const [previousEnvId, setPreviousEnvId] = useState<string | undefined>();
+  const validRoute = envs.isSuccess && envs.data.some((e) => e.id === routeEnvId);
+  const previousEnv = envs.isSuccess && !envs.isFetching ? envs.data.find((e) => e.id === previousEnvId) : undefined;
+  const envId = validRoute ? routeEnvId! : !routeEnvId ? previousEnv?.id ?? "" : "";
+  useEffect(() => { if (validRoute) setPreviousEnvId(routeEnvId); }, [validRoute, routeEnvId]);
+  const contextMessage = envs.isPending ? "Carregando ambientes legados…"
+    : envs.isError ? envs.error instanceof ApiError && envs.error.status === 403
+      ? "Sem permissão para listar ambientes legados."
+      : "Não foi possível carregar os ambientes legados."
+    : envs.data.length === 0 ? "Nenhum ambiente legado disponível."
+    : !validRoute ? "Ambiente legado indisponível para esta URL." : null;
+  const legacyRole = effectiveRole(user, routeEnvId);
   const signOut = useMutation({ mutationFn: logout });
 
   const switchEnv = (id: string) => {
+    if (!envs.isSuccess || !envs.data.some((e) => e.id === id)) return;
     // Keep the current section when switching environments.
     const section = routeEnvId ? location.pathname.split("/")[3] ?? "services" : "services";
     navigate(`/e/${id}/${section}`);
@@ -91,16 +113,24 @@ export function Shell() {
     <div className="app">
       <aside className="menu">
         <Brand />
-        <div className="env">
-          <label htmlFor="env-select">Workspace</label>
-          <select id="env-select" value={envId} onChange={(e) => switchEnv(e.target.value)}>
-            {envs.data?.map((e) => (
-              <option key={e.id} value={e.id}>
-                {e.name}
-              </option>
-            ))}
-          </select>
-        </div>
+        <InstanceContext />
+        {hasWorkspaceSelector && <WorkspaceSelector id={routeEnvId} onSelect={(id) => navigate(`/e/${id}/${workspaceSection ?? "services"}`)} />}
+        {routeEnvId ? (
+          <div className="env">
+            <label htmlFor="env-select">Ambiente (legado)</label>
+            <select id="env-select" value={validRoute ? routeEnvId : ""} disabled={!envs.isSuccess || envs.data.length === 0} aria-describedby={contextMessage ? "env-context-message" : undefined} onChange={(e) => switchEnv(e.target.value)}>
+              {!validRoute && <option value="" disabled>Selecione um ambiente legado</option>}
+              {envs.isSuccess && envs.data.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+            </select>
+            {contextMessage && <p id="env-context-message" role={envs.isError ? "alert" : "status"}>{contextMessage}</p>}
+            {validRoute && <WorkspaceContext key={routeEnvId} id={routeEnvId} />}
+          </div>
+        ) : (
+          <div className="global-context">
+            <p>{isAccountRoute ? "Escopo: minha conta nesta instância" : "Escopo: esta instância"}</p>
+            {previousEnv && <NavLink className="context-return" to={`/e/${previousEnv.id}/services`}>Voltar ao ambiente legado {previousEnv.name}</NavLink>}
+          </div>
+        )}
         <nav aria-label="Menu principal">
           {envId && (
             <>
@@ -116,7 +146,7 @@ export function Shell() {
         </nav>
         <div className="account">
           <span className="who">
-            {user?.name} · {effectiveRole(user, routeEnvId)}
+            {user?.name} · Papel legado: {legacyRole ? ROLE_LABELS[legacyRole] : "Não informado"}
           </span>
           <button type="button" disabled={signOut.isPending} onClick={() => signOut.mutate()}>
             {signOut.isPending ? "Saindo…" : "Sair"}
