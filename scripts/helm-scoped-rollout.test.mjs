@@ -61,7 +61,7 @@ function fixture() {
   target[0].spec.template.spec.containers[0].image = image("b");
   const live = structuredClone(current);
   for (const obj of live) Object.assign(obj.metadata, { namespace: "dev", uid: `uid-${obj.metadata.name}`, resourceVersion: "42" });
-  const f = { current, target, live, rollback: structuredClone(current), hooks: [hook()], calls: [], output: [],
+  const f = { current, target, live, replicaSets: [], pods: [], rollback: structuredClone(current), hooks: [hook()], calls: [], output: [],
     config: { "current-context": "lab", contexts: [{ name: "lab", context: { cluster: "lab-cluster" } }],
       clusters: [{ name: "lab-cluster", cluster: { server: "https://cluster.example", "certificate-authority-data": ca } }] },
     uid: "cluster-uid", history: [{ revision: 4, status: "superseded" }, { revision: 5, status: "deployed" }],
@@ -74,6 +74,8 @@ function fixture() {
       if (args.includes("kube-system")) return JSON.stringify({ metadata: { name: "kube-system", uid: f.uid } });
       if (args.includes("get")) {
         const pos = args.indexOf("get");
+        if (args[pos + 1] === "ReplicaSet") return list(f.replicaSets);
+        if (args[pos + 1] === "Pod") return list(f.pods);
         const obj = f.live.find(v => v.kind === args[pos + 1] && v.metadata.name === args[pos + 2]);
         return JSON.stringify(obj ?? {});
       }
@@ -91,6 +93,8 @@ function fixture() {
       if (args.includes("--dry-run=server")) return JSON.stringify({ name: "cp", namespace: "dev", version: 6,
         manifest: list(f.target), hooks: f.hooks });
       assert.ok(args.includes("--post-renderer"));
+      f.live.find(v => v.kind === "Deployment" && v.metadata.name === "cp-control-plane-ui")
+        .spec.template.spec.containers.find(v => v.name === "ui").image = image("b");
       return "applied";
     }
     assert.equal(file, "image-proof");
@@ -130,7 +134,7 @@ test("apply is explicit after rollback and image proof, followed by live verific
   assert.ok(writes(f)[0].args.includes("--no-hooks"));
   assert.ok(writes(f)[0].args.includes("--post-renderer"));
   const after = f.calls.slice(f.calls.indexOf(writes(f)[0]) + 1);
-  assert.equal(after.length, f.current.length);
+  assert.equal(after.length, f.current.length + 2);
   assert.ok(after.every(c => c.file === "kubectl" && c.args.includes("get")));
 });
 
@@ -284,6 +288,66 @@ for (const stage of ["initial", "immediate"]) for (const drift of ["missing", "r
     assert.equal(writes(f).length, 0);
   });
 }
+for (const stage of ["initial", "immediate"]) for (const unexpected of [image("b"), image("c")]) {
+  test(`preparation refuses unexpected live image: ${stage} ${unexpected}`, async () => {
+    const f = fixture(), execute = f.execute;
+    const change = () => { f.live[0].spec.template.spec.containers[0].image = unexpected; };
+    if (stage === "initial") change();
+    else f.execute = async (file, args, io) => { const out = await execute(file, args, io); if (file === "image-proof") change(); return out; };
+    await assert.rejects(f.run({ ...options(), mode: "apply" }), /live.*image/i);
+    assert.equal(writes(f).length, 0);
+  });
+}
+for (const unexpected of [image("a"), image("c")]) {
+  test(`post-apply refuses a retained or third live image: ${unexpected}`, async () => {
+    const f = fixture(), execute = f.execute;
+    f.execute = async (file, args, io) => {
+      const out = await execute(file, args, io);
+      if (file === "helm" && args[0] === "upgrade" && !args.includes("--dry-run=server"))
+        f.live[0].spec.template.spec.containers[0].image = unexpected;
+      return out;
+    };
+    await assert.rejects(f.run({ ...options(), mode: "apply" }), /post-apply verification failed:.*live.*image.*\nRollback command/);
+    assert.equal(writes(f).length, 1);
+  });
+}
+function readyPods(f, imageID) {
+  const owner = (kind, uid) => [{ kind, uid, controller: true }];
+  f.replicaSets = [{ metadata: { namespace: "dev", uid: "ui-rs", ownerReferences: owner("Deployment", f.live[0].metadata.uid) } }];
+  f.pods = [{ metadata: { namespace: "dev", name: "ui-pod", ownerReferences: owner("ReplicaSet", "ui-rs") },
+    spec: { containers: [{ name: "ui", image: image("b") }] },
+    status: { conditions: [{ type: "Ready", status: "True" }], containerStatuses: [{ name: "ui", ready: true, image: image("b"), imageID }] } }];
+}
+for (const imageID of [image("b"), `docker-pullable://${image("b")}`, `containerd://sha256:${"b".repeat(64)}`]) {
+  test(`post-apply accepts Ready container digest: ${imageID}`, async () => {
+    const f = fixture(); readyPods(f, imageID);
+    await f.run({ ...options(), mode: "apply" });
+    assert.equal(writes(f).length, 1);
+  });
+}
+for (const [name, mutate] of [
+  ["old digest", p => { p.status.containerStatuses[0].imageID = image("a"); }],
+  ["third digest", p => { p.status.containerStatuses[0].imageID = image("c"); }],
+  ["missing imageID", p => { delete p.status.containerStatuses[0].imageID; }],
+  ["digest suffix spoof", p => { p.status.containerStatuses[0].imageID += "extra"; }],
+  ["missing status", p => { p.status.containerStatuses = []; }],
+  ["wrong pod image", p => { p.spec.containers[0].image = image("c"); }],
+]) test(`post-apply refuses Ready container image drift: ${name}`, async () => {
+  const f = fixture(); readyPods(f, image("b")); mutate(f.pods[0]);
+  await assert.rejects(f.run({ ...options(), mode: "apply" }), /post-apply verification failed:.*image.*\nRollback command/);
+  assert.equal(writes(f).length, 1);
+});
+test("post-apply refuses missing Ready pod evidence when Deployment reports ready replicas", async () => {
+  const f = fixture(); f.live[0].status = { readyReplicas: 2 };
+  await assert.rejects(f.run({ ...options(), mode: "apply" }), /post-apply verification failed:.*Ready.*\nRollback command/);
+});
+test("post-apply ignores non-Ready imageIDs and pods outside the Deployment ownership chain", async () => {
+  const f = fixture(); readyPods(f, image("a"));
+  const other = structuredClone(f.pods[0]); other.metadata.ownerReferences[0].uid = "unrelated-rs";
+  f.pods.push(other);
+  f.pods[0].status = { containerStatuses: [{ name: "ui", ready: false, imageID: image("a") }] };
+  await f.run({ ...options(), mode: "apply" });
+});
 test("authorized Deployment proof permits only its named image path, with API defaults normalized", async () => {
   const f = fixture(), execute = f.execute, live = f.live[0];
   Object.assign(live.spec, { revisionHistoryLimit: 10, progressDeadlineSeconds: 600 });
@@ -366,7 +430,7 @@ let out;
 if (tool === "kubectl") {
   if (args.includes("config")) out = f.config;
   else if (args.includes("kube-system")) out = {metadata:{name:"kube-system", uid:f.uid}};
-  else if (args.includes("get")) { const pos = args.indexOf("get"); out = f.live.find(v => v.kind === args[pos+1] && v.metadata.name === args[pos+2]) ?? {}; }
+  else if (args.includes("get")) { const pos = args.indexOf("get"); out = args[pos+1] === "ReplicaSet" ? list(f.replicaSets) : args[pos+1] === "Pod" ? list(f.pods) : f.live.find(v => v.kind === args[pos+1] && v.metadata.name === args[pos+2]) ?? {}; }
   else if (args.includes("create") && args.includes("--dry-run=client")) out = JSON.parse(readFileSync(0,"utf8"));
   else throw Error("unexpected kubectl call");
 } else if (tool === "helm") {
@@ -382,6 +446,7 @@ if (tool === "kubectl") {
       if (process.env.DRIFT_LIVE === "missing") f.live.splice(5, 1);
       if (process.env.DRIFT_LIVE === "recreated") f.live[5].metadata.uid = "new-uid";
       if (process.env.DRIFT_LIVE === "spec") f.live[5].spec.ports[0].port = 80;
+      if (process.env.DRIFT_LIVE === "image") f.live[0].spec.template.spec.containers[0].image = f.target[0].spec.template.spec.containers[0].image;
       writeFileSync(process.env.SCOPED_FIXTURE, JSON.stringify(f));
     }
     if (process.env.DRIFT_HOOKS) {
@@ -402,6 +467,8 @@ if (tool === "kubectl") {
     if (process.env.DRIFT_AFTER_APPLY === "missing") f.live.splice(5, 1);
     if (process.env.DRIFT_AFTER_APPLY === "recreated") f.live[5].metadata.uid = "recreated-after-apply";
     if (process.env.DRIFT_AFTER_APPLY === "spec") f.live[5].spec.ports[0].port = 80;
+    if (process.env.DRIFT_AFTER_APPLY === "old-image") f.live[0].spec.template.spec.containers[0].image = f.current[0].spec.template.spec.containers[0].image;
+    if (process.env.DRIFT_AFTER_APPLY === "third-image") f.live[0].spec.template.spec.containers[0].image = "registry.example/gromesh-ui@sha256:" + "c".repeat(64);
     writeFileSync(process.env.SCOPED_FIXTURE, JSON.stringify(f));
     out = "simulated apply";
   }
@@ -423,6 +490,7 @@ console.log(typeof out === "string" ? out : JSON.stringify(out));
     const env = { PATH: dir, SCOPED_FIXTURE: snapshot, SCOPED_CALLS: calls, HELM_KUBEAPISERVER: "https://wrong.example", HELM_KUBEINSECURE_SKIP_TLS_VERIFY: "true" };
     const script = new URL("./helm-scoped-rollout.mjs", import.meta.url).pathname;
     for (const mode of [[], ["--apply"]]) {
+      writeFileSync(snapshot, JSON.stringify(f));
       writeFileSync(calls, "");
       const result = await promisify(execFile)(process.execPath, [script, ...argv, "--no-hooks", ...mode], { env });
       const plan = JSON.parse(result.stdout);
@@ -433,6 +501,7 @@ console.log(typeof out === "string" ? out : JSON.stringify(out));
       assert.equal(upgrades.length, mode.length);
       assert.ok(trace.some(c => c.tool === "kubectl" && c.args.includes("create")));
     }
+    writeFileSync(snapshot, JSON.stringify(f));
     writeFileSync(calls, "");
     await assert.rejects(promisify(execFile)(process.execPath, [script, ...argv, "--no-hooks", "--apply"], {
       env: { ...env, FAIL_IMAGE_PROOF: "1" },
@@ -446,10 +515,11 @@ console.log(typeof out === "string" ? out : JSON.stringify(out));
     const hookArgv = [...argv, "--authorize-hook", JSON.stringify(authorize(f.hooks[0])), "--apply"];
     const appliedHooks = await promisify(execFile)(process.execPath, [script, ...hookArgv], { env });
     assert.equal(JSON.parse(appliedHooks.stdout).hooks[0].action, "authorized");
+    writeFileSync(snapshot, JSON.stringify(f));
     await assert.rejects(promisify(execFile)(process.execPath, [script, ...hookArgv], {
       env: { ...env, DRIFT_HOOKS: "1" },
     }), error => error.code === 1 && /apply command failed/.test(error.stderr));
-    for (const drift of ["missing", "recreated", "spec"]) {
+    for (const drift of ["missing", "recreated", "spec", "image"]) {
       writeFileSync(snapshot, JSON.stringify(f));
       await assert.rejects(promisify(execFile)(process.execPath, [script, ...argv, "--no-hooks", "--apply"], {
         env: { ...env, DRIFT_LIVE: drift },
@@ -461,7 +531,7 @@ console.log(typeof out === "string" ? out : JSON.stringify(out));
         env: { ...env, DRIFT_BASELINE: drift },
       }), error => error.code === 1 && /apply command failed/.test(error.stderr));
     }
-    for (const drift of ["missing", "recreated", "spec"]) {
+    for (const drift of ["missing", "recreated", "spec", "old-image", "third-image"]) {
       writeFileSync(snapshot, JSON.stringify(f));
       writeFileSync(calls, "");
       await assert.rejects(promisify(execFile)(process.execPath, [script, ...argv, "--no-hooks", "--apply"], {
@@ -737,6 +807,11 @@ for (const template of [
   '{{ genSignedCertWithKey "cert" nil nil 365 .Values.ca .Values.key }}', '{{ randBytes 16 }}',
   '{{ lookup "v1" "ConfigMap" "dev" "data" }}', '{{ tpl .Values.template . }}',
   '{{ .Release.Time }}', '{{ getHostByName "example.test" }}',
+  '{{ if lt (first .Capabilities.APIVersions) "m" }}ALTER TABLE approved{{ else }}DROP TABLE unapproved{{ end }}',
+  '{{ if .Capabilities.KubeVersion.Version }}ALTER TABLE example{{ end }}',
+  '{{ $caps := $.Capabilities }}{{ $caps.APIVersions }}',
+  '{{ if .Release.IsUpgrade }}ALTER TABLE example{{ end }}', '{{ .Release.Revision }}',
+  '{{ env "HOOK_SQL" }}', '{{ expandenv "$HOOK_SQL" }}',
   '{{ keys .Values.map }}', '{{ values .Values.map }}', '{{ durationRound .Values.time }}',
   '{{ printf "unterminated }}', '{{/* unterminated }}', '{{ printf "ok"',
 ]) test(`hook authorization refuses volatile or ambiguous template: ${template}`, async () => {

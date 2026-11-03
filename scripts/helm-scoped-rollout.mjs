@@ -355,12 +355,33 @@ function baselineObjects(current, o) {
       ignoredPaths.push(["spec", "template", "spec", "containers", index, "image"]);
     }
     result.push({ ignoredPaths, apiVersion: object.apiVersion, kind: object.kind, name: object.metadata.name, namespace: o.namespace,
+      ...(object === authorized ? { containerImage: { name: o.container, image: container(object, o.container).image } } : {}),
       uid: expected.uid, specSha256: sha256(JSON.stringify(canonical(relevantObject(object, o.namespace, ignoredPaths)))) });
   }
   if (result.length !== o.objectUids.length) refuse("baseline object UIDs differ from release inventory");
   return result;
 }
-async function liveObjects(proofs, o, run) {
+async function readyImages(deployment, name, image, o, run) {
+  // Deployment status has no containerStatuses. Follow controller UIDs through ReplicaSets to live pods.
+  const ownedBy = (object, kind, uid) => object.metadata?.namespace === o.namespace
+    && object.metadata?.ownerReferences?.some(owner => owner.controller === true && owner.kind === kind && owner.uid === uid);
+  const sets = json(await run("live ReplicaSets", "kubectl", [...kubeScope(o), "get", "ReplicaSet", "-o", "json"]), "live ReplicaSets");
+  const pods = json(await run("live pods", "kubectl", [...kubeScope(o), "get", "Pod", "-o", "json"]), "live pods");
+  if (!Array.isArray(sets.items) || !Array.isArray(pods.items)) refuse("live image pod inventory missing");
+  const uids = new Set(sets.items.filter(v => ownedBy(v, "Deployment", deployment.metadata.uid)).map(v => v.metadata.uid));
+  const digest = imageParts(image).digest;
+  let ready = 0;
+  for (const pod of pods.items.filter(v => [...uids].some(uid => ownedBy(v, "ReplicaSet", uid)))) {
+    const status = pod.status?.containerStatuses?.find(v => v.name === name);
+    if (!status?.ready && !pod.status?.conditions?.some(v => v.type === "Ready" && v.status === "True")) continue;
+    if (pod.spec?.containers?.find(v => v.name === name)?.image !== image || !status?.ready
+      || typeof status.imageID !== "string" || !new RegExp(`(?:^|[/@])${digest}$`).test(status.imageID))
+      refuse("live Ready container image differs from authorized digest");
+    ready++;
+  }
+  if ((deployment.status?.readyReplicas ?? 0) > ready) refuse("live Ready pod image evidence missing");
+}
+async function liveObjects(proofs, o, run, afterApply = false) {
   if (!Array.isArray(proofs) || !proofs.length) refuse("live object proof missing");
   for (const expected of proofs) {
     const live = json(await run("live object", "kubectl", [...kubeScope(o), "get", expected.kind, expected.name, "-o", "json"]), "live object");
@@ -369,6 +390,12 @@ async function liveObjects(proofs, o, run) {
       refuse(`live object missing/recreated/deleting: ${expected.kind}/${expected.name}`);
     if (sha256(JSON.stringify(canonical(relevantObject(live, o.namespace, expected.ignoredPaths)))) !== expected.specSha256)
       refuse(`live object differs from stored manifest: ${expected.kind}/${expected.name}`);
+    if (expected.containerImage) {
+      const { name, image: previous } = expected.containerImage;
+      const image = afterApply ? o.image : previous;
+      if (container(live, name).image !== image) refuse(`live object image differs from ${afterApply ? "authorized target" : "previous image"}`);
+      if (afterApply) await readyImages(live, name, image, o, run);
+    }
   }
 }
 function templateTokens(text) {
@@ -406,8 +433,9 @@ function templateTokens(text) {
         const start = cursor - 1;
         while (/[A-Za-z0-9_]/.test(text[cursor] ?? "")) cursor++;
         const token = text.slice(start, cursor);
-        // Fields/variables such as .Values.env cannot call Sprig functions. Time also pins .Release.Time.
-        if (![".", "$"].includes(text[start - 1]) || token === "Time") tokens.push(token);
+        // Preserve volatile Helm fields too, including access through aliases such as $root.Capabilities.
+        // Ordinary fields/variables such as .Values.env cannot call Sprig functions.
+        if (![".", "$"].includes(text[start - 1]) || ["Capabilities", "Revision", "IsUpgrade", "Time"].includes(token)) tokens.push(token);
       }
     }
     if (!closed) refuse("unterminated template action; use --no-hooks");
@@ -425,8 +453,9 @@ function chartHash(path, deterministicHooks = false) {
         const content = readFileSync(file);
         if (deterministicHooks) {
           if (/\.(?:tgz|gz)$/.test(name)) refuse("hook authorization requires unpacked deterministic chart dependencies");
-          // Hooks bypass Helm's post-renderer. Re-render checks alone cannot pin lookup/random/tpl output.
-          if (templateTokens(content.toString("utf8")).some(v => /^(?:lookup|rand\w*|uuid\w*|now|ago|date\w*|must_?[dD]ate\w*|htmlDate\w*|toDate|mustToDate|durationRound|gen\w*|encryptAES|bcrypt|htpasswd|shuffle|keys|values|getHostByName|tpl|env|expandenv|Time)$/.test(v)))
+          // Scan the whole chart, including helpers/dependencies, conservatively covering hook includes.
+          // Hooks bypass the post-renderer; capability ordering and release state can also change their output.
+          if (templateTokens(content.toString("utf8")).some(v => /^(?:Capabilities|Revision|IsUpgrade|lookup|rand\w*|uuid\w*|now|ago|date\w*|must_?[dD]ate\w*|htmlDate\w*|toDate|mustToDate|durationRound|gen\w*|encryptAES|bcrypt|htpasswd|shuffle|keys|values|getHostByName|tpl|env|expandenv|Time)$/.test(v)))
             refuse("volatile chart template: hook authorization requires deterministic local rendering; use --no-hooks");
         }
         entries.push([rel, sha256(content)]);
@@ -518,7 +547,7 @@ export async function scopedRollout(input, { execute: executor = execute, emit =
   emit(plan);
   if (o.mode === "apply") {
     await run("apply", command.file, command.args);
-    try { await liveObjects(liveProof, o, run); }
+    try { await liveObjects(liveProof, o, run, true); }
     catch (error) {
       const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
       refuse(`post-apply verification failed: ${error.message}\nRollback command (not executed): ${[rollback.file, ...rollback.args].map(quote).join(" ")}`);
