@@ -1,4 +1,5 @@
 import type { Page } from "@playwright/test";
+import AxeBuilder from "@axe-core/playwright";
 import { expect, mockSession, test } from "./fixtures";
 
 // W6-C1 acceptance against the contract mock: Prism answers the summary and request examples of the contract.
@@ -93,6 +94,106 @@ test("o explorador filtra por classe de status e abre o detalhe de uma requisiç
   await expect(detail).toContainText("1804 bytes");
   await detail.getByRole("button", { name: /Fechar/ }).click();
   await expect(detail).toBeHidden();
+});
+
+test("requisições mantém classe e status exato exclusivos ao aplicar, limpar e reaplicar", async ({ page }) => {
+  await page.clock.install({ time: new Date("2026-11-03T12:00:00Z") });
+  await page.route("**/api/v1/environments/*/consumers", (route) => route.fulfill({ json: {
+    items: [{ id: "0b7c3c1e-1f2a-4f7e-9c41-0d3c1b2a9e11", username: "Ana", customId: null, tags: [], createdAt: "2026-10-15T12:00:00Z", updatedAt: "2026-10-15T12:00:00Z" }], nextCursor: null,
+  } }));
+  const queries: URL[] = [];
+  await page.route("**/api/v1/environments/*/requests?*", (route) => {
+    const url = new URL(route.request().url());
+    queries.push(url);
+    return url.searchParams.has("status") && url.searchParams.has("statusClass")
+      ? route.fulfill({ status: 422, json: { title: "Unprocessable Content", status: 422 } })
+      : route.fulfill({ json: { items: [], nextCursor: null } });
+  });
+  await login(page, "viewer");
+  const routeId = "2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f";
+  await page.goto(`/e/${envId}/requests?routeId=${routeId}`);
+  await expect(page.getByRole("heading", { name: "Nenhuma requisição no período." })).toBeVisible();
+  expect(queries.at(-1)!.searchParams.get("routeId")).toBe(routeId);
+  expect(queries.at(-1)!.searchParams.has("status")).toBe(false);
+  expect(queries.at(-1)!.searchParams.has("statusClass")).toBe(false);
+
+  const exact = page.getByLabel("Status exato");
+  const statusClass = page.getByLabel("Classe de status");
+  const apply = async (expected: { status?: string; statusClass?: string }) => {
+    const response = page.waitForResponse((r) => new URL(r.url()).pathname === `/api/v1/environments/${envId}/requests`);
+    await page.getByRole("button", { name: "Filtrar", exact: true }).click();
+    const result = await response;
+    expect(result.status()).toBe(200);
+    const query = new URL(result.url()).searchParams;
+    expect(query.get("status")).toBe(expected.status ?? null);
+    expect(query.get("statusClass")).toBe(expected.statusClass ?? null);
+    expect(query.get("routeId")).toBe(routeId);
+    expect(query.get("serviceId")).toBe("6f1d2c3b-4a5e-4f60-8b7c-1d2e3f4a5b6c");
+    expect(query.get("consumerId")).toBe("0b7c3c1e-1f2a-4f7e-9c41-0d3c1b2a9e11");
+    expect(Date.parse(query.get("to")!) - Date.parse(query.get("from")!)).toBe(24 * 3_600_000);
+  };
+  await page.getByLabel("Período", { exact: true }).selectOption("24h");
+  await page.getByLabel("Service", { exact: true }).selectOption("6f1d2c3b-4a5e-4f60-8b7c-1d2e3f4a5b6c");
+  await page.getByLabel("Consumer", { exact: true }).selectOption("0b7c3c1e-1f2a-4f7e-9c41-0d3c1b2a9e11");
+  await statusClass.selectOption("5xx");
+  await apply({ statusClass: "5xx" });
+  await exact.fill("500");
+  await expect(statusClass).toBeDisabled();
+  await expect(statusClass).toHaveValue("");
+  await expect(statusClass).toHaveAccessibleDescription("Limpe o status exato para escolher uma classe.");
+  await apply({ status: "500" });
+
+  const audit = await new AxeBuilder({ page }).include('form[aria-label="Filtros de requisições"]').withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
+  expect(audit.violations.filter((v) => v.impact === "serious" || v.impact === "critical")).toEqual([]);
+
+  // Keyboard access still reaches the exact field while the class is disabled.
+  await page.getByLabel("Período", { exact: true }).focus();
+  await page.keyboard.press("Tab");
+  await expect(exact).toBeFocused();
+  await exact.fill("");
+  await expect(statusClass).toBeEnabled();
+  await expect(statusClass).toHaveValue("");
+  await apply({});
+  await statusClass.selectOption("4xx");
+  await apply({ statusClass: "4xx" });
+  await page.clock.setSystemTime(new Date("2026-11-03T12:01:00Z"));
+  await apply({ statusClass: "4xx" });
+  await statusClass.selectOption("");
+  await apply({});
+  expect(queries.length).toBeGreaterThanOrEqual(7);
+  for (const url of queries) expect(url.searchParams.has("status") && url.searchParams.has("statusClass"), url.search).toBe(false);
+});
+
+test("requisições bloqueia status inválido sem envio e mantém o erro 422 do servidor visível", async ({ page }) => {
+  const queries: URL[] = [];
+  await page.route("**/api/v1/environments/*/requests?*", (route) => {
+    const url = new URL(route.request().url());
+    queries.push(url);
+    return url.searchParams.has("status")
+      ? route.fulfill({ status: 422, json: { title: "Unprocessable Content", status: 422, errors: [{ path: "status", message: "Filtro recusado pelo servidor" }] } })
+      : route.fulfill({ json: { items: [], nextCursor: null } });
+  });
+  await login(page, "viewer");
+  await menu(page).getByRole("link", { name: "Requisições" }).click();
+  await expect(page.getByRole("heading", { name: "Nenhuma requisição no período." })).toBeVisible();
+  const count = queries.length;
+  for (const invalid of ["99", "600", "404.5", "abc"]) {
+    await page.getByLabel("Status exato").fill(invalid);
+    await page.getByRole("button", { name: "Filtrar", exact: true }).click();
+    await expect(page.getByLabel("Status exato")).toHaveAttribute("aria-invalid", "true");
+    await expect(page.getByLabel("Status exato")).toHaveAccessibleDescription(/100 e 599/);
+    await expect(page.getByRole("alert")).toContainText("100 e 599");
+    expect(queries).toHaveLength(count);
+  }
+  const rejected = page.waitForResponse((r) => r.url().includes("/requests?") && r.status() === 422);
+  await page.getByLabel("Status exato").fill("404");
+  await page.getByRole("button", { name: "Filtrar", exact: true }).click();
+  const response = await rejected;
+  expect(new URL(response.url()).searchParams.has("statusClass")).toBe(false);
+  await expect(page.getByRole("alert")).toContainText("Filtro recusado pelo servidor");
+  await expect(page.getByLabel("Status exato")).toHaveValue("404");
+  await expect(page.getByRole("heading", { name: "Nenhuma requisição no período." })).toHaveCount(0);
+  for (const url of queries) expect(url.searchParams.has("status") && url.searchParams.has("statusClass"), url.search).toBe(false);
 });
 
 test("métricas explica na hora quando o coletor está fora do ar (5xx sem nova tentativa)", async ({ page }) => {
