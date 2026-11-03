@@ -115,5 +115,13 @@ test("login shows origin without requesting protected instance metadata", async 
   await page.route("**/api/v2/workspace-creation-policy", (route) => { reads++; return route.fulfill({ status: 403, json: {} }); });
   await page.goto("/login");
   await expect(page.locator(".login-origin")).toContainText(new URL(test.info().project.use.baseURL!).origin);
+  for (const width of [390, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    await expect(page.locator(".login-origin")).toBeVisible();
+    await expect(page.locator(".login-origin .instance-origin")).toBeVisible();
+    const result = await new AxeBuilder({ page }).include(".login").withRules(["color-contrast"]).analyze();
+    expect(result.violations).toEqual([]);
+    expect(result.incomplete).toEqual([]);
+  }
   expect(reads).toBe(0);
 });
