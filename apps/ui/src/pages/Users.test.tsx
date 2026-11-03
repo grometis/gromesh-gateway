@@ -31,7 +31,7 @@ describe("user row actions", () => {
         } else {
           expect(text).not.toBe("");
           expect((label ?? text).startsWith(text)).toBe(true);
-          if (text === "Environments") expect(label).toBe(`Environments de ${users[index]!.name}`);
+          if (text === "Ambientes (legado)") expect(label).toBe(`Ambientes (legado) de ${users[index]!.name}`);
         }
       }
     }

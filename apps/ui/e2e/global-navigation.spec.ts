@@ -110,8 +110,8 @@ for (const width of [390, 768, 1440]) {
           ["Requisições", scope === "v1" ? `/e/${E}/requests` : null, "Requer ambiente legado"],
           ["Métricas", scope === "v1" ? `/e/${E}/metrics` : null, "Requer ambiente legado"],
           ["Revisar snapshot", scope === "v1" ? `/e/${E}/publish` : null, "Requer ambiente legado"],
-          ["Snapshots publicados", scope === "v1" ? `/e/${E}/publications` : null, "Requer ambiente legado"],
-          ["Clusters", scope === "v1" ? `/e/${E}/clusters` : null, "Requer ambiente legado"],
+          ["Publicações", scope === "v1" ? `/e/${E}/publications` : null, "Requer ambiente legado"],
+          ["Clusters (legado)", scope === "v1" ? `/e/${E}/clusters` : null, "Requer ambiente legado"],
         ];
         for (const [label, href, requirement] of expected) {
           if (href) await expect(nav(page).getByRole("link", { name: label!, exact: true })).toHaveAttribute("href", href);
@@ -210,7 +210,7 @@ for (const width of [390, 768, 1440]) {
     await page.locator("main").focus();
     await expect(instance).toHaveAttribute("aria-expanded", "false");
     await openGlobalMenu(page, "Operações");
-    const routes = page.getByRole("navigation", { name: "Menu principal", exact: true }).getByRole("link", { name: "Routes", exact: true });
+    const routes = page.getByRole("navigation", { name: "Menu principal", exact: true }).getByRole("link", { name: "Rotas", exact: true });
     // This link is also covered at tablet width; keyboard navigation remains available.
     await routes.focus();
     await routes.press("Enter");

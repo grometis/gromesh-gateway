@@ -161,7 +161,7 @@ describe("availability strip", () => {
     const { Availability } = await load(() => new Promise(() => {}));
     const html = renderToStaticMarkup(<Availability policy={policy({ workspacesMode: "disabled", caller: { canCreate: false, canRequest: false, canDecide: false } })} />);
     expect(html).toContain("só existe no laboratório isolado autorizado");
-    expect(html).toContain("Deployment e ativação operacional de Workspaces estão indisponíveis");
+    expect(html).toContain("Implantação e ativação operacional de Workspaces estão indisponíveis");
     expect(html).not.toContain("<button");
     expect(html).not.toContain("<a ");
   });

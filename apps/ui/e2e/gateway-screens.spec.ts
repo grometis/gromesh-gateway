@@ -42,7 +42,7 @@ async function login(page: Page) {
   await page.getByLabel("E-mail").fill(admin.email);
   await page.getByLabel("Senha").fill("s3nha-de-teste");
   await page.getByRole("button", { name: "Entrar" }).click();
-  await expect(page.getByRole("heading", { name: "Services", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Serviços", exact: true })).toBeVisible();
   return /\/e\/([^/]+)\//.exec(new URL(page.url()).pathname)![1]!;
 }
 
@@ -58,35 +58,35 @@ test("service detail keeps properties and actions, with scoped routes and plugin
   await expect(page.locator(".lede")).toHaveText("https://orders.internal:8443/v2");
   await expect(page.locator("dl.service-properties dt")).toHaveText(["Destino", "Protocolo", "Host", "Porta", "Path no destino", "Tags"]);
   await expect(page.locator("dl.service-properties dd")).toHaveText(["Destino direto (DNS)", "https", "orders.internal", "8443", "/v2", "checkout"]);
-  const routes = page.getByRole("table", { name: "Routes do service", exact: true });
+  const routes = page.getByRole("table", { name: "Rotas do serviço", exact: true });
   await expect(routes).toHaveClass("cards");
   await expect(routes.getByRole("row").last()).toContainText("orders-api");
   await expect(page.getByRole("table", { name: "Plugins", exact: true })).toHaveClass("cards");
-  await expect(page.getByRole("heading", { name: "Plugins do service" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Plugins do serviço" })).toBeVisible();
   await page.getByRole("button", { name: "Mais ações para orders", exact: true }).click();
   await page.getByRole("menuitem", { name: "Excluir" }).click();
-  const confirm = page.getByRole("dialog", { name: "Excluir service" });
+  const confirm = page.getByRole("dialog", { name: "Excluir serviço" });
   await expect(confirm.getByRole("button", { name: "Excluir", exact: true })).toHaveClass("danger");
   await confirm.getByRole("button", { name: "Cancelar" }).click();
   await expect(confirm).toBeHidden();
-  await page.getByRole("link", { name: "← Services" }).click();
-  await expect(page.getByRole("heading", { level: 1, name: "Services", exact: true })).toBeVisible();
+  await page.getByRole("link", { name: "← Serviços" }).click();
+  await expect(page.getByRole("heading", { level: 1, name: "Serviços", exact: true })).toBeVisible();
 });
 
 test("route cards retain matches, filters and actions, with draft badges and a confirmation menu", async ({ page }) => {
   const envId = await login(page);
   await page.goto(`/e/${envId}/routes`);
-  const table = page.getByRole("table", { name: "Routes", exact: true });
+  const table = page.getByRole("table", { name: "Rotas", exact: true });
   await expect(table).toHaveClass("cards");
   const row = table.getByRole("row").last();
   for (const value of ["orders-api", "/orders", "orders", "GET", "POST", "api.example.test", "Novo"]) await expect(row).toContainText(value);
   await expect(row.locator(".match-chip")).toHaveText(["GET", "POST", "api.example.test"]);
   const filtered = page.waitForRequest((r) => new URL(r.url()).pathname.endsWith("/routes") && new URL(r.url()).searchParams.get("serviceId") === service.id);
-  await page.getByLabel("Filtrar por service").selectOption(service.id);
+  await page.getByLabel("Filtrar por serviço").selectOption(service.id);
   await filtered;
   await expect(page).toHaveURL(new RegExp(`serviceId=${service.id}`));
   const searched = page.waitForRequest((r) => new URL(r.url()).pathname.endsWith("/routes") && new URL(r.url()).searchParams.get("q") === "/orders");
-  await page.getByLabel("Buscar routes").fill("/orders");
+  await page.getByLabel("Buscar rotas").fill("/orders");
   await searched;
   await row.getByRole("button", { name: "Plugins", exact: true }).click();
   const plugins = page.getByRole("dialog", { name: "Plugins de orders-api" });
@@ -103,7 +103,7 @@ test("route cards retain matches, filters and actions, with draft badges and a c
   await page.keyboard.press("ArrowDown");
   await expect(page.getByRole("menuitem", { name: "Excluir" })).toBeFocused();
   await page.keyboard.press("Enter");
-  const confirm = page.getByRole("dialog", { name: "Excluir route" });
+  const confirm = page.getByRole("dialog", { name: "Excluir rota" });
   await expect(confirm).toContainText("orders-api");
   await expect(confirm.getByRole("button", { name: "Excluir", exact: true })).toHaveClass("danger");
   await confirm.getByRole("button", { name: "Cancelar" }).click();
@@ -116,7 +116,7 @@ test("plugin cards keep name, scope and state; scope filtering and deletion stil
   const table = page.getByRole("table", { name: "Plugins", exact: true });
   await expect(table).toHaveClass("cards");
   const row = table.getByRole("row").filter({ hasText: "rate-limiting" });
-  for (const value of ["rate-limiting", "Service orders", "Não", "Alterado"]) await expect(row).toContainText(value);
+  for (const value of ["rate-limiting", "Serviço orders", "Não", "Alterado"]) await expect(row).toContainText(value);
   await expect(row).not.toContainText("minute");
   const filtered = page.waitForRequest((r) => new URL(r.url()).pathname.endsWith("/plugins") && new URL(r.url()).searchParams.get("global") === "true");
   await page.getByLabel("Filtrar por escopo").selectOption("global");
@@ -131,7 +131,7 @@ test("plugin cards keep name, scope and state; scope filtering and deletion stil
   await row.getByRole("button", { name: /^Mais ações para rate-limiting/ }).click();
   await page.getByRole("menuitem", { name: "Excluir" }).click();
   const confirm = page.getByRole("dialog", { name: "Excluir plugin" });
-  await expect(confirm).toContainText("Service orders");
+  await expect(confirm).toContainText("Serviço orders");
   await expect(confirm.getByRole("button", { name: "Excluir", exact: true })).toHaveClass("danger");
   await confirm.getByRole("button", { name: "Cancelar" }).click();
   await expect(confirm).toBeHidden();
@@ -149,8 +149,8 @@ test("empty route and plugin lists use EmptyState without hiding their creation 
   await page.route("**/api/v1/environments/*/plugins*", (r) => r.fulfill({ json: { items: [], nextCursor: null } }));
   await page.route("**/api/v2/workspaces/*/plugins*", (r) => r.fulfill({ json: { items: [], nextCursor: null } }));
   await page.goto(`/e/${envId}/routes`);
-  await expect(page.locator(".empty-state").getByRole("heading", { name: "Nenhuma route encontrada." })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Nova route" })).toBeEnabled();
+  await expect(page.locator(".empty-state").getByRole("heading", { name: "Nenhuma rota encontrada." })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Nova rota" })).toBeEnabled();
   await page.goto(`/e/${envId}/plugins`);
   // v2 names the Workspace explicitly; the shared EmptyState and creation action remain required.
   await expect(page.locator(".empty-state").getByRole("heading", { name: "Nenhum plugin neste Workspace." })).toBeVisible();

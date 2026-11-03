@@ -74,7 +74,7 @@ for (const options of [{ archived: true }, { auto: true }]) {
     const fake = await setup(page, options);
     await expect(page.getByRole("note")).toContainText("Somente leitura");
     await expect(page.getByRole("table", { name: "Plugins" })).toContainText("rate-limiting");
-    await expect(page.getByRole("button", { name: /Novo plugin|Editar rate|Mais ações para|Publicar|Deployment/ })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /Novo plugin|Editar rate|Mais ações para|Publicar|Implantação/ })).toHaveCount(0);
     expect(fake.writes).toEqual([]);
   });
 }
@@ -91,7 +91,7 @@ test("creates scoped plugins, edits a write-only secret, reopens empty and delet
   // The session is a legacy viewer: server permission grants, not the legacy role, decide whether saving succeeds.
   await page.getByRole("button", { name: "Novo plugin" }).click();
   await page.getByRole("dialog", { name: "Escolha um plugin" }).getByRole("button", { name: "rate-limiting", exact: true }).click();
-  await page.getByLabel("Service", { exact: true }).selectOption(S);
+  await page.getByLabel("Serviço", { exact: true }).selectOption(S);
   await page.getByLabel("minute", { exact: false }).fill("10");
   await page.getByLabel("password", { exact: true }).fill("typed-secret");
   await page.getByRole("button", { name: "Salvar no rascunho" }).click();
@@ -112,7 +112,7 @@ test("creates scoped plugins, edits a write-only secret, reopens empty and delet
   expect(fake.writes.map(w => [w.method, w.path])).toEqual([["POST", `/api/v2/workspaces/${A}/plugins`], ["PUT", `/api/v2/workspaces/${A}/plugins/${P}`], ["DELETE", `/api/v2/workspaces/${A}/plugins/${P}`]]);
   expect(fake.writes[0]!.body).toMatchObject({ scope: { serviceId: S }, config: { redis: { password: "typed-secret" } } });
   expect(fake.writes[1]!.body).toMatchObject({ enabled: false, config: { redis: { password: "REDACTED" } } });
-  await expect(page.getByRole("button", { name: /Publicar|Deployment/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /Publicar|Implantação/ })).toHaveCount(0);
 });
 
 for (const status of [403, 409, 422]) {
@@ -145,7 +145,7 @@ test("requires an explicit workspace scope and isolates an open form when switch
   await page.getByRole("button", { name: "Novo plugin" }).click();
   await page.getByRole("dialog", { name: "Escolha um plugin" }).getByRole("button", { name: "rate-limiting", exact: true }).click();
   await expect(page.getByLabel("password", { exact: true })).toHaveValue("");
-  await expect(page.getByLabel("Service", { exact: true }).getByRole("option", { name: "cobranca" })).toHaveCount(0);
+  await expect(page.getByLabel("Serviço", { exact: true }).getByRole("option", { name: "cobranca" })).toHaveCount(0);
   expect(fake.writes).toEqual([]);
 });
 
@@ -166,11 +166,11 @@ test("a legacy viewer gets the server's 403 for each v2 plugin mutation without 
   const fake = await setup(page);
   fake.reject({ status: 403 });
   const table = page.getByRole("table", { name: "Plugins", exact: true });
-  await expect(table).toContainText("Service cobranca");
+  await expect(table).toContainText("Serviço cobranca");
   const before = await table.getByRole("row").allTextContents();
   await page.getByRole("button", { name: "Novo plugin", exact: true }).click();
   await page.getByRole("dialog", { name: "Escolha um plugin" }).getByRole("button", { name: "rate-limiting", exact: true }).click();
-  await page.getByLabel("Service", { exact: true }).selectOption(S);
+  await page.getByLabel("Serviço", { exact: true }).selectOption(S);
   await page.getByLabel("minute", { exact: false }).fill("20");
   await page.getByRole("button", { name: "Salvar no rascunho" }).click();
   const create = page.getByRole("dialog", { name: "Novo plugin", exact: true });

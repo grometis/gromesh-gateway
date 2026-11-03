@@ -37,7 +37,7 @@ export function upstreamPath(servicePath: string | null | undefined, requestPath
 
 /** What the upstream receives for a request under the route's first path, the service's path included (decision D1). */
 export function upstreamEffect(slug: string, path: string, stripPath: boolean, servicePath?: string | null, flow: "v1" | "v2" = "v1"): string {
-  if (servicePath?.includes("${")) return "O path do service usa uma variável; o path recebido pelo upstream depende do valor na instância.";
+  if (servicePath?.includes("${")) return "O path do serviço usa uma variável; o path recebido pelo upstream depende do valor na instância.";
   const sp = servicePath && servicePath !== "/" ? servicePath : null;
   if (path.startsWith("~")) {
     if (stripPath) return sp ? `O upstream recebe ${sp} seguido do que vier depois do trecho que a expressão casar.` : "O upstream recebe só o que vier depois do trecho que a expressão casar.";
@@ -177,10 +177,10 @@ export function WorkspaceGatewayNote({ workspaceId }: { workspaceId: string }) {
   return (
     <div className="note" role="note" aria-label="Estado do Workspace">
       <p>
-        Prefixo previsto na configuração v2 <span className="mono">/{w.slug}</span> · {w.activeRelease === null ? "nenhuma Release v2 ativa" : typeof w.activeRelease === "number" ? `Release v2 ativa v${w.activeRelease}` : "estado da Release v2 não comprovado"}
+        Prefixo previsto do Workspace <span className="mono">/{w.slug}</span> · {w.activeRelease === null ? "nenhuma Release v2 ativa" : typeof w.activeRelease === "number" ? `Release v2 ativa v${w.activeRelease}` : "estado da Release v2 não comprovado"}
         {env.data && (env.data.hasUnpublishedChanges ? " · há alterações no rascunho ainda não publicadas" : " · rascunho sem alterações pendentes")}.
       </p>
-      {access.reason ? <p role="status">{access.reason}</p> : <p>Deployment v2 indisponível nesta fase. Criar ou editar altera o rascunho; uma Release v2 publicada também não comprova implantação.</p>}
+      {access.reason ? <p role="status">{access.reason}</p> : <p>Implantação de Releases do Workspace indisponível nesta interface. Criar ou editar altera o rascunho; uma Release v2 publicada também não comprova implantação.</p>}
     </div>
   );
 }

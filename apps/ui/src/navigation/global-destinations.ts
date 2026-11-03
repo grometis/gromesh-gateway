@@ -31,7 +31,7 @@ export function globalDestinations(section: GlobalSection, context: NavigationCo
       ? id === releasesId && context?.route.kind !== "legacy-v1" && context?.route.kind !== "workspace-v2"
         ? "Requer Workspace ou ambiente legado" : v2 ? "Requer Workspace" : "Requer ambiente legado"
       : undefined;
-    return [{ id, label: id === "N12" ? "Revisar snapshot" : id === "N13" ? "Snapshots publicados" : item.label,
+    return [{ id, label: id === "N12" ? "Revisar snapshot" : id === "N13" ? "Publicações" : item.label,
       href: requirement ? undefined : confirmedId ? destinationHref(item, confirmedId) : item.path,
       requirement, active: id === activeId, legacy: ["N12", "N13", "N15"].includes(id) }];
   });

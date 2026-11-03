@@ -61,7 +61,7 @@ export function ScopeFilters({
   const services = useServices(envId);
   return (
     <>
-      <Field label="Service">
+      <Field label="Serviço">
         {(id) => (
           <select id={id} value={serviceId} onChange={(e) => onService(e.target.value)}>
             <option value="">Todos</option>
@@ -73,7 +73,7 @@ export function ScopeFilters({
           </select>
         )}
       </Field>
-      <Field label="Route">
+      <Field label="Rota">
         {(id) => (
           <select id={id} value={routeId} onChange={(e) => onRoute(e.target.value)}>
             <option value="">Todas</option>
@@ -230,7 +230,7 @@ export function TopRoutes({ envId, range, tick, visible }: { envId: string; rang
   return (
     <section className="top-routes traffic-list" aria-labelledby="top-routes-title">
       <div className="page-head">
-        <h2 id="top-routes-title">Top rotas</h2>
+        <h2 id="top-routes-title">Principais rotas</h2>
         <div className="gateway-filters traffic-filters">
           <Field label="Critério">
             {(id) => (
@@ -252,7 +252,7 @@ export function TopRoutes({ envId, range, tick, visible }: { envId: string; rang
       )}
       {top.data && top.data.items.length === 0 && <EmptyState title="Sem tráfego no período." />}
       {top.data && top.data.items.length > 0 && (
-        <Table label="Top rotas" cards>
+        <Table label="Principais rotas" cards>
           <thead>
             <tr>
               <th scope="col">Rota</th>

@@ -64,7 +64,7 @@ for (const width of [390, 1440]) {
     await audit(page);
     await page.getByRole("link", { name: "Service A", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Service A", exact: true })).toBeVisible();
-    await expect(page.getByRole("link", { name: "Routes do Workspace", exact: true })).toHaveAttribute("href", `${v2(A, "routes")}?serviceId=service-${A}`);
+    await expect(page.getByRole("link", { name: "Rotas do Workspace", exact: true })).toHaveAttribute("href", `${v2(A, "routes")}?serviceId=service-${A}`);
     expect(sent.some((p) => p.startsWith("/api/v1/environments"))).toBe(false);
   });
 
@@ -73,7 +73,7 @@ for (const width of [390, 1440]) {
     await setup(page, { listIds: [A, B] });
     await page.goto(`/e/${A}?x=1#y`);
     await expect(page).toHaveURL(`${v1()}?x=1#y`);
-    await expect(page.getByRole("heading", { name: "Services", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Serviços", exact: true })).toBeVisible();
     const url = `${v1(A, "analytics")}?x#y`;
     await page.goto(url);
     await expect(page).toHaveURL(`${v1(A, "metrics")}?x#y`);
@@ -83,7 +83,7 @@ for (const width of [390, 1440]) {
     await expect(page.getByRole("heading", { name: "Métricas", exact: true })).toBeVisible();
     await expect(page.getByLabel("Ambiente (legado)", { exact: true })).toHaveValue(A);
     await expect(page.getByRole("region", { name: "Publicação", exact: true })).toBeVisible();
-    await expect(page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Services", exact: true })).toHaveAttribute("href", v1());
+    await expect(page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Serviços", exact: true })).toHaveAttribute("href", v1());
     await audit(page);
   });
 
@@ -105,7 +105,7 @@ for (const width of [390, 1440]) {
         await expect(page.getByRole("link", { name: "Service A", exact: true })).toHaveCount(0);
         expect(sent).not.toContain(`/api/v2/workspaces/${A}/services`);
       }
-      if (state.name === "archived") await expect(page.getByRole("button", { name: "Novo service", exact: true })).toHaveCount(0);
+      if (state.name === "archived") await expect(page.getByRole("button", { name: "Novo serviço", exact: true })).toHaveCount(0);
       await audit(page);
     });
   }
@@ -160,7 +160,7 @@ for (const namespace of ["legacy", "v2"] as const) {
       if (namespace === "v2") await page.route(`**/api/v2/workspaces/${A}/releases`, (route) => route.request().method() === "POST"
         ? route.fulfill({ status: 201, json: releaseV1 }) : route.fallback());
       try {
-        await page.getByRole("button", { name: namespace === "legacy" ? "Novo service" : "Publicar release", exact: true }).click();
+        await page.getByRole("button", { name: namespace === "legacy" ? "Novo serviço" : "Publicar release", exact: true }).click();
         if (namespace === "v2") await page.getByRole("button", { name: "Confirmar publicação", exact: true }).click();
         await requested;
         await expect(content).toBeVisible();
@@ -192,7 +192,7 @@ test("v2 publication confirmation survives pending and completed Workspace refre
     status: route.request().method() === "POST" ? 201 : 200,
     json: route.request().method() === "POST" ? releaseV1 : [releaseV1],
   }));
-  const confirmation = page.getByRole("status").filter({ hasText: "Release v1 publicada. Nenhum deployment foi criado." });
+  const confirmation = page.getByRole("status").filter({ hasText: "Release v1 publicada. Nenhuma implantação foi criada." });
   try {
     await page.getByRole("button", { name: "Confirmar publicação", exact: true }).click();
     await requested;
@@ -267,7 +267,7 @@ test("v2 failure never becomes legacy; legacy failure never selects a v2 Workspa
   state.legacyStatus = 404;
   await page.goto(v1());
   await expect(page.getByText("Não encontrado ou indisponível para sua conta.", { exact: true })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Services", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Serviços", exact: true })).toHaveCount(0);
   await expect(page).toHaveURL(v1());
   await page.goto(v2());
   await expect(page.getByRole("link", { name: "Service A", exact: true })).toBeVisible();

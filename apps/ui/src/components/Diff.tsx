@@ -4,9 +4,9 @@ type EntityChange = Schemas["EntityChange"];
 
 const CHANGE_LABEL: Record<EntityChange["change"], string> = { added: "Adicionado", removed: "Removido", modified: "Alterado" };
 export const KIND_LABEL: Record<EntityChange["kind"], string> = {
-  services: "Service",
-  routes: "Route",
-  consumers: "Consumer",
+  services: "Serviço",
+  routes: "Rota",
+  consumers: "Consumidor",
   keyauth_credentials: "Credencial key-auth",
   jwt_secrets: "Credencial JWT",
   basicauth_credentials: "Credencial basic-auth",
@@ -25,17 +25,17 @@ export function changeTitle(change: Pick<EntityChange, "kind" | "label">): strin
   const { kind, label } = change;
   const match = (re: RegExp) => re.exec(label);
   let m: RegExpExecArray | null;
-  if (kind === "keyauth_credentials" && (m = match(/^key-auth credential of consumer (.+)$/))) return `Credencial key-auth do consumer ${m[1]}`;
+  if (kind === "keyauth_credentials" && (m = match(/^key-auth credential of consumer (.+)$/))) return `Credencial key-auth do consumidor ${m[1]}`;
   if (kind === "jwt_secrets" && (m = match(/^JWT credential (.+)$/))) return `Credencial JWT ${m[1]}`;
   if (kind === "basicauth_credentials" && (m = match(/^basic-auth credential (.+)$/))) return `Credencial basic-auth ${m[1]}`;
-  if (kind === "acls" && (m = match(/^group (.+) of consumer (.+)$/))) return `Grupo ${m[1]} do consumer ${m[2]}`;
+  if (kind === "acls" && (m = match(/^group (.+) of consumer (.+)$/))) return `Grupo ${m[1]} do consumidor ${m[2]}`;
   if (kind === "certificates" && (m = match(/^certificate (.+)$/))) return `Certificado ${m[1]}`;
   return `${KIND_LABEL[kind]} ${label}`;
 }
 
 export function Diff({ changes, from, to }: { changes: EntityChange[]; from: number; to: number }) {
   return (
-    <section aria-label={`Diff v${from} → v${to}`}>
+    <section aria-label={`Alterações v${from} → v${to}`}>
       <h2>
         Alterações de v{from} para v{to}
       </h2>

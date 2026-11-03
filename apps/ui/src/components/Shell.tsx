@@ -56,10 +56,10 @@ export function RequireAdmin() {
 
 
 const GATEWAY = [
-  ["services", "Services"],
-  ["routes", "Routes"],
+  ["services", "Serviços"],
+  ["routes", "Rotas"],
   ["variables", "Variáveis"],
-  ["consumers", "Consumers"],
+  ["consumers", "Consumidores"],
   ["plugins", "Plugins"],
   ["upstreams", "Upstreams"],
   ["certificates", "Certificados"],

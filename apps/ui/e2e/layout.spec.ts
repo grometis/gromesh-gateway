@@ -36,7 +36,7 @@ for (const width of [390, 1440]) {
       await page.getByLabel("E-mail").fill(admin.email);
       await page.getByLabel("Senha").fill("s3nha-de-teste");
       await page.getByRole("button", { name: "Entrar" }).click();
-      await expect(page.getByRole("heading", { name: "Services", exact: true })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "Serviços", exact: true })).toBeVisible();
       const envId = /\/e\/([^/]+)\//.exec(new URL(page.url()).pathname)![1]!;
       const path = screen === "service-detail" ? "services/7c1d2e3f-4a5b-4c6d-8e7f-000000000002"
         : screen === "publication-detail" || screen === "publication-diff" ? "publications/2"
@@ -65,8 +65,8 @@ for (const width of [390, 1440]) {
             await expect(page.getByRole("dialog", { name: "Desativar usuário" })).toBeVisible();
           }
         } else if (screen === "user-roles") {
-          await table.getByRole("button", { name: /^Environments de/ }).first().click();
-          await expect(page.getByRole("table", { name: "Papéis por environment" })).toBeVisible();
+          await table.getByRole("button", { name: /^Ambientes \(legado\) de/ }).first().click();
+          await expect(page.getByRole("table", { name: "Papéis por ambiente (legado)" })).toBeVisible();
         } else if (screen === "user-delete") {
           await table.getByRole("button", { name: "Excluir", exact: true }).first().click();
           await expect(page.getByRole("dialog", { name: "Excluir usuário" })).toBeVisible();
@@ -96,10 +96,10 @@ for (const width of [390, 1440]) {
         await expect(page.getByRole("list", { name: "Chaves", exact: true })).toBeVisible();
       } else if (screen === "service-detail") {
         await expect(page.locator("dl.service-properties")).toContainText("Protocolo");
-        await expect(page.getByRole("table", { name: "Routes do service" })).toHaveClass("cards");
+        await expect(page.getByRole("table", { name: "Rotas do serviço" })).toHaveClass("cards");
         await expect(page.getByRole("table", { name: "Plugins" })).toHaveClass("cards");
       } else if (screen === "routes" || screen === "plugins" || screen === "plugin-catalog") {
-        await expect(page.getByRole("table", { name: screen === "routes" ? "Routes" : "Plugins", exact: true })).toHaveClass("cards");
+        await expect(page.getByRole("table", { name: screen === "routes" ? "Rotas" : "Plugins", exact: true })).toHaveClass("cards");
         if (screen === "plugin-catalog") {
           // The contract has no catalog example; use the same served catalog as the plugin acceptance test.
           await page.route("**/api/v1/plugin-schemas", (route) => route.fulfill({
@@ -143,11 +143,11 @@ for (const width of [390, 1440]) {
           await expect(dialog.getByLabel("Chave privada (PEM)")).toHaveValue("");
         }
       } else if (screen === "services" || screen === "consumers") {
-        await expect(page.getByRole("table", { name: screen === "services" ? "Services" : "Consumers" })).toBeVisible();
+        await expect(page.getByRole("table", { name: screen === "services" ? "Serviços" : "Consumers" })).toBeVisible();
       } else if (screen === "metrics") {
         await expect(page.locator("dl.stat-cards > .stat-card")).toHaveCount(6);
         await expect(page.locator("figure.chart")).toHaveCount(3);
-        await expect(page.getByRole("table", { name: "Top rotas" })).toHaveClass("cards");
+        await expect(page.getByRole("table", { name: "Principais rotas" })).toHaveClass("cards");
         await expect(page.getByLabel("Período", { exact: true })).toHaveValue("6h");
       } else if (screen === "requests" || screen === "request-detail") {
         const table = page.getByRole("table", { name: "Requisições", exact: true });
@@ -181,11 +181,11 @@ for (const width of [390, 1440]) {
       } else if (screen === "publish") {
         await expect(page.getByRole("list", { name: "Alterações", exact: true })).toBeVisible();
       } else if (screen === "publications" || screen === "publication-rollback") {
-        await expect(page.getByRole("table", { name: "Publicações", exact: true })).toHaveClass("cards");
+        await expect(page.getByRole("table", { name: "Snapshots publicados (legado)", exact: true })).toHaveClass("cards");
         if (screen === "publication-rollback") {
           await page.getByRole("button", { name: /^Restaurar v\d+$/ }).first().click();
           const dialog = page.getByRole("dialog", { name: /^Restaurar v\d+$/ });
-          await expect(dialog.getByRole("region", { name: /^Diff v\d+ → v\d+$/ })).toBeVisible();
+          await expect(dialog.getByRole("region", { name: /^Alterações v\d+ → v\d+$/ })).toBeVisible();
           await expect(dialog.getByRole("button", { name: "Confirmar rollback" })).toHaveClass("danger");
         }
       } else if (screen === "publication-detail" || screen === "publication-diff") {
@@ -194,7 +194,7 @@ for (const width of [390, 1440]) {
         await expect(page.getByRole("button", { name: "Restaurar v2", exact: true })).toBeEnabled();
         if (screen === "publication-diff") {
           await page.getByRole("button", { name: "Comparar", exact: true }).click();
-          await expect(page.getByRole("region", { name: "Diff v1 → v2", exact: true })).toBeVisible();
+          await expect(page.getByRole("region", { name: "Alterações v1 → v2", exact: true })).toBeVisible();
           await expect(page.getByRole("columnheader", { name: "Antes", exact: true }).first()).toBeVisible();
         }
       } else if (screen === "audit") {
@@ -205,7 +205,7 @@ for (const width of [390, 1440]) {
         await expect(event.getByRole("columnheader", { name: "Antes", exact: true })).toBeVisible();
         await expect(event.getByRole("columnheader", { name: "Depois", exact: true })).toBeVisible();
       } else {
-        await expect(page.getByRole("table", { name: "Top rotas" })).toBeVisible();
+        await expect(page.getByRole("table", { name: "Principais rotas" })).toBeVisible();
       }
       if (isGlobal) await expect(page.getByRole("region", { name: "Publicação" })).toHaveCount(0);
       else await expect(page.getByRole("region", { name: "Publicação" })).toBeVisible();
@@ -222,7 +222,7 @@ for (const width of [390, 1440]) {
           : screen === "publish"
             // WCAG 2.5.8 inline exception: this link is part of the rollback sentence, not a standalone action.
             ? [{
-              selector: `.final-page[aria-label="Revisar e publicar"] > .publish-box > p.muted > a[href="/e/${envId}/publications"]`,
+              selector: `.final-page[aria-label="Revisar snapshot (legado)"] > .publish-box > p.muted > a[href="/e/${envId}/publications"]`,
               reason: "Publicações is a plain inline link within the rollback paragraph (WCAG 2.5.8 inline exception).",
             }]
             : [],

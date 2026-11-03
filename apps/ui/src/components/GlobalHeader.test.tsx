@@ -192,7 +192,7 @@ describe("global navigation", () => {
     expect(view.button("Operações").getAttribute("data-active")).toBe("true");
     expect(view.button("Operações").getAttribute("aria-current")).toBeNull();
     const current = view.all((n) => n.getAttribute("aria-current") === "page");
-    expect(current.map((n) => n.textContent)).toEqual(path.endsWith("/3") ? ["Snapshots publicados"] : ["Releases"]);
+    expect(current.map((n) => n.textContent)).toEqual(path.endsWith("/3") ? ["Publicações"] : ["Releases"]);
   });
   it.each(["viewer", "admin"] as const)("matches RequireAdmin for %s, even with a local admin override", async (role) => {
     const view = await screen({ role, path: `/e/${E}/services` });

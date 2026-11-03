@@ -73,7 +73,7 @@ describe("service detail route and plugin access", () => {
     expect(html).toContain(route.name);
     expect(html).toContain(plugin.name);
     expect(html).toContain('href="/e/' + W + '/routes?serviceId=' + service.id + '"');
-    expect(html).toContain("Gerencie as routes na tela de");
+    expect(html).toContain("Gerencie as rotas na tela de");
     expect(html).toContain("Plugins por Workspace ainda não são editáveis aqui.");
     expect(html).not.toMatch(/Nova route|Adicionar plugin|Novo plugin|type="checkbox"|role="switch"/);
     // Only the Service's own v2 Edit/Delete actions remain.
@@ -119,7 +119,7 @@ describe("service detail route and plugin access", () => {
     const { RoutesPage, ScopedRoutes, ScopedPlugins, loaded } = await load();
     for (const element of [<RoutesPage />, <ScopedRoutes envId={W} service={service} />]) {
       const html = await loaded(element);
-      expect(html).toContain("Nova route");
+      expect(html).toContain("Nova rota");
       expect(html).toContain(">Editar</button>");
       expect(html).toContain(`Mais ações para ${route.name}`);
     }
@@ -182,7 +182,7 @@ describe("workspace service write access", () => {
     if (view === "hook") expect(render(<AccessProbe />)).toContain(">writable</output>");
     else {
       const html = render(<ServicesPage />);
-      expect(html).toContain("Novo service");
+      expect(html).toContain("Novo serviço");
       expect(html).toContain(">Editar</button>");
       expect(html).toContain("Mais ações para cobranca");
       for (const element of elements.slice(2)) {
@@ -202,7 +202,7 @@ describe("workspace service write access", () => {
         expect(html).toContain(service.name);
         expect(html).toContain("Somente leitura");
         expect(html).toContain(reason);
-        expect(html).not.toMatch(/Novo service|>Editar<|Mais ações para cobranca/);
+        expect(html).not.toMatch(/Novo serviço|>Editar<|Mais ações para cobranca/);
       }
       const form = await loaded(<ServiceForm workspaceId={W} service={service} onClose={() => {}} />);
       expect(form).toContain("Somente leitura");
@@ -216,7 +216,7 @@ describe("workspace service write access", () => {
     client.setQueryData(["ws-services", W, ""], { pages: [page([service])], pageParams: [""] });
     for (const key of ["workspace", "environment"]) {
       const html = render(<ServicesPage />);
-      expect(html).not.toMatch(/Novo service|>Editar<|Mais ações para cobranca/);
+      expect(html).not.toMatch(/Novo serviço|>Editar<|Mais ações para cobranca/);
       expect(html).toContain("Somente leitura enquanto");
       // Even if the other read succeeds, a failed read must not enable writes.
       client.setQueryData([key, W], key === "workspace" ? { id: W, status: "active" } : { id: W, publishMode: "manual" });
@@ -225,7 +225,7 @@ describe("workspace service write access", () => {
       const data = client.getQueryData([key, W]);
       client.getQueryCache().find({ queryKey: [key, W] })!.setState({ status: "error", error: new Error("offline") });
       const html = render(<ServicesPage />);
-      expect(html).not.toMatch(/Novo service|>Editar<|Mais ações para cobranca/);
+      expect(html).not.toMatch(/Novo serviço|>Editar<|Mais ações para cobranca/);
       expect(html).toContain("Somente leitura: não foi possível verificar");
       client.setQueryData([key, W], data);
     }
@@ -234,7 +234,7 @@ describe("workspace service write access", () => {
   it("offers service writes in an active workspace with manual publication", async () => {
     const { ServicesPage, loaded } = await load();
     const html = await loaded(<ServicesPage />);
-    expect(html).toContain("Novo service");
+    expect(html).toContain("Novo serviço");
     expect(html).toContain(">Editar</button>");
     expect(html).toContain("Mais ações para cobranca");
   });

@@ -104,7 +104,7 @@ describe("authorized route context with real transport", () => {
     const view = await mount(`/workspaces/${A}/services`, { archived: true, full: true });
     await view.waitText("Service A");
     expect(view.container.textContent).toContain("arquivado · somente leitura");
-    expect(view.container.textContent).not.toContain("Novo service");
+    expect(view.container.textContent).not.toContain("Novo serviço");
   });
   it.each([[200, "legacy"], [404, "not-found"], [403, "forbidden"]])("validates only v1 for a legacy route (%s)", async (status, state) => {
     const view = await mount(`/e/${A}/metrics?x#y`, { answers: { [`/api/v1/environments/${A}`]: status === 200 ? () => Response.json(environment(A)) : problem(status as number) } });
@@ -158,7 +158,7 @@ describe("authorized route context with real transport", () => {
     await view.waitText("Route A");
     const detail = view.container.findAll((n) => n.tagName === "BUTTON" && n.textContent === "Ver detalhes")[0]!;
     await act(async () => { detail.dispatchEvent(new Event("click", { bubbles: true })); await tick(); });
-    await view.waitText("Path previsto na configuração v2");
+    await view.waitText("Path previsto do Workspace");
     expect(view.container.textContent).not.toContain("Path no fluxo v1");
     expect(view.container.findAll((n) => n.tagName === "A" && n.textContent === "Plugins do Workspace")[0]?.getAttribute("href")).toBe(`/workspaces/${A}/plugins`);
     expect(view.sent.some((p) => p.startsWith("/api/v1/environments"))).toBe(false);
@@ -215,17 +215,17 @@ describe("authorized route context with real transport", () => {
       [`/api/v1/environments/${A}`]: state === "pending" ? () => new Promise<Response>(() => {}) : problem(500),
     } });
     await view.waitText("Service A");
-    expect(view.container.textContent).not.toContain("Novo service");
+    expect(view.container.textContent).not.toContain("Novo serviço");
     expect(view.container.textContent).toContain("Somente leitura");
     expect(view.sent.filter((p) => p === `/api/v1/environments/${A}`)).toHaveLength(1);
   });
   it.each([500, 502, "network"])("keeps an open legacy service form's error verdict after transient environment failure %s", async (status) => {
     const view = await mount(`/e/${A}/services`, { full: true, role: "admin" });
-    await view.waitText("Novo service");
+    await view.waitText("Novo serviço");
     let release!: (response: Response | PromiseLike<Response>) => void;
     const pending = new Promise<Response>((resolve) => { release = resolve; });
     view.answers[`/api/v1/environments/${A}`] = () => pending;
-    const create = view.container.findAll((n) => n.tagName === "BUTTON" && n.textContent === "Novo service")[0]!;
+    const create = view.container.findAll((n) => n.tagName === "BUTTON" && n.textContent === "Novo serviço")[0]!;
     await act(async () => { create.dispatchEvent(new Event("click", { bubbles: true })); await tick(); });
     const dialog = view.container.findAll((n) => n.getAttribute("role") === "dialog")[0]!;
     const form = dialog.findAll((n) => n.tagName === "FORM")[0]!;
@@ -244,8 +244,8 @@ describe("authorized route context with real transport", () => {
     it.each([403, 404])(`unmounts authorized ${namespace} content and an open form on explicit %s revalidation`, async (status) => {
       const view = await mount(`/${namespace}/${A}/services?x=1#y`, { full: true, role: "admin" });
       await view.waitText("Service A");
-      await view.waitText("Novo service");
-      const create = view.container.findAll((n) => n.tagName === "BUTTON" && n.textContent === "Novo service")[0]!;
+      await view.waitText("Novo serviço");
+      const create = view.container.findAll((n) => n.tagName === "BUTTON" && n.textContent === "Novo serviço")[0]!;
       await act(async () => { create.dispatchEvent(new Event("click", { bubbles: true })); await tick(); });
       expect(view.container.findAll((n) => n.getAttribute("role") === "dialog")).toHaveLength(1);
       const key = namespace === "e" ? "environment" : "workspace";
@@ -288,7 +288,7 @@ describe("authorized route context with real transport", () => {
     await act(async () => { await client.invalidateQueries({ queryKey: ["workspace", A] }); await tick(); });
     expect(view.container.textContent).toContain("Service A");
     expect(view.container.findAll((n) => n.tagName === "TABLE")[0]).toBe(content);
-    expect(view.container.textContent).not.toContain("Novo service");
+    expect(view.container.textContent).not.toContain("Novo serviço");
   });
   it("preserves publication confirmation while and after the authorized Workspace refreshes", async () => {
     const view = await mount(`/workspaces/${A}/releases`, { full: true });
@@ -310,15 +310,15 @@ describe("authorized route context with real transport", () => {
       return Response.json(release, { status: 201 });
     };
     await click("Confirmar publicação");
-    await view.waitText("Release v1 publicada. Nenhum deployment foi criado.");
+    await view.waitText("Release v1 publicada. Nenhuma implantação foi criada.");
     expect(view.container.textContent).not.toContain("Verificando contexto…");
     view.answers[`/api/v2/workspaces/${A}/releases`] = () => Response.json([release]);
     await act(async () => { finish(Response.json({ ...workspace(A), activeRelease: 1 })); await tick(); });
     await view.waitText("Release ativa: v1");
-    expect(view.container.textContent).toContain("Release v1 publicada. Nenhum deployment foi criado.");
+    expect(view.container.textContent).toContain("Release v1 publicada. Nenhuma implantação foi criada.");
   });
   it.each([
-    ["services", "Novo service"], ["routes", "Nova route"], ["variables", "Declarar variável"],
+    ["services", "Novo serviço"], ["routes", "Nova rota"], ["variables", "Declarar variável"],
     ["plugins", "Novo plugin"], ["releases", "Publicar release"],
   ])("offers v2 writes on %s without consulting legacy publishMode", async (section, action) => {
     const view = await mount(`/workspaces/${A}/${section}`, { full: true });
@@ -331,7 +331,7 @@ describe("authorized route context with real transport", () => {
   });
   it("keeps the service form and its data when v2 returns auto-publish", async () => {
     const view = await mount(`/workspaces/${A}/services`, { full: true });
-    await view.waitText("Novo service");
+    await view.waitText("Novo serviço");
     await view.waitText("Service A");
     const edit = view.container.findAll((n) => n.tagName === "BUTTON" && n.textContent === "Editar")[0]!;
     await act(async () => { edit.dispatchEvent(new Event("click", { bubbles: true })); await tick(); });

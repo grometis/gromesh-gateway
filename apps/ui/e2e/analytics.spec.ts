@@ -16,7 +16,7 @@ async function login(page: Page, role: "admin" | "viewer" = "admin") {
   await page.getByLabel("E-mail").fill("ana@gromesh.dev");
   await page.getByLabel("Senha").fill("test-password");
   await page.getByRole("button", { name: "Entrar" }).click();
-  await expect(page.getByRole("heading", { name: "Services" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Serviços" })).toBeVisible();
 }
 
 const menu = (page: Page) => page.getByRole("navigation", { name: "Navegação global" });
@@ -57,7 +57,7 @@ test("o card Top rotas ranqueia pelo critério escolhido e leva ao explorador fi
   const url = new URL((await top).url());
   expect(url.searchParams.get("by")).toBe("requests");
   expect(url.searchParams.get("limit")).toBe("10");
-  const table = page.getByRole("table", { name: "Top rotas" });
+  const table = page.getByRole("table", { name: "Principais rotas" });
   await expect(table.getByRole("link", { name: "orders" })).toBeVisible();
   await expect(table).toContainText("900");
   await expect(table).toContainText("Sem rota"); // traffic that matched no route
@@ -134,8 +134,8 @@ test("requisições mantém classe e status exato exclusivos ao aplicar, limpar 
     expect(Date.parse(query.get("to")!) - Date.parse(query.get("from")!)).toBe(24 * 3_600_000);
   };
   await page.getByLabel("Período", { exact: true }).selectOption("24h");
-  await page.getByLabel("Service", { exact: true }).selectOption("6f1d2c3b-4a5e-4f60-8b7c-1d2e3f4a5b6c");
-  await page.getByLabel("Consumer", { exact: true }).selectOption("0b7c3c1e-1f2a-4f7e-9c41-0d3c1b2a9e11");
+  await page.getByLabel("Serviço", { exact: true }).selectOption("6f1d2c3b-4a5e-4f60-8b7c-1d2e3f4a5b6c");
+  await page.getByLabel("Consumidor", { exact: true }).selectOption("0b7c3c1e-1f2a-4f7e-9c41-0d3c1b2a9e11");
   await statusClass.selectOption("5xx");
   await apply({ statusClass: "5xx" });
   await exact.fill("500");
@@ -226,7 +226,7 @@ test("métricas e requisições usam estados vazios sem perder os filtros", asyn
   await page.route("**/api/v1/environments/*/analytics/top-routes?*", (route) => route.fulfill({ json: { by: "requests", items: [] } }));
   await page.goto(`/e/${envId}/metrics`);
   await expect(page.getByRole("heading", { name: "Sem tráfego no período.", exact: true })).toBeVisible();
-  await expect(page.getByRole("table", { name: "Top rotas" })).toHaveCount(0);
+  await expect(page.getByRole("table", { name: "Principais rotas" })).toHaveCount(0);
   await expect(page.getByLabel("Critério")).toBeEnabled();
   await expect(page.locator("figure.chart")).toHaveCount(3);
 
