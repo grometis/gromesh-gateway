@@ -19,6 +19,31 @@ const credentialPattern = /(?:synthetic[_ -](?:secret|password|token)|gh[pousr]_
 
 const sensitiveTextPattern = /(?:secret|password|passwd|authorization|cookie|credential|api[ _-]?key|private[ _-]?key|access[ _-]?key|token|bearer|synthetic|gh[pousr]_|github_pat_|AKIA|ASIA|sk-[a-z])/i;
 
+function normalizeIdentifiers(value) {
+  return value.replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/[_0-9-]+/g, " ").replace(/ +/g, " ");
+}
+function credentialAssignment(value) {
+  return [...value.matchAll(/([A-Za-z][A-Za-z0-9_-]*)\s*=(?=\s*\S)/g)].some(([, identifier]) =>
+    [identifier, normalizeIdentifiers(identifier)].some(spelling =>
+      /\b(?:secrets?|password|passwd|authorization|cookies?|credentials?|api *key|private *key|access *key|token|bearer)\b/i.test(spelling)));
+}
+function encodedCredential(value) {
+  // Inspect the whole spelling and its components: '/' is both base64 data and
+  // a path separator, while '-'/'_' can be either base64url data or identifier separators.
+  for (const fragment of [value, ...value.split(/[/.:@\\]+/), ...value.split(/[/.:@\\_+-]+/)]) {
+    for (const encoded of fragment.match(/[A-Za-z0-9+/_-]{4,}={0,2}/g) ?? []) {
+      const decoded = [Buffer.from(encoded, "base64url").toString("utf8")];
+      const hex = encoded.replace(/^0x/i, "");
+      if (/^(?:[0-9a-f]{2})+$/i.test(hex)) decoded.push(Buffer.from(hex, "hex").toString("utf8"));
+      if (decoded.some(item => sensitiveTextPattern.test(item) ||
+        sensitiveTextPattern.test(normalizeIdentifiers(item)) || credentialPattern.test(item))) return true;
+    }
+  }
+  return false;
+}
+
 function exactDigest(value) {
   requireValid(typeof value === "string" && value.length === 71 && digestPattern.test(value), RejectionCode.DIGEST_FORMAT);
 }
@@ -31,9 +56,15 @@ function shape(value, required, optional = []) {
 function list(value, maximum, minimum = 0) {
   requireValid(Array.isArray(value) && value.length >= minimum && value.length <= maximum, RejectionCode.ARRAY_BUDGET);
 }
-function text(value, maximum, pattern, unicode = false) {
+function text(value, maximum, pattern, unicode = false, prose = false) {
   requireValid(typeof value === "string" && value.length > 0 && value.length <= maximum, RejectionCode.TEXT_BUDGET);
   requireValid((unicode ? /^[\x20-\x7e\p{L}\p{M}]+$/u : /^[\x20-\x7e]+$/).test(value) && !credentialPattern.test(value), RejectionCode.TEXT_CHARACTERS);
+  if (prose) {
+    requireValid(!credentialAssignment(value), RejectionCode.PROSE_CREDENTIAL);
+    requireValid(!encodedCredential(value), RejectionCode.PROSE_ENCODED_CREDENTIAL);
+  } else {
+    requireValid(!credentialAssignment(value) && !encodedCredential(value), RejectionCode.TEXT_CHARACTERS);
+  }
   if (pattern) requireValid(pattern.test(value), RejectionCode.TEXT_PATTERN);
 }
 function entropy(value) {
@@ -43,7 +74,7 @@ function entropy(value) {
 }
 export function safeText(value, maximum = 160) {
   text(value, maximum, /^[A-Za-z0-9 .,():/+_@=*~-]+$/);
-  requireValid(!sensitiveTextPattern.test(value), RejectionCode.SAFE_TEXT_SENSITIVE);
+  requireValid(!sensitiveTextPattern.test(value) && !sensitiveTextPattern.test(normalizeIdentifiers(value)), RejectionCode.SAFE_TEXT_SENSITIVE);
   requireValid(!value.includes("://") && !value.includes(".."), RejectionCode.SAFE_TEXT_LOCATION);
   // Free text is never exempt just because it resembles a hash/base64 string.
   for (const word of value.match(/[A-Za-z0-9_+/=-]+/g) ?? []) {
@@ -52,19 +83,16 @@ export function safeText(value, maximum = 160) {
   requireValid(value.length < 32 || entropy(value) < 4.5, RejectionCode.SAFE_TEXT_ENTROPY);
 }
 function syftProse(value, unicode = false) {
-  text(value, 160, /^[\p{L}\p{M}0-9 .,():/+_@=*~`'"!?&;[\]-]+$/u, unicode);
+  text(value, 160, /^[\p{L}\p{M}0-9 .,():/+_@=*~`'"!?&;[\]-]+$/u, unicode, true);
   requireValid(!value.includes("://") && !value.includes(".."), RejectionCode.PROSE_LOCATION);
   // Project descriptions legitimately mention cookie parsing and tokenizers. Reject
   // credential words/phrases, and short encoded credential markers regardless of entropy.
-  requireValid(!/\b(?:password|passwd|authorization|credentials?|api[ _-]?key|private[ _-]?key|access[ _-]?key|bearer|secret)\b/i.test(value), RejectionCode.PROSE_CREDENTIAL);
+  const normalized = normalizeIdentifiers(value);
+  requireValid(![value, normalized].some(spelling => /\b(?:password|passwd|authorization|credentials?|api[ _-]?key|private[ _-]?key|access[ _-]?key|bearer|secret)\b/i.test(spelling)), RejectionCode.PROSE_CREDENTIAL);
   const terminology = value.replace(/\btoken types\b/ig, "types")
     .replace(/\bdefinition for [a-z0-9-]+ token$/ig, "definition")
     .replace(/\bcookie parsing\b/ig, "parsing");
-  requireValid(!/\b(?:token|cookie)\b/i.test(terminology), RejectionCode.PROSE_TERMINOLOGY);
-  for (const encoded of value.match(/[A-Za-z0-9+/_-]{8,}={0,2}/g) ?? []) {
-    const decoded = Buffer.from(encoded, "base64url").toString("utf8");
-    requireValid(!sensitiveTextPattern.test(decoded) && !credentialPattern.test(decoded), RejectionCode.PROSE_ENCODED_CREDENTIAL);
-  }
+  requireValid(![terminology, normalizeIdentifiers(terminology)].some(spelling => /\b(?:token|cookie)\b/i.test(spelling)), RejectionCode.PROSE_TERMINOLOGY);
   for (const word of value.match(/[\p{L}\p{M}0-9_+/=-]+/gu) ?? []) {
     // Descriptions contain camelCase API identifiers; comments keep the stricter 3.5 budget.
     requireValid(word.length < 32 && (word.length < 20 || entropy(word) < 4), RejectionCode.PROSE_WORD_BUDGET);
@@ -87,7 +115,7 @@ function packageVersion(value, maximum = 100) {
 }
 function downloadRef(value) {
   text(value, 100, /^[A-Za-z0-9._+-]+$/);
-  requireValid(!sensitiveTextPattern.test(value) && !value.includes(".."), RejectionCode.DOWNLOAD_REF_SENSITIVE);
+  requireValid(!sensitiveTextPattern.test(value) && !sensitiveTextPattern.test(normalizeIdentifiers(value)) && !value.includes(".."), RejectionCode.DOWNLOAD_REF_SENSITIVE);
   if (/^[0-9a-f]{7,40}$/.test(value)) return;
   // Numeric release tags include v1.2.3, release-1.2.3 and upstream's libidn2.
   // Unstructured words and opaque high-entropy fragments are not refs.
@@ -105,7 +133,7 @@ function downloadHost(value) {
   requireValid(labels.length >= 2 && isIP(value) === 0 && /[a-z]/.test(labels.at(-1)), RejectionCode.DOWNLOAD_HOST);
   for (const label of labels) {
     requireValid(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label) && !label.startsWith("xn--"), RejectionCode.DOWNLOAD_HOST_LABEL);
-    requireValid(!/(?:^|-)(?:password|passwd|authorization|cookie|credentials?|secrets?|api-?key|private-?key|access-?key|token|bearer|synthetic)(?:-|$)/i.test(label), RejectionCode.DOWNLOAD_HOST_SENSITIVE);
+    requireValid(![label, normalizeIdentifiers(label)].some(spelling => /\b(?:password|passwd|authorization|cookie|credentials?|secrets?|api[ _-]?key|private[ _-]?key|access[ _-]?key|token|bearer|synthetic)\b/i.test(spelling)), RejectionCode.DOWNLOAD_HOST_SENSITIVE);
     requireValid(label.length < 20 || entropy(label) < 3.5, RejectionCode.DOWNLOAD_HOST_ENTROPY);
   }
 }
@@ -133,7 +161,7 @@ function downloadLocation(value) {
   const parts = path.replace(/^\//, "").replace(/\/$/, "").split("/");
   requireValid(path === "" || path === "/" || parts.every(part => part.length > 0 && part !== "."), RejectionCode.DOWNLOAD_PATH);
   for (const part of parts) {
-    requireValid(!/^(?:password|passwd|authorization|cookie|credential|secret|api[_-]?key|private[_-]?key|access[_-]?key|token|bearer)$/i.test(part), RejectionCode.DOWNLOAD_PATH_SENSITIVE);
+    requireValid(![part, normalizeIdentifiers(part)].some(spelling => /^(?:password|passwd|authorization|cookie|credential|secret|api[ _-]?key|private[ _-]?key|access[ _-]?key|token|bearer)$/i.test(spelling)), RejectionCode.DOWNLOAD_PATH_SENSITIVE);
   }
   if (match[5] !== undefined) downloadRef(match[5]);
 }
@@ -271,7 +299,7 @@ function externalRef(value, context, pkg) {
       structuredText(part.replace(/\\(.)/g, "$1"), 200);
       // cookie, tokenizer and similar words are real npm products, not credentials.
       // Reject credential labels without rejecting every product containing them.
-      requireValid(!/^(?:password|passwd|authorization|credential|secret|api[_-]?key|private[_-]?key|access[_-]?key)$/i.test(part), RejectionCode.CPE_SENSITIVE);
+      requireValid(![part, normalizeIdentifiers(part)].some(spelling => /\b(?:password|passwd|authorization|credential|secret|api[ _-]?key|private[ _-]?key|access[ _-]?key)\b/i.test(spelling)), RejectionCode.CPE_SENSITIVE);
     }
     const language = parts[offset === 3 ? 8 : 7];
     if (language !== undefined) text(language, 15, /^(?:\*|-|[A-Za-z]{2,3}(?:-(?:[A-Za-z]{2}|[0-9]{3}))?)$/);
@@ -283,7 +311,7 @@ function annotations(value) {
 }
 function licenseId(value) {
   structuredText(value, 100, /^[A-Za-z0-9][A-Za-z0-9.-]*\+?$/);
-  requireValid(!sensitiveTextPattern.test(value), RejectionCode.LICENSE_SENSITIVE);
+  requireValid(!sensitiveTextPattern.test(value) && !sensitiveTextPattern.test(normalizeIdentifiers(value)), RejectionCode.LICENSE_SENSITIVE);
 }
 function licenseExpression(value, licenseIds) {
   text(value, 160, /^[A-Za-z0-9.()+ -]+$/);

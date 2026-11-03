@@ -1098,6 +1098,85 @@ function prSupplyFixture(t) {
 test('PR mode validates SHA, arch and local image without publication or digest artifact', t => {
   assert.equal(prSupplyFixture(t).runSupply().status, 0);
 });
+
+for (const mode of ['images', 'pr']) {
+  for (const [index, assignment] of ['client_secret=short', 'session_token=abc123', 'clientSecret=abc123'].entries()) {
+    for (const [field, mutate] of [
+      ['fileName', d => { d.files[0].fileName = `/app/${assignment}`; }],
+      ['SPDXID', d => { replaceSbomId(d, d.packages[0], `SPDXRef-${assignment}`); }],
+      ['homepage', d => { d.packages[0].homepage = `https://example.org/${assignment}`;
+        d.packages[0].externalRefs = [{ referenceCategory: 'PACKAGE-MANAGER', referenceType: 'purl', referenceLocator: 'pkg:npm/future@1.0.0' }]; }],
+      ['externalRefs', d => { d.packages[0].externalRefs[0].referenceLocator = `cpe:2.3:a:future:${assignment}:1:*:*:*:*:*:*:*`; }],
+      ['license', d => { d.packages[0].licenseDeclared = assignment; }],
+    ]) {
+      test(`credential identifier normalization ${mode} ${field} reported variant ${index}`, t => {
+        const f = mode === 'pr' ? prSupplyFixture(t) : supplyFixture(t);
+        const doc = JSON.parse(readFileSync(f.sbomFile));
+        mutate(doc);
+        writeFileSync(f.sbomFile, JSON.stringify(doc));
+        const result = f.runSupply();
+        rejectSupply(result);
+        assert.equal(JSON.parse(result.stderr).code, 'TEXT_CHARACTERS');
+        assert.equal(result.stderr.includes(assignment), false);
+      });
+    }
+  }
+  for (const [index, assignment] of [
+    'client_secret=short', 'session_token=abc123', 'clientSecret=abc123',
+    'client-secret=short', 'client2Secret=short', 'clientSecret2=short',
+    'session2_token3=abc123', 'clientAPIKey=short', 'client_api2_key=short',
+    'passWord=short', 'secRet=short', 'toKen=abc123', 'clientAPIKEY=short',
+  ].entries()) {
+    for (const field of ['description', 'supplier', 'originator', 'name', 'versionInfo', 'sourceInfo', 'downloadLocation']) {
+      test(`credential identifier normalization ${mode} ${field} variant ${index}`, t => {
+        const f = mode === 'pr' ? prSupplyFixture(t) : supplyFixture(t);
+        const doc = JSON.parse(readFileSync(f.sbomFile));
+        doc.packages[0][field] = ['supplier', 'originator'].includes(field) ? `Person: ${assignment}` : assignment;
+        writeFileSync(f.sbomFile, JSON.stringify(doc));
+        const result = f.runSupply();
+        rejectSupply(result);
+        assert.equal(JSON.parse(result.stderr).code,
+          ['description', 'supplier', 'originator'].includes(field) ? 'PROSE_CREDENTIAL' : 'TEXT_CHARACTERS');
+        assert.equal(result.stderr.includes(assignment), false);
+      });
+    }
+  }
+  // The short base64 case is the reported bypass; hex fits the same entropy budgets.
+  for (const [encoding, payload] of [
+    ['base64', 'dG9rZW49YWJjMTIz'], ['base64-padded', 'c2VjcmV0PXg='],
+    ['base64url', 'dG9rZW49fj4_'], ['base64-slash', 'dG9rZW49Pz8/'],
+    ['base64-short-marker', 'dG9rZW4'], ['base64-compound-marker', 'YXBpMmtleT14'],
+    ['hex', '746f6b656e3d616263313233'], ['hex-uppercase', '746F6B656E3D616263313233'],
+    ['hex-prefix', '0x746f6b656e3d616263313233'], ['hex-uppercase-prefix', '0X746F6B656E3D616263313233'],
+  ]) {
+    for (const [field, mutate, code] of [
+      ['downloadLocation', d => { d.packages[0].downloadLocation = `https://example.org/${payload}`; }, 'TEXT_CHARACTERS'],
+      ['prefixed-path-segment', d => { d.packages[0].downloadLocation = `https://example.org/releases/build_${payload}/v1`; }, 'TEXT_CHARACTERS'],
+      ['plus-prefixed-path-segment', d => { d.packages[0].downloadLocation = `https://example.org/v+${payload}`; }, 'TEXT_CHARACTERS'],
+      ['homepage', d => {
+        d.packages[0].externalRefs = [{ referenceCategory: 'PACKAGE-MANAGER', referenceType: 'purl', referenceLocator: 'pkg:npm/future@1.0.0' }];
+        d.packages[0].homepage = `https://example.org/${payload}#readme`;
+      }, 'TEXT_CHARACTERS'],
+      ['purl', d => { d.packages[0].externalRefs = [{ referenceCategory: 'PACKAGE-MANAGER', referenceType: 'purl', referenceLocator: `pkg:npm/${encodeURIComponent(payload)}@1.0.0` }]; }, 'TEXT_CHARACTERS'],
+      ['cpe', d => { d.packages[0].externalRefs = [{ referenceCategory: 'SECURITY', referenceType: 'cpe23Type', referenceLocator: `cpe:2.3:a:future:${payload.replace(/[=/]/g, c => `\\${c}`)}:1:*:*:*:*:*:*:*` }]; }, 'TEXT_CHARACTERS'],
+      ['fileName', d => { d.files[0].fileName = `/app/${payload}/package.json`; }, 'TEXT_CHARACTERS'],
+      ['sourceInfo', d => { d.packages[0].sourceInfo = `acquired package info from APK DB: /lib/${payload}`; }, 'TEXT_CHARACTERS'],
+      ['description', d => { d.packages[0].description = payload; }, 'PROSE_ENCODED_CREDENTIAL'],
+    ]) {
+      test(`encoded credential inspection ${mode} ${field} ${encoding}`, t => {
+        const f = mode === 'pr' ? prSupplyFixture(t) : supplyFixture(t);
+        const doc = JSON.parse(readFileSync(f.sbomFile));
+        mutate(doc);
+        writeFileSync(f.sbomFile, JSON.stringify(doc));
+        const result = f.runSupply();
+        rejectSupply(result);
+        assert.equal(JSON.parse(result.stderr).code, code);
+        assert.equal(result.stderr.includes(payload), false);
+      });
+    }
+  }
+}
+
 for (const [label, extra] of [
   ['wrong SHA', { GITHUB_SHA: 'd'.repeat(40) }], ['wrong arch', { TARGET_ARCH: 'arm64' }],
   ['wrong runner', { RUNNER_ARCH: 'ARM64' }], ['no local ID', { LOCAL_IMAGE_ID: '' }],
