@@ -27,7 +27,7 @@ async function mount(read: (url: URL) => Response | Promise<Response>, policySta
     if (url.pathname === "/api/v1/me") return Response.json({ id: A.id, name: "Ana", role: "viewer", environmentRoles: [] });
     if (url.pathname.endsWith("/auth/csrf")) return Response.json({ csrfToken: "csrf" });
     if (url.pathname === "/api/v1/environments") return Response.json({ items: [], nextCursor: null });
-    if (url.pathname === "/api/v2/workspace-creation-policy") return Response.json({ stage: "dev" }, { status: policyStatus });
+    if (url.pathname === "/api/v2/workspace-creation-policy") return Response.json({ stage: "dev", workspacesMode: "disabled", caller: { canCreate: false } }, { status: policyStatus });
     if (url.pathname === "/api/v2/workspaces") return read(url);
     throw new Error(`Unexpected request: ${url.pathname}`);
   });
@@ -41,7 +41,7 @@ async function mount(read: (url: URL) => Response | Promise<Response>, policySta
   const settle = async () => { await act(async () => { await tick(); }); };
   const waitText = async (text: string) => { await vi.waitFor(async () => { await settle(); expect(container.textContent).toContain(text); }); };
   const button = (text: string) => container.findAll((n) => n.tagName === "BUTTON" && n.textContent === text)[0]!;
-  const click = async (node: TestNode) => { await act(async () => { node.dispatchEvent(new Event("click", { bubbles: true })); await tick(); }); };
+  const click = async (node: TestNode) => { await act(async () => { node.dispatchEvent(Object.assign(new Event("click", { bubbles: true, cancelable: true }), { button: 0 })); await tick(); }); };
   const rows = () => container.findAll((n) => n.tagName === "TBODY")[0]?.childNodes ?? [];
   const counts = () => container.findAll((n) => n.tagName === "DD").map((n) => n.textContent);
   return { container, router, sent, settle, waitText, button, click, rows, counts };
@@ -182,6 +182,80 @@ describe("instance overview with real queries and authenticated routes", () => {
     expect(view.rows()).toHaveLength(0);
     expect(view.container.textContent).not.toContain(A.name);
   });
+  it.each(["revalidation", "next page"])("discards denied caches after %s before navigating to management", async (source) => {
+    let revoked = false;
+    let management: Promise<Response> | undefined;
+    const view = await mount(() => management ?? (revoked ? failure(403) : page([A], "next")));
+    await view.waitText(A.name);
+    client.setQueryData(["workspace", A.id], A);
+    client.setQueryData(["workspaces", "other-list"], { pages: [{ items: [A], nextCursor: null }], pageParams: [""] });
+    revoked = true;
+    if (source === "next page") await view.click(view.button("Carregar mais"));
+    else await act(async () => { await client.invalidateQueries({ queryKey: ["workspaces"], exact: true }); await tick(); });
+    await view.waitText("Sem permissão para listar Workspaces nesta instância.");
+    expect(client.getQueriesData({ queryKey: ["workspaces"] }).every(([, data]) => data === undefined)).toBe(true);
+    expect(client.getQueriesData({ queryKey: ["workspace"] })).toEqual([]);
+    let finish!: (response: Response) => void;
+    management = new Promise<Response>((resolve) => { finish = resolve; });
+    const manage = view.container.findAll((n) => n.tagName === "A" && n.textContent === "Gerenciar Workspaces")[0]!;
+    await view.click(manage);
+    await vi.waitFor(async () => { await view.settle(); expect(view.router.state.location.pathname).toBe("/workspaces"); });
+    expect(view.container.textContent).not.toContain(A.name);
+    expect(view.container.textContent).not.toContain(A.description);
+    await act(async () => { finish(failure(403)); await tick(); });
+    await vi.waitFor(async () => { await view.settle(); expect(view.container.findAll((n) => n.getAttribute("role") === "alert").length).toBeGreaterThan(0); });
+    expect(view.container.textContent).not.toContain(A.name);
+    expect(view.container.textContent).not.toContain(A.description);
+    expect(client.getQueriesData({ queryKey: ["workspaces"] }).every(([, data]) => data === undefined)).toBe(true);
+    expect(view.rows()).toHaveLength(0);
+  });
+  it.each([403, 502])("management hides old rows alongside a %s revalidation error", async (status) => {
+    let revoked = false;
+    const view = await mount(() => revoked ? failure(status) : page([A]));
+    await view.waitText(A.name);
+    await act(async () => { await view.router.navigate("/workspaces"); await tick(); });
+    await view.waitText(A.description!);
+    revoked = true;
+    await act(async () => { await client.invalidateQueries({ queryKey: ["workspaces"] }); await tick(); });
+    await vi.waitFor(async () => { await view.settle(); expect(view.container.findAll((n) => n.getAttribute("role") === "alert").length).toBeGreaterThan(0); });
+    expect(view.rows()).toHaveLength(0);
+    expect(view.container.textContent).not.toContain(A.description);
+    if (status === 403) expect(client.getQueriesData({ queryKey: ["workspaces"] }).every(([, data]) => data === undefined)).toBe(true);
+  });
+  it("reloads only the first page on every return, then waits for explicit pagination", async () => {
+    const view = await mount((url) => url.searchParams.has("cursor") ? page([B]) : page([A], "next"));
+    await view.waitText(A.name);
+    const cursors = () => view.sent.filter((r) => new URL(r.url).pathname === "/api/v2/workspaces").map((r) => new URL(r.url).searchParams.get("cursor"));
+    for (let visit = 0; visit < 2; visit++) {
+      await view.click(view.button("Carregar mais"));
+      await view.waitText("2 carregados");
+      await act(async () => { await view.router.navigate("/missing"); await tick(); });
+      const beforeReturn = cursors().length;
+      await act(async () => { await view.router.navigate(-1); await tick(); });
+      await view.waitText("1 carregados");
+      await vi.waitFor(async () => { await view.settle(); expect(client.isFetching({ queryKey: ["workspaces"] })).toBe(0); });
+      expect(cursors().slice(beforeReturn)).toEqual([null]);
+      expect(view.rows()).toHaveLength(1);
+      expect(view.container.textContent).not.toContain(B.name);
+    }
+    expect(cursors()).toEqual([null, "next", null, "next", null]);
+  });
+  it("starts from the first page even when management has accumulated more pages", async () => {
+    const view = await mount((url) => url.searchParams.has("cursor") ? page([B]) : page([A], "next"));
+    await view.waitText(A.name);
+    await view.click(view.container.findAll((n) => n.tagName === "A" && n.textContent === "Gerenciar Workspaces")[0]!);
+    await view.waitText("Cada Workspace isola");
+    await view.click(view.button("Carregar mais"));
+    await view.waitText(B.name);
+    await vi.waitFor(async () => { await view.settle(); expect(client.isFetching({ queryKey: ["workspaces"] })).toBe(0); });
+    const beforeReturn = view.sent.length;
+    await view.click(view.container.findAll((n) => n.tagName === "A" && n.textContent === "Abrir Visão geral da instância")[0]!);
+    await view.waitText("1 carregados");
+    await vi.waitFor(async () => { await view.settle(); expect(client.isFetching({ queryKey: ["workspaces"] })).toBe(0); });
+    expect(view.sent.slice(beforeReturn).filter((r) => new URL(r.url).pathname === "/api/v2/workspaces").map((r) => new URL(r.url).searchParams.get("cursor"))).toEqual([null]);
+    expect(view.rows()).toHaveLength(1);
+    expect(view.container.textContent).not.toContain(B.name);
+  });
   it("keeps an authorized list when instance identity is unavailable", async () => {
     const view = await mount(() => page([A]), 403);
     await view.waitText(A.name);
@@ -194,5 +268,18 @@ describe("instance overview with real queries and authenticated routes", () => {
     expect(view.router.state.location.pathname).toBe("/login");
     expect(client.getQueriesData({ queryKey: ["workspaces"] })).toEqual([]);
     expect(view.container.textContent).not.toContain("Workspaces carregados");
+  });
+  it("clears previously loaded workspaces on a 401 revalidation", async () => {
+    let expired = false;
+    const view = await mount(() => expired ? failure(401) : page([A]));
+    await view.waitText(A.name);
+    client.setQueryData(["workspace", A.id], A);
+    expired = true;
+    await act(async () => { await client.invalidateQueries({ queryKey: ["workspaces"] }); await tick(); });
+    await view.waitText("Entrar");
+    expect(view.router.state.location.pathname).toBe("/login");
+    expect(client.getQueriesData({ queryKey: ["workspaces"] })).toEqual([]);
+    expect(client.getQueriesData({ queryKey: ["workspace"] })).toEqual([]);
+    expect(view.container.textContent).not.toContain(A.name);
   });
 });

@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router";
 import { ApiError } from "../api/client";
@@ -17,20 +17,36 @@ const releaseText = (workspace: Workspace) => workspace.activeRelease === undefi
 
 export function InstanceOverviewPage() {
   const queryClient = useQueryClient();
-  const workspaces = useInfiniteQuery({ ...workspacesQuery, retry: false, refetchOnMount: "always", refetchOnWindowFocus: false });
+  const [ready, setReady] = useState(false);
+  const workspaces = useInfiniteQuery({ ...workspacesQuery, enabled: ready, retry: false, refetchOnMount: false, refetchOnWindowFocus: false });
+  useEffect(() => {
+    // Reset before enabling: returning must start one new cursor chain, not refetch every cached page.
+    void queryClient.resetQueries({ queryKey: workspacesQuery.queryKey, exact: true });
+    setReady(true);
+  }, [queryClient]);
+  useEffect(() => {
+    if (workspaces.error instanceof ApiError && [401, 403].includes(workspaces.error.status)) {
+      queryClient.removeQueries({ queryKey: workspacesQuery.queryKey });
+      queryClient.removeQueries({ queryKey: ["workspace"] });
+    }
+  }, [queryClient, workspaces.error]);
   const [search, setSearch] = useState("");
   const [order, setOrder] = useState<Order>("name");
   const id = useId();
-  const forbidden = workspaces.isError && workspaces.error instanceof ApiError && workspaces.error.status === 403;
+  const denied = workspaces.isError && workspaces.error instanceof ApiError && [401, 403].includes(workspaces.error.status);
+  const forbidden = denied && workspaces.error instanceof ApiError && workspaces.error.status === 403;
   // A failed next page can retain authorized pages; a denied list or failed revalidation cannot.
-  const available = !!workspaces.data && !forbidden && (!workspaces.isError || workspaces.isFetchNextPageError);
+  const available = ready && !!workspaces.data && !denied && (!workspaces.isError || workspaces.isFetchNextPageError);
   const items = available ? [...new Map(workspaces.data!.pages.flatMap((page) => page.items).map((w) => [w.id, w])).values()] : [];
   const term = normalizeSearch(search.trim());
   const visible = items.filter((w) => normalizeSearch(w.name).includes(term) || normalizeSearch(w.slug).includes(term)).sort((a, b) =>
     (order === "status" ? a.status.localeCompare(b.status) : 0)
     || (order === "name-desc" ? -1 : 1) * a.name.localeCompare(b.name, "pt-BR") || a.id.localeCompare(b.id));
   const nextError = available && workspaces.isFetchNextPageError;
-  const resetList = () => { void queryClient.resetQueries({ queryKey: workspacesQuery.queryKey, exact: true }); };
+  const resetList = () => {
+    queryClient.removeQueries({ queryKey: workspacesQuery.queryKey, exact: true });
+    void workspaces.refetch();
+  };
   const counts = [
     ["Workspaces carregados", items.length],
     ["Ativos carregados", items.filter((w) => w.status === "active").length],
