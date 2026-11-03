@@ -50,7 +50,7 @@ test("histórico paginado, detalhe, diff v1 → v2 e rollback com o diff inverso
   await expect(current.locator(".badge.converged")).toHaveText("Atual");
   await expect(current.getByRole("button", { name: "Restaurar v2" })).toHaveClass("danger");
   const older = page.waitForRequest((r) => r.url().includes("cursor=older"));
-  await page.getByRole("button", { name: "Carregar mais" }).click();
+  await page.getByRole("button", { name: "Carregar mais", exact: true }).click();
   await older;
   await page.getByRole("link", { name: "v1", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Publicação v1", exact: true })).toBeVisible();
@@ -81,7 +81,7 @@ test("histórico paginado, detalhe, diff v1 → v2 e rollback com o diff inverso
   await rollback.getByRole("button", { name: "Confirmar rollback" }).click();
   await expect(rollback).toBeHidden();
   expect(rollbacks).toBe(1);
-  await expect(page.getByRole("status")).toContainText("v3");
+  await expect(page.getByRole("main").getByRole("status")).toContainText("v3");
 });
 
 test("rollback trata 409 de mesma configuração sem indicar sucesso", async ({ page }) => {
@@ -89,7 +89,7 @@ test("rollback trata 409 de mesma configuração sem indicar sucesso", async ({ 
   await page.route("**/api/v1/environments/*/snapshots/1/rollback", (route) => route.fulfill({ status: 409, contentType: "application/problem+json", body: JSON.stringify({ title: "Conflict", status: 409, detail: "Target has the same configuration as current" }) }));
   await login(page);
   await page.getByRole("link", { name: "Publicações", exact: true }).click();
-  await page.getByRole("button", { name: "Carregar mais" }).click();
+  await page.getByRole("button", { name: "Carregar mais", exact: true }).click();
   await page.getByRole("button", { name: "Restaurar v1" }).click();
   const modal = page.getByRole("dialog", { name: "Restaurar v1" });
   await expect(modal.getByRole("region", { name: "Diff v2 → v1" })).toBeVisible();
@@ -158,7 +158,7 @@ test("editor pode restaurar publicações, mas não administrar clusters", async
   await expect(page.getByText("edge-prod", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: /Novo cluster|Rotacionar token|Excluir|Mais ações/ })).toHaveCount(0);
   await page.getByRole("link", { name: "Publicações", exact: true }).click();
-  await page.getByRole("button", { name: "Carregar mais" }).click();
+  await page.getByRole("button", { name: "Carregar mais", exact: true }).click();
   await expect(page.getByRole("button", { name: "Restaurar v1" })).toBeVisible();
 });
 

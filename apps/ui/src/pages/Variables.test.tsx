@@ -1,7 +1,7 @@
 import { act } from "react";
 import { createPrivateKey } from "node:crypto";
 import type { Root } from "react-dom/client";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { notifyManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TEST_PRIVATE_KEY } from "../test/pem";
 import type { components } from "../api/schema-v2";
@@ -196,6 +196,46 @@ describe("workspace variables", () => {
     await view.submit();
     expect(await view.writes()[1]!.json()).toEqual({ type: "string", secret: false, required: false });
     expect(new URL(view.writes()[1]!.url).pathname).toBe(`/api/v2/workspaces/${W}/variables/HOST`);
+  });
+
+  it("submits a declaration after revalidation completes even before observer notifications render", async () => {
+    let reads = 0;
+    let release!: (response: Response) => void;
+    const held = new Promise<Response>((resolve) => { release = resolve; });
+    const view = await screen({ readResponse: (request) => {
+      if (new URL(request.url).pathname === `/api/v2/workspaces/${W}` && ++reads > 1) return held;
+    } });
+    await view.click("Editar declaração");
+    expect(view.buttons("Salvar")[0]!.getAttribute("disabled")).not.toBeNull();
+    // Delay only observer delivery; the actual access query still completes in the cache.
+    const scheduled: (() => void)[] = [];
+    notifyManager.setScheduler((callback) => { scheduled.push(callback); });
+    try {
+      release(Response.json({ id: W, key: W, name: "Workspace", slug: "billing", status: "active", activeRelease: null }));
+      await vi.waitFor(() => expect(client!.getQueryState(["workspace", W])?.fetchStatus).toBe("idle"));
+      await view.submit();
+      expect(view.writes().map((request) => request.method)).toEqual(["PUT"]);
+      expect(new URL(view.writes()[0]!.url).pathname).toBe(`/api/v2/workspaces/${W}/variables/API_KEY`);
+    } finally {
+      notifyManager.setScheduler((callback) => { setTimeout(callback, 0); });
+      await act(async () => { for (const callback of scheduled) callback(); await tick(); });
+    }
+  });
+
+  it("blocks a declaration when the cache revokes access before observers render", async () => {
+    const view = await screen();
+    await view.click("Editar declaração");
+    await vi.waitFor(async () => { await act(async () => { await tick(); }); expect(view.buttons("Salvar")[0]!.getAttribute("disabled")).toBeNull(); });
+    const scheduled: (() => void)[] = [];
+    notifyManager.setScheduler((callback) => { scheduled.push(callback); });
+    try {
+      client!.setQueryData(["workspace", W], { id: W, status: "archived" });
+      await view.submit();
+      expect(view.writes()).toEqual([]);
+    } finally {
+      notifyManager.setScheduler((callback) => { setTimeout(callback, 0); });
+      await act(async () => { for (const callback of scheduled) callback(); await tick(); });
+    }
   });
 
   it("sets a secret only on this instance, clears the password and keeps it out of DOM and mutation cache", async () => {

@@ -32,7 +32,7 @@ async function signIn(page: Page, user: Me) {
 
 test("a global viewer who is editor in one environment edits only there, and does not see the hidden one", async ({ page }) => {
   await signIn(page, person("viewer", [{ environmentId: prod.id, role: "editor" }, { environmentId: sandbox.id, role: "none" }]));
-  const select = page.getByLabel("Workspace", { exact: true });
+  const select = page.getByLabel("Ambiente (legado)", { exact: true });
   await expect(select.locator("option")).toHaveText(["Produção", "Homologação"]);
   await expect(page).toHaveURL(new RegExp(`/e/${prod.id}/consumers$`));
   await expect(page.getByRole("button", { name: "Novo consumer" })).toBeVisible();
@@ -46,7 +46,7 @@ test("a global viewer who is editor in one environment edits only there, and doe
 test("a global editor who is viewer in one environment only reads there", async ({ page }) => {
   await signIn(page, person("editor", [{ environmentId: prod.id, role: "viewer" }]));
   await expect(page.getByRole("button", { name: "Novo consumer" })).toHaveCount(0);
-  await page.getByLabel("Workspace", { exact: true }).selectOption({ label: "Homologação" });
+  await page.getByLabel("Ambiente (legado)", { exact: true }).selectOption({ label: "Homologação" });
   await expect(page.getByRole("button", { name: "Novo consumer" })).toBeVisible();
 });
 

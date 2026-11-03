@@ -12,8 +12,8 @@ import { PageHeader } from "../components/PageHeader";
 import { useEnvId } from "../components/Shell";
 import { Table } from "../components/Table";
 import { variableFormErrors } from "./gateway-errors";
-import { creationPolicyQuery } from "./Workspaces";
-import { useInvalidateWorkspaceGateway, useWorkspaceGatewayAccess, WorkspaceGatewayNote } from "./workspace-gateway";
+import { creationPolicyQuery } from "../api/client-v2";
+import { canWriteWorkspaceGateway, useInvalidateWorkspaceGateway, useWorkspaceGatewayAccess, WorkspaceGatewayNote } from "./workspace-gateway";
 
 const NO_ERRORS: FormErrors = { fields: {}, form: [] };
 const TYPES = { string: "Texto", host: "Host", port: "Porta", url: "URL", certificate: "Certificado", privateKey: "Chave privada", credential: "Credencial" } as const;
@@ -103,6 +103,7 @@ function WorkspaceVariables({ workspaceId }: { workspaceId: string }) {
 }
 
 function DeclarationForm({ workspaceId, variable, onClose }: { workspaceId: string; variable: WorkspaceVariable | null; onClose: () => void }) {
+  const queryClient = useQueryClient();
   const access = useWorkspaceGatewayAccess(workspaceId);
   const invalidate = useInvalidateVariables(workspaceId);
   const [name, setName] = useState(variable?.name ?? "");
@@ -121,7 +122,7 @@ function DeclarationForm({ workspaceId, variable, onClose }: { workspaceId: stri
   const errors = save.error ?? local;
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    if (!access.canWrite || save.isPending) return;
+    if (!canWriteWorkspaceGateway(queryClient, workspaceId) || save.isPending) return;
     save.reset();
     const fields: FormErrors["fields"] = {};
     if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(name.trim())) fields.name = ["Use de 1 a 64 letras maiúsculas, números e sublinhados, começando por letra."];

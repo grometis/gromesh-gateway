@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import { Navigate, useLocation } from "react-router";
 import { ApiError } from "../api/client";
 import { useAuth } from "../auth";
+import { InstanceOrigin } from "../components/InstanceContext";
 import { Brand } from "../components/Brand";
 import { Button } from "../components/Button";
 import { Field } from "../components/Field";
@@ -41,6 +42,7 @@ export function LoginPage() {
     <main className="login">
       <section className="final-page login-box">
         <Brand />
+        <p className="login-origin">Instância · <InstanceOrigin /></p>
         <form onSubmit={submit} className="login-card">
           <PageHeader title="Entrar" />
           <Field label="E-mail">

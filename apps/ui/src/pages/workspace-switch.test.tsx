@@ -83,7 +83,7 @@ const newClient = () => new QueryClient({ defaultOptions: { queries: { retry: fa
 // Rendering registers each query the screen reads (with its options); fetching them fills the cache as the browser would.
 const fetchAll = (client: QueryClient) => Promise.allSettled(client.getQueryCache().getAll().map((q) => q.fetch()));
 // Read by the selector or shared by the whole instance, never by one workspace.
-const INSTANCE_KEYS = new Set(["environments", "plugin-catalog", "plugin-schema", "workspace-creation-policy"]);
+const INSTANCE_KEYS = new Set(["environments", "workspaces", "plugin-catalog", "plugin-schema", "workspace-creation-policy"]);
 
 describe("switching workspaces", () => {
   afterEach(() => vi.unstubAllGlobals());

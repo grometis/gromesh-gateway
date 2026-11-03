@@ -1,4 +1,4 @@
-import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
+import { type QueryClient, useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type Environment, unwrap } from "../api/client";
 import { apiV2, type Workspace, type WorkspaceService } from "../api/client-v2";
 import { statusMessage } from "../api/errors";
@@ -67,6 +67,16 @@ export function workspaceGatewayAccess(workspace: Pick<Workspace, "status"> | un
   // publishRelease only freezes content; unlike gateway edits it never triggers v1 auto-publication.
   const canWrite = workspace?.status === "active" && (environment?.publishMode === "manual" || (purpose === "release" && environment?.publishMode === "auto"));
   return { canWrite, reason: canWrite ? null : "Somente leitura enquanto verificamos o estado e o modo de publicação do Workspace." };
+}
+
+/** Event handlers may run before observers render a completed revalidation or a newly denied access. */
+export function canWriteWorkspaceGateway(client: QueryClient, workspaceId: string) {
+  const workspace = client.getQueryState<Workspace>(["workspace", workspaceId]);
+  const env = client.getQueryState<Environment>(["environment", workspaceId]);
+  return workspace?.status === "success" && env?.status === "success"
+    && workspace.fetchStatus === "idle" && env.fetchStatus === "idle"
+    && !workspace.isInvalidated && !env.isInvalidated
+    && workspaceGatewayAccess(workspace.data, env.data).canWrite;
 }
 
 /** Shared with the v2 Routes screen. Cached access cannot authorize writes while its current state is unconfirmed. */

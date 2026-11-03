@@ -118,7 +118,7 @@ async function openWorkspaces(page: Page, user: Me) {
 
 const table = (page: Page) => page.getByRole("table", { name: "Workspaces", exact: true });
 const row = (page: Page, name: string) => table(page).getByRole("row").filter({ hasText: name });
-const selector = (page: Page) => page.getByLabel("Workspace", { exact: true });
+const selector = (page: Page) => page.getByLabel("Ambiente (legado)", { exact: true });
 
 const pagamentos = () => ws(1, "Pagamentos", "pagamentos", { activeRelease: 4 });
 const recargas = () => ws(2, "Recargas", "recargas");
@@ -137,9 +137,9 @@ test("lists workspaces page by page, marks the archived one and opens the detail
   await expect(row(page, "Pagamentos")).toContainText("Times de Pagamentos");
   await expect(row(page, "Recargas")).toHaveCount(0);
 
-  await page.getByRole("button", { name: "Carregar mais" }).click();
+  await page.getByRole("button", { name: "Carregar mais", exact: true }).click();
   await expect(row(page, "Recargas")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Carregar mais" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Carregar mais", exact: true })).toHaveCount(0);
 
   await row(page, "Pagamentos").getByRole("button", { name: "Detalhes de Pagamentos" }).click();
   const dialog = page.getByRole("dialog", { name: "Pagamentos" });
@@ -171,6 +171,8 @@ test("an authorized caller creates a workspace: suggested slug, success only aft
     { method: "POST", path: "/workspaces", body: { name: "Gestão de Cobrança", slug: "gestao-de-cobranca", description: "Boletos e PIX" } },
   ]);
   await expect(row(page, "Gestão de Cobrança")).toContainText("gestao-de-cobranca");
+  await expect(selector(page)).toHaveCount(0);
+  await page.getByRole("link", { name: "Voltar ao ambiente legado Pagamentos", exact: true }).click();
   await expect(selector(page).locator("option")).toHaveText(["Pagamentos", "Gestão de Cobrança"]);
 });
 
@@ -242,7 +244,8 @@ test("without permission: no create button; edit and archive are tried and the s
   await expect(page.getByRole("status")).toHaveCount(0);
   await expect(row(page, "Recargas")).toContainText("Ativo");
   await expect(row(page, "Recargas e Pacotes")).toHaveCount(0);
-  await expect(selector(page).locator("option")).toHaveText(["Pagamentos", "Recargas"]);
+  await expect(selector(page)).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Voltar ao ambiente legado Pagamentos", exact: true })).toBeVisible();
   expect(fake.workspaces.map((w) => [w.name, w.status])).toEqual([["Pagamentos", "active"], ["Recargas", "active"]]);
 });
 
@@ -312,6 +315,8 @@ test("a workspace admin edits the name and description; the slug stays read-only
     { method: "PATCH", path: `/workspaces/${id(2)}`, body: { name: "Recargas e Pacotes", description: "Recargas pré-pagas" } },
   ]);
   await expect(row(page, "Recargas e Pacotes")).toContainText("Recargas pré-pagas");
+  await expect(selector(page)).toHaveCount(0);
+  await page.getByRole("link", { name: "Voltar ao ambiente legado Pagamentos", exact: true }).click();
   await expect(selector(page).locator("option")).toHaveText(["Pagamentos", "Recargas e Pacotes"]);
 });
 

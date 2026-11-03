@@ -42,6 +42,8 @@ async function setup(page: Page, options: {
     if (path === "/api/v1/me") return route.fulfill({ json: { id: W, name: "Ana", email: "ana@gromesh.dev", role: options.role ?? "editor", active: true, ...timestamps } satisfies Me });
     if (path === "/api/v1/auth/csrf") return route.fulfill({ json: { csrfToken: "session-csrf" } });
     if (path === "/api/v1/environments") return route.fulfill({ json: { items: [environment(W), environment(B)], nextCursor: null } });
+    if (path === "/api/v2/workspace-creation-policy") return route.fulfill({ json: { mode: "restricted-request", creatorBecomesAdmin: false, updatedAt: null, updatedBy: null, workspacesMode: "lab", stage: "dev", caller: { canCreate: false, canRequest: false, canDecide: false } } });
+    if (path === "/api/v2/workspaces") return route.fulfill({ json: { items: [W, B].map((id) => ({ id, key: id, name: environment(id).name, slug: id === W ? "billing" : "recargas", status: archived ? "archived" : "active", activeRelease: id === W ? activeRelease : null } satisfies Workspace)), nextCursor: null } });
     for (const id of [W, B]) {
       if (path === `/api/v1/environments/${id}`) {
         if (hold === "environment") await held;
@@ -193,7 +195,7 @@ test("switching workspace discards confirmation, input and previous release data
   await expect(page.getByRole("table", { name: "Releases publicadas" })).toContainText(release.contentDigest);
   await page.getByRole("button", { name: "Publicar release", exact: true }).click();
   await page.getByRole("dialog").getByLabel("Resumo (opcional)").fill("Não reaproveitar");
-  await page.getByLabel("Workspace", { exact: true }).selectOption(B, { force: true });
+  await page.getByLabel("Workspace v2", { exact: true }).selectOption(B, { force: true });
   await expect(page).toHaveURL(`/e/${B}/releases`);
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(page.getByText("Nenhuma release publicada neste Workspace.")).toBeVisible();

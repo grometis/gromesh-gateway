@@ -51,6 +51,7 @@ async function setup(page: Page, options: {
       const id = path.includes(B) ? B : W;
       const env = { id, name: id === W ? "Pagamentos" : "Recargas", publishMode: options.publishMode ?? "manual", currentVersion: 0, hasUnpublishedChanges: true, ...timestamps };
       if (path === "/api/v1/environments") return route.fulfill({ json: { items: [env, { ...env, id: B, name: "Recargas" }], nextCursor: null } });
+      if (path === "/api/v2/workspaces") return route.fulfill({ json: { items: [W, B].map((id) => ({ id, key: id, name: id === W ? "Pagamentos" : "Recargas", slug: id === W ? "pagamentos" : "recargas", status: options.status ?? "active", activeRelease: null })), nextCursor: null } });
       if (path === `/api/v1/environments/${id}`) {
         if (options.hold === "environment") await held;
         return route.fulfill({ json: env });
@@ -227,12 +228,12 @@ for (const action of ["Declarar variável", "Editar declaração", "Definir valo
     await page.getByRole("button", { name: action, exact: true }).click();
     if (action === "Definir valor") await page.getByRole("dialog").getByLabel("Valor", { exact: true }).fill("discard-test-secret");
     if (action === "Declarar variável") await page.getByRole("dialog").getByLabel("Nome", { exact: true }).fill("DISCARD_NAME");
-    await page.getByLabel("Workspace", { exact: true }).selectOption(B, { force: true });
+    await page.getByLabel("Ambiente (legado)", { exact: true }).selectOption(B, { force: true });
     await expect(page).toHaveURL(`/e/${B}/variables`);
     await expect(page.getByRole("dialog")).toHaveCount(0);
     await expect(page.getByText("Nenhuma variável declarada.", { exact: true })).toBeVisible();
     await expect(page.locator("body")).not.toContainText("API_KEY");
-    await page.getByLabel("Workspace", { exact: true }).selectOption(W);
+    await page.getByLabel("Ambiente (legado)", { exact: true }).selectOption(W);
     await page.getByRole("button", { name: action, exact: true }).click();
     if (action === "Definir valor") await expect(page.getByRole("dialog").getByLabel("Valor", { exact: true })).toHaveValue("");
     if (action === "Declarar variável") await expect(page.getByRole("dialog").getByLabel("Nome", { exact: true })).toHaveValue("");

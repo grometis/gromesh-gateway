@@ -1,7 +1,7 @@
 import { useId, useState, type FormEvent } from "react";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { unwrap } from "../api/client";
-import { apiV2, type Workspace, type WorkspaceCreationPolicy, type WorkspaceWrite } from "../api/client-v2";
+import { apiV2, creationPolicyQuery, workspacesQuery, type Workspace, type WorkspaceCreationPolicy, type WorkspaceWrite } from "../api/client-v2";
 import { statusMessage } from "../api/errors";
 import { Badge } from "../components/Badge";
 import { Button } from "../components/Button";
@@ -19,10 +19,7 @@ const STAGES = { dev: "DEV", hml: "HML", prd: "PRD" } as const;
 // "kong" is reserved too (the slug check refuses it), but the product's UI never names the data plane.
 export const SLUG_RULE = "Começa com letra minúscula; depois letras minúsculas, números e hífens, de 2 a 40 caracteres, sem hífen no fim nem dois seguidos. Reservados: api, admin, agent, status, metrics, health, healthz, ready, gromesh, gromesh-*, well-known, static, assets e outros nomes da plataforma.";
 
-export const creationPolicyQuery = {
-  queryKey: ["workspace-creation-policy"],
-  queryFn: () => unwrap(apiV2.GET("/workspace-creation-policy")),
-};
+export { creationPolicyQuery } from "../api/client-v2";
 
 /** The Workspaces page, the selector (v1 environments: the same ids) and every open detail read the change. */
 export function invalidateWorkspaceQueries(queryClient: QueryClient) {
@@ -61,12 +58,7 @@ export function archiveWorkspaceMutation(queryClient: QueryClient, workspace: Wo
 }
 
 export function WorkspacesPage() {
-  const workspaces = useInfiniteQuery({
-    queryKey: ["workspaces"],
-    queryFn: ({ pageParam }) => unwrap(apiV2.GET("/workspaces", { params: { query: pageParam ? { cursor: pageParam } : {} } })),
-    initialPageParam: "",
-    getNextPageParam: (page) => page.nextCursor ?? undefined,
-  });
+  const workspaces = useInfiniteQuery(workspacesQuery);
   const policy = useQuery(creationPolicyQuery);
   const [creating, setCreating] = useState(false);
   const [viewing, setViewing] = useState<Workspace | null>(null);
