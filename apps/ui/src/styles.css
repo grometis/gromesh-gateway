@@ -670,8 +670,8 @@ table.numeric td, table.numeric th { white-space: nowrap; }
   .global-header .instance-origin { font-size: 11px; }
   .global-toggle { display: inline-flex; grid-column: 2; grid-row: 2; font-size: var(--text-xs); padding: 8px 10px; border-color: var(--ink-line); background: var(--ink-raised); }
   .global-groups { display: none; grid-row: 3; }
-  .global-groups.is-open { display: grid; gap: 4px; }
-  .global-account { margin: 0; }
+  .global-groups.is-open { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .global-account { grid-column: auto; grid-row: auto; margin: 0; }
   .global-trigger { width: 100%; justify-content: space-between; }
   .global-panel, .global-account .global-panel { position: static; width: 100%; max-width: 100%; margin-top: 4px; max-height: 52vh; box-shadow: none; }
 }
