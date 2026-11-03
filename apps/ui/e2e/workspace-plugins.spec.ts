@@ -1,3 +1,4 @@
+import { openGlobalMenu } from "./global-navigation";
 import type { Page } from "@playwright/test";
 import type { Me, Plugin } from "../src/api/client";
 import { expect, mockSession, test } from "./fixtures";
@@ -187,6 +188,8 @@ test("a legacy viewer gets the server's 403 for each v2 plugin mutation without 
   await remove.getByRole("button", { name: "Excluir", exact: true }).click();
   await expect(remove.getByRole("alert")).toContainText("permissão");
   await expect(table.getByRole("row")).toHaveText(before);
+  await remove.getByRole("button", { name: "Fechar", exact: true }).click();
+  await openGlobalMenu(page, "Minha conta");
   await expect(page.getByRole("button", { name: "Sair", exact: true })).toBeVisible();
   expect(fake.writes.map(w => [w.method, w.path])).toEqual([
     ["POST", `/api/v2/workspaces/${A}/plugins`],

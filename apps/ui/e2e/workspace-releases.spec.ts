@@ -1,3 +1,4 @@
+import { openGlobalMenu } from "./global-navigation";
 import { expect, test, type Page } from "@playwright/test";
 import type { Environment, Me } from "../src/api/client";
 import type { Release, Workspace } from "../src/api/client-v2";
@@ -69,12 +70,14 @@ async function setup(page: Page, options: {
 test.afterEach(async ({ page }) => {
   await expect(page.getByRole("region", { name: "Publicação", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /^Publicar v\d/ })).toHaveCount(0);
-  await expect(page.locator(`a[href="/e/${W}/publish"], a[href="/e/${B}/publish"]`)).toHaveCount(0);
+  await expect(page.locator("main").locator(`a[href="/e/${W}/publish"], a[href="/e/${B}/publish"]`)).toHaveCount(0);
 });
 
 test("publishes an immutable release through v2 without deploying or calling v1 snapshots", async ({ page }) => {
   const fake = await setup(page);
-  await expect(page.getByRole("link", { name: "Releases", exact: true })).toHaveAttribute("href", `/e/${W}/releases`);
+  await openGlobalMenu(page, "Operações");
+  await expect(page.getByRole("navigation", { name: "Navegação global" }).locator('[aria-disabled="true"]').filter({ hasText: "Releases" })).toHaveAccessibleDescription("Requer Workspace");
+  await page.keyboard.press("Escape");
   await expect(page.getByRole("region", { name: "Deployment", exact: true })).toContainText("Deployment de Workspaces indisponível nesta fase");
   await expect(page.getByRole("region", { name: "Convergência", exact: true })).toContainText("indisponível");
   await expect(page.getByRole("region", { name: "Publicação", exact: true })).toHaveCount(0);
@@ -154,7 +157,8 @@ test("v1 publication stays available on Services and disappears again on Release
   await expect(page.getByRole("region", { name: "Publicação", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Publicar v4" })).toBeEnabled();
   await expect(page.getByRole("link", { name: "Ver diff", exact: true })).toHaveAttribute("href", `/e/${W}/publish`);
-  await page.getByRole("link", { name: "Releases", exact: true }).click();
+  // This compatibility URL remains directly addressable, but global Releases requires a confirmed v2 context.
+  await page.goBack();
   await expect(page).toHaveURL(`/e/${W}/releases`);
   await expect(page.getByRole("button", { name: "Publicar release", exact: true })).toBeVisible();
   expect(fake.writes).toEqual([]);

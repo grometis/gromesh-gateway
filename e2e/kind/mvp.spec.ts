@@ -1,3 +1,4 @@
+import { navigateGlobal } from "../../apps/ui/e2e/global-navigation";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
@@ -154,10 +155,10 @@ test("MVP: install → publish → converge → traffic in the dashboard → rol
       const rows = page.items.filter((r) => r.path === path && r.status === 200);
       return rows.length >= 5 && rows.every((r) => r.environmentId === envId && r.clusterId === clusterId);
     }, { timeout: 30_000, intervals: [1000, 2000], message: "traffic must reach the analytics API" }).toBe(true);
-    await page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Métricas" }).click();
+    await navigateGlobal(page, "Métricas");
     await page.getByLabel("Período", { exact: true }).selectOption("1h");
     await expect(page.locator("dl.stat-cards")).toContainText(/Requisições\s*[1-9]/);
-    await page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Requisições" }).click();
+    await navigateGlobal(page, "Requisições");
     await page.getByRole("button", { name: "Filtrar" }).click();
     await expect(page.getByRole("cell", { name: path, exact: true }).first()).toBeVisible();
 
@@ -166,7 +167,7 @@ test("MVP: install → publish → converge → traffic in the dashboard → rol
     await api("PUT", `/environments/${envId}/services/${(await api<{ items: Entity[] }>("GET", `/environments/${envId}/services`, 200)).items[0]!.id}`, 200, { name, protocol: "http", host: "echo", port: 8080 });
     const v2 = await api<Publication>("POST", `/environments/${envId}/snapshots`, 201, { message: "move to 8080" });
     await converge(api, v2.version);
-    await page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Publicações", exact: true }).click();
+    await navigateGlobal(page, "Snapshots publicados");
     await page.getByRole("button", { name: `Restaurar v${v1.version}` }).first().click();
     const restore = page.getByRole("dialog", { name: `Restaurar v${v1.version}` });
     await expect(restore.locator("[data-change]")).toHaveCount(1);
@@ -178,7 +179,7 @@ test("MVP: install → publish → converge → traffic in the dashboard → rol
     expect((await proxy(traffic, path, { apikey: credential.key })).status()).toBe(200);
 
     // The audit log, in the UI and the API, shows the publications with their author.
-    await page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Auditoria" }).click();
+    await navigateGlobal(page, "Auditoria");
     await page.getByLabel("ID do environment").fill(envId);
     await page.getByLabel("Tipo de entidade").fill("snapshot");
     await page.getByRole("button", { name: "Filtrar" }).click();
