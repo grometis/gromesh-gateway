@@ -346,24 +346,69 @@ function baselineObjects(current, o) {
 }
 async function readyImages(deployment, name, image, o, run) {
   // Deployment status has no containerStatuses. Follow controller UIDs through ReplicaSets to live pods.
-  const ownedBy = (object, kind, uid) => object.metadata?.namespace === o.namespace
-    && object.metadata?.ownerReferences?.some(owner => owner.controller === true && owner.kind === kind && owner.uid === uid);
+  const owners = object => object.metadata?.ownerReferences?.filter(owner => owner.controller === true) ?? [];
+  const ownedBy = (object, kind, uid) => owners(object).some(owner => owner.kind === kind && owner.uid === uid);
+  const labelsMatch = (labels, expected) => Object.entries(expected ?? {}).every(([key, value]) => labels?.[key] === value);
+  const selected = pod => {
+    const selector = deployment.spec?.selector;
+    return selector && labelsMatch(pod.metadata?.labels, selector.matchLabels)
+      && (selector.matchExpressions ?? []).every(({ key, operator, values }) => {
+        const value = pod.metadata?.labels?.[key];
+        if (operator === "In") return value !== undefined && values.includes(value);
+        if (operator === "NotIn") return !values.includes(value);
+        if (operator === "Exists") return value !== undefined;
+        if (operator === "DoesNotExist") return value === undefined;
+        refuse("invalid Deployment pod selector");
+      });
+  };
+  const template = object => {
+    const value = relevantObject(object, o.namespace).spec?.template;
+    if (!value?.spec) refuse("live ReplicaSet pod template missing");
+    // The Deployment controller adds this label only to the ReplicaSet template.
+    if (value.metadata?.labels) delete value.metadata.labels["pod-template-hash"];
+    omitEmpty(value.metadata, "labels");
+    omitEmpty(value, "metadata");
+    return value;
+  };
   const sets = json(await run("live ReplicaSets", "kubectl", [...kubeScope(o), "get", "ReplicaSet", "-o", "json"]), "live ReplicaSets");
   const pods = json(await run("live pods", "kubectl", [...kubeScope(o), "get", "Pod", "-o", "json"]), "live pods");
   if (!Array.isArray(sets.items) || !Array.isArray(pods.items)) refuse("live image pod inventory missing");
-  const uids = new Set(sets.items.filter(v => ownedBy(v, "Deployment", deployment.metadata.uid)).map(v => v.metadata.uid));
+  const ownedSets = new Map();
+  const expectedTemplate = template(deployment);
+  let currentSet;
+  for (const rs of sets.items.filter(v => ownedBy(v, "Deployment", deployment.metadata.uid))) {
+    if (rs.metadata.namespace !== o.namespace || !rs.metadata.uid || !namePattern.test(rs.metadata.name ?? "")
+      || owners(rs).length !== 1 || ownedSets.has(rs.metadata.uid)) refuse("live ReplicaSet identity differs from authorized Deployment");
+    ownedSets.set(rs.metadata.uid, rs);
+    if (isDeepStrictEqual(template(rs), expectedTemplate)) {
+      if (currentSet) refuse("live current ReplicaSet is ambiguous");
+      currentSet = rs;
+    }
+  }
   const digest = imageParts(image).digest;
   let ready = 0;
-  for (const pod of pods.items.filter(v => !v.metadata?.deletionTimestamp && [...uids].some(uid => ownedBy(v, "ReplicaSet", uid)))) {
+  for (const pod of pods.items) {
+    const controller = owners(pod)[0];
+    const rs = controller?.kind === "ReplicaSet" ? ownedSets.get(controller.uid) : undefined;
+    if (!rs && !selected(pod)) continue;
+    if (!rs || owners(pod).length !== 1 || pod.metadata.namespace !== o.namespace || !pod.metadata.uid
+      || !namePattern.test(pod.metadata.name ?? "") || !labelsMatch(pod.metadata.labels, rs.spec.template.metadata?.labels))
+      refuse("live pod identity differs from authorized Deployment/ReplicaSet");
+    if (pod.metadata.deletionTimestamp) continue;
+    const terminal = ["Failed", "Succeeded"].includes(pod.status?.phase);
+    if (rs !== currentSet) {
+      if (terminal) continue;
+      refuse("live active pod belongs to an old ReplicaSet");
+    }
     const status = pod.status?.containerStatuses?.find(v => v.name === name);
-    if (!status?.ready || !pod.status?.conditions?.some(v => v.type === "Ready" && v.status === "True"))
+    if (terminal || !status?.ready || !pod.status?.conditions?.some(v => v.type === "Ready" && v.status === "True"))
       refuse("live non-terminating pod/container is not Ready for authorized image");
     if (pod.spec?.containers?.find(v => v.name === name)?.image !== image
       || typeof status.imageID !== "string" || !new RegExp(`(?:^|[/@])${digest}$`).test(status.imageID))
       refuse("live Ready container image differs from authorized digest");
     ready++;
   }
-  if ((deployment.spec?.replicas ?? 1) > ready) refuse("live Ready pod image evidence missing");
+  if (!currentSet || (deployment.spec?.replicas ?? 1) !== ready) refuse("live Ready pod image evidence missing or replica count differs");
 }
 async function liveObjects(proofs, o, run, afterApply = false) {
   if (!Array.isArray(proofs) || !proofs.length) refuse("live object proof missing");

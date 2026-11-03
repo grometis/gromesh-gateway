@@ -24,7 +24,9 @@ const resource = (kind, name, extra = {}) => ({
   apiVersion: kind === "Deployment" ? "apps/v1" : "v1", kind, metadata: { name }, ...extra,
 });
 const deployment = (name, container, img) => resource("Deployment", name, {
-  spec: { replicas: 2, template: { spec: { containers: [{ name: container, image: img }] } } },
+  spec: { replicas: 2, selector: { matchLabels: { app: name, "app.kubernetes.io/instance": "cp" } },
+    template: { metadata: { labels: { app: name, "app.kubernetes.io/instance": "cp" } },
+      spec: { containers: [{ name: container, image: img }] } } },
 });
 const list = items => JSON.stringify({ apiVersion: "v1", kind: "List", items });
 function hook(name = "cp-control-plane-migrate", events = ["pre-install", "pre-upgrade"]) {
@@ -328,11 +330,27 @@ for (const unexpected of [image("a"), image("c")]) {
 }
 function readyPods(f, imageID) {
   const owner = (kind, uid) => [{ kind, uid, controller: true }];
-  f.replicaSets = [{ metadata: { namespace: "dev", uid: "ui-rs", ownerReferences: owner("Deployment", f.live[0].metadata.uid) } }];
-  f.pods = [{ metadata: { namespace: "dev", name: "ui-pod", ownerReferences: owner("ReplicaSet", "ui-rs") },
+  const template = structuredClone(f.target[0].spec.template);
+  template.metadata.labels["pod-template-hash"] = "new-hash";
+  f.replicaSets = [{ metadata: { name: "ui-rs", namespace: "dev", uid: "ui-rs", ownerReferences: owner("Deployment", f.live[0].metadata.uid) }, spec: { template } }];
+  f.pods = [{ metadata: { namespace: "dev", name: "ui-pod", uid: "ui-pod-uid", labels: { ...template.metadata.labels }, ownerReferences: owner("ReplicaSet", "ui-rs") },
     spec: { containers: [{ name: "ui", image: image("b") }] },
-    status: { conditions: [{ type: "Ready", status: "True" }], containerStatuses: [{ name: "ui", ready: true, image: image("b"), imageID }] } }];
-  const second = structuredClone(f.pods[0]); second.metadata.name = "ui-pod-2"; f.pods.push(second);
+    status: { phase: "Running", conditions: [{ type: "Ready", status: "True" }], containerStatuses: [{ name: "ui", ready: true, image: image("b"), imageID }] } }];
+  const second = structuredClone(f.pods[0]); second.metadata.name = "ui-pod-2"; second.metadata.uid = "ui-pod-2-uid"; f.pods.push(second);
+}
+function oldPod(f) {
+  const rs = structuredClone(f.replicaSets[0]);
+  Object.assign(rs.metadata, { name: "old-rs", uid: "old-rs" });
+  rs.spec.template.metadata.labels["pod-template-hash"] = "old-hash";
+  rs.spec.template.spec.containers[0].image = image("a");
+  f.replicaSets.push(rs);
+  const pod = structuredClone(f.pods[0]);
+  Object.assign(pod.metadata, { name: "old-pod", uid: "old-pod-uid", labels: { ...rs.spec.template.metadata.labels } });
+  pod.metadata.ownerReferences[0].uid = "old-rs";
+  pod.spec.containers[0].image = image("a");
+  pod.status.containerStatuses[0].imageID = image("a");
+  f.pods.push(pod);
+  return pod;
 }
 for (const imageID of [image("b"), `docker-pullable://${image("b")}`, `containerd://sha256:${"b".repeat(64)}`]) {
   test(`post-apply accepts Ready container digest: ${imageID}`, async () => {
@@ -360,16 +378,59 @@ test("post-apply refuses missing Ready pod evidence when Deployment reports read
 test("post-apply accepts a correct rollout while an old Ready pod is terminating", async () => {
   const f = fixture(); readyPods(f, image("b"));
   f.live[0].status = { readyReplicas: 2 };
-  const old = structuredClone(f.pods[0]);
-  old.metadata.name = "old-terminating";
+  const old = oldPod(f);
   old.metadata.deletionTimestamp = "2026-11-02T23:00:00Z";
-  old.metadata.ownerReferences[0].uid = "old-rs";
-  old.spec.containers[0].image = image("a");
-  old.status.containerStatuses[0].imageID = image("a");
-  f.replicaSets.push({ metadata: { namespace: "dev", uid: "old-rs", ownerReferences: [{ kind: "Deployment", uid: f.live[0].metadata.uid, controller: true }] } });
-  f.pods.push(old);
   await f.run({ ...options(), mode: "apply" });
   assert.equal(writes(f).length, 1);
+});
+
+for (const [phase, reason] of [["Failed", "Error"], ["Failed", "Evicted"], ["Succeeded", "Completed"]]) {
+  test(`post-apply ignores retained terminal pods only from an old owned ReplicaSet: ${phase}/${reason}`, async () => {
+    const f = fixture();
+    const old = oldPod(f);
+    old.status = { phase, reason, conditions: [{ type: "Ready", status: "False" }] };
+    await f.run({ ...options(), mode: "apply" });
+    assert.equal(writes(f).length, 1);
+  });
+}
+
+for (const [name, mutate] of [
+  ["old pod still Ready", () => {}],
+  ["old pod Ready even with authorized digest", (f, p) => { p.spec.containers[0].image = image("b"); p.status.containerStatuses[0].imageID = image("b"); }],
+  ["Evicted reason without terminal phase", (f, p) => { p.status.reason = "Evicted"; }],
+  ["terminal pod from a recreated Deployment", (f, p) => { p.status.phase = "Failed"; f.replicaSets[1].metadata.ownerReferences[0].uid = "other-deployment"; }],
+  ["terminal pod with spoofed RS UID", (f, p) => { p.status.phase = "Failed"; p.metadata.ownerReferences[0].uid = "unknown-rs"; }],
+  ["terminal pod without controller ownership", (f, p) => { p.status.phase = "Failed"; p.metadata.ownerReferences[0].controller = false; }],
+]) test(`post-apply refuses unexpected historical pod evidence: ${name}`, async () => {
+  const f = fixture(), pod = oldPod(f);
+  mutate(f, pod);
+  await assert.rejects(f.run({ ...options(), mode: "apply" }), /post-apply verification failed:.*\nRollback command/);
+  assert.equal(writes(f).length, 1);
+});
+
+for (const [name, mutate] of [
+  ["another release", p => { p.metadata.labels["app.kubernetes.io/instance"] = "other-release"; }],
+  ["wrong namespace", p => { p.metadata.namespace = "other-namespace"; }],
+  ["unknown RS UID", p => { p.metadata.ownerReferences[0].uid = "unexpected-rs"; }],
+  ["wrong owner kind", p => { p.metadata.ownerReferences[0].kind = "Job"; }],
+  ["missing controller owner", p => { p.metadata.ownerReferences = []; }],
+  ["missing pod UID", p => { delete p.metadata.uid; }],
+  ["newly created Pending pod", p => { p.status = { phase: "Pending" }; }],
+  ["terminal pod in new RS", p => { p.status.phase = "Failed"; }],
+  ["Succeeded pod in new RS", p => { p.status.phase = "Succeeded"; }],
+]) test(`post-apply refuses an extra unexpected pod even with enough Ready replicas: ${name}`, async () => {
+  const f = fixture(), pod = structuredClone(f.pods[0]);
+  Object.assign(pod.metadata, { name: "extra-pod", uid: "extra-pod-uid" });
+  mutate(pod); f.pods.push(pod);
+  await assert.rejects(f.run({ ...options(), mode: "apply" }), /post-apply verification failed:.*\nRollback command/);
+  assert.equal(writes(f).length, 1);
+});
+
+test("post-apply requires exactly the desired number of Ready pods from the new ReplicaSet", async () => {
+  const f = fixture(), extra = structuredClone(f.pods[0]);
+  Object.assign(extra.metadata, { name: "extra-ready", uid: "extra-ready-uid" });
+  f.pods.push(extra);
+  await assert.rejects(f.run({ ...options(), mode: "apply" }), /post-apply verification failed:.*Ready/);
 });
 
 for (const field of ["pod", "container"]) test(`post-apply refuses a non-terminating new pod that is not Ready: ${field}`, async () => {
@@ -382,6 +443,7 @@ for (const field of ["pod", "container"]) test(`post-apply refuses a non-termina
 test("post-apply ignores pods outside the Deployment ownership chain", async () => {
   const f = fixture();
   const other = structuredClone(f.pods[0]);
+  Object.assign(other.metadata, { name: "unrelated-pod", uid: "unrelated-pod-uid", labels: { app: "unrelated", "app.kubernetes.io/instance": "other-release" } });
   other.metadata.ownerReferences[0].uid = "unrelated-rs";
   other.spec.containers[0].image = image("a");
   other.status.containerStatuses[0].imageID = image("a");
@@ -400,7 +462,7 @@ for (const state of ["empty", "terminating", "below desired replicas"]) test(`po
 test("authorized Deployment proof permits only its named image path, with API defaults normalized", async () => {
   const f = fixture(), execute = f.execute, live = f.live[0];
   Object.assign(live.spec, { revisionHistoryLimit: 10, progressDeadlineSeconds: 600 });
-  live.spec.template.metadata = { creationTimestamp: null };
+  live.spec.template.metadata.creationTimestamp = null;
   live.spec.template.spec.dnsPolicy = "ClusterFirst";
   f.execute = async (file, args, io) => {
     const out = await execute(file, args, io);
@@ -762,7 +824,7 @@ test("real Helm renders both shipped charts as subcharts, values conditionals an
 test("API defaults and allocated Service fields normalize without hiding workload drift", async () => {
   const f = fixture(), cp = f.live[1], svc = f.live[5];
   Object.assign(cp.spec, { revisionHistoryLimit: 10, progressDeadlineSeconds: 600, strategy: { type: "RollingUpdate", rollingUpdate: { maxSurge: "25%", maxUnavailable: "25%" } } });
-  cp.spec.template.metadata = { creationTimestamp: null };
+  cp.spec.template.metadata.creationTimestamp = null;
   Object.assign(cp.spec.template.spec, { restartPolicy: "Always", terminationGracePeriodSeconds: 30, dnsPolicy: "ClusterFirst", schedulerName: "default-scheduler", securityContext: {} });
   Object.assign(cp.spec.template.spec.containers[0], { terminationMessagePath: "/dev/termination-log", terminationMessagePolicy: "File" });
   Object.assign(svc.spec, { clusterIP: "10.96.1.2", clusterIPs: ["10.96.1.2"], ipFamilies: ["IPv4"], ipFamilyPolicy: "SingleStack", type: "ClusterIP", sessionAffinity: "None", internalTrafficPolicy: "Cluster" });
