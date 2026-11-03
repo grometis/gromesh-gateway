@@ -63,6 +63,11 @@ function proseTokens(value) {
       tokens.push({ name: value.slice(start, end).toLowerCase(), start, end });
     }
   }
+  for (let i = tokens.length - 1; i >= 0; i--) {
+    const next = tokens[i + 1];
+    tokens[i].identifierEnd = next && /^[_-]*$/.test(value.slice(tokens[i].end, next.start))
+      ? next.identifierEnd : tokens[i].end;
+  }
   return tokens;
 }
 function credentialValue(value) {
@@ -89,15 +94,18 @@ function tokenCredential(value, prose = false) {
       name += tokens[j].name.replace(/[0-9]/g, "");
       if (name.length > 13) break;
       if (!sensitiveTokens.has(name)) continue;
-      const tail = value.slice(tokens[j].end);
-      const separators = /^[\s:="'\[\]{}(),]*/.exec(tail)[0];
-      const rest = tail.slice(separators.length);
-      // Keep the prior rejection of assignments, including short/punctuation values.
-      if (separators.includes("=") && /\S/.test(tail.slice(tail.indexOf("=") + 1))) return true;
-      const candidate = /^[\p{L}\p{M}0-9+/_~.-]+={0,2}/u.exec(rest)?.[0];
-      if (prose && candidate && credentialValue(candidate)) return true;
-      // Digest uses auth-param pairs rather than a single token68 payload.
-      if (prose && name === "digest" && /^[A-Za-z][A-Za-z0-9_-]*[\s"']*=[\s"']*[A-Za-z0-9+/_~.-]+/.test(rest)) return true;
+      // Inspect the whole identifier while preserving detection of inline values like authAbc123.
+      for (const end of new Set([tokens[j].end, tokens[j].identifierEnd])) {
+        const tail = value.slice(end);
+        const separators = /^[\s:="'\[\]{}(),]*/.exec(tail)[0];
+        const rest = tail.slice(separators.length);
+        // Keep the prior rejection of assignments, including short/punctuation values.
+        if (separators.includes("=") && /\S/.test(tail.slice(tail.indexOf("=") + 1))) return true;
+        const candidate = /^[\p{L}\p{M}0-9+/_~.-]+={0,2}/u.exec(rest)?.[0];
+        if (prose && candidate && credentialValue(candidate)) return true;
+        // Digest uses auth-param pairs rather than a single token68 payload.
+        if (prose && name === "digest" && /^[A-Za-z][A-Za-z0-9_-]*[\s"']*=[\s"']*[A-Za-z0-9+/_~.-]+/.test(rest)) return true;
+      }
     }
   }
   return false;
