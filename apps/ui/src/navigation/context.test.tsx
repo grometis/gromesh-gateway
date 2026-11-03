@@ -353,3 +353,111 @@ describe("authorized route context with real transport", () => {
     if (path !== "/login") expect(view.router.state.location.state).toEqual({ from: path });
   });
 });
+
+
+describe("breadcrumbs through the authorized context and real queries", () => {
+  const trail = (view: Awaited<ReturnType<typeof mount>>) => view.container.findAll((n) => n.tagName === "NAV" && n.getAttribute("aria-label") === "Trilha")[0]!;
+  const labels = (view: Awaited<ReturnType<typeof mount>>) => trail(view).findAll((n) => n.tagName === "LI").map((n) => n.textContent);
+  it("renders an ordered accessible v2 detail trail with real names and ID links, without extra requests", async () => {
+    const view = await mount(`/workspaces/${A}/services/service-${A}?x#y`, { full: true });
+    await view.waitText("Service A");
+    await vi.waitFor(async () => { await view.settle(); expect(labels(view)).toEqual(["Visão geral da instância", "Workspace A", "Serviços", "Service A"]); });
+    expect(trail(view).findAll((n) => n.tagName === "OL")).toHaveLength(1);
+    expect(trail(view).findAll((n) => n.getAttribute("aria-current") === "page").map((n) => n.textContent)).toEqual(["Service A"]);
+    expect(trail(view).findAll((n) => n.tagName === "A").map((n) => n.getAttribute("href"))).toEqual(["/", `/workspaces/${A}`, `/workspaces/${A}/services`]);
+    expect(view.sent.filter((p) => p === `/api/v2/workspaces/${A}/services/service-${A}`)).toHaveLength(1);
+    expect(view.router.state.location).toMatchObject({ pathname: `/workspaces/${A}/services/service-${A}`, search: "?x", hash: "#y" });
+  });
+  it.each([["/", "Visão geral da instância"], ["/workspaces", "Workspaces"], ["/tokens", "Tokens de API"], ["/users", "Usuários"], ["/audit", "Auditoria"]])("keeps global %s at one level", async (path, label) => {
+    const view = await mount(path, { full: true });
+    await view.settle();
+    expect(labels(view)).toEqual([label]);
+    expect(trail(view).findAll((n) => n.tagName === "A")).toHaveLength(0);
+  });
+  it("uses the confirmed legacy environment without a fabricated v2 ancestor", async () => {
+    const view = await mount(`/e/${A}/services`, { full: true });
+    await view.waitText("Service A");
+    expect(labels(view)).toEqual(["Visão geral da instância", "Ambiente (legado) Legado A", "Serviços"]);
+    expect(trail(view).findAll((n) => n.tagName === "A").map((n) => n.getAttribute("href"))).toEqual(["/", `/e/${A}`]);
+  });
+  it("uses a generic detail until its exact resource loads and discards a late A response after entering B", async () => {
+    let release!: (r: Response) => void;
+    const view = await mount(`/workspaces/${A}/services/service-${A}`, { full: true, answers: {
+      [`/api/v2/workspaces/${A}/services/service-${A}`]: () => new Promise<Response>((resolve) => { release = resolve; }),
+    } });
+    await view.waitText("Workspace v2: Workspace A");
+    expect(labels(view)).toEqual(["Visão geral da instância", "Workspace A", "Serviços", "Serviço"]);
+    await view.navigate(`/workspaces/${B}/services/service-${B}`);
+    await view.waitText("Service B");
+    await act(async () => { release(Response.json(service(A))); await tick(); });
+    expect(labels(view)).toEqual(["Visão geral da instância", "Workspace B", "Serviços", "Service B"]);
+    expect(trail(view).textContent).not.toContain("Service A");
+  });
+  it.each([403, 404])("never displays a cached Workspace name or resource during loading or HTTP %s on reentry", async (status) => {
+    const view = await mount(`/workspaces/${A}/services/service-${A}`, { full: true });
+    await view.waitText("Service A");
+    await view.navigate(`/workspaces/${B}/services`);
+    await view.waitText("Service B");
+    let release!: (r: Response) => void;
+    view.answers[`/api/v2/workspaces/${A}`] = () => new Promise<Response>((resolve) => { release = resolve; });
+    await view.navigate(`/workspaces/${A}/services/service-${A}`);
+    expect(labels(view)).toEqual(["Visão geral da instância", "Serviços", "Serviço"]);
+    await act(async () => { release(problem(status)()); await tick(); });
+    await view.waitText(status === 403 ? "Você não tem permissão" : "Não encontrado ou indisponível");
+    expect(labels(view)).toEqual(["Visão geral da instância", "Serviços", "Serviço"]);
+    expect(trail(view).findAll((n) => n.tagName === "A").map((n) => n.getAttribute("href"))).toEqual(["/"]);
+  });
+  it("uses an already loaded legacy resource when context authorization completes later", async () => {
+    let release!: (r: Response) => void;
+    const view = await mount(`/e/${A}/services/service-${A}`, { full: true, answers: {
+      [`/api/v1/environments/${A}`]: () => new Promise<Response>((resolve) => { release = resolve; }),
+    } });
+    await view.waitText("Service A");
+    expect(labels(view)).toEqual(["Visão geral da instância", "Serviços", "Serviço"]);
+    await act(async () => { release(Response.json(environment(A))); await tick(); });
+    await view.waitText("Ambiente (legado) Legado A");
+    expect(labels(view)).toEqual(["Visão geral da instância", "Ambiente (legado) Legado A", "Serviços", "Service A"]);
+  });
+  it.each([
+    ["consumers/customer-a", "consumers/customer-a", { id: "customer-a", username: null, customId: "Cliente real", tags: [], createdAt: stamp, updatedAt: stamp }, ["Consumidores", "Cliente real"]],
+    ["publications/7", "snapshots/7", { version: 7, hash: "sha256:abc", createdAt: stamp }, ["Publicações", "Snapshot v7"]],
+  ] as const)("names legacy detail %s from its existing page query", async (path, endpoint, data, suffix) => {
+    const view = await mount(`/e/${A}/${path}`, { full: true, answers: { [`/api/v1/environments/${A}/${endpoint}`]: () => Response.json(data) } });
+    await view.waitText(suffix[1]);
+    expect(labels(view)).toEqual(["Visão geral da instância", "Ambiente (legado) Legado A", ...suffix]);
+    expect(view.sent.filter((p) => p === `/api/v1/environments/${A}/${endpoint}`)).toHaveLength(1);
+  });
+  it("keeps an archived Workspace readable and unknown routes free of invented ancestors", async () => {
+    const view = await mount(`/workspaces/${A}/routes`, { full: true, archived: true });
+    await view.waitText("arquivado · somente leitura");
+    expect(labels(view)).toEqual(["Visão geral da instância", "Workspace A", "Rotas"]);
+    await view.navigate(`/workspaces/${A}/no-such-page`);
+    expect(labels(view)).toEqual(["Página não encontrada"]);
+    expect(trail(view).findAll((n) => n.tagName === "A")).toHaveLength(0);
+  });
+});
+
+
+describe("one accented publication action per screen", () => {
+  const publishActions = (view: Awaited<ReturnType<typeof mount>>) => view.container.findAll((n) => n.tagName === "BUTTON" && n.getAttribute("class")?.split(" ").includes("publish") === true);
+  it("moves the Release accent to its confirmation and restores it on close", async () => {
+    const view = await mount(`/workspaces/${A}/releases`, { full: true });
+    await view.waitText("Publicar release");
+    expect(publishActions(view).map((n) => n.textContent)).toEqual(["Publicar release"]);
+    const open = view.container.findAll((n) => n.tagName === "BUTTON" && n.textContent === "Publicar release")[0]!;
+    await act(async () => { open.dispatchEvent(new Event("click", { bubbles: true })); await tick(); });
+    expect(publishActions(view).map((n) => n.textContent)).toEqual(["Confirmar publicação"]);
+    const close = view.container.findAll((n) => n.tagName === "BUTTON" && n.textContent === "Cancelar")[0]!;
+    await act(async () => { close.dispatchEvent(new Event("click", { bubbles: true })); await tick(); });
+    expect(publishActions(view).map((n) => n.textContent)).toEqual(["Publicar release"]);
+  });
+  it("keeps the legacy review strip neutral while its confirmation is accented", async () => {
+    const view = await mount(`/e/${A}/publish`, { full: true, role: "admin", answers: {
+      [`/api/v1/environments/${A}`]: () => Response.json({ ...environment(A), hasUnpublishedChanges: true }),
+      [`/api/v1/environments/${A}/publish-preview`]: () => Response.json({ currentVersion: null, hasChanges: true, changes: [] }),
+    } });
+    await view.waitText("Revisar e publicar");
+    await vi.waitFor(async () => { await view.settle(); expect(publishActions(view)).toHaveLength(1); });
+    expect(publishActions(view)[0]!.parentNode?.getAttribute("class")).toBe("publish-box");
+  });
+});

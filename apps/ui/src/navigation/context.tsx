@@ -104,16 +104,16 @@ const messages: Partial<Record<NavigationContext["state"], string>> = {
   forbidden: "Você não tem permissão para acessar este contexto.", error: "Não foi possível verificar o contexto. Tente novamente.",
   expired: "Sua sessão expirou. Entre novamente.", unknown: "Rota não encontrada.",
 };
-export function NavigationContextBoundary({ children }: { children?: ReactNode }) {
+export function NavigationContextBoundary({ children, fallbackNavigation }: { children?: ReactNode; fallbackNavigation?: ReactNode }) {
   const context = useNavigationContext();
   if (context.legacyReadAvailable) return children ?? <Outlet />;
   const message = messages[context.state];
-  if (message) return <section className="stack" aria-label="Contexto de navegação">
+  if (message) return <>{fallbackNavigation}<section className="stack" aria-label="Contexto de navegação">
     <h1>{context.route.kind === "workspace-v2" ? "Workspace" : context.route.kind === "legacy-v1" ? "Ambiente legado" : "Navegação"}</h1>
     <p role={context.state === "loading" ? "status" : "alert"}>{message}</p>
     {context.state === "error" && <button type="button" onClick={context.retry}>Tentar novamente</button>}
-    <Link to="/workspaces">Ver Workspaces</Link>
-  </section>;
+    <Link className="back-link" to="/workspaces">Ver Workspaces</Link>
+  </section></>;
   return children ?? <Outlet />;
 }
 

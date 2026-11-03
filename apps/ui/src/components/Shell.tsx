@@ -5,6 +5,7 @@ import { api, ApiError, unwrap } from "../api/client";
 import { effectiveRole, useAuth } from "../auth";
 import { NavigationContextBoundary, useOptionalNavigationContext, useIsWorkspaceRoute } from "../navigation/context";
 import { workspaceSections } from "../navigation/destinations";
+import { Breadcrumbs } from "./Breadcrumbs";
 import { GlobalHeader } from "./GlobalHeader";
 import { PublishStrip } from "./PublishStrip";
 import { WorkspaceContext, WorkspaceSelector } from "./WorkspaceContext";
@@ -129,11 +130,14 @@ export function Shell() {
         </nav>
       </aside>
       <main className="content" id="main-content" tabIndex={-1} ref={main}>
-        {context ? <NavigationContextBoundary>
+        {context ? <NavigationContextBoundary fallbackNavigation={<Breadcrumbs />}>
+          {/* Keep the environment-wide strip in place; the trail belongs to the page below it. */}
           {routeEnvId && !isReleasesRoute && <PublishStrip envId={routeEnvId} />}
+          <Breadcrumbs />
           <Outlet key={"id" in context.route ? `${context.route.kind}/${context.route.id}` : context.route.kind} />
         </NavigationContextBoundary> : <>
           {routeEnvId && !isReleasesRoute && <PublishStrip envId={routeEnvId} />}
+          <Breadcrumbs />
           <Outlet />
         </>}
       </main>

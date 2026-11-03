@@ -19,7 +19,7 @@
   --line-strong: #d3dedc;
   /* form controls need 3:1 against white and the surface */
   --control-line: #6f8481;
-  /* accent: only the publish action and error states */
+  /* accent: publishing, the instance main action, and error states */
   --accent: #c93a1e;
   --accent-hover: #a8301a;
   --on-accent: #ffffff;
@@ -111,7 +111,7 @@ button, .button {
 }
 button:hover:not(:disabled), .button:hover { background: var(--surface); }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
-/* The accent is reserved for publishing; every other main action is the ink outline. */
+/* Publishing uses the accent; primary actions use ink unless a page explicitly opts in. */
 button.publish { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
 button.publish:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
 /* Nothing to publish: a calm, legible state rather than a faded accent. */
@@ -285,7 +285,7 @@ table.cards td:last-child { border-radius: 0 var(--radius) var(--radius) 0; }
 .strip-draft .sep, .strip-live .sep { opacity: 0.7; }
 .strip-draft .strip-link { color: var(--draft-text); font-weight: 600; }
 .strip-draft.clean { background: var(--surface); color: var(--text-2); }
-.publish-strip > button.publish { min-height: 56px; padding: 0 var(--space-5); font-size: 16px; }
+.publish-strip > button { min-height: 56px; padding: 0 var(--space-5); font-size: 16px; }
 .strip-live { background: var(--ink); color: var(--ink-text); }
 .strip-live strong, .strip-live .mono { color: var(--bg); }
 /* Every node on the live version, a rollout under way, a failed node, no node: each 3:1 or more on the ink. */

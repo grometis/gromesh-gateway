@@ -186,12 +186,12 @@ describe("global navigation", () => {
     await view.click(view.button("Operações"));
     expect(view.panel("Operações").findAll((n) => n.tagName === "A").map((n) => n.getAttribute("href"))).toEqual([`/workspaces/${W}/releases`]);
   });
-  it.each([`/e/${E}/publications/3`, `/e/${E}/releases`])("marks the operations section without duplicating page identity on %s", async (path) => {
+  it.each([`/e/${E}/publications/3`, `/e/${E}/releases`])("marks the operations section once within its own navigation on %s", async (path) => {
     const view = await screen({ path });
     await view.click(view.button("Operações"));
     expect(view.button("Operações").getAttribute("data-active")).toBe("true");
     expect(view.button("Operações").getAttribute("aria-current")).toBeNull();
-    const current = view.all((n) => n.getAttribute("aria-current") === "page");
+    const current = view.panel("Operações").findAll((n) => n.getAttribute("aria-current") === "page");
     expect(current.map((n) => n.textContent)).toEqual(path.endsWith("/3") ? ["Snapshots publicados"] : ["Releases"]);
   });
   it.each(["viewer", "admin"] as const)("matches RequireAdmin for %s, even with a local admin override", async (role) => {
