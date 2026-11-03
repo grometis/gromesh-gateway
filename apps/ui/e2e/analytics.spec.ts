@@ -234,3 +234,49 @@ test("métricas e requisições usam estados vazios sem perder os filtros", asyn
   await expect(page.getByRole("table", { name: "Requisições", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Filtrar", exact: true })).toBeEnabled();
 });
+
+// FB-P1-01: this fixture can also be served to the base UI for Claude's before/after screenshots.
+test.describe("escala e leitura dos gráficos", () => {
+  test.use({ timezoneId: "UTC" });
+  for (const width of [1440, 390]) {
+    test(`máximos, unidades e tabela exata em ${width}px`, async ({ page }) => {
+      const { chartSummary } = await import("./chart-fixtures");
+      await page.setViewportSize({ width, height: 900 });
+      await page.route("**/api/v1/environments/*/analytics/summary?*", (route) => route.fulfill({ json: chartSummary() }));
+      await login(page, "viewer");
+      await menu(page).getByRole("link", { name: "Métricas" }).click();
+      const charts = page.locator("figure.chart");
+      await expect(charts).toHaveCount(3);
+      await expect(charts.first()).toContainText("Horário local");
+      await expect(charts.first()).toContainText("17/10/2026");
+      await expect(charts.first()).toContainText("18/10/2026");
+      for (const chart of await charts.all()) {
+        await expect(chart.getByRole("img")).toBeVisible();
+        await expect(chart.getByRole("list", { name: "Legenda" })).toBeVisible();
+        // Wait for ResizeObserver: labels stay in CSS pixels at both viewport widths.
+        await expect.poll(async () => chart.locator(".chart-plot > svg").evaluate((svg) => Math.abs(Number(svg.getAttribute("width")) - svg.getBoundingClientRect().width))).toBeLessThan(2);
+        const bounds = await chart.evaluate((figure) => {
+          const grid = [...figure.querySelectorAll<SVGLineElement>(".chart-grid")];
+          const top = Math.min(...grid.map((line) => line.y1.baseVal.value));
+          const bottom = Math.max(...grid.map((line) => line.y1.baseVal.value));
+          return [...figure.querySelectorAll<SVGPathElement>("path[data-series]")].map((path) => {
+            const box = path.getBBox();
+            return { above: box.y > top, below: box.y + box.height <= bottom + 0.01, left: box.x >= grid[0]!.x1.baseVal.value, right: box.x + box.width <= grid[0]!.x2.baseVal.value + 0.01 };
+          });
+        });
+        expect(bounds.length).toBeGreaterThan(0);
+        for (const bound of bounds) expect(bound).toEqual({ above: true, below: true, left: true, right: true });
+      }
+      const latency = charts.nth(2);
+      await latency.getByLabel("Ver como tabela: Latência total", { exact: true }).focus();
+      await page.keyboard.press("Enter");
+      const table = latency.getByRole("table", { name: "Latência total" });
+      await expect(table).toBeVisible();
+      await expect(table).toContainText("131,5 ms");
+      await expect(table).toContainText("0,00013 ms");
+      await expect(table).toContainText("Sem dado");
+      await expect(table.getByRole("row")).toHaveCount(5);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    });
+  }
+});
