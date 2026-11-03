@@ -522,15 +522,18 @@ table.numeric td, table.numeric th { white-space: nowrap; }
 .chart-swatch.ok { background: var(--ok); }
 .chart-swatch.err { background: var(--accent); }
 .chart-tooltip {
-  position: absolute; top: 0; transform: translateX(-50%); pointer-events: none; display: flex; flex-direction: column; gap: 2px;
-  padding: var(--space-2) var(--space-3); background: var(--ink); color: var(--ink-text); border-radius: var(--radius-sm); font-size: var(--text-sm); white-space: nowrap;
+  position: absolute; top: 0; pointer-events: none; display: flex; flex-direction: column; gap: 2px;
+  padding: var(--space-2) var(--space-3); background: var(--ink); color: var(--ink-text); border-radius: var(--radius-sm); font-size: var(--text-sm); width: min(200px, 100%); overflow-wrap: anywhere;
 }
 .chart-tooltip strong { color: var(--bg); font-family: var(--font-mono); }
 .chart-table { margin-top: var(--space-2); font-size: var(--text-sm); }
 .chart-table summary { min-height: 40px; align-content: center; cursor: pointer; color: var(--text-2); }
 
+.chart-context { margin: var(--space-1) 0; color: var(--text-2); font-size: var(--text-xs); overflow-wrap: anywhere; }
+.chart-table-scroll { overflow: auto; max-height: 320px; }
+.chart-table-scroll th, .chart-table-scroll td { white-space: nowrap; }
 .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: var(--space-4); }
-.chart { margin: 0; background: var(--surface); border-radius: var(--radius); padding: var(--space-3) var(--space-4); }
+.chart { min-width: 0; margin: 0; background: var(--surface); border-radius: var(--radius); padding: var(--space-3) var(--space-4); }
 .chart figcaption { font-weight: 600; margin-bottom: var(--space-2); }
 .chart > svg { width: 100%; height: auto; display: block; }
 .chart-grid { stroke: var(--line-strong); stroke-width: 1; }
