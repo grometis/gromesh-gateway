@@ -52,6 +52,8 @@ export const appRoutes: RouteObject[] = [
               { path: "services", element: <ServicesPage /> },
               { path: "services/:serviceId", element: <ServiceDetailPage /> },
               { path: "routes", element: <RoutesPage /> },
+              { path: "consumers", element: <ConsumersPage /> },
+              { path: "consumers/:consumerId", element: <ConsumerDetailPage /> },
               { path: "releases", element: <ReleasesPage /> },
               { path: "variables", element: <VariablesPage /> },
               { path: "plugins", element: <PluginsPage /> },

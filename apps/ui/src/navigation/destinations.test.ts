@@ -24,9 +24,13 @@ describe("route classification and declarative destinations", () => {
     },
   );
 
-  it.each(["overview", "metrics", "requests", "publish", "publications", "clusters", "consumers", "upstreams", "certificates", "analytics"])("excludes v1 page %s from v2", (page) => {
+  it.each(["overview", "metrics", "requests", "publish", "publications", "clusters", "upstreams", "certificates", "analytics"])("excludes v1 page %s from v2", (page) => {
     expect(classifyRoute(`${v2}/${page}`)).toEqual({ kind: "unknown" });
     expect(classifyRoute(`/e/w/${page}`)).toEqual({ kind: "legacy-v1", id: "w" });
+  });
+  it.each(["consumers", "consumers/c"])("registers v2 %s", page => {
+    expect(classifyRoute(`${v2}/${page}`)).toEqual({ kind: "workspace-v2", id: "w" });
+    expect(matchRoutes(appRoutes, `${v2}/${page}`)?.at(-1)?.route.path).toBe(page === "consumers" ? page : "consumers/:consumerId");
   });
   it("keeps namespaces distinct even with the same id and encodes IDs", () => {
     expect(classifyRoute("/e/w/services")).toEqual({ kind: "legacy-v1", id: "w" });

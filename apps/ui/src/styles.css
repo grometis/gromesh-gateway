@@ -675,3 +675,14 @@ table.numeric td, table.numeric th { white-space: nowrap; }
   .global-trigger { width: 100%; justify-content: space-between; }
   .global-panel, .global-account .global-panel { position: static; width: 100%; max-width: 100%; margin-top: 4px; max-height: 52vh; box-shadow: none; }
 }
+
+/* Consumer v2 can contain long external identifiers without widening its page or dialogs. */
+.workspace-consumers .page-head > div, .workspace-consumers .cred-card > div { min-width: 0; }
+.workspace-consumers :is(h1, h2, .row-main, td, dd, .modal-body) { overflow-wrap: anywhere; }
+.workspace-consumers .props { grid-template-columns: max-content minmax(0, 1fr); }
+.workspace-consumers .cred-columns { grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); }
+.workspace-consumers .cred-section { min-width: 0; }
+.workspace-consumers .secret { flex-wrap: wrap; }
+.workspace-consumers .secret code { min-width: 0; flex-basis: 200px; }
+.workspace-consumers .modal > header h2 { min-width: 0; }
+.workspace-consumers .modal > header .icon { flex: none; }

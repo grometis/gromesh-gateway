@@ -131,7 +131,7 @@ export function Shell() {
           </div>
         )}
         <nav aria-label="Menu principal">
-          {workspace && <MenuGroup title="Gateway" items={GATEWAY.filter(([path]) => workspaceSections.some((s) => s === path)).map(([path, label]) => [`/workspaces/${encodeURIComponent(workspace.id)}/${path}`, label])} />}
+          {workspace && <MenuGroup title="Gateway" items={GATEWAY.filter(([path]) => workspaceSections.some((s) => s === path)).map(([path, label]) => [`/workspaces/${encodeURIComponent(workspace.id)}/${path}`, path === "consumers" ? "Consumidores" : label])} />}
           {envId && (
             <>
               <MenuGroup title="Gateway" items={GATEWAY.map(([path, label]) => [`/e/${envId}/${path}`, label])} />
