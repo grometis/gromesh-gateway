@@ -18,7 +18,7 @@ async function login(page: Page, user = admin) {
   await mockSession(page, user);
   await page.route("**/api/v1/environments", (route) => route.fulfill({ json: { items: [environment] } }));
   await page.route(`**/api/v1/environments/${envId}`, (route) => route.fulfill({ json: environment }));
-  await page.goto("/login");
+  await page.goto(`/e/${envId}/services`);
   await page.getByLabel("E-mail").fill(user.email);
   await page.getByLabel("Senha").fill("gromesh-dev-admin");
   await page.getByRole("button", { name: "Entrar" }).click();

@@ -1,3 +1,4 @@
+import { Link } from "react-router";
 import { useId, useState, type FormEvent } from "react";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { unwrap } from "../api/client";
@@ -75,9 +76,9 @@ export function WorkspacesPage() {
       <PageHeader
         title="Workspaces"
         description="Cada Workspace isola services, routes, consumers e plugins de um time nesta instância."
-        actions={policy.data?.caller.canCreate && (
+        actions={<div className="identity-actions"><Link to="/" className="back-link">Abrir Visão geral da instância</Link>{policy.data?.caller.canCreate && (
           <Button variant="primary" onClick={() => { setNotice(null); setCreating(true); }}>Criar Workspace</Button>
-        )}
+        )}</div>}
       />
       {policy.data && <Availability policy={policy.data} />}
       {policy.isError && <p className="error" role="alert">Não foi possível ler a política de criação: {statusMessage(policy.error)}</p>}

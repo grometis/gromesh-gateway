@@ -101,13 +101,13 @@ async function fakeApi(page: Page, init: { workspaces: Workspace[]; policy?: Wor
   return fake;
 }
 
-async function signIn(page: Page, user: Me) {
+async function signIn(page: Page, user: Me, initialPath = "/login") {
   await mockSession(page, user);
-  await page.goto("/login");
+  await page.goto(initialPath);
   await page.getByLabel("E-mail").fill(user.email);
   await page.getByLabel("Senha").fill("s3nha-de-teste");
   await page.getByRole("button", { name: "Entrar" }).click();
-  await expect(page.getByRole("heading", { name: "Services", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: initialPath === "/login" ? "Visão geral da instância" : "Services", exact: true })).toBeVisible();
 }
 
 async function openWorkspaces(page: Page, user: Me) {
@@ -356,7 +356,7 @@ test("the selector switches workspace and shows nothing of the previous one whil
     await held;
     return route.fulfill({ json: { items: [], nextCursor: null } });
   });
-  await signIn(page, admin);
+  await signIn(page, admin, `/e/${id(1)}/services`);
   await expect(page.getByText("cobranca-api")).toBeVisible();
   await expect(selector(page).locator("option")).toHaveText(["Pagamentos", "Recargas"]);
   await selector(page).selectOption({ label: "Recargas" });

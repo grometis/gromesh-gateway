@@ -26,7 +26,7 @@ async function openClusters(page: Page) {
   await page.route("**/api/v1/environments", (route) => route.fulfill({ json: { items: [environment] } }));
   await page.route(`**/api/v1/environments/${envId}`, (route) => route.fulfill({ json: environment }));
   await page.route("**/api/v1/environments/*/clusters", (route) => route.fulfill({ json: { items: clusters } }));
-  await page.goto("/login");
+  await page.goto(`/e/${envId}/services`);
   await page.getByLabel("E-mail").fill("ana@gromesh.dev");
   await page.getByLabel("Senha").fill("s3nha-de-teste");
   await page.getByRole("button", { name: "Entrar" }).click();

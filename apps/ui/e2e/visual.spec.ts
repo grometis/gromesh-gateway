@@ -31,7 +31,7 @@ async function openServices(page: Page, clusters = converging) {
   await page.route("**/api/v2/workspaces/*/services*", (route) => route.fulfill({ json: { items: services, nextCursor: null } }));
   await page.route("**/api/v1/environments/*/publish-preview", (route) => route.fulfill({ json: { currentVersion: 3, draftHash: `sha256:${"a".repeat(64)}`, hasChanges: true, changes } }));
   await page.route("**/api/v1/environments/*/clusters", (route) => route.fulfill({ json: { items: clusters } }));
-  await page.goto("/login");
+  await page.goto(`/e/${envId}/services`);
   await page.getByLabel("E-mail").fill("ana@gromesh.dev");
   await page.getByLabel("Senha").fill("s3nha-de-teste");
   await page.getByRole("button", { name: "Entrar" }).click();
