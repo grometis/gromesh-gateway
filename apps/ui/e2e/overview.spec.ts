@@ -65,7 +65,7 @@ for (const viewport of [{ name: "desktop-1440", width: 1440, height: 900 }, { na
 
 test("the chart's values are readable as a table, hovering a column shows its hour, and top routes follow the selector", async ({ page }) => {
   await openOverview(page);
-  await page.getByText("Ver como tabela").click();
+  await page.getByLabel("Ver como tabela: Requisições por hora", { exact: true }).click();
   const table = page.getByRole("table", { name: "Requisições por hora" });
   await expect(table.getByRole("row")).toHaveCount(25);
   const peak = series[14]!;
@@ -81,4 +81,26 @@ test("the chart's values are readable as a table, hovering a column shows its ho
   await page.getByLabel("Critério").selectOption("errors");
   await request;
   await expect(page.getByRole("table", { name: "Top rotas" })).toContainText("orders-api");
+});
+
+// A round stacked maximum must have headroom; a tiny error must remain present.
+test("barras preservam extremos e valores exatos sem saturar o teto", async ({ page }) => {
+  await openOverview(page);
+  const { chartSummary } = await import("./chart-fixtures");
+  const summary = chartSummary("1h");
+  summary.series[2] = { ...summary.series[2]!, requests: 1_000_000, errors4xx: 0, errors5xx: 1, errorRate: 0.000001 };
+  summary.totals = { ...summary.totals, requests: 1_000_720, errors4xx: 24, errors5xx: 2, errorRate: 26 / 1_000_720 };
+  await page.route("**/api/v1/environments/*/analytics/summary*", (route) => route.fulfill({ json: summary }));
+  await page.reload();
+  const chart = page.locator("figure.hourly");
+  await expect(chart.getByRole("img")).toBeVisible();
+  await expect(chart.locator(".bar-err").nth(2)).toHaveAttribute("d", /^M/);
+  const top = await chart.locator("svg[role=img]").evaluate((svg) => {
+    const gridY = [...svg.querySelectorAll<SVGLineElement>(".chart-grid")].map((line) => line.y1.baseVal.value);
+    const barsY = [...svg.querySelectorAll<SVGPathElement>(".bar-ok, .bar-err")].filter((path) => path.getAttribute("d")).map((path) => path.getBBox().y);
+    return { grid: Math.min(...gridY), bars: Math.min(...barsY) };
+  });
+  expect(top.bars).toBeGreaterThan(top.grid);
+  await chart.getByLabel("Ver como tabela: Requisições por hora", { exact: true }).click();
+  await expect(chart.getByRole("table")).toContainText("999.999");
 });
