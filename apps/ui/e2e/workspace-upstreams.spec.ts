@@ -257,10 +257,12 @@ test("switch A to B drops forms and targets, retaining the v2 section", async ({
 test("pending list and delayed A response cannot populate B", async ({ page }) => {
   await setup(page);
   let release!: () => void;
+  let responseCompleted = false;
   const held = new Promise<void>((resolve) => { release = resolve; });
   await page.route(`**/api/v2/workspaces/${A}/upstreams`, async (route) => {
     await held;
     await route.fulfill({ json: pageOf([upstream]) }).catch(() => {});
+    responseCompleted = true;
   });
   await page.goto(url());
   await expect(page.getByRole("status").filter({ hasText: "Carregando Upstreams…" })).toBeVisible();
@@ -268,6 +270,7 @@ test("pending list and delayed A response cannot populate B", async ({ page }) =
     await page.getByLabel("Workspace v2", { exact: true }).selectOption(B);
     await expect(page.getByText("Nenhum upstream ainda.", { exact: true })).toBeVisible();
   } finally { release(); }
+  await expect.poll(() => responseCompleted).toBe(true);
   await expect(page.getByRole("table", { name: "Upstreams", exact: true })).toHaveCount(0);
   await expect(page.getByText("orders-pool", { exact: true })).toHaveCount(0);
 });
