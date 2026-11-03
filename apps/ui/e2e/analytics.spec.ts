@@ -167,7 +167,7 @@ test.describe("escala e leitura dos gráficos", () => {
         for (const bound of bounds) expect(bound).toEqual({ above: true, below: true, left: true, right: true });
       }
       const latency = charts.nth(2);
-      await latency.getByText("Ver como tabela", { exact: true }).focus();
+      await latency.getByLabel("Ver como tabela: Latência total", { exact: true }).focus();
       await page.keyboard.press("Enter");
       const table = latency.getByRole("table", { name: "Latência total" });
       await expect(table).toBeVisible();

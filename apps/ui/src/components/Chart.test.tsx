@@ -1,11 +1,14 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { LineChart, ticks, type ChartPoint } from "./Chart";
 import { HourlyBars } from "./HourlyBars";
+import * as chartUtils from "./chart-utils";
 
 const ts = "2026-10-17T09:00:00Z";
 const lines = [{ key: "value", label: "Latência p95", color: "#0b2a2a" }];
 const render = (points: ChartPoint[]) => renderToStaticMarkup(<LineChart title="Latência total" points={points} lines={lines} unit="ms" />);
+
+afterEach(() => vi.restoreAllMocks());
 
 // These fail if the last tick is below the data, or if small values are rounded to zero.
 describe("chart scale", () => {
@@ -27,6 +30,26 @@ describe("chart scale", () => {
 function coordinates(html: string) {
   return [...html.matchAll(/<path[^>]*d="([^"]*)"[^>]*data-series/g)].flatMap((path) => [...path[1]!.matchAll(/[ML]([\d.-]+),([\d.-]+)/g)].map((match) => ({ x: Number(match[1]), y: Number(match[2]) })));
 }
+
+function columnBounds(html: string, className: string) {
+  const path = html.match(new RegExp(`<path class="${className}" d="([^"]+)"`))![1]!;
+  const values = [...path.matchAll(/-?\d+(?:\.\d+)?(?:e[+-]?\d+)?/gi)].map((m) => Number(m[0]));
+  return { left: values[0]!, right: values[8]!, top: values[4]!, bottom: values[1]! };
+}
+
+it("gives table controls distinct chart names without repeating the control label in SVG descriptions", () => {
+  const titles = ["Requisições", "Erros", "Latência total"];
+  const html = renderToStaticMarkup(<>
+    {titles.map((title) => <LineChart key={title} title={title} points={[{ ts, value: 1 }]} lines={lines} />)}
+    <HourlyBars title="Requisições por hora" buckets={[{ ts, ok: 1, errors: 0 }]} />
+  </>);
+  for (const title of [...titles, "Requisições por hora"]) {
+    expect(html).toContain(`<summary aria-label="Ver como tabela: ${title}">Ver como tabela</summary>`);
+  }
+  const descriptions = [...html.matchAll(/<desc[^>]*>([^<]*)<\/desc>/g)];
+  expect(descriptions).toHaveLength(4);
+  for (const description of descriptions) expect(description[1]).not.toContain("Ver como tabela");
+});
 
 describe("LineChart", () => {
   it("keeps a non-round maximum and the zero baseline in the plot", () => {
@@ -96,9 +119,56 @@ describe("HourlyBars", () => {
     expect(html).toContain("400");
   });
 
-  it("keeps a small error segment instead of subtracting it as a visual gap", () => {
+  it("shows a separate visible presence marker without enlarging a subpixel error segment", () => {
     const html = renderToStaticMarkup(<HourlyBars title="Requisições por hora" buckets={[{ ts, ok: 1_000_000, errors: 1 }]} />);
-    expect(html).toMatch(/class="bar-err" d="M/);
+    const ok = columnBounds(html, "bar-ok");
+    const error = columnBounds(html, "bar-err");
+    const errorHeight = error.bottom - error.top;
+    expect(errorHeight).toBeGreaterThan(0);
+    expect(errorHeight).toBeLessThan(1);
+    expect(errorHeight / (ok.bottom - ok.top)).toBeCloseTo(1 / 1_000_000, 10);
+    expect(error.bottom).toBeCloseTo(ok.top, 10);
+    const marker = html.match(/<circle class="bar-error-indicator" cx="([^"]+)" cy="([^"]+)" r="([^"]+)" fill="([^"]+)"><title>([^<]+)<\/title><\/circle>/);
+    expect(marker).not.toBeNull();
+    const [, cx, cy, r, fill, title] = marker!;
+    expect(Number(cx)).toBeCloseTo((error.left + error.right) / 2);
+    expect(Number(r)).toBeGreaterThanOrEqual(2);
+    expect(Number(cy) + Number(r)).toBeLessThan(error.top);
+    expect(Number(cy) - Number(r)).toBeGreaterThanOrEqual(0);
+    expect(fill).toBe("var(--accent)");
+    expect(title).toContain("Erro: 1");
+    expect(title).toContain("presença");
+    expect(html).toMatch(/<desc[^>]*>[^<]*Ponto acima da barra: erro abaixo de 1 px/);
+    expect(html).toMatch(/<li>.*Ponto acima da barra: erro abaixo de 1 px/);
+    expect(html).toContain('class="mono">1</td>');
+  });
+
+  it.each([0, 1, 8, 9])("only marks positive errors whose segment is below 1 px (%s errors)", (errors) => {
+    const html = renderToStaticMarkup(<HourlyBars title="Requisições por hora" buckets={[{ ts, ok: 1000 - errors, errors }]} />);
+    const expected = errors > 0 && errors <= 8;
+    expect(html.includes('class="bar-error-indicator"')).toBe(expected);
+    expect(html.includes("Ponto acima da barra")).toBe(expected);
+  });
+
+  it.each([320, 640, 1280])("centers hour ticks on their bars and anchors edge labels inward at %s px", (width) => {
+    vi.spyOn(chartUtils, "useChartWidth").mockReturnValue({ ref: { current: null }, width });
+    for (const count of [1, 2, 24]) {
+      const buckets = Array.from({ length: count }, (_, i) => ({ ts: new Date(Date.parse(ts) + i * 3_600_000).toISOString(), ok: 600, errors: 0 }));
+      const html = renderToStaticMarkup(<HourlyBars title="Requisições por hora" buckets={buckets} />);
+      const bars = [...html.matchAll(/<g class="bar">(.*?)<\/g>/g)];
+      expect(bars).toHaveLength(count);
+      let labels = 0;
+      bars.forEach((bar, i) => {
+        const tick = bar[1]!.match(/<text class="chart-tick" x="([^"]+)" y="212" text-anchor="([^"]+)">([^<]+)<\/text>/);
+        if (!tick) return;
+        labels++;
+        const bounds = columnBounds(bar[1]!, "bar-ok");
+        expect(Number(tick[1])).toBeCloseTo((bounds.left + bounds.right) / 2);
+        expect(tick[2]).toBe(count === 1 ? "middle" : i === 0 ? "start" : i === count - 1 ? "end" : "middle");
+        expect(tick[3]).toBe(chartUtils.chartTime(buckets[i]!.ts));
+      });
+      expect(labels).toBeGreaterThanOrEqual(Math.min(count, 2));
+    }
   });
 
   it("reports empty buckets as absent, but keeps zero buckets as measured values", () => {

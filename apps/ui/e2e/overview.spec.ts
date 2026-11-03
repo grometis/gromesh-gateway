@@ -65,7 +65,7 @@ for (const viewport of [{ name: "desktop-1440", width: 1440, height: 900 }, { na
 
 test("the chart's values are readable as a table, hovering a column shows its hour, and top routes follow the selector", async ({ page }) => {
   await openOverview(page);
-  await page.getByText("Ver como tabela", { exact: true }).click();
+  await page.getByLabel("Ver como tabela: Requisições por hora", { exact: true }).click();
   const table = page.getByRole("table", { name: "Requisições por hora" });
   await expect(table.getByRole("row")).toHaveCount(25);
   const peak = series[14]!;
@@ -101,6 +101,6 @@ test("barras preservam extremos e valores exatos sem saturar o teto", async ({ p
     return { grid: Math.min(...gridY), bars: Math.min(...barsY) };
   });
   expect(top.bars).toBeGreaterThan(top.grid);
-  await chart.getByText("Ver como tabela", { exact: true }).click();
+  await chart.getByLabel("Ver como tabela: Requisições por hora", { exact: true }).click();
   await expect(chart.getByRole("table")).toContainText("999.999");
 });

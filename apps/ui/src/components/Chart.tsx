@@ -66,7 +66,7 @@ export function LineChart({ title, points, lines, unit = "" }: { title: string; 
         {hasData && (
           <svg width={width} height={HEIGHT} viewBox={`0 0 ${width} ${HEIGHT}`} role="img" aria-labelledby={`${id}-plot-title`} aria-describedby={`${id}-description ${id}-period`}>
             <title id={`${id}-plot-title`}>{`${title}: ${lines.map((l) => l.label).join(", ")}`}</title>
-            <desc id={`${id}-description`}>Escala linear a partir de zero. Lacunas indicam ausência de dado. Valores exatos em Ver como tabela.</desc>
+            <desc id={`${id}-description`}>Escala linear a partir de zero. Lacunas indicam ausência de dado. Valores exatos na tabela abaixo.</desc>
             {yTicks.map((t) => (
               <g key={t}>
                 <line x1={left} x2={width - PAD.right} y1={y(t)} y2={y(t)} className="chart-grid" />
@@ -114,7 +114,7 @@ export function LineChart({ title, points, lines, unit = "" }: { title: string; 
       </ul>
       {points.length > 0 && (
         <details className="chart-table">
-          <summary>Ver como tabela</summary>
+          <summary aria-label={`Ver como tabela: ${title}`}>Ver como tabela</summary>
           <div className="chart-table-scroll" tabIndex={0} role="region" aria-label={`Tabela: ${title}`}>
             <table aria-label={title}>
               <thead>
