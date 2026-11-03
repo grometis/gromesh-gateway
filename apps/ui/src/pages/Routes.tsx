@@ -1,12 +1,13 @@
+import { useIsWorkspaceRoute, useWorkspaceId } from "../navigation/context";
 import { useDeferredValue, useState, type FormEvent } from "react";
 import { useInfiniteQuery, useMutation } from "@tanstack/react-query";
-import { useSearchParams } from "react-router";
+import { Link, useSearchParams } from "react-router";
 import { apiV2, type WorkspaceRoute, type WorkspaceRouteWrite } from "../api/client-v2";
 import { unwrap } from "../api/client";
 import { statusMessage, type FormErrors } from "../api/errors";
 import { CheckboxField, Field, FormErrorList } from "../components/Field";
 import { ConfirmDialog, Modal } from "../components/Modal";
-import { useEnvId } from "../components/Shell";
+
 import { ScopedPlugins } from "./Plugins";
 import { splitPaths, splitList, useEntityDraft } from "./Services";
 import { PageHeader } from "../components/PageHeader";
@@ -28,7 +29,7 @@ const LEGACY = "Route migrada de um environment: mantém o stripPath que tinha. 
 
 /** Keyed by the workspace: switching it remounts the screen, so no modal or form keeps the previous one's route. */
 export function RoutesPage() {
-  const envId = useEnvId();
+  const envId = useWorkspaceId();
   // The service filter lives in the URL so it can be linked from a service.
   const [params, setParams] = useSearchParams();
   const serviceId = params.get("serviceId") ?? "";
@@ -48,6 +49,7 @@ export function ScopedRoutes({ envId, service, readOnly = false }: { envId: stri
 }
 
 function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly = false }: { workspaceId: string; serviceId: string; service?: { id: string; name: string }; onServiceChange?: (id: string) => void; readOnly?: boolean }) {
+  const v2 = useIsWorkspaceRoute();
   const draft = useEntityDraft(workspaceId, "routes");
   const publication = useRoutePublication(workspaceId);
   const workspace = useWorkspace(workspaceId);
@@ -91,7 +93,7 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
     <div className="gateway-list">
       {service ? <div className="page-head"><h2>Routes do service</h2>{createAction}</div> : (
         <>
-          <PageHeader title="Routes" description="Paths configurados, publicação no fluxo v1 e previsão para a configuração v2." actions={createAction} />
+          <PageHeader title="Routes" description={v2 ? "Paths configurados e previsão para a configuração v2." : "Paths configurados, publicação no fluxo v1 e previsão para a configuração v2."} actions={createAction} />
           <WorkspaceGatewayNote workspaceId={workspaceId} />
         </>
       )}
@@ -145,7 +147,7 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
                     ) : (
                       <>
                         <Button variant="quiet" onClick={() => setDetails(r)}>Ver detalhes</Button>
-                        <Button variant="quiet" onClick={() => setPlugins(r)}>Plugins</Button>
+                        {v2 ? <Link to={`/workspaces/${workspaceId}/plugins`}>Plugins do Workspace</Link> : <Button variant="quiet" onClick={() => setPlugins(r)}>Plugins</Button>}
                         {canWrite && <>
                           <Button variant="quiet" onClick={() => setEditing(r)}>Editar</Button>
                           <RowMenu label={`Mais ações para ${r.name}`} items={[{ label: "Excluir", danger: true, onSelect: () => setDeleting(r) }]} />

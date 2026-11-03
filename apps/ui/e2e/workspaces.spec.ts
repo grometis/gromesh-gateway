@@ -172,7 +172,7 @@ test("an authorized caller creates a workspace: suggested slug, success only aft
   ]);
   await expect(row(page, "Gestão de Cobrança")).toContainText("gestao-de-cobranca");
   await expect(selector(page)).toHaveCount(0);
-  await page.getByRole("link", { name: "Voltar ao ambiente legado Pagamentos", exact: true }).click();
+  await page.goto(`/e/${id(1)}/services`);
   await expect(selector(page).locator("option")).toHaveText(["Pagamentos", "Gestão de Cobrança"]);
 });
 
@@ -245,7 +245,7 @@ test("without permission: no create button; edit and archive are tried and the s
   await expect(row(page, "Recargas")).toContainText("Ativo");
   await expect(row(page, "Recargas e Pacotes")).toHaveCount(0);
   await expect(selector(page)).toHaveCount(0);
-  await expect(page.getByRole("link", { name: "Voltar ao ambiente legado Pagamentos", exact: true })).toBeVisible();
+  await expect(page.locator(".context-return")).toHaveCount(0);
   expect(fake.workspaces.map((w) => [w.name, w.status])).toEqual([["Pagamentos", "active"], ["Recargas", "active"]]);
 });
 
@@ -316,7 +316,7 @@ test("a workspace admin edits the name and description; the slug stays read-only
   ]);
   await expect(row(page, "Recargas e Pacotes")).toContainText("Recargas pré-pagas");
   await expect(selector(page)).toHaveCount(0);
-  await page.getByRole("link", { name: "Voltar ao ambiente legado Pagamentos", exact: true }).click();
+  await page.goto(`/e/${id(1)}/services`);
   await expect(selector(page).locator("option")).toHaveText(["Pagamentos", "Recargas e Pacotes"]);
 });
 

@@ -16,7 +16,7 @@ const LABELS: Record<string, string> = {
 };
 
 export const GATEWAY_MESSAGES = {
-  autoPublish: "Este Workspace publica automaticamente pela v1: mude para publicação manual antes de editar pela v2.",
+  autoPublish: "Este Workspace publica automaticamente pelo fluxo legado. Mude para publicação manual antes de editar por aqui.",
   pathCompatibility: "Esta route preserva o stripPath legado. A conversão para o padrão do Workspace é uma ação separada; a edição mantém o valor atual.",
   forbidden: "Você não tem permissão para alterar o gateway deste Workspace.",
   concurrent: "Outra alteração simultânea impediu esta; tente novamente.",

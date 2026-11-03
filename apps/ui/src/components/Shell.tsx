@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Navigate, NavLink, Outlet, useLocation, useMatch, useNavigate, useParams } from "react-router";
 import { api, ApiError, unwrap } from "../api/client";
 import { statusMessage } from "../api/errors";
 import { effectiveRole, useAuth } from "../auth";
+import { NavigationContextBoundary, useOptionalNavigationContext, useIsWorkspaceRoute } from "../navigation/context";
+import { workspaceSections } from "../navigation/destinations";
 import { Brand } from "./Brand";
 import { PublishStrip } from "./PublishStrip";
 import { InstanceContext } from "./InstanceContext";
@@ -12,9 +13,9 @@ import { WorkspaceContext, WorkspaceSelector } from "./WorkspaceContext";
 export const environmentsQuery = { queryKey: ["environments"], queryFn: () => unwrap(api.GET("/environments")) };
 
 /** The API lists only the environments the user may see; the UI also leaves out any its session marks as none. */
-export function useVisibleEnvironments() {
+export function useVisibleEnvironments(enabled = true) {
   const { user } = useAuth();
-  return useQuery({ ...environmentsQuery, select: (data) => data.items.filter((e) => effectiveRole(user, e.id) !== "none") });
+  return useQuery({ ...environmentsQuery, enabled, select: (data) => data.items.filter((e) => effectiveRole(user, e.id) !== "none") });
 }
 
 export function useEnvId(): string {
@@ -29,12 +30,22 @@ export function useEnvironment(envId: string) {
   });
 }
 
+export function useLegacyEnvironment(envId: string) {
+  const v2 = useIsWorkspaceRoute();
+  const query = useQuery({
+    queryKey: ["environment", envId],
+    queryFn: () => unwrap(api.GET("/environments/{envId}", { params: { path: { envId } } })),
+    enabled: !v2,
+  });
+  return { ...query, data: v2 ? undefined : query.data, isSuccess: !v2 && query.isSuccess, isError: !v2 && query.isError };
+}
+
 export function RequireAuth() {
   const { user, loading, error } = useAuth();
   const location = useLocation();
   if (loading) return <p className="center muted">Carregando…</p>;
   if (error) return <p className="center error" role="alert">{error}</p>;
-  if (!user) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  if (!user) return <Navigate to="/login" replace state={{ from: location.pathname + location.search + location.hash }} />;
   return <Outlet />;
 }
 
@@ -77,22 +88,22 @@ const OPERATION = [
 ] as const;
 
 export function Shell() {
-  const { envId: routeEnvId } = useParams();
+  const { envId: routeEnvId, workspaceId } = useParams();
+  const context = useOptionalNavigationContext();
+  const workspace = context?.workspace;
+  const v2Section = useMatch("/workspaces/:workspaceId/:section/*")?.params.section;
   const isReleasesRoute = useMatch("/e/:envId/releases");
   const isAccountRoute = useMatch("/tokens");
   const isWorkspacesRoute = useMatch("/workspaces");
   const workspaceRoute = useMatch("/e/:envId/:section/*");
   const workspaceSection = workspaceRoute?.params.section?.toLowerCase();
-  const hasWorkspaceSelector = !!isWorkspacesRoute || ["services", "routes", "variables", "plugins", "releases"].includes(workspaceSection ?? "");
+  const hasWorkspaceSelector = !!workspaceId || !!isWorkspacesRoute || ["services", "routes", "variables", "plugins", "releases"].includes(workspaceSection ?? "");
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const envs = useVisibleEnvironments();
-  const [previousEnvId, setPreviousEnvId] = useState<string | undefined>();
+  const envs = useVisibleEnvironments(!workspaceId);
   const validRoute = envs.isSuccess && envs.data.some((e) => e.id === routeEnvId);
-  const previousEnv = envs.isSuccess && !envs.isFetching ? envs.data.find((e) => e.id === previousEnvId) : undefined;
-  const envId = validRoute ? routeEnvId! : !routeEnvId ? previousEnv?.id ?? "" : "";
-  useEffect(() => { if (validRoute) setPreviousEnvId(routeEnvId); }, [validRoute, routeEnvId]);
+  const envId = validRoute ? routeEnvId! : "";
   const contextMessage = envs.isPending ? "Carregando ambientes legados…"
     : envs.isError ? envs.error instanceof ApiError && envs.error.status === 403
       ? "Sem permissão para listar ambientes legados."
@@ -114,7 +125,8 @@ export function Shell() {
       <aside className="menu">
         <Brand />
         <InstanceContext />
-        {hasWorkspaceSelector && <WorkspaceSelector id={routeEnvId} onSelect={(id) => navigate(`/e/${id}/${workspaceSection ?? "services"}`)} />}
+        {hasWorkspaceSelector && <WorkspaceSelector id={workspaceId ?? routeEnvId} workspace={workspace} onSelect={(id) => navigate(routeEnvId ? `/e/${id}/${workspaceSection ?? "services"}` : `/workspaces/${encodeURIComponent(id)}/${workspaceSections.some((s) => s === v2Section) ? v2Section : "services"}`)} />}
+        {workspace && <p className="workspace-context" role="status">Workspace v2: {workspace.name} · /{workspace.slug} · {workspace.status === "archived" ? "arquivado · somente leitura" : "ativo"}</p>}
         {routeEnvId ? (
           <div className="env">
             <label htmlFor="env-select">Ambiente (legado)</label>
@@ -125,13 +137,13 @@ export function Shell() {
             {contextMessage && <p id="env-context-message" role={envs.isError ? "alert" : "status"}>{contextMessage}</p>}
             {validRoute && <WorkspaceContext key={routeEnvId} id={routeEnvId} />}
           </div>
-        ) : (
+        ) : !workspaceId && (
           <div className="global-context">
             <p>{isAccountRoute ? "Escopo: minha conta nesta instância" : "Escopo: esta instância"}</p>
-            {previousEnv && <NavLink className="context-return" to={`/e/${previousEnv.id}/services`}>Voltar ao ambiente legado {previousEnv.name}</NavLink>}
           </div>
         )}
         <nav aria-label="Menu principal">
+          {workspace && <MenuGroup title="Gateway" items={GATEWAY.filter(([path]) => workspaceSections.some((s) => s === path)).map(([path, label]) => [`/workspaces/${encodeURIComponent(workspace.id)}/${path}`, label])} />}
           {envId && (
             <>
               <MenuGroup title="Gateway" items={GATEWAY.map(([path, label]) => [`/e/${envId}/${path}`, label])} />
@@ -155,8 +167,13 @@ export function Shell() {
         </div>
       </aside>
       <main className="content">
-        {routeEnvId && !isReleasesRoute && <PublishStrip envId={routeEnvId} />}
-        <Outlet />
+        {context ? <NavigationContextBoundary>
+          {routeEnvId && !isReleasesRoute && <PublishStrip envId={routeEnvId} />}
+          <Outlet key={"id" in context.route ? `${context.route.kind}/${context.route.id}` : context.route.kind} />
+        </NavigationContextBoundary> : <>
+          {routeEnvId && !isReleasesRoute && <PublishStrip envId={routeEnvId} />}
+          <Outlet />
+        </>}
       </main>
     </div>
   );

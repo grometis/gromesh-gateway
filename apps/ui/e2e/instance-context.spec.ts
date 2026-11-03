@@ -102,7 +102,7 @@ for (const width of [390, 1440]) {
     await page.getByRole("link", { name: "Tokens de API", exact: true }).click();
     await expect(page.getByText("Escopo: minha conta nesta instância", { exact: true })).toBeVisible();
     await expect(page.getByLabel("Ambiente (legado)", { exact: true })).toHaveCount(0);
-    await expect(page.getByRole("link", { name: "Voltar ao ambiente legado Pedidos", exact: true })).toHaveAttribute("href", `/e/${B}/services`);
+    await expect(page.locator(".context-return")).toHaveCount(0);
     await audit(page);
     await page.reload();
     await expect(page.getByLabel("Ambiente (legado)", { exact: true })).toHaveCount(0);

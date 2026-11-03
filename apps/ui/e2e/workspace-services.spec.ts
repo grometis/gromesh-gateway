@@ -124,7 +124,8 @@ for (const key of ["workspace", "environment"] as const) {
       await page.route(`**${path}`, async (route) => {
         started();
         await held;
-        if (verdict === "error") return route.fulfill({ status: 403, json: { title: "Forbidden", status: 403 } });
+        // A transient environment failure keeps the form; explicit 403/404 revoke the legacy context.
+        if (verdict === "error") return route.fulfill({ status: key === "environment" ? 502 : 403, json: { title: "Revalidation failed", status: key === "environment" ? 502 : 403 } });
         if (verdict === "allow") return route.fallback();
         return route.fulfill({ json: key === "workspace"
           ? { id: W, key: W, name: "Cobrança", slug: "billing", status: "archived", activeRelease: null }

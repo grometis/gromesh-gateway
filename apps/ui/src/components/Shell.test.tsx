@@ -49,6 +49,7 @@ async function screen(options: { stage?: unknown; policyStatus?: number; envStat
   const router = createMemoryRouter([
     { path: "/login", element: <LoginPage /> },
     { element: <RequireAuth />, children: [{ element: <Shell />, children: [
+      { path: "/workspaces/:workspaceId/*", element: <h1>Workspace v2</h1> },
       { path: "/e/:envId/*", element: <h1>Conteúdo autorizado pelo servidor</h1> },
       { path: "/tokens", element: <h1>Tokens de API</h1> },
       { path: "/workspaces", element: <h1>Workspaces</h1> },
@@ -119,7 +120,7 @@ describe("instance and context in the shell", () => {
     expect(select()!.options.filter((n) => n.getAttribute("value")).map((n) => n.textContent)).toEqual(["Pedidos v2", "Catálogo v2"]);
     if (path === "/workspaces") expect(select()!.value).toBe("");
     await act(async () => { select()!.value = C; select()!.dispatchEvent(new Event("change", { bubbles: true })); await tick(); });
-    expect(view.router.state.location.pathname).toBe(`/e/${C}/${path.endsWith("releases") ? "releases" : "services"}`);
+    expect(view.router.state.location.pathname).toBe(path === "/workspaces" ? `/workspaces/${C}/services` : `/e/${C}/${path.endsWith("releases") ? "releases" : "services"}`);
     expect(view.methods.every((method) => method === "GET")).toBe(true);
     expect(view.container.textContent).toContain("Instância DEV");
   });
@@ -144,7 +145,7 @@ describe("instance and context in the shell", () => {
     await act(async () => { more()!.dispatchEvent(new Event("click", { bubbles: true })); await tick(); });
     await vi.waitFor(async () => { await view.settle(); expect(more()).toBeUndefined(); });
     const select = view.container.findAll((n) => n.tagName === "SELECT" && n.getAttribute("id") === "workspace-select")[0]!;
-    expect(select.options.map((n) => n.textContent)).toEqual(["Pedidos v2", "Catálogo v2"]);
+    expect(select.options.filter((n) => n.getAttribute("value")).map((n) => n.textContent)).toEqual(["Pedidos v2", "Catálogo v2"]);
     expect(view.router.state.location.pathname).toBe(`/e/${A}/releases`);
     expect(view.methods.every((method) => method === "GET")).toBe(true);
   });
@@ -179,7 +180,7 @@ describe("instance and context in the shell", () => {
     await view.settle();
     await act(async () => { await view.router.navigate("/workspaces"); await tick(); });
     expect(view.container.textContent).toContain("Escopo: esta instância");
-    expect(view.container.textContent).toContain("Voltar ao ambiente legado producao");
+    expect(view.container.textContent).not.toContain("Voltar ao ambiente legado producao");
     await act(async () => { client.setQueryData(["environments"], { items: [] }); await tick(); });
     expect(view.container.textContent).not.toContain("Voltar ao ambiente legado");
   });

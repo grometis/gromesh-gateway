@@ -1,3 +1,4 @@
+import { useWorkspaceId, useIsWorkspaceRoute } from "../navigation/context";
 import { useDeferredValue, useState, type FormEvent } from "react";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, unwrap } from "../api/client";
@@ -6,7 +7,7 @@ import { statusMessage, type FormErrors } from "../api/errors";
 import { CheckboxField, Field, FormErrorList } from "../components/Field";
 import { ConfirmDialog, Modal } from "../components/Modal";
 import { Link, useNavigate, useParams } from "react-router";
-import { useEnvId, useEnvironment } from "../components/Shell";
+import { useLegacyEnvironment } from "../components/Shell";
 import { Badge, DraftBadge } from "../components/Badge";
 import { RowMenu } from "../components/RowMenu";
 import { Button } from "../components/Button";
@@ -53,8 +54,9 @@ export function useServices(envId: string, q = "") {
 
 /** Which entities the draft adds or changes, from the publish preview (the strip loads the same query). */
 export function useEntityDraft(envId: string, kind: "services" | "routes" | "plugins"): Map<string, "added" | "modified"> {
-  const env = useEnvironment(envId);
-  const pending = env.data?.hasUnpublishedChanges ?? false;
+  const v2 = useIsWorkspaceRoute();
+  const env = useLegacyEnvironment(envId);
+  const pending = !v2 && (env.data?.hasUnpublishedChanges ?? false);
   const preview = useQuery({
     queryKey: ["preview", envId],
     queryFn: () => unwrap(api.GET("/environments/{envId}/publish-preview", { params: { path: { envId } } })),
@@ -68,17 +70,18 @@ export function useEntityDraft(envId: string, kind: "services" | "routes" | "plu
 
 /** Keyed by the workspace: switching it remounts the screen, so no modal or form keeps the previous one's entity. */
 export function ServicesPage() {
-  const envId = useEnvId();
+  const envId = useWorkspaceId();
   return <WorkspaceServices key={envId} workspaceId={envId} />;
 }
 
 export function ServiceDetailPage() {
-  const envId = useEnvId();
+  const envId = useWorkspaceId();
   const { serviceId } = useParams();
   return <WorkspaceServiceDetail key={`${envId}/${serviceId}`} workspaceId={envId} serviceId={serviceId!} />;
 }
 
 function WorkspaceServices({ workspaceId }: { workspaceId: string }) {
+  const v2 = useIsWorkspaceRoute();
   const { canWrite } = useWorkspaceGatewayAccess(workspaceId);
   const [search, setSearch] = useState("");
   const [onlyChanged, setOnlyChanged] = useState(false);
@@ -105,14 +108,14 @@ function WorkspaceServices({ workspaceId }: { workspaceId: string }) {
         )}
       />
       <WorkspaceGatewayNote workspaceId={workspaceId} />
-      <div className="pills" role="group" aria-label="Filtrar services">
+      {!v2 && <div className="pills" role="group" aria-label="Filtrar services">
         <button type="button" aria-pressed={!onlyChanged} onClick={() => setOnlyChanged(false)}>
           Todos <span className="count">{all.length}</span>
         </button>
         <button type="button" aria-pressed={onlyChanged} onClick={() => setOnlyChanged(true)}>
           Com alterações <span className="count">{changed.length}</span>
         </button>
-      </div>
+      </div>}
       <input type="search" className="search" placeholder="Buscar por nome" aria-label="Buscar services" value={search} onChange={(e) => setSearch(e.target.value)} />
       {services.isPending && <p className="muted">Carregando…</p>}
       {services.isError && <p className="error">{statusMessage(services.error)}</p>}
@@ -180,6 +183,7 @@ function WorkspaceServices({ workspaceId }: { workspaceId: string }) {
 
 function WorkspaceServiceDetail({ workspaceId, serviceId }: { workspaceId: string; serviceId: string }) {
   const navigate = useNavigate();
+  const v2 = useIsWorkspaceRoute();
   const { canWrite } = useWorkspaceGatewayAccess(workspaceId);
   const draft = useEntityDraft(workspaceId, "services");
   const upstreams = useWorkspaceUpstreams(workspaceId);
@@ -231,10 +235,10 @@ function WorkspaceServiceDetail({ workspaceId, serviceId }: { workspaceId: strin
         <dt>Tags</dt>
         <dd>{s.tags?.join(", ") || "—"}</dd>
       </dl>
-      <p className="muted">Gerencie as routes na tela de <Link className="strip-link" to={`/e/${workspaceId}/routes?serviceId=${s.id}`}>Routes do Workspace</Link>.</p>
+      <p className="muted">Gerencie as routes na tela de <Link className="strip-link" to={`${v2 ? "/workspaces" : "/e"}/${workspaceId}/routes?serviceId=${s.id}`}>Routes do Workspace</Link>.</p>
       <ScopedRoutes envId={workspaceId} service={s} readOnly />
       <p className="muted">Plugins por Workspace ainda não são editáveis aqui.</p>
-      <ScopedPlugins envId={workspaceId} scope={{ kind: "service", id: s.id }} title="Plugins do service" readOnly />
+      {v2 ? <p><Link to={`/workspaces/${workspaceId}/plugins`}>Plugins do Workspace</Link></p> : <ScopedPlugins envId={workspaceId} scope={{ kind: "service", id: s.id }} title="Plugins do service" readOnly />}
       {editing && <ServiceForm workspaceId={workspaceId} service={s} onClose={() => setEditing(false)} />}
       {deleting && <DeleteService workspaceId={workspaceId} service={s} onClose={() => setDeleting(false)} onDeleted={() => navigate("..")} />}
     </section>

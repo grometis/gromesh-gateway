@@ -9,6 +9,8 @@ async function login(page: Page, role: "admin" | "viewer" = "viewer") {
   await mockSession(page, { ...actor, email: "ana@gromesh.dev", role, active: true, createdAt: "2026-10-15T12:00:00Z", updatedAt: "2026-10-15T12:00:00Z" });
   const environment = { id: "11111111-1111-4111-8111-111111111111", name: "Produção", publishMode: "manual", currentVersion: 2, hasUnpublishedChanges: false };
   await page.route("**/api/v1/environments", (route) => route.fulfill({ json: { items: [environment] } }));
+  // Prism's static detail example has another ID; this environment must have its own consistent detail.
+  await page.route(`**/api/v1/environments/${environment.id}`, (route) => route.fulfill({ json: environment }));
   await page.goto("/login");
   await page.getByLabel("E-mail").fill("ana@gromesh.dev");
   await page.getByLabel("Senha").fill("test-password");

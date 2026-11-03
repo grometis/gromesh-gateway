@@ -1,3 +1,4 @@
+import { useWorkspaceId, useIsWorkspaceRoute } from "../navigation/context";
 import { useState } from "react";
 import { type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, unwrap } from "../api/client";
@@ -6,7 +7,7 @@ import { Button } from "../components/Button";
 import { Field } from "../components/Field";
 import { Modal } from "../components/Modal";
 import { PageHeader } from "../components/PageHeader";
-import { useEnvId, useEnvironment } from "../components/Shell";
+import { useLegacyEnvironment } from "../components/Shell";
 import { Table } from "../components/Table";
 import { useWorkspace, useWorkspaceGatewayAccess } from "./workspace-gateway";
 
@@ -55,13 +56,14 @@ export function releaseErrors(error: unknown): string[] {
 }
 
 export function ReleasesPage() {
-  const workspaceId = useEnvId();
+  const workspaceId = useWorkspaceId();
   return <WorkspaceReleases key={workspaceId} workspaceId={workspaceId} />;
 }
 
 function WorkspaceReleases({ workspaceId }: { workspaceId: string }) {
+  const v2 = useIsWorkspaceRoute();
   const workspace = useWorkspace(workspaceId);
-  const environment = useEnvironment(workspaceId);
+  const environment = useLegacyEnvironment(workspaceId);
   const access = useWorkspaceGatewayAccess(workspaceId, "release");
   // /me cannot describe v2 bindings: offer publication to readers and let the server enforce release.publish.
   const [confirm, setConfirm] = useState<{ expectedVersion: number | null } | null>(null);
@@ -70,15 +72,14 @@ function WorkspaceReleases({ workspaceId }: { workspaceId: string }) {
   const open = () => {
     if (!access.canWrite) return;
     setConfirm({ expectedVersion: activeVersion });
-    void workspace.refetch();
-    void environment.refetch();
+    if (!v2) { void workspace.refetch(); void environment.refetch(); }
   };
   return <section className="final-page stack">
     <PageHeader title="Releases" description={`Releases do Workspace ${workspace.data?.name ?? "selecionado"}. Publicar uma release não implanta seu conteúdo.`}
       actions={access.canWrite && <Button variant="publish" onClick={open}>Publicar release</Button>} />
     {access.reason && <p role="status" className="note">{access.reason}</p>}
     {published !== null && <p role="status">Release v{published} publicada. Nenhum deployment foi criado.</p>}
-    <section className="stack" aria-label="Rascunho">
+    {!v2 && <section className="stack" aria-label="Rascunho">
       <h2>Rascunho</h2>
       <p>{environment.isError ? "Não foi possível consultar o indicador de alterações pendentes."
         : !environment.data ? "Verificando alterações pendentes…"
@@ -86,6 +87,7 @@ function WorkspaceReleases({ workspaceId }: { workspaceId: string }) {
       <p className="muted">Este indicador é compartilhado com o fluxo v1 e não é limpo ao publicar uma release v2. O contrato v2 não expõe a comparação do rascunho com a release ativa; o servidor verifica se há conteúdo novo ao publicar.</p>
       {environment.data?.publishMode === "auto" && <p className="note">A publicação automática pertence ao fluxo v1. Publicar uma release v2 é permitido nesse modo e não dispara implantação nem publicação v1.</p>}
     </section>
+    }
     <section className="stack" aria-label="Releases publicadas">
       <h2>Releases publicadas</h2>
       <p>Histórico imutável: releases publicadas não podem ser editadas ou excluídas.</p>

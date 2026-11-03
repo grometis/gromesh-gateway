@@ -1,11 +1,12 @@
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { ApiError, unwrap } from "../api/client";
-import { apiV2, workspacesQuery } from "../api/client-v2";
+import { apiV2, workspacesQuery, type Workspace } from "../api/client-v2";
 
-export function WorkspaceSelector({ id, onSelect }: { id?: string; onSelect: (id: string) => void }) {
+export function WorkspaceSelector({ id, workspace, onSelect }: { id?: string; workspace?: Workspace; onSelect: (id: string) => void }) {
   const workspaces = useInfiniteQuery({ ...workspacesQuery, retry: false });
-  const items = workspaces.data?.pages.flatMap((page) => page.items) ?? [];
-  const selected = workspaces.isSuccess && items.some((w) => w.id === id) ? id : "";
+  const listed = workspaces.data?.pages.flatMap((page) => page.items) ?? [];
+  const items = workspace && workspace.id === id ? [workspace, ...listed.filter((w) => w.id !== id)] : listed;
+  const selected = (workspace?.id === id || workspaces.isSuccess) && items.some((w) => w.id === id) ? id : "";
   const message = workspaces.isPending ? "Carregando Workspaces…"
     : workspaces.isError ? workspaces.error instanceof ApiError && workspaces.error.status === 403
       ? "Sem permissão para listar Workspaces." : "Não foi possível carregar os Workspaces."

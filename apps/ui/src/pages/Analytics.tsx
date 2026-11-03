@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, Navigate } from "react-router";
+import { Link, Navigate, useLocation } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { api, ApiError, retryNetworkErrorsOnly, unwrap, type Schemas } from "../api/client";
 import { statusMessage } from "../api/errors";
@@ -112,7 +112,8 @@ const ms = (v: number | null) => (v === null ? "—" : `${v.toLocaleString("pt-B
 /** The screen was called Dashboard at /analytics: old links and bookmarks land on Métricas. */
 export function AnalyticsRedirect() {
   const envId = useEnvId();
-  return <Navigate to={`/e/${envId}/metrics`} replace />;
+  const { search, hash } = useLocation();
+  return <Navigate to={`/e/${envId}/metrics${search}${hash}`} replace />;
 }
 
 export function AnalyticsPage() {

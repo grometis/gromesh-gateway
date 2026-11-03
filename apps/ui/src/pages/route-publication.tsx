@@ -1,12 +1,14 @@
+import { useIsWorkspaceRoute } from "../navigation/context";
 import { useQuery } from "@tanstack/react-query";
 import { api, unwrap } from "../api/client";
 import { apiV2, type WorkspaceRoute } from "../api/client-v2";
-import { useEnvironment } from "../components/Shell";
+import { useLegacyEnvironment } from "../components/Shell";
 import { plannedV2Path, upstreamEffect, useWorkspace } from "./workspace-gateway";
 
 /** Read the immutable v1 publication, rather than guessing delivery from the Workspace's existence or Release. */
 export function useRoutePublication(workspaceId: string) {
-  const env = useEnvironment(workspaceId);
+  const v2 = useIsWorkspaceRoute();
+  const env = useLegacyEnvironment(workspaceId);
   const workspace = useWorkspace(workspaceId);
   const version = env.data?.currentVersion;
   const snapshot = useQuery({
@@ -14,13 +16,13 @@ export function useRoutePublication(workspaceId: string) {
     queryFn: () => unwrap(api.GET("/environments/{envId}/snapshots/{version}", {
       params: { path: { envId: workspaceId, version: version! } },
     })),
-    enabled: version != null,
+    enabled: !v2 && version != null,
   });
   // Same query as useEntityDraft: a missing/failed preview must not turn an unknown draft into "published".
   const preview = useQuery({
     queryKey: ["preview", workspaceId],
     queryFn: () => unwrap(api.GET("/environments/{envId}/publish-preview", { params: { path: { envId: workspaceId } } })),
-    enabled: env.data?.hasUnpublishedChanges === true,
+    enabled: !v2 && env.data?.hasUnpublishedChanges === true,
   });
   const releases = useQuery({
     queryKey: ["route-releases", workspaceId],
@@ -31,10 +33,11 @@ export function useRoutePublication(workspaceId: string) {
   const activeRelease = !workspace.isError && !releases.isError
     ? releases.data?.find((r) => r.workspaceId === workspaceId && r.version === workspace.data?.activeRelease) : undefined;
   return {
-    snapshot: confirmedSnapshot,
-    noSnapshot: env.isSuccess && !env.isError && version === null,
-    draftKnown: env.isSuccess && (!env.data.hasUnpublishedChanges || (preview.isSuccess && !preview.isError && preview.data.currentVersion === version)),
-    changes: env.data?.hasUnpublishedChanges && !preview.isError ? preview.data?.changes : undefined,
+    legacy: !v2,
+    snapshot: v2 ? undefined : confirmedSnapshot,
+    noSnapshot: !v2 && env.isSuccess && !env.isError && version === null,
+    draftKnown: !v2 && env.isSuccess && (!env.data?.hasUnpublishedChanges || (preview.isSuccess && !preview.isError && preview.data.currentVersion === version)),
+    changes: !v2 && env.data?.hasUnpublishedChanges && !preview.isError ? preview.data?.changes : undefined,
     releaseState: activeRelease
       ? `Release v2 do Workspace publicada v${activeRelease.version}${activeRelease.contentRevoked ? " (conteúdo revogado)" : ""}; inclusão desta configuração da route não comprovada`
       : workspace.isSuccess && workspace.data.activeRelease === null
@@ -77,12 +80,12 @@ export function RoutePaths({ route, config = route, slug, servicePath, publicati
   return (
     <div className="note route-paths" role="group" aria-label="Configuração e publicação por fluxo">
       <p>Path configurado: <span className="mono">{pathText(paths)}</span></p>
-      {published && <>
+      {publication.legacy && published && <>
         <p>Path no fluxo v1: <span className="mono">{pathText(published.paths)}</span> — publicado na versão v{publication.snapshot!.version}.</p>
         <p><small>Aplicação do snapshot v1 no gateway não comprovada nesta tela.</small></p>
         {typeof published.strip_path === "boolean" ? effects(published.paths ?? [], published.strip_path, publishedService ? publishedService.path ?? null : undefined, "v1") : <p><small>Efeito de stripPath publicado não comprovado.</small></p>}
       </>}
-      {draftState && <>
+      {publication.legacy && draftState && <>
         <p>Path no fluxo v1{published ? " (rascunho)" : ""}: <span className="mono">{pathText(paths)}</span> — {draftState}.</p>
         {(route || paths.length > 0) && effects(paths, strip, servicePath, "v1")}
       </>}

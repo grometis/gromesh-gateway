@@ -243,7 +243,7 @@ async function createService(page: Page, name: string, host: string) {
   await expect(dialog).toHaveCount(0);
 }
 
-async function createRoute(page: Page, name: string, service: string, path: string, slug: string) {
+async function createRoute(page: Page, name: string, service: string, path: string, slug: string, flow: "v1" | "v2" = "v1") {
   await page.getByRole("button", { name: "Nova route" }).click();
   const dialog = page.getByRole("dialog", { name: "Nova route" });
   await dialog.getByLabel("Nome").fill(name);
@@ -251,7 +251,8 @@ async function createRoute(page: Page, name: string, service: string, path: stri
   await dialog.getByLabel("Paths", { exact: true }).fill(path);
   await expect(dialog.getByRole("group", { name: "Configuração e publicação por fluxo" })).toContainText(`Path configurado: ${path}`);
   await expect(dialog.getByRole("group", { name: "Configuração e publicação por fluxo" })).toContainText(`Path previsto na configuração v2: /${slug}${path}`);
-  await expect(dialog.getByRole("group", { name: "Configuração e publicação por fluxo" })).toContainText(`Uma requisição a ${path}/x chega ao upstream como ${path}/x.`);
+  if (flow === "v1") await expect(dialog.getByRole("group", { name: "Configuração e publicação por fluxo" })).toContainText(`Uma requisição a ${path}/x chega ao upstream como ${path}/x.`);
+  else await expect(dialog.getByRole("group", { name: "Configuração e publicação por fluxo" })).not.toContainText("Upstream v1");
   await expect(dialog.getByRole("group", { name: "Configuração e publicação por fluxo" })).toContainText(`chega ao upstream como /${slug}${path}/x`);
   await expect(dialog).not.toContainText("Path público");
   await dialog.getByRole("button", { name: "Salvar" }).click();
@@ -272,9 +273,9 @@ test("two workspaces keep their services and routes apart; nothing crosses, noth
   await openSection(page, "Recargas", "Services");
   await createService(page, "service-b", "recargas.internal");
   await openSection(page, "Cobrança", "Routes");
-  await createRoute(page, "route-a", "service-a", "/boletos", "cobranca");
+  await createRoute(page, "route-a", "service-a", "/boletos", "cobranca", "v2");
   await openSection(page, "Recargas", "Routes");
-  await createRoute(page, "route-b", "service-b", "/pix", "recargas");
+  await createRoute(page, "route-b", "service-b", "/pix", "recargas", "v2");
 
   // Each workspace shows only its own entities, and its forms only offer its own services.
   const routes = page.getByRole("table", { name: "Routes", exact: true });
@@ -282,7 +283,7 @@ test("two workspaces keep their services and routes apart; nothing crosses, noth
   await expect(routes).toContainText("/recargas/pix");
   await expect(routes).not.toContainText("route-a");
   await selector(page).selectOption({ label: "Cobrança" });
-  await expect(page).toHaveURL(new RegExp(`/e/${a.id}/routes$`));
+  await expect(page).toHaveURL(new RegExp(`/workspaces/${a.id}/routes$`));
   await expect(routes).toContainText("route-a");
   await expect(routes).toContainText("/cobranca/boletos");
   await expect(routes).not.toContainText("route-b");
@@ -320,7 +321,9 @@ test("two workspaces keep their services and routes apart; nothing crosses, noth
   await dialog.getByRole("button", { name: "Salvar" }).click();
   await expect(dialog).toHaveCount(0);
   await expect(services).toContainText("https://cobranca.internal:8443");
-  await expect(page.getByRole("note", { name: "Estado do Workspace" })).toContainText("há alterações no rascunho ainda não publicadas");
+  // Entered from the global selector: v2 has no legacy draft indicator or publication strip.
+  await expect(page.getByRole("note", { name: "Estado do Workspace" })).toContainText("nenhuma Release v2 ativa");
+  await expect(page.getByRole("region", { name: "Publicação", exact: true })).toHaveCount(0);
   await expect(page.getByRole("note", { name: "Estado do Workspace" })).toContainText("Deployment v2 indisponível nesta fase");
 
   // Nothing was published, released or deployed: only draft writes reached the server.

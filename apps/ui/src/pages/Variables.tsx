@@ -1,3 +1,4 @@
+import { useWorkspaceId, useIsWorkspaceRoute } from "../navigation/context";
 import { useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { unwrap } from "../api/client";
@@ -9,7 +10,7 @@ import { EmptyState } from "../components/EmptyState";
 import { CheckboxField, Field, FormErrorList } from "../components/Field";
 import { ConfirmDialog, Modal } from "../components/Modal";
 import { PageHeader } from "../components/PageHeader";
-import { useEnvId } from "../components/Shell";
+
 import { Table } from "../components/Table";
 import { variableFormErrors } from "./gateway-errors";
 import { creationPolicyQuery } from "../api/client-v2";
@@ -50,7 +51,7 @@ async function variableRequest<T>(request: Promise<T>): Promise<T> {
 }
 
 export function VariablesPage() {
-  const workspaceId = useEnvId();
+  const workspaceId = useWorkspaceId();
   return <WorkspaceVariables key={workspaceId} workspaceId={workspaceId} />;
 }
 
@@ -103,6 +104,7 @@ function WorkspaceVariables({ workspaceId }: { workspaceId: string }) {
 }
 
 function DeclarationForm({ workspaceId, variable, onClose }: { workspaceId: string; variable: WorkspaceVariable | null; onClose: () => void }) {
+  const v2 = useIsWorkspaceRoute();
   const queryClient = useQueryClient();
   const access = useWorkspaceGatewayAccess(workspaceId);
   const invalidate = useInvalidateVariables(workspaceId);
@@ -122,7 +124,7 @@ function DeclarationForm({ workspaceId, variable, onClose }: { workspaceId: stri
   const errors = save.error ?? local;
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    if (!canWriteWorkspaceGateway(queryClient, workspaceId) || save.isPending) return;
+    if (!canWriteWorkspaceGateway(queryClient, workspaceId, v2) || save.isPending) return;
     save.reset();
     const fields: FormErrors["fields"] = {};
     if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(name.trim())) fields.name = ["Use de 1 a 64 letras maiúsculas, números e sublinhados, começando por letra."];

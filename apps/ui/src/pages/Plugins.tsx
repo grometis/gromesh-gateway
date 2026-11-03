@@ -1,3 +1,4 @@
+import { useWorkspaceId } from "../navigation/context";
 import { CatalogPicker } from "../components/PluginCatalog";
 import { WorkspacePlugins } from "./WorkspacePlugins";
 import { useMemo, useState, type FormEvent } from "react";
@@ -8,7 +9,7 @@ import { statusMessage } from "../api/errors";
 import { useCanEdit } from "../auth";
 import { Field, FormErrorList } from "../components/Field";
 import { ConfirmDialog, Modal } from "../components/Modal";
-import { useEnvId } from "../components/Shell";
+
 import { SchemaFields } from "../schema-form/SchemaForm";
 import { configToSubmit, fieldPaths, initialConfig, isObject, parsePluginSchema, placeErrors, validateConfig, type Config, type FieldErrors, type PluginSchema } from "../schema-form/schema";
 import { splitList, useEntityDraft, useInvalidateDraft, useServices } from "./Services";
@@ -91,7 +92,7 @@ function usePlugins(envId: string, scope: ScopeChoice | null) {
 }
 
 export function PluginsPage() {
-  const envId = useEnvId();
+  const envId = useWorkspaceId();
   return <WorkspacePlugins key={envId} workspaceId={envId} />;
 }
 
