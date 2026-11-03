@@ -123,9 +123,9 @@ for (const width of [390, 1440]) {
     await expect(page.getByRole("alert").filter({ hasText: "Não foi possível verificar o contexto." })).toBeVisible();
     expect(sent.some((p) => p.startsWith("/api/v1/environments"))).toBe(false);
     await audit(page);
-    await page.goto(`${v2(A, "overview")}?x#y`);
+    await page.goto(`${v2(A, "missing")}?x#y`);
     await expect(page.getByText("Rota não encontrada.", { exact: true })).toBeVisible();
-    await expect(page).toHaveURL(`${v2(A, "overview")}?x#y`);
+    await expect(page).toHaveURL(`${v2(A, "missing")}?x#y`);
     await audit(page);
     await page.route(`**/api/v2/workspaces/${B}`, (route) => route.fulfill({ status: 401, json: { title: "Unauthorized", status: 401 } }));
     await page.goto(v2(B));
