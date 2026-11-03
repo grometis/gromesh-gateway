@@ -1099,6 +1099,46 @@ test('PR mode validates SHA, arch and local image without publication or digest 
   assert.equal(prSupplyFixture(t).runSupply().status, 0);
 });
 
+for (const mode of ['images', 'pr']) {
+  for (const description of [
+    'auth=abc123', 'session=abc123', 'client_auth=abc123', 'client_session=abc123',
+    'clientAuth=abc123', 'clientSession=abc123', 'client-auth=abc123', 'client-session=abc123',
+    'client2Auth=abc123', 'client2Session=abc123', 'CLIENT_AUTH = abc123', 'CLIENT_SESSION = abc123',
+    'Library client_auth = abc123 for requests', 'Library clientSession = abc123 for requests',
+    'Basic dXNlcjpwYXNz', 'basic dXNlcjpwYXNz', 'Basic dTpwYQ==', 'Basic abc',
+    'Uses Basic dXNlcjpwYXNz for requests', 'Bearer abc123', 'bearer abc',
+    'Digest abc123', 'digest abc', 'HTTP header: Digest abc123',
+    'HTTP header (Digest abc123)', 'Digest username="abc123"',
+    'Uses Digest abc123 for requests', 'Uses Digest username="abc" for requests',
+    'Uses Digest abc for requests', 'Message Digest functions from BSD systems Digest abc',
+    'Message Digest functions from BSD systems Basic dXNlcjpwYXNz',
+  ]) {
+    test(`prose credential ${mode} ${description}`, t => {
+      const f = mode === 'pr' ? prSupplyFixture(t) : supplyFixture(t);
+      const doc = JSON.parse(readFileSync(f.sbomFile));
+      doc.packages[0].description = description;
+      writeFileSync(f.sbomFile, JSON.stringify(doc));
+      const result = f.runSupply();
+      rejectSupply(result);
+      assert.equal(JSON.parse(result.stderr).code, 'PROSE_CREDENTIAL');
+      assert.equal(result.stderr.includes(description), false);
+      for (const token of ['abc123', 'dXNlcjpwYXNz', 'dTpwYQ==']) assert.equal(result.stderr.includes(token), false);
+    });
+  }
+  for (const description of [
+    'Message Digest functions from BSD systems', 'X11 Session Management library',
+    'Session utilities with auth helpers', 'Library name=value',
+  ]) {
+    test(`prose terminology ${mode} ${description}`, t => {
+      const f = mode === 'pr' ? prSupplyFixture(t) : supplyFixture(t);
+      const doc = JSON.parse(readFileSync(f.sbomFile));
+      doc.packages[0].description = description;
+      writeFileSync(f.sbomFile, JSON.stringify(doc));
+      assert.equal(f.runSupply().status, 0);
+    });
+  }
+}
+
 const credentialPathLabels = ['client_secret', 'access_token', 'clientSecret', 'accessToken', 'sessionToken',
   'client-secret', 'access-token', 'client.secret', 'client2Secret', 'session2_token3',
   'secret', 'token', 'password', 'passwd', 'apikey', 'api_key', 'access_key',

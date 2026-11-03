@@ -52,7 +52,13 @@ function tokenRepository(parts, pkg) {
 function credentialAssignment(value) {
   return [...value.matchAll(/([A-Za-z][A-Za-z0-9_-]*)\s*=(?=\s*\S)/g)].some(([, identifier]) =>
     [identifier, normalizeIdentifiers(identifier)].some(spelling =>
-      /\b(?:secrets?|password|passwd|authorization|cookies?|credentials?|api *key|private *key|access *key|token|bearer)\b/i.test(spelling)));
+      /\b(?:secrets?|password|passwd|auth|authorization|session|cookies?|credentials?|api *key|private *key|access *key|token|bearer)\b/i.test(spelling)));
+}
+function httpAuthorization(value) {
+  // This complete Syft/BSD description uses Digest as hash terminology. Keep the
+  // exception exact so appended credentials still fail the scheme check.
+  return value !== "Message Digest functions from BSD systems" &&
+    /\b(?:basic|bearer|digest) +[A-Za-z0-9+/_~.-]+={0,2}/i.test(value);
 }
 function encodedCredential(value, pattern = sensitiveTextPattern) {
   // Inspect the whole spelling and its components: '/' is both base64 data and
@@ -85,7 +91,7 @@ function text(value, maximum, pattern, unicode = false, prose = false) {
   requireValid(typeof value === "string" && value.length > 0 && value.length <= maximum, RejectionCode.TEXT_BUDGET);
   requireValid((unicode ? /^[\x20-\x7e\p{L}\p{M}]+$/u : /^[\x20-\x7e]+$/).test(value) && !credentialPattern.test(value), RejectionCode.TEXT_CHARACTERS);
   if (prose) {
-    requireValid(!credentialAssignment(value), RejectionCode.PROSE_CREDENTIAL);
+    requireValid(!credentialAssignment(value) && !httpAuthorization(value), RejectionCode.PROSE_CREDENTIAL);
     requireValid(!encodedCredential(value), RejectionCode.PROSE_ENCODED_CREDENTIAL);
   } else {
     requireValid(!credentialAssignment(value) && !encodedCredential(value), RejectionCode.TEXT_CHARACTERS);
