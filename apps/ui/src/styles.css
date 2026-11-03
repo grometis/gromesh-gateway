@@ -354,6 +354,10 @@ table.cards tr:hover td { background: var(--line); }
 .upstreams-page .modal .cards th.actions { width: 120px; }
 .certificates-page .cards th.actions { width: 160px; }
 .certificates-page .badge { white-space: normal; }
+.workspace-certificates-page td.actions { white-space: normal; }
+.workspace-certificates-page .form fieldset { min-width: 0; display: flex; flex-direction: column; gap: var(--space-3); }
+.workspace-certificates-page .certificate-metadata { overflow-wrap: anywhere; }
+.workspace-certificates-page .certificate-metadata dd { margin: var(--space-1) 0 var(--space-3); }
 .certificate-file { display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--text-sm); min-width: 0; }
 .certificate-file input { min-width: 0; max-width: 100%; }
 .certificate-file input::file-selector-button {

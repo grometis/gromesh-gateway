@@ -24,7 +24,12 @@ describe("route classification and declarative destinations", () => {
     },
   );
 
-  it.each(["overview", "metrics", "requests", "publish", "publications", "clusters", "consumers", "upstreams", "certificates", "analytics"])("excludes v1 page %s from v2", (page) => {
+  it("resolves Workspace certificates independently from the legacy route", () => {
+    expect(classifyRoute(`${v2}/certificates`)).toEqual({ kind: "workspace-v2", id: "w" });
+    expect(resolveDestination(`${v2}/certificates`)?.activeId).toBe("v2-N09");
+    expect(matchRoutes(appRoutes, `${v2}/certificates`)?.at(-1)?.route.path).toBe("certificates");
+  });
+  it.each(["overview", "metrics", "requests", "publish", "publications", "clusters", "consumers", "upstreams", "analytics"])("excludes v1 page %s from v2", (page) => {
     expect(classifyRoute(`${v2}/${page}`)).toEqual({ kind: "unknown" });
     expect(classifyRoute(`/e/w/${page}`)).toEqual({ kind: "legacy-v1", id: "w" });
   });

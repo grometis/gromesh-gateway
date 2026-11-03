@@ -142,7 +142,7 @@ describe("authorized route context with real transport", () => {
     expect(view.container.textContent).not.toContain("Service B");
     expect(view.container.findAll((n) => n.tagName === "A" && (n.getAttribute("href")?.includes(`/workspaces/${B}/`) ?? false))).toHaveLength(0);
   });
-  it.each(["services", `services/service-${A}`, "routes", "releases", "variables", "plugins"])("mounts real v2 page %s without environment reads, even with cached v1 draft data", async (section) => {
+  it.each(["services", `services/service-${A}`, "routes", "releases", "variables", "plugins", "certificates"])("mounts real v2 page %s without environment reads, even with cached v1 draft data", async (section) => {
     const view = await mount(`/workspaces/${A}/${section}`, { full: true, deniedList: true });
     client.setQueryData(["environment", A], { ...environment(A), hasUnpublishedChanges: true, currentVersion: 99 });
     await view.waitText("Workspace v2: Workspace A");
@@ -319,14 +319,15 @@ describe("authorized route context with real transport", () => {
   });
   it.each([
     ["services", "Novo service"], ["routes", "Nova route"], ["variables", "Declarar variável"],
-    ["plugins", "Novo plugin"], ["releases", "Publicar release"],
+    ["plugins", "Novo plugin"], ["releases", "Publicar release"], ["certificates", "Novo certificado"],
   ])("offers v2 writes on %s without consulting legacy publishMode", async (section, action) => {
     const view = await mount(`/workspaces/${A}/${section}`, { full: true });
     await view.waitText(action);
     expect(view.sent.some((p) => p.startsWith("/api/v1/environments"))).toBe(false);
     const links = view.container.findAll((n) => n.tagName === "A").map((n) => n.getAttribute("href"));
     expect(links.some((href) => href?.startsWith("/e/"))).toBe(false);
-    for (const legacy of ["overview", "metrics", "requests", "consumers", "upstreams", "certificates", "publish", "publications", "clusters"])
+    expect(links).toContain(`/workspaces/${A}/certificates`);
+    for (const legacy of ["overview", "metrics", "requests", "consumers", "upstreams", "publish", "publications", "clusters"])
       expect(links).not.toContain(`/workspaces/${A}/${legacy}`);
   });
   it("keeps the service form and its data when v2 returns auto-publish", async () => {
