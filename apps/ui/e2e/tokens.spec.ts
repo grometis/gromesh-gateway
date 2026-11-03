@@ -16,7 +16,7 @@ async function login(page: Page, role: "admin" | "viewer" = "viewer") {
   await page.getByLabel("E-mail").fill("ana@gromesh.dev");
   await page.getByLabel("Senha").fill("test-password");
   await page.getByRole("button", { name: "Entrar" }).click();
-  await expect(page.getByRole("heading", { name: "Services" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Visão geral da instância" })).toBeVisible();
 }
 
 test("qualquer usuário cria um token, vê o valor uma única vez e revoga pela lista", async ({ page, context }) => {
