@@ -109,6 +109,45 @@ describe("Workspace certificate forms", () => {
     await view.click("Novo certificado");
     expect(view.field("Chave privada (PEM)").value).toBe(""); expect(view.writes()).toHaveLength(0);
   });
+  it.each([204, 409, 403])("keeps Y's confirmation isolated from X's late DELETE %s and reflects X's result in the list", async status => {
+    const other = { ...saved, id: B, subject: "CN=other.example.test", snis: ["other.example.test"] };
+    let release!: (response: Response) => void;
+    const held = new Promise<Response>(resolve => { release = resolve; });
+    let committed = false;
+    const view = await screen({
+      items: [saved, other],
+      write: () => held,
+      read: request => committed && new URL(request.url).pathname.endsWith("/certificates") ? Response.json({ items: [other], nextCursor: null }) : undefined,
+    });
+    const openDelete = async (subject: string) => {
+      const menu = view.container.findAll(node => node.getAttribute("aria-label") === `Mais ações para ${subject}`)[0]!;
+      await act(async () => { menu.dispatchEvent(new Event("click", { bubbles: true })); await tick(); });
+      await view.click("Excluir");
+    };
+    await vi.waitFor(async () => { await act(tick); expect(view.container.textContent).toContain(other.subject); });
+    await openDelete(saved.subject!); await view.click("Excluir");
+    expect(view.writes().map(request => [request.method, new URL(request.url).pathname])).toEqual([["DELETE", `/api/v2/workspaces/${W}/certificates/${C}`]]);
+    await view.click("Cancelar"); await openDelete(other.subject);
+    const dialog = view.dialog()!;
+    expect(dialog.textContent).toContain("other.example.test");
+    await act(async () => {
+      committed = status === 204;
+      release(status === 204 ? new Response(null, { status }) : Response.json({ title: "Rejected", status }, { status }));
+      await tick();
+    });
+    await vi.waitFor(async () => {
+      await act(tick);
+      expect(view.dialog() === dialog).toBe(true);
+      expect(dialog.textContent).toContain("other.example.test");
+      expect(dialog.findAll(node => node.getAttribute("role") === "alert")).toHaveLength(0);
+      expect(view.buttons("Excluir")[0]!.getAttribute("disabled")).toBeNull();
+      const table = view.container.findAll(node => node.tagName === "TABLE")[0]!;
+      expect(table.textContent).toContain(other.subject);
+      if (status === 204) expect(table.textContent).not.toContain(saved.subject);
+      else expect(table.textContent).toContain(saved.subject);
+    });
+    expect(view.writes()).toHaveLength(1);
+  });
   it("discards form and data on A→B, including a return to cached A", async () => {
     const view = await screen(); await view.click("Editar"); await view.input("Chave privada (PEM)", TEST_PRIVATE_KEY);
     await act(async () => { await view.router.navigate(`/workspaces/${B}/certificates`); await tick(); });

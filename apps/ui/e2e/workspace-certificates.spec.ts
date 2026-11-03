@@ -13,12 +13,12 @@ const workspace = (id: string, archived = false) => ({ id, key: id, name: `Works
 const certificate = { id: C, cert: TEST_CERTIFICATE, key: "REDACTED", snis: ["api.example.test", "*.example.test"], subject: "CN=api.example.test", issuer: "CN=Test CA", notBefore: "2026-01-01T00:00:00Z", notAfter: "2099-01-01T00:00:00Z", fingerprintSha256: "AA:".repeat(31) + "AA", tags: ["tls"], createdAt: stamp, updatedAt: stamp };
 const url = (id = A) => `/workspaces/${id}/certificates`;
 const pageOf = (items: unknown[], nextCursor: string | null = null) => ({ items, nextCursor });
-interface State { contextStatus?: number; listStatus?: number; archived?: boolean; empty?: boolean; writeStatus?: number; code?: string; varRef?: boolean; paginated?: boolean; holdList?: boolean }
+interface State { contextStatus?: number; listStatus?: number; archived?: boolean; empty?: boolean; items?: (typeof certificate)[]; writeStatus?: number; code?: string; varRef?: boolean; paginated?: boolean; holdList?: boolean }
 
 async function setup(page: Page, state: State = {}) {
   const reads: string[] = [];
   const writes: { method: string; path: string; body: unknown }[] = [];
-  let items = state.empty ? [] : [certificate];
+  let items = state.items ?? (state.empty ? [] : [certificate]);
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
   await page.route(/^https?:\/\/[^/]+\/api\/v[12]\//, async route => {
@@ -32,7 +32,7 @@ async function setup(page: Page, state: State = {}) {
       writes.push({ method: request.method(), path, body });
       if (!path.startsWith(`/api/v2/workspaces/${A}/certificates`)) return json({ title: "Unexpected mutation", status: 500 }, 500);
       if (state.writeStatus) return json({ title: "Rejected", status: state.writeStatus, code: state.code, detail: TEST_PRIVATE_KEY, errors: state.writeStatus === 422 ? [{ path: state.varRef ? "cert" : "key", message: state.varRef ? "variable CERT is not declared in this workspace" : "does not match the leaf certificate" }] : [] }, state.writeStatus);
-      if (request.method() === "DELETE") { items = []; return route.fulfill({ status: 204 }); }
+      if (request.method() === "DELETE") { items = items.filter(item => item.id !== path.split("/").at(-1)); return route.fulfill({ status: 204 }); }
       const fields = body as Record<string, unknown>;
       // Enforce the closed write body, PEM/key matching and POST/PUT placeholder distinction.
       const allowed = ["cert", "key", "snis", "tags"];
@@ -119,6 +119,42 @@ for (const width of [390, 768, 1440]) {
     await expect(dialog).toHaveCount(0); await expect(page.getByText("Nenhum certificado neste Workspace.", { exact: true })).toBeVisible();
     expect(fake.writes.map(write => write.method)).toEqual(["POST", "PUT", "DELETE"]);
     expect(fake.reads.some(path => path.startsWith("/api/v1/environments"))).toBe(false);
+  });
+}
+
+for (const status of [204, 409, 403]) {
+  test(`late DELETE ${status} for X preserves Y's confirmation and reflects X's result in the list`, async ({ page }) => {
+    const other = { ...certificate, id: B, subject: "CN=other.example.test", snis: ["other.example.test"] };
+    const fake = await setup(page, { items: [certificate, other], writeStatus: status === 204 ? undefined : status });
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    let requested!: () => void;
+    const started = new Promise<void>(resolve => { requested = resolve; });
+    const deletePath = `/api/v2/workspaces/${A}/certificates/${C}`;
+    await page.route(`**${deletePath}`, async route => { requested(); await held; await route.fallback(); });
+    await page.goto(url());
+    const table = page.getByRole("table", { name: "Certificados" });
+    const openDelete = async (subject: string) => {
+      await table.getByRole("button", { name: `Mais ações para ${subject}`, exact: true }).click();
+      await page.getByRole("menuitem", { name: "Excluir", exact: true }).click();
+    };
+    await openDelete(certificate.subject);
+    const dialog = page.getByRole("dialog", { name: "Excluir certificado" });
+    await expect(dialog.getByRole("button", { name: "Excluir", exact: true })).toBeEnabled();
+    await dialog.getByRole("button", { name: "Excluir", exact: true }).click(); await started;
+    await dialog.getByRole("button", { name: "Cancelar" }).click(); await openDelete(other.subject);
+    await expect(dialog).toContainText("other.example.test");
+    const response = page.waitForResponse(response => new URL(response.url()).pathname === deletePath && response.request().method() === "DELETE");
+    release();
+    const result = await response;
+    expect(result.status()).toBe(status); await result.finished();
+    if (status === 204) await expect(table).not.toContainText(certificate.subject);
+    else await expect(table).toContainText(certificate.subject);
+    await expect(table).toContainText(other.subject);
+    await expect(dialog).toBeVisible(); await expect(dialog).toContainText("other.example.test");
+    await expect(dialog.getByRole("button", { name: "Excluir", exact: true })).toBeEnabled();
+    await expect(dialog.getByRole("alert")).toHaveCount(0);
+    expect(fake.writes.map(write => [write.method, write.path])).toEqual([["DELETE", deletePath]]);
   });
 }
 

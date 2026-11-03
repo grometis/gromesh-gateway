@@ -47,11 +47,11 @@ function WorkspaceCertificates({ workspaceId }: { workspaceId: string }) {
   const [writeDenied, setWriteDenied] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const deletingRef = useRef(false);
+  const deletingRef = useRef<{ pending: boolean } | null>(null);
   const canWrite = access.canWrite && !writeDenied && certificates.isSuccess;
   const keepForm = access.canWrite || access.isRevalidating;
   // A definitive context denial discards any draft, including an entered private key.
-  useEffect(() => { if (!keepForm) { setEditing(null); setDeleting(null); } }, [keepForm]);
+  useEffect(() => { if (!keepForm) { setEditing(null); deletingRef.current = null; setDeleting(null); setBusy(false); } }, [keepForm]);
   const invalidate = () => {
     for (const key of ["ws-certificates", "certificates", "environment", "preview"]) void client.invalidateQueries({ queryKey: [key, workspaceId] });
   };
@@ -62,14 +62,28 @@ function WorkspaceCertificates({ workspaceId }: { workspaceId: string }) {
   };
   const openDelete = (current: WorkspaceCertificate) => {
     if (!canWriteWorkspaceGateway(client, workspaceId, true) || writeDenied) return;
-    setDeleteError(null); setDeleting(current); revalidate();
+    deletingRef.current = { pending: false };
+    setBusy(false); setDeleteError(null); setDeleting(current); revalidate();
+  };
+  const closeDelete = () => {
+    deletingRef.current = null;
+    setDeleting(null); setBusy(false);
   };
   const remove = async () => {
-    if (!deleting || deletingRef.current || writeDenied || !canWriteWorkspaceGateway(client, workspaceId, true)) return;
-    deletingRef.current = true; setBusy(true); setDeleteError(null);
-    try { await deleteWorkspaceCertificate(workspaceId, deleting.id); invalidate(); setDeleting(null); }
-    catch (error) { setDeleteError(certificateErrorMessage(error)); if (error instanceof ApiError && error.status === 403) setWriteDenied(true); }
-    finally { deletingRef.current = false; setBusy(false); }
+    const operation = deletingRef.current;
+    if (!deleting || !operation || operation.pending || writeDenied || !canWriteWorkspaceGateway(client, workspaceId, true)) return;
+    operation.pending = true; setBusy(true); setDeleteError(null);
+    try {
+      await deleteWorkspaceCertificate(workspaceId, deleting.id);
+      // A committed deletion refreshes the list even after its confirmation was closed.
+      invalidate();
+      if (deletingRef.current === operation) closeDelete();
+    } catch (error) {
+      if (deletingRef.current === operation) { setDeleteError(certificateErrorMessage(error)); if (error instanceof ApiError && error.status === 403) setWriteDenied(true); }
+    } finally {
+      operation.pending = false;
+      if (deletingRef.current === operation) setBusy(false);
+    }
   };
   const items = certificates.isError ? [] : certificates.data?.pages.flatMap(page => page.items) ?? [];
   return <section className="final-page gateway-list certificates-page workspace-certificates-page">
@@ -106,7 +120,7 @@ function WorkspaceCertificates({ workspaceId }: { workspaceId: string }) {
       </dl>
     </Modal>}
     {editing && keepForm && <CertificateEditor workspaceId={workspaceId} certificate={editing === "new" ? null : editing} denied={writeDenied} onForbidden={() => setWriteDenied(true)} onClose={() => setEditing(null)} onCommitted={invalidate} />}
-    {deleting && keepForm && <ConfirmDialog title="Excluir certificado" message={<>Excluir o certificado de <strong>{deleting.snis.join(", ") || nameOf(deleting)}</strong> e seus SNIs do rascunho deste Workspace?</>} confirmLabel="Excluir" busy={busy} confirmDisabled={!canWrite} error={deleteError} onConfirm={() => void remove()} onClose={() => setDeleting(null)} />}
+    {deleting && keepForm && <ConfirmDialog title="Excluir certificado" message={<>Excluir o certificado de <strong>{deleting.snis.join(", ") || nameOf(deleting)}</strong> e seus SNIs do rascunho deste Workspace?</>} confirmLabel="Excluir" busy={busy} confirmDisabled={!canWrite} error={deleteError} onConfirm={() => void remove()} onClose={closeDelete} />}
   </section>;
 }
 
