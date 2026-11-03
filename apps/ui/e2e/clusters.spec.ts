@@ -1,3 +1,4 @@
+import { navigateGlobal } from "./global-navigation";
 import type { Page } from "@playwright/test";
 import { expect, mockSession, test } from "./fixtures";
 
@@ -31,7 +32,7 @@ async function openClusters(page: Page) {
   await page.getByLabel("Senha").fill("s3nha-de-teste");
   await page.getByRole("button", { name: "Entrar" }).click();
   await expect(page.getByRole("heading", { name: "Services" })).toBeVisible();
-  await page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Clusters" }).click();
+  await navigateGlobal(page, "Clusters");
   await expect(page.getByRole("region", { name: "Cluster edge-sp" })).toBeVisible();
   await page.evaluate(() => document.fonts.ready);
 }

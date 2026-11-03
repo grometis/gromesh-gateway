@@ -1,3 +1,4 @@
+import { navigateGlobal } from "./global-navigation";
 import AxeBuilder from "@axe-core/playwright";
 import type { Page } from "@playwright/test";
 import { expect, mockSession, test } from "./fixtures";
@@ -217,7 +218,7 @@ test("back/forward preserve each URL; explicit A to B drops entity IDs and filte
   await page.goForward();
   await expect(page).toHaveURL(v2(B));
   await expect(page.getByRole("link", { name: "Service B", exact: true })).toBeVisible();
-  await page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Tokens de API", exact: true }).click();
+  await navigateGlobal(page, "Tokens de API");
   await expect(page.getByText("Escopo: minha conta nesta instância", { exact: true })).toBeVisible();
   await expect(page.locator("main")).not.toContainText("Service B");
   await expect(page.locator("nav a[href^='/workspaces/']")).toHaveCount(0);

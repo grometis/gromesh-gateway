@@ -1,13 +1,12 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useEffect, useRef } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Navigate, NavLink, Outlet, useLocation, useMatch, useNavigate, useParams } from "react-router";
 import { api, ApiError, unwrap } from "../api/client";
-import { statusMessage } from "../api/errors";
 import { effectiveRole, useAuth } from "../auth";
 import { NavigationContextBoundary, useOptionalNavigationContext, useIsWorkspaceRoute } from "../navigation/context";
 import { workspaceSections } from "../navigation/destinations";
-import { Brand } from "./Brand";
+import { GlobalHeader } from "./GlobalHeader";
 import { PublishStrip } from "./PublishStrip";
-import { InstanceContext } from "./InstanceContext";
 import { WorkspaceContext, WorkspaceSelector } from "./WorkspaceContext";
 
 export const environmentsQuery = { queryKey: ["environments"], queryFn: () => unwrap(api.GET("/environments")) };
@@ -55,7 +54,6 @@ export function RequireAdmin() {
   return <Outlet />;
 }
 
-const ROLE_LABELS = { viewer: "Leitor", editor: "Editor", admin: "Administrador", none: "Sem acesso" } as const;
 
 const GATEWAY = [
   ["services", "Services"],
@@ -65,16 +63,7 @@ const GATEWAY = [
   ["plugins", "Plugins"],
   ["upstreams", "Upstreams"],
   ["certificates", "Certificados"],
-  ["releases", "Releases"],
 ] as const;
-const OPERATION = [
-  ["overview", "Visão geral"],
-  ["publications", "Publicações"],
-  ["clusters", "Clusters"],
-  ["metrics", "Métricas"],
-  ["requests", "Requisições"],
-] as const;
-
 export function Shell() {
   const { envId: routeEnvId, workspaceId } = useParams();
   const context = useOptionalNavigationContext();
@@ -86,7 +75,6 @@ export function Shell() {
   const workspaceRoute = useMatch("/e/:envId/:section/*");
   const workspaceSection = workspaceRoute?.params.section?.toLowerCase();
   const hasWorkspaceSelector = !!workspaceId || !!isWorkspacesRoute || ["services", "routes", "variables", "plugins", "releases"].includes(workspaceSection ?? "");
-  const { user, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const envs = useVisibleEnvironments(!workspaceId);
@@ -98,8 +86,8 @@ export function Shell() {
       : "Não foi possível carregar os ambientes legados."
     : envs.data.length === 0 ? "Nenhum ambiente legado disponível."
     : !validRoute ? "Ambiente legado indisponível para esta URL." : null;
-  const legacyRole = effectiveRole(user, routeEnvId);
-  const signOut = useMutation({ mutationFn: logout });
+  const main = useRef<HTMLElement>(null);
+  useEffect(() => { main.current?.focus(); }, [location]);
 
   const switchEnv = (id: string) => {
     if (!envs.isSuccess || !envs.data.some((e) => e.id === id)) return;
@@ -110,9 +98,9 @@ export function Shell() {
 
   return (
     <div className="app">
+      <a className="skip-link" href="#main-content">Pular para o conteúdo</a>
+      <GlobalHeader />
       <aside className="menu">
-        <Brand />
-        <InstanceContext />
         {hasWorkspaceSelector && <WorkspaceSelector id={workspaceId ?? routeEnvId} workspace={workspace} onSelect={(id) => navigate(routeEnvId ? `/e/${id}/${workspaceSection ?? "services"}` : `/workspaces/${encodeURIComponent(id)}/${workspaceSections.some((s) => s === v2Section) ? v2Section : "services"}`)} />}
         {workspace && <p className="workspace-context" role="status">Workspace v2: {workspace.name} · /{workspace.slug} · {workspace.status === "archived" ? "arquivado · somente leitura" : "ativo"}</p>}
         {routeEnvId ? (
@@ -135,26 +123,12 @@ export function Shell() {
           {envId && (
             <>
               <MenuGroup title="Gateway" items={GATEWAY.map(([path, label]) => [`/e/${envId}/${path}`, label])} />
-              <MenuGroup title="Operação" items={OPERATION.map(([path, label]) => [`/e/${envId}/${path}`, label])} />
+              <MenuGroup title="Workspace" items={[[`/e/${envId}/overview`, "Visão geral"]]} />
             </>
           )}
-          <MenuGroup title="Instância" items={[["/workspaces", "Workspaces"]]} />
-          <MenuGroup
-            title="Conta"
-            items={[["/tokens", "Tokens de API"], ...(user?.role === "admin" ? ([["/users", "Usuários"], ["/audit", "Auditoria"]] as const) : [])]}
-          />
         </nav>
-        <div className="account">
-          <span className="who">
-            {user?.name} · Papel legado: {legacyRole ? ROLE_LABELS[legacyRole] : "Não informado"}
-          </span>
-          <button type="button" disabled={signOut.isPending} onClick={() => signOut.mutate()}>
-            {signOut.isPending ? "Saindo…" : "Sair"}
-          </button>
-          {signOut.isError && <p className="error" role="alert">{statusMessage(signOut.error)}</p>}
-        </div>
       </aside>
-      <main className="content">
+      <main className="content" id="main-content" tabIndex={-1} ref={main}>
         {context ? <NavigationContextBoundary>
           {routeEnvId && !isReleasesRoute && <PublishStrip envId={routeEnvId} />}
           <Outlet key={"id" in context.route ? `${context.route.kind}/${context.route.id}` : context.route.kind} />

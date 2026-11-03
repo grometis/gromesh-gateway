@@ -1,3 +1,4 @@
+import { navigateGlobal, openGlobalMenu } from "./global-navigation";
 import type { Page } from "@playwright/test";
 import { expect, mockSession, test } from "./fixtures";
 import type { User } from "../src/api/client";
@@ -41,6 +42,7 @@ test("cookie restaura a sessão; CSRF fica em memória e protege também o logou
   await page.route("**/api/v1/auth/logout", (route) => route.fulfill({
     status: 204, headers: { "Set-Cookie": "gromesh_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0" },
   }));
+  await openGlobalMenu(page, "Minha conta");
   await page.getByRole("button", { name: "Sair", exact: true }).click();
   await expect(page).toHaveURL(/\/login$/);
   expect(csrfRequests).toEqual(["example-csrf-token"]);
@@ -50,11 +52,12 @@ test("cookie restaura a sessão; CSRF fica em memória e protege também o logou
 test("401 em qualquer consulta encerra a sessão; 403 é exibido sem logout", async ({ page }) => {
   await page.route("**/api/v1/users*", (route) => route.fulfill({ status: 403, json: { title: "Forbidden", status: 403 } }));
   await login(page);
-  await page.getByRole("link", { name: "Usuários", exact: true }).click();
+  await navigateGlobal(page, "Usuários");
   await expect(page.getByRole("alert")).toContainText("Você não tem permissão");
+  await openGlobalMenu(page, "Minha conta");
   await expect(page.getByRole("button", { name: "Sair" })).toBeVisible();
   await page.route("**/api/v1/audit-events*", (route) => route.fulfill({ status: 401, json: { title: "Unauthorized", status: 401 } }));
-  await page.getByRole("link", { name: "Auditoria", exact: true }).click();
+  await navigateGlobal(page, "Auditoria");
   await expect(page).toHaveURL(/\/login$/);
 });
 
@@ -70,21 +73,34 @@ test("login informa limite de tentativas e permite tentar depois", async ({ page
 
 test("403 no logout aparece sem abandonar a sessão", async ({ page }) => {
   await login(page);
-  await page.route("**/api/v1/auth/logout", (route) => route.fulfill({ status: 403, json: { title: "Forbidden", status: 403 } }));
+  let finishLogout!: () => void;
+  const pending = new Promise<void>((resolve) => { finishLogout = resolve; });
+  await page.route("**/api/v1/auth/logout", async (route) => {
+    await pending;
+    await route.fulfill({ status: 403, json: { title: "Forbidden", status: 403 } });
+  });
+  await openGlobalMenu(page, "Minha conta");
   await page.getByRole("button", { name: "Sair", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Saindo…", exact: true, includeHidden: true })).toBeDisabled();
+  await page.locator("main").focus();
+  await expect(page.getByRole("button", { name: "Minha conta", exact: true })).toHaveAttribute("aria-expanded", "false");
+  finishLogout();
   await expect(page.getByRole("alert")).toContainText("Você não tem permissão");
   await expect(page.getByRole("heading", { name: "Services", exact: true })).toBeVisible();
+  await openGlobalMenu(page, "Minha conta");
   await expect(page.getByRole("button", { name: "Sair", exact: true })).toBeEnabled();
 });
 
 test("viewer conserva restrições v1; gateway v2 usa permissões do servidor e recusa 403", async ({ page }) => {
   await login(page, viewer);
   const menu = page.getByRole("navigation", { name: "Menu principal" });
-  await expect(menu.getByRole("link", { name: /Usuários|Auditoria/ })).toHaveCount(0);
+  await openGlobalMenu(page, "Instância");
+  await expect(page.getByRole("navigation", { name: "Navegação global" }).getByRole("link", { name: /Usuários|Auditoria/ })).toHaveCount(0);
   // Services, Routes and Plugins go through v2, where no operation tells the caller's permissions: the actions are offered
   // and the server's 403 decides (Services/Routes below; Plugins in workspace-plugins.spec.ts). The v1 screens hide v1 edits.
   for (const section of ["Consumers", "Publicações", "Clusters"]) {
-    await menu.getByRole("link", { name: section, exact: true }).click();
+    if (section === "Consumers") await menu.getByRole("link", { name: section, exact: true }).click();
+    else await navigateGlobal(page, section === "Publicações" ? "Snapshots publicados" : section);
     await expect(page.getByRole("heading", { name: section, exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: /^(Novo |Nova |Editar|Excluir|Publicar$|Restaurar |Rotacionar |Gerar )/ })).toHaveCount(0);
   }
@@ -160,6 +176,7 @@ test("viewer conserva restrições v1; gateway v2 usa permissões do servidor e 
   for (const path of ["/users", "/audit"]) {
     await page.goto(path);
     await expect(page.getByRole("alert")).toContainText("Você não tem permissão");
+    await openGlobalMenu(page, "Minha conta");
     await expect(page.getByRole("button", { name: "Sair" })).toBeVisible();
   }
 });
@@ -188,7 +205,7 @@ test("admin pagina usuários, cria, altera papel e ativo e confirma exclusão", 
     return route.fulfill({ status: 204 });
   });
   await login(page);
-  await page.getByRole("link", { name: "Usuários", exact: true }).click();
+  await navigateGlobal(page, "Usuários");
   await expect(page.getByRole("table", { name: "Usuários", exact: true })).toHaveClass("cards");
   await page.getByRole("button", { name: "Carregar mais", exact: true }).click();
   await expect(page.getByRole("row").filter({ hasText: viewer.email })).toBeVisible();
@@ -230,7 +247,7 @@ test("usuários exibem validação e conflito do último admin sem fechar o diá
     : route.fulfill({ json: { items: [admin], nextCursor: null } }));
   await page.route(`**/api/v1/users/${admin.id}`, (route) => route.fulfill({ status: 409, json: { title: "Conflict", status: 409, detail: "Last active admin cannot be removed" } }));
   await login(page);
-  await page.getByRole("link", { name: "Usuários", exact: true }).click();
+  await navigateGlobal(page, "Usuários");
   await page.getByRole("button", { name: "Novo usuário" }).click();
   const form = page.getByRole("dialog", { name: "Novo usuário" });
   await form.getByLabel("Senha", { exact: true }).fill("short");
@@ -252,7 +269,7 @@ test("audit mostra publicação com autor, antes/depois e filtra com cursor", as
     return route.fulfill({ json: { items: query.has("cursor") ? [{ ...publication, id: envId, action: "service.update", entityType: "service", before: { host: "old.internal" }, after: { host: "new.internal" } }] : [publication], nextCursor: query.has("cursor") ? null : "next-audit" } });
   });
   await login(page);
-  await page.getByRole("link", { name: "Auditoria", exact: true }).click();
+  await navigateGlobal(page, "Auditoria");
   await expect(page.getByText("snapshot.publish", { exact: true })).toBeVisible();
   const event = page.getByRole("article", { name: `snapshot.publish por ${admin.name}` });
   await expect(page.locator(".final-page")).toBeVisible();
@@ -297,7 +314,7 @@ test("auditoria vazia usa EmptyState e conserva os filtros e a validação do pe
     return route.fulfill({ json: { items: [], nextCursor: null } });
   });
   await login(page);
-  await page.getByRole("link", { name: "Auditoria", exact: true }).click();
+  await navigateGlobal(page, "Auditoria");
   await expect(page.locator(".empty-state").getByRole("heading", { name: "Nenhum evento encontrado." })).toBeVisible();
   await page.getByLabel("De", { exact: true }).fill("2026-10-16T00:00");
   await page.getByLabel("Até", { exact: true }).fill("2026-10-15T00:00");
@@ -348,7 +365,7 @@ test("login por cookie → service → route → publicação → audit com o me
   const snapshot = await response.json() as { version: number };
   publishedVersion = snapshot.version;
   await expect(publish).toBeHidden();
-  await page.getByRole("link", { name: "Auditoria", exact: true }).click();
+  await navigateGlobal(page, "Auditoria");
   const event = page.getByRole("article", { name: `snapshot.publish por ${admin.name}` });
   await expect(event).toContainText(admin.id);
   await expect(event).toContainText(`"version": ${snapshot.version}`);

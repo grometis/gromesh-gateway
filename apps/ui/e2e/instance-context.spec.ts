@@ -1,3 +1,4 @@
+import { navigateGlobal, openGlobalMenu } from "./global-navigation";
 import AxeBuilder from "@axe-core/playwright";
 import type { Page } from "@playwright/test";
 import { expect, mockSession, test } from "./fixtures";
@@ -26,7 +27,7 @@ async function setup(page: Page, options: { stage?: string | null; policyStatus?
 }
 
 async function audit(page: Page) {
-  await checkLayout(page, { focusWithin: ".menu" });
+  await checkLayout(page, { focusWithin: await page.getByLabel("Ambiente (legado)", { exact: true }).count() ? ".menu" : ".global-header" });
   const result = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
   expect(result.violations.filter((v) => v.impact === "serious" || v.impact === "critical").map((v) => `${v.id}: ${v.nodes.map((n) => n.target).join(", ")}`)).toEqual([]);
 }
@@ -53,12 +54,13 @@ for (const width of [390, 1440]) {
       await page.goto(`/e/${A}/releases`);
       const identity = page.getByRole("region", { name: "Identidade da instância" });
       await expect(identity).toContainText(new URL(test.info().project.use.baseURL!).origin);
-      await expect(page.locator(".menu")).toContainText(state.text);
+      await expect(state.text.startsWith("Instância") ? identity : page.locator(".menu")).toContainText(state.text);
       await expect(page.getByLabel("Ambiente (legado)", { exact: true })).toBeVisible();
       await expect(page.getByLabel("Workspace v2", { exact: true })).toBeVisible();
       await expect(page.getByLabel("Workspace v2", { exact: true }).locator("option")).toHaveText(["Pedidos v2", "Catálogo v2"]);
       if (state.name === "invalid selection") await expect(page.getByLabel("Ambiente (legado)", { exact: true })).toHaveValue("");
-      await expect(page.locator(".who")).toContainText("Ana Souza");
+      await openGlobalMenu(page, "Minha conta");
+      await expect(page.locator(".global-account .global-panel-context")).toContainText("Ana Souza");
       await expect(page).toHaveURL(new RegExp(`/e/${A}/releases$`));
       await audit(page);
       await testInfo.attach(`context-${width}`, { body: await page.screenshot({ fullPage: true }), contentType: "image/png" });
@@ -99,7 +101,7 @@ for (const width of [390, 1440]) {
     await expect(page.getByLabel("Workspace v2", { exact: true })).toHaveValue(B);
     await expect(page.getByLabel("Ambiente (legado)", { exact: true })).toHaveValue(B);
     await expect(page.locator(".workspace-context")).toContainText("Catálogo v2");
-    await page.getByRole("link", { name: "Tokens de API", exact: true }).click();
+    await navigateGlobal(page, "Tokens de API");
     await expect(page.getByText("Escopo: minha conta nesta instância", { exact: true })).toBeVisible();
     await expect(page.getByLabel("Ambiente (legado)", { exact: true })).toHaveCount(0);
     await expect(page.locator(".context-return")).toHaveCount(0);

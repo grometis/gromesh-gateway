@@ -1,3 +1,4 @@
+import { navigateGlobal } from "./global-navigation";
 import AxeBuilder from "@axe-core/playwright";
 import type { Page, Route } from "@playwright/test";
 import { expect, mockSession, test } from "./fixtures";
@@ -112,7 +113,7 @@ async function signIn(page: Page, user: Me, initialPath = "/login") {
 
 async function openWorkspaces(page: Page, user: Me) {
   await signIn(page, user);
-  await page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Workspaces", exact: true }).click();
+  await navigateGlobal(page, "Workspaces");
   await expect(page.getByRole("heading", { level: 1, name: "Workspaces" })).toBeVisible();
 }
 

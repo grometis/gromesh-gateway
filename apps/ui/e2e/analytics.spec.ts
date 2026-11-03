@@ -1,3 +1,4 @@
+import { navigateGlobal, openGlobalMenu } from "./global-navigation";
 import type { Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, mockSession, test } from "./fixtures";
@@ -18,12 +19,12 @@ async function login(page: Page, role: "admin" | "viewer" = "admin") {
   await expect(page.getByRole("heading", { name: "Services" })).toBeVisible();
 }
 
-const menu = (page: Page) => page.getByRole("navigation", { name: "Menu principal" });
+const menu = (page: Page) => page.getByRole("navigation", { name: "Navegação global" });
 
 test("o dashboard renderiza os totais e as séries do período", async ({ page }) => {
   await login(page);
   const summary = page.waitForRequest((r) => r.url().includes("/analytics/summary?"));
-  await menu(page).getByRole("link", { name: "Métricas" }).click();
+  await navigateGlobal(page, "Métricas");
   const url = new URL((await summary).url());
   expect(url.searchParams.get("interval")).toBe("5m"); // the 6 h preset
   expect(Date.parse(url.searchParams.get("to")!) - Date.parse(url.searchParams.get("from")!)).toBe(6 * 3_600_000);
@@ -52,7 +53,7 @@ test("o dashboard renderiza os totais e as séries do período", async ({ page }
 test("o card Top rotas ranqueia pelo critério escolhido e leva ao explorador filtrado pela rota", async ({ page }) => {
   await login(page);
   const top = page.waitForRequest((r) => r.url().includes("/analytics/top-routes?"));
-  await menu(page).getByRole("link", { name: "Métricas" }).click();
+  await navigateGlobal(page, "Métricas");
   const url = new URL((await top).url());
   expect(url.searchParams.get("by")).toBe("requests");
   expect(url.searchParams.get("limit")).toBe("10");
@@ -76,7 +77,7 @@ test("o card Top rotas ranqueia pelo critério escolhido e leva ao explorador fi
 
 test("o explorador filtra por classe de status e abre o detalhe de uma requisição", async ({ page }) => {
   await login(page, "viewer");
-  await menu(page).getByRole("link", { name: "Requisições" }).click();
+  await navigateGlobal(page, "Requisições");
   await expect(page.getByRole("cell", { name: "/orders/42" })).toBeVisible();
   // The explorer shows the address as the API sends it: masked for a viewer.
   await expect(page.getByRole("cell", { name: "203.0.113.0" })).toBeVisible();
@@ -174,7 +175,7 @@ test("requisições bloqueia status inválido sem envio e mantém o erro 422 do 
       : route.fulfill({ json: { items: [], nextCursor: null } });
   });
   await login(page, "viewer");
-  await menu(page).getByRole("link", { name: "Requisições" }).click();
+  await navigateGlobal(page, "Requisições");
   await expect(page.getByRole("heading", { name: "Nenhuma requisição no período." })).toBeVisible();
   const count = queries.length;
   for (const invalid of ["99", "600", "404.5", "abc"]) {
@@ -203,7 +204,7 @@ test("métricas explica na hora quando o coletor está fora do ar (5xx sem nova 
     return route.fulfill({ status: 502, contentType: "application/problem+json", body: JSON.stringify({ type: "https://gromesh.dev/problems/502", title: "Bad Gateway", status: 502, detail: "Analytics store is unavailable" }) });
   });
   await login(page);
-  await menu(page).getByRole("link", { name: "Métricas" }).click();
+  await navigateGlobal(page, "Métricas");
   // The server answered: no retry delays the message (the default would retry twice, about 3 s).
   await expect(page.getByRole("alert")).toContainText("não estão disponíveis", { timeout: 1500 });
   expect(summaries).toBe(1);
@@ -215,6 +216,7 @@ test("Métricas is the former Dashboard: the old /analytics address redirects to
   await page.goto(`/e/${envId}/analytics`);
   await expect(page).toHaveURL(new RegExp(`/e/${envId}/metrics$`));
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Métricas");
+  await openGlobalMenu(page, "Operações");
   await expect(menu(page).getByRole("link", { name: "Métricas" })).toHaveAttribute("aria-current", "page");
   await expect(menu(page).getByRole("link", { name: "Dashboard" })).toHaveCount(0);
 });
@@ -244,7 +246,7 @@ test.describe("escala e leitura dos gráficos", () => {
       await page.setViewportSize({ width, height: 900 });
       await page.route("**/api/v1/environments/*/analytics/summary?*", (route) => route.fulfill({ json: chartSummary() }));
       await login(page, "viewer");
-      await menu(page).getByRole("link", { name: "Métricas" }).click();
+      await navigateGlobal(page, "Métricas");
       const charts = page.locator("figure.chart");
       await expect(charts).toHaveCount(3);
       await expect(charts.first()).toContainText("Horário local");

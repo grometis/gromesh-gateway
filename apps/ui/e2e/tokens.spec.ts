@@ -1,3 +1,4 @@
+import { navigateGlobal } from "./global-navigation";
 import type { Page } from "@playwright/test";
 import { expect, mockSession, test } from "./fixtures";
 
@@ -21,7 +22,7 @@ async function login(page: Page, role: "admin" | "viewer" = "viewer") {
 test("qualquer usuário cria um token, vê o valor uma única vez e revoga pela lista", async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await login(page, "viewer");
-  await page.getByRole("link", { name: "Tokens de API" }).click();
+  await navigateGlobal(page, "Tokens de API");
   await expect(page.getByRole("heading", { name: "Tokens de API" })).toBeVisible();
   // The list comes from the contract example: hint only, never a token value.
   const table = page.getByRole("table", { name: "Tokens de API" });
@@ -57,7 +58,7 @@ test("qualquer usuário cria um token, vê o valor uma única vez e revoga pela 
 
 test("o administrador vê os tokens de todos os usuários e revoga pela rota administrativa", async ({ page }) => {
   await login(page, "admin");
-  await page.getByRole("link", { name: "Tokens de API" }).click();
+  await navigateGlobal(page, "Tokens de API");
   const all = page.waitForRequest((r) => r.method() === "GET" && /\/api\/v1\/tokens(\?|$)/.test(r.url()));
   await page.getByLabel("Mostrar").selectOption("all");
   await all;
