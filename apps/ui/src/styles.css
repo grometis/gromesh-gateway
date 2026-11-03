@@ -675,3 +675,9 @@ table.numeric td, table.numeric th { white-space: nowrap; }
   .global-trigger { width: 100%; justify-content: space-between; }
   .global-panel, .global-account .global-panel { position: static; width: 100%; max-width: 100%; margin-top: 4px; max-height: 52vh; box-shadow: none; }
 }
+
+/* Workspace names and literal IPv6 targets can exceed a row's available width. */
+.workspace-upstreams-page td.actions { white-space: normal; }
+.workspace-upstreams-page td.actions button { max-width: 100%; overflow-wrap: anywhere; white-space: normal; }
+.workspace-upstreams-page .service-route > * { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.workspace-upstreams-page .route-matches { overflow-wrap: anywhere; }
