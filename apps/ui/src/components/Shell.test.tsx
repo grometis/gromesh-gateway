@@ -156,12 +156,50 @@ describe("instance and context in the shell", () => {
     expect(view.select()).toBeUndefined();
     expect(view.router.state.location.pathname).toBe("/workspaces");
   });
+  it.each([403, 502])("preserves the legacy environment selector and URL when the v2 list fails (%s)", async (workspaceListStatus) => {
+    const path = `/e/${A}/releases`;
+    const view = await screen({ workspaceListStatus, path, envs: [C, A] });
+    await vi.waitFor(async () => {
+      await view.settle();
+      expect(view.container.textContent).toContain(workspaceListStatus === 403 ? "Sem permissão para listar Workspaces." : "Não foi possível carregar os Workspaces.");
+      expect(view.select()).toBeDefined();
+      expect(view.select()!.options.map((n) => n.getAttribute("value"))).toEqual([C, A]);
+    });
+    expect(view.select()!.getAttribute("disabled")).toBeNull();
+    expect(view.container.textContent).toContain("Ambiente (legado)");
+    expect(view.container.textContent).toContain("Conteúdo autorizado pelo servidor");
+    expect(view.router.state.location.pathname).toBe(path);
+    expect(view.sent).not.toContain(`/api/v2/workspaces/${A}`);
+    expect(view.methods.every((method) => method === "GET")).toBe(true);
+  });
   it.each([{ workspaces: [] }, { workspaces: [C] }, { pending: "workspaces" as const }])("keeps an unconfirmed Workspace selection empty without redirecting: %j", async (options) => {
     const view = await screen({ ...options, path: "/workspaces" });
     await vi.waitFor(async () => { await view.settle(); expect(view.container.findAll((n) => n.getAttribute("id") === "workspace-select")).toHaveLength(1); });
     const select = view.container.findAll((n) => n.tagName === "SELECT" && n.getAttribute("id") === "workspace-select")[0]!;
     expect(select.value).toBe("");
     expect(view.router.state.location.pathname).toBe("/workspaces");
+    expect(view.methods.every((method) => method === "GET")).toBe(true);
+  });
+  it.each([{ workspaces: [] }, { workspaces: [C] }, { pending: "workspaces" as const }])("keeps an unconfirmed v2 selection empty while preserving the legacy selector and URL: %j", async (options) => {
+    const path = `/e/${A}/releases`;
+    const view = await screen({ ...options, path, envs: [C, A] });
+    await vi.waitFor(async () => {
+      await view.settle();
+      expect(view.container.findAll((n) => n.getAttribute("id") === "workspace-select")).toHaveLength(1);
+      expect(view.select()).toBeDefined();
+      expect(view.select()!.options.map((n) => n.getAttribute("value"))).toEqual([C, A]);
+      if (options.pending) expect(view.container.textContent).toContain("Carregando Workspaces…");
+      else if (!options.workspaces.length) expect(view.container.textContent).toContain("Nenhum Workspace disponível.");
+      else expect(view.container.textContent).toContain("Catálogo v2");
+    });
+    const select = view.container.findAll((n) => n.tagName === "SELECT" && n.getAttribute("id") === "workspace-select")[0]!;
+    expect(select.value).toBe("");
+    expect(select.options[0]!.textContent).toBe("Abrir um Workspace v2…");
+    expect(view.select()!.getAttribute("disabled")).toBeNull();
+    expect(view.container.textContent).toContain("Ambiente (legado)");
+    expect(view.container.textContent).toContain("Conteúdo autorizado pelo servidor");
+    expect(view.router.state.location.pathname).toBe(path);
+    expect(view.sent).not.toContain(`/api/v2/workspaces/${A}`);
     expect(view.methods.every((method) => method === "GET")).toBe(true);
   });
   it("loads another page of actual Workspaces without selecting or leaving the current context", async () => {
