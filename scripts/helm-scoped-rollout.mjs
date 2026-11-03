@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Requires a trusted operator and a maintenance window with no concurrent writers to the release or its objects.
+// Helm/Kubernetes provide no atomic precondition from live checks to writes. The late post-renderer check
+// and post-apply verification detect drift but cannot eliminate TOCTOU. Rollback is printed, never executed.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -21,6 +24,7 @@ const valueFlags = {
 // The only writable path authorized by this operation is one named Deployment container's image.
 // Example: --deployment cp-control-plane-ui --container ui --image repo@sha256:<64 hex>.
 // --object-uids is a JSON array of {kind,name,namespace,uid} from the approved baseline.
+// Include every release object, including the Deployment whose container image is authorized.
 // Helm manifests normally omit UID: never trust a first live observation as proof against recreation.
 // --authorize-hook is repeatable JSON: {kind,name,events,classification,manifestSha256}.
 // manifestSha256 hashes the exact UTF-8 hook.manifest returned by Helm's JSON dry-run.
@@ -343,14 +347,17 @@ function baselineObjects(current, o) {
   const authorized = authorizedObject(current, o);
   const result = [];
   for (const object of current.values()) {
-    if (object === authorized) continue;
     const expected = o.objectUids.find(v => v.kind === object.kind && v.name === object.metadata.name && v.namespace === o.namespace);
     if (!expected || (object.metadata.uid && object.metadata.uid !== expected.uid)) refuse("missing/mismatched baseline object UID");
     const ignoredPaths = allocatedFields(object);
+    if (object === authorized) {
+      const index = object.spec.template.spec.containers.indexOf(container(object, o.container));
+      ignoredPaths.push(["spec", "template", "spec", "containers", index, "image"]);
+    }
     result.push({ ignoredPaths, apiVersion: object.apiVersion, kind: object.kind, name: object.metadata.name, namespace: o.namespace,
       uid: expected.uid, specSha256: sha256(JSON.stringify(canonical(relevantObject(object, o.namespace, ignoredPaths)))) });
   }
-  if (result.length !== o.objectUids.length) refuse("baseline object UIDs differ from out-of-scope inventory");
+  if (result.length !== o.objectUids.length) refuse("baseline object UIDs differ from release inventory");
   return result;
 }
 async function liveObjects(proofs, o, run) {
@@ -364,6 +371,49 @@ async function liveObjects(proofs, o, run) {
       refuse(`live object differs from stored manifest: ${expected.kind}/${expected.name}`);
   }
 }
+function templateTokens(text) {
+  // Tokenize actions rather than splitting at }}: quoted strings can contain delimiters.
+  // Only identifiers outside strings/comments can invoke functions; tpl is itself forbidden.
+  const tokens = [];
+  let cursor = 0;
+  while ((cursor = text.indexOf("{{", cursor)) !== -1) {
+    cursor += 2;
+    if (text[cursor] === "-" && /\s/.test(text[cursor + 1] ?? "")) cursor++;
+    while (/\s/.test(text[cursor] ?? "")) cursor++;
+    if (text.startsWith("/*", cursor)) {
+      const end = text.indexOf("*/", cursor + 2);
+      if (end === -1) refuse("unterminated template comment; use --no-hooks");
+      cursor = end + 2;
+      while (/\s/.test(text[cursor] ?? "")) cursor++;
+      if (text[cursor] === "-") cursor++;
+      if (!text.startsWith("}}", cursor)) refuse("ambiguous template comment; use --no-hooks");
+      cursor += 2;
+      continue;
+    }
+    let closed = false;
+    while (cursor < text.length) {
+      if (text.startsWith("}}", cursor)) { cursor += 2; closed = true; break; }
+      const char = text[cursor++];
+      if (["\"", "'", "`"].includes(char)) {
+        let quoted = false;
+        while (cursor < text.length) {
+          const next = text[cursor++];
+          if (next === char) { quoted = true; break; }
+          if (next === "\\" && char !== "`") cursor++;
+        }
+        if (!quoted) refuse("unterminated template string; use --no-hooks");
+      } else if (/[A-Za-z_]/.test(char)) {
+        const start = cursor - 1;
+        while (/[A-Za-z0-9_]/.test(text[cursor] ?? "")) cursor++;
+        const token = text.slice(start, cursor);
+        // Fields/variables such as .Values.env cannot call Sprig functions. Time also pins .Release.Time.
+        if (![".", "$"].includes(text[start - 1]) || token === "Time") tokens.push(token);
+      }
+    }
+    if (!closed) refuse("unterminated template action; use --no-hooks");
+  }
+  return tokens;
+}
 function chartHash(path, deterministicHooks = false) {
   const entries = [];
   const visit = (dir, prefix = "") => {
@@ -376,8 +426,7 @@ function chartHash(path, deterministicHooks = false) {
         if (deterministicHooks) {
           if (/\.(?:tgz|gz)$/.test(name)) refuse("hook authorization requires unpacked deterministic chart dependencies");
           // Hooks bypass Helm's post-renderer. Re-render checks alone cannot pin lookup/random/tpl output.
-          const directives = content.toString("utf8").match(/{{[\s\S]*?}}/g) ?? [];
-          if (directives.some(v => /\b(?:lookup|rand[A-Za-z]*|uuidv4|now|ago|genCA|genSelfSignedCert|genSignedCert|genPrivateKey|encryptAES|bcrypt|htpasswd|shuffle|getHostByName|tpl)\b|\.Release\.Time\b/.test(v)))
+          if (templateTokens(content.toString("utf8")).some(v => /^(?:lookup|rand\w*|uuid\w*|now|ago|date\w*|must_?[dD]ate\w*|htmlDate\w*|toDate|mustToDate|durationRound|gen\w*|encryptAES|bcrypt|htpasswd|shuffle|keys|values|getHostByName|tpl|env|expandenv|Time)$/.test(v)))
             refuse("volatile chart template: hook authorization requires deterministic local rendering; use --no-hooks");
         }
         entries.push([rel, sha256(content)]);
@@ -448,14 +497,15 @@ export async function scopedRollout(input, { execute: executor = execute, emit =
   const renderProof = { manifestSha256: sha256(rendered.manifest), baselineSha256: sha256(currentRaw), revision: latest.revision,
     liveObjects: liveProof, chart: o.chart, chartSha256,
     hookOptions: Object.fromEntries(["noHooks", "authorizedHooks", "namespace", "kubeconfig", "kubeContext"].map(k => [k, o[k]])),
-    hookInventory: inventory, upgradeArgs: upgradeArgs(o),
+    hookInventory: inventory, hooksSha256: sha256(JSON.stringify(rendered.hooks)), upgradeArgs: upgradeArgs(o),
     scope: Object.fromEntries(["release", "namespace", "kubeContext", "kubeconfig", "expectedCluster", "expectedUid", "expectedCaSha256"].map(k => [k, o[k]])) };
   command.args.push(...postRendererArgs(renderProof));
   assertUpgradeCommand(command.args, o, renderProof);
   if (chartHash(o.chart, !o.noHooks) !== chartSha256) refuse("chart changed during preparation");
   if (!o.noHooks) {
     const finalRender = json(await run("hook render recheck", "helm", [...upgradeArgs(o), "--dry-run=server", "--output", "json"]), "hook render recheck");
-    if (finalRender.manifest !== rendered.manifest || !isDeepStrictEqual(await hooks(finalRender.hooks, o, run), inventory)) refuse("hook render changed before apply");
+    if (finalRender.manifest !== rendered.manifest || sha256(JSON.stringify(finalRender.hooks) ?? "") !== renderProof.hooksSha256
+      || !isDeepStrictEqual(await hooks(finalRender.hooks, o, run), inventory)) refuse("hook render changed before apply");
   }
   await liveObjects(liveProof, o, run);
   const plan = { mode: o.mode, release: o.release, namespace: o.namespace, context: o.kubeContext,
@@ -466,7 +516,14 @@ export async function scopedRollout(input, { execute: executor = execute, emit =
     migrations: inventory.some(h => h.classification === "migration/job" && h.action === "authorized") ? "explicitly authorized hook migrations" : "none authorized", rollbackRevision: o.rollbackRevision,
     renderProof, command, rollback };
   emit(plan);
-  if (o.mode === "apply") await run("apply", command.file, command.args);
+  if (o.mode === "apply") {
+    await run("apply", command.file, command.args);
+    try { await liveObjects(liveProof, o, run); }
+    catch (error) {
+      const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
+      refuse(`post-apply verification failed: ${error.message}\nRollback command (not executed): ${[rollback.file, ...rollback.args].map(quote).join(" ")}`);
+    }
+  }
   return plan;
 }
 
@@ -493,6 +550,7 @@ async function checkRender(proof) {
   if (!proof.hookOptions.noHooks) {
     const rendered = json(await run("post-render hooks", "helm", [...proof.upgradeArgs, "--dry-run=server", "--output", "json"]), "post-render hooks");
     if (sha256(rendered.manifest ?? "") !== proof.manifestSha256
+      || sha256(JSON.stringify(rendered.hooks) ?? "") !== proof.hooksSha256
       || !isDeepStrictEqual(await hooks(rendered.hooks, proof.hookOptions, run), proof.hookInventory)) refuse("hooks changed before final render");
   }
   if (chartHash(proof.chart, !proof.hookOptions.noHooks) !== proof.chartSha256) refuse("chart changed during final hook render");

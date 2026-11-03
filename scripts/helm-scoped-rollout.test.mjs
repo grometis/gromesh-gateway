@@ -34,7 +34,7 @@ function hook(name = "cp-control-plane-migrate", events = ["pre-install", "pre-u
   })) };
 }
 const baselineUids = () => [
-  ["Deployment", "cp-control-plane"], ["Secret", "credentials"], ["PersistentVolumeClaim", "backups"],
+  ["Deployment", "cp-control-plane-ui"], ["Deployment", "cp-control-plane"], ["Secret", "credentials"], ["PersistentVolumeClaim", "backups"],
   ["ConfigMap", "operational"], ["Service", "api"], ["NetworkPolicy", "ingress"], ["CronJob", "backup"],
 ].map(([kind, name]) => ({ kind, name, namespace: "dev", uid: `uid-${name}` }));
 function renderedObjectUids(f, o) {
@@ -44,8 +44,7 @@ function renderedObjectUids(f, o) {
     Object.assign(obj.metadata, { namespace, uid: `uid-${obj.kind}-${namespace}-${obj.metadata.name}`, resourceVersion: "1" });
   }
   // Service and NetworkPolicy can share the authorized Deployment's name.
-  return f.live.filter(v => !(v.kind === "Deployment" && v.metadata.name === o.deployment && v.metadata.namespace === o.namespace))
-    .map(v => ({ kind: v.kind, name: v.metadata.name, namespace: v.metadata.namespace, uid: v.metadata.uid }));
+  return f.live.map(v => ({ kind: v.kind, name: v.metadata.name, namespace: v.metadata.namespace, uid: v.metadata.uid }));
 }
 const authorize = (h, classification = "migration/job") => ({ name: h.name, kind: h.kind, events: h.events,
   classification, manifestSha256: createHash("sha256").update(h.manifest).digest("hex") });
@@ -122,14 +121,17 @@ test("legitimate UI-only plan inventories the chart migration but suppresses all
   }
 });
 
-test("apply is explicit and is the final step after rollback and image proof", async () => {
+test("apply is explicit after rollback and image proof, followed by live verification", async () => {
   const f = fixture();
   await f.run({ ...options(), mode: "apply" });
   assert.equal(writes(f).length, 1);
-  assert.equal(f.calls.at(-1).file, "helm");
+  assert.equal(f.calls.at(-1).file, "kubectl");
   assert.ok(f.calls.some(c => c.file === "image-proof"));
-  assert.ok(f.calls.at(-1).args.includes("--no-hooks"));
-  assert.ok(f.calls.at(-1).args.includes("--post-renderer"));
+  assert.ok(writes(f)[0].args.includes("--no-hooks"));
+  assert.ok(writes(f)[0].args.includes("--post-renderer"));
+  const after = f.calls.slice(f.calls.indexOf(writes(f)[0]) + 1);
+  assert.equal(after.length, f.current.length);
+  assert.ok(after.every(c => c.file === "kubectl" && c.args.includes("get")));
 });
 
 test("hidden migration in chart hooks blocks an upgrade with hooks enabled", async () => {
@@ -264,10 +266,68 @@ for (const stage of ["initial", "immediate"]) for (const drift of ["missing", "r
     assert.equal(writes(f).length, 0);
   });
 }
-test("all out-of-scope objects are read by identity twice, with normalized proof", async () => {
+for (const stage of ["initial", "immediate"]) for (const drift of ["missing", "recreated", "replicas", "env", "sidecar", "annotation"]) {
+  test(`authorized Deployment live proof fails closed: ${stage} ${drift}`, async () => {
+    const f = fixture(), execute = f.execute;
+    const change = () => {
+      const live = f.live[0];
+      if (drift === "missing") f.live.shift();
+      if (drift === "recreated") live.metadata.uid = "new-workload-uid";
+      if (drift === "replicas") live.spec.replicas = 3;
+      if (drift === "env") live.spec.template.spec.containers[0].env = [{ name: "UNAPPROVED", value: "PRIVATE_VALUE" }];
+      if (drift === "sidecar") live.spec.template.spec.containers.push({ name: "injected", image: "extra" });
+      if (drift === "annotation") live.metadata.annotations = { unapproved: "true" };
+    };
+    if (stage === "initial") change();
+    else f.execute = async (file, args, io) => { const out = await execute(file, args, io); if (file === "image-proof") change(); return out; };
+    await assert.rejects(f.run({ ...options(), mode: "apply" }), error => /live object/.test(error.message) && !error.message.includes("PRIVATE_VALUE"));
+    assert.equal(writes(f).length, 0);
+  });
+}
+test("authorized Deployment proof permits only its named image path, with API defaults normalized", async () => {
+  const f = fixture(), execute = f.execute, live = f.live[0];
+  Object.assign(live.spec, { revisionHistoryLimit: 10, progressDeadlineSeconds: 600 });
+  live.spec.template.metadata = { creationTimestamp: null };
+  live.spec.template.spec.dnsPolicy = "ClusterFirst";
+  f.execute = async (file, args, io) => {
+    const out = await execute(file, args, io);
+    if (file === "helm" && args[0] === "upgrade" && !args.includes("--dry-run=server")) live.spec.template.spec.containers[0].image = image("b");
+    return out;
+  };
+  const plan = await f.run({ ...options(), mode: "apply" });
+  const proof = plan.liveObjects.find(v => v.name === options().deployment);
+  assert.equal(proof.uid, "uid-cp-control-plane-ui");
+  assert.deepEqual(proof.ignoredPaths, [["spec", "template", "spec", "containers", 0, "image"]]);
+  assert.equal(live.spec.template.spec.containers[0].image, image("b"));
+});
+for (const drift of ["missing", "recreated", "spec", "unreadable", "authorized-deployment"]) {
+  test(`post-apply check refuses drift and prints rollback without executing it: ${drift}`, async () => {
+    const f = fixture(), execute = f.execute;
+    let applied = false;
+    f.execute = async (file, args, io) => {
+      if (applied && drift === "unreadable" && file === "kubectl" && args.includes("get")) throw new Error("PRIVATE_VALUE");
+      const out = await execute(file, args, io);
+      if (file === "helm" && args[0] === "upgrade" && !args.includes("--dry-run=server")) {
+        applied = true;
+        f.live[0].spec.template.spec.containers[0].image = image("b");
+        if (drift === "missing") f.live.splice(5, 1);
+        if (drift === "recreated") f.live[5].metadata.uid = "new-service-uid";
+        if (drift === "spec") f.live[5].spec.ports[0].port = 80;
+        if (drift === "authorized-deployment") f.live[0].metadata.uid = "new-workload-uid";
+      }
+      return out;
+    };
+    await assert.rejects(f.run({ ...options(), mode: "apply" }), error => /post-apply verification failed/.test(error.message)
+      && /Rollback command \(not executed\): 'helm' 'rollback' 'cp' '4'/.test(error.message)
+      && /'--no-hooks'/.test(error.message) && !error.message.includes("PRIVATE_VALUE"));
+    assert.equal(writes(f).length, 1);
+    assert.ok(f.calls.filter(c => c.file === "helm" && c.args[0] === "rollback").every(c => c.args.includes("--dry-run")));
+  });
+}
+test("all release objects are read by identity twice, with normalized proof", async () => {
   const f = fixture(); f.live[1].status = { readyReplicas: 2 }; f.live[1].metadata.managedFields = [{ manager: "controller" }];
   const plan = await f.run();
-  assert.equal(plan.liveObjects.length, f.current.length - 1);
+  assert.equal(plan.liveObjects.length, f.current.length);
   for (const proof of plan.liveObjects) {
     assert.equal(proof.uid, `uid-${proof.name}`);
     assert.match(proof.specSha256, /^[a-f0-9]{64}$/);
@@ -338,6 +398,11 @@ if (tool === "kubectl") {
     const checked = spawnSync(renderer, rendererArgs, {input: manifest, encoding: "utf8"});
     if (checked.status !== 0) { console.error(checked.stderr); process.exit(1); }
     if (checked.stdout !== manifest) throw Error("post-renderer changed manifest");
+    f.live[0].spec.template.spec.containers[0].image = f.target[0].spec.template.spec.containers[0].image;
+    if (process.env.DRIFT_AFTER_APPLY === "missing") f.live.splice(5, 1);
+    if (process.env.DRIFT_AFTER_APPLY === "recreated") f.live[5].metadata.uid = "recreated-after-apply";
+    if (process.env.DRIFT_AFTER_APPLY === "spec") f.live[5].spec.ports[0].port = 80;
+    writeFileSync(process.env.SCOPED_FIXTURE, JSON.stringify(f));
     out = "simulated apply";
   }
   else throw Error("unexpected helm call");
@@ -396,6 +461,18 @@ console.log(typeof out === "string" ? out : JSON.stringify(out));
         env: { ...env, DRIFT_BASELINE: drift },
       }), error => error.code === 1 && /apply command failed/.test(error.stderr));
     }
+    for (const drift of ["missing", "recreated", "spec"]) {
+      writeFileSync(snapshot, JSON.stringify(f));
+      writeFileSync(calls, "");
+      await assert.rejects(promisify(execFile)(process.execPath, [script, ...argv, "--no-hooks", "--apply"], {
+        env: { ...env, DRIFT_AFTER_APPLY: drift },
+      }), error => error.code === 1 && /post-apply verification failed/.test(error.stderr)
+        && /Rollback command \(not executed\): 'helm' 'rollback' 'cp' '4'/.test(error.stderr)
+        && /'--no-hooks'/.test(error.stderr) && !error.stderr.includes("PRIVATE_VALUE"));
+      const postTrace = readFileSync(calls, "utf8").trim().split("\n").map(JSON.parse);
+      assert.equal(postTrace.filter(c => c.tool === "helm" && c.args[0] === "upgrade" && !c.args.includes("--dry-run=server")).length, 1);
+      assert.ok(postTrace.filter(c => c.args[0] === "rollback").every(c => c.args.includes("--dry-run")));
+    }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -449,7 +526,7 @@ test("guard is included in test:guard and actual chart migration is not conditio
   assert.match(migration, /helm.sh\/hook: pre-install,pre-upgrade/);
 });
 
-for (const change of ["body", "events", "added"]) test(`hook inventory rechecked immediately before apply: ${change}`, async () => {
+for (const change of ["body", "events", "added", "weight", "deletePolicies"]) test(`hook inventory rechecked immediately before apply: ${change}`, async () => {
   const f = fixture(), execute = f.execute, auth = authorize(f.hooks[0]);
   f.execute = async (file, args, io) => {
     const out = await execute(file, args, io);
@@ -457,6 +534,8 @@ for (const change of ["body", "events", "added"]) test(`hook inventory rechecked
       if (change === "body") { const obj = JSON.parse(f.hooks[0].manifest); obj.spec.template.spec.containers[0].args = ["--changed"]; f.hooks[0].manifest = JSON.stringify(obj); }
       if (change === "events") f.hooks[0] = hook(undefined, ["post-upgrade"]);
       if (change === "added") f.hooks.push(hook("additional"));
+      if (change === "weight") f.hooks[0].weight = 100;
+      if (change === "deletePolicies") f.hooks[0].delete_policies = ["before-hook-creation"];
     }
     return out;
   };
@@ -480,7 +559,7 @@ test("migration env content also overrides test classification", async () => {
   assert.equal((await f.run()).hooks[0].classification, "migration/job");
 });
 
-test("live UID baseline must cover exactly the release objects outside image scope", async () => {
+test("live UID baseline must cover exactly all release objects including the authorized Deployment", async () => {
   for (const objectUids of [undefined, [], baselineUids().slice(1), [...baselineUids(), { kind: "Service", name: "extra", namespace: "dev", uid: "extra" }]]) {
     const f = fixture();
     await assert.rejects(f.run({ ...options(), objectUids }), /UID/i);
@@ -496,8 +575,9 @@ test("rendered UID baseline includes Service and NetworkPolicy sharing the autho
   }
   const objectUids = renderedObjectUids(f, o);
   const plan = await f.run({ ...o, objectUids });
-  assert.equal(plan.liveObjects.length, f.current.length - 1);
+  assert.equal(plan.liveObjects.length, f.current.length);
   assert.deepEqual(plan.liveObjects.filter(v => v.name === o.deployment).map(v => ({ kind: v.kind, uid: v.uid })), [
+    { kind: "Deployment", uid: "uid-Deployment-dev-cp-control-plane-ui" },
     { kind: "Service", uid: "uid-Service-dev-cp-control-plane-ui" },
     { kind: "NetworkPolicy", uid: "uid-NetworkPolicy-dev-cp-control-plane-ui" },
   ]);
@@ -572,7 +652,7 @@ test("real Helm renders both shipped charts as subcharts, values conditionals an
       }), /missing\/mismatched baseline object UID/);
       assert.equal(writes(f).length, 0);
       const plan = await f.run({ ...options(), chart: umbrella, objectUids });
-      assert.equal(plan.liveObjects.length, f.current.length - 1);
+      assert.equal(plan.liveObjects.length, f.current.length);
       assert.ok(plan.liveObjects.some(v => v.kind === "Service" && v.name === "cp-control-plane-ui"));
       assert.equal(plan.liveObjects.some(v => v.kind === "NetworkPolicy" && v.name === "cp-control-plane-ui"), enabled);
       assert.equal(plan.hooks.length, renderedHooks.length);
@@ -644,5 +724,49 @@ test("hook-enabled apply refuses volatile chart templates that could evade re-re
     assert.equal(writes(f).length, 0);
     // Suppressed hooks retain the ordinary full-manifest and live-object checks.
     await f.run({ ...options(), chart: dir });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+for (const template of [
+  '{{ printf "%d}}" (randInt 0 2) }}',
+  '{{ printf `}}` (uuidv4) }}',
+  '{{ printf "{{/*" }}{{ randAlpha 12 }}',
+  String.raw`{{ printf "escaped\"}}" (randAlphaNum 12) }}`,
+  '{{ now }}', '{{ date "2006" .Values.time }}', '{{ dateInZone "2006" .Values.time "UTC" }}',
+  '{{ mustDateModify "1h" .Values.time }}', '{{ genCA "ca" 365 }}', '{{ genSelfSignedCert "cert" nil nil 365 }}',
+  '{{ genSignedCertWithKey "cert" nil nil 365 .Values.ca .Values.key }}', '{{ randBytes 16 }}',
+  '{{ lookup "v1" "ConfigMap" "dev" "data" }}', '{{ tpl .Values.template . }}',
+  '{{ .Release.Time }}', '{{ getHostByName "example.test" }}',
+  '{{ keys .Values.map }}', '{{ values .Values.map }}', '{{ durationRound .Values.time }}',
+  '{{ printf "unterminated }}', '{{/* unterminated }}', '{{ printf "ok"',
+]) test(`hook authorization refuses volatile or ambiguous template: ${template}`, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoped-template-token-"));
+  try {
+    mkdirSync(join(dir, "charts", "dependency", "templates"), { recursive: true });
+    writeFileSync(join(dir, "charts", "dependency", "templates", "_dynamic.tpl"), template);
+    const f = fixture();
+    await assert.rejects(f.run({ ...options(), chart: dir, mode: "apply", noHooks: false, authorizedHooks: [authorize(f.hooks[0])] }), /volatile|template|no-hooks/i);
+    assert.equal(writes(f).length, 0);
+    await f.run({ ...options(), chart: dir });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("deterministic hook authorization respects quoted delimiters and Go template comments and renders twice", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoped-deterministic-"));
+  try {
+    writeFileSync(join(dir, "hook.tpl"), [
+      '{{/* randInt 0 2 }} {{ now }} */}}',
+      '{{- /* uuidv4 date genCA */ -}}',
+      '{{ printf "%s}}" "randInt now date" }}',
+      '{{ printf `}}` }}',
+      String.raw`{{ printf "escaped\"}}" }}`,
+      '{{ $now := .Values.env }}{{ $now }}',
+    ].join("\n"));
+    const f = fixture();
+    const plan = await f.run({ ...options(), chart: dir, mode: "apply", noHooks: false, authorizedHooks: [authorize(f.hooks[0])] });
+    const renders = f.calls.filter(c => c.file === "helm" && c.args.includes("--dry-run=server"));
+    assert.equal(renders.length, 2);
+    assert.equal(plan.renderProof.hooksSha256, createHash("sha256").update(JSON.stringify(f.hooks)).digest("hex"));
+    assert.equal(writes(f).length, 1);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
