@@ -21,6 +21,7 @@ afterEach(async () => {
 });
 
 async function screen(options: {
+  v2?: boolean;
   items?: Variable[]; stage?: "dev" | "hml" | "prd" | null;
   role?: "admin" | "editor" | "viewer"; status?: "active" | "archived"; publishMode?: "manual" | "auto";
   pending?: "workspace" | "environment" | "policy";
@@ -66,7 +67,10 @@ async function screen(options: {
   const [{ VariablesPage }, { AuthProvider }, { createMemoryRouter, RouterProvider }, { createRoot }] = await Promise.all([
     import("./Variables"), import("../auth"), import("react-router"), import("react-dom/client"),
   ]);
-  const router = createMemoryRouter([{ path: "/e/:envId/variables", element: <VariablesPage /> }], { initialEntries: [`/e/${W}/variables`] });
+  const { NavigationContextProvider } = await import("../navigation/context");
+  const router = createMemoryRouter(options.v2 ? [{ element: <NavigationContextProvider />, children: [
+    { path: "/workspaces/:workspaceId/variables", element: <VariablesPage /> },
+  ] }] : [{ path: "/e/:envId/variables", element: <VariablesPage /> }], { initialEntries: [options.v2 ? `/workspaces/${W}/variables` : `/e/${W}/variables`] });
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   if (options.cachedStage) client.setQueryData(["workspace-creation-policy"], { stage: options.cachedStage });
   root = createRoot(container as unknown as HTMLElement);
@@ -96,6 +100,29 @@ async function screen(options: {
 }
 
 describe("workspace variables", () => {
+  it.each([200, 409])("submits v2 declarations without a legacy environment and preserves the form on HTTP %s", async (status) => {
+    const view = await screen({ v2: true, writeResponse: () => status === 409
+      ? Response.json({ title: "Conflict", status: 409, code: "auto-publish" }, { status: 409 })
+      : Response.json(variable) });
+    await view.click("Editar declaração");
+    await view.submit();
+    expect(view.writes()).toHaveLength(1);
+    expect(view.writes()[0]!.method).toBe("PUT");
+    expect(new URL(view.writes()[0]!.url).pathname).toBe(`/api/v2/workspaces/${W}/variables/API_KEY`);
+    expect(await view.writes()[0]!.json()).toEqual({ type: "credential", secret: true, required: true });
+    expect(view.sent.some((r) => new URL(r.url).pathname.startsWith("/api/v1/environments"))).toBe(false);
+    if (status === 409) {
+      expect(view.dialog()).toBeDefined();
+      expect(view.field("Nome").value).toBe("API_KEY");
+      expect(view.container.textContent).toContain("Mude para publicação manual");
+    } else expect(view.dialog()).toBeUndefined();
+  });
+  it.each(["viewer", "editor"] as const)("does not grant v2 instance values.write to a %s", async (role) => {
+    const view = await screen({ v2: true, role });
+    await view.click("Editar declaração");
+    expect(view.buttons("Definir valor")).toHaveLength(0);
+    expect(view.writes()).toEqual([]);
+  });
   it.each(["Declarar variável", "Editar declaração", "Definir valor", "Excluir"])("keeps %s open during access revalidation, but blocks submission", async (action) => {
     let reads = 0;
     let release!: (response: Response) => void;
@@ -222,8 +249,8 @@ describe("workspace variables", () => {
     }
   });
 
-  it("blocks a declaration when the cache revokes access before observers render", async () => {
-    const view = await screen();
+  it.each([false, true])("blocks a declaration when the cache revokes access before observers render (v2=%s)", async (v2) => {
+    const view = await screen({ v2 });
     await view.click("Editar declaração");
     await vi.waitFor(async () => { await act(async () => { await tick(); }); expect(view.buttons("Salvar")[0]!.getAttribute("disabled")).toBeNull(); });
     const scheduled: (() => void)[] = [];

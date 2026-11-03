@@ -1,8 +1,9 @@
+import { useIsWorkspaceRoute, workspaceQuery } from "../navigation/context";
 import { type QueryClient, useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type Environment, unwrap } from "../api/client";
 import { apiV2, type Workspace, type WorkspaceService } from "../api/client-v2";
 import { statusMessage } from "../api/errors";
-import { useEnvironment } from "../components/Shell";
+import { useLegacyEnvironment } from "../components/Shell";
 
 /** A v2 field may hold a variable reference; shown as `${NAME}`, never resolved here (the value lives per instance). */
 export type Plain<T> = T | { $var: string };
@@ -48,10 +49,8 @@ export function upstreamEffect(slug: string, path: string, stripPath: boolean, s
 }
 
 export function useWorkspace(workspaceId: string) {
-  return useQuery({
-    queryKey: ["workspace", workspaceId],
-    queryFn: () => unwrap(apiV2.GET("/workspaces/{workspaceId}", { params: { path: { workspaceId } } })),
-  });
+  const v2 = useIsWorkspaceRoute();
+  return useQuery({ ...workspaceQuery(workspaceId), enabled: !v2 });
 }
 
 /** v2 has status; publishMode remains on the v1 environment with the same id. Unknown data forbids writes. */
@@ -70,8 +69,10 @@ export function workspaceGatewayAccess(workspace: Pick<Workspace, "status"> | un
 }
 
 /** Event handlers may run before observers render a completed revalidation or a newly denied access. */
-export function canWriteWorkspaceGateway(client: QueryClient, workspaceId: string) {
+export function canWriteWorkspaceGateway(client: QueryClient, workspaceId: string, v2 = false) {
   const workspace = client.getQueryState<Workspace>(["workspace", workspaceId]);
+  if (v2) return workspace?.status === "success" && workspace.fetchStatus === "idle"
+    && !workspace.isInvalidated && workspace.data?.id === workspaceId && workspace.data.status === "active";
   const env = client.getQueryState<Environment>(["environment", workspaceId]);
   return workspace?.status === "success" && env?.status === "success"
     && workspace.fetchStatus === "idle" && env.fetchStatus === "idle"
@@ -81,8 +82,18 @@ export function canWriteWorkspaceGateway(client: QueryClient, workspaceId: strin
 
 /** Shared with the v2 Routes screen. Cached access cannot authorize writes while its current state is unconfirmed. */
 export function useWorkspaceGatewayAccess(workspaceId: string, purpose: "gateway" | "release" = "gateway") {
+  const v2 = useIsWorkspaceRoute();
   const workspace = useWorkspace(workspaceId);
-  const env = useEnvironment(workspaceId);
+  const env = useLegacyEnvironment(workspaceId);
+  if (v2) {
+    // /me has no effective v2 bindings. As before, the server enforces gateway.write/release.publish
+    // and refuses auto-publish atomically; v1 metadata cannot establish v2 identity or access.
+    const active = workspace.isSuccess && workspace.data.id === workspaceId && workspace.data.status === "active";
+    const canWrite = active && workspace.fetchStatus === "idle";
+    return { canWrite, isRevalidating: active && workspace.fetchStatus !== "idle", reason: workspace.data?.status === "archived"
+      ? "Somente leitura: este Workspace está arquivado."
+      : canWrite ? null : "Somente leitura enquanto verificamos o estado do Workspace." };
+  }
   if (workspace.isError || env.isError) return {
     canWrite: false,
     isRevalidating: false,
@@ -158,7 +169,7 @@ export function useInvalidateWorkspaceGateway(workspaceId: string) {
 /** The workspace's prefix, its active release, the unpublished draft and why nothing here deploys (N2 gates). */
 export function WorkspaceGatewayNote({ workspaceId }: { workspaceId: string }) {
   const workspace = useWorkspace(workspaceId);
-  const env = useEnvironment(workspaceId);
+  const env = useLegacyEnvironment(workspaceId);
   const access = useWorkspaceGatewayAccess(workspaceId);
   if (workspace.isError) return <p className="error" role="alert">{access.reason} {statusMessage(workspace.error)}</p>;
   if (!workspace.data) return <p className="muted" role="status">{access.reason}</p>;

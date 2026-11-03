@@ -1,5 +1,7 @@
-import { createBrowserRouter, Navigate } from "react-router";
+import { Navigate, type RouteObject } from "react-router";
 import { Shell, RequireAuth, RequireAdmin, FirstEnvironment } from "./components/Shell";
+import { NavigationContextProvider } from "./navigation/context";
+import { WorkspaceEntry } from "./navigation/workspace-entry";
 import { LoginPage } from "./pages/Login";
 import { ServiceDetailPage, ServicesPage } from "./pages/Services";
 import { RoutesPage } from "./pages/Routes";
@@ -20,11 +22,11 @@ import { WorkspacesPage } from "./pages/Workspaces";
 import { ReleasesPage } from "./pages/Releases";
 import { VariablesPage } from "./pages/Variables";
 
-export const router = createBrowserRouter([
+export const appRoutes: RouteObject[] = [
   { path: "/login", element: <LoginPage /> },
   {
     element: <RequireAuth />,
-    children: [
+    children: [{ element: <NavigationContextProvider />, children: [
       { index: true, element: <FirstEnvironment /> },
       {
         element: <Shell />,
@@ -36,6 +38,18 @@ export const router = createBrowserRouter([
             children: [
               { path: "users", element: <UsersPage /> },
               { path: "audit", element: <AuditPage /> },
+            ],
+          },
+          {
+            path: "workspaces/:workspaceId",
+            children: [
+              { index: true, element: <WorkspaceEntry /> },
+              { path: "services", element: <ServicesPage /> },
+              { path: "services/:serviceId", element: <ServiceDetailPage /> },
+              { path: "routes", element: <RoutesPage /> },
+              { path: "releases", element: <ReleasesPage /> },
+              { path: "variables", element: <VariablesPage /> },
+              { path: "plugins", element: <PluginsPage /> },
             ],
           },
           {
@@ -62,9 +76,9 @@ export const router = createBrowserRouter([
               { path: "requests", element: <RequestsPage /> },
             ],
           },
+          { path: "*", element: null },
         ],
       },
-    ],
+    ] }],
   },
-  { path: "*", element: <Navigate to="/" replace /> },
-]);
+];
