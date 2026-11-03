@@ -79,7 +79,7 @@ describe("workspace plugin screen", () => {
     const html = await screen([{ ...saved, enabled: false, scope: { serviceId: W, routeId: W, consumerId: W } }]);
     expect(html).toContain('class="cards"');
     expect(html).toContain('aria-label="Plugins"');
-    for (const value of ["rate-limiting", "Service orders · Route orders-api · Consumer checkout", "Alterado", "Não", 'aria-label="Filtrar por escopo"', 'value="global"', `value="serviceId:${W}"`, 'aria-label="Mais ações para rate-limiting']) expect(html).toContain(value);
+    for (const value of ["rate-limiting", "Serviço orders · Route orders-api · Consumidor checkout", "Alterado", "Não", 'aria-label="Filtrar por escopo"', 'value="global"', `value="serviceId:${W}"`, 'aria-label="Mais ações para rate-limiting']) expect(html).toContain(value);
     expect(html).not.toContain("minute");
     expect(html).not.toContain("password");
     expect(html).not.toContain("typed-secret");
@@ -87,7 +87,7 @@ describe("workspace plugin screen", () => {
   });
 
   it("uses an id when a scope name is unavailable", async () => {
-    expect(await screen([saved], { names: false })).toContain(`Service ${W}`);
+    expect(await screen([saved], { names: false })).toContain(`Serviço ${W}`);
   });
 
   it.each(["pending", "failed"])("keeps service names and scope filters available while consumers are %s", async state => {
@@ -116,8 +116,8 @@ describe("workspace plugin screen", () => {
     try {
       await vi.waitFor(() => {
         const html = render();
-        expect(html).toContain("Service orders");
-        expect(html).toContain(`<option value="serviceId:${W}">Service orders</option>`);
+        expect(html).toContain("Serviço orders");
+        expect(html).toContain(`<option value="serviceId:${W}">Serviço orders</option>`);
         expect(html).toContain("Route orders-api");
       });
     } finally {

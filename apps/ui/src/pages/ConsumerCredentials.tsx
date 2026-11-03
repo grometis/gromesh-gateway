@@ -348,7 +348,7 @@ export function AclGroupsPanel({ envId, consumer, canEdit }: { envId: string; co
           </button>
         )}
       </div>
-      <p className="muted">O plugin acl libera ou bloqueia o consumer pelos nomes destes grupos (allow/deny).</p>
+      <p className="muted">O plugin acl libera ou bloqueia o consumidor pelos nomes destes grupos (allow/deny).</p>
       {groups.isPending && <p className="muted">Carregando…</p>}
       {groups.isError && <p className="error">{statusMessage(groups.error)}</p>}
       {groups.isSuccess && draft === null && (current.length === 0 ? <p className="muted">Nenhum grupo.</p> : (

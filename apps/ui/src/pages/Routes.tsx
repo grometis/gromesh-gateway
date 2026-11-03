@@ -98,8 +98,8 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
       {service && !readOnly && access.reason && <p role="status">{access.reason}</p>}
       <div className="gateway-filters">
         <input type="search" className="search" placeholder="Buscar por nome, path ou host" aria-label="Buscar rotas" value={search} onChange={(e) => setSearch(e.target.value)} />
-        {onServiceChange && <select aria-label="Filtrar por service" value={serviceId} onChange={(e) => onServiceChange(e.target.value)}>
-          <option value="">Todos os services</option>
+        {onServiceChange && <select aria-label="Filtrar por serviço" value={serviceId} onChange={(e) => onServiceChange(e.target.value)}>
+          <option value="">Todos os serviços</option>
           {serviceList.map((s) => (
             <option key={s.id} value={s.id}>
               {s.name}
@@ -193,7 +193,7 @@ const isPathlessLegacy = (route: WorkspaceRoute | null): boolean =>
 function RouteDetails({ route, serviceName, onClose, ...paths }: { route: WorkspaceRoute; serviceName: string; onClose: () => void; slug?: string; servicePath?: string | null; publication: ReturnType<typeof useRoutePublication> }) {
   const fields = [
     ["Nome", route.name],
-    ["Service", serviceName],
+    ["Serviço", serviceName],
     ["Paths", route.paths?.join(", ") || "—"],
     ["Hosts", route.hosts?.join(", ") || "—"],
     ["Métodos", route.methods?.join(", ") || "todos"],
@@ -288,7 +288,7 @@ function RouteForm(props: { publication: ReturnType<typeof useRoutePublication>;
     save.reset();
     const fields: Record<string, string[]> = {
       ...(form.name.trim() ? {} : { name: ["Nome: campo obrigatório."] }),
-      ...(services.some((s) => s.id === form.serviceId) ? {} : { serviceId: ["Escolha um service deste Workspace."] }),
+      ...(services.some((s) => s.id === form.serviceId) ? {} : { serviceId: ["Escolha um serviço deste Workspace."] }),
       ...(paths.length > 0 ? {} : { paths: ["Informe ao menos um path."] }),
     };
     setLocal({ fields, form: [] });

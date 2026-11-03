@@ -10,7 +10,7 @@ export const ROUTE_FIELDS = ["name", "serviceId", "paths", "hosts", "methods", "
 
 const LABELS: Record<string, string> = {
   name: "Nome", protocol: "Protocolo", host: "Host", port: "Porta", path: "Path no destino", upstreamId: "Upstream", enabled: "Ativo",
-  tags: "Tags", serviceId: "Service", paths: "Paths", hosts: "Hosts", methods: "Métodos", protocols: "Protocolos",
+  tags: "Tags", serviceId: "Serviço", paths: "Paths", hosts: "Hosts", methods: "Métodos", protocols: "Protocolos",
   stripPath: "Remover o path", preserveHost: "Preservar o host", retries: "Tentativas", connectTimeoutMs: "Timeout de conexão",
   readTimeoutMs: "Timeout de leitura", writeTimeoutMs: "Timeout de escrita",
 };
@@ -20,8 +20,8 @@ export const GATEWAY_MESSAGES = {
   pathCompatibility: "Esta route preserva o stripPath legado. A conversão para o padrão do Workspace é uma ação separada; a edição mantém o valor atual.",
   forbidden: "Você não tem permissão para alterar o gateway deste Workspace.",
   concurrent: "Outra alteração simultânea impediu esta; tente novamente.",
-  upstreamCapturesService: "Já existe um service com destino direto (DNS) para este nome: um upstream com o mesmo nome capturaria o tráfego dele. Escolha outro nome ou ligue o service ao upstream.",
-  duplicate: { service: "Já existe um service com este nome neste Workspace.", route: "Já existe uma route com este nome neste Workspace." },
+  upstreamCapturesService: "Já existe um serviço com destino direto (DNS) para este nome: um upstream com o mesmo nome capturaria o tráfego dele. Escolha outro nome ou ligue o serviço ao upstream.",
+  duplicate: { service: "Já existe um serviço com este nome neste Workspace.", route: "Já existe uma route com este nome neste Workspace." },
 } as const;
 
 /** One 422 item in Portuguese: the rules the v2 gateway writes add to the validator's, then the validator's own. */
@@ -35,7 +35,7 @@ export function gatewayMessage(path: string, message: string): string {
   if (field === "upstreamId" && /is an upstream of this workspace/i.test(message)) return "Este host é um upstream do Workspace: escolha “Upstream do Workspace”.";
   if (field === "upstreamId" && /unknown upstream/i.test(message)) return "O upstream escolhido não pertence a este Workspace.";
   if (field === "host" && /upstream's name/i.test(message)) return "Com um upstream, o host precisa ser o nome dele.";
-  if (field === "serviceId" && /unknown service/i.test(message)) return "O service escolhido não pertence a este Workspace.";
+  if (field === "serviceId" && /unknown service/i.test(message)) return "O serviço escolhido não pertence a este Workspace.";
   if (field === "paths" && index !== undefined) {
     const n = Number(index) + 1;
     if (/must match pattern/i.test(message)) return `Path ${n}: precisa começar com / (ou ~/ para expressão regular).`;

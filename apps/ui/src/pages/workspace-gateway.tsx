@@ -36,7 +36,7 @@ export function upstreamPath(servicePath: string | null | undefined, requestPath
 
 /** What the upstream receives for a request under the route's first path, the service's path included (decision D1). */
 export function upstreamEffect(slug: string, path: string, stripPath: boolean, servicePath?: string | null, flow: "v1" | "v2" = "v1"): string {
-  if (servicePath?.includes("${")) return "O path do service usa uma variável; o path recebido pelo upstream depende do valor na instância.";
+  if (servicePath?.includes("${")) return "O path do serviço usa uma variável; o path recebido pelo upstream depende do valor na instância.";
   const sp = servicePath && servicePath !== "/" ? servicePath : null;
   if (path.startsWith("~")) {
     if (stripPath) return sp ? `O upstream recebe ${sp} seguido do que vier depois do trecho que a expressão casar.` : "O upstream recebe só o que vier depois do trecho que a expressão casar.";

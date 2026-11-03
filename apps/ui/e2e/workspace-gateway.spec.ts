@@ -294,7 +294,7 @@ test("two workspaces keep their services and routes apart; nothing crosses, noth
   const serviceB = fake.services.find((s) => s.name === "service-b")!;
   await page.route(`**/api/v2/workspaces/${a.id}/routes/*`, (route) => route.fallback({ postData: JSON.stringify({ ...route.request().postDataJSON(), serviceId: serviceB.id }) }));
   await dialog.getByRole("button", { name: "Salvar" }).click();
-  await expect(dialog.getByText("O service escolhido não pertence a este Workspace.")).toBeVisible();
+  await expect(dialog.getByText("O serviço escolhido não pertence a este Workspace.")).toBeVisible();
   await expect(dialog).toBeVisible();
   expect(fake.routes.find((r) => r.name === "route-a")!.serviceId).not.toBe(serviceB.id);
   await page.unroute(`**/api/v2/workspaces/${a.id}/routes/*`);
@@ -407,7 +407,7 @@ test("searching services for \"all\" and then opening Routes keeps both lists ap
   await page.getByLabel("Buscar serviços").fill("all");
   await expect(page.getByRole("table", { name: "Serviços", exact: true })).toContainText("all-in-one");
   await menu(page).getByRole("link", { name: "Rotas", exact: true }).click();
-  await expect(page.getByLabel("Filtrar por service").locator("option")).toHaveText(["Todos os services", "boletos", "all-in-one"]);
+  await expect(page.getByLabel("Filtrar por serviço").locator("option")).toHaveText(["Todos os serviços", "boletos", "all-in-one"]);
   await expect(page.getByRole("table", { name: "Rotas", exact: true })).toContainText("Serviço boletos");
   await page.getByRole("button", { name: "Nova rota" }).click();
   const dialog = page.getByRole("dialog", { name: "Nova rota" });

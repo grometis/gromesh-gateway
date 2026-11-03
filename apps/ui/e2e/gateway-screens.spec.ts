@@ -82,7 +82,7 @@ test("route cards retain matches, filters and actions, with draft badges and a c
   for (const value of ["orders-api", "/orders", "orders", "GET", "POST", "api.example.test", "Novo"]) await expect(row).toContainText(value);
   await expect(row.locator(".match-chip")).toHaveText(["GET", "POST", "api.example.test"]);
   const filtered = page.waitForRequest((r) => new URL(r.url()).pathname.endsWith("/routes") && new URL(r.url()).searchParams.get("serviceId") === service.id);
-  await page.getByLabel("Filtrar por service").selectOption(service.id);
+  await page.getByLabel("Filtrar por serviço").selectOption(service.id);
   await filtered;
   await expect(page).toHaveURL(new RegExp(`serviceId=${service.id}`));
   const searched = page.waitForRequest((r) => new URL(r.url()).pathname.endsWith("/routes") && new URL(r.url()).searchParams.get("q") === "/orders");
@@ -116,7 +116,7 @@ test("plugin cards keep name, scope and state; scope filtering and deletion stil
   const table = page.getByRole("table", { name: "Plugins", exact: true });
   await expect(table).toHaveClass("cards");
   const row = table.getByRole("row").filter({ hasText: "rate-limiting" });
-  for (const value of ["rate-limiting", "Service orders", "Não", "Alterado"]) await expect(row).toContainText(value);
+  for (const value of ["rate-limiting", "Serviço orders", "Não", "Alterado"]) await expect(row).toContainText(value);
   await expect(row).not.toContainText("minute");
   const filtered = page.waitForRequest((r) => new URL(r.url()).pathname.endsWith("/plugins") && new URL(r.url()).searchParams.get("global") === "true");
   await page.getByLabel("Filtrar por escopo").selectOption("global");
@@ -131,7 +131,7 @@ test("plugin cards keep name, scope and state; scope filtering and deletion stil
   await row.getByRole("button", { name: /^Mais ações para rate-limiting/ }).click();
   await page.getByRole("menuitem", { name: "Excluir" }).click();
   const confirm = page.getByRole("dialog", { name: "Excluir plugin" });
-  await expect(confirm).toContainText("Service orders");
+  await expect(confirm).toContainText("Serviço orders");
   await expect(confirm.getByRole("button", { name: "Excluir", exact: true })).toHaveClass("danger");
   await confirm.getByRole("button", { name: "Cancelar" }).click();
   await expect(confirm).toBeHidden();

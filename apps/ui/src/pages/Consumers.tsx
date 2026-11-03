@@ -217,7 +217,7 @@ function ConsumerForm({ envId, consumer, onClose, onCreated }: { envId: string; 
         <Field label="Username" errors={errors.fields.username}>
           {(id, invalid) => <input id={id} aria-invalid={invalid} value={form.username} onChange={(e) => set("username", e.target.value)} />}
         </Field>
-        <Field label="Custom id" errors={errors.fields.customId} hint="Identificador do consumer no seu sistema (opcional se houver username)">
+        <Field label="Custom id" errors={errors.fields.customId} hint="Identificador do consumidor no seu sistema (opcional se houver username)">
           {(id, invalid) => <input id={id} aria-invalid={invalid} value={form.customId} onChange={(e) => set("customId", e.target.value)} />}
         </Field>
         <Field label="Tags" errors={errors.fields.tags} hint="Separadas por vírgula">

@@ -26,7 +26,7 @@ describe("gatewayFormErrors", () => {
 
   it("puts the route rules on serviceId and on paths, numbered from 1", () => {
     expect(gatewayFormErrors(invalid({ path: "serviceId", message: "unknown service in this environment" }), "route").fields)
-      .toEqual({ serviceId: ["O service escolhido não pertence a este Workspace."] });
+      .toEqual({ serviceId: ["O serviço escolhido não pertence a este Workspace."] });
     expect(gatewayFormErrors(invalid(
       { path: "paths.0", message: "must match pattern \"^(/|~/)\"" },
       { path: "paths.1", message: "unbalanced parenthesis at offset 3" },

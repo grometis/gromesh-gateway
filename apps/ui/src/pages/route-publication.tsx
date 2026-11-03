@@ -69,10 +69,10 @@ export function RoutePaths({ route, config = route, slug, servicePath, publicati
     : published ? null : "publicação não comprovada; ainda não implantado";
   const pathText = (values: string[] | undefined) => values?.length ? values.join(", ") : route ? "sem paths (outros critérios de correspondência)" : "nenhum path informado";
   const effects = (values: string[], stripped: boolean, base: string | null | undefined, flow: "v1" | "v2") => base === undefined
-    ? <p><small>Upstream {flow} · stripPath {String(stripped)}: path do service não comprovado.</small></p>
+    ? <p><small>Upstream {flow} · stripPath {String(stripped)}: path do serviço não comprovado.</small></p>
     : values.length
     ? values.map((p) => <p key={p}><small>Upstream {flow} · stripPath {String(stripped)} · simulação: {upstreamEffect(slug ?? "", p, stripped, base, flow)}</small></p>)
-    : <p><small>Upstream {flow} · stripPath {String(stripped)}: sem match de path para remover; o upstream recebe o path completo da requisição, combinado com o path do service {base || "/"}.</small></p>;
+    : <p><small>Upstream {flow} · stripPath {String(stripped)}: sem match de path para remover; o upstream recebe o path completo da requisição, combinado com o path do serviço {base || "/"}.</small></p>;
 
   return (
     <div className="note route-paths" role="group" aria-label="Configuração e publicação por fluxo">

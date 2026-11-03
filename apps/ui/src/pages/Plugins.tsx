@@ -25,7 +25,7 @@ export interface ScopeChoice {
   id: string;
 }
 
-const SCOPE_LABEL: Record<ScopeKind, string> = { global: "Global", service: "Service", route: "Route", consumer: "Consumer" };
+const SCOPE_LABEL: Record<ScopeKind, string> = { global: "Global", service: "Serviço", route: "Route", consumer: "Consumidor" };
 
 export function scopeOf(p: Pick<Plugin, "scope">): ScopeChoice {
   const s = p.scope ?? {};

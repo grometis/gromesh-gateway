@@ -28,7 +28,7 @@ const ALGORITHMS: Record<Algorithm, string> = {
   "consistent-hashing": "Hash consistente",
   latency: "Menor latência",
 };
-const HASH_ON: Record<HashOn, string> = { none: "Nenhum", consumer: "Consumer", ip: "IP do cliente", header: "Header", cookie: "Cookie" };
+const HASH_ON: Record<HashOn, string> = { none: "Nenhum", consumer: "Consumidor", ip: "IP do cliente", header: "Header", cookie: "Cookie" };
 const FIELDS = ["name", "algorithm", "hashOn", "hashFallback", "hashOnHeader", "hashFallbackHeader", "hashOnCookie", "hashOnCookiePath", "healthchecks", "tags"] as const;
 
 /** Upstream names, also used as suggestions for a service's host. */
@@ -62,7 +62,7 @@ export function UpstreamsPage() {
     <section className="final-page gateway-list upstreams-page">
       <PageHeader
         title="Upstreams"
-        description="Um service cujo host é o nome de um upstream balanceia entre os targets dele."
+        description="Um serviço cujo host é o nome de um upstream balanceia entre os targets dele."
         actions={canEdit && <Button variant="primary" onClick={() => setEditing("new")}>Novo upstream</Button>}
       />
       {upstreams.isPending && <p className="muted">Carregando…</p>}
@@ -212,7 +212,7 @@ function UpstreamForm({ envId, upstream, onClose }: { envId: string; upstream: U
   return (
     <Modal title={upstream ? `Editar ${upstream.name}` : "Novo upstream"} onClose={onClose} wide>
       <form onSubmit={submit} className="form" noValidate>
-        <Field label="Nome" errors={errors.fields.name} hint="Hostname em minúsculas; use este nome como host dos services">
+        <Field label="Nome" errors={errors.fields.name} hint="Hostname em minúsculas; use este nome como host dos serviços">
           {(id, invalid) => <input id={id} aria-invalid={invalid} value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="orders.upstream" />}
         </Field>
         <Field label="Algoritmo" errors={errors.fields.algorithm}>
@@ -340,7 +340,7 @@ function DeleteUpstream({ envId, upstream, onClose }: { envId: string; upstream:
       title="Excluir upstream"
       message={
         <>
-          Excluir <strong>{upstream.name}</strong> e seus targets? Não é possível enquanto algum service usa este nome como host.
+          Excluir <strong>{upstream.name}</strong> e seus targets? Não é possível enquanto algum serviço usa este nome como host.
         </>
       }
       confirmLabel="Excluir"
