@@ -25,12 +25,13 @@ function normalizeIdentifiers(value) {
     .replace(/([a-z])([A-Z])/g, "$1 $2")
     .replace(/[_0-9-]+/g, " ").replace(/ +/g, " ");
 }
-function referencePath(parts, packageParts = [], cpe = false) {
+function referencePath(parts, packageParts = [], kind = "download") {
   // Check names even without a following value: this also closes name/value path pairs.
   for (const part of parts) {
     const sensitive = [part, normalizeIdentifiers(part)].some(spelling => referenceNamePattern.test(spelling)) ||
       encodedCredential(part, referenceNamePattern);
-    if (cpe) requireValid(!sensitive || packageParts.includes(part), RejectionCode.CPE_SENSITIVE);
+    if (kind === "cpe") requireValid(!sensitive || packageParts.includes(part), RejectionCode.CPE_SENSITIVE);
+    else if (kind === "image") requireValid(!sensitive || packageParts.includes(part), RejectionCode.IMAGE_PATH_SENSITIVE);
     else requireValid(!sensitive || packageParts.includes(part), RejectionCode.DOWNLOAD_PATH_SENSITIVE);
   }
 }
@@ -211,7 +212,7 @@ function timestamp(value) {
   const parsed = Date.parse(value);
   requireValid(Number.isFinite(parsed) && new Date(parsed).toISOString() === value.replace("Z", ".000Z"), RejectionCode.TIMESTAMP);
 }
-function imagePath(value, inventory = false) {
+function imagePath(value, inventory = false, tokenPackages = []) {
   text(value, 512, /^\/?[\p{L}\p{M}0-9@+_.,/=-]+$/u, true);
   const parts = value.replace(/^\//, "").split("/");
   requireValid(parts.every(part => part !== ".." && part !== "." && part.length > 0), RejectionCode.IMAGE_PATH_SEGMENTS);
@@ -221,6 +222,23 @@ function imagePath(value, inventory = false) {
   // This exception is only for file metadata, not sourceInfo or arbitrary shadow paths.
   requireValid((inventory && ["etc/shadow", "/etc/shadow"].includes(value)) || !/(?:^|\/)(?:\.env(?:\.[^/]*)?|\.aws|\.ssh|\.docker|credentials|secrets?|shadow|gshadow|kubeconfig)(?:\/|$)/i.test(value), RejectionCode.IMAGE_PATH_SENSITIVE);
   requireValid(!/(?:^|\/)(?:home|Users|runner|github|host|proc|sys|dev|mnt)(?:\/|$)/.test(value), RejectionCode.IMAGE_PATH_HOST);
+  const path = parts.join("/");
+  const metadataParts = [];
+  // Captured file inventories name the public account database and this Mozilla CA.
+  // Exempt only the complete file locations, never sourceInfo or child/sibling paths.
+  if (inventory && ["etc/passwd", "usr/share/ca-certificates/mozilla/GDCA_TrustAUTH_R5_ROOT.crt"].includes(path)) {
+    metadataParts.push(parts.at(-1));
+  }
+  // Lexer packages have token-named pnpm manifests in the control-plane inventory.
+  // Bind to their npm coordinates and complete manifest path; versions stay checked.
+  for (const pkg of tokenPackages) {
+    if (!tokenPackage(pkg)) continue;
+    const coordinate = `${pkg.name.replace("/", "+")}@${pkg.versionInfo}`;
+    if (path !== `app/apps/control-plane/node_modules/.pnpm/${coordinate}/node_modules/${pkg.name}/package.json`) continue;
+    referencePath([pkg.versionInfo], [], "image");
+    metadataParts.push(coordinate, ...pkg.name.split("/"));
+  }
+  referencePath(parts, metadataParts, "image");
   for (const part of parts) {
     // pnpm truncates long peer-dependency coordinates and appends a 32-hex hash.
     // Only that path component has a hash suffix; all remaining text stays checked.
@@ -339,7 +357,7 @@ function externalRef(value, context, pkg) {
       // Reject credential labels without rejecting every product containing them.
       requireValid(![part, normalizeIdentifiers(part)].some(spelling => /\b(?:password|passwd|authorization|credential|secret|api[ _-]?key|private[ _-]?key|access[ _-]?key)\b/i.test(spelling)), RejectionCode.CPE_SENSITIVE);
       const segments = decoded[index].split("/");
-      referencePath(segments, tokenCpe && [3, 4].includes(index) ? segments : [], true);
+      referencePath(segments, tokenCpe && [3, 4].includes(index) ? segments : [], "cpe");
     }
     const language = parts[offset === 3 ? 8 : 7];
     if (language !== undefined) text(language, 15, /^(?:\*|-|[A-Za-z]{2,3}(?:-(?:[A-Za-z]{2}|[0-9]{3}))?)$/);
@@ -543,7 +561,7 @@ export function validateSbom(directory, context) {
       const match = /^acquired package info from (APK DB|installed node module manifest file|go module information|the following paths): (.+)$/.exec(pkg.sourceInfo);
       requireValid(match !== null, RejectionCode.SOURCE_INFO);
       safeText(match[1], 60);
-      imagePath(match[2]);
+      imagePath(match[2], false, [pkg]);
     }
     optionalMetadata(pkg, licenseIds);
     if (pkg.externalRefs !== undefined) {
@@ -561,10 +579,11 @@ export function validateSbom(directory, context) {
   }
   if (doc.files !== undefined) {
     list(doc.files, 10_000);
+    const tokenPackages = doc.packages.filter(tokenPackage);
     for (const file of doc.files) {
       shape(file, ["SPDXID", "fileName", "checksums"], ["fileTypes", "licenseConcluded", "copyrightText", "comment", "annotations", "licenseInfoInFiles"]);
       register(file.SPDXID, file.fileName);
-      imagePath(file.fileName, true);
+      imagePath(file.fileName, true, tokenPackages);
       optionalMetadata(file, licenseIds, true);
       if (file.licenseInfoInFiles !== undefined) {
         list(file.licenseInfoInFiles, 64, 1);

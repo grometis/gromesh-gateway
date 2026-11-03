@@ -1099,14 +1099,15 @@ test('PR mode validates SHA, arch and local image without publication or digest 
   assert.equal(prSupplyFixture(t).runSupply().status, 0);
 });
 
+const credentialPathLabels = ['client_secret', 'access_token', 'clientSecret', 'accessToken', 'sessionToken',
+  'client-secret', 'access-token', 'client.secret', 'client2Secret', 'session2_token3',
+  'secret', 'token', 'password', 'passwd', 'apikey', 'api_key', 'access_key',
+  'private_key', 'credential', 'auth', 'bearer', 'session', 'clientAPIKey',
+  'api.key', 'api+key', 'access.key', 'private.key', 'client.api.key',
+  'client%5fsecret', '%61ccess_token', 'client%53ecret',
+  'YXV0aA', 'YXV0aA==', 'c2Vzc2lvbg', '61757468', '73657373696f6e'];
 for (const mode of ['images', 'pr']) {
-  for (const label of ['client_secret', 'access_token', 'clientSecret', 'accessToken',
-    'client-secret', 'access-token', 'client.secret', 'client2Secret', 'session2_token3',
-    'secret', 'token', 'password', 'passwd', 'apikey', 'api_key', 'access_key',
-    'private_key', 'credential', 'auth', 'bearer', 'session', 'clientAPIKey',
-    'api.key', 'api+key', 'access.key', 'private.key', 'client.api.key',
-    'client%5fsecret', '%61ccess_token', 'client%53ecret',
-    'YXV0aA', 'YXV0aA==', 'c2Vzc2lvbg', '61757468', '73657373696f6e']) {
+  for (const label of credentialPathLabels) {
     for (const [field, mutate] of [
       ['downloadLocation', d => { d.packages[0].downloadLocation = `https://example.org/${label}/abc123`; }],
       ['terminal segment', d => { d.packages[0].downloadLocation = `https://example.org/releases/${label}`; }],
@@ -1134,6 +1135,98 @@ for (const mode of ['images', 'pr']) {
         assert.equal(result.stderr.includes(label), false);
       });
     }
+  }
+}
+
+for (const mode of ['images', 'pr']) {
+  for (const label of credentialPathLabels) {
+    for (const field of ['fileName', 'sourceInfo']) {
+      for (const path of [`/app/${label}/abc123`, `app/releases/${label}`]) {
+        test(`internal path credential ${mode} ${field} ${path}`, t => {
+          const f = mode === 'pr' ? prSupplyFixture(t) : supplyFixture(t);
+          const doc = JSON.parse(readFileSync(f.sbomFile));
+          if (field === 'fileName') doc.files[0].fileName = path;
+          else doc.packages[0].sourceInfo = `acquired package info from the following paths: ${path}`;
+          writeFileSync(f.sbomFile, JSON.stringify(doc));
+          const result = f.runSupply();
+          rejectSupply(result);
+          assert.equal(result.stderr.includes('abc123'), false);
+          assert.equal(result.stderr.includes(label), false);
+        });
+      }
+    }
+  }
+  for (const name of ['@tokenizer/token', 'token-types']) {
+    for (const field of ['fileName', 'sourceInfo']) {
+      for (const variant of ['future version', 'wrong package', 'wrong version', 'missing purl', 'wrong purl',
+        'credential version', 'child path', 'sibling file', 'wrong root']) {
+        test(`internal path token manifest ${mode} ${field} ${name} ${variant}`, t => {
+          const f = mode === 'pr' ? prSupplyFixture(t) : supplyFixture(t);
+          const doc = JSON.parse(readFileSync(f.sbomFile));
+          const pkg = doc.packages[0];
+          const version = variant === 'credential version' ? '99.1.2-sessionToken' : '99.1.2';
+          Object.assign(pkg, { name, versionInfo: version, externalRefs: [
+            { referenceCategory: 'PACKAGE-MANAGER', referenceType: 'purl', referenceLocator: `pkg:npm/${name}@${version}` },
+          ] });
+          let path = `/app/apps/control-plane/node_modules/.pnpm/${name.replace('/', '+')}@${version}/node_modules/${name}/package.json`;
+          if (variant === 'wrong package') pkg.name = 'future';
+          if (variant === 'wrong version') pkg.versionInfo = '99.1.3';
+          if (variant === 'missing purl') delete pkg.externalRefs;
+          if (variant === 'wrong purl') pkg.externalRefs[0].referenceLocator = `pkg:npm/future@${version}`;
+          if (variant === 'child path') path += '/abc123';
+          if (variant === 'sibling file') path += '.backup';
+          if (variant === 'wrong root') path = path.replace('/app/', '/opt/');
+          if (field === 'fileName') doc.files[0].fileName = path;
+          else pkg.sourceInfo = `acquired package info from installed node module manifest file: ${path}`;
+          writeFileSync(f.sbomFile, JSON.stringify(doc));
+          const result = f.runSupply();
+          if (variant === 'future version') assert.equal(result.status, 0, result.stderr);
+          else rejectSupply(result);
+        });
+      }
+    }
+  }
+  for (const path of ['etc/passwd', 'usr/share/ca-certificates/mozilla/GDCA_TrustAUTH_R5_ROOT.crt']) {
+    for (const prefix of ['', '/']) {
+      test(`internal path public file metadata ${mode} ${prefix}${path}`, t => {
+        const f = mode === 'pr' ? prSupplyFixture(t) : supplyFixture(t);
+        const doc = JSON.parse(readFileSync(f.sbomFile));
+        doc.files[0].fileName = prefix + path;
+        writeFileSync(f.sbomFile, JSON.stringify(doc));
+        assert.equal(f.runSupply().status, 0);
+      });
+    }
+  }
+  for (const path of [
+    '/app/passwd', '/etc/passwd/abc123', '/etc/passwd.backup',
+    '/app/GDCA_TrustAUTH_R5_ROOT.crt', '/usr/share/ca-certificates/mozilla/GDCA_TrustAUTH_R5_ROOT.crt/abc123',
+    '/usr/share/ca-certificates/mozilla/GDCA_TrustAUTH_R5_ROOT.crt.backup',
+    '/app/token-types/package.json',
+    '/app/apps/control-plane/node_modules/.pnpm/token-types@6.1.2/node_modules/token-types/abc123',
+    '/app/apps/control-plane/node_modules/.pnpm/token-types@6.1.2/node_modules/token-types/package.json/abc123',
+    '/app/apps/control-plane/node_modules/.pnpm/token-types@6.1.2-clientSecret/node_modules/token-types/package.json',
+    '/app/apps/control-plane/node_modules/.pnpm/@tokenizer+token@0.3.0/node_modules/@tokenizer/token/clientSecret',
+    '/app/apps/control-plane/node_modules/.pnpm/@tokenizer+token@0.3.0-clientSecret/node_modules/@tokenizer/token/package.json',
+  ]) {
+    for (const field of ['fileName', 'sourceInfo']) {
+      test(`internal path exception scope ${mode} ${field} ${path}`, t => {
+        const f = mode === 'pr' ? prSupplyFixture(t) : supplyFixture(t);
+        const doc = JSON.parse(readFileSync(f.sbomFile));
+        if (field === 'fileName') doc.files[0].fileName = path;
+        else doc.packages[0].sourceInfo = `acquired package info from the following paths: ${path}`;
+        writeFileSync(f.sbomFile, JSON.stringify(doc));
+        rejectSupply(f.runSupply());
+      });
+    }
+  }
+  for (const path of ['/etc/passwd', '/usr/share/ca-certificates/mozilla/GDCA_TrustAUTH_R5_ROOT.crt']) {
+    test(`internal path file-only metadata ${mode} ${path}`, t => {
+      const f = mode === 'pr' ? prSupplyFixture(t) : supplyFixture(t);
+      const doc = JSON.parse(readFileSync(f.sbomFile));
+      doc.packages[0].sourceInfo = `acquired package info from the following paths: ${path}`;
+      writeFileSync(f.sbomFile, JSON.stringify(doc));
+      rejectSupply(f.runSupply());
+    });
   }
 }
 
