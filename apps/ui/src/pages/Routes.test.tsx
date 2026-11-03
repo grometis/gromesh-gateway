@@ -69,7 +69,7 @@ describe("paths previstos na configuração v2", () => {
 describe("saving a workspace route", () => {
   it.each(["create", "edit"])("reserves the Paths accessible label for the input on %s", async (operation) => {
     const view = await screen([route()]);
-    await view.click(operation === "create" ? "Nova route" : "Editar");
+    await view.click(operation === "create" ? "Nova rota" : "Editar");
     const dialog = view.dialog()!;
     expect(view.field("Paths").tagName).toBe("TEXTAREA");
     expect(dialog.findAll((node) => (node.getAttribute("aria-label") ?? "").includes("Paths"))).toHaveLength(0);
@@ -258,7 +258,7 @@ describe("routes screen", () => {
       const menu = view.container.findAll((n) => n.getAttribute("aria-haspopup") === "menu")[0]!;
       await act(async () => { menu.dispatchEvent(new Event("click", { bubbles: true })); await tick(); });
       await view.click("Excluir");
-    } else await view.click(operation === "create" ? "Nova route" : "Editar");
+    } else await view.click(operation === "create" ? "Nova rota" : "Editar");
     try {
       expect(client!.getQueryState([query, W])).toMatchObject({ fetchStatus: "fetching", status: "success" });
       const dialog = view.dialog();
@@ -298,7 +298,7 @@ describe("routes screen", () => {
   it.each(["create", "edit"])("preserves commas in literal and regex paths on %s", async (operation) => {
     const paths = ["~/items/[0-9]{1,3}", "/a,/b"];
     const view = await screen([route({ paths })]);
-    await view.click(operation === "create" ? "Nova route" : "Editar");
+    await view.click(operation === "create" ? "Nova rota" : "Editar");
     await view.input("Nome", "comma-paths");
     if (operation === "create") await view.input("Paths", ` ${paths[0]} \r\n\n${paths[1]}\n`);
     expect(view.dialog()!.textContent).toContain("~/a(?:/items/[0-9]{1,3})");
@@ -313,7 +313,7 @@ describe("routes screen", () => {
     const view = await screen([route(), { ...pathless(), id: "pathless-id" }], { status, publishMode });
     expect(view.container.textContent).toContain("Somente leitura");
     expect(view.container.textContent).toContain(reason);
-    for (const label of ["Nova route", "Editar", "Excluir"]) expect(view.buttons(label)).toHaveLength(0);
+    for (const label of ["Nova rota", "Editar", "Excluir"]) expect(view.buttons(label)).toHaveLength(0);
     expect(view.container.findAll((n) => n.getAttribute("aria-haspopup") === "menu")).toHaveLength(0);
     await view.click("Ver detalhes", 1);
     expect(view.dialog()!.textContent).toContain("sem paths é somente leitura");
@@ -322,14 +322,14 @@ describe("routes screen", () => {
 
   it.each(["workspace", "environment"] as const)("blocks writes while %s is pending or failed", async (query) => {
     const view = await screen([route()], { pending: query });
-    expect(view.buttons("Nova route")).toHaveLength(0);
+    expect(view.buttons("Nova rota")).toHaveLength(0);
     expect(view.buttons("Editar")).toHaveLength(0);
     await act(async () => {
       client!.getQueryCache().find({ queryKey: [query, W] })!.setState({ status: "error", error: new Error("offline") });
       await tick();
     });
     expect(view.container.textContent).toContain("não foi possível verificar");
-    expect(view.buttons("Nova route")).toHaveLength(0);
+    expect(view.buttons("Nova rota")).toHaveLength(0);
     expect(view.buttons("Editar")).toHaveLength(0);
     expect(sent.every((r) => r.method === "GET")).toBe(true);
   });
@@ -342,7 +342,7 @@ describe("routes screen", () => {
       await tick();
     });
     expect(view.container.textContent).toContain("não foi possível verificar");
-    expect(view.buttons("Nova route")).toHaveLength(0);
+    expect(view.buttons("Nova rota")).toHaveLength(0);
     expect(view.buttons("Editar")).toHaveLength(0);
     expect(sent.every((r) => r.method === "GET")).toBe(true);
   });
@@ -428,7 +428,7 @@ describe("routes screen", () => {
 
   it("creates and deletes routes through v2 without a v1 PUT", async () => {
     const view = await screen([route()]);
-    await view.click("Nova route");
+    await view.click("Nova rota");
     await view.input("Nome", "new-route-a");
     await view.input("Paths", "/new-route-a");
     await view.submit();
@@ -451,18 +451,18 @@ describe("routes screen", () => {
     await act(async () => { await view.router.navigate(`/e/${B}/routes`); await tick(); });
     await act(async () => { await tick(); });
     await act(async () => { await view.router.navigate(`/e/${W}/routes`); await tick(); });
-    await view.click("Nova route");
-    expect(view.field("Service").options.map((node) => node.textContent)).toEqual(["service-a"]);
+    await view.click("Nova rota");
+    expect(view.field("Serviço").options.map((node) => node.textContent)).toEqual(["service-a"]);
     await view.input("Nome", "unsaved-route-a");
     expect(view.field("Nome").value).toBe("unsaved-route-a");
     await act(async () => { await view.router.navigate(`/e/${B}/routes`); await tick(); });
     expect(view.dialog()).toBeUndefined();
-    await view.click("Nova route");
+    await view.click("Nova rota");
     expect(view.field("Nome").value).toBe("");
-    expect(view.field("Service").options.map((node) => node.textContent)).toEqual(["service-b"]);
+    expect(view.field("Serviço").options.map((node) => node.textContent)).toEqual(["service-b"]);
     await act(async () => { await view.router.navigate(`/e/${W}/routes`); await tick(); });
     expect(view.dialog()).toBeUndefined();
-    await view.click("Nova route");
+    await view.click("Nova rota");
     expect(view.field("Nome").value).toBe("");
   });
 });
@@ -474,7 +474,7 @@ describe("route publication evidence (D1)", () => {
     const check = (scope: TestNode) => {
       expect(scope.textContent).toContain("Path configurado: /orders");
       expect(scope.textContent).toContain("Path no fluxo v1: /orders — publicado na versão v7");
-      expect(scope.textContent).toContain("Path previsto na configuração v2: /a/orders — previsão; ainda não implantado");
+      expect(scope.textContent).toContain("Path previsto do Workspace: /a/orders — previsão; ainda não implantado");
       expect(scope.textContent).toContain(`Upstream v1 · stripPath ${stripPath} · simulação: Uma requisição a /orders/x chega ao upstream como /v1/${stripPath ? "x" : "orders/x"}.`);
       expect(scope.textContent).toContain("Aplicação do snapshot v1 no gateway não comprovada");
       expect(scope.textContent).not.toContain("Path público");
@@ -501,7 +501,7 @@ describe("route publication evidence (D1)", () => {
     await view.input("Paths", "/unsaved");
     expect(view.dialog()!.textContent).toContain("Path no fluxo v1: /orders — publicado na versão v3");
     expect(view.dialog()!.textContent).toContain("Path no fluxo v1 (rascunho): /unsaved — alterado no formulário, não publicado");
-    expect(view.dialog()!.textContent).toContain("Path previsto na configuração v2: /a/unsaved — previsão");
+    expect(view.dialog()!.textContent).toContain("Path previsto do Workspace: /a/unsaved — previsão");
   });
 
   it.each([null, 4])("never treats a newly created route as published (current snapshot %s)", async (version) => {
@@ -509,7 +509,7 @@ describe("route publication evidence (D1)", () => {
     const view = await screen([stored], { version, publishedRoutes: [], changes: [{ kind: "routes", id: stored.id, label: stored.name, change: "added" }] });
     expect(view.container.textContent).toContain("Path no fluxo v1: /orders — não publicado; ainda não implantado");
     expect(view.container.textContent).not.toContain("publicado na versão");
-    await view.click("Nova route");
+    await view.click("Nova rota");
     await view.input("Paths", "/created");
     expect(view.dialog()!.textContent).toContain("Path no fluxo v1: /created — não publicado; ainda não implantado");
     expect(view.dialog()!.textContent).not.toContain("publicado na versão");
@@ -519,7 +519,7 @@ describe("route publication evidence (D1)", () => {
   it("a published Release v2 is a workspace state and never proof of route inclusion or deployment", async () => {
     const view = await screen([route({ paths: ["/orders"] })], { releaseVersion: 9 });
     expect(view.container.textContent).toContain("Release v2 do Workspace publicada v9; inclusão desta configuração da route não comprovada");
-    expect(view.container.textContent).toContain("Deployment v2 indisponível nesta fase");
+    expect(view.container.textContent).toContain("Implantação de Releases do Workspace indisponível nesta interface");
     expect(view.container.textContent).not.toContain("publicado na versão");
     expect(view.container.textContent).not.toMatch(/Path público|route implantada|Deployment aplicado/);
     expect(sent.some((r) => new URL(r.url).pathname.endsWith("/releases"))).toBe(true);
@@ -534,7 +534,7 @@ describe("route publication evidence (D1)", () => {
     await act(async () => { await view.router.navigate(`/e/${B}/routes`); await tick(); });
     await act(async () => { await tick(); });
     expect(view.dialog()).toBeUndefined();
-    await view.click("Nova route");
+    await view.click("Nova rota");
     await view.input("Paths", "/orders");
     expect(view.dialog()!.textContent).toContain("/b/orders — previsão");
     expect(view.container.textContent).not.toMatch(/\/a\/orders|publicado na versão v7|publicada v9/);
@@ -563,7 +563,7 @@ describe("route publication evidence (D1)", () => {
     const view = await screen([stored], { version: 7, publishedRoutes: [stored] });
     expect(view.container.textContent).toContain("Legada");
     expect(view.container.textContent).toContain("Path no fluxo v1: ~/items/[0-9]{1,3} — publicado na versão v7");
-    expect(view.container.textContent).toContain("Path previsto na configuração v2: ~/a(?:/items/[0-9]{1,3}) — previsão");
+    expect(view.container.textContent).toContain("Path previsto do Workspace: ~/a(?:/items/[0-9]{1,3}) — previsão");
     expect(view.container.textContent).toContain("sem acrescentar o prefixo do Workspace");
     expect(view.container.textContent).toContain("com o prefixo do Workspace");
     expect(view.container.textContent).not.toContain("Path público");
@@ -575,7 +575,7 @@ describe("pathless legacy publication", () => {
     const stored = { ...pathless(), stripPath };
     const view = await screen([stored], { version: 7, publishedRoutes: [stored] });
     expect(view.container.textContent).toContain("Path no fluxo v1: sem paths (outros critérios de correspondência) — publicado na versão v7");
-    expect(view.container.textContent).toContain("Path previsto na configuração v2: não comprovado");
+    expect(view.container.textContent).toContain("Path previsto do Workspace: não comprovado");
     expect(view.container.textContent).toContain(`Upstream v1 · stripPath ${stripPath}: sem match de path para remover`);
     expect(view.container.textContent).not.toContain("/a/");
     await view.click("Ver detalhes");

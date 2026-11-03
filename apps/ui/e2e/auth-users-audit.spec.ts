@@ -22,7 +22,7 @@ async function login(page: Page, user = admin) {
   await page.getByLabel("E-mail").fill(user.email);
   await page.getByLabel("Senha").fill("gromesh-dev-admin");
   await page.getByRole("button", { name: "Entrar" }).click();
-  await expect(page.getByRole("heading", { name: "Services", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Serviços", exact: true })).toBeVisible();
 }
 
 test("cookie restaura a sessão; CSRF fica em memória e protege também o logout", async ({ page, context }) => {
@@ -36,7 +36,7 @@ test("cookie restaura a sessão; CSRF fica em memória e protege também o logou
   await login(page);
   expect((await context.cookies()).find((cookie) => cookie.name === "gromesh_session")?.httpOnly).toBe(true);
   await page.reload();
-  await expect(page.getByRole("heading", { name: "Services", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Serviços", exact: true })).toBeVisible();
   expect(await page.evaluate(() => ({ local: { ...localStorage }, session: { ...sessionStorage } }))).toEqual({ local: {}, session: {} });
   await page.route("**/api/v1/auth/logout", (route) => route.fulfill({
     status: 204, headers: { "Set-Cookie": "gromesh_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0" },
@@ -73,7 +73,7 @@ test("403 no logout aparece sem abandonar a sessão", async ({ page }) => {
   await page.route("**/api/v1/auth/logout", (route) => route.fulfill({ status: 403, json: { title: "Forbidden", status: 403 } }));
   await page.getByRole("button", { name: "Sair", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("Você não tem permissão");
-  await expect(page.getByRole("heading", { name: "Services", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Serviços", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Sair", exact: true })).toBeEnabled();
 });
 
@@ -83,7 +83,7 @@ test("viewer conserva restrições v1; gateway v2 usa permissões do servidor e 
   await expect(menu.getByRole("link", { name: /Usuários|Auditoria/ })).toHaveCount(0);
   // Services, Routes and Plugins go through v2, where no operation tells the caller's permissions: the actions are offered
   // and the server's 403 decides (Services/Routes below; Plugins in workspace-plugins.spec.ts). The v1 screens hide v1 edits.
-  for (const section of ["Consumers", "Publicações", "Clusters"]) {
+  for (const section of ["Consumidores", "Snapshots publicados (legado)", "Clusters (legado)"]) {
     await menu.getByRole("link", { name: section, exact: true }).click();
     await expect(page.getByRole("heading", { name: section, exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: /^(Novo |Nova |Editar|Excluir|Publicar$|Restaurar |Rotacionar |Gerar )/ })).toHaveCount(0);
@@ -91,8 +91,8 @@ test("viewer conserva restrições v1; gateway v2 usa permissões do servidor e 
   await menu.getByRole("link", { name: "Plugins", exact: true }).click();
   await expect(page.getByRole("table", { name: "Plugins", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Novo plugin", exact: true })).toBeEnabled();
-  await menu.getByRole("link", { name: "Services", exact: true }).click();
-  const services = page.getByRole("table", { name: "Services", exact: true });
+  await menu.getByRole("link", { name: "Serviços", exact: true }).click();
+  const services = page.getByRole("table", { name: "Serviços", exact: true });
   await expect(services.getByRole("row")).not.toHaveCount(0);
   await expect(services.getByRole("button", { name: "Editar", exact: true }).first()).toBeVisible();
   const before = await services.getByRole("row").allTextContents();
@@ -102,8 +102,8 @@ test("viewer conserva restrições v1; gateway v2 usa permissões do servidor e 
     writes.push(route.request().method());
     return route.fulfill({ status: 403, contentType: "application/problem+json", json: { type: "about:blank", title: "Forbidden", status: 403 } });
   });
-  await page.getByRole("button", { name: "Novo service" }).click();
-  const create = page.getByRole("dialog", { name: "Novo service" });
+  await page.getByRole("button", { name: "Novo serviço" }).click();
+  const create = page.getByRole("dialog", { name: "Novo serviço" });
   await create.getByLabel("Nome").fill("forbidden");
   await create.getByLabel("Host").fill("forbidden.internal");
   await create.getByRole("button", { name: "Salvar" }).click();
@@ -119,8 +119,8 @@ test("viewer conserva restrições v1; gateway v2 usa permissões do servidor e 
   await expect(services.getByRole("row")).toHaveText(before);
   await page.unroute("**/api/v2/workspaces/*/services**");
 
-  await menu.getByRole("link", { name: "Routes", exact: true }).click();
-  const routes = page.getByRole("table", { name: "Routes", exact: true });
+  await menu.getByRole("link", { name: "Rotas", exact: true }).click();
+  const routes = page.getByRole("table", { name: "Rotas", exact: true });
   await expect(routes.getByRole("row")).not.toHaveCount(0);
   await expect(routes.getByRole("button", { name: "Editar", exact: true }).first()).toBeVisible();
   const routesBefore = await routes.getByRole("row").allTextContents();
@@ -129,8 +129,8 @@ test("viewer conserva restrições v1; gateway v2 usa permissões do servidor e 
     writes.push(route.request().method());
     return route.fulfill({ status: 403, contentType: "application/problem+json", json: { type: "about:blank", title: "Forbidden", status: 403 } });
   });
-  await page.getByRole("button", { name: "Nova route" }).click();
-  const newRoute = page.getByRole("dialog", { name: "Nova route" });
+  await page.getByRole("button", { name: "Nova rota" }).click();
+  const newRoute = page.getByRole("dialog", { name: "Nova rota" });
   await newRoute.getByLabel("Nome").fill("forbidden");
   await newRoute.getByLabel("Paths", { exact: true }).fill("/forbidden");
   await newRoute.getByRole("button", { name: "Salvar" }).click();
@@ -319,8 +319,8 @@ test("login por cookie → service → route → publicação → audit com o me
     nextCursor: null,
   } }));
   await login(page);
-  await page.getByRole("button", { name: "Novo service" }).click();
-  const service = page.getByRole("dialog", { name: "Novo service" });
+  await page.getByRole("button", { name: "Novo serviço" }).click();
+  const service = page.getByRole("dialog", { name: "Novo serviço" });
   await service.getByLabel("Nome").fill("orders");
   await service.getByLabel("Host").fill("orders.internal");
   await service.getByLabel("Porta").fill("8080");
@@ -328,9 +328,9 @@ test("login por cookie → service → route → publicação → audit com o me
   await service.getByRole("button", { name: "Salvar" }).click();
   expect((await serviceCreated).status()).toBe(201);
   await expect(service).toBeHidden();
-  await page.getByRole("link", { name: "Routes", exact: true }).click();
-  await page.getByRole("button", { name: "Nova route" }).click();
-  const route = page.getByRole("dialog", { name: "Nova route" });
+  await page.getByRole("link", { name: "Rotas", exact: true }).click();
+  await page.getByRole("button", { name: "Nova rota" }).click();
+  const route = page.getByRole("dialog", { name: "Nova rota" });
   await route.getByLabel("Nome").fill("orders-api");
   await route.getByLabel("Paths").fill("/orders");
   const routeCreated = page.waitForResponse((response) => response.request().method() === "POST" && response.url().endsWith("/routes"));
@@ -338,7 +338,7 @@ test("login por cookie → service → route → publicação → audit com o me
   expect((await routeCreated).status()).toBe(201);
   await expect(route).toBeHidden();
   await page.getByRole("region", { name: "Publicação" }).getByRole("button", { name: /^Publicar v\d+$/ }).click();
-  const publish = page.getByRole("region", { name: "Revisar e publicar" });
+  const publish = page.getByRole("region", { name: "Revisar snapshot (legado)" });
   await expect(publish.locator('[data-change="added"]')).toHaveCount(2);
   await publish.getByLabel("Mensagem").fill("Publicação da UI");
   const published = page.waitForResponse((response) => response.request().method() === "POST" && response.url().endsWith("/snapshots"));

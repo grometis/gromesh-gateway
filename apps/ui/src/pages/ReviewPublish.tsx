@@ -121,9 +121,9 @@ export function ReviewPublishPage() {
   const issues = preview.isError ? toFormErrors(preview.error, []) : null;
 
   return (
-    <section className="final-page" aria-label="Revisar e publicar">
+    <section className="final-page" aria-label="Revisar snapshot (legado)">
       <PageHeader
-        title="Revisar e publicar"
+        title="Revisar snapshot (legado)"
         description={<>
             O que muda quando o rascunho virar <span className="mono">v{(current ?? 0) + 1}</span>
             {current !== null && (

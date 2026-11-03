@@ -35,22 +35,22 @@ export function ConsumersPage() {
   return (
     <section className="final-page">
       <PageHeader
-        title="Consumers"
+        title="Consumidores"
         actions={canEdit && (
           <button type="button" className="primary" onClick={() => setEditing("new")}>
-            Novo consumer
+            Novo consumidor
           </button>
         )}
       />
-      <input type="search" className="search" placeholder="Buscar por username ou custom id" aria-label="Buscar consumers" value={search} onChange={(e) => setSearch(e.target.value)} />
+      <input type="search" className="search" placeholder="Buscar por username ou custom id" aria-label="Buscar consumidores" value={search} onChange={(e) => setSearch(e.target.value)} />
       {consumers.isPending && <p className="muted">Carregando…</p>}
       {consumers.isError && <p className="error">{statusMessage(consumers.error)}</p>}
-      {consumers.isSuccess && items.length === 0 && <EmptyState title={q ? "Nenhum consumer encontrado." : "Nenhum consumer ainda."} />}
+      {consumers.isSuccess && items.length === 0 && <EmptyState title={q ? "Nenhum consumidor encontrado." : "Nenhum consumidor ainda."} />}
       {items.length > 0 && (
-        <Table label="Consumers" cards>
+        <Table label="Consumidores" cards>
           <thead>
             <tr>
-              <th>Consumer</th>
+              <th>Consumidor</th>
               <th>Custom id</th>
               <th>
                 <span className="visually-hidden">Ações</span>
@@ -120,10 +120,10 @@ export function ConsumerDetailPage() {
   return (
     <section className="stack final-page">
       <p>
-        <Link to=".." className="back-link">← Consumers</Link>
+        <Link to=".." className="back-link">← Consumidores</Link>
       </p>
       <PageHeader
-        title={<>Consumer {consumerName(c)}</>}
+        title={<>Consumidor {consumerName(c)}</>}
         actions={canEdit && (
           <div className="form-actions">
             <Button variant="primary" onClick={() => setEditing(true)}>
@@ -160,7 +160,7 @@ function CredentialsPanel(props: { envId: string; consumer: Consumer; canEdit: b
 }
 
 function PluginsPanel({ envId, consumer }: { envId: string; consumer: Consumer; canEdit: boolean }) {
-  return <ScopedPlugins envId={envId} scope={{ kind: "consumer", id: consumer.id }} title="Plugins do consumer" />;
+  return <ScopedPlugins envId={envId} scope={{ kind: "consumer", id: consumer.id }} title="Plugins do consumidor" />;
 }
 
 const TABS = [
@@ -174,7 +174,7 @@ function CredentialTabs({ envId, consumer, canEdit }: { envId: string; consumer:
   const [active, setActive] = useState<(typeof TABS)[number]["id"]>("credentials");
   const { Panel } = TABS.find((t) => t.id === active)!;
   return (
-    <Tabs label="Seções do consumer" tabs={TABS} active={active} onChange={setActive}>
+    <Tabs label="Seções do consumidor" tabs={TABS} active={active} onChange={setActive}>
       <Panel envId={envId} consumer={consumer} canEdit={canEdit} />
     </Tabs>
   );
@@ -212,7 +212,7 @@ function ConsumerForm({ envId, consumer, onClose, onCreated }: { envId: string; 
   const set = (k: keyof typeof form, v: string) => setForm((f) => ({ ...f, [k]: v }));
 
   return (
-    <Modal title={consumer ? `Editar ${consumerName(consumer)}` : "Novo consumer"} onClose={onClose}>
+    <Modal title={consumer ? `Editar ${consumerName(consumer)}` : "Novo consumidor"} onClose={onClose}>
       <form onSubmit={submit} className="form" noValidate>
         <Field label="Username" errors={errors.fields.username}>
           {(id, invalid) => <input id={id} aria-invalid={invalid} value={form.username} onChange={(e) => set("username", e.target.value)} />}
@@ -249,7 +249,7 @@ function DeleteConsumer({ envId, consumer, onClose, onDeleted }: { envId: string
   });
   return (
     <ConfirmDialog
-      title="Excluir consumer"
+      title="Excluir consumidor"
       message={
         <>
           Excluir <strong>{consumerName(consumer)}</strong>? As credenciais e os plugins dele também são excluídos. A exclusão só afeta o tráfego depois de publicar.

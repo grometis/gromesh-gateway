@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Navigate, NavLink, Outlet, useLocation, useMatch, useNavigate, useParams } from "react-router";
 import { api, ApiError, unwrap } from "../api/client";
@@ -8,6 +8,7 @@ import { Brand } from "./Brand";
 import { PublishStrip } from "./PublishStrip";
 import { InstanceContext } from "./InstanceContext";
 import { WorkspaceContext, WorkspaceSelector } from "./WorkspaceContext";
+import { NavTree } from "./NavTree";
 
 export const environmentsQuery = { queryKey: ["environments"], queryFn: () => unwrap(api.GET("/environments")) };
 
@@ -58,26 +59,10 @@ export function FirstEnvironment() {
 
 const ROLE_LABELS = { viewer: "Leitor", editor: "Editor", admin: "Administrador", none: "Sem acesso" } as const;
 
-const GATEWAY = [
-  ["services", "Services"],
-  ["routes", "Routes"],
-  ["variables", "Variáveis"],
-  ["consumers", "Consumers"],
-  ["plugins", "Plugins"],
-  ["upstreams", "Upstreams"],
-  ["certificates", "Certificados"],
-  ["releases", "Releases"],
-] as const;
-const OPERATION = [
-  ["overview", "Visão geral"],
-  ["publications", "Publicações"],
-  ["clusters", "Clusters"],
-  ["metrics", "Métricas"],
-  ["requests", "Requisições"],
-] as const;
-
 export function Shell() {
   const { envId: routeEnvId } = useParams();
+  const [collapsed, setCollapsed] = useState(false);
+  const mainRef = useRef<HTMLElement>(null);
   const isReleasesRoute = useMatch("/e/:envId/releases");
   const isAccountRoute = useMatch("/tokens");
   const isWorkspacesRoute = useMatch("/workspaces");
@@ -110,67 +95,53 @@ export function Shell() {
   };
 
   return (
-    <div className="app">
+    <div className={collapsed ? "app menu-collapsed" : "app"}>
+      <a className="skip-link" href="#main-content" onClick={() => mainRef.current?.focus()}>Pular para o conteúdo</a>
       <aside className="menu">
         <Brand />
         <InstanceContext />
-        {hasWorkspaceSelector && <WorkspaceSelector id={routeEnvId} onSelect={(id) => navigate(`/e/${id}/${workspaceSection ?? "services"}`)} />}
-        {routeEnvId ? (
-          <div className="env">
-            <label htmlFor="env-select">Ambiente (legado)</label>
-            <select id="env-select" value={validRoute ? routeEnvId : ""} disabled={!envs.isSuccess || envs.data.length === 0} aria-describedby={contextMessage ? "env-context-message" : undefined} onChange={(e) => switchEnv(e.target.value)}>
-              {!validRoute && <option value="" disabled>Selecione um ambiente legado</option>}
-              {envs.isSuccess && envs.data.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
-            </select>
-            {contextMessage && <p id="env-context-message" role={envs.isError ? "alert" : "status"}>{contextMessage}</p>}
-            {validRoute && <WorkspaceContext key={routeEnvId} id={routeEnvId} />}
-          </div>
-        ) : (
-          <div className="global-context">
-            <p>{isAccountRoute ? "Escopo: minha conta nesta instância" : "Escopo: esta instância"}</p>
-            {previousEnv && <NavLink className="context-return" to={`/e/${previousEnv.id}/services`}>Voltar ao ambiente legado {previousEnv.name}</NavLink>}
-          </div>
-        )}
-        <nav aria-label="Menu principal">
-          {envId && (
-            <>
-              <MenuGroup title="Gateway" items={GATEWAY.map(([path, label]) => [`/e/${envId}/${path}`, label])} />
-              <MenuGroup title="Operação" items={OPERATION.map(([path, label]) => [`/e/${envId}/${path}`, label])} />
-            </>
-          )}
-          <MenuGroup title="Instância" items={[["/workspaces", "Workspaces"]]} />
-          <MenuGroup
-            title="Conta"
-            items={[["/tokens", "Tokens de API"], ...(user?.role === "admin" ? ([["/users", "Usuários"], ["/audit", "Auditoria"]] as const) : [])]}
-          />
-        </nav>
-        <div className="account">
-          <span className="who">
-            {user?.name} · Papel legado: {legacyRole ? ROLE_LABELS[legacyRole] : "Não informado"}
-          </span>
-          <button type="button" disabled={signOut.isPending} onClick={() => signOut.mutate()}>
-            {signOut.isPending ? "Saindo…" : "Sair"}
-          </button>
-          {signOut.isError && <p className="error" role="alert">{statusMessage(signOut.error)}</p>}
-        </div>
+        <button className="menu-toggle" type="button" aria-controls="main-navigation" aria-expanded={!collapsed} onClick={() => setCollapsed((value) => !value)}>
+          {collapsed ? "Expandir menu" : "Recolher menu"}
+        </button>
+        <NavTree
+          envId={envId}
+          role={user?.role}
+          context={<>
+            {hasWorkspaceSelector && <WorkspaceSelector id={routeEnvId} onSelect={(id) => navigate(`/e/${id}/${workspaceSection ?? "services"}`)} />}
+            {routeEnvId ? (
+              <div className="env">
+                <label htmlFor="env-select">Ambiente (legado)</label>
+                <select id="env-select" value={validRoute ? routeEnvId : ""} disabled={!envs.isSuccess || envs.data.length === 0} aria-describedby={contextMessage ? "env-context-message" : undefined} onChange={(e) => switchEnv(e.target.value)}>
+                  {!validRoute && <option value="" disabled>Selecione um ambiente legado</option>}
+                  {envs.isSuccess && envs.data.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+                </select>
+                {contextMessage && <p id="env-context-message" role={envs.isError ? "alert" : "status"}>{contextMessage}</p>}
+                {validRoute && <WorkspaceContext key={routeEnvId} id={routeEnvId} />}
+              </div>
+            ) : (
+              <div className="global-context">
+                <p>{isAccountRoute ? "Escopo: minha conta nesta instância" : "Escopo: esta instância"}</p>
+                {previousEnv && <NavLink className="context-return" to={`/e/${previousEnv.id}/services`}>Voltar ao ambiente legado {previousEnv.name}</NavLink>}
+              </div>
+            )}
+          </>}
+          account={
+            <div className="account">
+              <span className="who">
+                {user?.name} · Papel legado: {legacyRole ? ROLE_LABELS[legacyRole] : "Não informado"}
+              </span>
+              <button type="button" disabled={signOut.isPending} onClick={() => signOut.mutate()}>
+                {signOut.isPending ? "Saindo…" : "Sair"}
+              </button>
+              {signOut.isError && <p className="error" role="alert">{statusMessage(signOut.error)}</p>}
+            </div>
+          }
+        />
       </aside>
-      <main className="content">
+      <main id="main-content" className="content" tabIndex={-1} ref={mainRef}>
         {routeEnvId && !isReleasesRoute && <PublishStrip envId={routeEnvId} />}
         <Outlet />
       </main>
-    </div>
-  );
-}
-
-function MenuGroup({ title, items }: { title: string; items: readonly (readonly [string, string])[] }) {
-  return (
-    <div className="menu-group">
-      <h2>{title}</h2>
-      {items.map(([to, label]) => (
-        <NavLink key={to} to={to}>
-          {label}
-        </NavLink>
-      ))}
     </div>
   );
 }

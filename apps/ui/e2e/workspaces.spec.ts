@@ -107,7 +107,7 @@ async function signIn(page: Page, user: Me) {
   await page.getByLabel("E-mail").fill(user.email);
   await page.getByLabel("Senha").fill("s3nha-de-teste");
   await page.getByRole("button", { name: "Entrar" }).click();
-  await expect(page.getByRole("heading", { name: "Services", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Serviços", exact: true })).toBeVisible();
 }
 
 async function openWorkspaces(page: Page, user: Me) {
@@ -364,7 +364,7 @@ test("the selector switches workspace and shows nothing of the previous one whil
   await expect(page.getByText("Carregando…")).toBeVisible();
   await expect(page.getByText("cobranca-api")).toHaveCount(0);
   release();
-  await expect(page.getByText("Nenhum service ainda.")).toBeVisible();
+  await expect(page.getByText("Nenhum serviço ainda.")).toBeVisible();
   await expect(page.getByText("cobranca-api")).toHaveCount(0);
 });
 

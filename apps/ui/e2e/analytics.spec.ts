@@ -14,7 +14,7 @@ async function login(page: Page, role: "admin" | "viewer" = "admin") {
   await page.getByLabel("E-mail").fill("ana@gromesh.dev");
   await page.getByLabel("Senha").fill("test-password");
   await page.getByRole("button", { name: "Entrar" }).click();
-  await expect(page.getByRole("heading", { name: "Services" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Serviços" })).toBeVisible();
 }
 
 const menu = (page: Page) => page.getByRole("navigation", { name: "Menu principal" });

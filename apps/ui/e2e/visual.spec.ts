@@ -35,8 +35,8 @@ async function openServices(page: Page, clusters = converging) {
   await page.getByLabel("E-mail").fill("ana@gromesh.dev");
   await page.getByLabel("Senha").fill("s3nha-de-teste");
   await page.getByRole("button", { name: "Entrar" }).click();
-  await expect(page.getByRole("heading", { name: "Services" })).toBeVisible();
-  await expect(page.getByRole("table", { name: "Services" }).getByRole("row")).toHaveCount(services.length + 1);
+  await expect(page.getByRole("heading", { name: "Serviços" })).toBeVisible();
+  await expect(page.getByRole("table", { name: "Serviços" }).getByRole("row")).toHaveCount(services.length + 1);
   await page.evaluate(() => document.fonts.ready);
 }
 
@@ -50,13 +50,13 @@ for (const viewport of [{ name: "desktop-1440", width: 1440, height: 900 }, { na
     await expect(strip).toContainText("v3");
     await expect(strip).toContainText("2/3");
     await expect(strip).toContainText("convergindo");
-    const rows = page.getByRole("table", { name: "Services" }).getByRole("row");
+    const rows = page.getByRole("table", { name: "Serviços" }).getByRole("row");
     await expect(rows.filter({ hasText: "payments" })).toContainText("Novo");
     await expect(rows.filter({ hasText: "orders" })).toContainText("Alterado");
     await expect(page.getByRole("button", { name: "Com alterações 2" })).toBeVisible();
     await expect(rows.filter({ hasText: "legacy-reports" })).toContainText("Desativado");
     // The accent is only for publishing: the screen's main action is the ink outline.
-    await expect(page.getByRole("button", { name: "Novo service" })).toHaveCSS("background-color", "rgb(255, 255, 255)");
+    await expect(page.getByRole("button", { name: "Novo serviço" })).toHaveCSS("background-color", "rgb(255, 255, 255)");
     await expect(strip.getByRole("button", { name: "Publicar v4" })).toHaveCSS("background-color", "rgb(201, 58, 30)");
 
     // No horizontal page scroll: only wide tables scroll, inside their own container.
@@ -85,7 +85,7 @@ test("a degraded rollout is written in the strip, not only coloured", async ({ p
 test("a service row opens its detail; Editar is quiet and Excluir lives in the keyboard-operable ⋯ menu", async ({ page }) => {
   await openServices(page);
   await page.route(`**/api/v2/workspaces/*/services/${id(3)}`, (route) => route.fulfill({ json: services[2] }));
-  const row = page.getByRole("table", { name: "Services" }).getByRole("row").filter({ hasText: "orders" });
+  const row = page.getByRole("table", { name: "Serviços" }).getByRole("row").filter({ hasText: "orders" });
   await expect(row.getByRole("button", { name: "Editar" })).toBeVisible();
   await expect(row.getByRole("button", { name: "Excluir" })).toHaveCount(0);
   const more = row.getByRole("button", { name: "Mais ações para orders" });
@@ -100,8 +100,8 @@ test("a service row opens its detail; Editar is quiet and Excluir lives in the k
   await expect(more).toBeFocused();
   await page.keyboard.press("ArrowDown");
   await page.keyboard.press("Enter");
-  await expect(page.getByRole("dialog", { name: "Excluir service" })).toContainText("orders");
-  await page.getByRole("dialog", { name: "Excluir service" }).getByRole("button", { name: "Cancelar" }).click();
+  await expect(page.getByRole("dialog", { name: "Excluir serviço" })).toContainText("orders");
+  await page.getByRole("dialog", { name: "Excluir serviço" }).getByRole("button", { name: "Cancelar" }).click();
 
   // Clicking anywhere on the row (not only the name) opens the service.
   const target = (await row.locator(".target").boundingBox())!;

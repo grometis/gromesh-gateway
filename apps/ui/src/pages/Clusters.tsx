@@ -56,7 +56,7 @@ function ClusterList({ envId }: { envId: string }) {
   return (
     <section className="final-page">
       <PageHeader
-        title="Clusters"
+        title="Clusters (legado)"
         description="Os gateways de cada cluster e a versão que cada um serve. Atualiza a cada 10 segundos com esta aba visível."
         actions={canAdmin && (
           <button type="button" className="primary" onClick={() => setCreating(true)}>

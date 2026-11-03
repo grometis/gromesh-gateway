@@ -114,7 +114,7 @@ describe("switching workspaces", () => {
     void fetchAll(client);
     const after = render(client, `/e/${B}/services`);
     expect(after).not.toContain("servico-de-pagamentos");
-    expect(after).not.toContain("Nenhum service");
+    expect(after).not.toContain("Nenhum serviço");
     expect(after).toContain("Carregando");
     // The selector already shows B, and its list (instance-wide) is the only data reused.
     expect(after).toMatch(new RegExp(`<option value="${B}" selected="">Recargas</option>`));

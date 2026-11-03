@@ -31,7 +31,7 @@ test("every screen of the app shell", async ({ page }) => {
   await page.getByLabel("E-mail").fill(admin.email);
   await page.getByLabel("Senha").fill("s3nha-de-teste");
   await page.getByRole("button", { name: "Entrar" }).click();
-  await expect(page.getByRole("heading", { name: "Services" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Serviços" })).toBeVisible();
   const envId = /\/e\/([^/]+)\//.exec(new URL(page.url()).pathname)![1]!;
   for (const screen of ENV_SCREENS) {
     await page.goto(`/e/${envId}/${screen}`);

@@ -23,11 +23,11 @@ async function signIn(page: Page, user: Me) {
   await page.getByLabel("E-mail").fill(user.email);
   await page.getByLabel("Senha").fill("s3nha-de-teste");
   await page.getByRole("button", { name: "Entrar" }).click();
-  await expect(page.getByRole("heading", { name: "Services", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Serviços", exact: true })).toBeVisible();
   // A v1 screen: its actions follow the role in the environment on screen (the v2 gateway screens offer them to
   // everyone and leave the decision to the server).
-  await page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Consumers", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Consumers", exact: true })).toBeVisible();
+  await page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Consumidores", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Consumidores", exact: true })).toBeVisible();
 }
 
 test("a global viewer who is editor in one environment edits only there, and does not see the hidden one", async ({ page }) => {
@@ -35,19 +35,19 @@ test("a global viewer who is editor in one environment edits only there, and doe
   const select = page.getByLabel("Ambiente (legado)", { exact: true });
   await expect(select.locator("option")).toHaveText(["Produção", "Homologação"]);
   await expect(page).toHaveURL(new RegExp(`/e/${prod.id}/consumers$`));
-  await expect(page.getByRole("button", { name: "Novo consumer" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Novo consumidor" })).toBeVisible();
   await select.selectOption({ label: "Homologação" });
   await expect(page).toHaveURL(new RegExp(`/e/${staging.id}/consumers$`));
-  await expect(page.getByRole("heading", { name: "Consumers", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Novo consumer" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Consumidores", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Novo consumidor" })).toHaveCount(0);
   await expect(page.getByRole("link", { name: "Usuários" })).toHaveCount(0);
 });
 
 test("a global editor who is viewer in one environment only reads there", async ({ page }) => {
   await signIn(page, person("editor", [{ environmentId: prod.id, role: "viewer" }]));
-  await expect(page.getByRole("button", { name: "Novo consumer" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Novo consumidor" })).toHaveCount(0);
   await page.getByLabel("Ambiente (legado)", { exact: true }).selectOption({ label: "Homologação" });
-  await expect(page.getByRole("button", { name: "Novo consumer" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Novo consumidor" })).toBeVisible();
 });
 
 for (const key of ["Enter", "Space"]) {
@@ -171,7 +171,7 @@ test("Salvar stays off when the roles cannot be read again: a stale set never re
 
 test("a global viewer who is editor in one environment may create an editor token, never an admin one", async ({ page }) => {
   await signIn(page, person("viewer", [{ environmentId: prod.id, role: "editor" }]));
-  await page.getByRole("link", { name: "Tokens de API" }).click();
+  await page.getByRole("link", { name: "Tokens" }).click();
   await page.getByRole("button", { name: "Novo token" }).click();
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByLabel("Papel").locator("option")).toHaveText(["Leitor", "Editor"]);

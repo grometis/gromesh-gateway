@@ -34,9 +34,9 @@ async function openConsumer(page: Page) {
   await page.getByLabel("E-mail").fill("ana@gromesh.dev");
   await page.getByLabel("Senha").fill("s3nha-de-teste");
   await page.getByRole("button", { name: "Entrar" }).click();
-  await expect(page.getByRole("heading", { name: "Services" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Serviços" })).toBeVisible();
   await page.goto(`/e/${envId}/consumers/${consumerId}`);
-  await expect(page.getByRole("heading", { name: "Consumer partner-acme" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Consumidor partner-acme" })).toBeVisible();
   await expect(page.getByRole("list", { name: "Credenciais basic-auth" })).toBeVisible();
   await page.evaluate(() => document.fonts.ready);
 }
@@ -56,7 +56,7 @@ for (const viewport of [{ name: "desktop-1440", width: 1440, height: 900 }, { na
 
 test("credential cards show only hints; a new secret is shown once with Copiar and Já copiei; tabs reach groups and plugins", async ({ page }) => {
   await openConsumer(page);
-  const tabs = page.getByRole("tablist", { name: "Seções do consumer" });
+  const tabs = page.getByRole("tablist", { name: "Seções do consumidor" });
   await expect(tabs.getByRole("tab")).toHaveText(["Credenciais", "Grupos ACL", "Plugins"]);
   const panel = page.getByRole("tabpanel", { name: "Credenciais" });
   await expect(panel.getByRole("list", { name: "Chaves" }).getByRole("listitem")).toHaveText([/…k9Qa/, /…7Tz1/]);
@@ -79,7 +79,7 @@ test("credential cards show only hints; a new secret is shown once with Copiar a
   await tabs.getByRole("tab", { name: "Grupos ACL" }).click();
   await expect(page.getByRole("list", { name: "Grupos" })).toContainText("gold");
   await tabs.getByRole("tab", { name: "Plugins" }).click();
-  await expect(page.getByRole("heading", { name: "Plugins do consumer" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Plugins do consumidor" })).toBeVisible();
 });
 
 test("decision H-14: no field takes a key or an HS256 secret; a pending credential is reprovisioned and shown once", async ({ page }) => {

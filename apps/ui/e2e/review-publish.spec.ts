@@ -31,9 +31,9 @@ async function openReview(page: Page) {
   await page.getByLabel("E-mail").fill("ana@gromesh.dev");
   await page.getByLabel("Senha").fill("s3nha-de-teste");
   await page.getByRole("button", { name: "Entrar" }).click();
-  await expect(page.getByRole("heading", { name: "Services" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Serviços" })).toBeVisible();
   await page.getByRole("region", { name: "Publicação" }).getByRole("link", { name: "Ver diff" }).click();
-  await expect(page.getByRole("heading", { name: "Revisar e publicar" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Revisar snapshot (legado)" })).toBeVisible();
   await page.evaluate(() => document.fonts.ready);
 }
 
@@ -41,7 +41,7 @@ for (const viewport of [{ name: "desktop-1440", width: 1440, height: 900 }, { na
   test(`review and publish, ${viewport.name}`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     await openReview(page);
-    const review = page.getByRole("region", { name: "Revisar e publicar" });
+    const review = page.getByRole("region", { name: "Revisar snapshot (legado)" });
     await expect(review.getByRole("list", { name: "Alterações" }).getByRole("listitem")).toHaveCount(4);
     await expect(review.getByRole("button", { name: "Publicar v8" })).toBeVisible();
     await expect(page.getByRole("region", { name: "Publicação" })).toContainText("nenhum nó online");
@@ -59,7 +59,7 @@ for (const viewport of [{ name: "desktop-1440", width: 1440, height: 900 }, { na
 
 test("the selected change shows field by field what differs from the live version", async ({ page }) => {
   await openReview(page);
-  const review = page.getByRole("region", { name: "Revisar e publicar" });
+  const review = page.getByRole("region", { name: "Revisar snapshot (legado)" });
   const diff = review.getByRole("region", { name: "Diff de Service orders" });
   await expect(diff).toContainText("2 campos alterados");
   await expect(diff.locator("tr.changed")).toHaveCount(2);
@@ -91,7 +91,7 @@ test("publishing sends the message and the expected version, then opens Publica�
   await page.route("**/api/v1/environments/*/snapshots", (route) =>
     route.request().method() === "POST" ? route.fulfill({ status: 201, json: { version: 8, hash: `sha256:${"b".repeat(64)}`, environmentId: envId, createdAt: "2026-10-17T12:00:00Z", message: "Porta 8443" } }) : route.fallback(),
   );
-  const review = page.getByRole("region", { name: "Revisar e publicar" });
+  const review = page.getByRole("region", { name: "Revisar snapshot (legado)" });
   await review.getByLabel("Mensagem (opcional)").fill("Porta 8443");
   const posted = page.waitForRequest((r) => r.method() === "POST" && r.url().endsWith("/snapshots"));
   await review.getByRole("button", { name: "Publicar v8" }).click();

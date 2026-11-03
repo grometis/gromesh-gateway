@@ -74,8 +74,8 @@ async function setup(page: Page, options: {
   await page.getByLabel("E-mail").fill(user.email);
   await page.getByLabel("Senha").fill("s3nha-de-teste");
   await page.getByRole("button", { name: "Entrar" }).click();
-  await expect(page.getByRole("heading", { name: "Services", exact: true })).toBeVisible();
-  await expect(page.getByRole("table", { name: "Services", exact: true })).toContainText("cobranca");
+  await expect(page.getByRole("heading", { name: "Serviços", exact: true })).toBeVisible();
+  await expect(page.getByRole("table", { name: "Serviços", exact: true })).toContainText("cobranca");
   return { writes, release, rejectEnabled: () => { rejectEnabled = true; } };
 }
 
@@ -91,7 +91,7 @@ for (const options of [
       if (detail) await page.getByRole("link", { name: "cobranca", exact: true }).click();
       await expect(page.getByRole("note", { name: "Estado do Workspace" })).toContainText(options.reason);
       await expect(page.getByText(/Somente leitura:/)).toBeVisible();
-      await expect(page.getByRole("button", { name: /Novo service|^Editar$|Mais ações para/ })).toHaveCount(0);
+      await expect(page.getByRole("button", { name: /Novo serviço|^Editar$|Mais ações para/ })).toHaveCount(0);
       await expect(page.getByRole("region", { name: "Publicação", exact: true })).toBeVisible();
     }
     expect(fake.writes).toEqual([]);
@@ -103,10 +103,10 @@ for (const hold of ["workspace", "environment"] as const) {
     const fake = await setup(page, { hold });
     try {
       await expect(page.getByText(/Somente leitura enquanto/)).toBeVisible();
-      await expect(page.getByRole("button", { name: /Novo service|^Editar$|Mais ações para/ })).toHaveCount(0);
+      await expect(page.getByRole("button", { name: /Novo serviço|^Editar$|Mais ações para/ })).toHaveCount(0);
       expect(fake.writes).toEqual([]);
     } finally { fake.release(); }
-    await expect(page.getByRole("button", { name: "Novo service" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Novo serviço" })).toBeVisible();
   });
 }
 
@@ -114,7 +114,7 @@ for (const key of ["workspace", "environment"] as const) {
   for (const verdict of ["allow", "deny", "error"] as const) {
     test(`an open service form survives ${key} revalidation and obeys its ${verdict} verdict`, async ({ page }) => {
       const fake = await setup(page);
-      const create = page.getByRole("button", { name: "Novo service" });
+      const create = page.getByRole("button", { name: "Novo serviço" });
       await expect(create).toBeVisible();
       let release!: () => void;
       const held = new Promise<void>((resolve) => { release = resolve; });
@@ -132,7 +132,7 @@ for (const key of ["workspace", "environment"] as const) {
       });
       await create.click();
       await requested;
-      const dialog = page.getByRole("dialog", { name: "Novo service" });
+      const dialog = page.getByRole("dialog", { name: "Novo serviço" });
       try {
         await dialog.getByLabel("Nome", { exact: true }).fill("preservado");
         await dialog.getByLabel("Host", { exact: true }).fill("preservado.internal");
@@ -171,7 +171,7 @@ for (const key of ["workspace", "environment"] as const) {
     await page.route(`**${path}`, async (route) => { started(); await held; return route.fallback(); });
     await page.getByRole("menuitem", { name: "Excluir", exact: true }).click();
     await requested;
-    const dialog = page.getByRole("dialog", { name: "Excluir service" });
+    const dialog = page.getByRole("dialog", { name: "Excluir serviço" });
     const confirm = dialog.getByRole("button", { name: "Excluir", exact: true });
     try {
       await expect(dialog).toBeVisible();
@@ -190,8 +190,8 @@ for (const key of ["workspace", "environment"] as const) {
 
 test("manual publication keeps v2 create, edit and delete, without publishing a snapshot", async ({ page }) => {
   const fake = await setup(page);
-  await page.getByRole("button", { name: "Novo service" }).click();
-  let dialog = page.getByRole("dialog", { name: "Novo service" });
+  await page.getByRole("button", { name: "Novo serviço" }).click();
+  let dialog = page.getByRole("dialog", { name: "Novo serviço" });
   await dialog.getByLabel("Nome", { exact: true }).fill("novo");
   await dialog.getByLabel("Host", { exact: true }).fill("new.internal");
   await dialog.getByRole("button", { name: "Salvar" }).click();
@@ -205,7 +205,7 @@ test("manual publication keeps v2 create, edit and delete, without publishing a 
   await expect(page.getByRole("link", { name: "renomeado", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Mais ações para renomeado" }).click();
   await page.getByRole("menuitem", { name: "Excluir" }).click();
-  dialog = page.getByRole("dialog", { name: "Excluir service" });
+  dialog = page.getByRole("dialog", { name: "Excluir serviço" });
   await dialog.getByRole("button", { name: "Excluir", exact: true }).click();
   await expect(dialog).toHaveCount(0);
   expect(fake.writes.map(({ method, path }) => [method, path])).toEqual([
@@ -246,9 +246,9 @@ test("the v1 publication strip is available on Services, its detail and Routes",
 
 test("the v2 Routes form sends commas within paths unchanged", async ({ page }) => {
   const fake = await setup(page);
-  await page.getByRole("link", { name: "Routes", exact: true }).click();
-  await page.getByRole("button", { name: "Nova route" }).click();
-  const dialog = page.getByRole("dialog", { name: "Nova route" });
+  await page.getByRole("link", { name: "Rotas", exact: true }).click();
+  await page.getByRole("button", { name: "Nova rota" }).click();
+  const dialog = page.getByRole("dialog", { name: "Nova rota" });
   await dialog.getByLabel("Nome", { exact: true }).fill("items");
   await dialog.getByLabel("Paths", { exact: true }).fill("~/items/[0-9]{1,3}\n/a,/b");
   await dialog.getByRole("button", { name: "Salvar" }).click();
@@ -264,9 +264,9 @@ test("switching workspace closes a service form and discards its input", async (
   // The selector sits behind the modal; force only the selection so the SPA stays mounted.
   await page.getByLabel("Ambiente (legado)", { exact: true }).selectOption(B, { force: true });
   await expect(page).toHaveURL(`/e/${B}/services`);
-  await expect(page.getByRole("heading", { name: "Services", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Serviços", exact: true })).toBeVisible();
   await expect(page.getByRole("dialog")).toHaveCount(0);
-  await page.getByRole("button", { name: "Novo service" }).click();
+  await page.getByRole("button", { name: "Novo serviço" }).click();
   await expect(page.getByRole("dialog").getByLabel("Nome", { exact: true })).toHaveValue("");
   expect(fake.writes).toEqual([]);
 });

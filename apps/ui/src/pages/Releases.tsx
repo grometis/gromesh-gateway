@@ -96,12 +96,12 @@ function WorkspaceReleases({ workspaceId }: { workspaceId: string }) {
     </section>
     <section className="stack" aria-label="Deployment">
       <h2>Deployment</h2>
-      <p>Deployment de Workspaces indisponível nesta fase</p>
+      <p>Implantação de Releases do Workspace indisponível nesta interface</p>
       <p className="muted">A consulta do deployment atual ainda está planejada no contrato. Não é possível informar qual release está implantada a partir de activeRelease.</p>
     </section>
     <section className="stack" aria-label="Convergência">
       <h2>Convergência</h2>
-      <p>Convergência indisponível nesta fase: depende da consulta do deployment atual, ainda planejada. Uma release publicada não comprova aplicação nos nós.</p>
+      <p>Aplicação nos nós indisponível neste fluxo: a consulta da implantação atual ainda não está disponível. Uma release publicada não comprova aplicação nos nós.</p>
     </section>
     {confirm && <PublishRelease workspaceId={workspaceId} expectedVersion={confirm.expectedVersion}
       onClose={() => setConfirm(null)} onPublished={(r) => { setPublished(r.version); setConfirm(null); }} />}

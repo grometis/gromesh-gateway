@@ -86,9 +86,9 @@ export function RoutePaths({ route, config = route, slug, servicePath, publicati
         <p>Path no fluxo v1{published ? " (rascunho)" : ""}: <span className="mono">{pathText(paths)}</span> — {draftState}.</p>
         {(route || paths.length > 0) && effects(paths, strip, servicePath, "v1")}
       </>}
-      <p>Path previsto na configuração v2: <span className="mono">{paths.length && slug ? paths.map((p) => plannedV2Path(slug, p)).join(", ") : "não comprovado"}</span> — previsão; ainda não implantado.</p>
-      {!paths.length && <p><small>{route?.pathCompatibility === "legacy-preserved" ? "Route legada sem paths: a configuração v2 exige conversão explícita; nenhum path é acrescentado aqui." : "Informe paths para prever a configuração v2."}</small></p>}
-      <p><small>{publication.releaseState}. Deployment v2 indisponível nesta fase.</small></p>
+      <p>Path previsto do Workspace: <span className="mono">{paths.length && slug ? paths.map((p) => plannedV2Path(slug, p)).join(", ") : "não comprovado"}</span> — previsão; ainda não implantado.</p>
+      {!paths.length && <p><small>{route?.pathCompatibility === "legacy-preserved" ? "Rota legada sem paths: o fluxo do Workspace exige conversão explícita; nenhum path é acrescentado aqui." : "Informe paths para prever o prefixo do Workspace."}</small></p>}
+      <p><small>{publication.releaseState}. Implantação de Releases do Workspace indisponível nesta interface.</small></p>
       {slug && paths.length > 0 && effects(paths, strip, servicePath, "v2")}
     </div>
   );

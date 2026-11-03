@@ -75,7 +75,7 @@ test.afterEach(async ({ page }) => {
 test("publishes an immutable release through v2 without deploying or calling v1 snapshots", async ({ page }) => {
   const fake = await setup(page);
   await expect(page.getByRole("link", { name: "Releases", exact: true })).toHaveAttribute("href", `/e/${W}/releases`);
-  await expect(page.getByRole("region", { name: "Deployment", exact: true })).toContainText("Deployment de Workspaces indisponível nesta fase");
+  await expect(page.getByRole("region", { name: "Deployment", exact: true })).toContainText("Implantação de Releases do Workspace indisponível nesta interface");
   await expect(page.getByRole("region", { name: "Convergência", exact: true })).toContainText("indisponível");
   await expect(page.getByRole("region", { name: "Publicação", exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Publicar release", exact: true }).click();
@@ -150,7 +150,7 @@ for (const status of [403, 201] as const) {
 
 test("v1 publication stays available on Services and disappears again on Releases", async ({ page }) => {
   const fake = await setup(page);
-  await page.getByRole("link", { name: "Services", exact: true }).click();
+  await page.getByRole("link", { name: "Serviços", exact: true }).click();
   await expect(page.getByRole("region", { name: "Publicação", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Publicar v4" })).toBeEnabled();
   await expect(page.getByRole("link", { name: "Ver diff", exact: true })).toHaveAttribute("href", `/e/${W}/publish`);

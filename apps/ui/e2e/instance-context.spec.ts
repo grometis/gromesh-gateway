@@ -99,7 +99,7 @@ for (const width of [390, 1440]) {
     await expect(page.getByLabel("Workspace v2", { exact: true })).toHaveValue(B);
     await expect(page.getByLabel("Ambiente (legado)", { exact: true })).toHaveValue(B);
     await expect(page.locator(".workspace-context")).toContainText("Catálogo v2");
-    await page.getByRole("link", { name: "Tokens de API", exact: true }).click();
+    await page.getByRole("link", { name: "Tokens", exact: true }).click();
     await expect(page.getByText("Escopo: minha conta nesta instância", { exact: true })).toBeVisible();
     await expect(page.getByLabel("Ambiente (legado)", { exact: true })).toHaveCount(0);
     await expect(page.getByRole("link", { name: "Voltar ao ambiente legado Pedidos", exact: true })).toHaveAttribute("href", `/e/${B}/services`);

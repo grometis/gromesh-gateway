@@ -7,7 +7,7 @@ async function login(page: Page) {
   await page.getByLabel("E-mail").fill("editor@gromesh.dev");
   await page.getByLabel("Senha").fill("s3nha-de-teste");
   await page.getByRole("button", { name: "Entrar" }).click();
-  await expect(page.getByRole("heading", { name: "Services" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Serviços" })).toBeVisible();
 }
 
 const menu = (page: Page) => page.getByRole("navigation", { name: "Menu principal" });
@@ -69,8 +69,8 @@ test("upstreams: list, consistent hashing with a header, health checks and targe
 
 test("the service form offers the workspace's upstreams or a direct DNS destination", async ({ page }) => {
   await login(page);
-  await page.getByRole("button", { name: "Novo service" }).click();
-  const dialog = page.getByRole("dialog", { name: "Novo service" });
+  await page.getByRole("button", { name: "Novo serviço" }).click();
+  const dialog = page.getByRole("dialog", { name: "Novo serviço" });
   await expect(dialog.getByLabel("Destino", { exact: true })).toHaveValue("dns");
   await expect(dialog.getByLabel("Host")).toBeVisible();
   await dialog.getByLabel("Destino", { exact: true }).selectOption("Upstream do Workspace");

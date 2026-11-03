@@ -12,7 +12,7 @@ let root: Root | undefined;
 let client: QueryClient;
 afterEach(async () => { if (root) await act(() => root!.unmount()); root = undefined; client?.clear(); vi.unstubAllGlobals(); });
 
-async function screen(options: { stage?: unknown; policyStatus?: number; envStatus?: number; workspaceStatus?: number; workspaceListStatus?: number; workspaces?: string[]; paginated?: boolean; pending?: "environments" | "workspace" | "workspaces"; archived?: boolean; envs?: string[]; path?: string; authenticated?: boolean } = {}) {
+async function screen(options: { role?: "admin" | "editor" | "viewer"; stage?: unknown; policyStatus?: number; envStatus?: number; workspaceStatus?: number; workspaceListStatus?: number; workspaces?: string[]; paginated?: boolean; pending?: "environments" | "workspace" | "workspaces"; archived?: boolean; envs?: string[]; path?: string; authenticated?: boolean } = {}) {
   vi.resetModules();
   const container = installTestDom();
   Object.assign(window.location, { origin: "https://prd.example.test" });
@@ -29,7 +29,7 @@ async function screen(options: { stage?: unknown; policyStatus?: number; envStat
     sent.push(path);
     methods.push(request.method);
     if (path.endsWith("/auth/csrf")) return Response.json({ csrfToken: "csrf" });
-    if (path === "/api/v1/me") return response(options.authenticated === false ? 401 : 200, { id: A, name: "Ana", role: "viewer", environmentRoles: [{ environmentId: B, role: "none" }] });
+    if (path === "/api/v1/me") return response(options.authenticated === false ? 401 : 200, { id: A, name: "Ana", role: options.role ?? "viewer", environmentRoles: [{ environmentId: B, role: "none" }] });
     if (path === "/api/v2/workspace-creation-policy") return policyResponse ? policyResponse() : response(options.policyStatus, { stage: options.stage === undefined ? "dev" : options.stage });
     if (path === "/api/v1/environments" && options.pending === "environments") return new Promise<Response>(() => {});
     if (path === `/api/v2/workspaces/${A}` && options.pending === "workspace") return new Promise<Response>(() => {});
@@ -52,6 +52,8 @@ async function screen(options: { stage?: unknown; policyStatus?: number; envStat
       { path: "/e/:envId/*", element: <h1>Conteúdo autorizado pelo servidor</h1> },
       { path: "/tokens", element: <h1>Tokens de API</h1> },
       { path: "/workspaces", element: <h1>Workspaces</h1> },
+      { path: "/users", element: <h1>Usuários</h1> },
+      { path: "/audit", element: <h1>Auditoria</h1> },
     ] }] },
   ], { initialEntries: [options.path ?? `/e/${A}/releases`] });
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -63,6 +65,62 @@ async function screen(options: { stage?: unknown; policyStatus?: number; envStat
   const select = () => container.findAll((n) => n.tagName === "SELECT" && n.getAttribute("id") === "env-select")[0];
   return { container, router, sent, methods, settle, select, setPolicyResponse: (read: () => Promise<Response>) => { policyResponse = read; } };
 }
+
+describe("hybrid navigation", () => {
+  it("separates platform, Workspace, gateway, operations, administration and account", async () => {
+    const view = await screen({ role: "admin" });
+    await vi.waitFor(async () => { await view.settle(); expect(view.container.textContent).toContain("Operações e publicações"); });
+    const nav = view.container.findAll((n) => n.tagName === "NAV" && n.getAttribute("aria-label") === "Menu principal")[0]!;
+    expect(nav.findAll((n) => n.tagName === "H2").map((n) => n.getAttribute("aria-label") ?? n.textContent)).toEqual([
+      "Plataforma", "Workspace selecionado", "Gateway", "Operações e publicações", "Administração da instância", "Minha conta",
+    ]);
+    expect(nav.findAll((n) => n.tagName === "A").map((n) => n.getAttribute("aria-label"))).toEqual([
+      "Workspaces", "Visão geral", "Serviços", "Rotas", "Consumidores", "Plugins", "Upstreams", "Certificados", "Variáveis",
+      "Requisições", "Métricas", "Releases", "Revisar snapshot (legado)", "Snapshots publicados (legado)", "Clusters (legado)", "Usuários", "Auditoria", "Tokens",
+    ]);
+  });
+
+  it.each(["admin", "editor", "viewer"] as const)("preserves existing menu visibility for %s", async (role) => {
+    const view = await screen({ role });
+    await vi.waitFor(async () => { await view.settle(); expect(view.container.textContent).toContain("Revisar snapshot (legado)"); });
+    const links = view.container.findAll((n) => n.tagName === "A");
+    for (const path of ["/users", "/audit"]) expect(links.some((n) => n.getAttribute("href") === path)).toBe(role === "admin");
+    for (const path of ["publish", "clusters", "variables", "releases"]) expect(links.some((n) => n.getAttribute("href") === `/e/${A}/${path}`)).toBe(true);
+  });
+
+  it.each([
+    ["services/entity", "Serviços"], ["consumers/entity", "Consumidores"], ["publications/2", "Snapshots publicados (legado)"],
+    ["publish", "Revisar snapshot (legado)"], ["overview", "Visão geral"], ["analytics", "Métricas"], ["Releases/", "Releases"],
+  ])("marks exactly the matching destination for %s", async (path, label) => {
+    const view = await screen({ path: `/e/${A}/${path}?filter=keep#detail` });
+    await vi.waitFor(async () => { await view.settle(); expect(view.container.findAll((n) => n.getAttribute("aria-current") === "page")).toHaveLength(1); });
+    expect(view.container.findAll((n) => n.getAttribute("aria-current") === "page")[0]!.getAttribute("aria-label")).toBe(label);
+    expect(view.router.state.location.search).toBe("?filter=keep");
+    expect(view.router.state.location.hash).toBe("#detail");
+  });
+
+  it("keeps every destination and its accessible name when collapsing and expanding", async () => {
+    const view = await screen();
+    const toggle = () => view.container.findAll((n) => n.tagName === "BUTTON" && n.getAttribute("aria-controls") === "main-navigation")[0];
+    await vi.waitFor(async () => { await view.settle(); expect(toggle()).toBeDefined(); });
+    const links = () => view.container.findAll((n) => n.tagName === "A").map((n) => [n.getAttribute("href"), n.getAttribute("aria-label")]);
+    const expandedLinks = links();
+    expect(toggle()!.getAttribute("aria-expanded")).toBe("true");
+    await act(async () => { toggle()!.dispatchEvent(new Event("click", { bubbles: true })); await tick(); });
+    expect(toggle()!.getAttribute("aria-expanded")).toBe("false");
+    expect(links()).toEqual(expandedLinks);
+    await act(async () => { toggle()!.dispatchEvent(new Event("click", { bubbles: true })); await tick(); });
+    expect(toggle()!.getAttribute("aria-expanded")).toBe("true");
+    expect(view.router.state.location.pathname).toBe(`/e/${A}/releases`);
+  });
+
+  it("keeps only the global destination active after leaving a Workspace", async () => {
+    const view = await screen();
+    await view.settle();
+    await act(async () => { await view.router.navigate("/tokens"); await tick(); });
+    expect(view.container.findAll((n) => n.getAttribute("aria-current") === "page").map((n) => n.getAttribute("aria-label"))).toEqual(["Tokens"]);
+  });
+});
 
 describe("instance and context in the shell", () => {
   it.each(["dev", "hml", "prd"])("uses only the server stage %s, regardless of host or environment name", async (stage) => {

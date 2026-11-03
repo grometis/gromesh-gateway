@@ -11,16 +11,16 @@ async function openConsumer(page: Page) {
   await page.getByLabel("E-mail").fill("editor@gromesh.dev");
   await page.getByLabel("Senha").fill("s3nha-de-teste");
   await page.getByRole("button", { name: "Entrar" }).click();
-  await expect(page.getByRole("heading", { name: "Services" })).toBeVisible();
-  await page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Consumers" }).click();
-  await page.getByRole("button", { name: "Novo consumer" }).click();
-  const form = page.getByRole("dialog", { name: "Novo consumer" });
+  await expect(page.getByRole("heading", { name: "Serviços" })).toBeVisible();
+  await page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Consumidores" }).click();
+  await page.getByRole("button", { name: "Novo consumidor" }).click();
+  const form = page.getByRole("dialog", { name: "Novo consumidor" });
   await form.getByLabel("Username").fill("partner");
   await form.getByRole("button", { name: "Salvar" }).click();
-  await expect(page.getByRole("heading", { name: /^Consumer / })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^Consumidor / })).toBeVisible();
 }
 
-const tabs = (page: Page) => page.getByRole("tablist", { name: "Seções do consumer" });
+const tabs = (page: Page) => page.getByRole("tablist", { name: "Seções do consumidor" });
 
 test("an HS256 secret is shown once and is gone after closing; an RS256 key needs a PEM", async ({ page }) => {
   // Prism would answer with a placeholder; a realistic secret makes "shown once" observable.
