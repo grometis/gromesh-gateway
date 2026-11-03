@@ -1,7 +1,8 @@
 import { Navigate, useLocation, type RouteObject } from "react-router";
-import { Shell, RequireAuth, RequireAdmin, FirstEnvironment } from "./components/Shell";
+import { Shell, RequireAuth, RequireAdmin } from "./components/Shell";
 import { NavigationContextProvider } from "./navigation/context";
 import { WorkspaceEntry } from "./navigation/workspace-entry";
+import { InstanceOverviewPage } from "./pages/InstanceOverview";
 import { LoginPage } from "./pages/Login";
 import { ServiceDetailPage, ServicesPage } from "./pages/Services";
 import { RoutesPage } from "./pages/Routes";
@@ -32,10 +33,10 @@ export const appRoutes: RouteObject[] = [
   {
     element: <RequireAuth />,
     children: [{ element: <NavigationContextProvider />, children: [
-      { index: true, element: <FirstEnvironment /> },
       {
         element: <Shell />,
         children: [
+          { index: true, element: <InstanceOverviewPage /> },
           { path: "tokens", element: <TokensPage /> },
           { path: "workspaces", element: <WorkspacesPage /> },
           {

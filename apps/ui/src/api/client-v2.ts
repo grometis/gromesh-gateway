@@ -53,7 +53,7 @@ export const creationPolicyQuery = {
 
 export const workspacesQuery = {
   queryKey: ["workspaces"],
-  queryFn: ({ pageParam }: { pageParam: string }) => unwrap(apiV2.GET("/workspaces", { params: { query: pageParam ? { cursor: pageParam } : {} } })),
+  queryFn: ({ pageParam, signal }: { pageParam: string; signal?: AbortSignal }) => unwrap(apiV2.GET("/workspaces", { params: { query: { limit: 50, ...(pageParam ? { cursor: pageParam } : {}) } }, signal })),
   initialPageParam: "",
   getNextPageParam: (page: WorkspacePage) => page.nextCursor ?? undefined,
 };

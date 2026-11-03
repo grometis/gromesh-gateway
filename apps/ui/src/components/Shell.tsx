@@ -2,7 +2,6 @@ import { useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Navigate, NavLink, Outlet, useLocation, useMatch, useNavigate, useParams } from "react-router";
 import { api, ApiError, unwrap } from "../api/client";
-import { statusMessage } from "../api/errors";
 import { effectiveRole, useAuth } from "../auth";
 import { NavigationContextBoundary, useOptionalNavigationContext, useIsWorkspaceRoute } from "../navigation/context";
 import { workspaceSections } from "../navigation/destinations";
@@ -55,17 +54,6 @@ export function RequireAdmin() {
   return <Outlet />;
 }
 
-export function FirstEnvironment() {
-  const { user } = useAuth();
-  const envs = useVisibleEnvironments();
-  if (envs.isPending) return <p className="center muted">Carregando environments…</p>;
-  if (envs.isError) return <p className="center error">{statusMessage(envs.error)}</p>;
-  const first = envs.data[0];
-  if (!first) return user?.role === "admin"
-    ? <Navigate to="/users" replace />
-    : <p className="center muted">Nenhum environment cadastrado. Peça a um administrador para criar um.</p>;
-  return <Navigate to={`/e/${first.id}/services`} replace />;
-}
 
 const GATEWAY = [
   ["services", "Services"],

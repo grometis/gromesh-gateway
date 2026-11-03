@@ -1,0 +1,41 @@
+.instance-overview { min-width: 0; overflow-wrap: anywhere; }
+.instance-overview-scope { margin: var(--space-4) 0 var(--space-3); color: var(--text-3); font-size: var(--text-xs); font-weight: 600; text-transform: uppercase; letter-spacing: .08em; }
+.instance-overview-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.instance-overview .button { display: inline-flex; align-items: center; justify-content: center; min-height: var(--control-h); padding: var(--space-2) var(--space-4); border: 1px solid var(--control-line); border-radius: var(--radius); text-decoration: none; }
+.instance-overview button[aria-disabled="true"] { opacity: .65; cursor: not-allowed; }
+.instance-overview .button:hover { background: var(--surface); }
+.instance-overview-counts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-3); margin: 0; }
+.instance-overview-counts > div { padding: var(--space-5); background: var(--surface); border-radius: var(--radius); }
+.instance-overview-counts dt { font-size: var(--text-sm); color: var(--text-2); }
+.instance-overview-counts dd { margin: var(--space-3) 0 0; font-size: 30px; font-weight: 600; }
+.instance-overview-caption { font-size: var(--text-xs); margin: var(--space-3) 0 var(--space-5); }
+.instance-overview-panel { padding: var(--space-5); border: 1px solid var(--line-strong); border-radius: var(--radius); }
+.instance-overview-panel > p, .instance-overview-limits > p { font-size: var(--text-sm); }
+.instance-overview-filters { display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, .25fr); gap: var(--space-4); margin-top: var(--space-4); }
+.instance-overview-filters .field { min-width: 0; }
+.instance-overview-filters input, .instance-overview-filters select { width: 100%; min-width: 0; }
+.instance-overview .table-scroll { overflow: visible; }
+.instance-overview table { table-layout: fixed; width: 100%; }
+.instance-overview th:first-child { width: 26%; }
+.instance-overview th:last-child { width: 100px; }
+.instance-overview table.cards td { background: transparent; border-bottom: 1px solid var(--line); border-radius: 0; padding: var(--space-4) var(--space-2); white-space: normal; }
+.instance-overview td code { display: block; margin-top: var(--space-1); color: var(--text-2); }
+.instance-overview td .badge { white-space: normal; }
+.instance-overview-footer { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: var(--space-3); margin-top: var(--space-3); font-size: var(--text-sm); }
+.instance-overview-limits { margin-top: var(--space-5); }
+.instance-overview-limit-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-4); }
+.instance-overview-limit-cards article { padding: var(--space-4); border: 1px dashed var(--control-line); border-radius: var(--radius); font-size: var(--text-sm); }
+@media (max-width: 1100px) {
+  .instance-overview-limit-cards { grid-template-columns: minmax(0, 1fr); }
+  .instance-overview table.cards, .instance-overview table.cards tbody { display: block; }
+  .instance-overview table.cards thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .instance-overview table.cards tr { display: flex; flex-direction: column; gap: var(--space-2); border-bottom: 1px solid var(--line); border-radius: 0; margin-bottom: 0; background: transparent; padding: var(--space-4) 0; }
+  .instance-overview table.cards td { display: block; padding: 0; border: 0; }
+  .instance-overview td[data-label]::before { content: attr(data-label) ": "; font-size: var(--text-xs); color: var(--text-3); }
+}
+@media (max-width: 700px) {
+  .instance-overview-counts, .instance-overview-limit-cards, .instance-overview-filters { grid-template-columns: minmax(0, 1fr); }
+  .instance-overview-counts > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); padding: var(--space-4); }
+  .instance-overview-counts dd { margin: 0; }
+  .instance-overview-panel { padding: var(--space-4); }
+}

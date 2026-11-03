@@ -70,7 +70,7 @@ async function setup(page: Page, options: {
     return route.fulfill({ status: 404, json: { title: "Unexpected query", status: 404 } });
   });
   await mockSession(page, user);
-  await page.goto("/login");
+  await page.goto(`/e/${W}/services`);
   await page.getByLabel("E-mail").fill(user.email);
   await page.getByLabel("Senha").fill("s3nha-de-teste");
   await page.getByRole("button", { name: "Entrar" }).click();
