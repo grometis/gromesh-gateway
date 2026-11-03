@@ -34,14 +34,14 @@ function Explorer({ envId }: { envId: string }) {
   const initial = { ...EMPTY, routeId: params.get("routeId") ?? "" };
   const [form, setForm] = useState<Filters>(initial);
   const [applied, setApplied] = useState<Filters & { range: { from: string; to: string } }>({ ...initial, range: periodRange(initial.period) });
+  const [statusError, setStatusError] = useState<string | null>(null);
   const [selected, setSelected] = useState<RequestRecord | null>(null);
   const consumers = useConsumers(envId);
   const set = <K extends keyof Filters>(k: K, v: Filters[K]) => setForm((f) => ({ ...f, [k]: v }));
 
   const query = {
     ...applied.range,
-    ...(applied.status ? { status: Number(applied.status) } : {}),
-    ...(applied.statusClass ? { statusClass: applied.statusClass } : {}),
+    ...(applied.status ? { status: Number(applied.status) } : applied.statusClass ? { statusClass: applied.statusClass } : {}),
     ...(applied.routeId ? { routeId: applied.routeId } : {}),
     ...(applied.serviceId ? { serviceId: applied.serviceId } : {}),
     ...(applied.consumerId ? { consumerId: applied.consumerId } : {}),
@@ -59,6 +59,11 @@ function Explorer({ envId }: { envId: string }) {
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
+    if (form.status && !/^[1-5]\d{2}$/.test(form.status)) {
+      setStatusError("Informe um status HTTP inteiro entre 100 e 599.");
+      return;
+    }
+    setStatusError(null);
     setApplied({ ...form, range: periodRange(form.period) });
   };
 
@@ -69,18 +74,32 @@ function Explorer({ envId }: { envId: string }) {
         <PeriodSelect value={form.period} onChange={(v) => set("period", v)} />
         <Field label="Classe de status" errors={errors.fields.statusClass}>
           {(id, invalid) => (
-            <select id={id} aria-invalid={invalid} value={form.statusClass} onChange={(e) => set("statusClass", e.target.value as StatusClass)}>
-              <option value="">Todas</option>
-              {["2xx", "3xx", "4xx", "5xx"].map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-            </select>
+            <>
+              <select id={id} aria-invalid={invalid} disabled={form.status !== ""} aria-describedby={form.status ? `${id}-reason` : undefined} value={form.statusClass} onChange={(e) => {
+                const statusClass = e.target.value as StatusClass;
+                setStatusError(null);
+                setForm((f) => ({ ...f, status: "", statusClass }));
+              }}>
+                <option value="">Todas</option>
+                {["2xx", "3xx", "4xx", "5xx"].map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+              {form.status && <small id={`${id}-reason`} className="muted">Limpe o status exato para escolher uma classe.</small>}
+            </>
           )}
         </Field>
         <Field label="Status exato" errors={errors.fields.status} hint="Ignora a classe">
-          {(id, invalid) => <input id={id} inputMode="numeric" aria-invalid={invalid} value={form.status} onChange={(e) => set("status", e.target.value)} placeholder="ex.: 404" />}
+          {(id, invalid) => <>
+            <input id={id} inputMode="numeric" aria-invalid={invalid || statusError !== null} aria-describedby={statusError ? `${id}-error` : undefined} value={form.status} onChange={(e) => {
+              const status = e.target.value;
+              setStatusError(null);
+              setForm((f) => ({ ...f, status, statusClass: "" }));
+            }} placeholder="ex.: 404" />
+            {statusError && <small id={`${id}-error`} className="error" role="alert">{statusError}</small>}
+          </>}
         </Field>
         <ScopeFilters envId={envId} routeId={form.routeId} serviceId={form.serviceId} onRoute={(v) => set("routeId", v)} onService={(v) => set("serviceId", v)} />
         <Field label="Consumer" errors={errors.fields.consumerId}>
