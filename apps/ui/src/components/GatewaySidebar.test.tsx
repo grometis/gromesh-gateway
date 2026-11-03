@@ -35,7 +35,7 @@ describe("Gateway sidebar interactions", () => {
       if (collapsed) await view.click(view.button("Recolher menu Gateway"));
       const links = view.all((node) => node.getAttribute("aria-label") !== null
         && (node.tagName === "A" || node.getAttribute("role") === "link"));
-      expect(links).toHaveLength(8);
+      expect(links).toHaveLength(9);
       for (const link of links) {
         expect(link.getAttribute("aria-label")!.toLocaleLowerCase("pt-BR"))
           .toContain(link.textContent.toLocaleLowerCase("pt-BR"));
@@ -52,10 +52,19 @@ describe("Gateway sidebar interactions", () => {
         const reasonId = item.getAttribute("aria-describedby")!.split(" ")[0];
         const reason = view.all((n) => n.getAttribute("id") === reasonId)[0]!;
         expect(reason.textContent).toBe("Disponível no ambiente legado");
+        expect(reason.getAttribute("hidden") !== null).toBe(collapsed);
         expect(item.contains(reason)).toBe(false);
         expect(item.getAttribute("href")).toBeNull();
       }
     }
+  });
+  it("hides context selectors while collapsed and restores them on expansion", async () => {
+    const view = await screen();
+    expect(view.button("Trocar Workspace")).toBeDefined();
+    await view.click(view.button("Recolher menu Gateway"));
+    expect(view.button("Trocar Workspace")).toBeUndefined();
+    await view.click(view.button("Expandir menu Gateway"));
+    expect(view.button("Trocar Workspace")).toBeDefined();
   });
   it("collapses without changing accessible names, hrefs, active parent or toggle focus", async () => {
     const view = await screen();

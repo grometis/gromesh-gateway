@@ -638,7 +638,8 @@ table.numeric td, table.numeric th { white-space: nowrap; }
   .global-header .instance-origin { font-size: 11px; }
   .global-toggle { display: inline-flex; grid-column: 2; grid-row: 2; font-size: var(--text-xs); padding: 8px 10px; border-color: var(--ink-line); background: var(--ink-raised); }
   .global-groups { display: none; grid-row: 3; }
-  .global-groups.is-open { display: grid; gap: 4px; }
+  .global-groups.is-open { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .global-group, .global-account { grid-column: 1; grid-row: auto; }
   .global-account { margin: 0; }
   .global-trigger { width: 100%; justify-content: space-between; }
   .global-panel, .global-account .global-panel { position: static; width: 100%; max-width: 100%; margin-top: 4px; max-height: 52vh; box-shadow: none; }
@@ -660,7 +661,9 @@ table.numeric td, table.numeric th { white-space: nowrap; }
 .gateway-sidebar .env { min-width: 0; margin-top: 16px; }
 .gateway-sidebar .env label { display: block; font-size: 11px; color: var(--ink-text); margin-bottom: 4px; }
 .gateway-sidebar .env select { width: 100%; min-width: 0; max-width: 100%; min-height: 44px; background: var(--ink-raised); border-color: var(--ink-line); color: var(--ink-text); }
-.gateway-sidebar .env button { white-space: normal; max-width: 100%; }
+.gateway-sidebar .env button { white-space: normal; width: 100%; max-width: 100%; margin-top: 8px; }
+.workspace-directory-link { display: inline-flex; align-items: center; min-height: 44px; font-size: 12px; }
+.gateway-sidebar .workspace-directory-link { color: var(--ink-text); }
 .gateway-sidebar .workspace-context { color: var(--ink-text); }
 .gateway-sidebar ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
 .gateway-item { position: relative; min-width: 0; }
@@ -672,11 +675,14 @@ table.numeric td, table.numeric th { white-space: nowrap; }
 .gateway-item .gateway-requirement { padding: 0 12px 8px; }
 .gateway-footer { margin-top: auto; border-top: 1px solid var(--ink-line); padding-top: 16px; display: grid; gap: 12px; }
 .gateway-footer a { display: flex; align-items: center; min-height: 44px; padding: 8px 12px; font-size: 12px; color: var(--ink-text); }
-.gateway-footer button, .gateway-close { white-space: normal; min-height: 44px; background: transparent; color: var(--ink-text); border-color: var(--ink-line); font-size: 12px; }
+.gateway-sidebar .env button, .gateway-footer button, .gateway-close { white-space: normal; min-height: 44px; background: transparent; color: var(--ink-text); border-color: var(--ink-line); font-size: 12px; }
+.gateway-sidebar button:hover:not(:disabled) { background: var(--ink-raised); color: #fff; }
+.gateway-sidebar [hidden] { display: none !important; }
 .gateway-sidebar.is-collapsed { padding-left: 8px; padding-right: 8px; }
 .is-collapsed .gateway-context { padding: 0 4px; }
 .is-collapsed .gateway-context > strong { font-size: 16px; }
 .is-collapsed .gateway-item > a, .is-collapsed .gateway-item > [aria-disabled] { padding: 10px 8px; font-size: 13px; }
+.gateway-tooltip span { display: block; margin-top: 4px; color: var(--ink-text); }
 .gateway-tooltip { display: none; position: absolute; left: 8px; bottom: calc(100% - 4px); z-index: 20; padding: 6px 8px; border: 1px solid var(--ink-line); border-radius: var(--radius); background: var(--ink); color: #fff; font-size: 12px; }
 .gateway-item:not([data-tooltip-dismissed="true"]):hover .gateway-tooltip, .gateway-item:not([data-tooltip-dismissed="true"]):focus-within .gateway-tooltip { display: block; }
 .gateway-mobile { padding: 12px 16px 0; min-width: 0; }

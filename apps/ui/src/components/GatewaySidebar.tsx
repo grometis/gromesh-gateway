@@ -95,15 +95,15 @@ export function GatewaySidebar({ context, selectors, focusContent }: {
       <strong>{name}</strong>
       {workspace ? <p className="workspace-context" role="status">Workspace v2 · /{workspace.slug} · {context.state === "archived" ? "arquivado · somente leitura" : "ativo"}</p>
         : <p>Ambiente (legado)</p>}
-      {selectors}
+      {!compact && selectors}
     </div>
     <nav id={`${prefix}-links`} aria-label="Menu principal">
       <ul>{items.map((item) => <GatewayItem key={item.id} item={item} collapsed={compact} prefix={prefix} onNavigate={() => { dialog.current?.close(); setOpen(false); focusContent(); }} />)}</ul>
     </nav>
     <footer className="gateway-footer">
-      <Link to="/" onClick={() => { dialog.current?.close(); setOpen(false); }}>Voltar à visão geral da instância</Link>
-      {!mobile && <button type="button" id={`${prefix}-collapse`} aria-controls={`${prefix}-links`} aria-expanded={!collapsed} onClick={() => setCollapsed(!collapsed)}>
-        {collapsed ? "Expandir" : "Recolher"} menu Gateway
+      <Link to="/" aria-label="Voltar à visão geral da instância" onClick={() => { dialog.current?.close(); setOpen(false); }}>{compact ? "Instância" : "Voltar à visão geral da instância"}</Link>
+      {!mobile && <button type="button" id={`${prefix}-collapse`} aria-controls={`${prefix}-links`} aria-expanded={!collapsed} aria-label={`${collapsed ? "Expandir" : "Recolher"} menu Gateway`} onClick={() => setCollapsed(!collapsed)}>
+        {collapsed ? "Expandir menu" : "Recolher menu Gateway"}
       </button>}
     </footer>
   </>;
@@ -146,9 +146,9 @@ function GatewayItem({ item, collapsed, prefix, onNavigate }: { item: GatewayDes
     {item.href ? <Link to={item.href} aria-label={item.label} aria-current={item.active ? "page" : undefined}
       aria-describedby={collapsed ? tooltipId : undefined} onClick={onNavigate}>
       <span aria-hidden="true">{collapsed ? item.shortLabel : item.label}</span>
-    </Link> : <><span role="link" aria-disabled="true" aria-label={item.label} tabIndex={collapsed ? 0 : undefined} aria-describedby={collapsed ? `${reasonId} ${tooltipId}` : reasonId}>
+    </Link> : <><span role="link" aria-disabled="true" aria-label={item.label} tabIndex={collapsed ? 0 : undefined} aria-describedby={reasonId}>
       <span aria-hidden="true">{collapsed ? item.shortLabel : item.label}</span>
-    </span><small className="gateway-requirement" id={reasonId}>{item.requirement}</small></>}
-    {collapsed && <span id={tooltipId} role="tooltip" className="gateway-tooltip">{item.label}</span>}
+    </span><small className="gateway-requirement" id={reasonId} hidden={collapsed}>{item.requirement}</small></>}
+    {collapsed && <span id={tooltipId} role="tooltip" className="gateway-tooltip">{item.label}{item.requirement && <span>{item.requirement}</span>}</span>}
   </li>;
 }

@@ -116,7 +116,29 @@ describe("instance and context in the shell", () => {
     await vi.waitFor(async () => { await view.settle(); expect(view.container.textContent).toContain("Instância DEV"); });
     expect(view.container.textContent).not.toContain("Workspace v2: Pedidos v2");
   });
-  it.each(["/workspaces", `/e/${A}/releases`, `/e/${A}/services/entity`])("offers real v2 Workspaces separately from legacy environments on %s", async (path) => {
+  it.each([
+    { path: `/e/${A}/releases`, target: `/workspaces/${C}/releases` },
+    { path: `/e/${A}/services/entity`, target: `/workspaces/${C}/services` },
+    { path: `/e/${A}/consumers`, target: `/workspaces/${C}/services` },
+  ])("opens a real v2 Workspace from legacy $path without assuming a selection", async ({ path, target }) => {
+    const view = await screen({ path, paginated: true });
+    const select = () => view.container.findAll((n) => n.tagName === "SELECT" && n.getAttribute("id") === "workspace-select")[0];
+    const more = () => view.container.findAll((n) => n.tagName === "BUTTON" && n.textContent === "Carregar mais Workspaces")[0];
+    await vi.waitFor(async () => { await view.settle(); expect(select()).toBeDefined(); expect(more()).toBeDefined(); });
+    expect(view.select()!.options.filter((n) => n.getAttribute("value")).map((n) => n.getAttribute("value"))).toEqual([A]);
+    expect(select()!.value).toBe("");
+    expect(select()!.options[0]!.textContent).toBe("Abrir um Workspace v2…");
+    expect(view.sent).not.toContain(`/api/v2/workspaces/${A}`);
+    expect(view.container.textContent).not.toContain("Ir para Workspaces");
+    await act(async () => { more()!.dispatchEvent(new Event("click", { bubbles: true })); await tick(); });
+    await vi.waitFor(async () => { await view.settle(); expect(select()!.options.filter((n) => n.getAttribute("value")).map((n) => n.textContent)).toEqual(["Pedidos v2", "Catálogo v2"]); });
+    expect(select()!.value).toBe("");
+    expect(view.router.state.location.pathname).toBe(path);
+    await act(async () => { select()!.value = C; select()!.dispatchEvent(new Event("change", { bubbles: true })); await tick(); });
+    expect(view.router.state.location.pathname).toBe(target);
+    expect(view.methods.every((method) => method === "GET")).toBe(true);
+  });
+  it.each(["/workspaces", `/workspaces/${A}/releases`, `/workspaces/${A}/services/entity`])("offers real v2 Workspaces in the explicit v2 namespace on %s", async (path) => {
     const view = await screen({ path, envs: [A], workspaces: [A, C] });
     const select = () => view.container.findAll((n) => n.tagName === "SELECT" && n.getAttribute("id") === "workspace-select")[0];
     await vi.waitFor(async () => { await view.settle(); expect(select()).toBeDefined(); });
@@ -128,29 +150,29 @@ describe("instance and context in the shell", () => {
     expect(view.methods.every((method) => method === "GET")).toBe(true);
     await vi.waitFor(async () => { await view.settle(); expect(view.container.textContent).toContain("Instância DEV"); });
   });
-  it.each([403, 502])("keeps a denied or failed v2 list (%s) separate from available legacy environments", async (workspaceListStatus) => {
-    const view = await screen({ workspaceListStatus });
+  it.each([403, 502])("keeps a denied or failed v2 list (%s) in the Workspace directory", async (workspaceListStatus) => {
+    const view = await screen({ workspaceListStatus, path: "/workspaces" });
     await vi.waitFor(async () => { await view.settle(); expect(view.container.textContent).toContain(workspaceListStatus === 403 ? "Sem permissão para listar Workspaces." : "Não foi possível carregar os Workspaces."); });
-    expect(view.select()!.options.map((n) => n.textContent)).toEqual(["producao"]);
-    expect(view.router.state.location.pathname).toBe(`/e/${A}/releases`);
+    expect(view.select()).toBeUndefined();
+    expect(view.router.state.location.pathname).toBe("/workspaces");
   });
   it.each([{ workspaces: [] }, { workspaces: [C] }, { pending: "workspaces" as const }])("keeps an unconfirmed Workspace selection empty without redirecting: %j", async (options) => {
-    const view = await screen(options);
+    const view = await screen({ ...options, path: "/workspaces" });
     await vi.waitFor(async () => { await view.settle(); expect(view.container.findAll((n) => n.getAttribute("id") === "workspace-select")).toHaveLength(1); });
     const select = view.container.findAll((n) => n.tagName === "SELECT" && n.getAttribute("id") === "workspace-select")[0]!;
     expect(select.value).toBe("");
-    expect(view.router.state.location.pathname).toBe(`/e/${A}/releases`);
+    expect(view.router.state.location.pathname).toBe("/workspaces");
     expect(view.methods.every((method) => method === "GET")).toBe(true);
   });
   it("loads another page of actual Workspaces without selecting or leaving the current context", async () => {
-    const view = await screen({ paginated: true });
+    const view = await screen({ paginated: true, path: "/workspaces" });
     const more = () => view.container.findAll((n) => n.tagName === "BUTTON" && n.textContent === "Carregar mais Workspaces")[0];
     await vi.waitFor(async () => { await view.settle(); expect(more()).toBeDefined(); });
     await act(async () => { more()!.dispatchEvent(new Event("click", { bubbles: true })); await tick(); });
     await vi.waitFor(async () => { await view.settle(); expect(more()).toBeUndefined(); });
     const select = view.container.findAll((n) => n.tagName === "SELECT" && n.getAttribute("id") === "workspace-select")[0]!;
     expect(select.options.filter((n) => n.getAttribute("value")).map((n) => n.textContent)).toEqual(["Pedidos v2", "Catálogo v2"]);
-    expect(view.router.state.location.pathname).toBe(`/e/${A}/releases`);
+    expect(view.router.state.location.pathname).toBe("/workspaces");
     expect(view.methods.every((method) => method === "GET")).toBe(true);
   });
   it.each([{ envs: [] }, { envs: [A] }, { envs: [A, C] }, { envs: [A, B, C] }])("represents visible legacy environments explicitly: %j", async ({ envs }) => {

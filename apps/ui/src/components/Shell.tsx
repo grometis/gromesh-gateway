@@ -73,12 +73,12 @@ export function Shell() {
   const context = useOptionalNavigationContext();
   const workspace = context?.workspace;
   const v2Section = useMatch("/workspaces/:workspaceId/:section/*")?.params.section;
+  const legacySection = useMatch("/e/:envId/:section/*")?.params.section;
+  const workspaceSection = v2Section ?? legacySection;
   const isReleasesRoute = useMatch("/e/:envId/releases");
   const isAccountRoute = useMatch("/tokens");
   const isWorkspacesRoute = useMatch("/workspaces");
-  const workspaceRoute = useMatch("/e/:envId/:section/*");
-  const workspaceSection = workspaceRoute?.params.section?.toLowerCase();
-  const hasWorkspaceSelector = !!workspaceId || !!isWorkspacesRoute || ["services", "routes", "variables", "plugins", "releases"].includes(workspaceSection ?? "");
+  const hasWorkspaceSelector = !!workspaceId || !!routeEnvId || !!isWorkspacesRoute;
   const navigate = useNavigate();
   const location = useLocation();
   const envs = useVisibleEnvironments(!!routeEnvId);
@@ -101,7 +101,7 @@ export function Shell() {
   };
 
   const selectors = <>
-    {hasWorkspaceSelector && <WorkspaceSelector id={workspaceId} workspace={workspace} onSelect={(id) => navigate(`/workspaces/${encodeURIComponent(id)}/${workspaceSections.some((s) => s === (v2Section ?? workspaceSection)) ? v2Section ?? workspaceSection : "services"}`)} />}
+    {hasWorkspaceSelector && <WorkspaceSelector id={workspaceId} workspace={workspace} placeholder={routeEnvId ? "Abrir um Workspace v2…" : undefined} onSelect={(id) => navigate(`/workspaces/${encodeURIComponent(id)}/${workspaceSections.some((s) => s === workspaceSection) ? workspaceSection : "services"}`)} />}
     {routeEnvId && <div className="env">
       <label htmlFor="env-select">Ambiente (legado)</label>
       <select id="env-select" value={validRoute ? routeEnvId : ""} disabled={!envs.isSuccess || envs.data.length === 0} aria-describedby={contextMessage ? "env-context-message" : undefined} onChange={(e) => switchEnv(e.target.value)}>

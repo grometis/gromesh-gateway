@@ -128,7 +128,7 @@ test("desktop sidebar keeps collapse and instance return in the viewport while s
   await expect(home).toBeInViewport({ ratio: 1 });
 });
 
-test("legacy catalog stays in /e, consumer detail selects parent, Workspace selector enters explicit v2 namespace", async ({ page }) => {
+test("legacy catalog stays in /e, consumer detail selects parent, Workspace selector enters v2", async ({ page }) => {
   const sent = await setup(page);
   await page.goto(v1(`consumers/${S}`));
   await expect(page.getByRole("heading", { name: "Consumer Consumidor autorizado", exact: true })).toBeVisible();
@@ -138,6 +138,10 @@ test("legacy catalog stays in /e, consumer detail selects parent, Workspace sele
   await expect(nav(page).getByRole("link", { name: "Consumidores", exact: true })).toHaveAttribute("aria-current", "page");
   expect(sent).not.toContain(`/api/v2/workspaces/${E}`);
   await nav(page).getByRole("link", { name: "Serviços", exact: true }).click();
+  await expect(page.getByLabel("Workspace v2", { exact: true })).toHaveValue("");
+  await expect(page.getByLabel("Workspace v2", { exact: true }).locator('option[value=""]')).toHaveText("Abrir um Workspace v2…");
+  await expect(page.getByLabel("Ambiente (legado)", { exact: true })).toHaveValue(E);
+  await expect(page.getByRole("link", { name: "Ir para Workspaces", exact: true })).toHaveCount(0);
   await page.getByLabel("Workspace v2", { exact: true }).selectOption(E);
   await expect(page).toHaveURL(`/workspaces/${E}/services`);
   await expect(nav(page).locator('a[href^="/e/"]')).toHaveCount(0);
@@ -197,6 +201,9 @@ for (const width of [390, 768]) {
     await expect(nav(page)).toHaveCount(0);
     await audit(page);
     await openGlobalMenu(page, "Operações");
+    const panelBox = (await page.getByRole("region", { name: "Operações", exact: true }).boundingBox())!;
+    const triggerBox = (await trigger(page).boundingBox())!;
+    expect(panelBox.y + panelBox.height).toBeLessThanOrEqual(triggerBox.y);
     await openGateway(page);
     const close = drawer(page).getByRole("button", { name: "Fechar menu Gateway", exact: true });
     await expect(close).toBeFocused();
@@ -317,3 +324,52 @@ for (const width of [390, 768, 1440]) {
     await fits(page);
   });
 }
+
+test("collapsed sidebar keeps controls within two lines and descriptions out of the narrow column", async ({ page }, testInfo) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await setup(page);
+  await page.route(/^https?:\/\/[^/]+\/api\/v2\/workspaces(?:\?|$)/, (route) => route.fulfill({ json: {
+    items: [workspace(W), workspace(E)], nextCursor: "next",
+  } }));
+  await page.goto(v2());
+  const sidebar = page.locator(".gateway-desktop");
+  const more = sidebar.getByRole("button", { name: "Carregar mais Workspaces", exact: true });
+  const collapse = sidebar.getByRole("button", { name: "Recolher menu Gateway", exact: true });
+  await expect(more).toBeVisible();
+  for (const hovered of [false, true]) {
+    const appearance = async (button: typeof more) => {
+      if (hovered) await button.hover();
+      // The shared secondary style must remain legible over the dark sidebar, including hover.
+      return button.evaluate((node) => {
+        const style = getComputedStyle(node);
+        return { background: style.backgroundColor, color: style.color, border: style.borderTopColor };
+      });
+    };
+    const expected = await appearance(collapse);
+    await expect.poll(() => appearance(more)).toEqual(expected);
+  }
+  await collapse.click();
+  await expect(sidebar).toHaveCSS("width", "136px");
+  await expect(sidebar.getByRole("combobox")).toHaveCount(0);
+  await expect(more).toHaveCount(0);
+  await expect(sidebar.locator(".gateway-requirement")).toHaveCount(4);
+  for (const reason of await sidebar.locator(".gateway-requirement").all()) await expect(reason).toBeHidden();
+  const controls = await sidebar.locator("a, button, select, [role=link]").evaluateAll((nodes) => nodes
+    .filter((node) => node.getClientRects().length > 0)
+    .map((node) => ({ name: node.getAttribute("aria-label") ?? node.textContent, height: node.getBoundingClientRect().height })));
+  expect(controls.length).toBeGreaterThan(0);
+  for (const control of controls) expect(control.height, control.name ?? "").toBeLessThanOrEqual(64);
+  expect(await sidebar.locator("*").evaluateAll((nodes) => nodes
+    .filter((node) => node.getClientRects().length > 0 && node.clientWidth > 0)
+    .filter((node) => node.scrollWidth > node.clientWidth)
+    .map((node) => node.textContent))).toEqual([]);
+  const unavailable = nav(page).getByRole("link", { name: "Consumidores", exact: true });
+  await expect(unavailable).toHaveAccessibleDescription("Disponível no ambiente legado");
+  await unavailable.focus();
+  await expect(nav(page).getByRole("tooltip").filter({ hasText: "Consumidores" })).toContainText("Disponível no ambiente legado");
+  await testInfo.attach("collapsed-compact-controls", { body: await page.screenshot(), contentType: "image/png" });
+  await sidebar.getByRole("button", { name: "Expandir menu Gateway", exact: true }).click();
+  await expect(sidebar.getByLabel("Workspace v2", { exact: true })).toBeVisible();
+  await expect(more).toBeVisible();
+});

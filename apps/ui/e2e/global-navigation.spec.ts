@@ -253,3 +253,33 @@ for (const status of [403, 404, 502]) {
     }
   });
 }
+
+for (const scope of ["global", "v2", "v1"] as const) {
+  test(`${scope}: mobile global groups form full-width accordions at 390px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 390, height: 900 });
+    await setup(page);
+    await page.goto(paths[scope]);
+    for (const name of ["Operações", "Instância", "Minha conta"] as const) {
+      await openGlobalMenu(page, name);
+      const panel = nav(page).getByRole("region", { name, exact: true });
+      await expect(panel).toBeVisible();
+      const panelBox = (await panel.boundingBox())!;
+      expect(panelBox.width).toBeGreaterThanOrEqual(390 * .9);
+      expect(panelBox.x).toBeGreaterThanOrEqual(16);
+      expect(panelBox.x + panelBox.width).toBeLessThanOrEqual(390 - 16);
+      const itemWidths = await panel.locator("li").evaluateAll((nodes) => nodes.map((node) => node.getBoundingClientRect().width));
+      expect(itemWidths.length).toBeGreaterThan(0);
+      for (const width of itemWidths) expect(width).toBeGreaterThanOrEqual(200);
+      const groups = await nav(page).locator(".global-group").evaluateAll((nodes) => nodes.map((node) => {
+        const { top, bottom, width } = node.getBoundingClientRect();
+        return { top, bottom, width };
+      }));
+      for (let index = 0; index < groups.length; index++) {
+        expect(groups[index]!.width).toBeGreaterThanOrEqual(390 * .9);
+        if (index > 0) expect(groups[index]!.top).toBeGreaterThanOrEqual(groups[index - 1]!.bottom);
+      }
+      await fits(page);
+      await testInfo.attach(`accordion-${scope}-${name}`, { body: await page.screenshot({ fullPage: true }), contentType: "image/png" });
+    }
+  });
+}

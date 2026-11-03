@@ -59,7 +59,9 @@ for (const width of [390, 1440]) {
       await expect(state.text.startsWith("Instância") ? page.locator(".instance-context") : page.locator(".menu")).toContainText(state.text);
       await expect(page.getByLabel("Ambiente (legado)", { exact: true })).toBeVisible();
       await expect(page.getByLabel("Workspace v2", { exact: true })).toBeVisible();
-      await expect(page.getByLabel("Workspace v2", { exact: true }).locator("option[value]:not([value=\"\"])")).toHaveText(["Pedidos v2", "Catálogo v2"]);
+      await expect(page.getByLabel("Workspace v2", { exact: true })).toHaveValue("");
+      await expect(page.getByLabel("Workspace v2", { exact: true }).locator('option[value=""]')).toHaveText("Abrir um Workspace v2…");
+      await expect(page.getByRole("link", { name: "Ir para Workspaces", exact: true })).toHaveCount(0);
       if (state.name === "invalid selection") await expect(page.getByLabel("Ambiente (legado)", { exact: true })).toHaveValue("");
       const close = page.getByRole("button", { name: "Fechar menu Gateway", exact: true });
       if (await close.isVisible()) await close.click();
