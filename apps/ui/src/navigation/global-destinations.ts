@@ -13,10 +13,11 @@ export interface GlobalDestination {
 
 // PR-C can add "instance" here once / renders the instance overview instead of redirecting.
 const INSTANCE_IDS = ["N18", "N20", "N21"];
-const OPERATIONS = ["v2-N11", "N17", "N16", "N12", "N13", "N15"];
+const OPERATIONS = ["N17", "N16", "N12", "N13", "N15"];
 
 export function globalDestinations(section: GlobalSection, context: NavigationContext | null, role: string | undefined, pathname: string): GlobalDestination[] {
-  const ids = section === "operations" ? OPERATIONS : section === "instance" ? INSTANCE_IDS : ["N19"];
+  const releasesId = context?.route.kind === "legacy-v1" ? "N11" : "v2-N11";
+  const ids = section === "operations" ? [releasesId, ...OPERATIONS] : section === "instance" ? INSTANCE_IDS : ["N19"];
   const activeId = resolveDestination(pathname)?.activeId;
   return ids.flatMap((id) => {
     const item = destinations.find((destination) => destination.id === id)!;
@@ -26,10 +27,12 @@ export function globalDestinations(section: GlobalSection, context: NavigationCo
     const confirmedId = v2 && context?.route.kind === "workspace-v2" && (context.state === "authorized" || context.state === "archived")
       ? context.workspace?.id
       : v1 && context?.route.kind === "legacy-v1" && context.state === "legacy" ? context.environment?.id : undefined;
-    const requirement = (v1 || v2) && !confirmedId ? v2 ? "Requer Workspace" : "Requer ambiente legado" : undefined;
+    const requirement = (v1 || v2) && !confirmedId
+      ? id === releasesId && context?.route.kind !== "legacy-v1" && context?.route.kind !== "workspace-v2"
+        ? "Requer Workspace ou ambiente legado" : v2 ? "Requer Workspace" : "Requer ambiente legado"
+      : undefined;
     return [{ id, label: id === "N12" ? "Revisar snapshot" : id === "N13" ? "Snapshots publicados" : item.label,
       href: requirement ? undefined : confirmedId ? destinationHref(item, confirmedId) : item.path,
-      // The directly addressable legacy Releases alias belongs to this section, but cannot enable its v2 link.
-      requirement, active: id === activeId || (id === "v2-N11" && activeId === "N11"), legacy: ["N12", "N13", "N15"].includes(id) }];
+      requirement, active: id === activeId, legacy: ["N12", "N13", "N15"].includes(id) }];
   });
 }

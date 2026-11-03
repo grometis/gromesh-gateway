@@ -64,7 +64,12 @@ async function screen({ path = "/tokens", role = "viewer", status = 200, compact
   const all = (predicate: (node: TestNode) => boolean) => container.findAll(predicate);
   const button = (label: string) => all((n) => n.tagName === "BUTTON" && n.textContent === label)[0]!;
   const panel = (label: string) => all((n) => n.getAttribute("id") === button(label).getAttribute("aria-controls"))[0]!;
-  const click = async (node: TestNode) => { await act(async () => { node.dispatchEvent(new Event("click", { bubbles: true })); await tick(); }); };
+  const click = async (node: TestNode) => { await act(async () => {
+    const event = new Event("click", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "button", { value: 0 });
+    node.dispatchEvent(event);
+    await tick();
+  }); };
   const focus = async (node: TestNode) => { await act(async () => { node.focus(); node.dispatchEvent(new Event("focusin", { bubbles: true })); await tick(); }); };
   const resize = async (matches: boolean) => { await act(async () => { media.matches = matches; media.dispatchEvent(new Event("change")); await tick(); }); };
   return { container, all, button, panel, click, focus, resize, router, settle, sent, releaseContext };
@@ -74,7 +79,7 @@ describe("global navigation", () => {
   it.each([
     { path: "/tokens", releases: undefined, requests: undefined },
     { path: `/workspaces/${W}/services`, releases: `/workspaces/${W}/releases`, requests: undefined },
-    { path: `/e/${E}/services`, releases: undefined, requests: `/e/${E}/requests` },
+    { path: `/e/${E}/services`, releases: `/e/${E}/releases`, requests: `/e/${E}/requests` },
   ])("uses confirmed namespaces on $path", async ({ path, releases, requests }) => {
     const view = await screen({ path });
     await vi.waitFor(async () => { await view.settle(); expect(view.container.textContent).not.toContain("Verificando contexto…"); });
@@ -84,17 +89,30 @@ describe("global navigation", () => {
     expect(items.find((n) => n.textContent === "Releases")?.getAttribute("href")).toBe(releases);
     expect(items.find((n) => n.textContent === "Requisições")?.getAttribute("href")).toBe(requests);
     const disabled = view.panel("Operações").findAll((n) => n.getAttribute("aria-disabled") === "true");
-    expect(disabled.length).toBe(path === "/tokens" ? 6 : releases ? 5 : 1);
+    expect(disabled.length).toBe(path === "/tokens" ? 6 : requests ? 0 : 5);
     for (const item of disabled) {
       expect(item.getAttribute("href")).toBeNull();
       const reason = view.all((n) => n.getAttribute("id") === item.getAttribute("aria-describedby"))[0]!;
-      expect(reason.textContent).toBe(item.textContent.startsWith("Releases") ? "Requer Workspace" : "Requer ambiente legado");
+      expect(reason.textContent).toBe(item.textContent.startsWith("Releases") ? "Requer Workspace ou ambiente legado" : "Requer ambiente legado");
       expect(item.contains(reason)).toBe(false);
       expect(item.getAttribute("aria-label") ?? item.textContent).toBe(item.textContent);
     }
     const sidebar = view.all((n) => n.getAttribute("aria-label") === "Menu principal")[0]!;
     expect(sidebar.findAll((n) => n.tagName === "A").every((n) => !/releases|requests|metrics|publish|publications|clusters|tokens|users|audit/.test(n.getAttribute("href") ?? ""))).toBe(true);
-    if (releases) expect(view.sent.some((p) => p.startsWith("/api/v1/environments"))).toBe(false);
+    if (path.startsWith("/workspaces/")) expect(view.sent.some((p) => p.startsWith("/api/v1/environments"))).toBe(false);
+  });
+  it.each([
+    { path: `/workspaces/${W}/services`, destination: `/workspaces/${W}/releases` },
+    { path: `/e/${E}/services`, destination: `/e/${E}/releases` },
+  ])("navigates to Releases by menu click from $path", async ({ path, destination }) => {
+    const view = await screen({ path });
+    await vi.waitFor(async () => { await view.settle(); expect(view.container.textContent).not.toContain("Verificando contexto…"); });
+    await view.click(view.button("Operações"));
+    const release = view.panel("Operações").findAll((n) => n.tagName === "A" && n.textContent === "Releases")[0]!;
+    expect(release).toBeDefined();
+    await view.click(release);
+    expect(view.router.state.location.pathname).toBe(destination);
+    expect(view.button("Operações").getAttribute("aria-expanded")).toBe("false");
   });
   it("lets keyboard users focus Operations to scroll even when every destination is unavailable", async () => {
     const view = await screen({ compact: true });
@@ -148,10 +166,13 @@ describe("global navigation", () => {
     const view = await screen({ path, status });
     await view.click(view.button("Operações"));
     expect(view.panel("Operações").findAll((n) => n.tagName === "A")).toHaveLength(0);
+    const release = view.panel("Operações").findAll((n) => n.getAttribute("aria-disabled") === "true" && n.textContent === "Releases")[0]!;
+    const requirement = view.all((n) => n.getAttribute("id") === release.getAttribute("aria-describedby"))[0]!;
+    expect(requirement.textContent).toBe(path.startsWith("/e/") ? "Requer ambiente legado" : "Requer Workspace");
   });
   it.each([
     { path: `/workspaces/${W}/services`, pending: "workspace" as const, links: 1 },
-    { path: `/e/${E}/services`, pending: "environment" as const, links: 5 },
+    { path: `/e/${E}/services`, pending: "environment" as const, links: 6 },
   ])("enables only the confirmed namespace after loading on $path", async ({ path, pending, links }) => {
     const view = await screen({ path, pending });
     await view.click(view.button("Operações"));
@@ -171,7 +192,7 @@ describe("global navigation", () => {
     expect(view.button("Operações").getAttribute("data-active")).toBe("true");
     expect(view.button("Operações").getAttribute("aria-current")).toBeNull();
     const current = view.all((n) => n.getAttribute("aria-current") === "page");
-    expect(current.map((n) => n.textContent)).toEqual(path.endsWith("/3") ? ["Snapshots publicados"] : []);
+    expect(current.map((n) => n.textContent)).toEqual(path.endsWith("/3") ? ["Snapshots publicados"] : ["Releases"]);
   });
   it.each(["viewer", "admin"] as const)("matches RequireAdmin for %s, even with a local admin override", async (role) => {
     const view = await screen({ role, path: `/e/${E}/services` });
@@ -202,6 +223,21 @@ describe("global navigation", () => {
     await view.focus(main);
     expect(ops.getAttribute("aria-expanded")).toBe("false");
     expect(document.activeElement).toBe(main);
+  });
+  it.each([false, true])("closes each group when clicking instance identity inside the header (compact: %s)", async (compact) => {
+    const view = await screen({ compact });
+    if (compact) await view.click(view.button("Menus globais"));
+    const identity = view.all((n) => n.getAttribute("aria-label") === "Identidade da instância")[0]!;
+    for (const section of ["Operações", "Instância", "Minha conta"]) {
+      await view.click(view.button(section));
+      await view.click(view.panel(section));
+      expect(view.button(section).getAttribute("aria-expanded")).toBe("true");
+      await act(() => { identity.dispatchEvent(new Event("pointerdown", { bubbles: true })); });
+      expect(view.button(section).getAttribute("aria-expanded")).toBe("true");
+      await view.click(identity);
+      expect(view.button(section).getAttribute("aria-expanded")).toBe("false");
+      if (compact) expect(view.button("Menus globais").getAttribute("aria-expanded")).toBe("true");
+    }
   });
   it("closes on navigation, clears prior context and focuses main without polling stealing focus", async () => {
     const view = await screen({ path: `/workspaces/${W}/releases` });

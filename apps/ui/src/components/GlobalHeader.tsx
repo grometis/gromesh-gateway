@@ -67,8 +67,9 @@ export function GlobalHeader() {
     const endPointer = () => { pointerActive.current = false; };
     const click = (event: MouseEvent) => {
       pointerActive.current = false;
-      if (!header.current?.contains(event.target as Node)) {
-        setOpen(null);
+      const target = event.target as Node;
+      setOpen((current) => current && !groups.current[current]?.contains(target) ? null : current);
+      if (!header.current?.contains(target)) {
         setMobileOpen(false);
         lastFocus.current = null;
       }

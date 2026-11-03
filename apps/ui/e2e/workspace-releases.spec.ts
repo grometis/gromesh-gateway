@@ -1,4 +1,4 @@
-import { openGlobalMenu } from "./global-navigation";
+import { navigateGlobal, openGlobalMenu } from "./global-navigation";
 import { expect, test, type Page } from "@playwright/test";
 import type { Environment, Me } from "../src/api/client";
 import type { Release, Workspace } from "../src/api/client-v2";
@@ -75,8 +75,10 @@ test.afterEach(async ({ page }) => {
 
 test("publishes an immutable release through v2 without deploying or calling v1 snapshots", async ({ page }) => {
   const fake = await setup(page);
-  await openGlobalMenu(page, "Operações");
-  await expect(page.getByRole("navigation", { name: "Navegação global" }).locator('[aria-disabled="true"]').filter({ hasText: "Releases" })).toHaveAccessibleDescription("Requer Workspace");
+  const operations = (await openGlobalMenu(page, "Operações")).getByRole("region", { name: "Operações", exact: true });
+  const releases = operations.getByRole("link", { name: "Releases", exact: true });
+  await expect(releases).toHaveAttribute("href", `/e/${W}/releases`);
+  await expect(releases).toHaveAttribute("aria-current", "page");
   await page.keyboard.press("Escape");
   await expect(page.getByRole("region", { name: "Deployment", exact: true })).toContainText("Deployment de Workspaces indisponível nesta fase");
   await expect(page.getByRole("region", { name: "Convergência", exact: true })).toContainText("indisponível");
@@ -94,6 +96,13 @@ test("publishes an immutable release through v2 without deploying or calling v1 
   await expect(list).toContainText("Serviços de cobrança");
   await expect(list).toContainText(release.contentDigest);
   await expect(list.getByRole("button")).toHaveCount(0);
+  await navigateGlobal(page, "Workspaces");
+  await expect(page).toHaveURL("/workspaces");
+  const globalOperations = (await openGlobalMenu(page, "Operações")).getByRole("region", { name: "Operações", exact: true });
+  const unavailableReleases = globalOperations.getByRole("link", { name: "Releases", exact: true });
+  await expect(unavailableReleases).toHaveAttribute("aria-disabled", "true");
+  await expect(unavailableReleases).not.toHaveAttribute("href");
+  await expect(unavailableReleases).toHaveAccessibleDescription("Requer Workspace ou ambiente legado");
   expect(fake.writes).toEqual([{ method: "POST", path: `/api/v2/workspaces/${W}/releases`, body: { message: "Serviços de cobrança", expectedActiveVersion: null }, csrf: "session-csrf" }]);
   expect(fake.unexpected).toEqual([]);
 });
@@ -157,10 +166,10 @@ test("v1 publication stays available on Services and disappears again on Release
   await expect(page.getByRole("region", { name: "Publicação", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Publicar v4" })).toBeEnabled();
   await expect(page.getByRole("link", { name: "Ver diff", exact: true })).toHaveAttribute("href", `/e/${W}/publish`);
-  // This compatibility URL remains directly addressable, but global Releases requires a confirmed v2 context.
-  await page.goBack();
+  await navigateGlobal(page, "Releases");
   await expect(page).toHaveURL(`/e/${W}/releases`);
   await expect(page.getByRole("button", { name: "Publicar release", exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Publicação", exact: true })).toHaveCount(0);
   expect(fake.writes).toEqual([]);
   expect(fake.unexpected).toEqual([]);
 });
