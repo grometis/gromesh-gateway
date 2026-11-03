@@ -1101,6 +1101,19 @@ test('PR mode validates SHA, arch and local image without publication or digest 
 
 for (const mode of ['images', 'pr']) {
   for (const description of [
+    'auth: abc123', 'SESSION: abc123', 'clientSession: abc123',
+    '"auth"="abc123"', '"session": "abc123"', 'auth[]=abc123',
+    'Basic "dXNlcjpwYXNz"', 'Basic: dXNlcjpwYXNz', 'Digest: username=abc',
+    "Basic 'dXNlcjpwYXNz'", "Digest 'username'='abc'",
+    'auth({["abc123"]})', 'client-session: 42', 'clientSession: deadbeef',
+    'clientAuth: cGFzcw==', 'client_auth: cGFzcw', 'session: AbCdEf',
+    'Basic "+/8="', 'Basic "////"', 'session: "_w=="',
+    'session: ab_cd-ef', 'authAbc123', 'clientAUTH: abc123',
+    'APIKey: abc123', 'api key: abc123', 'access-key: abc123', 'private_key: abc123',
+    'secret: abc123', 'token: abc123', 'password: abc123', 'passwd: abc123',
+    'credential: abc123', 'bearer: abc123', 'cookie: abc123',
+    'X11 Session Management library auth: abc123',
+    'auth=short', 'session=""', 'auth=@', 'auth=()', 'session={}',
     'auth=abc123', 'session=abc123', 'client_auth=abc123', 'client_session=abc123',
     'clientAuth=abc123', 'clientSession=abc123', 'client-auth=abc123', 'client-session=abc123',
     'client2Auth=abc123', 'client2Session=abc123', 'CLIENT_AUTH = abc123', 'CLIENT_SESSION = abc123',
@@ -1127,6 +1140,11 @@ for (const mode of ['images', 'pr']) {
   }
   for (const description of [
     'Message Digest functions from BSD systems', 'X11 Session Management library',
+    'Message Digest functions from BSD systems.', 'Message digest library',
+    'Basic HTTP client', 'Basic authentication utilities',
+    'auth helpers abc123', 'Session utilities abc123',
+    'auth / abc123', 'auth . abc123', 'auth + abc123',
+    'authentication: abc123',
     'Session utilities with auth helpers', 'Library name=value',
   ]) {
     test(`prose terminology ${mode} ${description}`, t => {

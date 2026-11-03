@@ -49,16 +49,58 @@ function tokenRepository(parts, pkg) {
   return tokenPackage(pkg) && parts.length === 2 && parts[0] === "Borewit" &&
     [repo, `${repo}.git`].includes(parts[1]);
 }
-function credentialAssignment(value) {
-  return [...value.matchAll(/([A-Za-z][A-Za-z0-9_-]*)\s*=(?=\s*\S)/g)].some(([, identifier]) =>
-    [identifier, normalizeIdentifiers(identifier)].some(spelling =>
-      /\b(?:secrets?|password|passwd|auth|authorization|session|cookies?|credentials?|api *key|private *key|access *key|token|bearer)\b/i.test(spelling)));
+const sensitiveTokens = new Set(["auth", "authorization", "session", "secret", "secrets", "token",
+  "password", "passwd", "apikey", "accesskey", "privatekey", "credential", "credentials",
+  "bearer", "basic", "digest", "cookie", "cookies"]);
+function proseTokens(value) {
+  const tokens = [];
+  for (const match of value.matchAll(/[\p{L}\p{M}0-9]+/gu)) {
+    const splits = [...match[0].matchAll(/(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])|(?<=[A-Za-z])(?=[0-9])|(?<=[0-9])(?=[A-Za-z])/g)];
+    const boundaries = [0, ...splits.map(part => part.index), match[0].length];
+    for (let i = 1; i < boundaries.length; i++) {
+      const start = match.index + boundaries[i - 1];
+      const end = match.index + boundaries[i];
+      tokens.push({ name: value.slice(start, end).toLowerCase(), start, end });
+    }
+  }
+  return tokens;
 }
-function httpAuthorization(value) {
-  // This complete Syft/BSD description uses Digest as hash terminology. Keep the
-  // exception exact so appended credentials still fail the scheme check.
-  return value !== "Message Digest functions from BSD systems" &&
-    /\b(?:basic|bearer|digest) +[A-Za-z0-9+/_~.-]+={0,2}/i.test(value);
+function credentialValue(value) {
+  if (/[0-9]/.test(value) || /^[a-f]+$/i.test(value)) return true;
+  const classes = [/[a-z]/, /[A-Z]/, /[^A-Za-z0-9]/].filter(pattern => pattern.test(value)).length;
+  if (value.length >= 6 && classes >= 2) return true;
+  // Plain words also fit the base64 alphabet. Require canonical encoding and
+  // textual decoded data or encoding punctuation before treating them as values.
+  if (!/^[A-Za-z0-9+/_-]+={0,2}$/.test(value)) return false;
+  const decoded = Buffer.from(value, "base64url");
+  const canonical = decoded.toString("base64url");
+  return canonical === value.replace(/=+$/, "").replaceAll("+", "-").replaceAll("/", "_") &&
+    (/^[\x20-\x7e]+$/.test(decoded.toString("latin1")) || /[=+/_-]/.test(value));
+}
+function tokenCredential(value, prose = false) {
+  // The captured libsm description names X11 session management. Bind the
+  // exception to the complete description; appended values must still fail.
+  if (prose && value === "X11 Session Management library") return false;
+  const tokens = proseTokens(value);
+  for (let i = 0; i < tokens.length; i++) {
+    let name = "";
+    for (let j = i; j < tokens.length && j < i + 13; j++) {
+      if (j > i && !/^[ _-]*$/.test(value.slice(tokens[j - 1].end, tokens[j].start))) break;
+      name += tokens[j].name.replace(/[0-9]/g, "");
+      if (name.length > 13) break;
+      if (!sensitiveTokens.has(name)) continue;
+      const tail = value.slice(tokens[j].end);
+      const separators = /^[\s:="'\[\]{}(),]*/.exec(tail)[0];
+      const rest = tail.slice(separators.length);
+      // Keep the prior rejection of assignments, including short/punctuation values.
+      if (separators.includes("=") && /\S/.test(tail.slice(tail.indexOf("=") + 1))) return true;
+      const candidate = /^[\p{L}\p{M}0-9+/_~.-]+={0,2}/u.exec(rest)?.[0];
+      if (prose && candidate && credentialValue(candidate)) return true;
+      // Digest uses auth-param pairs rather than a single token68 payload.
+      if (prose && name === "digest" && /^[A-Za-z][A-Za-z0-9_-]*[\s"']*=[\s"']*[A-Za-z0-9+/_~.-]+/.test(rest)) return true;
+    }
+  }
+  return false;
 }
 function encodedCredential(value, pattern = sensitiveTextPattern) {
   // Inspect the whole spelling and its components: '/' is both base64 data and
@@ -91,10 +133,10 @@ function text(value, maximum, pattern, unicode = false, prose = false) {
   requireValid(typeof value === "string" && value.length > 0 && value.length <= maximum, RejectionCode.TEXT_BUDGET);
   requireValid((unicode ? /^[\x20-\x7e\p{L}\p{M}]+$/u : /^[\x20-\x7e]+$/).test(value) && !credentialPattern.test(value), RejectionCode.TEXT_CHARACTERS);
   if (prose) {
-    requireValid(!credentialAssignment(value) && !httpAuthorization(value), RejectionCode.PROSE_CREDENTIAL);
+    requireValid(!tokenCredential(value, true), RejectionCode.PROSE_CREDENTIAL);
     requireValid(!encodedCredential(value), RejectionCode.PROSE_ENCODED_CREDENTIAL);
   } else {
-    requireValid(!credentialAssignment(value) && !encodedCredential(value), RejectionCode.TEXT_CHARACTERS);
+    requireValid(!tokenCredential(value) && !encodedCredential(value), RejectionCode.TEXT_CHARACTERS);
   }
   if (pattern) requireValid(pattern.test(value), RejectionCode.TEXT_PATTERN);
 }
