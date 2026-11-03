@@ -101,6 +101,7 @@ function fixture() {
     assert.deepEqual(args, [image("a"), "/tmp/explicit-config", "lab", "dev"]);
     return "image exists on all eligible nodes";
   };
+  readyPods(f, image("b"));
   f.run = o => scopedRollout(o ?? options(), { execute: f.execute, emit: value => f.output.push(value) });
   return f;
 }
@@ -125,6 +126,16 @@ test("legitimate UI-only plan inventories the chart migration but suppresses all
   }
 });
 
+test("plan without --no-hooks inventories upgrade hooks for a separately authorized procedure", async () => {
+  const f = fixture();
+  const plan = await f.run({ ...options(), noHooks: false });
+  assert.equal(plan.hooks[0].classification, "migration/job");
+  assert.equal(plan.hooks[0].action, "requires-separate-authorization");
+  assert.equal(plan.migrations, "none authorized");
+  assert.ok(plan.command.args.includes("--no-hooks"));
+  assert.equal(writes(f).length, 0);
+});
+
 test("apply is explicit after rollback and image proof, followed by live verification", async () => {
   const f = fixture();
   await f.run({ ...options(), mode: "apply" });
@@ -138,10 +149,10 @@ test("apply is explicit after rollback and image proof, followed by live verific
   assert.ok(after.every(c => c.file === "kubectl" && c.args.includes("get")));
 });
 
-test("hidden migration in chart hooks blocks an upgrade with hooks enabled", async () => {
+test("legacy hook authorization is refused before rendering a plan", async () => {
   const f = fixture();
   await assert.rejects(f.run({ ...options(), noHooks: false, authorizedHooks: [authorize(hook("backup"))] }), /hook|migration/i);
-  assert.ok(f.calls.some(c => c.args.includes("--dry-run=server")));
+  assert.equal(f.calls.length, 0);
   assert.equal(writes(f).length, 0);
   assert.equal(f.output.length, 0);
 });
@@ -210,19 +221,23 @@ test("every failed executor stage aborts before any plan or apply, without leaki
   }
 });
 
-test("authorized migration hooks can apply with exact manifest, identity, events and classification", async () => {
+test("apply refuses even an exactly authorized hook without --no-hooks", async () => {
   const f = fixture();
-  const plan = await f.run({ ...options(), mode: "apply", noHooks: false, authorizedHooks: [authorize(f.hooks[0])] });
-  assert.equal(writes(f).length, 1);
-  assert.equal(plan.hooks[0].action, "authorized");
-  assert.ok(!plan.command.args.includes("--no-hooks"));
+  await assert.rejects(f.run({ ...options(), mode: "apply", noHooks: false, authorizedHooks: [authorize(f.hooks[0])] }), /--no-hooks/);
+  assert.equal(f.calls.length, 0);
+  assert.equal(writes(f).length, 0);
 });
 
-for (const field of ["name", "kind", "events", "manifestSha256", "classification"]) test(`hook authorization pins ${field}`, async () => {
-  const f = fixture(), auth = authorize(f.hooks[0]);
-  auth[field] = field === "events" ? ["pre-upgrade"] : field === "manifestSha256" ? "c".repeat(64) : "test";
-  await assert.rejects(f.run({ ...options(), mode: "apply", noHooks: false, authorizedHooks: [auth] }), /hook|authorization|migration/i);
-  assert.equal(writes(f).length, 0);
+test("legacy hook authorization cannot be combined with --no-hooks to authorize execution", async () => {
+  const f = fixture();
+  await assert.rejects(f.run({ ...options(), mode: "apply", authorizedHooks: [authorize(f.hooks[0])] }), /hook authorization is not supported/);
+  assert.equal(f.calls.length, 0);
+});
+
+test("apply requires --no-hooks even when the chart has no hooks", async () => {
+  const f = fixture(); f.hooks = [];
+  await assert.rejects(f.run({ ...options(), mode: "apply", noHooks: false }), /--no-hooks/);
+  assert.equal(f.calls.length, 0);
 });
 
 for (const kind of ["Job", "Pod", "CronJob", "Deployment", "StatefulSet", "DaemonSet", "ReplicaSet"]) {
@@ -246,7 +261,7 @@ for (const event of ["pre-install", "post-install", "pre-upgrade", "post-upgrade
     assert.equal((await f.run()).hooks[0].classification, "migration/job");
   });
 }
-test("unknown hooks remain blocking even with matching unknown authorization", async () => {
+test("unknown hooks are inventoried but cannot be authorized through this guard", async () => {
   const f = fixture(), h = hook("seed", ["pre-upgrade"]), obj = JSON.parse(h.manifest);
   obj.kind = "Pod"; h.kind = "Pod"; obj.spec = { containers: [{ name: "seed", image: "tool:fixed", command: ["opaque-tool"] }] };
   h.manifest = JSON.stringify(obj); f.hooks = [h];
@@ -317,6 +332,7 @@ function readyPods(f, imageID) {
   f.pods = [{ metadata: { namespace: "dev", name: "ui-pod", ownerReferences: owner("ReplicaSet", "ui-rs") },
     spec: { containers: [{ name: "ui", image: image("b") }] },
     status: { conditions: [{ type: "Ready", status: "True" }], containerStatuses: [{ name: "ui", ready: true, image: image("b"), imageID }] } }];
+  const second = structuredClone(f.pods[0]); second.metadata.name = "ui-pod-2"; f.pods.push(second);
 }
 for (const imageID of [image("b"), `docker-pullable://${image("b")}`, `containerd://sha256:${"b".repeat(64)}`]) {
   test(`post-apply accepts Ready container digest: ${imageID}`, async () => {
@@ -338,16 +354,49 @@ for (const [name, mutate] of [
   assert.equal(writes(f).length, 1);
 });
 test("post-apply refuses missing Ready pod evidence when Deployment reports ready replicas", async () => {
-  const f = fixture(); f.live[0].status = { readyReplicas: 2 };
+  const f = fixture(); f.live[0].status = { readyReplicas: 2 }; f.pods = [];
   await assert.rejects(f.run({ ...options(), mode: "apply" }), /post-apply verification failed:.*Ready.*\nRollback command/);
 });
-test("post-apply ignores non-Ready imageIDs and pods outside the Deployment ownership chain", async () => {
-  const f = fixture(); readyPods(f, image("a"));
-  const other = structuredClone(f.pods[0]); other.metadata.ownerReferences[0].uid = "unrelated-rs";
+test("post-apply accepts a correct rollout while an old Ready pod is terminating", async () => {
+  const f = fixture(); readyPods(f, image("b"));
+  f.live[0].status = { readyReplicas: 2 };
+  const old = structuredClone(f.pods[0]);
+  old.metadata.name = "old-terminating";
+  old.metadata.deletionTimestamp = "2026-11-02T23:00:00Z";
+  old.metadata.ownerReferences[0].uid = "old-rs";
+  old.spec.containers[0].image = image("a");
+  old.status.containerStatuses[0].imageID = image("a");
+  f.replicaSets.push({ metadata: { namespace: "dev", uid: "old-rs", ownerReferences: [{ kind: "Deployment", uid: f.live[0].metadata.uid, controller: true }] } });
+  f.pods.push(old);
+  await f.run({ ...options(), mode: "apply" });
+  assert.equal(writes(f).length, 1);
+});
+
+for (const field of ["pod", "container"]) test(`post-apply refuses a non-terminating new pod that is not Ready: ${field}`, async () => {
+  const f = fixture(); readyPods(f, image("b"));
+  if (field === "pod") f.pods[0].status.conditions[0].status = "False";
+  else f.pods[0].status.containerStatuses[0].ready = false;
+  await assert.rejects(f.run({ ...options(), mode: "apply" }), /post-apply verification failed:.*Ready/);
+});
+
+test("post-apply ignores pods outside the Deployment ownership chain", async () => {
+  const f = fixture();
+  const other = structuredClone(f.pods[0]);
+  other.metadata.ownerReferences[0].uid = "unrelated-rs";
+  other.spec.containers[0].image = image("a");
+  other.status.containerStatuses[0].imageID = image("a");
   f.pods.push(other);
-  f.pods[0].status = { containerStatuses: [{ name: "ui", ready: false, imageID: image("a") }] };
   await f.run({ ...options(), mode: "apply" });
 });
+
+for (const state of ["empty", "terminating", "below desired replicas"]) test(`post-apply requires active Ready pod evidence: ${state}`, async () => {
+  const f = fixture();
+  if (state === "empty") f.pods = [];
+  else if (state === "terminating") f.pods.forEach(p => { p.metadata.deletionTimestamp = "2026-11-02T23:00:00Z"; });
+  else f.pods.pop();
+  await assert.rejects(f.run({ ...options(), mode: "apply" }), /post-apply verification failed:.*Ready pod image evidence missing/);
+});
+
 test("authorized Deployment proof permits only its named image path, with API defaults normalized", async () => {
   const f = fixture(), execute = f.execute, live = f.live[0];
   Object.assign(live.spec, { revisionHistoryLimit: 10, progressDeadlineSeconds: 600 });
@@ -449,12 +498,6 @@ if (tool === "kubectl") {
       if (process.env.DRIFT_LIVE === "image") f.live[0].spec.template.spec.containers[0].image = f.target[0].spec.template.spec.containers[0].image;
       writeFileSync(process.env.SCOPED_FIXTURE, JSON.stringify(f));
     }
-    if (process.env.DRIFT_HOOKS) {
-      const h = JSON.parse(f.hooks[0].manifest);
-      h.spec.template.spec.containers[0].command.push("--changed");
-      f.hooks[0].manifest = JSON.stringify(h);
-      writeFileSync(process.env.SCOPED_FIXTURE, JSON.stringify(f));
-    }
     if (process.env.DRIFT_BASELINE) {
       if (process.env.DRIFT_BASELINE === "history") f.history.push({revision:6, status:"deployed"});
       else f.current[4].data.mode = "concurrently-changed";
@@ -513,12 +556,9 @@ console.log(typeof out === "string" ? out : JSON.stringify(out));
     }), error => error.code === 1 && /apply command failed/.test(error.stderr));
     writeFileSync(snapshot, JSON.stringify(f));
     const hookArgv = [...argv, "--authorize-hook", JSON.stringify(authorize(f.hooks[0])), "--apply"];
-    const appliedHooks = await promisify(execFile)(process.execPath, [script, ...hookArgv], { env });
-    assert.equal(JSON.parse(appliedHooks.stdout).hooks[0].action, "authorized");
+    await assert.rejects(promisify(execFile)(process.execPath, [script, ...hookArgv], { env }),
+      error => error.code === 1 && /--apply requires --no-hooks/.test(error.stderr));
     writeFileSync(snapshot, JSON.stringify(f));
-    await assert.rejects(promisify(execFile)(process.execPath, [script, ...hookArgv], {
-      env: { ...env, DRIFT_HOOKS: "1" },
-    }), error => error.code === 1 && /apply command failed/.test(error.stderr));
     for (const drift of ["missing", "recreated", "spec", "image"]) {
       writeFileSync(snapshot, JSON.stringify(f));
       await assert.rejects(promisify(execFile)(process.execPath, [script, ...argv, "--no-hooks", "--apply"], {
@@ -560,7 +600,7 @@ test("tagged or malformed image and absent explicit scope fail before executors"
     { image: "registry.example/ui:latest" }, { image: "registry.example/ui:v1@sha256:" + "a".repeat(64) },
     { image: "registry.example/ui@sha256:abc" }, { release: "" }, { namespace: "" }, { kubeContext: "" },
     { kubeconfig: "" }, { expectedUid: "" }, { expectedCaSha256: "" }, { expectedCluster: "" },
-    { noHooks: false }, { mode: "unknown" }, { verifyImageCommand: [] },
+    { mode: "apply", noHooks: false }, { mode: "unknown" }, { verifyImageCommand: [] },
     { noHooks: true, authorizedHooks: ["Job/backup"] },
   ]) {
     const f = fixture();
@@ -596,30 +636,14 @@ test("guard is included in test:guard and actual chart migration is not conditio
   assert.match(migration, /helm.sh\/hook: pre-install,pre-upgrade/);
 });
 
-for (const change of ["body", "events", "added", "weight", "deletePolicies"]) test(`hook inventory rechecked immediately before apply: ${change}`, async () => {
-  const f = fixture(), execute = f.execute, auth = authorize(f.hooks[0]);
-  f.execute = async (file, args, io) => {
-    const out = await execute(file, args, io);
-    if (file === "image-proof") {
-      if (change === "body") { const obj = JSON.parse(f.hooks[0].manifest); obj.spec.template.spec.containers[0].args = ["--changed"]; f.hooks[0].manifest = JSON.stringify(obj); }
-      if (change === "events") f.hooks[0] = hook(undefined, ["post-upgrade"]);
-      if (change === "added") f.hooks.push(hook("additional"));
-      if (change === "weight") f.hooks[0].weight = 100;
-      if (change === "deletePolicies") f.hooks[0].delete_policies = ["before-hook-creation"];
-    }
-    return out;
-  };
-  await assert.rejects(f.run({ ...options(), mode: "apply", noHooks: false, authorizedHooks: [auth] }), /hook|authorization/i);
-  assert.equal(writes(f).length, 0);
-});
-
-test("a direct pg_dump backup hook can apply when fully authorized", async () => {
+test("a direct pg_dump backup hook is classified in a plan for separate authorization", async () => {
   const f = fixture(), h = hook("backup", ["post-upgrade"]), obj = JSON.parse(h.manifest);
   obj.spec.template.spec.containers = [{ name: "pg-dump", image: "backup:fixed", command: ["pg_dump"] }];
   h.manifest = JSON.stringify(obj); f.hooks = [h];
-  const plan = await f.run({ ...options(), mode: "apply", noHooks: false, authorizedHooks: [authorize(h, "backup")] });
+  const plan = await f.run({ ...options(), noHooks: false });
   assert.equal(plan.hooks[0].classification, "backup");
-  assert.equal(writes(f).length, 1);
+  assert.equal(plan.hooks[0].action, "requires-separate-authorization");
+  assert.equal(writes(f).length, 0);
 });
 
 test("migration env content also overrides test classification", async () => {
@@ -729,8 +753,8 @@ test("real Helm renders both shipped charts as subcharts, values conditionals an
       assert.ok(plan.hooks.every(h => h.action === "suppressed"));
       assert.ok(plan.hooks.filter(h => h.id.startsWith("Pod/")).every(h => h.classification === "migration/job"));
       const unauthorized = { ...options(), chart: umbrella, objectUids, mode: "apply", noHooks: false, authorizedHooks: [authorize(renderedHooks.find(h => h.name === "cp-control-plane-migrate"))] };
-      if (enabled) { await assert.rejects(f.run(unauthorized), /hook|authorization|volatile|deterministic/i); assert.equal(writes(f).length, 0); }
-      else await assert.rejects(f.run(unauthorized), /volatile|deterministic/i);
+      await assert.rejects(f.run(unauthorized), /--no-hooks/);
+      assert.equal(writes(f).length, 0);
     });
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
@@ -784,64 +808,16 @@ test("chart content, including a dependency, is pinned until apply", async () =>
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("hook-enabled apply refuses volatile chart templates that could evade re-render hashes", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "scoped-chart-volatile-"));
+test("indirect Capabilities templates cannot enable hooks through apply", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "scoped-chart-capabilities-"));
   try {
-    cpSync(resolve("deploy/helm/control-plane"), dir, { recursive: true });
-    writeFileSync(join(dir, "templates", "_dynamic.tpl"), '{{ define "dynamic" }}{{ lookup "v1" "ConfigMap" "dev" "sql" }}{{ end }}');
+    writeFileSync(join(dir, "hook.tpl"), '{{ $c := index . "Capabilities" }}{{ if lt (first $c.APIVersions) "m" }}approved{{ else }}unapproved{{ end }}');
     const f = fixture();
-    await assert.rejects(f.run({ ...options(), chart: dir, mode: "apply", noHooks: false, authorizedHooks: [authorize(f.hooks[0])] }), /volatile|deterministic/i);
-    assert.equal(writes(f).length, 0);
-    // Suppressed hooks retain the ordinary full-manifest and live-object checks.
-    await f.run({ ...options(), chart: dir });
-  } finally { rmSync(dir, { recursive: true, force: true }); }
-});
-
-for (const template of [
-  '{{ printf "%d}}" (randInt 0 2) }}',
-  '{{ printf `}}` (uuidv4) }}',
-  '{{ printf "{{/*" }}{{ randAlpha 12 }}',
-  String.raw`{{ printf "escaped\"}}" (randAlphaNum 12) }}`,
-  '{{ now }}', '{{ date "2006" .Values.time }}', '{{ dateInZone "2006" .Values.time "UTC" }}',
-  '{{ mustDateModify "1h" .Values.time }}', '{{ genCA "ca" 365 }}', '{{ genSelfSignedCert "cert" nil nil 365 }}',
-  '{{ genSignedCertWithKey "cert" nil nil 365 .Values.ca .Values.key }}', '{{ randBytes 16 }}',
-  '{{ lookup "v1" "ConfigMap" "dev" "data" }}', '{{ tpl .Values.template . }}',
-  '{{ .Release.Time }}', '{{ getHostByName "example.test" }}',
-  '{{ if lt (first .Capabilities.APIVersions) "m" }}ALTER TABLE approved{{ else }}DROP TABLE unapproved{{ end }}',
-  '{{ if .Capabilities.KubeVersion.Version }}ALTER TABLE example{{ end }}',
-  '{{ $caps := $.Capabilities }}{{ $caps.APIVersions }}',
-  '{{ if .Release.IsUpgrade }}ALTER TABLE example{{ end }}', '{{ .Release.Revision }}',
-  '{{ env "HOOK_SQL" }}', '{{ expandenv "$HOOK_SQL" }}',
-  '{{ keys .Values.map }}', '{{ values .Values.map }}', '{{ durationRound .Values.time }}',
-  '{{ printf "unterminated }}', '{{/* unterminated }}', '{{ printf "ok"',
-]) test(`hook authorization refuses volatile or ambiguous template: ${template}`, async () => {
-  const dir = mkdtempSync(join(tmpdir(), "scoped-template-token-"));
-  try {
-    mkdirSync(join(dir, "charts", "dependency", "templates"), { recursive: true });
-    writeFileSync(join(dir, "charts", "dependency", "templates", "_dynamic.tpl"), template);
-    const f = fixture();
-    await assert.rejects(f.run({ ...options(), chart: dir, mode: "apply", noHooks: false, authorizedHooks: [authorize(f.hooks[0])] }), /volatile|template|no-hooks/i);
-    assert.equal(writes(f).length, 0);
-    await f.run({ ...options(), chart: dir });
-  } finally { rmSync(dir, { recursive: true, force: true }); }
-});
-
-test("deterministic hook authorization respects quoted delimiters and Go template comments and renders twice", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "scoped-deterministic-"));
-  try {
-    writeFileSync(join(dir, "hook.tpl"), [
-      '{{/* randInt 0 2 }} {{ now }} */}}',
-      '{{- /* uuidv4 date genCA */ -}}',
-      '{{ printf "%s}}" "randInt now date" }}',
-      '{{ printf `}}` }}',
-      String.raw`{{ printf "escaped\"}}" }}`,
-      '{{ $now := .Values.env }}{{ $now }}',
-    ].join("\n"));
-    const f = fixture();
-    const plan = await f.run({ ...options(), chart: dir, mode: "apply", noHooks: false, authorizedHooks: [authorize(f.hooks[0])] });
-    const renders = f.calls.filter(c => c.file === "helm" && c.args.includes("--dry-run=server"));
-    assert.equal(renders.length, 2);
-    assert.equal(plan.renderProof.hooksSha256, createHash("sha256").update(JSON.stringify(f.hooks)).digest("hex"));
+    await assert.rejects(f.run({ ...options(), chart: dir, mode: "apply", noHooks: false, authorizedHooks: [authorize(f.hooks[0])] }), /--no-hooks/);
+    assert.equal(f.calls.length, 0);
+    const plan = await f.run({ ...options(), chart: dir, mode: "apply" });
+    assert.ok(plan.command.args.includes("--no-hooks"));
+    assert.equal(plan.hooks[0].action, "suppressed");
     assert.equal(writes(f).length, 1);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

@@ -2,6 +2,8 @@
 // Requires a trusted operator and a maintenance window with no concurrent writers to the release or its objects.
 // Helm/Kubernetes provide no atomic precondition from live checks to writes. The late post-renderer check
 // and post-apply verification detect drift but cannot eliminate TOCTOU. Rollback is printed, never executed.
+// This guard never executes hooks: every --apply requires --no-hooks. Plans inventory/classify hooks;
+// any procedure that needs them requires separate authorization and execution.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -26,8 +28,7 @@ const valueFlags = {
 // --object-uids is a JSON array of {kind,name,namespace,uid} from the approved baseline.
 // Include every release object, including the Deployment whose container image is authorized.
 // Helm manifests normally omit UID: never trust a first live observation as proof against recreation.
-// --authorize-hook is repeatable JSON: {kind,name,events,classification,manifestSha256}.
-// manifestSha256 hashes the exact UTF-8 hook.manifest returned by Helm's JSON dry-run.
+// Legacy --authorize-hook input is rejected; it cannot authorize hook execution through this guard.
 // --verify-image-command is a JSON argv array; the four placeholders below must be whole arguments.
 export function parseArgs(argv) {
   const options = { mode: "plan", noHooks: false, authorizedHooks: [], overrides: [], imageValuesPrefix: "ui.image" };
@@ -80,16 +81,8 @@ function validateOptions(o) {
   if (!Number.isSafeInteger(o.rollbackRevision) || o.rollbackRevision < 1) refuse("explicit rollback revision is required");
   if (!["plan", "apply"].includes(o.mode)) refuse("invalid mode");
   if (typeof o.noHooks !== "boolean" || !Array.isArray(o.authorizedHooks) || !Array.isArray(o.overrides)) refuse("invalid hook/override policy");
-  const authIds = new Set();
-  for (const h of o.authorizedHooks) {
-    if (!h || typeof h !== "object" || !namePattern.test(h.name ?? "") || !/^[A-Za-z][A-Za-z0-9]*$/.test(h.kind ?? "")
-      || !Array.isArray(h.events) || !h.events.length || h.events.some(e => !hookEvents.has(e))
-      || new Set(h.events).size !== h.events.length || !/^[a-f0-9]{64}$/.test(h.manifestSha256 ?? "")
-      || !["migration/job", "backup", "test"].includes(h.classification)) refuse("invalid explicit hook authorization");
-    const id = `${h.kind}/${h.name}`;
-    if (authIds.has(id)) refuse("duplicate hook authorization");
-    authIds.add(id);
-  }
+  if (o.mode === "apply" && !o.noHooks) refuse("--apply requires --no-hooks; hooks require a separately authorized procedure");
+  if (o.authorizedHooks.length) refuse("hook authorization is not supported; hooks require a separately authorized procedure");
   if (!Array.isArray(o.objectUids) || !o.objectUids.length) refuse("explicit baseline object UIDs are required");
   const uidIds = new Set();
   for (const v of o.objectUids) {
@@ -99,8 +92,6 @@ function validateOptions(o) {
     if (uidIds.has(id)) refuse("duplicate baseline object UID");
     uidIds.add(id);
   }
-  if (!o.authorizedHooks.length && !o.noHooks) refuse("--no-hooks is required without authorized hooks");
-  if (o.authorizedHooks.length && o.noHooks) refuse("--no-hooks conflicts with authorized hooks");
   if (!/^[a-zA-Z][a-zA-Z0-9]*(?:\.[a-zA-Z][a-zA-Z0-9]*)*$/.test(o.imageValuesPrefix ?? "")) refuse("invalid image values prefix");
   for (const value of o.overrides) {
     // Helm interprets commas as extra assignments, even when passed in a single argv entry.
@@ -131,7 +122,7 @@ function upgradeArgs(o) {
   const { repository, digest } = imageParts(o.image);
   return ["upgrade", o.release, resolve(o.chart), ...helmScope(o), "--reuse-values", ...o.overrides.flatMap(v => ["--set-string", v]),
     "--set-string", `${o.imageValuesPrefix}.repository=${repository}`, "--set-string", `${o.imageValuesPrefix}.digest=${digest}`,
-    "--set-string", `${o.imageValuesPrefix}.tag=`, ...(o.noHooks ? ["--no-hooks"] : []), "--wait", "--timeout", "5m"];
+    "--set-string", `${o.imageValuesPrefix}.tag=`, "--no-hooks", "--wait", "--timeout", "5m"];
 }
 
 function postRendererArgs(proof) {
@@ -141,7 +132,7 @@ function postRendererArgs(proof) {
 
 export function assertUpgradeCommand(args, o, proof) {
   const expected = [...upgradeArgs(o), ...(proof ? postRendererArgs(proof) : [])];
-  if (!isDeepStrictEqual(args, expected) || (!o.authorizedHooks.length && !args.includes("--no-hooks")))
+  if (!isDeepStrictEqual(args, expected) || !args.includes("--no-hooks"))
     refuse("final upgrade command differs from validated command or lacks --no-hooks");
 }
 
@@ -244,18 +235,10 @@ async function hooks(inventory, o, run) {
     seen.add(id);
     const type = classification(object, hook.events);
     const upgrade = hook.events.some(e => ["pre-upgrade", "post-upgrade"].includes(e));
-    const action = o.noHooks ? "suppressed" : upgrade ? "authorized" : "not-run-on-upgrade";
+    const action = o.noHooks ? "suppressed" : upgrade ? "requires-separate-authorization" : "not-run-on-upgrade";
     const manifestSha256 = sha256(hook.manifest);
-    if (!o.noHooks && upgrade) {
-      const auth = o.authorizedHooks.find(h => h.kind === object.kind && h.name === object.metadata.name);
-      if (!auth || auth.manifestSha256 !== manifestSha256 || auth.classification !== type
-        || !isDeepStrictEqual([...auth.events].sort(), [...hook.events].sort())) refuse(`upgrade hook ${id} lacks matching explicit authorization`);
-      if (type === "unknown") refuse(`unknown hook ${id} cannot run in a scoped rollout`);
-    }
     result.push({ id, classification: type, events: [...hook.events].sort(), manifestSha256, action });
   }
-  for (const auth of o.authorizedHooks)
-    if (!result.some(h => h.id === `${auth.kind}/${auth.name}` && h.action === "authorized")) refuse("authorized hook does not run on upgrade");
   return result;
 }
 
@@ -371,15 +354,16 @@ async function readyImages(deployment, name, image, o, run) {
   const uids = new Set(sets.items.filter(v => ownedBy(v, "Deployment", deployment.metadata.uid)).map(v => v.metadata.uid));
   const digest = imageParts(image).digest;
   let ready = 0;
-  for (const pod of pods.items.filter(v => [...uids].some(uid => ownedBy(v, "ReplicaSet", uid)))) {
+  for (const pod of pods.items.filter(v => !v.metadata?.deletionTimestamp && [...uids].some(uid => ownedBy(v, "ReplicaSet", uid)))) {
     const status = pod.status?.containerStatuses?.find(v => v.name === name);
-    if (!status?.ready && !pod.status?.conditions?.some(v => v.type === "Ready" && v.status === "True")) continue;
-    if (pod.spec?.containers?.find(v => v.name === name)?.image !== image || !status?.ready
+    if (!status?.ready || !pod.status?.conditions?.some(v => v.type === "Ready" && v.status === "True"))
+      refuse("live non-terminating pod/container is not Ready for authorized image");
+    if (pod.spec?.containers?.find(v => v.name === name)?.image !== image
       || typeof status.imageID !== "string" || !new RegExp(`(?:^|[/@])${digest}$`).test(status.imageID))
       refuse("live Ready container image differs from authorized digest");
     ready++;
   }
-  if ((deployment.status?.readyReplicas ?? 0) > ready) refuse("live Ready pod image evidence missing");
+  if ((deployment.spec?.replicas ?? 1) > ready) refuse("live Ready pod image evidence missing");
 }
 async function liveObjects(proofs, o, run, afterApply = false) {
   if (!Array.isArray(proofs) || !proofs.length) refuse("live object proof missing");
@@ -398,51 +382,7 @@ async function liveObjects(proofs, o, run, afterApply = false) {
     }
   }
 }
-function templateTokens(text) {
-  // Tokenize actions rather than splitting at }}: quoted strings can contain delimiters.
-  // Only identifiers outside strings/comments can invoke functions; tpl is itself forbidden.
-  const tokens = [];
-  let cursor = 0;
-  while ((cursor = text.indexOf("{{", cursor)) !== -1) {
-    cursor += 2;
-    if (text[cursor] === "-" && /\s/.test(text[cursor + 1] ?? "")) cursor++;
-    while (/\s/.test(text[cursor] ?? "")) cursor++;
-    if (text.startsWith("/*", cursor)) {
-      const end = text.indexOf("*/", cursor + 2);
-      if (end === -1) refuse("unterminated template comment; use --no-hooks");
-      cursor = end + 2;
-      while (/\s/.test(text[cursor] ?? "")) cursor++;
-      if (text[cursor] === "-") cursor++;
-      if (!text.startsWith("}}", cursor)) refuse("ambiguous template comment; use --no-hooks");
-      cursor += 2;
-      continue;
-    }
-    let closed = false;
-    while (cursor < text.length) {
-      if (text.startsWith("}}", cursor)) { cursor += 2; closed = true; break; }
-      const char = text[cursor++];
-      if (["\"", "'", "`"].includes(char)) {
-        let quoted = false;
-        while (cursor < text.length) {
-          const next = text[cursor++];
-          if (next === char) { quoted = true; break; }
-          if (next === "\\" && char !== "`") cursor++;
-        }
-        if (!quoted) refuse("unterminated template string; use --no-hooks");
-      } else if (/[A-Za-z_]/.test(char)) {
-        const start = cursor - 1;
-        while (/[A-Za-z0-9_]/.test(text[cursor] ?? "")) cursor++;
-        const token = text.slice(start, cursor);
-        // Preserve volatile Helm fields too, including access through aliases such as $root.Capabilities.
-        // Ordinary fields/variables such as .Values.env cannot call Sprig functions.
-        if (![".", "$"].includes(text[start - 1]) || ["Capabilities", "Revision", "IsUpgrade", "Time"].includes(token)) tokens.push(token);
-      }
-    }
-    if (!closed) refuse("unterminated template action; use --no-hooks");
-  }
-  return tokens;
-}
-function chartHash(path, deterministicHooks = false) {
+function chartHash(path) {
   const entries = [];
   const visit = (dir, prefix = "") => {
     for (const name of readdirSync(dir).sort()) {
@@ -451,20 +391,13 @@ function chartHash(path, deterministicHooks = false) {
       if (stat.isDirectory()) visit(file, `${rel}/`);
       else if (stat.isFile()) {
         const content = readFileSync(file);
-        if (deterministicHooks) {
-          if (/\.(?:tgz|gz)$/.test(name)) refuse("hook authorization requires unpacked deterministic chart dependencies");
-          // Scan the whole chart, including helpers/dependencies, conservatively covering hook includes.
-          // Hooks bypass the post-renderer; capability ordering and release state can also change their output.
-          if (templateTokens(content.toString("utf8")).some(v => /^(?:Capabilities|Revision|IsUpgrade|lookup|rand\w*|uuid\w*|now|ago|date\w*|must_?[dD]ate\w*|htmlDate\w*|toDate|mustToDate|durationRound|gen\w*|encryptAES|bcrypt|htpasswd|shuffle|keys|values|getHostByName|tpl|env|expandenv|Time)$/.test(v)))
-            refuse("volatile chart template: hook authorization requires deterministic local rendering; use --no-hooks");
-        }
         entries.push([rel, sha256(content)]);
       }
       else refuse("invalid local chart entry");
     }
   };
   try { visit(path); }
-  catch (error) { if (error.message?.startsWith("Scoped rollout refused:")) throw error; refuse("readable local chart required for pinned hook rendering"); }
+  catch (error) { if (error.message?.startsWith("Scoped rollout refused:")) throw error; refuse("readable local chart required for pinned rendering"); }
   return sha256(JSON.stringify(entries));
 }
 
@@ -491,7 +424,7 @@ export async function scopedRollout(input, { execute: executor = execute, emit =
   const liveProof = baselineObjects(current, o);
   await liveObjects(liveProof, o, run);
   o.chart = resolve(o.chart);
-  const chartSha256 = chartHash(o.chart, !o.noHooks);
+  const chartSha256 = chartHash(o.chart);
   const command = { file: "helm", args: upgradeArgs(o) };
   assertUpgradeCommand(command.args, o);
   // Helm's release JSON contains BOTH manifest and hooks. helm get manifest alone omits hooks.
@@ -525,24 +458,17 @@ export async function scopedRollout(input, { execute: executor = execute, emit =
   await run("previous image availability", verifyFile, verifyArgs);
   const renderProof = { manifestSha256: sha256(rendered.manifest), baselineSha256: sha256(currentRaw), revision: latest.revision,
     liveObjects: liveProof, chart: o.chart, chartSha256,
-    hookOptions: Object.fromEntries(["noHooks", "authorizedHooks", "namespace", "kubeconfig", "kubeContext"].map(k => [k, o[k]])),
-    hookInventory: inventory, hooksSha256: sha256(JSON.stringify(rendered.hooks)), upgradeArgs: upgradeArgs(o),
     scope: Object.fromEntries(["release", "namespace", "kubeContext", "kubeconfig", "expectedCluster", "expectedUid", "expectedCaSha256"].map(k => [k, o[k]])) };
   command.args.push(...postRendererArgs(renderProof));
   assertUpgradeCommand(command.args, o, renderProof);
-  if (chartHash(o.chart, !o.noHooks) !== chartSha256) refuse("chart changed during preparation");
-  if (!o.noHooks) {
-    const finalRender = json(await run("hook render recheck", "helm", [...upgradeArgs(o), "--dry-run=server", "--output", "json"]), "hook render recheck");
-    if (finalRender.manifest !== rendered.manifest || sha256(JSON.stringify(finalRender.hooks) ?? "") !== renderProof.hooksSha256
-      || !isDeepStrictEqual(await hooks(finalRender.hooks, o, run), inventory)) refuse("hook render changed before apply");
-  }
+  if (chartHash(o.chart) !== chartSha256) refuse("chart changed during preparation");
   await liveObjects(liveProof, o, run);
   const plan = { mode: o.mode, release: o.release, namespace: o.namespace, context: o.kubeContext,
     cluster: { name: o.expectedCluster, uid: o.expectedUid, caSha256: o.expectedCaSha256 },
     changes: [{ kind: "Deployment", name: o.deployment, namespace: o.namespace,
       path: `.spec.template.spec.containers[name=${o.container}].image`, before: previousImage, after: o.image }],
     liveObjects: liveProof, hooks: inventory,
-    migrations: inventory.some(h => h.classification === "migration/job" && h.action === "authorized") ? "explicitly authorized hook migrations" : "none authorized", rollbackRevision: o.rollbackRevision,
+    migrations: "none authorized", rollbackRevision: o.rollbackRevision,
     renderProof, command, rollback };
   emit(plan);
   if (o.mode === "apply") {
@@ -566,7 +492,7 @@ async function checkRender(proof) {
     try { return await execute(file, args, { input, env: scopedEnvironment(o.kubeconfig) }); }
     catch { refuse(`${stage} command failed`); }
   };
-  // This runs inside Helm after it loaded its baseline, before it creates the pending revision or executes hooks.
+  // This runs inside Helm after it loaded its baseline, before it creates the pending revision. Hooks are disabled.
   await identity(o, run);
   const history = json(await run("post-render history", "helm", ["history", o.release, ...helmScope(o), "--max", "1024", "--output", "json"]), "post-render history");
   if (!Array.isArray(history) || !history.length || history.some(h => !Number.isSafeInteger(h.revision))) refuse("invalid post-render history");
@@ -574,15 +500,7 @@ async function checkRender(proof) {
   if (latest.revision !== proof.revision || latest.status !== "deployed") refuse("release changed before final render");
   const baseline = await run("post-render baseline", "helm", ["get", "manifest", o.release, ...helmScope(o)]);
   if (sha256(baseline) !== proof.baselineSha256) refuse("release baseline changed before final render");
-  if (chartHash(proof.chart, !proof.hookOptions.noHooks) !== proof.chartSha256) refuse("chart changed before final render");
-  // Helm omits hooks from post-renderer stdin. Re-inventory the pinned local chart before any hook runs.
-  if (!proof.hookOptions.noHooks) {
-    const rendered = json(await run("post-render hooks", "helm", [...proof.upgradeArgs, "--dry-run=server", "--output", "json"]), "post-render hooks");
-    if (sha256(rendered.manifest ?? "") !== proof.manifestSha256
-      || sha256(JSON.stringify(rendered.hooks) ?? "") !== proof.hooksSha256
-      || !isDeepStrictEqual(await hooks(rendered.hooks, proof.hookOptions, run), proof.hookInventory)) refuse("hooks changed before final render");
-  }
-  if (chartHash(proof.chart, !proof.hookOptions.noHooks) !== proof.chartSha256) refuse("chart changed during final hook render");
+  if (chartHash(proof.chart) !== proof.chartSha256) refuse("chart changed before final render");
   await liveObjects(proof.liveObjects, o, run);
   process.stdout.write(raw);
 }
