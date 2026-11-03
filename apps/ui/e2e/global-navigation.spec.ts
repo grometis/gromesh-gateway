@@ -67,7 +67,7 @@ for (const width of [390, 768, 1440]) {
         await expect(operations).toHaveAttribute("tabindex", "0");
         await expect(nav(page).getByRole("heading", { name: "Legado v1", exact: true })).toBeVisible();
         const expected = [
-          ["Releases", scope === "v2" ? `/workspaces/${W}/releases` : null, "Requer Workspace"],
+          ["Releases", scope === "v2" ? `/workspaces/${W}/releases` : scope === "v1" ? `/e/${E}/releases` : null, "Requer Workspace ou ambiente legado"],
           ["Requisições", scope === "v1" ? `/e/${E}/requests` : null, "Requer ambiente legado"],
           ["Métricas", scope === "v1" ? `/e/${E}/metrics` : null, "Requer ambiente legado"],
           ["Revisar snapshot", scope === "v1" ? `/e/${E}/publish` : null, "Requer ambiente legado"],
@@ -158,6 +158,9 @@ for (const width of [390, 768, 1440]) {
     await expect(instance).toHaveAttribute("aria-expanded", "false");
     await expect(nav(page).getByRole("button", { name: "Operações", exact: true, includeHidden: true })).toBeFocused();
     expect(await page.evaluate(() => { const style = getComputedStyle(document.activeElement!); return style.outlineStyle !== "none" && parseFloat(style.outlineWidth) > 0; })).toBe(true);
+    await openGlobalMenu(page, "Operações");
+    await page.getByRole("region", { name: "Identidade da instância", exact: true }).click();
+    await expect(nav(page).getByRole("button", { name: "Operações", exact: true, includeHidden: true })).toHaveAttribute("aria-expanded", "false");
     await openGlobalMenu(page, "Operações");
     const main = page.locator("main");
     const mainBox = await main.boundingBox();

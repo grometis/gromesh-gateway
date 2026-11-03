@@ -6,7 +6,7 @@ imagePullSecrets: []
 image:
   # Published by the images workflow and pinned by digest through image-digests (scripts/bump-image-digests.mjs).
   repository: ghcr.io/grometis/gromesh-control-plane
-  tag: "55809676d3450552643899fbf1cc066e08689665"
+  tag: "45acf8a3b03478ce31570b8cb37ad02875647b7f"
   digest: "sha256:5c10863df15120af2b8bb6868c6d530bfbec948c5672ac3fb425060d6deb280b"
   pullPolicy: IfNotPresent
 
@@ -15,8 +15,8 @@ ui:
   image:
     # apps/ui/Dockerfile (nginx-unprivileged on 8080), published and pinned like the control plane.
     repository: ghcr.io/grometis/gromesh-ui
-    tag: "55809676d3450552643899fbf1cc066e08689665"
-    digest: "sha256:3d39c4b53f422680f06ed043deebaa91c874b7868b82126b74a1c22358f024f8"
+    tag: "45acf8a3b03478ce31570b8cb37ad02875647b7f"
+    digest: "sha256:90572b64fbd530e06916e268dc1572c69425e412a6ceda618301b9de9898b978"
     pullPolicy: IfNotPresent
   resources:
     requests: {cpu: 25m, memory: 32Mi}
