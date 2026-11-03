@@ -70,8 +70,8 @@ for (const width of [390, 1440]) {
   test(`legacy deep link, refresh, redirect and analytics alias at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
     await setup(page, { listIds: [A, B] });
-    await page.goto(`/e/${A}`);
-    await expect(page).toHaveURL(v1());
+    await page.goto(`/e/${A}?x=1#y`);
+    await expect(page).toHaveURL(`${v1()}?x=1#y`);
     await expect(page.getByRole("heading", { name: "Services", exact: true })).toBeVisible();
     const url = `${v1(A, "analytics")}?x#y`;
     await page.goto(url);
@@ -133,6 +133,74 @@ for (const width of [390, 1440]) {
     await audit(page);
   });
 }
+
+const releaseV1 = { workspaceId: A, version: 1, contentDigest: `sha256:${"a".repeat(64)}`, origin: "local", contentOriginVersion: 1,
+  contentFirstActivatedAt: null, originPromotionId: null, contentRevoked: false, createdAt: stamp, createdBy: { name: "Ana" }, message: "" };
+
+for (const namespace of ["legacy", "v2"] as const) {
+  for (const status of [403, 404]) {
+    test(`${namespace} 200→${status} unmounts the authorized content without changing the URL`, async ({ page }) => {
+      const sent = await setup(page);
+      await mockSession(page, { ...user, role: "admin" });
+      const url = `${namespace === "legacy" ? v1() : v2(A, "releases")}?x=1#y`;
+      await page.goto(url);
+      const content = namespace === "legacy" ? page.getByRole("link", { name: "Service A", exact: true }) : page.getByRole("heading", { name: "Releases", exact: true });
+      await expect(content).toBeVisible();
+      const endpoint = namespace === "legacy" ? `/api/v1/environments/${A}` : `/api/v2/workspaces/${A}`;
+      let finish!: () => void;
+      const held = new Promise<void>((resolve) => { finish = resolve; });
+      let started!: () => void;
+      const requested = new Promise<void>((resolve) => { started = resolve; });
+      await page.route(`**${endpoint}`, async (route) => {
+        started();
+        await held;
+        return route.fulfill({ status, json: { title: "Access refused", status } });
+      });
+      if (namespace === "v2") await page.route(`**/api/v2/workspaces/${A}/releases`, (route) => route.request().method() === "POST"
+        ? route.fulfill({ status: 201, json: releaseV1 }) : route.fallback());
+      try {
+        await page.getByRole("button", { name: namespace === "legacy" ? "Novo service" : "Publicar release", exact: true }).click();
+        if (namespace === "v2") await page.getByRole("button", { name: "Confirmar publicação", exact: true }).click();
+        await requested;
+        await expect(content).toBeVisible();
+      } finally { finish(); }
+      await expect(page.getByRole("alert").filter({ hasText: status === 403
+        ? "Você não tem permissão para acessar este contexto." : "Não encontrado ou indisponível para sua conta." })).toBeVisible();
+      await expect(content).toHaveCount(0);
+      await expect(page.getByRole("dialog")).toHaveCount(0);
+      await expect(page).toHaveURL(url);
+      if (namespace === "v2") expect(sent.some((path) => path.startsWith("/api/v1/environments"))).toBe(false);
+    });
+  }
+}
+
+test("v2 publication confirmation survives pending and completed Workspace refresh", async ({ page }) => {
+  await setup(page);
+  await page.goto(v2(A, "releases"));
+  await page.getByRole("button", { name: "Publicar release", exact: true }).click();
+  let finish!: () => void;
+  const held = new Promise<void>((resolve) => { finish = resolve; });
+  let started!: () => void;
+  const requested = new Promise<void>((resolve) => { started = resolve; });
+  await page.route(`**/api/v2/workspaces/${A}`, async (route) => {
+    started();
+    await held;
+    return route.fulfill({ json: { ...workspace(A), activeRelease: 1 } });
+  });
+  await page.route(`**/api/v2/workspaces/${A}/releases`, (route) => route.fulfill({
+    status: route.request().method() === "POST" ? 201 : 200,
+    json: route.request().method() === "POST" ? releaseV1 : [releaseV1],
+  }));
+  const confirmation = page.getByRole("status").filter({ hasText: "Release v1 publicada. Nenhum deployment foi criado." });
+  try {
+    await page.getByRole("button", { name: "Confirmar publicação", exact: true }).click();
+    await requested;
+    await expect(confirmation).toBeVisible();
+    await expect(page.getByText("Verificando contexto…", { exact: true })).toHaveCount(0);
+  } finally { finish(); }
+  await expect(page.getByText("Release ativa: v1.", { exact: false })).toBeVisible();
+  await expect(confirmation).toBeVisible();
+});
 
 test("back/forward preserve each URL; explicit A to B drops entity IDs and filters", async ({ page }) => {
   await setup(page, { listIds: [A, B] });

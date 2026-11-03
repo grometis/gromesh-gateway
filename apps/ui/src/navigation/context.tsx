@@ -49,7 +49,8 @@ export function useIsWorkspaceRoute() { return !!useParams().workspaceId; }
 
 function ResolveContext({ route, children }: { route: Extract<RouteContext, { id: string }>; children: ReactNode }) {
   const v2 = route.kind === "workspace-v2";
-  const legacyValidated = useRef(false);
+  const authorizedWorkspace = useRef<Workspace | undefined>(undefined);
+  const accessRefused = useRef(false);
   const query = useQuery({
     queryKey: v2 ? workspaceQuery(route.id).queryKey : ["environment", route.id],
     queryFn: ({ signal }): Promise<Workspace | Environment> => v2
@@ -60,18 +61,29 @@ function ResolveContext({ route, children }: { route: Extract<RouteContext, { id
     refetchOnMount: "always",
     staleTime: Infinity,
   });
-  let value: NavigationContext = { route, state: "loading", legacyReadAvailable: !v2, retry: () => { void query.refetch(); } };
-  if (query.isError && !query.isFetching) {
+  let value: NavigationContext = { route, state: "loading", legacyReadAvailable: !v2 && !accessRefused.current, retry: () => { void query.refetch(); } };
+  // Authorization belongs to this mounted ID, not to a cached result from a previous visit.
+  // Background refreshes preserve the page; write gates still inspect the live query state.
+  if (v2 && authorizedWorkspace.current) value = { ...value,
+    state: authorizedWorkspace.current.status === "archived" ? "archived" : "authorized", workspace: authorizedWorkspace.current };
+  if (query.isError) {
     const status = query.error instanceof ApiError ? query.error.status : undefined;
-    value = { ...value, state: status === 401 ? "expired" : status === 403 ? "forbidden" : status === 404 ? "not-found" : "error",
-      legacyReadAvailable: !v2 && status !== 401 && (legacyValidated.current || status === undefined || status >= 500) };
+    const transient = query.error instanceof TypeError || (status !== undefined && status >= 500);
+    if (!transient) {
+      authorizedWorkspace.current = undefined;
+      accessRefused.current = true;
+    }
+    if (!v2 || !transient || !authorizedWorkspace.current) value = { ...value,
+      state: status === 401 ? "expired" : status === 403 ? "forbidden" : status === 404 ? "not-found" : "error",
+      workspace: undefined, legacyReadAvailable: !v2 && transient && !accessRefused.current };
   } else if (query.isFetchedAfterMount && !query.isFetching && query.isSuccess) {
     if (query.data?.id !== route.id || (v2 && !["active", "archived"].includes((query.data as Workspace).status))) {
-      return <Context.Provider value={{ ...value, state: "error", legacyReadAvailable: false }}>{children}</Context.Provider>;
+      authorizedWorkspace.current = undefined;
+      accessRefused.current = true;
+      return <Context.Provider value={{ ...value, workspace: undefined, state: "error", legacyReadAvailable: false }}>{children}</Context.Provider>;
     }
-    // Keep mounted legacy forms so their existing access gate can show a revalidation error.
-    // ResolveContext is keyed per route entry; cached metadata cannot validate a later visit.
-    if (!v2) legacyValidated.current = true;
+    accessRefused.current = false;
+    if (v2) authorizedWorkspace.current = query.data as Workspace;
     value = v2
       ? { ...value, state: (query.data as Workspace).status === "archived" ? "archived" : "authorized", workspace: query.data as Workspace }
       : { ...value, state: "legacy", environment: query.data as Environment };

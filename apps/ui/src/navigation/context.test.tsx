@@ -179,11 +179,11 @@ describe("authorized route context with real transport", () => {
     await vi.waitFor(async () => { await view.settle(); expect(view.router.state.location.pathname).toBe(`/e/${A}/metrics`); });
     expect(view.router.state.location).toMatchObject({ search: "?x=1", hash: "#y" });
   });
-  it("preserves v2 entry suffixes, back and forward", async () => {
-    const view = await mount(`/workspaces/${A}?x=1#y`, { full: true });
+  it.each(["workspaces", "e"])("preserves %s entry suffixes, back and forward", async (namespace) => {
+    const view = await mount(`/${namespace}/${A}?x=1#y`, { full: true });
     await view.waitText("Service A");
-    expect(view.router.state.location).toMatchObject({ pathname: `/workspaces/${A}/services`, search: "?x=1", hash: "#y" });
-    await view.navigate(`/workspaces/${B}/services?x=2#z`);
+    expect(view.router.state.location).toMatchObject({ pathname: `/${namespace}/${A}/services`, search: "?x=1", hash: "#y" });
+    await view.navigate(`/${namespace}/${B}/services?x=2#z`);
     await view.waitText("Service B");
     await view.navigate(-1);
     await view.waitText("Service A");
@@ -219,10 +219,10 @@ describe("authorized route context with real transport", () => {
     expect(view.container.textContent).toContain("Somente leitura");
     expect(view.sent.filter((p) => p === `/api/v1/environments/${A}`)).toHaveLength(1);
   });
-  it.each([403, 404])("keeps an open legacy service form's error verdict after environment revalidation returns %s", async (status) => {
+  it.each([500, 502, "network"])("keeps an open legacy service form's error verdict after transient environment failure %s", async (status) => {
     const view = await mount(`/e/${A}/services`, { full: true, role: "admin" });
     await view.waitText("Novo service");
-    let release!: (response: Response) => void;
+    let release!: (response: Response | PromiseLike<Response>) => void;
     const pending = new Promise<Response>((resolve) => { release = resolve; });
     view.answers[`/api/v1/environments/${A}`] = () => pending;
     const create = view.container.findAll((n) => n.tagName === "BUTTON" && n.textContent === "Novo service")[0]!;
@@ -233,20 +233,89 @@ describe("authorized route context with real transport", () => {
     expect(dialog.findAll((n) => n.tagName === "BUTTON" && n.textContent === "Salvar")[0]?.getAttribute("disabled")).not.toBeNull();
     await act(async () => { form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); await tick(); });
     expect(view.writes).toEqual([]);
-    await act(async () => { release(problem(status)()); await tick(); });
+    await act(async () => { release(status === "network" ? Promise.reject(new TypeError("offline")) : problem(Number(status))()); await tick(); });
     await view.waitText("não foi possível verificar");
     expect(view.container.findAll((n) => n.getAttribute("role") === "dialog")[0]).toBe(dialog);
     expect(dialog.textContent).toContain("não foi possível verificar");
     expect(dialog.findAll((n) => n.tagName === "BUTTON" && n.textContent === "Salvar")).toHaveLength(0);
     expect(view.writes).toEqual([]);
-    // A previous successful visit cannot authorize a new entry after access is denied.
-    await view.navigate("/tokens");
-    view.answers[`/api/v1/environments/${A}`] = problem(status);
-    await view.navigate(`/e/${A}/services`);
-    await view.waitText(status === 403 ? "Você não tem permissão para acessar este contexto." : "Não encontrado ou indisponível para sua conta.");
-    expect(view.container.findAll((n) => n.getAttribute("role") === "dialog")).toHaveLength(0);
-    expect(view.container.textContent).not.toContain("Service A");
-    expect(view.writes).toEqual([]);
+  });
+  for (const namespace of ["e", "workspaces"]) {
+    it.each([403, 404])(`unmounts authorized ${namespace} content and an open form on explicit %s revalidation`, async (status) => {
+      const view = await mount(`/${namespace}/${A}/services?x=1#y`, { full: true, role: "admin" });
+      await view.waitText("Service A");
+      await view.waitText("Novo service");
+      const create = view.container.findAll((n) => n.tagName === "BUTTON" && n.textContent === "Novo service")[0]!;
+      await act(async () => { create.dispatchEvent(new Event("click", { bubbles: true })); await tick(); });
+      expect(view.container.findAll((n) => n.getAttribute("role") === "dialog")).toHaveLength(1);
+      const key = namespace === "e" ? "environment" : "workspace";
+      const path = namespace === "e" ? `/api/v1/environments/${A}` : `/api/v2/workspaces/${A}`;
+      view.answers[path] = problem(status);
+      await act(async () => { await client.invalidateQueries({ queryKey: [key, A] }); await tick(); });
+      await view.waitText(status === 403 ? "Você não tem permissão para acessar este contexto." : "Não encontrado ou indisponível para sua conta.");
+      expect(view.container.textContent).not.toContain("Service A");
+      expect(view.container.findAll((n) => n.getAttribute("role") === "dialog")).toHaveLength(0);
+      expect(view.router.state.location).toMatchObject({ pathname: `/${namespace}/${A}/services`, search: "?x=1", hash: "#y" });
+      expect(view.writes).toEqual([]);
+      // A transient retry after an explicit refusal must not restore the old authorization.
+      view.answers[path] = problem(502);
+      await act(async () => { await client.invalidateQueries({ queryKey: [key, A] }); await tick(); });
+      await view.waitText("Não foi possível verificar o contexto.");
+      expect(view.container.textContent).not.toContain("Service A");
+      // Returning to a cached ID must establish access again, in either namespace.
+      await view.navigate("/tokens");
+      view.answers[path] = problem(status);
+      await view.navigate(`/${namespace}/${A}/services`);
+      await view.waitText(status === 403 ? "Você não tem permissão para acessar este contexto." : "Não encontrado ou indisponível para sua conta.");
+      expect(view.container.textContent).not.toContain("Service A");
+      expect(view.container.findAll((n) => n.getAttribute("role") === "dialog")).toHaveLength(0);
+    });
+    it(`revokes an authorized ${namespace} context on 401`, async () => {
+      const view = await mount(`/${namespace}/${A}/services`);
+      await view.waitText("Conteúdo");
+      const key = namespace === "e" ? "environment" : "workspace";
+      view.answers[namespace === "e" ? `/api/v1/environments/${A}` : `/api/v2/workspaces/${A}`] = problem(401);
+      await act(async () => { await client.invalidateQueries({ queryKey: [key, A] }); await tick(); });
+      await view.waitText("Sua sessão expirou.");
+      expect(view.container.textContent).not.toContain("Conteúdo");
+    });
+  }
+  it.each([500, "network"])("keeps authorized v2 content during transient revalidation failure %s", async (status) => {
+    const view = await mount(`/workspaces/${A}/services`, { full: true });
+    await view.waitText("Service A");
+    const content = view.container.findAll((n) => n.tagName === "TABLE")[0];
+    view.answers[`/api/v2/workspaces/${A}`] = status === "network" ? () => Promise.reject(new TypeError("offline")) : problem(Number(status));
+    await act(async () => { await client.invalidateQueries({ queryKey: ["workspace", A] }); await tick(); });
+    expect(view.container.textContent).toContain("Service A");
+    expect(view.container.findAll((n) => n.tagName === "TABLE")[0]).toBe(content);
+    expect(view.container.textContent).not.toContain("Novo service");
+  });
+  it("preserves publication confirmation while and after the authorized Workspace refreshes", async () => {
+    const view = await mount(`/workspaces/${A}/releases`, { full: true });
+    await view.waitText("Publicar release");
+    const click = async (label: string) => {
+      const button = view.container.findAll((n) => n.tagName === "BUTTON" && n.textContent === label)[0]!;
+      await act(async () => { button.dispatchEvent(new Event("click", { bubbles: true })); await tick(); });
+    };
+    await click("Publicar release");
+    let finish!: (response: Response) => void;
+    const pending = new Promise<Response>((resolve) => { finish = resolve; });
+    view.answers[`/api/v2/workspaces/${A}`] = () => pending;
+    const release = { workspaceId: A, version: 1, contentDigest: `sha256:${"a".repeat(64)}`, origin: "local", contentOriginVersion: 1,
+      contentFirstActivatedAt: null, originPromotionId: null, contentRevoked: false, createdAt: stamp, createdBy: { name: "Ana" }, message: "" };
+    let published = false;
+    view.answers[`/api/v2/workspaces/${A}/releases`] = () => {
+      if (published) return Response.json([release]);
+      published = true;
+      return Response.json(release, { status: 201 });
+    };
+    await click("Confirmar publicação");
+    await view.waitText("Release v1 publicada. Nenhum deployment foi criado.");
+    expect(view.container.textContent).not.toContain("Verificando contexto…");
+    view.answers[`/api/v2/workspaces/${A}/releases`] = () => Response.json([release]);
+    await act(async () => { finish(Response.json({ ...workspace(A), activeRelease: 1 })); await tick(); });
+    await view.waitText("Release ativa: v1");
+    expect(view.container.textContent).toContain("Release v1 publicada. Nenhum deployment foi criado.");
   });
   it.each([
     ["services", "Novo service"], ["routes", "Nova route"], ["variables", "Declarar variável"],

@@ -1,4 +1,4 @@
-import { Navigate, type RouteObject } from "react-router";
+import { Navigate, useLocation, type RouteObject } from "react-router";
 import { Shell, RequireAuth, RequireAdmin, FirstEnvironment } from "./components/Shell";
 import { NavigationContextProvider } from "./navigation/context";
 import { WorkspaceEntry } from "./navigation/workspace-entry";
@@ -21,6 +21,11 @@ import { ReviewPublishPage } from "./pages/ReviewPublish";
 import { WorkspacesPage } from "./pages/Workspaces";
 import { ReleasesPage } from "./pages/Releases";
 import { VariablesPage } from "./pages/Variables";
+
+function LegacyEntry() {
+  const { search, hash } = useLocation();
+  return <Navigate to={`services${search}${hash}`} replace />;
+}
 
 export const appRoutes: RouteObject[] = [
   { path: "/login", element: <LoginPage /> },
@@ -55,7 +60,7 @@ export const appRoutes: RouteObject[] = [
           {
             path: "e/:envId",
             children: [
-              { index: true, element: <Navigate to="services" replace /> },
+              { index: true, element: <LegacyEntry /> },
               { path: "services", element: <ServicesPage /> },
               { path: "services/:serviceId", element: <ServiceDetailPage /> },
               { path: "routes", element: <RoutesPage /> },
