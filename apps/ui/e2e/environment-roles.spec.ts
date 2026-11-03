@@ -1,3 +1,4 @@
+import { navigateGlobal, openGlobalMenu } from "./global-navigation";
 import AxeBuilder from "@axe-core/playwright";
 import type { Page } from "@playwright/test";
 import { expect, mockSession, test } from "./fixtures";
@@ -40,7 +41,8 @@ test("a global viewer who is editor in one environment edits only there, and doe
   await expect(page).toHaveURL(new RegExp(`/e/${staging.id}/consumers$`));
   await expect(page.getByRole("heading", { name: "Consumers", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Novo consumer" })).toHaveCount(0);
-  await expect(page.getByRole("link", { name: "Usuários" })).toHaveCount(0);
+  await openGlobalMenu(page, "Instância");
+  await expect(page.getByRole("navigation", { name: "Navegação global" }).getByRole("link", { name: "Usuários" })).toHaveCount(0);
 });
 
 test("a global editor who is viewer in one environment only reads there", async ({ page }) => {
@@ -59,7 +61,7 @@ for (const key of ["Enter", "Space"]) {
     await page.route("**/api/v1/users", (route) => route.fulfill({ json: { items: users, nextCursor: null } }));
     await page.route(`**/api/v1/users/${viewer.id}/environment-roles`, (route) => route.fulfill({ json: { items: [] } }));
     await signIn(page, admin);
-    await page.getByRole("link", { name: "Usuários", exact: true }).click();
+    await navigateGlobal(page, "Usuários");
     const table = page.getByRole("table", { name: "Usuários", exact: true });
     await expect(table).toBeVisible();
     await page.getByRole("button", { name: "Novo usuário", exact: true }).focus();
@@ -106,7 +108,7 @@ test("a global admin sets roles per environment; leaving one on the global role 
     return route.fulfill({ json: { items: [{ environmentId: staging.id, role: "editor" }] } });
   });
   await signIn(page, admin);
-  await page.getByRole("link", { name: "Usuários", exact: true }).click();
+  await navigateGlobal(page, "Usuários");
   await page.getByRole("button", { name: "Environments de Rui Prado" }).click();
   const dialog = page.getByRole("dialog", { name: "Environments de Rui Prado" });
   await expect(dialog).toContainText("Papel global: Leitor");
@@ -131,7 +133,7 @@ test("a 422 names the environment's row; a global admin has no environment roles
     ? route.fulfill({ status: 422, contentType: "application/problem+json", json: { title: "Unprocessable", status: 422, detail: "Invalid environment roles", errors: [{ path: "items.0.environmentId", message: "is not an environment" }] } })
     : route.fulfill({ json: { items: [] } }));
   await signIn(page, admin);
-  await page.getByRole("link", { name: "Usuários", exact: true }).click();
+  await navigateGlobal(page, "Usuários");
   await page.getByRole("button", { name: "Environments de Rui Prado" }).click();
   const dialog = page.getByRole("dialog", { name: "Environments de Rui Prado" });
   await dialog.getByLabel("Papel em Sandbox").selectOption({ label: "Editor" });
@@ -157,7 +159,7 @@ test("Salvar stays off when the roles cannot be read again: a stale set never re
     return fail ? route.fulfill({ status: 500, json: { title: "Internal", status: 500 } }) : route.fulfill({ json: { items: [] } });
   });
   await signIn(page, admin);
-  await page.getByRole("link", { name: "Usuários", exact: true }).click();
+  await navigateGlobal(page, "Usuários");
   await page.getByRole("button", { name: "Environments de Rui Prado" }).click();
   const dialog = page.getByRole("dialog", { name: "Environments de Rui Prado" });
   await expect(dialog.getByRole("button", { name: "Salvar" })).toBeEnabled();
@@ -171,7 +173,7 @@ test("Salvar stays off when the roles cannot be read again: a stale set never re
 
 test("a global viewer who is editor in one environment may create an editor token, never an admin one", async ({ page }) => {
   await signIn(page, person("viewer", [{ environmentId: prod.id, role: "editor" }]));
-  await page.getByRole("link", { name: "Tokens de API" }).click();
+  await navigateGlobal(page, "Tokens de API");
   await page.getByRole("button", { name: "Novo token" }).click();
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByLabel("Papel").locator("option")).toHaveText(["Leitor", "Editor"]);
@@ -185,7 +187,7 @@ for (const viewport of [{ name: "desktop-1440", width: 1440, height: 900 }, { na
     await page.route("**/api/v1/users", (route) => route.fulfill({ json: { items: [admin, viewer], nextCursor: null } }));
     await page.route(`**/api/v1/users/${viewer.id}/environment-roles`, (route) => route.fulfill({ json: { items: [{ environmentId: prod.id, role: "editor" }, { environmentId: sandbox.id, role: "none" }] } }));
     await signIn(page, admin);
-    await page.getByRole("link", { name: "Usuários", exact: true }).click();
+    await navigateGlobal(page, "Usuários");
     await page.getByRole("button", { name: "Environments de Rui Prado" }).click();
     const dialog = page.getByRole("dialog", { name: "Environments de Rui Prado" });
     await expect(dialog.getByLabel("Papel em Sandbox")).toHaveValue("none");

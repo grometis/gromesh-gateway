@@ -1,3 +1,4 @@
+import { navigateGlobal } from "./global-navigation";
 import AxeBuilder from "@axe-core/playwright";
 import type { Page } from "@playwright/test";
 import { expect, mockSession, test } from "./fixtures";
@@ -220,7 +221,7 @@ async function expectPathlessReadOnly(page: Page) {
 }
 
 async function createWorkspace(page: Page, name: string) {
-  await menu(page).getByRole("link", { name: "Workspaces", exact: true }).click();
+  await navigateGlobal(page, "Workspaces");
   await page.getByRole("button", { name: "Criar Workspace" }).click();
   const dialog = page.getByRole("dialog", { name: "Criar Workspace" });
   await dialog.getByLabel("Nome").fill(name);
