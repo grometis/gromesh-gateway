@@ -21,7 +21,7 @@ async function signIn(page: Page, user: Me) {
   for (const e of [prod, staging, sandbox]) await page.route(`**/api/v1/environments/${e.id}`, (route) => route.fulfill({ json: e }));
   await page.route("**/api/v1/environments/*/services*", (route) => route.fulfill({ json: { items: [], nextCursor: null } }));
   await page.route("**/api/v1/environments/*/consumers*", (route) => route.fulfill({ json: { items: [], nextCursor: null } }));
-  await page.goto("/login");
+  await page.goto(`/e/${prod.id}/services`);
   await page.getByLabel("E-mail").fill(user.email);
   await page.getByLabel("Senha").fill("s3nha-de-teste");
   await page.getByRole("button", { name: "Entrar" }).click();

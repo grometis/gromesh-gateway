@@ -34,7 +34,7 @@ async function openOverview(page: Page) {
   await page.route("**/api/v1/environments/*/clusters", (route) => route.fulfill({ json: { items: [{ id: id(20), environmentId: envId, name: "edge-sp", status: "converged", createdAt: "2026-10-15T12:00:00Z", nodes: [node(1, 7), node(2, 7), node(3, 7)] }] } }));
   await page.route("**/api/v1/environments/*/analytics/summary*", (route) => route.fulfill({ json: { from: series[0]!.ts, to: top("requests").to, interval: "1h", totals, series } }));
   await page.route("**/api/v1/environments/*/analytics/top-routes*", (route) => route.fulfill({ json: top(new URL(route.request().url()).searchParams.get("by") ?? "requests") }));
-  await page.goto("/login");
+  await page.goto(`/e/${envId}/services`);
   await page.getByLabel("E-mail").fill("ana@gromesh.dev");
   await page.getByLabel("Senha").fill("s3nha-de-teste");
   await page.getByRole("button", { name: "Entrar" }).click();

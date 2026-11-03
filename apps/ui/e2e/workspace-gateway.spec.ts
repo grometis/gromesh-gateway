@@ -179,7 +179,7 @@ function newFake(): Fake {
 async function signIn(page: Page, fake: Fake) {
   await fakeApi(page, fake);
   await mockSession(page, admin);
-  await page.goto("/login");
+  await page.goto(`/e/${legacyWs.id}/services`);
   await page.getByLabel("E-mail").fill(admin.email);
   await page.getByLabel("Senha").fill("s3nha-de-teste");
   await page.getByRole("button", { name: "Entrar" }).click();

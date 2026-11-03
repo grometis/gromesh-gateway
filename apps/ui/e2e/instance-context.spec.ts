@@ -24,7 +24,7 @@ async function setup(page: Page, options: { stage?: string | null; policyStatus?
   } }));
   await page.route("**/api/v2/workspaces/*", (route) => route.fulfill({ status: options.workspaceStatus ?? 200, json: workspace(new URL(route.request().url()).pathname.split("/").at(-1)!) }));
   await page.route("**/api/v2/workspaces/*/releases", (route) => route.fulfill({ json: [] }));
-  await page.route("**/api/v2/workspaces", (route) => route.fulfill({ json: { items: [A, B].map(workspace), nextCursor: null } }));
+  await page.route(/\/api\/v2\/workspaces(?:\?|$)/, (route) => route.fulfill({ json: { items: [A, B].map(workspace), nextCursor: null } }));
 }
 
 async function audit(page: Page) {

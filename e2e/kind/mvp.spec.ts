@@ -78,6 +78,9 @@ async function uiLogin(page: Page) {
   await page.getByLabel("E-mail").fill(ADMIN.email);
   await page.getByLabel("Senha").fill(ADMIN.password);
   await page.getByRole("button", { name: "Entrar" }).click();
+  await expect(page.getByRole("heading", { name: "Visão geral da instância", exact: true })).toBeVisible();
+  await expect(page).toHaveURL("/");
+  await page.goto(`/e/${envId}/services`);
   await page.getByLabel("Ambiente (legado)", { exact: true }).selectOption(envId);
   await expect(page.getByRole("heading", { name: "Services", exact: true })).toBeVisible();
 }

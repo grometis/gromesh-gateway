@@ -46,6 +46,46 @@ async function audit(page: Page) {
   expect(result.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target).join(", ")}`)).toEqual([]);
 }
 
+for (const width of [390, 600]) {
+  test(`compact groups stack with full-width readable panels at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await setup(page, { role: "admin" });
+    await page.goto(paths.v1);
+    await expect(page.locator("main h1")).toBeVisible();
+    const names = ["Operações", "Instância", "Minha conta"] as const;
+    for (const name of names) {
+      await openGlobalMenu(page, name);
+      const buttons = await Promise.all(names.map((label) => nav(page).getByRole("button", { name: label, exact: true }).boundingBox()));
+      for (const [index, box] of buttons.entries()) {
+        expect(box).not.toBeNull();
+        expect(box!.x).toBeCloseTo(buttons[0]!.x, 0);
+        expect(box!.width).toBeCloseTo(buttons[0]!.width, 0);
+        expect(box!.width).toBeGreaterThanOrEqual(width * 0.9);
+        if (index > 0) expect(box!.y).toBeGreaterThanOrEqual(buttons[index - 1]!.y + buttons[index - 1]!.height);
+      }
+      const panel = nav(page).getByRole("region", { name, exact: true });
+      await expect(panel).toBeVisible();
+      const panelBox = (await panel.boundingBox())!;
+      const triggerBox = buttons[names.indexOf(name)]!;
+      expect(panelBox.width).toBeGreaterThanOrEqual(width * 0.9);
+      expect(panelBox.x).toBeCloseTo(triggerBox.x, 0);
+      expect(panelBox.width).toBeCloseTo(triggerBox.width, 0);
+      expect(panelBox.y).toBeGreaterThanOrEqual(triggerBox.y + triggerBox.height);
+      const nextButton = buttons[names.indexOf(name) + 1];
+      if (nextButton) expect(nextButton.y).toBeGreaterThanOrEqual(panelBox.y + panelBox.height);
+      const links = panel.getByRole("link");
+      await expect(links.first()).toHaveAttribute("href", /./);
+      expect(await links.count()).toBeGreaterThan(0);
+      for (const link of await links.all()) expect((await link.boundingBox())!.width).toBeGreaterThanOrEqual(200);
+      expect(await panel.locator("*").evaluateAll((nodes) => nodes.filter((node) =>
+        node.textContent?.trim() && node.scrollWidth > node.clientWidth,
+      ).map((node) => node.textContent))).toEqual([]);
+      await expect(nav(page).locator('.global-trigger[aria-expanded="true"]')).toHaveCount(1);
+      await fits(page);
+    }
+  });
+}
+
 for (const width of [390, 768, 1440]) {
   for (const scope of ["global", "v2", "v1"] as const) {
     for (const stage of ["dev", null]) {

@@ -2,7 +2,7 @@ import { expect, test } from "./fixtures";
 
 // W3-C1 acceptance, against the contract mock: login → create service → create route → publish shows 2 "added".
 test("login, create a service and a route, then preview the publication", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/e/0b3c6b5e-8d1f-4a51-9c64-2f0f6d1f8a11/services");
   await expect(page).toHaveURL(/\/login$/);
   await page.getByLabel("E-mail").fill("editor@gromesh.dev");
   await page.getByLabel("Senha").fill("s3nha-de-teste");
@@ -62,7 +62,7 @@ test("422 errors from the API are shown on the fields they belong to", async ({ 
         })
       : route.fallback(),
   );
-  await page.goto("/login");
+  await page.goto("/e/0b3c6b5e-8d1f-4a51-9c64-2f0f6d1f8a11/services");
   await page.getByLabel("E-mail").fill("editor@gromesh.dev");
   await page.getByLabel("Senha").fill("s3nha-de-teste");
   await page.getByRole("button", { name: "Entrar" }).click();

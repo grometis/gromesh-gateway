@@ -8,7 +8,7 @@ const CATALOG = new URL("../../control-plane/src/plugin-catalog/kong-3.9/", impo
 const catalogFile = (name: string) => readFileSync(new URL(`${name}.json`, CATALOG), "utf8");
 
 async function login(page: Page) {
-  await page.goto("/");
+  await page.goto("/e/0b3c6b5e-8d1f-4a51-9c64-2f0f6d1f8a11/services");
   await page.getByLabel("E-mail").fill("editor@gromesh.dev");
   await page.getByLabel("Senha").fill("s3nha-de-teste");
   await page.getByRole("button", { name: "Entrar" }).click();
