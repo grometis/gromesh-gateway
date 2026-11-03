@@ -105,6 +105,29 @@ test("v2 catalog uses confirmed GET outside the list; collapse preserves accessi
   await expect(nav(page).locator('[aria-current="page"]')).toHaveCount(0);
 });
 
+test("desktop sidebar keeps collapse and instance return in the viewport while scrolling a long page", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1200 });
+  await setup(page);
+  await page.route(`**/api/v2/workspaces/${W}/services`, (route) => route.fulfill({ json: {
+    items: Array.from({ length: 40 }, (_, index) => ({
+      ...service(W), id: `7c1d2e3f-4a5b-4c6d-8e7f-${String(index + 1).padStart(12, "0")}`, name: `Serviço ${index + 1}`,
+    })),
+    nextCursor: null,
+  } }));
+  await page.goto(v2());
+  await expect(page.getByRole("link", { name: "Serviço 40", exact: true })).toBeAttached();
+  const collapse = page.getByRole("button", { name: "Recolher menu Gateway", exact: true });
+  const home = page.getByRole("link", { name: "Voltar à visão geral da instância", exact: true });
+  await page.evaluate(() => window.scrollTo(0, innerHeight));
+  await expect(collapse).toBeInViewport({ ratio: 1 });
+  await expect(home).toBeInViewport({ ratio: 1 });
+  await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(1200);
+  await expect.poll(() => page.evaluate(() => Math.ceil(window.scrollY + innerHeight) >= document.documentElement.scrollHeight)).toBe(true);
+  await expect(collapse).toBeInViewport({ ratio: 1 });
+  await expect(home).toBeInViewport({ ratio: 1 });
+});
+
 test("legacy catalog stays in /e, consumer detail selects parent, Workspace selector enters explicit v2 namespace", async ({ page }) => {
   const sent = await setup(page);
   await page.goto(v1(`consumers/${S}`));

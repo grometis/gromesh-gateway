@@ -649,9 +649,9 @@ table.numeric td, table.numeric th { white-space: nowrap; }
 @media (min-width: 901px) {
   .app:has(.gateway-desktop) { grid-template-columns: 264px minmax(0, 1fr); }
   .app:has(.gateway-desktop.is-collapsed) { grid-template-columns: 136px minmax(0, 1fr); }
+  .gateway-desktop { position: sticky; top: 0; align-self: start; height: 100vh; height: 100dvh; overflow-y: auto; }
 }
 .gateway-sidebar { min-width: 0; background: var(--ink); color: var(--ink-text); padding: 28px 16px 20px; display: flex; flex-direction: column; gap: 22px; overflow-wrap: anywhere; }
-.gateway-desktop { align-self: stretch; }
 .gateway-sidebar :focus-visible { outline: 3px solid #fff; outline-offset: 2px; }
 .gateway-context { min-width: 0; padding: 0 12px; }
 .gateway-context h2 { color: var(--ink-muted); font-size: var(--text-xs); letter-spacing: .1em; text-transform: uppercase; margin: 0 0 12px; }
