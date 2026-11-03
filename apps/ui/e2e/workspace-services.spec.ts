@@ -247,7 +247,7 @@ test("the v1 publication strip is available on Services, its detail and Routes",
 
 test("the v2 Routes form sends commas within paths unchanged", async ({ page }) => {
   const fake = await setup(page);
-  await page.getByRole("link", { name: "Routes", exact: true }).click();
+  await page.getByRole("link", { name: "Rotas", exact: true }).click();
   await page.getByRole("button", { name: "Nova route" }).click();
   const dialog = page.getByRole("dialog", { name: "Nova route" });
   await dialog.getByLabel("Nome", { exact: true }).fill("items");

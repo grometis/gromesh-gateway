@@ -1,0 +1,254 @@
+import AxeBuilder from "@axe-core/playwright";
+import type { Page } from "@playwright/test";
+import { expect, mockSession, test } from "./fixtures";
+import { openGateway } from "./gateway-sidebar";
+import { navigateGlobal, openGlobalMenu } from "./global-navigation";
+
+const W = "7c1d2e3f-4a5b-4c6d-8e7f-00000000000a";
+const E = "7c1d2e3f-4a5b-4c6d-8e7f-00000000000b";
+const S = "7c1d2e3f-4a5b-4c6d-8e7f-00000000000c";
+const stamp = "2026-11-03T12:00:00Z";
+const workspace = (id: string, archived = false) => ({ id, key: id, name: id === W ? "Pedidos autorizados" : "Outro Workspace", slug: id === W ? "pedidos" : "outro", status: archived ? "archived" : "active", activeRelease: null });
+const environment = { id: E, name: "Ambiente autorizado", publishMode: "manual", hasUnpublishedChanges: false, currentVersion: null, createdAt: stamp, updatedAt: stamp };
+const service = (id: string) => ({ id: S, workspaceId: id, name: "Serviço autorizado", upstreamId: null, host: "echo.internal", protocol: "http", port: 80, path: null, enabled: true, tags: [], createdAt: stamp, updatedAt: stamp });
+const v2 = (section = "services") => `/workspaces/${W}/${section}`;
+const v1 = (section = "services") => `/e/${E}/${section}`;
+const nav = (page: Page) => page.getByRole("navigation", { name: "Menu principal", exact: true });
+const trigger = (page: Page) => page.getByRole("button", { name: /^Abrir menu Gateway do /, includeHidden: true });
+const drawer = (page: Page) => page.getByRole("dialog", { name: /^Navegação Gateway do / });
+
+interface State { status?: number; archived?: boolean }
+async function setup(page: Page, state: State = {}) {
+  const sent: string[] = [];
+  await page.route(/^https?:\/\/[^/]+\/api\/v[12]\//, (route) => {
+    const path = new URL(route.request().url()).pathname;
+    sent.push(path);
+    const json = (body: unknown, status = 200) => route.fulfill({ status, json: status >= 400 ? { title: "Unavailable", status } : body });
+    if (path === "/api/v1/auth/csrf") return json({ csrfToken: "csrf" });
+    if (path === "/api/v2/workspace-creation-policy") return json({ mode: "restricted-request", creatorBecomesAdmin: false, updatedAt: null, updatedBy: null, workspacesMode: "disabled", stage: "dev", caller: { canCreate: false, canRequest: false, canDecide: false } });
+    if (path === "/api/v2/workspaces") return json({ items: [workspace(E)], nextCursor: null });
+    if (path === "/api/v1/environments") return json({ items: [environment], nextCursor: null });
+    if (path === `/api/v1/environments/${E}`) return json(environment, state.status);
+    if (path === "/api/v1/users/me/tokens" || path === "/api/v1/tokens" || path === "/api/v1/users" || path === "/api/v1/audit-events") return json({ items: [], nextCursor: null });
+    for (const id of [W, E]) {
+      if (path === `/api/v2/workspaces/${id}`) return json(workspace(id, state.archived), state.status);
+      if (path === `/api/v2/workspaces/${id}/services`) return json({ items: [service(id)], nextCursor: null });
+      if (path === `/api/v2/workspaces/${id}/services/${S}`) return json(service(id));
+      if (path === `/api/v2/workspaces/${id}/releases` || path === `/api/v2/workspaces/${id}/variables`) return json([]);
+      if (path.startsWith(`/api/v2/workspaces/${id}/`)) return json({ items: [], nextCursor: null });
+    }
+    if (path === `/api/v1/environments/${E}/consumers/${S}`) return json({ id: S, environmentId: E, username: "Consumidor autorizado", customId: null, tags: [], createdAt: stamp, updatedAt: stamp });
+    if (path.startsWith(`/api/v1/environments/${E}/`)) return json({ items: [], nextCursor: null });
+    return json({}, 404);
+  });
+  await mockSession(page, { id: W, name: "Ana", email: "ana@example.test", role: "admin", active: true, createdAt: stamp, updatedAt: stamp });
+  await page.context().addCookies([{ name: "gromesh_session", value: "sidebar", url: test.info().project.use.baseURL! }]);
+  return sent;
+}
+async function fits(page: Page) {
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()!.width);
+}
+async function audit(page: Page) {
+  await fits(page);
+  const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
+  expect(results.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target).join(", ")}`)).toEqual([]);
+}
+
+test("v2 catalog uses confirmed GET outside the list; collapse preserves accessible links, tooltip and detail parent", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  const sent = await setup(page);
+  await page.goto(v2(`services/${S}`));
+  await expect(page.getByRole("heading", { name: "Serviço autorizado", exact: true })).toBeVisible();
+  await expect(page.locator(".gateway-context")).toContainText("Pedidos autorizados");
+  await expect(page.locator(".gateway-context")).toContainText("/pedidos · ativo");
+  const links = nav(page).getByRole("link");
+  await expect(links).toHaveCount(8);
+  for (const label of ["Visão geral", "Consumidores", "Upstreams", "Certificados"]) {
+    const item = nav(page).getByRole("link", { name: label, exact: true });
+    await expect(item).toHaveAttribute("aria-disabled", "true");
+    await expect(item).not.toHaveAttribute("href");
+    await expect(item).toHaveAccessibleDescription("Disponível no ambiente legado");
+  }
+  for (const [label, path] of [["Serviços", "services"], ["Rotas", "routes"], ["Plugins", "plugins"], ["Variáveis", "variables"]]) {
+    await expect(nav(page).getByRole("link", { name: label!, exact: true })).toHaveAttribute("href", v2(path));
+  }
+  await expect(nav(page).getByRole("link", { name: "Serviços", exact: true })).toHaveAttribute("aria-current", "page");
+  await expect(nav(page).getByRole("link", { name: "Releases", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Voltar à visão geral da instância", exact: true })).toHaveAttribute("href", "/");
+  await audit(page);
+  await testInfo.attach("gateway-expanded", { body: await page.screenshot({ fullPage: true }), contentType: "image/png" });
+  const collapse = page.getByRole("button", { name: "Recolher menu Gateway", exact: true });
+  await collapse.click();
+  await expect(page.getByRole("button", { name: "Expandir menu Gateway", exact: true })).toBeFocused();
+  await expect(page.getByRole("button", { name: "Expandir menu Gateway", exact: true })).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator(".gateway-desktop")).toHaveCSS("width", "136px");
+  const services = nav(page).getByRole("link", { name: "Serviços", exact: true });
+  await services.focus();
+  await expect(nav(page).getByRole("tooltip", { name: "Serviços", exact: true })).toBeVisible();
+  await audit(page);
+  await testInfo.attach("gateway-collapsed", { body: await page.screenshot({ fullPage: true }), contentType: "image/png" });
+  await services.press("Escape");
+  await expect(nav(page).getByRole("tooltip", { name: "Serviços", exact: true })).toBeHidden();
+  await page.getByRole("button", { name: "Expandir menu Gateway", exact: true }).click();
+  await expect(page.locator(".gateway-desktop")).toHaveCSS("width", "264px");
+  expect(sent.some((p) => p.startsWith("/api/v1/environments"))).toBe(false);
+  await navigateGlobal(page, "Releases");
+  await expect(nav(page).locator('[aria-current="page"]')).toHaveCount(0);
+});
+
+test("legacy catalog stays in /e, consumer detail selects parent, Workspace selector enters explicit v2 namespace", async ({ page }) => {
+  const sent = await setup(page);
+  await page.goto(v1(`consumers/${S}`));
+  await expect(page.getByRole("heading", { name: "Consumidor autorizado", exact: true })).toBeVisible();
+  await expect(page.locator(".gateway-context")).toContainText("Ambiente (legado)");
+  const sections = ["overview", "services", "routes", "consumers", "plugins", "upstreams", "certificates", "variables"];
+  expect(await nav(page).locator("a").evaluateAll((nodes) => nodes.map((n) => n.getAttribute("href")))).toEqual(sections.map(v1));
+  await expect(nav(page).getByRole("link", { name: "Consumidores", exact: true })).toHaveAttribute("aria-current", "page");
+  expect(sent).not.toContain(`/api/v2/workspaces/${E}`);
+  await nav(page).getByRole("link", { name: "Serviços", exact: true }).click();
+  await page.getByLabel("Workspace v2", { exact: true }).selectOption(E);
+  await expect(page).toHaveURL(`/workspaces/${E}/services`);
+  await expect(nav(page).locator('a[href^="/e/"]')).toHaveCount(0);
+});
+
+for (const path of ["/tokens", "/users", "/audit", "/workspaces"]) {
+  test(`no Gateway or implicit selection at ${path}`, async ({ page }) => {
+    await setup(page);
+    await page.goto(v2());
+    await expect(nav(page)).toBeVisible();
+    await page.goto(path);
+    await expect(page.locator("main h1")).toBeVisible();
+    await expect(nav(page)).toHaveCount(0);
+    await expect(trigger(page)).toHaveCount(0);
+    await expect(page.locator(".gateway-context")).toHaveCount(0);
+    await expect(page.getByRole("navigation", { name: "Navegação global", exact: true })).toBeVisible();
+  });
+}
+
+for (const namespace of ["v2", "v1"] as const) {
+  for (const status of [403, 404]) {
+    test(`${namespace}: access loss ${status} clears previous context`, async ({ page }) => {
+      const state: State = {};
+      await setup(page, state);
+      await page.goto(namespace === "v2" ? v2() : v1());
+      await expect(nav(page)).toBeVisible();
+      await navigateGlobal(page, "Tokens de API");
+      state.status = status;
+      await page.goBack();
+      await expect(page.getByRole("alert").first()).toBeVisible();
+      await expect(nav(page)).toHaveCount(0);
+      await expect(page.locator(".gateway-context")).toHaveCount(0);
+      await expect(page.locator(".gateway-desktop")).toHaveCount(0);
+    });
+  }
+}
+
+test("archived Workspace keeps navigation readable and existing write gates", async ({ page }) => {
+  await setup(page, { archived: true });
+  await page.goto(v2());
+  await expect(page.locator(".gateway-context")).toContainText("arquivado · somente leitura");
+  await expect(nav(page).locator("a")).toHaveCount(4);
+  await expect(page.getByRole("button", { name: "Novo service", exact: true })).toHaveCount(0);
+});
+
+for (const width of [390, 768]) {
+  test(`drawer at ${width}: inert background, Tab trap, close/Escape/backdrop, navigation and axe`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 900 });
+    await setup(page);
+    await page.goto(v2());
+    await expect(trigger(page)).toHaveAccessibleName("Abrir menu Gateway do Workspace Pedidos autorizados");
+    await expect(trigger(page)).toHaveText("Gateway · Pedidos autorizados");
+    await expect(trigger(page)).toHaveAttribute("aria-expanded", "false");
+    await expect(nav(page)).toHaveCount(0);
+    await audit(page);
+    await openGlobalMenu(page, "Operações");
+    await openGateway(page);
+    const close = drawer(page).getByRole("button", { name: "Fechar menu Gateway", exact: true });
+    await expect(close).toBeFocused();
+    await expect(trigger(page)).toHaveAttribute("aria-expanded", "true");
+    await expect(page.locator(".global-operations > button")).toHaveAttribute("aria-expanded", "false");
+    await page.locator("main").evaluate((node: HTMLElement) => node.focus());
+    await expect(close).toBeFocused();
+    const home = drawer(page).getByRole("link", { name: "Voltar à visão geral da instância", exact: true });
+    await close.press("Shift+Tab");
+    await expect(home).toBeFocused();
+    await home.press("Tab");
+    await expect(close).toBeFocused();
+    await expect(page.locator("body")).toHaveCSS("overflow", "hidden");
+    await audit(page);
+    await testInfo.attach(`gateway-drawer-${width}`, { body: await page.screenshot(), contentType: "image/png" });
+    await close.press("Escape");
+    await expect(drawer(page)).toHaveCount(0);
+    await expect(trigger(page)).toBeFocused();
+    await openGateway(page);
+    await page.mouse.click(width - 8, 200);
+    await expect(drawer(page)).toHaveCount(0);
+    await expect(trigger(page)).toBeFocused();
+    await openGateway(page);
+    await drawer(page).getByRole("button", { name: "Fechar menu Gateway", exact: true }).click();
+    await expect(trigger(page)).toBeFocused();
+    await openGateway(page);
+    await nav(page).getByRole("link", { name: "Rotas", exact: true }).click();
+    await expect(page).toHaveURL(v2("routes"));
+    await expect(drawer(page)).toHaveCount(0);
+    await expect(page.locator("main")).toBeFocused();
+    await expect(page.locator("body")).not.toHaveCSS("overflow", "hidden");
+    await fits(page);
+  });
+}
+
+test("resize 900/901 remembers focused item, closes drawer, restores desktop match and frees background", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await setup(page);
+  await page.goto(v2());
+  const service = () => nav(page).getByRole("link", { name: "Serviços", exact: true });
+  await service().focus();
+  await page.setViewportSize({ width: 900, height: 900 });
+  await expect(trigger(page)).toBeFocused();
+  await expect(nav(page)).toHaveCount(0);
+  await openGateway(page);
+  await service().focus();
+  await page.setViewportSize({ width: 901, height: 900 });
+  await expect(drawer(page)).toHaveCount(0);
+  await expect(service()).toBeFocused();
+  await expect(page.locator("body")).not.toHaveCSS("overflow", "hidden");
+  await service().click();
+  await expect(page.locator("main")).toBeFocused();
+  await page.setViewportSize({ width: 390, height: 900 });
+  await expect(page.locator("main")).toBeFocused();
+  await fits(page);
+});
+
+test("switching Workspace in an open drawer closes it and clears denied context with focus on main", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 900 });
+  const state: State = {};
+  await setup(page, state);
+  await page.goto(v2(`services/${S}`));
+  await expect(page.getByRole("heading", { name: "Serviço autorizado", exact: true })).toBeVisible();
+  await openGateway(page);
+  state.status = 403;
+  await page.getByLabel("Workspace v2", { exact: true }).selectOption(E);
+  await expect(page).toHaveURL(`/workspaces/${E}/services`);
+  await expect(page.getByRole("alert")).toContainText("Você não tem permissão");
+  await expect(drawer(page)).toHaveCount(0);
+  await expect(trigger(page)).toHaveCount(0);
+  await expect(page.locator(".gateway-context")).toHaveCount(0);
+  await expect(page.locator("main")).toBeFocused();
+  await expect(page.locator("body")).not.toHaveCSS("overflow", "hidden");
+  await fits(page);
+});
+
+for (const width of [390, 768, 1440]) {
+  test(`long authorized names and slugs fit at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await setup(page);
+    await page.route(`**/api/v2/workspaces/${W}`, (route) => route.fulfill({ json: {
+      ...workspace(W), name: "Workspace de integrações ".repeat(8), slug: "integracoes".repeat(16),
+    } }));
+    await page.goto(v2());
+    await openGateway(page);
+    await fits(page);
+    if (width <= 900) await drawer(page).getByRole("button", { name: "Fechar menu Gateway", exact: true }).click();
+    await fits(page);
+  });
+}

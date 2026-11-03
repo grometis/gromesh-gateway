@@ -153,7 +153,7 @@ for (const status of [403, 201] as const) {
 
 test("v1 publication stays available on Services and disappears again on Releases", async ({ page }) => {
   const fake = await setup(page);
-  await page.getByRole("link", { name: "Services", exact: true }).click();
+  await page.getByRole("link", { name: "Serviços", exact: true }).click();
   await expect(page.getByRole("region", { name: "Publicação", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Publicar v4" })).toBeEnabled();
   await expect(page.getByRole("link", { name: "Ver diff", exact: true })).toHaveAttribute("href", `/e/${W}/publish`);

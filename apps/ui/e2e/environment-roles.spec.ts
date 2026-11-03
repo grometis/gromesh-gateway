@@ -27,7 +27,7 @@ async function signIn(page: Page, user: Me) {
   await expect(page.getByRole("heading", { name: "Services", exact: true })).toBeVisible();
   // A v1 screen: its actions follow the role in the environment on screen (the v2 gateway screens offer them to
   // everyone and leave the decision to the server).
-  await page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Consumers", exact: true }).click();
+  await page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Consumidores", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Consumers", exact: true })).toBeVisible();
 }
 

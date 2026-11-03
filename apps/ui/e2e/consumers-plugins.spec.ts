@@ -31,7 +31,7 @@ test("a new consumer's key is shown once and is gone after closing", async ({ pa
   );
   await login(page);
 
-  await menu(page).getByRole("link", { name: "Consumers" }).click();
+  await menu(page).getByRole("link", { name: "Consumidores" }).click();
   await page.getByRole("button", { name: "Novo consumer" }).click();
   const form = page.getByRole("dialog", { name: "Novo consumer" });
   await form.getByLabel("Username").fill("mobile-app");

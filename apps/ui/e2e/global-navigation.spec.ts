@@ -1,3 +1,4 @@
+import { openGateway } from "./gateway-sidebar";
 import AxeBuilder from "@axe-core/playwright";
 import type { Page } from "@playwright/test";
 import { expect, mockSession, test } from "./fixtures";
@@ -167,7 +168,8 @@ for (const width of [390, 768, 1440]) {
     await page.locator("main").focus();
     await expect(instance).toHaveAttribute("aria-expanded", "false");
     await openGlobalMenu(page, "Operações");
-    const routes = page.getByRole("navigation", { name: "Menu principal", exact: true }).getByRole("link", { name: "Routes", exact: true });
+    await openGateway(page);
+    const routes = page.getByRole("navigation", { name: "Menu principal", exact: true }).getByRole("link", { name: "Rotas", exact: true });
     // This link is also covered at tablet width; keyboard navigation remains available.
     await routes.focus();
     await routes.press("Enter");

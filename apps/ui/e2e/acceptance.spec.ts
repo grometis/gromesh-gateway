@@ -21,7 +21,7 @@ test("login, create a service and a route, then preview the publication", async 
   expect((await created).status()).toBe(201);
   await expect(svc).toBeHidden();
 
-  await page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Routes" }).click();
+  await page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Rotas" }).click();
   await page.getByRole("button", { name: "Nova route" }).click();
   const route = page.getByRole("dialog", { name: "Nova route" });
   await route.getByLabel("Nome").fill("orders-api");

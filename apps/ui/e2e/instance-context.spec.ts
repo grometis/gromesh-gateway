@@ -1,3 +1,4 @@
+import { openGateway } from "./gateway-sidebar";
 import { navigateGlobal, openGlobalMenu } from "./global-navigation";
 import AxeBuilder from "@axe-core/playwright";
 import type { Page } from "@playwright/test";
@@ -27,7 +28,7 @@ async function setup(page: Page, options: { stage?: string | null; policyStatus?
 }
 
 async function audit(page: Page) {
-  await checkLayout(page, { focusWithin: await page.getByLabel("Ambiente (legado)", { exact: true }).count() ? ".menu" : ".global-header" });
+  await checkLayout(page, { focusWithin: await page.getByLabel("Ambiente (legado)", { exact: true }).isVisible() ? ".menu" : ".global-header" });
   const result = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
   expect(result.violations.filter((v) => v.impact === "serious" || v.impact === "critical").map((v) => `${v.id}: ${v.nodes.map((n) => n.target).join(", ")}`)).toEqual([]);
 }
@@ -41,12 +42,12 @@ for (const width of [390, 1440]) {
     { name: "policy denied", options: { policyStatus: 403 }, text: "Instância não identificada" },
     { name: "policy failure", options: { policyStatus: 502 }, text: "Instância não identificada" },
     { name: "no legacy environment", options: { envs: [] }, text: "Nenhum ambiente legado disponível." },
-    { name: "many legacy environments", options: { envs: [A, B] }, text: "Workspace v2: Pedidos v2" },
+    { name: "many legacy environments", options: { envs: [A, B] }, text: "Ambiente (legado)" },
     { name: "legacy list denied", options: { envStatus: 403 }, text: "Sem permissão para listar ambientes legados." },
     { name: "legacy list failure", options: { envStatus: 502 }, text: "Não foi possível carregar os ambientes legados." },
     { name: "invalid selection", options: { envs: [B] }, text: "Ambiente legado indisponível para esta URL." },
-    { name: "workspace denied", options: { workspaceStatus: 403 }, text: "Workspace v2: sem permissão de leitura." },
-    { name: "workspace failure", options: { workspaceStatus: 502 }, text: "Workspace v2: não foi possível carregar." },
+    { name: "workspace denied", options: { workspaceStatus: 403 }, text: "Ambiente (legado)" },
+    { name: "workspace failure", options: { workspaceStatus: 502 }, text: "Ambiente (legado)" },
   ]) {
     test(`${state.name}: identity/context layout and axe at ${width}px`, async ({ page }, testInfo) => {
       await page.setViewportSize({ width, height: 900 });
@@ -54,11 +55,14 @@ for (const width of [390, 1440]) {
       await page.goto(`/e/${A}/releases`);
       const identity = page.getByRole("region", { name: "Identidade da instância" });
       await expect(identity).toContainText(new URL(test.info().project.use.baseURL!).origin);
-      await expect(state.text.startsWith("Instância") ? identity : page.locator(".menu")).toContainText(state.text);
+      await openGateway(page);
+      await expect(state.text.startsWith("Instância") ? page.locator(".instance-context") : page.locator(".menu")).toContainText(state.text);
       await expect(page.getByLabel("Ambiente (legado)", { exact: true })).toBeVisible();
       await expect(page.getByLabel("Workspace v2", { exact: true })).toBeVisible();
-      await expect(page.getByLabel("Workspace v2", { exact: true }).locator("option")).toHaveText(["Pedidos v2", "Catálogo v2"]);
+      await expect(page.getByLabel("Workspace v2", { exact: true }).locator("option[value]:not([value=\"\"])")).toHaveText(["Pedidos v2", "Catálogo v2"]);
       if (state.name === "invalid selection") await expect(page.getByLabel("Ambiente (legado)", { exact: true })).toHaveValue("");
+      const close = page.getByRole("button", { name: "Fechar menu Gateway", exact: true });
+      if (await close.isVisible()) await close.click();
       await openGlobalMenu(page, "Minha conta");
       await expect(page.locator(".global-account .global-panel-context")).toContainText("Ana Souza");
       await expect(page).toHaveURL(new RegExp(`/e/${A}/releases$`));
@@ -71,36 +75,42 @@ for (const width of [390, 1440]) {
     await page.setViewportSize({ width, height: 900 });
     await setup(page);
     let releaseMetadata!: () => void;
-    let releaseWorkspace!: () => void;
     const metadataReady = new Promise<void>((resolve) => { releaseMetadata = resolve; });
-    const workspaceReady = new Promise<void>((resolve) => { releaseWorkspace = resolve; });
     await page.route("**/api/v1/environments", async (route) => { await metadataReady; await route.fulfill({ json: { items: [environment(A)] } }); });
     await page.route("**/api/v2/workspace-creation-policy", async (route) => { await metadataReady; await route.fulfill({ json: { stage: "hml" } }); });
-    await page.route(`**/api/v2/workspaces/${A}`, async (route) => { await workspaceReady; await route.fulfill({ json: workspace(A) }); });
     await page.goto(`/e/${A}/releases`);
     await expect(page.getByRole("region", { name: "Identidade da instância" })).toContainText("Instância não identificada");
+    await openGateway(page);
     await expect(page.locator("#env-context-message")).toHaveText("Carregando ambientes legados…");
     await audit(page);
+    const close = page.getByRole("button", { name: "Fechar menu Gateway", exact: true });
+    if (await close.isVisible()) await close.click();
     releaseMetadata();
     await expect(page.getByRole("region", { name: "Identidade da instância" })).toContainText("Instância HML");
-    await expect(page.locator(".workspace-context")).toHaveText("Workspace v2: verificando…");
-    releaseWorkspace();
-    await expect(page.locator(".workspace-context")).toContainText("Pedidos v2");
+    await openGateway(page);
+    await expect(page.locator(".gateway-context")).toContainText("producao");
+    await expect(page.locator(".workspace-context")).toHaveCount(0);
   });
 
   test(`deep links, refresh and explicit global scope at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
     await setup(page, { envs: [A, B] });
     await page.goto(`/e/${A}/releases`);
-    await expect(page.locator(".workspace-context")).toContainText("Pedidos v2");
+    await openGateway(page);
+    await expect(page.locator(".gateway-context")).toContainText("producao");
     await page.getByLabel("Workspace v2", { exact: true }).selectOption(B);
-    await expect(page).toHaveURL(`/e/${B}/releases`);
-    await expect(page.locator(".workspace-context")).toContainText("Catálogo v2");
-    await expect(page.getByRole("region", { name: "Identidade da instância" })).toContainText("Instância DEV");
+    await expect(page).toHaveURL(`/workspaces/${B}/releases`);
+    await openGateway(page);
+    await expect(page.locator(".workspace-context")).toContainText("/catalogo");
+    await expect(page.locator(".instance-context")).toContainText("Instância DEV");
     await page.reload();
+    await expect(page.locator("main h1")).toBeVisible();
+    await openGateway(page);
     await expect(page.getByLabel("Workspace v2", { exact: true })).toHaveValue(B);
-    await expect(page.getByLabel("Ambiente (legado)", { exact: true })).toHaveValue(B);
-    await expect(page.locator(".workspace-context")).toContainText("Catálogo v2");
+    await expect(page.getByLabel("Ambiente (legado)", { exact: true })).toHaveCount(0);
+    await expect(page.locator(".workspace-context")).toContainText("/catalogo");
+    const close = page.getByRole("button", { name: "Fechar menu Gateway", exact: true });
+    if (await close.isVisible()) await close.click();
     await navigateGlobal(page, "Tokens de API");
     await expect(page.getByText("Escopo: minha conta nesta instância", { exact: true })).toBeVisible();
     await expect(page.getByLabel("Ambiente (legado)", { exact: true })).toHaveCount(0);
