@@ -1100,6 +1100,76 @@ test('PR mode validates SHA, arch and local image without publication or digest 
 });
 
 for (const mode of ['images', 'pr']) {
+  for (const label of ['client_secret', 'access_token', 'clientSecret', 'accessToken',
+    'client-secret', 'access-token', 'client.secret', 'client2Secret', 'session2_token3',
+    'secret', 'token', 'password', 'passwd', 'apikey', 'api_key', 'access_key',
+    'private_key', 'credential', 'auth', 'bearer', 'session', 'clientAPIKey',
+    'api.key', 'api+key', 'access.key', 'private.key', 'client.api.key',
+    'client%5fsecret', '%61ccess_token', 'client%53ecret',
+    'YXV0aA', 'YXV0aA==', 'c2Vzc2lvbg', '61757468', '73657373696f6e']) {
+    for (const [field, mutate] of [
+      ['downloadLocation', d => { d.packages[0].downloadLocation = `https://example.org/${label}/abc123`; }],
+      ['terminal segment', d => { d.packages[0].downloadLocation = `https://example.org/releases/${label}`; }],
+      ['download ref', d => { d.packages[0].downloadLocation = `https://example.org/future#${label}-1-abc123`; }],
+      ['shorthand', d => { d.packages[0].downloadLocation = `github:${label}/abc123`; }],
+      ['shorthand repository', d => { d.packages[0].downloadLocation = `future/${label}`; }],
+      ['homepage', d => {
+        d.packages[0].externalRefs = [{ referenceCategory: 'PACKAGE-MANAGER', referenceType: 'purl', referenceLocator: 'pkg:npm/future@1.0.0' }];
+        d.packages[0].homepage = `https://example.org/${label}/abc123#readme`;
+      }],
+      ['purl namespace', d => { d.packages[0].externalRefs = [{ referenceCategory: 'PACKAGE-MANAGER', referenceType: 'purl', referenceLocator: `pkg:npm/${label}/abc123@1.0.0` }]; }],
+      ['purl name', d => { d.packages[0].externalRefs = [{ referenceCategory: 'PACKAGE-MANAGER', referenceType: 'purl', referenceLocator: `pkg:npm/future/${label}@1.0.0` }]; }],
+      ['purl version', d => { d.packages[0].externalRefs = [{ referenceCategory: 'PACKAGE-MANAGER', referenceType: 'purl', referenceLocator: `pkg:npm/future@${label}` }]; }],
+      ['purl subpath', d => { d.packages[0].externalRefs = [{ referenceCategory: 'PACKAGE-MANAGER', referenceType: 'purl', referenceLocator: `pkg:golang/example.org/future@v1.0.0#src/${label}/abc123` }]; }],
+      ['CPE escaped path', d => { d.packages[0].externalRefs = [{ referenceCategory: 'SECURITY', referenceType: 'cpe23Type', referenceLocator: `cpe:2.3:a:future:src\\/${label}\\/abc123:1:*:*:*:*:*:*:*` }]; }],
+    ]) {
+      test(`reference path credential ${mode} ${field} ${label}`, t => {
+        const f = mode === 'pr' ? prSupplyFixture(t) : supplyFixture(t);
+        const doc = JSON.parse(readFileSync(f.sbomFile));
+        mutate(doc);
+        writeFileSync(f.sbomFile, JSON.stringify(doc));
+        const result = f.runSupply();
+        rejectSupply(result);
+        assert.equal(result.stderr.includes('abc123'), false);
+        assert.equal(result.stderr.includes(label), false);
+      });
+    }
+  }
+}
+
+for (const mode of ['images', 'pr']) {
+  for (const name of ['@tokenizer/token', 'token-types']) {
+    const repo = name === 'token-types' ? 'token-types' : 'tokenizer-token';
+    for (const variant of ['valid future version', 'download suffix', 'homepage suffix', 'wrong host',
+      'wrong package', 'wrong version', 'missing purl', 'purl suffix', 'CPE suffix', 'CPE update']) {
+      test(`token package reference grammar ${mode} ${name} ${variant}`, t => {
+        const f = mode === 'pr' ? prSupplyFixture(t) : supplyFixture(t);
+        const doc = JSON.parse(readFileSync(f.sbomFile));
+        const pkg = doc.packages[0];
+        Object.assign(pkg, { name, versionInfo: '99.1.2', downloadLocation: `https://github.com/Borewit/${repo}.git`,
+          homepage: `https://github.com/Borewit/${repo}#readme`, externalRefs: [
+            { referenceCategory: 'PACKAGE-MANAGER', referenceType: 'purl', referenceLocator: `pkg:npm/${name.replace('@', '%40')}@99.1.2` },
+            { referenceCategory: 'SECURITY', referenceType: 'cpe23Type', referenceLocator: `cpe:2.3:a:${name === 'token-types' ? 'token' : 'Borewit'}:${name.replace(/[@/]/g, c => `\\${c}`)}:99.1.2:*:*:*:*:*:*:*` },
+          ] });
+        if (variant === 'download suffix') pkg.downloadLocation += '/client_secret/abc123';
+        if (variant === 'homepage suffix') pkg.homepage = `https://github.com/Borewit/${repo}/access_token/abc123#readme`;
+        if (variant === 'wrong host') pkg.downloadLocation = `https://example.org/Borewit/${repo}.git`;
+        if (variant === 'wrong package') pkg.name = 'future';
+        if (variant === 'wrong version') pkg.versionInfo = '99.1.3';
+        if (variant === 'missing purl') pkg.externalRefs.shift();
+        if (variant === 'purl suffix') pkg.externalRefs[0].referenceLocator = `pkg:npm/${name.replace('@', '%40')}/abc123@99.1.2`;
+        if (variant === 'CPE suffix') pkg.externalRefs[1].referenceLocator = pkg.externalRefs[1].referenceLocator.replace(':99.1.2:', '\\/abc123:99.1.2:');
+        if (variant === 'CPE update') pkg.externalRefs[1].referenceLocator = pkg.externalRefs[1].referenceLocator.replace(':99.1.2:*:', ':99.1.2:session:');
+        writeFileSync(f.sbomFile, JSON.stringify(doc));
+        const result = f.runSupply();
+        if (variant === 'valid future version') assert.equal(result.status, 0, result.stderr);
+        else rejectSupply(result);
+      });
+    }
+  }
+}
+
+for (const mode of ['images', 'pr']) {
   for (const [index, assignment] of ['client_secret=short', 'session_token=abc123', 'clientSecret=abc123'].entries()) {
     for (const [field, mutate] of [
       ['fileName', d => { d.files[0].fileName = `/app/${assignment}`; }],

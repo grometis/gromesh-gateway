@@ -18,18 +18,42 @@ const digestPattern = /^sha256:[0-9a-f]{64}$/;
 const credentialPattern = /(?:synthetic[_ -](?:secret|password|token)|gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|(?:AKIA|ASIA)[A-Z0-9]{16}|AIza[A-Za-z0-9_-]{35}|glpat-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]+|sk-(?:proj-)?[A-Za-z0-9_-]{16,}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|BEGIN [A-Z ]*PRIVATE KEY)/i;
 
 const sensitiveTextPattern = /(?:secret|password|passwd|authorization|cookie|credential|api[ _-]?key|private[ _-]?key|access[ _-]?key|token|bearer|synthetic|gh[pousr]_|github_pat_|AKIA|ASIA|sk-[a-z])/i;
+const referenceNamePattern = /\b(?:secrets?|token|password|passwd|api[\W_]*key|access[\W_]*key|private[\W_]*key|credentials?|auth|authorization|bearer|session)\b/i;
 
 function normalizeIdentifiers(value) {
   return value.replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
     .replace(/([a-z])([A-Z])/g, "$1 $2")
     .replace(/[_0-9-]+/g, " ").replace(/ +/g, " ");
 }
+function referencePath(parts, packageParts = [], cpe = false) {
+  // Check names even without a following value: this also closes name/value path pairs.
+  for (const part of parts) {
+    const sensitive = [part, normalizeIdentifiers(part)].some(spelling => referenceNamePattern.test(spelling)) ||
+      encodedCredential(part, referenceNamePattern);
+    if (cpe) requireValid(!sensitive || packageParts.includes(part), RejectionCode.CPE_SENSITIVE);
+    else requireValid(!sensitive || packageParts.includes(part), RejectionCode.DOWNLOAD_PATH_SENSITIVE);
+  }
+}
+function tokenPackage(pkg) {
+  // These npm products describe lexer tokens. Bind exceptions to package coordinates,
+  // never to arbitrary segments called "token" or a credential-bearing suffix.
+  if (!["@tokenizer/token", "token-types"].includes(pkg?.name) ||
+    typeof pkg.versionInfo !== "string" || !semver.test(pkg.versionInfo)) return false;
+  return Array.isArray(pkg.externalRefs) && pkg.externalRefs.some(ref =>
+    ref?.referenceCategory === "PACKAGE-MANAGER" && ref.referenceType === "purl" &&
+    [pkg.name, pkg.name.replace("@", "%40")].some(name => ref.referenceLocator === `pkg:npm/${name}@${pkg.versionInfo}`));
+}
+function tokenRepository(parts, pkg) {
+  const repo = pkg?.name === "@tokenizer/token" ? "tokenizer-token" : "token-types";
+  return tokenPackage(pkg) && parts.length === 2 && parts[0] === "Borewit" &&
+    [repo, `${repo}.git`].includes(parts[1]);
+}
 function credentialAssignment(value) {
   return [...value.matchAll(/([A-Za-z][A-Za-z0-9_-]*)\s*=(?=\s*\S)/g)].some(([, identifier]) =>
     [identifier, normalizeIdentifiers(identifier)].some(spelling =>
       /\b(?:secrets?|password|passwd|authorization|cookies?|credentials?|api *key|private *key|access *key|token|bearer)\b/i.test(spelling)));
 }
-function encodedCredential(value) {
+function encodedCredential(value, pattern = sensitiveTextPattern) {
   // Inspect the whole spelling and its components: '/' is both base64 data and
   // a path separator, while '-'/'_' can be either base64url data or identifier separators.
   for (const fragment of [value, ...value.split(/[/.:@\\]+/), ...value.split(/[/.:@\\_+-]+/)]) {
@@ -37,8 +61,8 @@ function encodedCredential(value) {
       const decoded = [Buffer.from(encoded, "base64url").toString("utf8")];
       const hex = encoded.replace(/^0x/i, "");
       if (/^(?:[0-9a-f]{2})+$/i.test(hex)) decoded.push(Buffer.from(hex, "hex").toString("utf8"));
-      if (decoded.some(item => sensitiveTextPattern.test(item) ||
-        sensitiveTextPattern.test(normalizeIdentifiers(item)) || credentialPattern.test(item))) return true;
+      if (decoded.some(item => pattern.test(item) ||
+        pattern.test(normalizeIdentifiers(item)) || credentialPattern.test(item))) return true;
     }
   }
   return false;
@@ -116,16 +140,18 @@ function packageVersion(value, maximum = 100) {
 function downloadRef(value) {
   text(value, 100, /^[A-Za-z0-9._+-]+$/);
   requireValid(!sensitiveTextPattern.test(value) && !sensitiveTextPattern.test(normalizeIdentifiers(value)) && !value.includes(".."), RejectionCode.DOWNLOAD_REF_SENSITIVE);
+  referencePath([value]);
   if (/^[0-9a-f]{7,40}$/.test(value)) return;
   // Numeric release tags include v1.2.3, release-1.2.3 and upstream's libidn2.
   // Unstructured words and opaque high-entropy fragments are not refs.
   requireValid(semver.test(value.replace(/^v/, "")) || /^(?:[A-Za-z][A-Za-z_-]{0,39})?[0-9]+(?:[._-][A-Za-z0-9]+)*$/.test(value), RejectionCode.DOWNLOAD_REF_FORMAT);
   structuredText(value, 100);
 }
-function githubRepository(value) {
+function githubRepository(value, pkg) {
   structuredText(value, 141, /^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*\/[A-Za-z0-9._-]+$/);
   const [owner, repo] = value.split("/");
   requireValid(owner.length <= 39 && repo.length <= 100 && repo !== "." && repo !== "..", RejectionCode.GITHUB_REPOSITORY);
+  referencePath([owner, repo], tokenRepository([owner, repo], pkg) ? [repo] : []);
 }
 function downloadHost(value) {
   text(value, 253, /^[a-z0-9.-]+$/);
@@ -137,13 +163,13 @@ function downloadHost(value) {
     requireValid(label.length < 20 || entropy(label) < 3.5, RejectionCode.DOWNLOAD_HOST_ENTROPY);
   }
 }
-function downloadLocation(value) {
+function downloadLocation(value, pkg) {
   if (["NOASSERTION", "NONE"].includes(value)) return;
   text(value, 512);
   if (!value.includes("://")) {
     const shorthand = /^(?:github:)?([^#]+)(?:#([^#]+))?$/.exec(value);
     requireValid(shorthand !== null, RejectionCode.DOWNLOAD_SHORTHAND);
-    githubRepository(shorthand[1]);
+    githubRepository(shorthand[1], pkg);
     if (shorthand[2] !== undefined) downloadRef(shorthand[2]);
     return;
   }
@@ -160,15 +186,14 @@ function downloadLocation(value) {
   structuredText(path || "/", 400, /^\/[A-Za-z0-9._!@+/-]*$/);
   const parts = path.replace(/^\//, "").replace(/\/$/, "").split("/");
   requireValid(path === "" || path === "/" || parts.every(part => part.length > 0 && part !== "."), RejectionCode.DOWNLOAD_PATH);
-  for (const part of parts) {
-    requireValid(![part, normalizeIdentifiers(part)].some(spelling => /^(?:password|passwd|authorization|cookie|credential|secret|api[ _-]?key|private[ _-]?key|access[ _-]?key|token|bearer)$/i.test(spelling)), RejectionCode.DOWNLOAD_PATH_SENSITIVE);
-  }
+  requireValid(parts.every(part => ![part, normalizeIdentifiers(part)].some(spelling => /^cookie$/i.test(spelling))), RejectionCode.DOWNLOAD_PATH_SENSITIVE);
+  referencePath(parts, match[2] === "github.com" && tokenRepository(parts, pkg) ? [parts[1]] : []);
   if (match[5] !== undefined) downloadRef(match[5]);
 }
-function homepageLocation(value) {
+function homepageLocation(value, pkg) {
   text(value, 512, /^https?:\/\//);
   // npm's repository landing-page anchor is metadata, not a download ref.
-  downloadLocation(value.endsWith("#readme") ? value.slice(0, -7) : value);
+  downloadLocation(value.endsWith("#readme") ? value.slice(0, -7) : value, pkg);
 }
 function identifier(value, fileName) {
   // Syft appends a 16-hex ID hash to the file path. Validate these separately only
@@ -253,7 +278,12 @@ function externalRef(value, context, pkg) {
     const version = versioned ? component(coordinate.slice(separator + 1)) : undefined;
     requireValid(name.split("/").every(part => part.length > 0 && part !== "." && part !== ".."), RejectionCode.PURL_NAME);
     structuredText(name, 200, /^@?[A-Za-z0-9._+-]+(?:\/[A-Za-z0-9._+-]+)*$/);
-    if (version !== undefined) packageVersion(version);
+    referencePath(name.split("/"),
+      match[1] === "npm" && tokenPackage(pkg) && name === pkg.name && version === pkg.versionInfo ? name.split("/") : []);
+    if (version !== undefined) {
+      packageVersion(version);
+      referencePath([version]);
+    }
     if (match[1] === "generic") {
       requireValid(embeddedRuntimes.has(name) && typeof version === "string" && semver.test(version), RejectionCode.RUNTIME_VERSION);
       requireValid(pkg.name === name && pkg.versionInfo === version, RejectionCode.RUNTIME_PACKAGE);
@@ -262,7 +292,9 @@ function externalRef(value, context, pkg) {
     if (match[1] === "npm") requireValid(/^@?[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/.test(name), RejectionCode.NPM_NAME);
     if (match[4] !== undefined) {
       requireValid(match[1] === "golang", RejectionCode.PURL_SUBPATH);
-      structuredText(match[4].split("/").map(component).join("/"), 200, /^[A-Za-z0-9._+-]+(?:\/[A-Za-z0-9._+-]+)*$/);
+      const parts = match[4].split("/").map(component);
+      structuredText(parts.join("/"), 200, /^[A-Za-z0-9._+-]+(?:\/[A-Za-z0-9._+-]+)*$/);
+      referencePath(parts);
     }
     if (match[3] !== undefined) {
       const seen = new Set();
@@ -293,13 +325,21 @@ function externalRef(value, context, pkg) {
     }
     const offset = value.referenceType === "cpe23Type" ? 3 : 2;
     if (offset === 3) requireValid(["a", "h", "o"].includes(parts[2]), RejectionCode.CPE_PART);
-    for (const part of parts.slice(offset)) {
+    const decoded = parts.map(part => part.replace(/\\(.)/g, "$1"));
+    const tokenCpe = offset === 3 && parts[2] === "a" && tokenPackage(pkg) &&
+      decoded[5] === pkg.versionInfo && decoded.slice(6).every(part => part === "*") &&
+      (pkg.name === "@tokenizer/token" ? [pkg.name, "Borewit"].includes(decoded[3]) && decoded[4] === pkg.name :
+        ["token-types", "token_types", "token"].includes(decoded[3]) && ["token-types", "token_types"].includes(decoded[4]));
+    for (const [index, part] of parts.entries()) {
+      if (index < offset) continue;
       // CPE formatted strings escape punctuation, including Go subpaths and (devel).
       text(part, 200, /^(?:\*|-|(?:[A-Za-z0-9._-]|\\[\\!"#$%&'()+,/:;<=>?@[\]^`{|}~*-])+)$/);
       structuredText(part.replace(/\\(.)/g, "$1"), 200);
       // cookie, tokenizer and similar words are real npm products, not credentials.
       // Reject credential labels without rejecting every product containing them.
       requireValid(![part, normalizeIdentifiers(part)].some(spelling => /\b(?:password|passwd|authorization|credential|secret|api[ _-]?key|private[ _-]?key|access[ _-]?key)\b/i.test(spelling)), RejectionCode.CPE_SENSITIVE);
+      const segments = decoded[index].split("/");
+      referencePath(segments, tokenCpe && [3, 4].includes(index) ? segments : [], true);
     }
     const language = parts[offset === 3 ? 8 : 7];
     if (language !== undefined) text(language, 15, /^(?:\*|-|[A-Za-z]{2,3}(?:-(?:[A-Za-z]{2}|[0-9]{3}))?)$/);
@@ -475,7 +515,7 @@ export function validateSbom(directory, context) {
     packageIds.add(pkg.SPDXID);
     if (pkg.homepage !== undefined) {
       requireValid(Array.isArray(pkg.externalRefs) && pkg.externalRefs.some(ref => ref?.referenceType === "purl" && typeof ref.referenceLocator === "string" && ref.referenceLocator.startsWith("pkg:npm/")), RejectionCode.HOMEPAGE_PACKAGE);
-      homepageLocation(pkg.homepage);
+      homepageLocation(pkg.homepage, pkg);
     }
     if (pkg.primaryPackagePurpose === "CONTAINER") requireValid(pkg.name === context.sourceName, RejectionCode.OCI_SOURCE_NAME);
     if (pkg.name === context.sourceName) {
@@ -484,7 +524,7 @@ export function validateSbom(directory, context) {
       structuredText(pkg.name, 200, /^@?[A-Za-z0-9._+-]+(?:\/[A-Za-z0-9._+-]+)*$/);
       if (pkg.versionInfo !== undefined) packageVersion(pkg.versionInfo);
     }
-    downloadLocation(pkg.downloadLocation);
+    downloadLocation(pkg.downloadLocation, pkg);
     requireValid(typeof pkg.filesAnalyzed === "boolean", RejectionCode.FILES_ANALYZED);
     if (pkg.filesAnalyzed) {
       shape(pkg.packageVerificationCode, ["packageVerificationCodeValue"]);
