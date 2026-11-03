@@ -14,7 +14,7 @@ const service = (id: string) => ({ id: S, workspaceId: id, name: "Serviço autor
 const v2 = (section = "services") => `/workspaces/${W}/${section}`;
 const v1 = (section = "services") => `/e/${E}/${section}`;
 const nav = (page: Page) => page.getByRole("navigation", { name: "Menu principal", exact: true });
-const trigger = (page: Page) => page.getByRole("button", { name: /^Abrir menu Gateway do /, includeHidden: true });
+const trigger = (page: Page) => page.getByRole("button", { name: /^Abrir menu Gateway · /, includeHidden: true });
 const drawer = (page: Page) => page.getByRole("dialog", { name: /^Navegação Gateway do / });
 
 interface State { status?: number; archived?: boolean }
@@ -46,7 +46,16 @@ async function setup(page: Page, state: State = {}) {
   return sent;
 }
 async function fits(page: Page) {
-  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()!.width);
+  const layout = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    overflowing: Array.from(document.querySelectorAll("body *")).flatMap((node) => {
+      const { left, right, width } = node.getBoundingClientRect();
+      return width > 0 && (width > innerWidth || right > innerWidth)
+        ? [{ element: `${node.tagName.toLowerCase()}.${Array.from(node.classList).join(".")}`, left, right, width }]
+        : [];
+    }),
+  }));
+  expect(layout.scrollWidth, JSON.stringify(layout.overflowing)).toBeLessThanOrEqual(page.viewportSize()!.width);
 }
 async function audit(page: Page) {
   await fits(page);
@@ -99,7 +108,7 @@ test("v2 catalog uses confirmed GET outside the list; collapse preserves accessi
 test("legacy catalog stays in /e, consumer detail selects parent, Workspace selector enters explicit v2 namespace", async ({ page }) => {
   const sent = await setup(page);
   await page.goto(v1(`consumers/${S}`));
-  await expect(page.getByRole("heading", { name: "Consumidor autorizado", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Consumer Consumidor autorizado", exact: true })).toBeVisible();
   await expect(page.locator(".gateway-context")).toContainText("Ambiente (legado)");
   const sections = ["overview", "services", "routes", "consumers", "plugins", "upstreams", "certificates", "variables"];
   expect(await nav(page).locator("a").evaluateAll((nodes) => nodes.map((n) => n.getAttribute("href")))).toEqual(sections.map(v1));
@@ -133,6 +142,9 @@ for (const namespace of ["v2", "v1"] as const) {
       await page.goto(namespace === "v2" ? v2() : v1());
       await expect(nav(page)).toBeVisible();
       await navigateGlobal(page, "Tokens de API");
+      await expect(page).toHaveURL("/tokens");
+      await expect(page.getByRole("heading", { name: "Tokens de API", exact: true })).toBeVisible();
+      await expect(nav(page)).toHaveCount(0);
       state.status = status;
       await page.goBack();
       await expect(page.getByRole("alert").first()).toBeVisible();
@@ -156,7 +168,7 @@ for (const width of [390, 768]) {
     await page.setViewportSize({ width, height: 900 });
     await setup(page);
     await page.goto(v2());
-    await expect(trigger(page)).toHaveAccessibleName("Abrir menu Gateway do Workspace Pedidos autorizados");
+    await expect(trigger(page)).toHaveAccessibleName("Abrir menu Gateway · Pedidos autorizados — Workspace");
     await expect(trigger(page)).toHaveText("Gateway · Pedidos autorizados");
     await expect(trigger(page)).toHaveAttribute("aria-expanded", "false");
     await expect(nav(page)).toHaveCount(0);
@@ -196,6 +208,36 @@ for (const width of [390, 768]) {
     await fits(page);
   });
 }
+
+test("CSS releases the desktop column before the Gateway media change handler runs", async ({ page }) => {
+  await page.addInitScript(() => {
+    const matchMedia = window.matchMedia.bind(window);
+    window.matchMedia = (query) => {
+      const media = matchMedia(query);
+      // Hold only the Gateway's React notification; native CSS still follows the real viewport.
+      if (query === "(max-width: 900px)") media.addEventListener("change", (event) => event.stopImmediatePropagation());
+      return media;
+    };
+  });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await setup(page);
+  await page.goto(v2());
+  await expect(page.getByRole("heading", { name: "Services", exact: true })).toBeVisible();
+  for (const collapsed of [false, true]) {
+    if (collapsed) await page.getByRole("button", { name: "Recolher menu Gateway", exact: true }).click();
+    for (const width of [900, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      await expect(page.locator(".gateway-desktop")).toHaveCount(1);
+      await expect(page.locator(".gateway-desktop")).toBeHidden();
+      await expect(page.locator("main")).toHaveCSS("width", `${width}px`);
+      await fits(page);
+    }
+    await page.setViewportSize({ width: 901, height: 900 });
+    await expect(page.locator(".gateway-desktop")).toBeVisible();
+    await expect(page.locator(".gateway-desktop")).toHaveCSS("width", collapsed ? "136px" : "264px");
+    await fits(page);
+  }
+});
 
 test("resize 900/901 remembers focused item, closes drawer, restores desktop match and frees background", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });

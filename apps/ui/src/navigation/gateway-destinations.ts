@@ -3,9 +3,9 @@ import { destinationHref, destinations, resolveDestination } from "./destination
 
 const GATEWAY = [
   ["N01", "Visão geral", "Geral"], ["N02", "Serviços", "Serviços"],
-  ["N04", "Rotas", "Rotas"], ["N05", "Consumidores", "Consum."],
+  ["N04", "Rotas", "Rotas"], ["N05", "Consumidores", "Consumidores"],
   ["N07", "Plugins", "Plugins"], ["N08", "Upstreams", "Upstreams"],
-  ["N09", "Certificados", "Certif."], ["N10", "Variáveis", "Variáveis"],
+  ["N09", "Certificados", "Certificados"], ["N10", "Variáveis", "Variáveis"],
 ] as const;
 export interface GatewayDestination {
   id: string;

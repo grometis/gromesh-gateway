@@ -209,7 +209,7 @@ test("switching workspace discards confirmation, input and previous release data
   await page.getByRole("button", { name: "Publicar release", exact: true }).click();
   await page.getByRole("dialog").getByLabel("Resumo (opcional)").fill("Não reaproveitar");
   await page.getByLabel("Workspace v2", { exact: true }).selectOption(B, { force: true });
-  await expect(page).toHaveURL(`/e/${B}/releases`);
+  await expect(page).toHaveURL(`/workspaces/${B}/releases`);
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(page.getByText("Nenhuma release publicada neste Workspace.")).toBeVisible();
   await expect(page.getByText("Release v1 publicada. Nenhum deployment foi criado.", { exact: true })).toHaveCount(0);

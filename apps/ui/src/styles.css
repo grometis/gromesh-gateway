@@ -378,7 +378,7 @@ table.cards tr:hover td { background: var(--line); }
   .diff-narrow { display: flex; }
 }
 .diff-fields tr.same th, .diff-fields tr.same td { color: var(--text-3); }
-.note { background: var(--surface); border-radius: var(--radius); padding: var(--space-2) var(--space-3); color: var(--text-2); }
+.note { background: var(--surface); border-radius: var(--radius); padding: var(--space-2) var(--space-3); color: var(--text-2); overflow-wrap: anywhere; }
 .publish-box { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-3); align-items: end; padding-top: var(--space-4); border-top: 1px solid var(--line); }
 .publish-box > button.publish { min-height: 56px; padding: 0 var(--space-5); font-size: 16px; }
 .publish-box > p { grid-column: 1 / -1; margin: 0; }
@@ -625,7 +625,10 @@ table.numeric td, table.numeric th { white-space: nowrap; }
   .app { grid-template-rows: auto auto 1fr; }
   .global-header .instance-context { grid-column: 2; grid-row: 1; order: 0; justify-self: end; text-align: right; border: 0; padding: 0; max-width: 100%; }
   .global-navigation { display: contents; }
-  .global-groups { display: flex; grid-column: 1 / -1; grid-row: 2; gap: 6px; align-items: center; }
+  .global-groups { display: flex; grid-column: 1 / -1; grid-row: 2; gap: 6px; align-items: flex-start; }
+  .global-group { flex: 1; }
+  /* Keep disclosures in flow so they cannot cover the Gateway drawer trigger. */
+  .global-panel, .global-account .global-panel { position: static; width: 100%; max-width: 100%; margin-top: 4px; max-height: 52vh; box-shadow: none; }
   .global-account { margin-left: auto; }
 }
 @media (max-width: 600px) {
@@ -643,8 +646,10 @@ table.numeric td, table.numeric th { white-space: nowrap; }
 
 /* The Gateway is present only with a confirmed route context. */
 .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; align-content: start; }
-.app:has(.gateway-desktop) { grid-template-columns: 264px minmax(0, 1fr); }
-.app:has(.gateway-desktop.is-collapsed) { grid-template-columns: 136px minmax(0, 1fr); }
+@media (min-width: 901px) {
+  .app:has(.gateway-desktop) { grid-template-columns: 264px minmax(0, 1fr); }
+  .app:has(.gateway-desktop.is-collapsed) { grid-template-columns: 136px minmax(0, 1fr); }
+}
 .gateway-sidebar { min-width: 0; background: var(--ink); color: var(--ink-text); padding: 28px 16px 20px; display: flex; flex-direction: column; gap: 22px; overflow-wrap: anywhere; }
 .gateway-desktop { align-self: stretch; }
 .gateway-sidebar :focus-visible { outline: 3px solid #fff; outline-offset: 2px; }
@@ -664,6 +669,7 @@ table.numeric td, table.numeric th { white-space: nowrap; }
 .gateway-item > a[aria-current="page"] { background: var(--bg); color: var(--ink); font-weight: 600; }
 .gateway-item > [aria-disabled] { border: 1px dashed var(--ink-line); }
 .gateway-item small { display: block; font-size: 11px; line-height: 1.4; margin-top: 3px; }
+.gateway-item .gateway-requirement { padding: 0 12px 8px; }
 .gateway-footer { margin-top: auto; border-top: 1px solid var(--ink-line); padding-top: 16px; display: grid; gap: 12px; }
 .gateway-footer a { display: flex; align-items: center; min-height: 44px; padding: 8px 12px; font-size: 12px; color: var(--ink-text); }
 .gateway-footer button, .gateway-close { white-space: normal; min-height: 44px; background: transparent; color: var(--ink-text); border-color: var(--ink-line); font-size: 12px; }
@@ -681,5 +687,7 @@ dialog.gateway-drawer::backdrop { background: #061f25a6; }
 .context-selection { max-width: 360px; margin-bottom: 20px; }
 .context-selection .env { margin-bottom: 16px; }
 @media (max-width: 900px) {
+  /* CSS must release the desktop column before matchMedia updates the React surface. */
+  .gateway-desktop { display: none; }
   .app:has(.gateway-mobile) { grid-template-rows: auto auto 1fr; }
 }

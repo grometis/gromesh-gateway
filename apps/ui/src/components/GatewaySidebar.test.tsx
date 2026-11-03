@@ -24,6 +24,39 @@ async function screen(mobile = false) {
   return { all, button, click, focus, resize, container, router };
 }
 describe("Gateway sidebar interactions", () => {
+  it("includes the visible Gateway label in the drawer trigger's accessible name", async () => {
+    const view = await screen(true);
+    const trigger = view.all((n) => n.tagName === "BUTTON" && n.getAttribute("aria-controls")?.endsWith("-drawer") === true)[0]!;
+    expect(trigger.getAttribute("aria-label")).toContain(trigger.textContent);
+  });
+  it("keeps every visible link label within its accessible name, expanded and collapsed", async () => {
+    const view = await screen();
+    for (const collapsed of [false, true]) {
+      if (collapsed) await view.click(view.button("Recolher menu Gateway"));
+      const links = view.all((node) => node.getAttribute("aria-label") !== null
+        && (node.tagName === "A" || node.getAttribute("role") === "link"));
+      expect(links).toHaveLength(8);
+      for (const link of links) {
+        expect(link.getAttribute("aria-label")!.toLocaleLowerCase("pt-BR"))
+          .toContain(link.textContent.toLocaleLowerCase("pt-BR"));
+      }
+    }
+  });
+  it("describes unavailable links separately from their visible labels, expanded and collapsed", async () => {
+    const view = await screen();
+    for (const collapsed of [false, true]) {
+      if (collapsed) await view.click(view.button("Recolher menu Gateway"));
+      const unavailable = view.all((n) => n.getAttribute("aria-disabled") === "true");
+      expect(unavailable).toHaveLength(4);
+      for (const item of unavailable) {
+        const reasonId = item.getAttribute("aria-describedby")!.split(" ")[0];
+        const reason = view.all((n) => n.getAttribute("id") === reasonId)[0]!;
+        expect(reason.textContent).toBe("Disponível no ambiente legado");
+        expect(item.contains(reason)).toBe(false);
+        expect(item.getAttribute("href")).toBeNull();
+      }
+    }
+  });
   it("collapses without changing accessible names, hrefs, active parent or toggle focus", async () => {
     const view = await screen();
     const toggle = view.button("Recolher menu Gateway");
@@ -41,7 +74,7 @@ describe("Gateway sidebar interactions", () => {
   });
   it("starts closed, opens modal at Close, and restores trigger on Escape/close/backdrop", async () => {
     const view = await screen(true);
-    const trigger = view.button("Abrir menu Gateway do Workspace Pedidos");
+    const trigger = view.button("Abrir menu Gateway · Pedidos — Workspace");
     expect(view.all((n) => n.tagName === "DIALOG")).toHaveLength(0);
     for (const method of ["escape", "close", "backdrop"] as const) {
       await view.focus(trigger);
@@ -64,7 +97,7 @@ describe("Gateway sidebar interactions", () => {
   });
   it("wraps Tab and Shift+Tab within the visible dialog controls", async () => {
     const view = await screen(true);
-    await view.click(view.button("Abrir menu Gateway do Workspace Pedidos"));
+    await view.click(view.button("Abrir menu Gateway · Pedidos — Workspace"));
     const close = view.button("Fechar menu Gateway");
     const home = view.all((n) => n.tagName === "A" && n.getAttribute("href") === "/")[0]!;
     const key = async (node: TestNode, shiftKey: boolean) => {
@@ -82,7 +115,7 @@ describe("Gateway sidebar interactions", () => {
   });
   it("closes on route navigation and releases the scroll lock", async () => {
     const view = await screen(true);
-    await view.click(view.button("Abrir menu Gateway do Workspace Pedidos"));
+    await view.click(view.button("Abrir menu Gateway · Pedidos — Workspace"));
     await act(async () => { await view.router.navigate("/workspaces/W/routes"); });
     expect(view.all((n) => n.tagName === "DIALOG")).toHaveLength(0);
     expect(document.body.style.overflow).not.toBe("hidden");
@@ -94,7 +127,7 @@ describe("Gateway sidebar interactions", () => {
     await view.focus(service());
     document.body.focus(); // CSS can hide the previous surface before matchMedia.change.
     await view.resize(true);
-    const trigger = view.button("Abrir menu Gateway do Workspace Pedidos");
+    const trigger = view.button("Abrir menu Gateway · Pedidos — Workspace");
     expect(document.activeElement).toBe(trigger);
     await view.click(trigger);
     await view.focus(service());

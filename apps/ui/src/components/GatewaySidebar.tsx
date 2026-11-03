@@ -112,7 +112,7 @@ export function GatewaySidebar({ context, selectors, focusContent }: {
   if (!mobile) return <aside className={`menu gateway-sidebar gateway-desktop${collapsed ? " is-collapsed" : ""}`} aria-label={`Gateway do ${description}`} ref={desktop}>{body(collapsed)}</aside>;
   return <>
     <div className="gateway-mobile">
-      <button type="button" ref={trigger} aria-controls={`${prefix}-drawer`} aria-expanded={open} aria-label={`Abrir menu Gateway do ${description}`}
+      <button type="button" ref={trigger} aria-controls={`${prefix}-drawer`} aria-expanded={open} aria-label={`Abrir menu Gateway · ${name} — ${workspace ? "Workspace" : "ambiente legado"}`}
         onClick={() => { trigger.current?.focus(); setOpen(true); }}>Gateway · {name}</button>
     </div>
     {open && <dialog id={`${prefix}-drawer`} ref={dialog} className="menu gateway-sidebar gateway-drawer" aria-label={`Navegação Gateway do ${description}`}
@@ -146,10 +146,9 @@ function GatewayItem({ item, collapsed, prefix, onNavigate }: { item: GatewayDes
     {item.href ? <Link to={item.href} aria-label={item.label} aria-current={item.active ? "page" : undefined}
       aria-describedby={collapsed ? tooltipId : undefined} onClick={onNavigate}>
       <span aria-hidden="true">{collapsed ? item.shortLabel : item.label}</span>
-    </Link> : <span role="link" aria-disabled="true" aria-label={item.label} tabIndex={collapsed ? 0 : undefined} aria-describedby={collapsed ? `${reasonId} ${tooltipId}` : reasonId}>
+    </Link> : <><span role="link" aria-disabled="true" aria-label={item.label} tabIndex={collapsed ? 0 : undefined} aria-describedby={collapsed ? `${reasonId} ${tooltipId}` : reasonId}>
       <span aria-hidden="true">{collapsed ? item.shortLabel : item.label}</span>
-      <small id={reasonId}>{item.requirement}</small>
-    </span>}
+    </span><small className="gateway-requirement" id={reasonId}>{item.requirement}</small></>}
     {collapsed && <span id={tooltipId} role="tooltip" className="gateway-tooltip">{item.label}</span>}
   </li>;
 }
