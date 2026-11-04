@@ -20,9 +20,21 @@ for (const width of [390, 768, 1440]) {
     await page.goto(`/workspaces/${W}/services?glossary=1`);
     await page.reload();
     await expect(page.getByRole("heading", { name: "Serviços", exact: true })).toBeVisible();
+    const mobile = width <= 900;
+    const drawer = page.getByRole("dialog", { name: "Navegação Gateway do Workspace Cobrança", exact: true });
+    if (mobile) {
+      const trigger = page.getByRole("button", { name: "Abrir menu Gateway · Cobrança — Workspace", exact: true });
+      await expect(trigger).toHaveAttribute("aria-expanded", "false");
+      await trigger.click();
+      await expect(drawer).toBeVisible();
+    }
     const menu = page.getByRole("navigation", { name: "Menu principal", exact: true });
     await expect(menu.getByRole("link", { name: "Serviços", exact: true })).toHaveAttribute("href", `/workspaces/${W}/services`);
     await expect(menu.getByRole("link", { name: "Rotas", exact: true })).toHaveAttribute("href", `/workspaces/${W}/routes`);
+    if (mobile) {
+      await drawer.getByRole("button", { name: "Fechar menu Gateway", exact: true }).click();
+      await expect(drawer).toHaveCount(0);
+    }
     await expect(page.getByRole("searchbox", { name: "Buscar serviços", exact: true })).toBeVisible();
 
     const audit = async () => {
