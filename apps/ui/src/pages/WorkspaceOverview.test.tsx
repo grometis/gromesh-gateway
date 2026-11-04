@@ -186,7 +186,7 @@ describe("Workspace overview with real components and controlled transport", () 
   it("authorizes a deep link despite a denied Workspace list and rejects mismatched identity", async () => {
     const view = await mount({ answers: { "/api/v2/workspaces": problem(403) } });
     await view.waitText("Inventário no rascunho");
-    expect(view.container.textContent).toContain("Sem permissão para listar Workspaces");
+    await view.waitText("Sem permissão para listar Workspaces");
     await view.navigate("/tokens");
     view.answers[`/api/v2/workspaces/${B}`] = () => Response.json(workspace(A));
     await view.navigate(`/workspaces/${B}/overview`);
