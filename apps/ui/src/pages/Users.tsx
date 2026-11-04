@@ -16,7 +16,7 @@ const ROLES: Record<User["role"], string> = { viewer: "Leitor", editor: "Editor"
 const FIELDS = ["email", "name", "role", "active", "password"] as const;
 const ENV_ROLES: Record<EnvironmentRole, string> = { ...ROLES, none: "Sem acesso" };
 const GLOBAL = "global";
-const ROW_MESSAGES: Record<string, string> = { "is not an environment": "não é mais um environment", "is repeated": "aparece mais de uma vez" };
+const ROW_MESSAGES: Record<string, string> = { "is not an environment": "não é mais um ambiente (legado)", "is repeated": "aparece mais de uma vez" };
 
 export function UsersPage() {
   const users = useInfiniteQuery({
@@ -34,7 +34,7 @@ export function UsersPage() {
     <section className="final-page identity-page">
       <PageHeader
         title="Usuários"
-        description="Gerencie os papéis globais e o acesso de cada usuário aos environments."
+        description="Gerencie os papéis globais e o acesso de cada usuário aos ambientes (legado)."
         actions={<Button variant="primary" onClick={() => setEditing("new")}>Novo usuário</Button>}
       />
       {users.isPending && <p className="muted">Carregando…</p>}
@@ -70,15 +70,15 @@ export function UsersPage() {
                     <Button variant="quiet" onClick={() => setEditing(user)}>
                       Editar
                     </Button>
-                    <button type="button" aria-label={`Environments de ${user.name}`} onClick={() => setScoping(user)}>
-                      Environments
+                    <button type="button" aria-label={`Ambientes (legado) de ${user.name}`} onClick={() => setScoping(user)}>
+                      Ambientes (legado)
                     </button>
                     <button type="button" className="danger" onClick={() => setDeleting(user)}>
                       Excluir
                     </button>
                     <RowMenu label={`Mais ações para ${user.name}`} items={[
                       { label: "Editar", onSelect: () => setEditing(user) },
-                      { label: "Environments", onSelect: () => setScoping(user) },
+                      { label: "Ambientes (legado)", onSelect: () => setScoping(user) },
                       { label: "Excluir", danger: true, onSelect: () => setDeleting(user) },
                     ]} />
                   </div>
@@ -244,8 +244,8 @@ function EnvironmentRolesForm({ user, onClose }: { user: User; onClose: () => vo
 
   if (user.role === "admin") {
     return (
-      <Modal title={`Environments de ${user.name}`} onClose={onClose}>
-        <p>Administradores globais são administradores em todos os environments. Para limitar o acesso, mude o papel global primeiro.</p>
+      <Modal title={`Ambientes (legado) de ${user.name}`} onClose={onClose}>
+        <p>Administradores globais são administradores em todos os ambientes (legado). Para limitar o acesso, mude o papel global primeiro.</p>
         <div className="form-actions">
           <button type="button" onClick={onClose}>Fechar</button>
         </div>
@@ -254,18 +254,18 @@ function EnvironmentRolesForm({ user, onClose }: { user: User; onClose: () => vo
   }
   const failed = envs.error ?? roles.error;
   return (
-    <Modal title={`Environments de ${user.name}`} onClose={onClose} wide>
+    <Modal title={`Ambientes (legado) de ${user.name}`} onClose={onClose} wide>
       <form onSubmit={submit} className="form" noValidate>
         <p className="muted">
-          Papel global: <strong>{ROLES[user.role]}</strong>. Um papel escolhido aqui substitui o global só naquele environment; “Sem acesso” esconde o environment.
+          Papel global: <strong>{ROLES[user.role]}</strong>. Um papel escolhido aqui substitui o global só naquele ambiente (legado); “Sem acesso” esconde o ambiente (legado).
         </p>
         {(envs.isPending || roles.isPending) && <p className="muted">Carregando…</p>}
         {failed && <p className="error" role="alert">{statusMessage(failed)}</p>}
-        {envs.data && roles.data && (envs.data.items.length === 0 ? <EmptyState title="Nenhum environment cadastrado." /> : (
-          <Table label="Papéis por environment" cards>
+        {envs.data && roles.data && (envs.data.items.length === 0 ? <EmptyState title="Nenhum ambiente (legado) cadastrado." /> : (
+          <Table label="Papéis por ambiente (legado)" cards>
             <thead>
               <tr>
-                <th>Environment</th>
+                <th>Ambiente (legado)</th>
                 <th>Papel</th>
               </tr>
             </thead>

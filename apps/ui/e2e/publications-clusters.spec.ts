@@ -22,7 +22,7 @@ async function login(page: Page, role: "admin" | "editor" | "viewer" = "admin") 
   await page.getByLabel("E-mail").fill("ana@gromesh.dev");
   await page.getByLabel("Senha").fill("test-password");
   await page.getByRole("button", { name: "Entrar" }).click();
-  await expect(page.getByRole("heading", { name: "Services" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Serviços" })).toBeVisible();
 }
 
 async function snapshots(page: Page) {
@@ -41,9 +41,9 @@ test("histórico paginado, detalhe, diff v1 → v2 e rollback com o diff inverso
   let rollbacks = 0;
   await page.route("**/api/v1/environments/*/snapshots/1/rollback", (route) => { rollbacks++; return route.fulfill({ status: 201, json: { ...summary(3), rollbackOf: 1, isCurrent: true } }); });
   await login(page);
-  await navigateGlobal(page, "Snapshots publicados");
+  await navigateGlobal(page, "Publicações");
   await expect(page.getByRole("link", { name: "v2", exact: true })).toBeVisible();
-  const history = page.getByRole("table", { name: "Publicações", exact: true });
+  const history = page.getByRole("table", { name: "Snapshots publicados (legado)", exact: true });
   await expect(history).toHaveClass("cards");
   const current = history.getByRole("row").filter({ has: page.getByRole("link", { name: "v2", exact: true }) });
   await expect(current).toContainText("Publicação 2");
@@ -54,7 +54,7 @@ test("histórico paginado, detalhe, diff v1 → v2 e rollback com o diff inverso
   await page.getByRole("button", { name: "Carregar mais", exact: true }).click();
   await older;
   await page.getByRole("link", { name: "v1", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Publicação v1", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Snapshot v1", exact: true })).toBeVisible();
   await expect(page.getByText(summary(1).hash, { exact: true })).toBeVisible();
   await expect(page.locator("dl.service-properties")).toContainText("Hash");
   await expect(page.getByRole("link", { name: "Voltar ao histórico" })).toHaveClass("back-link");
@@ -64,7 +64,7 @@ test("histórico paginado, detalhe, diff v1 → v2 e rollback com o diff inverso
   const diffRequest = page.waitForRequest((r) => r.url().endsWith("/snapshots/2/diff?against=1"));
   await page.getByRole("button", { name: "Comparar" }).click();
   await diffRequest;
-  const diff = page.getByRole("region", { name: "Diff v1 → v2" });
+  const diff = page.getByRole("region", { name: "Alterações v1 → v2" });
   await expect(diff.locator('[data-change="modified"]')).toHaveCount(1);
   await expect(diff.locator('[data-change="added"]')).toHaveCount(1);
   await expect(diff.locator('[data-change="removed"]')).toHaveCount(1);
@@ -75,7 +75,7 @@ test("histórico paginado, detalhe, diff v1 → v2 e rollback com o diff inverso
   await page.getByRole("button", { name: "Restaurar v1" }).click();
   const rollback = page.getByRole("dialog", { name: "Restaurar v1" });
   await expect(rollback.getByRole("button", { name: "Confirmar rollback" })).toHaveClass("danger");
-  await expect(rollback.getByRole("region", { name: "Diff v2 → v1" })).toBeVisible();
+  await expect(rollback.getByRole("region", { name: "Alterações v2 → v1" })).toBeVisible();
   await expect(rollback.getByRole("cell").nth(0)).toContainText("new.internal");
   await expect(rollback.getByRole("cell").nth(1)).toContainText("old.internal");
   expect(rollbacks).toBe(0);
@@ -89,11 +89,11 @@ test("rollback trata 409 de mesma configuração sem indicar sucesso", async ({ 
   await snapshots(page);
   await page.route("**/api/v1/environments/*/snapshots/1/rollback", (route) => route.fulfill({ status: 409, contentType: "application/problem+json", body: JSON.stringify({ title: "Conflict", status: 409, detail: "Target has the same configuration as current" }) }));
   await login(page);
-  await navigateGlobal(page, "Snapshots publicados");
+  await navigateGlobal(page, "Publicações");
   await page.getByRole("button", { name: "Carregar mais", exact: true }).click();
   await page.getByRole("button", { name: "Restaurar v1" }).click();
   const modal = page.getByRole("dialog", { name: "Restaurar v1" });
-  await expect(modal.getByRole("region", { name: "Diff v2 → v1" })).toBeVisible();
+  await expect(modal.getByRole("region", { name: "Alterações v2 → v1" })).toBeVisible();
   await modal.getByRole("button", { name: "Confirmar rollback" }).click();
   await expect(modal.getByRole("alert")).toContainText("mesma configuração");
   await expect(modal).toBeVisible();
@@ -114,7 +114,7 @@ test("cluster: token único, copiar, comandos, nó com falha, rotação e exclus
   await page.route(`**/api/v1/clusters/${clusterId}/rotate-token`, (route) => { rotated++; return route.fulfill({ json: { registrationToken: "rotated-once-token" } }); });
   await page.route(`**/api/v1/clusters/${clusterId}`, (route) => { deleted++; return route.fulfill({ status: 204 }); });
   await login(page);
-  await navigateGlobal(page, "Clusters");
+  await navigateGlobal(page, "Clusters (legado)");
   await page.getByRole("button", { name: "Novo cluster" }).click();
   await page.getByRole("dialog").getByLabel("Nome").fill("edge-prod");
   await page.getByRole("dialog").getByRole("button", { name: "Criar" }).click();
@@ -139,8 +139,8 @@ test("cluster: token único, copiar, comandos, nó com falha, rotação e exclus
   await expect(token.getByLabel("Token de registro", { exact: true })).toHaveValue("rotated-once-token");
   await page.keyboard.press("Escape");
   await expect(token).toBeHidden();
-  await navigateGlobal(page, "Snapshots publicados");
-  await navigateGlobal(page, "Clusters");
+  await navigateGlobal(page, "Publicações");
+  await navigateGlobal(page, "Clusters (legado)");
   await expect(page.locator("input, textarea")).toHaveCount(0);
   await page.getByRole("button", { name: "Mais ações para edge-prod" }).click();
   await page.getByRole("menuitem", { name: "Excluir" }).click();
@@ -155,10 +155,10 @@ test("editor pode restaurar publicações, mas não administrar clusters", async
   await snapshots(page);
   await page.route("**/api/v1/environments/*/clusters", (route) => route.fulfill({ json: { items: [cluster] } }));
   await login(page, "editor");
-  await navigateGlobal(page, "Clusters");
+  await navigateGlobal(page, "Clusters (legado)");
   await expect(page.getByText("edge-prod", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: /Novo cluster|Rotacionar token|Excluir|Mais ações/ })).toHaveCount(0);
-  await navigateGlobal(page, "Snapshots publicados");
+  await navigateGlobal(page, "Publicações");
   await page.getByRole("button", { name: "Carregar mais", exact: true }).click();
   await expect(page.getByRole("button", { name: "Restaurar v1" })).toBeVisible();
 });
@@ -168,7 +168,7 @@ test("clusters atualizam a cada 10 s e pausam com a aba oculta", async ({ page }
   let reads = 0;
   await page.route("**/api/v1/environments/*/clusters", (route) => { reads++; return route.fulfill({ json: { items: [cluster] } }); });
   await login(page);
-  await navigateGlobal(page, "Clusters");
+  await navigateGlobal(page, "Clusters (legado)");
   await expect(page.getByText("edge-prod", { exact: true })).toBeVisible();
   await expect.poll(() => reads).toBe(1);
   await page.clock.runFor(10_100);
@@ -196,7 +196,7 @@ test("fechar durante criação descarta um token que chegar depois", async ({ pa
     await route.fulfill({ status: 201, json: { ...cluster, registrationToken: "late-secret-token" } });
   });
   await login(page);
-  await navigateGlobal(page, "Clusters");
+  await navigateGlobal(page, "Clusters (legado)");
   await page.getByRole("button", { name: "Novo cluster" }).click();
   await page.getByRole("dialog").getByLabel("Nome").fill("edge-prod");
   const request = page.waitForRequest((r) => r.method() === "POST" && r.url().endsWith("/clusters"));
@@ -217,7 +217,7 @@ test("criação de cluster mapeia erro de nome e mantém o formulário aberto", 
     ? route.fulfill({ status: 422, contentType: "application/problem+json", body: JSON.stringify({ title: "Unprocessable Content", status: 422, errors: [{ path: "name", message: "must match pattern" }] }) })
     : route.fulfill({ json: { items: [] } }));
   await login(page);
-  await navigateGlobal(page, "Clusters");
+  await navigateGlobal(page, "Clusters (legado)");
   await page.getByRole("button", { name: "Novo cluster" }).click();
   const modal = page.getByRole("dialog", { name: "Novo cluster" });
   await modal.getByLabel("Nome").fill("nome inválido");
@@ -229,17 +229,17 @@ test("criação de cluster mapeia erro de nome e mantém o formulário aberto", 
 test("viewer consulta histórico e diff sem ações de rollback", async ({ page }) => {
   await snapshots(page);
   await login(page, "viewer");
-  await navigateGlobal(page, "Snapshots publicados");
+  await navigateGlobal(page, "Publicações");
   await expect(page.getByRole("link", { name: "v2", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: /Restaurar/ })).toHaveCount(0);
   await page.getByRole("button", { name: "Comparar", exact: true }).click();
-  await expect(page.getByRole("region", { name: "Diff v1 → v2" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Alterações v1 → v2" })).toBeVisible();
 });
 
 test("histórico vazio usa EmptyState e mantém a comparação disponível", async ({ page }) => {
   await page.route("**/api/v1/environments/*/snapshots", (route) => route.fulfill({ json: { items: [], nextCursor: null } }));
   await login(page);
-  await navigateGlobal(page, "Snapshots publicados");
+  await navigateGlobal(page, "Publicações");
   await expect(page.locator(".empty-state").getByRole("heading", { name: "Nenhuma publicação ainda." })).toBeVisible();
   await expect(page.getByLabel("Versão de origem")).toHaveValue("1");
   await expect(page.getByLabel("Versão de destino")).toHaveValue("2");
@@ -259,10 +259,10 @@ test("publicação pela barra superior atualiza o histórico já aberto", async 
     }
     return route.fulfill({ json: { items: published ? [{ ...summary(3), isCurrent: true }, { ...summary(2), isCurrent: false }] : [summary(2)], nextCursor: null } });
   });
-  await navigateGlobal(page, "Snapshots publicados");
+  await navigateGlobal(page, "Publicações");
   await expect(page.getByRole("link", { name: "v2", exact: true })).toBeVisible();
   await page.getByRole("region", { name: "Publicação" }).getByRole("button", { name: /^Publicar v\d+$/ }).click();
-  const modal = page.getByRole("region", { name: "Revisar e publicar" });
+  const modal = page.getByRole("region", { name: "Revisar snapshot (legado)" });
   await modal.getByRole("button", { name: /^Publicar v\d+$/ }).click();
   await expect(modal).toBeHidden();
   await expect(page.getByRole("row").filter({ has: page.getByRole("link", { name: "v3", exact: true }) })).toContainText("Atual");

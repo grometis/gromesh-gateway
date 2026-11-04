@@ -232,7 +232,7 @@ test("removed Workspace stays at the v2 404 with no selection or legacy fallback
   await expect(page.getByText("Não encontrado ou indisponível para sua conta.", { exact: true })).toBeVisible();
   await expect(page).toHaveURL(`/workspaces/${A.id}`);
   await expect(page.getByRole("heading", { name: "Visão geral do Workspace", exact: true })).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "Services", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Serviços", exact: true })).toHaveCount(0);
   expect(sent.some((u) => u.pathname.startsWith("/api/v1/environments/"))).toBe(false);
   expect(sent.some((u) => u.pathname === `/api/v2/workspaces/${B.id}`)).toBe(false);
   expect(sent.some((u) => u.pathname.endsWith("/services"))).toBe(false);

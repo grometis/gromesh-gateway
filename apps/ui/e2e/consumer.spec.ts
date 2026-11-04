@@ -34,7 +34,7 @@ async function openConsumer(page: Page) {
   await page.getByLabel("E-mail").fill("ana@gromesh.dev");
   await page.getByLabel("Senha").fill("s3nha-de-teste");
   await page.getByRole("button", { name: "Entrar" }).click();
-  await expect(page.getByRole("heading", { name: "Services" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Serviços" })).toBeVisible();
   await page.goto(`/e/${envId}/consumers/${consumerId}`);
   await expect(page.getByRole("heading", { name: "Consumer partner-acme" })).toBeVisible();
   await expect(page.getByRole("list", { name: "Credenciais basic-auth" })).toBeVisible();

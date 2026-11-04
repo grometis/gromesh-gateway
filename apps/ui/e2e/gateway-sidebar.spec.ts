@@ -221,7 +221,7 @@ test("archived Workspace keeps navigation readable and existing write gates", as
   await page.goto(v2());
   await expect(page.locator(".gateway-context")).toContainText("arquivado · somente leitura");
   await expect(nav(page).locator("a")).toHaveCount(8);
-  await expect(page.getByRole("button", { name: "Novo service", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Novo serviço", exact: true })).toHaveCount(0);
   const certificates = nav(page).getByRole("link", { name: "Certificados", exact: true });
   await expect(certificates).toHaveAttribute("href", v2("certificates"));
   await expect(certificates).not.toHaveAttribute("aria-disabled");
@@ -317,7 +317,7 @@ test("CSS releases the desktop column before the Gateway media change handler ru
   await page.setViewportSize({ width: 1440, height: 900 });
   await setup(page);
   await page.goto(v2());
-  await expect(page.getByRole("heading", { name: "Services", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Serviços", exact: true })).toBeVisible();
   for (const collapsed of [false, true]) {
     if (collapsed) await page.getByRole("button", { name: "Recolher menu Gateway", exact: true }).click();
     for (const width of [900, 390]) {

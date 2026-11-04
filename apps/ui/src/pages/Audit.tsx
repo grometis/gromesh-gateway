@@ -57,7 +57,7 @@ export function AuditPage() {
     <section className="final-page audit-page stack">
       <PageHeader title="Auditoria" description="As ações no control plane, seus autores e as alterações registradas." />
       <form onSubmit={submit} className="gateway-filters audit-filters" aria-label="Filtros de auditoria">
-        <Field label="ID do environment" errors={errors.fields.environmentId}>
+        <Field label="ID do ambiente (legado)" errors={errors.fields.environmentId}>
           {(id, invalid) => (
             <input id={id} aria-invalid={invalid} value={form.environmentId} onChange={(event) => set("environmentId", event.target.value)} />
           )}
@@ -130,7 +130,7 @@ export function AuditPage() {
             </tbody>
           </Table>
           <dl className="service-properties">
-            <dt>Environment</dt>
+            <dt>Ambiente (legado)</dt>
             <dd className="mono">{event.environmentId ?? "—"}</dd>
             <dt>IP</dt>
             <dd className="mono">{event.ip ?? "—"}</dd>

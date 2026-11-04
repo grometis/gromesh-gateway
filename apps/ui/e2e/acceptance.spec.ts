@@ -8,11 +8,11 @@ test("login, create a service and a route, then preview the publication", async 
   await page.getByLabel("Senha").fill("s3nha-de-teste");
   await page.getByRole("button", { name: "Entrar" }).click();
 
-  await expect(page.getByRole("heading", { name: "Services" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Serviços" })).toBeVisible();
   await expect(page.getByLabel("Ambiente (legado)", { exact: true })).toHaveValue(/[0-9a-f-]{36}/);
 
-  await page.getByRole("button", { name: "Novo service" }).click();
-  const svc = page.getByRole("dialog", { name: "Novo service" });
+  await page.getByRole("button", { name: "Novo serviço" }).click();
+  const svc = page.getByRole("dialog", { name: "Novo serviço" });
   await svc.getByLabel("Nome").fill("orders");
   await svc.getByLabel("Host").fill("orders.internal");
   await svc.getByLabel("Porta").fill("8080");
@@ -22,10 +22,10 @@ test("login, create a service and a route, then preview the publication", async 
   await expect(svc).toBeHidden();
 
   await page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Rotas" }).click();
-  await page.getByRole("button", { name: "Nova route" }).click();
-  const route = page.getByRole("dialog", { name: "Nova route" });
+  await page.getByRole("button", { name: "Nova rota" }).click();
+  const route = page.getByRole("dialog", { name: "Nova rota" });
   await route.getByLabel("Nome").fill("orders-api");
-  await expect(route.getByLabel("Service")).toHaveValue(/[0-9a-f-]{36}/);
+  await expect(route.getByLabel("Serviço")).toHaveValue(/[0-9a-f-]{36}/);
   await route.getByLabel("Paths").fill("/orders");
   const createdRoute = page.waitForResponse((r) => r.request().method() === "POST" && r.url().endsWith("/routes"));
   await route.getByRole("button", { name: "Salvar" }).click();
@@ -34,12 +34,12 @@ test("login, create a service and a route, then preview the publication", async 
 
   await expect(page.getByRole("region", { name: "Publicação" })).toContainText("2 alterações");
   await page.getByRole("region", { name: "Publicação" }).getByRole("button", { name: /^Publicar v\d+$/ }).click();
-  const publish = page.getByRole("region", { name: "Revisar e publicar" });
+  const publish = page.getByRole("region", { name: "Revisar snapshot (legado)" });
   const changes = publish.getByRole("list", { name: "Alterações" }).getByRole("listitem");
   await expect(changes).toHaveCount(2);
   await expect(publish.locator('[data-change="added"]')).toHaveCount(2);
-  await expect(changes.nth(0)).toContainText("Service orders");
-  await expect(changes.nth(1)).toContainText("Route orders-api");
+  await expect(changes.nth(0)).toContainText("Serviço orders");
+  await expect(changes.nth(1)).toContainText("Rota orders-api");
 });
 
 test("422 errors from the API are shown on the fields they belong to", async ({ page }) => {
@@ -66,8 +66,8 @@ test("422 errors from the API are shown on the fields they belong to", async ({ 
   await page.getByLabel("E-mail").fill("editor@gromesh.dev");
   await page.getByLabel("Senha").fill("s3nha-de-teste");
   await page.getByRole("button", { name: "Entrar" }).click();
-  await page.getByRole("button", { name: "Novo service" }).click();
-  const svc = page.getByRole("dialog", { name: "Novo service" });
+  await page.getByRole("button", { name: "Novo serviço" }).click();
+  const svc = page.getByRole("dialog", { name: "Novo serviço" });
   await svc.getByLabel("Nome").fill("orders");
   await svc.getByLabel("Host").fill("orders.internal");
   await svc.getByLabel("Porta").fill("abc");

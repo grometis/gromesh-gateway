@@ -225,8 +225,8 @@ test("archived and empty contexts keep readable trails; 401 follows login", asyn
   await setup(page, state);
   await page.goto(path());
   await expect(trail(page)).toContainText(workspace(A).name);
-  await expect(page.getByText("Nenhum service ainda.", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Novo service", exact: true })).toHaveCount(0);
+  await expect(page.getByText("Nenhum serviço ainda.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Novo serviço", exact: true })).toHaveCount(0);
   await audit(page);
   state.status = 401;
   await page.reload();
@@ -238,7 +238,7 @@ test("archived and empty contexts keep readable trails; 401 follows login", asyn
 test("publication review and Release confirmation expose only one accented action", async ({ page }) => {
   await setup(page, { pendingDraft: true });
   await page.goto(`/e/${A}/publish`);
-  await expect(page.getByRole("heading", { name: "Revisar e publicar", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Revisar snapshot (legado)", exact: true })).toBeVisible();
   await expect(page.locator("main button.publish")).toHaveCount(1);
   await expect(page.locator(".publish-box button.publish")).toBeVisible();
   await page.goto(`/workspaces/${A}/releases`);

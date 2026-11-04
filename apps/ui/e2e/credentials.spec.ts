@@ -11,7 +11,7 @@ async function openConsumer(page: Page) {
   await page.getByLabel("E-mail").fill("editor@gromesh.dev");
   await page.getByLabel("Senha").fill("s3nha-de-teste");
   await page.getByRole("button", { name: "Entrar" }).click();
-  await expect(page.getByRole("heading", { name: "Services" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Serviços" })).toBeVisible();
   await page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Consumidores" }).click();
   await page.getByRole("button", { name: "Novo consumer" }).click();
   const form = page.getByRole("dialog", { name: "Novo consumer" });

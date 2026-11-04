@@ -30,7 +30,7 @@ function FieldDiff({ change, current }: { change: EntityChange; current: number 
   const fields = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter((f) => f !== "id").sort();
   const changed = fields.filter((f) => before[f] !== after[f]).length;
   return (
-    <section className="field-diff" aria-label={`Diff de ${changeTitle(change)}`}>
+    <section className="field-diff" aria-label={`Alterações de ${changeTitle(change)}`}>
       <h2 className="title-with-badges">
         {changeTitle(change)} <ChangeBadge change={change.change} />
       </h2>
@@ -121,9 +121,9 @@ export function ReviewPublishPage() {
   const issues = preview.isError ? toFormErrors(preview.error, []) : null;
 
   return (
-    <section className="final-page" aria-label="Revisar e publicar">
+    <section className="final-page" aria-label="Revisar snapshot (legado)">
       <PageHeader
-        title="Revisar e publicar"
+        title="Revisar snapshot (legado)"
         description={<>
             O que muda quando o rascunho virar <span className="mono">v{(current ?? 0) + 1}</span>
             {current !== null && (
@@ -188,7 +188,7 @@ export function ReviewPublishPage() {
           )}
         </div>
       )}
-      {!canEdit && preview.data?.hasChanges && <p className="muted">Só quem edita este environment pode publicar.</p>}
+      {!canEdit && preview.data?.hasChanges && <p className="muted">Só quem edita este ambiente (legado) pode publicar.</p>}
     </section>
   );
 }

@@ -50,7 +50,7 @@ export function PublishStrip({ envId }: { envId: string }) {
           <>
             <span className="sep" aria-hidden="true">·</span>
             <Link to={`/e/${envId}/publish`} className="strip-link">
-              Ver diff
+              Ver alterações
             </Link>
           </>
         )}
