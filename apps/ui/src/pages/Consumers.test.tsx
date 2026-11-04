@@ -371,3 +371,65 @@ it("does not submit after workspace is invalidated while confirming the consumer
   await view.settle();
   expect(view.requests.filter(r => r.method === "PUT")).toHaveLength(0);
 });
+
+describe.each(["consumer", "workspace"] as const)("shared plugin editor in %s", context => {
+  it.each([200, 404])("revalidates before reopening after save (detail HTTP %s)", async status => {
+    let stored = consumerPlugin;
+    let saved = false, holdDetail = true;
+    const details: ((response: Response) => void)[] = [];
+    const lists: ((response: Response) => void)[] = [];
+    const transport = pluginTransport();
+    const base = `/api/v2/workspaces/${A}/plugins`;
+    const view = await mount(context === "workspace" ? "plugins" : undefined, { respond: request => {
+      const path = new URL(request.url).pathname;
+      if (path === `${base}/${A}` && request.method === "PUT") {
+        return request.clone().json().then((body: { config: typeof consumerPlugin.config }) => {
+          stored = { ...stored, config: body.config };
+          saved = true;
+          return Response.json(stored);
+        });
+      }
+      // Keep the list stale while reopening, as with a slow invalidation refetch.
+      if (path === base && request.method === "GET" && saved) return new Promise<Response>(resolve => { lists.push(resolve); });
+      if (path === `${base}/${A}` && request.method === "GET") {
+        if (saved && holdDetail) return new Promise<Response>(resolve => { details.push(resolve); });
+        return Response.json(stored);
+      }
+      return transport(request);
+    } });
+    const minute = () => view.container.findAll(n => n.tagName === "INPUT" && n.type === "number")[0];
+    const closed = () => vi.waitFor(async () => { await view.settle(); expect(view.container.findAll(n => n.getAttribute("role") === "dialog")).toHaveLength(0); });
+    try {
+      if (context === "consumer") { await view.waitText("Nenhuma credencial basic-auth."); await view.click("Plugins"); }
+      await view.waitText("rate-limiting"); await view.click("Editar rate-limiting"); await view.waitText("Salvar no rascunho");
+      expect(minute()!.value).toBe("10");
+      await act(async () => { minute()!.value = "25"; minute()!.dispatchEvent(new Event("input", { bubbles: true })); await tick(); });
+      await view.submit(); await closed();
+      await view.click("Editar rate-limiting"); await view.settle();
+      expect(view.container.textContent).toContain("Carregando plugin…");
+      expect(minute()).toBeUndefined();
+      expect(view.find("Salvar no rascunho")).toBeUndefined();
+      await vi.waitFor(() => expect(details.length).toBeGreaterThan(0));
+      await act(async () => {
+        holdDetail = false;
+        for (const resolve of details.splice(0)) resolve(status === 200 ? Response.json(stored) : Response.json({ title: "Gone", status }, { status }));
+        await tick();
+      });
+      if (status === 200) {
+        await view.waitText("Salvar no rascunho");
+        expect(minute()!.value).toBe("25");
+        await view.submit(); await closed();
+      } else {
+        await view.waitText("Item não encontrado");
+        expect(minute()).toBeUndefined(); expect(view.find("Salvar no rascunho")).toBeUndefined();
+      }
+      const writes = view.requests.filter(r => r.method === "PUT");
+      expect(writes).toHaveLength(status === 200 ? 2 : 1);
+      expect(await Promise.all(writes.map(r => r.json()))).toEqual(writes.map(() => expect.objectContaining({ scope: { consumerId: C }, config: { minute: 25, password: "REDACTED" } })));
+    } finally {
+      for (const resolve of details) resolve(Response.json(stored));
+      for (const resolve of lists) resolve(Response.json(pageOf([stored])));
+      await view.settle();
+    }
+  });
+});

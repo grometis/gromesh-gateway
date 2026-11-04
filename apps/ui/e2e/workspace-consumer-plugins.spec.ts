@@ -118,6 +118,41 @@ test("associates, edits enabled/config and removes only the fixed consumer plugi
   expect(await page.evaluate(() => JSON.stringify([localStorage, sessionStorage]))).not.toContain("typed-secret-only");
 });
 
+test("reopening a saved consumer plugin waits for fresh detail and never PUTs the old value", async ({ page }) => {
+  const fake = await setup(page); await open(page);
+  await page.getByRole("button", { name: "Editar rate-limiting" }).click();
+  await expect(page.getByLabel("minute", { exact: true })).toHaveValue("10");
+  await page.getByLabel("minute", { exact: true }).fill("25");
+  let release!: () => void, detailReads = 0;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  // Reopening must work even while the list and the previous detail remain stale.
+  await page.route(u => u.pathname === `/api/v2/workspaces/${A}/plugins` || u.pathname === `/api/v2/workspaces/${A}/plugins/${P}`, async route => {
+    if (route.request().method() === "GET") {
+      if (new URL(route.request().url()).pathname.endsWith(`/${P}`)) detailReads++;
+      await held;
+    }
+    return route.fallback();
+  });
+  try {
+    await page.getByRole("button", { name: "Salvar no rascunho" }).click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await page.getByRole("button", { name: "Editar rate-limiting" }).click();
+    await expect(page.getByRole("dialog").getByRole("status")).toHaveText("Carregando plugin…");
+    await expect(page.getByLabel("minute", { exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Salvar no rascunho" })).toHaveCount(0);
+    await expect.poll(() => detailReads).toBeGreaterThan(0);
+    expect(fake.writes.map(w => w.method)).toEqual(["PUT"]);
+    release();
+    await expect(page.getByLabel("minute", { exact: true })).toHaveValue("25");
+    await page.getByRole("button", { name: "Salvar no rascunho" }).click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    expect(fake.writes.map(w => [w.method, w.path, w.body?.scope, (w.body?.config as Record<string, unknown>)?.minute])).toEqual([
+      ["PUT", `/api/v2/workspaces/${A}/plugins/${P}`, { consumerId: C }, 25],
+      ["PUT", `/api/v2/workspaces/${A}/plugins/${P}`, { consumerId: C }, 25],
+    ]);
+  } finally { release(); }
+});
+
 test("filters authenticators, schema-forbidden types and platform capabilities from association", async ({ page }) => {
   const fake = await setup(page, { empty: true }); await open(page);
   await page.getByRole("button", { name: "Associar plugin", exact: true }).click();

@@ -124,7 +124,7 @@ export function WorkspacePlugins({ workspaceId }: { workspaceId: string }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const invalidate = () => {
-    for (const key of ["ws-plugins", "plugins", "environment", "preview"]) void client.invalidateQueries({ queryKey: [key, workspaceId] });
+    for (const key of ["ws-plugins", "ws-plugin", "plugins", "environment", "preview"]) void client.invalidateQueries({ queryKey: [key, workspaceId] });
   };
   const remove = async () => {
     if (!access.canWrite || !deleting || busy) return;
@@ -177,12 +177,20 @@ export function WorkspacePlugins({ workspaceId }: { workspaceId: string }) {
 }
 
 export function PluginEditor({ workspaceId, current, onClose, onSaved, fixedConsumer }: { workspaceId: string; current: Plugin | null; onClose: () => void; onSaved: (active: boolean) => void; fixedConsumer?: { id: string; name: string } }) {
-  const fresh = useQuery({ queryKey: ["ws-consumer-plugin", workspaceId, fixedConsumer?.id, current?.id], queryFn: ({ signal }) => getConsumerPlugin(workspaceId, fixedConsumer!.id, current!.id, signal), enabled: !!fixedConsumer && !!current });
+  const fresh = useQuery({
+    queryKey: ["ws-plugin", workspaceId, fixedConsumer?.id, current?.id],
+    queryFn: ({ signal }) => fixedConsumer
+      ? getConsumerPlugin(workspaceId, fixedConsumer.id, current!.id, signal)
+      : unwrap(apiV2.GET("/workspaces/{workspaceId}/plugins/{pluginId}", { params: { path: { workspaceId, pluginId: current!.id } }, signal })),
+    enabled: !!current, refetchOnMount: "always",
+  });
   const [name, setName] = useState(current?.name ?? "");
   const catalog = useQuery({ queryKey: ["plugin-catalog"], queryFn: () => unwrap(api.GET("/plugin-schemas")), staleTime: Infinity });
   const schema = useQuery({ queryKey: ["plugin-schema", name], queryFn: async () => parsePluginSchema(await unwrap(api.GET("/plugin-schemas/{pluginName}", { params: { path: { pluginName: name } } }))), enabled: !!name, staleTime: Infinity });
   if (!name) return fixedConsumer ? <ConsumerPluginPicker workspaceId={workspaceId} consumerId={fixedConsumer.id} onPick={setName} onClose={onClose} /> : <CatalogPicker onPick={setName} onClose={onClose} />;
-  if (fixedConsumer && current && !fresh.isSuccess) return <Modal title="Editar plugin" onClose={onClose}>{fresh.isError ? <p role="alert" className="error">{consumerPluginMessage(fresh.error)}</p> : <p role="status">Carregando plugin…</p>}</Modal>;
+  // Cached success can predate the last PUT. Initialize form state only after this opening's GET,
+  // without remounting the form during later background refetches and discarding unsaved edits.
+  if (current && (!fresh.isSuccess || !fresh.isFetchedAfterMount)) return <Modal title="Editar plugin" onClose={onClose}>{fresh.isError ? <p role="alert" className="error">{consumerPluginMessage(fresh.error)}</p> : <p role="status">Carregando plugin…</p>}</Modal>;
   const selected = catalog.data?.items.find(p => p.name === name);
   const compatible = !fixedConsumer || (consumerPluginAllowed(selected, schema.data) && !!schema.data && !(fresh.data?.tags?.some(t => t.startsWith("gromesh-"))) && (!fresh.data || (fresh.data.name === name && !Object.keys(consumerPluginConfigErrors(name, fresh.data.config ?? {})).length)));
   return <Modal title={current ? `Editar plugin ${current.name}` : "Novo plugin"} onClose={onClose} wide>
@@ -191,7 +199,7 @@ export function PluginEditor({ workspaceId, current, onClose, onSaved, fixedCons
     {schema.isFetching && <p role="status">Carregando schema…</p>}
     {fixedConsumer && schema.isSuccess && catalog.isSuccess && !compatible && <p role="alert" className="error">Este plugin não é permitido no escopo de consumidor.</p>}
     {fixedConsumer && !current && <Button onClick={() => setName("")}>Trocar plugin</Button>}
-    {name && schema.data && compatible && <PluginForm key={name} workspaceId={workspaceId} name={name} schema={schema.data} current={fixedConsumer && current ? fresh.data! : current} onSaved={onSaved} fixedConsumer={fixedConsumer} />}
+    {name && schema.data && compatible && <PluginForm key={name} workspaceId={workspaceId} name={name} schema={schema.data} current={current ? fresh.data! : null} onSaved={onSaved} fixedConsumer={fixedConsumer} />}
   </Modal>;
 }
 

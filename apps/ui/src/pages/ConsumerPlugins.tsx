@@ -25,7 +25,7 @@ export function ConsumerPlugins({ workspaceId, consumerId, consumerName }: { wor
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const invalidate = () => {
-    for (const family of ["ws-plugins", "ws-consumer-plugin", "plugins", "environment", "preview"]) void client.invalidateQueries({ queryKey: [family, workspaceId] });
+    for (const family of ["ws-plugins", "ws-plugin", "plugins", "environment", "preview"]) void client.invalidateQueries({ queryKey: [family, workspaceId] });
   };
   const remove = async () => {
     if (!deleting || busy || !canWriteWorkspaceGateway(client, workspaceId, true)) return;
