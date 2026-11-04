@@ -218,8 +218,14 @@ test("switching workspace discards confirmation, input and previous release data
   await page.getByRole("dialog").getByRole("checkbox", { name: /Entendi que publicar/ }).check();
   await page.getByRole("dialog").getByRole("button", { name: "Confirmar publicação" }).click();
   await expect(page.getByRole("table", { name: "Releases publicadas" })).toContainText(release.contentDigest);
+  // The legacy context revalidates when reopening. Hold it so the selector's remount and focus race are deterministic.
+  fake.holdReads("environment");
   await page.getByRole("button", { name: "Publicar release", exact: true }).click();
   await page.getByRole("dialog").getByLabel("Resumo (opcional)").fill("Não reaproveitar");
+  await expect(page.getByRole("complementary")).toHaveCount(0);
+  fake.holdReads(undefined); fake.releaseRead();
+  await expect(page.getByRole("complementary")).toBeVisible();
+  expect(await page.getByRole("dialog").evaluate(dialog => dialog.contains(document.activeElement))).toBe(true);
   await page.getByLabel("Workspace v2", { exact: true }).selectOption(B, { force: true });
   await expect(page).toHaveURL(`/workspaces/${B}/releases`);
   await expect(page.getByRole("dialog")).toHaveCount(0);

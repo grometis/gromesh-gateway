@@ -17,6 +17,15 @@ export function Modal({ title, onClose, children, footer, wide, bodyLabel }: { t
     };
   }, [titleId]);
   useEffect(() => {
+    const onFocus = () => {
+      const dialog = dialogRef.current;
+      // Context revalidation can recreate navigation and focus the page behind this dialog.
+      if (openModals.at(-1) === titleId && dialog && !dialog.contains(document.activeElement)) dialog.focus();
+    };
+    document.addEventListener("focusin", onFocus);
+    return () => document.removeEventListener("focusin", onFocus);
+  }, [titleId]);
+  useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (openModals.at(-1) !== titleId) return;
       if (e.key === "Escape") { onClose(); return; }

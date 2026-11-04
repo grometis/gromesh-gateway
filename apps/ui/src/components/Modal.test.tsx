@@ -75,6 +75,18 @@ describe("Modal keyboard", () => {
     expect(document.activeElement).toBe(close);
   });
 
+  it("keeps programmatic background focus inside the open dialog without losing form values", async () => {
+    const view = await keyboardScreen();
+    const input = view.container.findAll(node => node.getAttribute("aria-label") === "Resumo")[0]!;
+    input.value = "Preservar resumo";
+    await act(() => { view.button("Depois").focus(); document.dispatchEvent(new Event("focusin")); });
+    expect(view.dialogs()[0]!.contains(document.activeElement as unknown as TestNode)).toBe(true);
+    expect(input.value).toBe("Preservar resumo");
+    await view.key("Escape");
+    await act(() => { view.button("Depois").focus(); document.dispatchEvent(new Event("focusin")); });
+    expect(document.activeElement).toBe(view.button("Depois"));
+  });
+
   it("traps and closes only the top dialog, then restores focus through both openers", async () => {
     const view = await keyboardScreen();
     await view.click(view.button("Outro diálogo"));
