@@ -54,6 +54,9 @@ async function setup(page: Page, options: { archived?: boolean; auto?: boolean; 
         return route.fulfill({ json: { id, key: id, name: environment(id).name, slug: id === A ? "billing" : "recargas", status: options.archived && id === A ? "archived" : "active", activeRelease: null } });
       }
       if (path === `/api/v2/workspaces/${id}/plugins`) return route.fulfill({ json: pageOf(id === A ? items : []) });
+      if (path === `/api/v2/workspaces/${id}/plugins/${P}`) return id === A && items[0]
+        ? route.fulfill({ json: items[0] })
+        : route.fulfill({ status: 404, json: { title: "Not found", status: 404 } });
       if (path === `/api/v2/workspaces/${id}/services`) return route.fulfill({ json: pageOf(id === B ? [] : options.paginated && !url.searchParams.has("cursor") ? [] : [{ id: S, name: "cobranca", workspaceId: id }], id === A && options.paginated && !url.searchParams.has("cursor") ? "next" : null) });
     }
     if (/\/(routes|consumers|clusters)$/.test(path)) return route.fulfill({ json: pageOf([]) });
@@ -113,6 +116,44 @@ test("creates scoped plugins, edits a write-only secret, reopens empty and delet
   expect(fake.writes[0]!.body).toMatchObject({ scope: { serviceId: S }, config: { redis: { password: "typed-secret" } } });
   expect(fake.writes[1]!.body).toMatchObject({ enabled: false, config: { redis: { password: "REDACTED" } } });
   await expect(page.getByRole("button", { name: /Publicar|Implantação/ })).toHaveCount(0);
+});
+
+test("reopening a saved workspace plugin waits for fresh detail and never PUTs the old value", async ({ page }) => {
+  const fake = await setup(page);
+  await page.goto(`/workspaces/${A}/plugins`);
+  await page.getByRole("button", { name: "Editar rate-limiting" }).click();
+  await expect(page.getByLabel("minute", { exact: false })).toHaveValue("10");
+  await page.getByLabel("minute", { exact: false }).fill("25");
+  let release!: () => void, detailReads = 0;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  // Hold the list refetch and the next opening's detail so both caches retain minute:10.
+  await page.route(u => u.pathname === `/api/v2/workspaces/${A}/plugins` || u.pathname === `/api/v2/workspaces/${A}/plugins/${P}`, async route => {
+    if (route.request().method() === "GET") {
+      if (new URL(route.request().url()).pathname.endsWith(`/${P}`)) detailReads++;
+      await held;
+    }
+    return route.fallback();
+  });
+  try {
+    await page.getByRole("button", { name: "Salvar no rascunho" }).click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    expect(detailReads).toBe(0);
+    await page.getByRole("button", { name: "Editar rate-limiting" }).click();
+    await expect(page.getByRole("dialog").getByRole("status")).toHaveText("Carregando plugin…");
+    await expect(page.getByLabel("minute", { exact: false })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Salvar no rascunho" })).toHaveCount(0);
+    await expect.poll(() => detailReads).toBe(1);
+    expect(fake.writes.map(w => w.method)).toEqual(["PUT"]);
+    release();
+    await expect(page.getByLabel("minute", { exact: false })).toHaveValue("25");
+    await page.getByRole("button", { name: "Salvar no rascunho" }).click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    expect(detailReads).toBe(1);
+    expect(fake.writes.map(w => [w.method, w.path, (w.body?.config as Record<string, unknown>)?.minute])).toEqual([
+      ["PUT", `/api/v2/workspaces/${A}/plugins/${P}`, 25],
+      ["PUT", `/api/v2/workspaces/${A}/plugins/${P}`, 25],
+    ]);
+  } finally { release(); }
 });
 
 for (const status of [403, 409, 422]) {
@@ -196,4 +237,36 @@ test("a legacy viewer gets the server's 403 for each v2 plugin mutation without 
     ["PUT", `/api/v2/workspaces/${A}/plugins/${P}`],
     ["DELETE", `/api/v2/workspaces/${A}/plugins/${P}`],
   ]);
+});
+
+for (const delayedDetail of [false, true]) test(`closing during save and reopening waits for commit (delayed detail ${delayedDetail})`, async ({ page }) => {
+  const fake = await setup(page); await page.goto(`/workspaces/${A}/plugins`);
+  await page.getByRole("button", { name: "Editar rate-limiting" }).click();
+  await expect(page.getByLabel("minute", { exact: false })).toHaveValue("10");
+  await page.getByLabel("minute", { exact: false }).fill("25");
+  let releaseWrite!: () => void, releaseDetail!: () => void;
+  const writeGate = new Promise<void>(resolve => { releaseWrite = resolve; });
+  const detailGate = new Promise<void>(resolve => { releaseDetail = resolve; });
+  let writes = 0, reads = 0;
+  await page.route(`**/api/v2/workspaces/${A}/plugins/${P}`, async route => {
+    if (route.request().method() === "PUT") { writes++; await writeGate; }
+    if (route.request().method() === "GET") { reads++; if (delayedDetail) await detailGate; }
+    return route.fallback();
+  });
+  try {
+    await page.getByRole("button", { name: "Salvar no rascunho" }).click();
+    await expect.poll(() => writes).toBe(1);
+    await page.getByRole("button", { name: "Fechar", exact: true }).click();
+    await page.getByRole("button", { name: "Editar rate-limiting" }).click();
+    await expect(page.getByRole("dialog").getByRole("status")).toHaveText("Carregando plugin…");
+    await expect(page.getByRole("button", { name: "Salvar no rascunho" })).toHaveCount(0);
+    expect(reads).toBe(0);
+    releaseWrite();
+    await expect.poll(() => reads).toBe(1);
+    releaseDetail();
+    await expect(page.getByLabel("minute", { exact: false })).toHaveValue("25");
+    await page.getByRole("button", { name: "Salvar no rascunho" }).click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    expect(fake.writes.map(w => (w.body?.config as Record<string, unknown>)?.minute)).toEqual([25, 25]);
+  } finally { releaseWrite(); releaseDetail(); }
 });

@@ -32,13 +32,13 @@ test("a new consumer's key is shown once and is gone after closing", async ({ pa
   await login(page);
 
   await menu(page).getByRole("link", { name: "Consumidores" }).click();
-  await page.getByRole("button", { name: "Novo consumer" }).click();
-  const form = page.getByRole("dialog", { name: "Novo consumer" });
-  await form.getByLabel("Username").fill("mobile-app");
+  await page.getByRole("button", { name: "Novo consumidor" }).click();
+  const form = page.getByRole("dialog", { name: "Novo consumidor" });
+  await form.getByLabel("Nome de usuário").fill("mobile-app");
   const created = page.waitForResponse((r) => r.request().method() === "POST" && r.url().endsWith("/consumers"));
   await form.getByRole("button", { name: "Salvar" }).click();
   expect((await created).status()).toBe(201);
-  await expect(page.getByRole("heading", { name: /^Consumer / })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^Consumidor / })).toBeVisible();
 
   await page.getByRole("button", { name: "Gerar chave" }).click();
   // Only the server generates a key (decision H-14): there is nothing to type one into.

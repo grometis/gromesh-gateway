@@ -104,7 +104,7 @@ export function Shell() {
 
   return (
     <div className="app">
-      <a className="skip-link" href="#main-content">Pular para o conteúdo</a>
+      <a className="skip-link" href="#main-content" onClick={(event) => { event.preventDefault(); focusContent(); }}>Pular para o conteúdo</a>
       <GlobalHeader />
       {hasGateway && context && <GatewaySidebar key={`${context.route.kind}/${"id" in context.route ? context.route.id : ""}`} context={context} selectors={selectors} focusContent={focusContent} />}
       <main className="content" id="main-content" tabIndex={-1} ref={main}>

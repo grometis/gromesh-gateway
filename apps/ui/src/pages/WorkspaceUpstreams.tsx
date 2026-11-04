@@ -49,16 +49,16 @@ function WorkspaceUpstreams({ workspaceId }: { workspaceId: string }) {
   });
   return <section className="final-page gateway-list upstreams-page workspace-upstreams-page">
     <PageHeader title="Upstreams"
-      description="Um Upstream reúne destinos (targets) e distribui o tráfego dos Serviços vinculados conforme o algoritmo e os pesos configurados."
+      description="Um Upstream reúne destinos e distribui o tráfego dos Serviços vinculados conforme o algoritmo e os pesos configurados."
       actions={canWrite && <Button variant="primary" onClick={() => setEditing("new")}>Novo upstream</Button>} />
     <div className="note" role="note" aria-label="Configuração de Upstreams">
       <p>Selecione o Upstream no Serviço para criar o vínculo. O nome do Upstream não deve ser usado como host do Serviço.</p>
-      <p>Alterações ficam no rascunho. A configuração de verificações de saúde não informa a saúde atual dos targets.</p>
+      <p>Alterações ficam no rascunho. A configuração de verificações de saúde não informa a saúde atual dos destinos.</p>
       {access.reason && <p role="status">{access.reason}</p>}
     </div>
     {upstreams.isPending && <p role="status">Carregando Upstreams…</p>}
     {upstreams.isError && <p className="error" role="alert">{upstreamErrorMessage(upstreams.error)}</p>}
-    {upstreams.isSuccess && items.length === 0 && <EmptyState title="Nenhum upstream ainda." text="Crie um Upstream, adicione targets e selecione o vínculo em um Serviço para distribuir o tráfego." />}
+    {upstreams.isSuccess && items.length === 0 && <EmptyState title="Nenhum upstream ainda." text="Crie um Upstream, adicione destinos e selecione o vínculo em um Serviço para distribuir o tráfego." />}
     {services.isPending && <p role="status">Carregando vínculos com Serviços…</p>}
     {services.isError && <p className="error" role="alert">Não foi possível consultar os Serviços vinculados. {upstreamErrorMessage(services.error)}</p>}
     {services.isSuccess && services.data.nextCursor && <p role="status">Lista parcial de Serviços: exibindo os vínculos encontrados nos primeiros 200 resultados.</p>}
@@ -77,7 +77,7 @@ function WorkspaceUpstreams({ workspaceId }: { workspaceId: string }) {
             </div>}
           </td>
           <td className="actions">
-            <Button variant="quiet" onClick={() => setTargets(u)}>Targets de {u.name}</Button>
+            <Button variant="quiet" onClick={() => setTargets(u)}>Destinos de {u.name}</Button>
             {canWrite && <><Button variant="quiet" onClick={() => setEditing(u)}>Editar {u.name}</Button>
               <Button variant="danger" onClick={() => { remove.reset(); setDeleting(u); }}>Excluir {u.name}</Button></>}
           </td>
@@ -90,10 +90,10 @@ function WorkspaceUpstreams({ workspaceId }: { workspaceId: string }) {
       errors: upstreamFormErrors,
       save: async (body) => { guard(); await saveWorkspaceUpstream(workspaceId, editing === "new" ? null : editing.id, body); refresh(); },
     }} />}
-    {keepDialogs && deleting && <ConfirmDialog title="Excluir upstream" message={<>Excluir <strong>{deleting.name}</strong> e seus targets? Serviços vinculados podem impedir a exclusão. A alteração fica no rascunho.</>}
+    {keepDialogs && deleting && <ConfirmDialog title="Excluir upstream" message={<>Excluir <strong>{deleting.name}</strong> e seus destinos? Serviços vinculados podem impedir a exclusão. A alteração fica no rascunho.</>}
       confirmLabel="Excluir" busy={remove.isPending} confirmDisabled={!canWrite} error={remove.isError ? upstreamErrorMessage(remove.error) : null}
       onConfirm={() => remove.mutate(deleting.id)} onClose={() => setDeleting(null)} />}
-    {targets && <Modal title={`Targets de ${targets.name}`} onClose={() => setTargets(null)} wide>
+    {targets && <Modal title={`Destinos de ${targets.name}`} onClose={() => setTargets(null)} wide>
       <WorkspaceTargets key={targets.id} workspaceId={workspaceId} upstreamId={targets.id} />
     </Modal>}
   </section>;
@@ -144,13 +144,13 @@ function WorkspaceTargets({ workspaceId, upstreamId }: { workspaceId: string; up
   };
   const items = targets.data?.pages.flatMap((p) => p.items) ?? [];
   return <div className="stack">
-    <p>Targets são destinos host:porta. O peso controla a participação no balanceamento; 0 retira o destino do balanceamento. Não há informação de saúde atual nesta tela.</p>
+    <p>Destinos são endereços host:porta. O peso controla a participação no balanceamento; 0 retira o destino do balanceamento. Não há informação de saúde atual nesta tela.</p>
     {access.reason && <p role="status">{access.reason}</p>}
-    {targets.isPending && <p role="status">Carregando targets…</p>}
+    {targets.isPending && <p role="status">Carregando destinos…</p>}
     {targets.isError && <p role="alert" className="error">{upstreamErrorMessage(targets.error)}</p>}
-    {targets.isSuccess && items.length === 0 && <EmptyState title="Nenhum target: o tráfego deste upstream não tem destino." />}
-    {targets.isSuccess && items.length > 0 && <Table label="Targets" cards>
-      <thead><tr><th>Target → peso</th><th className="actions" aria-label="Ações" /></tr></thead>
+    {targets.isSuccess && items.length === 0 && <EmptyState title="Nenhum destino: o tráfego deste Upstream não tem destino." />}
+    {targets.isSuccess && items.length > 0 && <Table label="Destinos" cards>
+      <thead><tr><th>Destino → peso</th><th className="actions" aria-label="Ações" /></tr></thead>
       <tbody>{items.map((t) => <tr key={t.id}><td className="row-main"><div className="service-route">
         <span className="service-name mono">{fieldText(t.target)}</span><span>Peso: {t.weight}</span>
         {t.weight === 0 && <Badge tone="off">fora do balanceamento</Badge>}
@@ -159,11 +159,11 @@ function WorkspaceTargets({ workspaceId, upstreamId }: { workspaceId: string; up
         <Button variant="danger" onClick={() => { remove.reset(); setDeleting(t); }}>Remover {fieldText(t.target)}</Button>
       </>}</td></tr>)}</tbody>
     </Table>}
-    {targets.hasNextPage && <Button onClick={() => void targets.fetchNextPage()} disabled={targets.isFetchingNextPage}>Carregar mais targets</Button>}
+    {targets.hasNextPage && <Button onClick={() => void targets.fetchNextPage()} disabled={targets.isFetchingNextPage}>Carregar mais destinos</Button>}
     {canWrite && <form className="form" onSubmit={submit} noValidate>
-      <h3>{editing ? "Editar peso" : "Adicionar target"}</h3>
+      <h3>{editing ? "Editar peso" : "Adicionar destino"}</h3>
       <div className="row">
-        <Field label={editing ? "Target" : "Novo target"} errors={errors.fields.target} hint="Destino literal host:porta; IPv6 entre colchetes. Variáveis ainda não são aceitas.">
+        <Field label={editing ? "Destino" : "Novo destino"} errors={errors.fields.target} hint="Destino literal host:porta; IPv6 entre colchetes. Variáveis ainda não são aceitas.">
           {(id, invalid) => <input id={id} aria-invalid={invalid} disabled={!!editing || save.isPending} value={form.target} onChange={(e) => setForm((f) => ({ ...f, target: e.target.value }))} placeholder="backend.internal:8080" />}
         </Field>
         <Field label="Peso" errors={errors.fields.weight} hint="Inteiro de 0 a 65535">
@@ -173,10 +173,10 @@ function WorkspaceTargets({ workspaceId, upstreamId }: { workspaceId: string; up
       <FormErrorList messages={errors.form} />
       <div className="form-actions">
         {editing && <Button disabled={save.isPending} onClick={() => { setEditing(null); setForm({ target: "", weight: "100" }); setErrors({ fields: {}, form: [] }); }}>Cancelar edição</Button>}
-        <button type="submit" className="primary" disabled={save.isPending}>{save.isPending ? "Salvando…" : editing ? "Salvar peso" : "Adicionar target"}</button>
+        <button type="submit" className="primary" disabled={save.isPending}>{save.isPending ? "Salvando…" : editing ? "Salvar peso" : "Adicionar destino"}</button>
       </div>
     </form>}
-    {(canWrite || access.isRevalidating) && deleting && <ConfirmDialog title="Remover target" message={<>Remover <strong>{fieldText(deleting.target)}</strong>? A alteração fica no rascunho.</>}
+    {(canWrite || access.isRevalidating) && deleting && <ConfirmDialog title="Remover destino" message={<>Remover <strong>{fieldText(deleting.target)}</strong>? A alteração fica no rascunho.</>}
       confirmLabel="Remover" busy={remove.isPending} confirmDisabled={!canWrite} error={remove.isError ? upstreamErrorMessage(remove.error) : null}
       onConfirm={() => remove.mutate(deleting.id)} onClose={() => setDeleting(null)} />}
   </div>;

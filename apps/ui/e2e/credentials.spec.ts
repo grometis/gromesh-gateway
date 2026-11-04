@@ -13,14 +13,14 @@ async function openConsumer(page: Page) {
   await page.getByRole("button", { name: "Entrar" }).click();
   await expect(page.getByRole("heading", { name: "Serviços" })).toBeVisible();
   await page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Consumidores" }).click();
-  await page.getByRole("button", { name: "Novo consumer" }).click();
-  const form = page.getByRole("dialog", { name: "Novo consumer" });
-  await form.getByLabel("Username").fill("partner");
+  await page.getByRole("button", { name: "Novo consumidor" }).click();
+  const form = page.getByRole("dialog", { name: "Novo consumidor" });
+  await form.getByLabel("Nome de usuário").fill("partner");
   await form.getByRole("button", { name: "Salvar" }).click();
-  await expect(page.getByRole("heading", { name: /^Consumer / })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^Consumidor / })).toBeVisible();
 }
 
-const tabs = (page: Page) => page.getByRole("tablist", { name: "Seções do consumer" });
+const tabs = (page: Page) => page.getByRole("tablist", { name: "Seções do consumidor" });
 
 test("an HS256 secret is shown once and is gone after closing; an RS256 key needs a PEM", async ({ page }) => {
   // Prism would answer with a placeholder; a realistic secret makes "shown once" observable.
@@ -58,7 +58,7 @@ test("a basic-auth password goes to the API once and is never rendered", async (
   await openConsumer(page);
   await page.getByRole("button", { name: "Nova credencial basic-auth" }).click();
   const dialog = page.getByRole("dialog", { name: "Nova credencial basic-auth" });
-  await dialog.getByLabel("Usuário").fill("partner-api");
+  await dialog.getByLabel("Nome de usuário").fill("partner-api");
   await dialog.getByLabel("Senha").fill("short");
   await dialog.getByRole("button", { name: "Criar" }).click();
   await expect(dialog.getByText("Use pelo menos 8 caracteres.")).toBeVisible();

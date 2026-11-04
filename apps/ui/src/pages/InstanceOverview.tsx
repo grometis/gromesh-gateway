@@ -124,9 +124,9 @@ export function InstanceOverviewPage() {
         <h2 id={`${id}-limits`}>Limites dos indicadores globais</h2>
         <p className="muted">A lista não fornece agregados operacionais da instância.</p>
         <div className="instance-overview-limit-cards">
-          {[["Inventário global", "Serviços, Rotas, Consumers e Plugins exigem um resumo autorizado próprio."],
+          {[["Inventário global", "Serviços, Rotas, Consumidores e Plugins exigem um resumo autorizado próprio."],
             ["Tráfego global", "Sem soma de tráfego ou média de percentis entre Workspaces."],
-            ["Saúde e convergência", "Sem informação operacional global de deployments ou atividade."]].map(([title, detail]) => <article key={title}>
+            ["Saúde e convergência", "Sem informação operacional global de implantações ou atividade."]].map(([title, detail]) => <article key={title}>
               <h3>{title}</h3><p>Não disponível — requer contrato</p><p className="muted">{detail}</p>
             </article>)}
         </div>

@@ -155,7 +155,7 @@ export function Availability({ policy }: { policy: WorkspaceCreationPolicy }) {
   if (policy.stage === "hml" || policy.stage === "prd") {
     lines.push(`Esta instância é ${STAGES[policy.stage]}. HML e PRD recebem Workspaces só por promoção; aqui não se cria Workspace.`);
   } else if (policy.stage === null) {
-    lines.push("O stage desta instância não está configurado, então a criação de Workspaces fica bloqueada.");
+    lines.push("O estágio desta instância não está configurado, então a criação de Workspaces fica bloqueada.");
   }
   if (lines.length > 0) {
     return (

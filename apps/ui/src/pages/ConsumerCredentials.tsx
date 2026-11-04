@@ -164,7 +164,7 @@ function NewJwt({ envId, consumerId, onDone }: { envId: string; consumerId: stri
     <Modal title="Nova credencial JWT" onClose={close}>
       {reason && <p role="status">{reason}</p>}
       <form className="form" noValidate onSubmit={submit}>
-        <Field label="Key (iss)" errors={errors.fields.key} hint="Opcional. Vazio = uma key aleatória é gerada.">
+        <Field label="Chave (iss)" errors={errors.fields.key} hint="Opcional. Se ficar vazio, uma chave aleatória será gerada.">
           {(id, invalid) => <input id={id} aria-invalid={invalid} value={form.key} onChange={(e) => setForm((f) => ({ ...f, key: e.target.value }))} />}
         </Field>
         <Field label="Algoritmo" errors={errors.fields.algorithm}>
@@ -282,7 +282,7 @@ function NewBasicAuth({ envId, consumerId, onDone }: { envId: string; consumerId
   const submit = (e: FormEvent) => {
     e.preventDefault();
     const fields: Record<string, string[]> = {};
-    if (!form.username.trim()) fields.username = ["Informe o usuário."];
+    if (!form.username.trim()) fields.username = ["Informe o nome de usuário."];
     if (form.password.length < 8) fields.password = ["Use pelo menos 8 caracteres."];
     setErrors({ fields, form: [] });
     if (Object.keys(fields).length === 0) create.mutate();
@@ -291,7 +291,7 @@ function NewBasicAuth({ envId, consumerId, onDone }: { envId: string; consumerId
     <Modal title="Nova credencial basic-auth" onClose={onDone}>
       {reason && <p role="status">{reason}</p>}
       <form className="form" noValidate onSubmit={submit}>
-        <Field label="Usuário" errors={errors.fields.username} hint={v2 ? "Único na instância" : "Único no ambiente"}>
+        <Field label="Nome de usuário" errors={errors.fields.username} hint={v2 ? "Único na instância" : "Único no ambiente"}>
           {(id, invalid) => <input id={id} autoComplete="off" aria-invalid={invalid} value={form.username} onChange={(e) => setForm((f) => ({ ...f, username: e.target.value }))} />}
         </Field>
         <Field label="Senha" errors={errors.fields.password} hint="Não é mostrada nem guardada: o gateway recebe só um hash dela.">
@@ -352,7 +352,7 @@ export function AclGroupsPanel({ envId, consumer, canEdit }: { envId: string; co
           </button>
         )}
       </div>
-      <p className="muted">O plugin acl libera ou bloqueia {v2 ? "o consumidor" : "o consumer"} pelos nomes destes grupos (allow/deny).</p>
+      <p className="muted">O plugin acl libera ou bloqueia o consumidor pelos nomes destes grupos (allow/deny).</p>
       {groups.isPending && <p className="muted">Carregando…</p>}
       {groups.isError && <p className="error">{statusMessage(groups.error)}</p>}
       {groups.isSuccess && draft === null && (current.length === 0 ? <p className="muted">Nenhum grupo.</p> : (

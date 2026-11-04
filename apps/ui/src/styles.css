@@ -491,6 +491,9 @@ table.cards tr:hover td { background: var(--line); }
 .modal > footer { justify-content: flex-end; border-top: 1px solid var(--line); }
 .modal-body { padding: 0 var(--space-5) var(--space-5); overflow: auto; }
 .modal-body:focus-visible { outline-offset: -2px; }
+.releases-page .modal > header h2 { min-width: 0; overflow-wrap: anywhere; }
+.releases-page .modal > header .icon { min-height: 40px; min-width: 40px; flex: none; }
+.releases-page .modal > footer { flex-wrap: wrap; }
 
 .props { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-1) var(--space-4); margin: 0; }
 .props dt { color: var(--text-3); }
