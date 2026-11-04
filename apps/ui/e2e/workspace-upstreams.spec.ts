@@ -124,9 +124,9 @@ for (const width of [390, 768, 1440]) {
     await page.getByRole("button", { name: "Novo upstream", exact: true }).click();
     await audit(page);
     await page.getByRole("button", { name: "Cancelar", exact: true }).click();
-    await page.getByRole("button", { name: "Targets de orders-pool", exact: true }).click();
-    await page.getByRole("button", { name: "Carregar mais targets" }).click();
-    await expect(page.getByRole("table", { name: "Targets", exact: true })).toContainText("second.internal:80");
+    await page.getByRole("button", { name: "Destinos de orders-pool", exact: true }).click();
+    await page.getByRole("button", { name: "Carregar mais destinos" }).click();
+    await expect(page.getByRole("table", { name: "Destinos", exact: true })).toContainText("second.internal:80");
     await audit(page);
     expect(fake.reads.filter((p) => p.startsWith(`/api/v2/workspaces/${A}/services`))).toHaveLength(2); // before and after refresh, never per row
     expect(fake.reads.some((p) => p.startsWith("/api/v1/environments"))).toBe(false);
@@ -142,7 +142,7 @@ for (const width of [390, 768, 1440]) {
     await dialog.getByLabel("Nome", { exact: true }).fill("orders-pool");
     await dialog.getByLabel("Algoritmo", { exact: true }).selectOption("consistent-hashing");
     await dialog.getByLabel("Hash por", { exact: true }).selectOption("header");
-    await dialog.getByLabel("Header do hash", { exact: true }).fill("X-Client");
+    await dialog.getByLabel("Cabeçalho do hash", { exact: true }).fill("X-Client");
     await dialog.getByLabel("Alternativa", { exact: true }).selectOption("ip");
     await dialog.getByLabel("Verificação ativa", { exact: true }).check();
     await dialog.getByLabel("Verificação passiva (pelo tráfego)", { exact: true }).check();
@@ -154,19 +154,19 @@ for (const width of [390, 768, 1440]) {
     } });
     await page.getByRole("button", { name: "Editar orders-pool", exact: true }).click();
     dialog = page.getByRole("dialog", { name: "Editar orders-pool", exact: true });
-    await expect(dialog.getByLabel("Header do hash", { exact: true })).toHaveValue("X-Client");
+    await expect(dialog.getByLabel("Cabeçalho do hash", { exact: true })).toHaveValue("X-Client");
     await dialog.getByLabel("Hash por", { exact: true }).selectOption("cookie");
     await dialog.getByLabel("Cookie", { exact: true }).fill("SESSION");
     await expect(dialog.getByLabel("Alternativa", { exact: true })).toHaveCount(0);
     await dialog.getByRole("button", { name: "Salvar", exact: true }).click();
     await expect(dialog).toHaveCount(0);
     expect(fake.writes[1]).toMatchObject({ method: "PUT", body: { hashOn: "cookie", hashOnCookie: "SESSION", hashFallback: "none" } });
-    await page.getByRole("button", { name: "Targets de orders-pool", exact: true }).click();
-    dialog = page.getByRole("dialog", { name: "Targets de orders-pool", exact: true });
-    await dialog.getByLabel("Novo target", { exact: true }).fill("new.internal:9090");
+    await page.getByRole("button", { name: "Destinos de orders-pool", exact: true }).click();
+    dialog = page.getByRole("dialog", { name: "Destinos de orders-pool", exact: true });
+    await dialog.getByLabel("Novo destino", { exact: true }).fill("new.internal:9090");
     await dialog.getByLabel("Peso", { exact: true }).fill("42");
-    await dialog.getByRole("button", { name: "Adicionar target", exact: true }).click();
-    await expect(dialog.getByRole("table", { name: "Targets", exact: true })).toContainText("new.internal:9090");
+    await dialog.getByRole("button", { name: "Adicionar destino", exact: true }).click();
+    await expect(dialog.getByRole("table", { name: "Destinos", exact: true })).toContainText("new.internal:9090");
     await dialog.getByRole("button", { name: "Editar peso de new.internal:9090", exact: true }).click();
     await dialog.getByLabel("Peso", { exact: true }).fill("0");
     await dialog.getByRole("button", { name: "Salvar peso", exact: true }).click();
@@ -174,8 +174,8 @@ for (const width of [390, 768, 1440]) {
     expect(fake.writes.at(-1)).toMatchObject({ method: "PUT", body: { target: "new.internal:9090", weight: 0, tags: [] } });
     await audit(page);
     await dialog.getByRole("button", { name: "Remover new.internal:9090", exact: true }).click();
-    await page.getByRole("dialog", { name: "Remover target", exact: true }).getByRole("button", { name: "Remover", exact: true }).click();
-    await expect(dialog.getByText(/Nenhum target:/)).toBeVisible();
+    await page.getByRole("dialog", { name: "Remover destino", exact: true }).getByRole("button", { name: "Remover", exact: true }).click();
+    await expect(dialog.getByText(/Nenhum destino:/)).toBeVisible();
     await dialog.getByRole("button", { name: "Fechar", exact: true }).click();
     const before = fake.writes.length;
     await page.getByRole("button", { name: "Excluir orders-pool", exact: true }).click();
@@ -194,9 +194,9 @@ for (const width of [390, 768, 1440]) {
     await page.goto(url());
     await expect(page.getByText("Somente leitura: este Workspace está arquivado.", { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: /Novo upstream|Editar orders-pool|Excluir orders-pool/ })).toHaveCount(0);
-    await page.getByRole("button", { name: "Targets de orders-pool", exact: true }).click();
-    await expect(page.getByRole("table", { name: "Targets", exact: true })).toContainText("backend.internal:8080");
-    await expect(page.getByRole("button", { name: /Adicionar target|Editar peso|Remover backend/ })).toHaveCount(0);
+    await page.getByRole("button", { name: "Destinos de orders-pool", exact: true }).click();
+    await expect(page.getByRole("table", { name: "Destinos", exact: true })).toContainText("backend.internal:8080");
+    await expect(page.getByRole("button", { name: /Adicionar destino|Editar peso|Remover backend/ })).toHaveCount(0);
     await audit(page);
     expect(fake.writes).toEqual([]);
   });
@@ -233,18 +233,18 @@ test("422 target VarRef is refused, weight is validated, and Services errors nev
   await page.goto(url());
   await expect(page.getByRole("alert")).toContainText("Não foi possível consultar os Serviços vinculados");
   await expect(page.getByText("Serviços vinculados: nenhum.", { exact: true })).toHaveCount(0);
-  await page.getByRole("button", { name: "Targets de orders-pool", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "Targets de orders-pool", exact: true });
-  await dialog.getByLabel("Novo target", { exact: true }).fill("backend.internal:80");
+  await page.getByRole("button", { name: "Destinos de orders-pool", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Destinos de orders-pool", exact: true });
+  await dialog.getByLabel("Novo destino", { exact: true }).fill("backend.internal:80");
   await dialog.getByLabel("Peso", { exact: true }).fill("-1");
-  await dialog.getByRole("button", { name: "Adicionar target", exact: true }).click();
+  await dialog.getByRole("button", { name: "Adicionar destino", exact: true }).click();
   await expect(dialog.getByRole("alert")).toContainText("inteiro de 0 a 65535");
   expect(fake.writes).toEqual([]);
   fake.state.varRef = true;
   await dialog.getByLabel("Peso", { exact: true }).fill("100");
-  await dialog.getByRole("button", { name: "Adicionar target", exact: true }).click();
+  await dialog.getByRole("button", { name: "Adicionar destino", exact: true }).click();
   await expect(dialog.getByRole("alert")).toContainText("variáveis ainda não são aceitas");
-  await expect(dialog.getByLabel("Novo target", { exact: true })).toHaveValue("backend.internal:80");
+  await expect(dialog.getByLabel("Novo destino", { exact: true })).toHaveValue("backend.internal:80");
 });
 test("switch A to B drops forms and targets, retaining the v2 section", async ({ page }) => {
   const fake = await setup(page);
@@ -259,7 +259,7 @@ test("switch A to B drops forms and targets, retaining the v2 section", async ({
   await expect(page.getByRole("dialog").getByLabel("Nome", { exact: true })).toHaveValue("");
   await page.getByRole("button", { name: "Cancelar", exact: true }).click();
   await page.getByLabel("Workspace v2", { exact: true }).selectOption(A);
-  await page.getByRole("button", { name: "Targets de orders-pool", exact: true }).click();
+  await page.getByRole("button", { name: "Destinos de orders-pool", exact: true }).click();
   await page.getByLabel("Workspace v2", { exact: true }).selectOption(B);
   await expect(page.getByRole("dialog")).toHaveCount(0);
   expect(fake.writes).toEqual([]);
@@ -289,13 +289,13 @@ for (const status of [401, 403, 404, 500]) test(`target list HTTP ${status} is d
   await setup(page);
   await page.route(`**/api/v2/workspaces/${A}/upstreams/${U}/targets`, (route) => route.fulfill(problem(status)));
   await page.goto(url());
-  await page.getByRole("button", { name: "Targets de orders-pool", exact: true }).click();
+  await page.getByRole("button", { name: "Destinos de orders-pool", exact: true }).click();
   if (status === 401) await expect(page).toHaveURL("/login");
   else {
-    const dialog = page.getByRole("dialog", { name: "Targets de orders-pool", exact: true });
+    const dialog = page.getByRole("dialog", { name: "Destinos de orders-pool", exact: true });
     await expect(dialog.getByRole("alert")).toContainText(status === 403 ? "Você não tem permissão" : status === 404 ? "Item não encontrado" : "Não foi possível concluir");
-    await expect(dialog.getByText(/Nenhum target:/)).toHaveCount(0);
-    await expect(dialog.getByRole("button", { name: "Adicionar target", exact: true })).toHaveCount(0);
+    await expect(dialog.getByText(/Nenhum destino:/)).toHaveCount(0);
+    await expect(dialog.getByRole("button", { name: "Adicionar destino", exact: true })).toHaveCount(0);
   }
 });
 test("mutation 401 returns to login and clears the open form", async ({ page }) => {

@@ -28,7 +28,7 @@ export const ALGORITHMS: Record<Algorithm, string> = {
   "consistent-hashing": "Hash consistente",
   latency: "Menor latência",
 };
-const HASH_ON: Record<HashOn, string> = { none: "Nenhum", consumer: "Consumer", ip: "IP do cliente", header: "Header", cookie: "Cookie" };
+const HASH_ON: Record<HashOn, string> = { none: "Nenhum", consumer: "Consumidor", ip: "IP do cliente", header: "Cabeçalho", cookie: "Cookie" };
 const FIELDS = ["name", "algorithm", "hashOn", "hashFallback", "hashOnHeader", "hashFallbackHeader", "hashOnCookie", "hashOnCookiePath", "healthchecks", "tags"] as const;
 
 /** Upstream names, also used as suggestions for a service's host. */
@@ -62,7 +62,7 @@ export function UpstreamsPage() {
     <section className="final-page gateway-list upstreams-page">
       <PageHeader
         title="Upstreams"
-        description="Um service cujo host é o nome de um upstream balanceia entre os targets dele."
+        description="Um serviço cujo host é o nome de um Upstream distribui o tráfego entre os destinos dele."
         actions={canEdit && <Button variant="primary" onClick={() => setEditing("new")}>Novo upstream</Button>}
       />
       {upstreams.isPending && <p className="muted">Carregando…</p>}
@@ -91,7 +91,7 @@ export function UpstreamsPage() {
                   </div>
                 </td>
                 <td className="actions">
-                  <Button variant="quiet" onClick={() => setTargets(u)}>Targets</Button>
+                  <Button variant="quiet" onClick={() => setTargets(u)}>Destinos</Button>
                   {canEdit && (
                     <>
                       <Button variant="quiet" onClick={() => setEditing(u)}>Editar</Button>
@@ -112,7 +112,7 @@ export function UpstreamsPage() {
       {editing && <UpstreamForm envId={envId} upstream={editing === "new" ? null : editing} onClose={() => setEditing(null)} />}
       {deleting && <DeleteUpstream envId={envId} upstream={deleting} onClose={() => setDeleting(null)} />}
       {targets && (
-        <Modal title={`Targets de ${targets.name}`} onClose={() => setTargets(null)} wide>
+        <Modal title={`Destinos de ${targets.name}`} onClose={() => setTargets(null)} wide>
           <Targets envId={envId} upstream={targets} canEdit={canEdit} />
         </Modal>
       )}
@@ -205,7 +205,7 @@ export function UpstreamForm({ envId, upstream, onClose, workspace }: {
         <select id={id} value={form[key]} onChange={(e) => set(key, e.target.value as HashOn)}>
           {options.map((h) => (
             <option key={h} value={h}>
-              {workspace && h === "consumer" ? "Consumidor" : HASH_ON[h]}
+              {HASH_ON[h]}
             </option>
           ))}
         </select>
@@ -216,7 +216,7 @@ export function UpstreamForm({ envId, upstream, onClose, workspace }: {
   return (
     <Modal title={upstream ? `Editar ${upstream.name}` : "Novo upstream"} onClose={onClose} wide>
       <form onSubmit={submit} className="form" noValidate>
-        <Field label="Nome" errors={errors.fields.name} hint={workspace ? "Nome local do Upstream. Nos Serviços, selecione o Upstream pelo vínculo; não use o nome como host." : "Hostname em minúsculas; use este nome como host dos services"}>
+        <Field label="Nome" errors={errors.fields.name} hint={workspace ? "Nome local do Upstream. Nos Serviços, selecione o Upstream pelo vínculo; não use o nome como host." : "Nome de host em minúsculas; use este nome como host dos serviços"}>
           {(id, invalid) => <input id={id} aria-invalid={invalid} value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="orders.upstream" />}
         </Field>
         <Field label="Algoritmo" errors={errors.fields.algorithm}>
@@ -238,12 +238,12 @@ export function UpstreamForm({ envId, upstream, onClose, workspace }: {
               {form.hashOn !== "cookie" && hashSelect("Alternativa", "hashFallback", ["none", "consumer", "ip", "header"])}
             </div>
             {form.hashOn === "header" && (
-              <Field label="Header do hash" errors={errors.fields.hashOnHeader}>
+              <Field label="Cabeçalho do hash" errors={errors.fields.hashOnHeader}>
                 {(id, invalid) => <input id={id} aria-invalid={invalid} value={form.hashOnHeader} onChange={(e) => set("hashOnHeader", e.target.value)} />}
               </Field>
             )}
             {form.hashOn !== "cookie" && form.hashFallback === "header" && (
-              <Field label="Header da alternativa" errors={errors.fields.hashFallbackHeader}>
+              <Field label="Cabeçalho da alternativa" errors={errors.fields.hashFallbackHeader}>
                 {(id, invalid) => <input id={id} aria-invalid={invalid} value={form.hashFallbackHeader} onChange={(e) => set("hashFallbackHeader", e.target.value)} />}
               </Field>
             )}
@@ -252,7 +252,7 @@ export function UpstreamForm({ envId, upstream, onClose, workspace }: {
                 <Field label="Cookie" errors={errors.fields.hashOnCookie}>
                   {(id, invalid) => <input id={id} aria-invalid={invalid} value={form.hashOnCookie} onChange={(e) => set("hashOnCookie", e.target.value)} />}
                 </Field>
-                <Field label="Path do cookie" errors={errors.fields.hashOnCookiePath}>
+                <Field label="Caminho do cookie" errors={errors.fields.hashOnCookiePath}>
                   {(id, invalid) => <input id={id} aria-invalid={invalid} value={form.hashOnCookiePath} onChange={(e) => set("hashOnCookiePath", e.target.value)} />}
                 </Field>
               </div>
@@ -260,7 +260,7 @@ export function UpstreamForm({ envId, upstream, onClose, workspace }: {
           </fieldset>
         )}
         <fieldset>
-          <legend>{workspace ? "Configuração das verificações de saúde" : "Saúde dos targets"}</legend>
+          <legend>{workspace ? "Configuração das verificações de saúde" : "Saúde dos destinos"}</legend>
           <label className="check">
             <input type="checkbox" checked={form.activeOn} onChange={(e) => set("activeOn", e.target.checked)} /> Verificação ativa
           </label>
@@ -277,7 +277,7 @@ export function UpstreamForm({ envId, upstream, onClose, workspace }: {
                   )}
                 </Field>
                 {form.activeType !== "tcp" && (
-                  <Field label="Path verificado">
+                  <Field label="Caminho verificado">
                     {(id) => <input id={id} value={form.httpPath} onChange={(e) => set("httpPath", e.target.value)} />}
                   </Field>
                 )}
@@ -292,7 +292,7 @@ export function UpstreamForm({ envId, upstream, onClose, workspace }: {
                 <Field label="Falhas para não saudável">
                   {(id) => <input id={id} inputMode="numeric" value={form.unhealthyThreshold} onChange={(e) => set("unhealthyThreshold", e.target.value)} />}
                 </Field>
-                <Field label="Timeout (s)">
+                <Field label="Tempo limite (s)">
                   {(id) => <input id={id} inputMode="decimal" value={form.timeoutSeconds} onChange={(e) => set("timeoutSeconds", e.target.value)} />}
                 </Field>
               </div>
@@ -306,7 +306,7 @@ export function UpstreamForm({ envId, upstream, onClose, workspace }: {
               <Field label="Respostas 5xx para não saudável">
                 {(id) => <input id={id} inputMode="numeric" value={form.unhealthyHttpFailures} onChange={(e) => set("unhealthyHttpFailures", e.target.value)} />}
               </Field>
-              <Field label="Timeouts para não saudável">
+              <Field label="Tempos limite para não saudável">
                 {(id) => <input id={id} inputMode="numeric" value={form.unhealthyTimeouts} onChange={(e) => set("unhealthyTimeouts", e.target.value)} />}
               </Field>
             </div>
@@ -344,7 +344,7 @@ function DeleteUpstream({ envId, upstream, onClose }: { envId: string; upstream:
       title="Excluir upstream"
       message={
         <>
-          Excluir <strong>{upstream.name}</strong> e seus targets? Não é possível enquanto algum service usa este nome como host.
+          Excluir <strong>{upstream.name}</strong> e seus destinos? Não é possível enquanto algum serviço usa este nome como host.
         </>
       }
       confirmLabel="Excluir"
@@ -422,12 +422,12 @@ function Targets({ envId, upstream, canEdit }: { envId: string; upstream: Upstre
     <div>
       {targets.isPending && <p className="muted">Carregando…</p>}
       {targets.isError && <p className="error">{statusMessage(targets.error)}</p>}
-      {targets.isSuccess && items.length === 0 && <EmptyState title="Nenhum target: o tráfego deste upstream não tem destino." />}
+      {targets.isSuccess && items.length === 0 && <EmptyState title="Nenhum destino: o tráfego deste Upstream não tem destino." />}
       {items.length > 0 && (
-        <Table label="Targets" cards>
+        <Table label="Destinos" cards>
           <thead>
             <tr>
-              <th>Target → peso</th>
+              <th>Destino → peso</th>
               <th className="actions" aria-label="Ações" />
             </tr>
           </thead>
@@ -469,7 +469,7 @@ function Targets({ envId, upstream, canEdit }: { envId: string; upstream: Upstre
       {reweigh.isError && <p className="error">{statusMessage(reweigh.error)}</p>}
       {deleting && (
         <ConfirmDialog
-          title="Remover target"
+          title="Remover destino"
           message={<>Remover <strong className="mono">{deleting.target}</strong>? A exclusão só afeta o tráfego depois de publicar.</>}
           confirmLabel="Remover"
           busy={remove.isPending}
@@ -488,7 +488,7 @@ function Targets({ envId, upstream, canEdit }: { envId: string; upstream: Upstre
           }}
         >
           <div className="row">
-            <Field label="Novo target" errors={errors.fields.target} hint="host:porta, IPv6 entre colchetes">
+            <Field label="Novo destino" errors={errors.fields.target} hint="host:porta, IPv6 entre colchetes">
               {(id, invalid) => <input id={id} aria-invalid={invalid} value={form.target} onChange={(e) => setForm((f) => ({ ...f, target: e.target.value }))} placeholder="10.0.0.11:8080" />}
             </Field>
             <Field label="Peso" errors={errors.fields.weight} hint="0 a 65535; 0 tira do balanceamento">
@@ -498,7 +498,7 @@ function Targets({ envId, upstream, canEdit }: { envId: string; upstream: Upstre
           <FormErrorList messages={errors.form} />
           <div className="form-actions">
             <button type="submit" className="primary" disabled={add.isPending}>
-              {add.isPending ? "Adicionando…" : "Adicionar target"}
+              {add.isPending ? "Adicionando…" : "Adicionar destino"}
             </button>
           </div>
         </form>

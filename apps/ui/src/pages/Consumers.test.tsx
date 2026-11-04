@@ -63,6 +63,31 @@ async function mount(section = `consumers/${C}`, options: { archived?: boolean; 
 const values = (node: TestNode) => node.textContent + node.findAll(n => n.tagName === "INPUT").map(n => n.value).join();
 
 describe("workspace consumers with controlled transport", () => {
+  it.each([false, true])("uses pt-BR fields, validates identity and preserves API keys (legacy=%s)", async (legacy) => {
+    const view = await mount("consumers", { legacy, role: "admin" });
+    await view.waitText("checkout");
+    await view.click("Novo consumidor");
+    const dialog = view.container.findAll(n => n.getAttribute("role") === "dialog")[0]!;
+    expect(dialog.findAll(n => n.tagName === "LABEL").map(n => n.textContent)).toEqual(["Nome de usuário", "Identificador personalizado", "Tags"]);
+    const inputs = dialog.findAll(n => n.tagName === "INPUT");
+    await view.submit();
+    expect(dialog.textContent).toContain("Informe o nome de usuário ou o identificador personalizado.");
+    expect(inputs[0]!.getAttribute("aria-invalid")).toBe("true");
+    expect(view.requests.filter(r => r.method === "POST")).toHaveLength(0);
+    await act(async () => {
+      for (const [index, value] of [" parceiro ", " ERP-42 ", "blue, gold"].entries()) {
+        inputs[index]!.value = value;
+        inputs[index]!.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      await tick();
+    });
+    await view.submit();
+    await vi.waitFor(() => expect(view.requests.filter(r => r.method === "POST")).toHaveLength(1));
+    const request = view.requests.find(r => r.method === "POST")!;
+    expect(new URL(request.url).pathname).toBe(legacy ? `/api/v1/environments/${A}/consumers` : `/api/v2/workspaces/${A}/consumers`);
+    expect(await request.json()).toEqual({ username: "parceiro", customId: "ERP-42", tags: ["blue", "gold"] });
+  });
+
   it("reads v2 detail and children, with no legacy environment or credential calls", async () => {
     const view = await mount();
     await view.waitText("Nenhuma credencial basic-auth.");
@@ -241,8 +266,8 @@ describe("workspace consumers with controlled transport", () => {
   });
   it("keeps v1 labels and environment endpoints with legacy viewer permissions", async () => {
     const view = await mount("consumers", { legacy: true }); await view.waitText("checkout");
-    expect(view.container.textContent).toContain("Consumers");
-    expect(view.find("Novo consumer")).toBeUndefined();
+    expect(view.container.textContent).toContain("Consumidores");
+    expect(view.find("Novo consumidor")).toBeUndefined();
     expect(view.requests.some(r => r.url.includes(`/api/v1/environments/${A}/consumers`))).toBe(true);
     expect(view.requests.some(r => r.url.includes(`/api/v2/workspaces/${A}/consumers`))).toBe(false);
   });

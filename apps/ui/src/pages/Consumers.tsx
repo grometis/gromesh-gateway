@@ -56,25 +56,25 @@ function Consumers({ envId }: { envId: string }) {
   return (
     <section className={v2 ? "final-page workspace-consumers" : "final-page"}>
       <PageHeader
-        title={v2 ? "Consumidores" : "Consumers"}
+        title="Consumidores"
         description={v2 ? "Identidades e credenciais de acesso. As alterações ficam no rascunho deste Workspace." : undefined}
         actions={canEdit && (
           <button type="button" className="primary" onClick={() => setEditing("new")}>
-            {v2 ? "Novo consumidor" : "Novo consumer"}
+            Novo consumidor
           </button>
         )}
       />
       {reason && <p role="status">{reason}</p>}
-      <input type="search" className="search" placeholder="Buscar por username ou custom id" aria-label={v2 ? "Buscar consumidores" : "Buscar consumers"} value={search} onChange={(e) => setSearch(e.target.value)} />
+      <input type="search" className="search" placeholder="Buscar por nome de usuário ou identificador personalizado" aria-label="Buscar consumidores" value={search} onChange={(e) => setSearch(e.target.value)} />
       {consumers.isPending && <p className="muted">Carregando…</p>}
       {consumers.isError && <p className="error">{statusMessage(consumers.error)}</p>}
-      {consumers.isSuccess && items.length === 0 && <EmptyState title={v2 ? (q ? "Nenhum consumidor encontrado." : "Nenhum consumidor ainda.") : q ? "Nenhum consumer encontrado." : "Nenhum consumer ainda."} text={v2 && !q ? "Crie um consumidor para configurar suas credenciais de acesso." : undefined} />}
+      {consumers.isSuccess && items.length === 0 && <EmptyState title={q ? "Nenhum consumidor encontrado." : "Nenhum consumidor ainda."} text={v2 && !q ? "Crie um consumidor para configurar suas credenciais de acesso." : undefined} />}
       {items.length > 0 && (
-        <Table label={v2 ? "Consumidores" : "Consumers"} cards>
+        <Table label="Consumidores" cards>
           <thead>
             <tr>
-              <th>{v2 ? "Consumidor" : "Consumer"}</th>
-              <th>Custom id</th>
+              <th>Consumidor</th>
+              <th>Identificador personalizado</th>
               <th>
                 <span className="visually-hidden">Ações</span>
               </th>
@@ -148,10 +148,10 @@ function ConsumerDetail({ envId, consumerId }: { envId: string; consumerId: stri
   return (
     <section className={v2 ? "stack final-page workspace-consumers" : "stack final-page"}>
       <p>
-        <Link to={v2 ? `/workspaces/${envId}/consumers` : ".."} className="back-link">← {v2 ? "Consumidores" : "Consumers"}</Link>
+        <Link to={v2 ? `/workspaces/${envId}/consumers` : ".."} className="back-link">← Consumidores</Link>
       </p>
       <PageHeader
-        title={<>{v2 ? "Consumidor" : "Consumer"} {consumerName(c)}</>}
+        title={<>Consumidor {consumerName(c)}</>}
         actions={canEdit && (
           <div className="form-actions">
             <Button variant="primary" onClick={() => setEditing(true)}>
@@ -163,9 +163,9 @@ function ConsumerDetail({ envId, consumerId }: { envId: string; consumerId: stri
       />
       {reason && <p role="status">{reason}</p>}
       <dl className="props">
-        <dt>Username</dt>
+        <dt>Nome de usuário</dt>
         <dd>{c.username ?? "—"}</dd>
-        <dt>Custom id</dt>
+        <dt>Identificador personalizado</dt>
         <dd className="mono">{c.customId ?? "—"}</dd>
         <dt>Tags</dt>
         <dd>{c.tags?.join(", ") || "—"}</dd>
@@ -191,7 +191,7 @@ function CredentialsPanel(props: { envId: string; consumer: Consumer; canEdit: b
 function PluginsPanel({ envId, consumer }: { envId: string; consumer: Consumer; canEdit: boolean }) {
   const v2 = useIsWorkspaceRoute();
   if (v2) return <ConsumerPlugins key={`${envId}/${consumer.id}`} workspaceId={envId} consumerId={consumer.id} consumerName={consumerName(consumer)} />;
-  return <ScopedPlugins envId={envId} scope={{ kind: "consumer", id: consumer.id }} title="Plugins do consumer" />;
+  return <ScopedPlugins envId={envId} scope={{ kind: "consumer", id: consumer.id }} title="Plugins do consumidor" />;
 }
 
 const TABS = [
@@ -202,11 +202,10 @@ const TABS = [
 
 /** Credentials and ACL groups of the consumer, one panel at a time. */
 function CredentialTabs({ envId, consumer, canEdit }: { envId: string; consumer: Consumer; canEdit: boolean }) {
-  const v2 = useIsWorkspaceRoute();
   const [active, setActive] = useState<(typeof TABS)[number]["id"]>("credentials");
   const { Panel } = TABS.find((t) => t.id === active)!;
   return (
-    <Tabs label={v2 ? "Seções do consumidor" : "Seções do consumer"} tabs={TABS} active={active} onChange={setActive}>
+    <Tabs label="Seções do consumidor" tabs={TABS} active={active} onChange={setActive}>
       <Panel envId={envId} consumer={consumer} canEdit={canEdit} />
     </Tabs>
   );
@@ -235,7 +234,7 @@ function ConsumerForm({ envId, consumer, onClose, onCreated }: { envId: string; 
   const submit = (e: FormEvent) => {
     e.preventDefault();
     if (!form.username.trim() && !form.customId.trim()) {
-      setErrors({ fields: { username: ["Informe o username ou o custom id."] }, form: [] });
+      setErrors({ fields: { username: ["Informe o nome de usuário ou o identificador personalizado."] }, form: [] });
       return;
     }
     setErrors({ fields: {}, form: [] });
@@ -244,13 +243,13 @@ function ConsumerForm({ envId, consumer, onClose, onCreated }: { envId: string; 
   const set = (k: keyof typeof form, v: string) => setForm((f) => ({ ...f, [k]: v }));
 
   return (
-    <Modal title={consumer ? `Editar ${consumerName(consumer)}` : v2 ? "Novo consumidor" : "Novo consumer"} onClose={onClose}>
+    <Modal title={consumer ? `Editar ${consumerName(consumer)}` : "Novo consumidor"} onClose={onClose}>
       {reason && <p role="status">{reason}</p>}
       <form onSubmit={submit} className="form" noValidate>
-        <Field label="Username" errors={errors.fields.username}>
+        <Field label="Nome de usuário" errors={errors.fields.username}>
           {(id, invalid) => <input id={id} aria-invalid={invalid} value={form.username} onChange={(e) => set("username", e.target.value)} />}
         </Field>
-        <Field label="Custom id" errors={errors.fields.customId} hint={v2 ? "Identificador do consumidor no seu sistema (opcional se houver username)" : "Identificador do consumer no seu sistema (opcional se houver username)"}>
+        <Field label="Identificador personalizado" errors={errors.fields.customId} hint="Identificador do consumidor no seu sistema (opcional se houver nome de usuário)">
           {(id, invalid) => <input id={id} aria-invalid={invalid} value={form.customId} onChange={(e) => set("customId", e.target.value)} />}
         </Field>
         <Field label="Tags" errors={errors.fields.tags} hint="Separadas por vírgula">
@@ -284,7 +283,7 @@ function DeleteConsumer({ envId, consumer, onClose, onDeleted }: { envId: string
   });
   return (
     <ConfirmDialog
-      title={v2 ? "Excluir consumidor" : "Excluir consumer"}
+      title="Excluir consumidor"
       message={
         <>
           Excluir <strong>{consumerName(consumer)}</strong>? As credenciais e os plugins dele também são excluídos. A exclusão só afeta o tráfego depois de publicar.
