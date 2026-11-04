@@ -50,6 +50,8 @@ export async function appendRouteHistory(tx: Tx, ctx: RequestContext, v: RouteHi
     if (previous && (await tx.execute(sql `select ${previous.recordedAt}::timestamptz > ${v.recordedAt}::timestamptz as backwards`)).rows[0]?.backwards)
         throw Error("Route history clock moved backwards");
     const [latest] = await tx.select().from(headers).where(eq(headers.instanceId, v.instanceId)).orderBy(sql `${headers.epoch} desc`, sql `${headers.revision} desc`).limit(1);
+    if (latest && (await tx.execute(sql`select ${latest.recordedAt}::timestamptz > ${v.recordedAt}::timestamptz as backwards`)).rows[0]?.backwards)
+        throw Error("Route history clock moved backwards");
     if (latest && (!before(latest, v) || (v.previous && before(v.previous, latest)) || !v.previous))
         throw Error("Route history predecessor conflict");
     await tx.insert(headers).values({ instanceId: v.instanceId, epoch: v.epoch, revision: v.revision, recordedAt: v.recordedAt, previous: v.previous, genesis: v.genesis, reason: v.reason, rollbackOf: v.rollbackOf, configHash: v.configHash, routeCount: v.routes.length });

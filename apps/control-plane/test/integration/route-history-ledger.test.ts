@@ -158,4 +158,11 @@ describe("transactional route history ledger", () => {
         await save(input(v.instanceId, 2));
         await expect(readRouteHistory(db, v.instanceId, { limit: 1 })).rejects.toThrow(/budget/i);
     });
+    it("rejects a timestamp older than retained history when the named predecessor is missing", async () => {
+        const v = { ...input(), recordedAt: "2026-01-01T00:00:10.000002Z" };
+        await save(v);
+        await expect(save({ ...input(v.instanceId, 3), recordedAt: "2026-01-01T00:00:10.000001Z" })).rejects.toThrow(/backwards/i);
+        expect(await readRouteHistory(db, v.instanceId)).toHaveLength(1);
+    });
+
 });
