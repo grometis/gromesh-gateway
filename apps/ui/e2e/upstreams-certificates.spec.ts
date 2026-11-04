@@ -76,7 +76,7 @@ test("the service form offers the workspace's upstreams or a direct DNS destinat
   await dialog.getByLabel("Destino", { exact: true }).selectOption("Upstream do Workspace");
   await expect(dialog.getByLabel("Host")).toHaveCount(0);
   await dialog.getByLabel("Upstream", { exact: true }).selectOption({ label: "orders.upstream" });
-  await expect(dialog).toContainText("O host do serviço passa a ser orders.upstream");
+  await expect(dialog).toContainText("O host do serviço passa a ser orders.upstream, balanceado pelos destinos do Upstream.");
   const created = page.waitForRequest((r) => r.method() === "POST" && r.url().endsWith("/services"));
   await dialog.getByLabel("Nome").fill("orders");
   await dialog.getByRole("button", { name: "Salvar" }).click();

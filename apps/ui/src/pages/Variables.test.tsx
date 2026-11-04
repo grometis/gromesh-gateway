@@ -401,7 +401,7 @@ describe("workspace variables", () => {
     } else {
       expect(view.buttons("Definir valor")[0]!.getAttribute("disabled")).not.toBeNull();
       expect(view.writes()).toHaveLength(0);
-      if (result === "error") expect(view.container.textContent).toContain("Não foi possível verificar o stage");
+      if (result === "error") expect(view.container.textContent).toContain("Não foi possível verificar o estágio");
     }
   });
 

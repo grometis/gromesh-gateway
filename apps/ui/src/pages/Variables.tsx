@@ -29,10 +29,10 @@ function useValueAccess() {
   const isDev = !policy.isError && policy.data?.stage === "dev";
   const isRevalidating = policy.fetchStatus !== "idle";
   const confirmed = policy.isSuccess && !isRevalidating;
-  const reason = policy.isError ? "Não foi possível verificar o stage da instância. Definir valores está indisponível."
-    : !confirmed ? "Verificando o stage da instância. Aguarde a confirmação antes de definir valores."
+  const reason = policy.isError ? "Não foi possível verificar o estágio da instância. Definir valores está indisponível."
+    : !confirmed ? "Verificando o estágio da instância. Aguarde a confirmação antes de definir valores."
     : isDev ? "Valores pertencem somente a esta instância DEV e não viajam com releases ou promoções."
-    : "Definir valores só está disponível em DEV. Em HML, PRD ou sem stage confirmado, a ação fica indisponível.";
+    : "Definir valores só está disponível em DEV. Em HML, PRD ou sem estágio confirmado, a ação fica indisponível.";
   return { canOffer: canAdmin, canSet: canAdmin && isDev && confirmed, isRevalidating: canAdmin && isDev && isRevalidating, reason };
 }
 
