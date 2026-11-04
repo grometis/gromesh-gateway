@@ -112,7 +112,7 @@ test("consumer CRUD, server search and pagination use v2 for a viewer with a wor
   await page.getByRole("button", { name: "Novo consumidor" }).click();
   let dialog = page.getByRole("dialog", { name: "Novo consumidor", exact: true });
   await dialog.getByRole("button", { name: "Salvar", exact: true }).click();
-  await expect(dialog.getByText("Informe o username ou o custom id.")).toBeVisible();
+  await expect(dialog.getByText("Informe o nome de usuário ou o identificador personalizado.", { exact: true })).toBeVisible();
   expect(fake.writes).toHaveLength(0);
   await dialog.getByLabel("Nome de usuário", { exact: true }).fill("created-app");
   await dialog.getByRole("button", { name: "Salvar", exact: true }).click();
