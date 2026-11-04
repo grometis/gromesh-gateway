@@ -1,7 +1,8 @@
 import { Navigate, useLocation, type RouteObject } from "react-router";
-import { Shell, RequireAuth, RequireAdmin, FirstEnvironment } from "./components/Shell";
+import { Shell, RequireAuth, RequireAdmin } from "./components/Shell";
 import { NavigationContextProvider } from "./navigation/context";
 import { WorkspaceEntry } from "./navigation/workspace-entry";
+import { InstanceOverviewPage } from "./pages/InstanceOverview";
 import { LoginPage } from "./pages/Login";
 import { ServiceDetailPage, ServicesPage } from "./pages/Services";
 import { RoutesPage } from "./pages/Routes";
@@ -21,6 +22,7 @@ import { ReviewPublishPage } from "./pages/ReviewPublish";
 import { WorkspacesPage } from "./pages/Workspaces";
 import { ReleasesPage } from "./pages/Releases";
 import { VariablesPage } from "./pages/Variables";
+import { WorkspaceOverviewPage } from "./pages/WorkspaceOverview";
 
 function LegacyEntry() {
   const { search, hash } = useLocation();
@@ -32,10 +34,10 @@ export const appRoutes: RouteObject[] = [
   {
     element: <RequireAuth />,
     children: [{ element: <NavigationContextProvider />, children: [
-      { index: true, element: <FirstEnvironment /> },
       {
         element: <Shell />,
         children: [
+          { index: true, element: <InstanceOverviewPage /> },
           { path: "tokens", element: <TokensPage /> },
           { path: "workspaces", element: <WorkspacesPage /> },
           {
@@ -49,6 +51,7 @@ export const appRoutes: RouteObject[] = [
             path: "workspaces/:workspaceId",
             children: [
               { index: true, element: <WorkspaceEntry /> },
+              { path: "overview", element: <WorkspaceOverviewPage /> },
               { path: "services", element: <ServicesPage /> },
               { path: "services/:serviceId", element: <ServiceDetailPage /> },
               { path: "routes", element: <RoutesPage /> },

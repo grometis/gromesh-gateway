@@ -78,6 +78,9 @@ async function uiLogin(page: Page) {
   await page.getByLabel("E-mail").fill(ADMIN.email);
   await page.getByLabel("Senha").fill(ADMIN.password);
   await page.getByRole("button", { name: "Entrar" }).click();
+  await expect(page.getByRole("heading", { name: "Visão geral da instância", exact: true })).toBeVisible();
+  await expect(page).toHaveURL("/");
+  await page.goto(`/e/${envId}/services`);
   await page.getByLabel("Ambiente (legado)", { exact: true }).selectOption(envId);
   await expect(page.getByRole("heading", { name: "Services", exact: true })).toBeVisible();
 }
@@ -99,7 +102,7 @@ test("MVP: install → publish → converge → traffic in the dashboard → rol
     await service.getByLabel("Porta").fill("80");
     await service.getByRole("button", { name: "Salvar" }).click();
     await expect(service).toBeHidden();
-    await page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Routes", exact: true }).click();
+    await page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Rotas", exact: true }).click();
     await page.getByRole("button", { name: "Nova route" }).click();
     const route = page.getByRole("dialog", { name: "Nova route" });
     await route.getByLabel("Nome").fill(name);

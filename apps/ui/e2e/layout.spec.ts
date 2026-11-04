@@ -32,7 +32,7 @@ for (const width of [390, 1440]) {
     test(`${screen}: layout and axe at ${width}px`, async ({ page }, testInfo) => {
       await page.setViewportSize({ width, height: 900 });
       await mockSession(page, admin);
-      await page.goto("/login");
+      await page.goto("/e/0b3c6b5e-8d1f-4a51-9c64-2f0f6d1f8a11/services");
       await page.getByLabel("E-mail").fill(admin.email);
       await page.getByLabel("Senha").fill("s3nha-de-teste");
       await page.getByRole("button", { name: "Entrar" }).click();

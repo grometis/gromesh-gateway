@@ -19,7 +19,7 @@ async function login(page: Page, user = admin) {
   await mockSession(page, user);
   await page.route("**/api/v1/environments", (route) => route.fulfill({ json: { items: [environment] } }));
   await page.route(`**/api/v1/environments/${envId}`, (route) => route.fulfill({ json: environment }));
-  await page.goto("/login");
+  await page.goto(`/e/${envId}/services`);
   await page.getByLabel("E-mail").fill(user.email);
   await page.getByLabel("Senha").fill("gromesh-dev-admin");
   await page.getByRole("button", { name: "Entrar" }).click();
@@ -99,7 +99,7 @@ test("viewer conserva restrições v1; gateway v2 usa permissões do servidor e 
   // Services, Routes and Plugins go through v2, where no operation tells the caller's permissions: the actions are offered
   // and the server's 403 decides (Services/Routes below; Plugins in workspace-plugins.spec.ts). The v1 screens hide v1 edits.
   for (const section of ["Consumers", "Publicações", "Clusters"]) {
-    if (section === "Consumers") await menu.getByRole("link", { name: section, exact: true }).click();
+    if (section === "Consumers") await menu.getByRole("link", { name: "Consumidores", exact: true }).click();
     else await navigateGlobal(page, section === "Publicações" ? "Snapshots publicados" : section);
     await expect(page.getByRole("heading", { name: section, exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: /^(Novo |Nova |Editar|Excluir|Publicar$|Restaurar |Rotacionar |Gerar )/ })).toHaveCount(0);
@@ -107,7 +107,7 @@ test("viewer conserva restrições v1; gateway v2 usa permissões do servidor e 
   await menu.getByRole("link", { name: "Plugins", exact: true }).click();
   await expect(page.getByRole("table", { name: "Plugins", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Novo plugin", exact: true })).toBeEnabled();
-  await menu.getByRole("link", { name: "Services", exact: true }).click();
+  await menu.getByRole("link", { name: "Serviços", exact: true }).click();
   const services = page.getByRole("table", { name: "Services", exact: true });
   await expect(services.getByRole("row")).not.toHaveCount(0);
   await expect(services.getByRole("button", { name: "Editar", exact: true }).first()).toBeVisible();
@@ -135,7 +135,7 @@ test("viewer conserva restrições v1; gateway v2 usa permissões do servidor e 
   await expect(services.getByRole("row")).toHaveText(before);
   await page.unroute("**/api/v2/workspaces/*/services**");
 
-  await menu.getByRole("link", { name: "Routes", exact: true }).click();
+  await menu.getByRole("link", { name: "Rotas", exact: true }).click();
   const routes = page.getByRole("table", { name: "Routes", exact: true });
   await expect(routes.getByRole("row")).not.toHaveCount(0);
   await expect(routes.getByRole("button", { name: "Editar", exact: true }).first()).toBeVisible();
@@ -345,7 +345,7 @@ test("login por cookie → service → route → publicação → audit com o me
   await service.getByRole("button", { name: "Salvar" }).click();
   expect((await serviceCreated).status()).toBe(201);
   await expect(service).toBeHidden();
-  await page.getByRole("link", { name: "Routes", exact: true }).click();
+  await page.getByRole("link", { name: "Rotas", exact: true }).click();
   await page.getByRole("button", { name: "Nova route" }).click();
   const route = page.getByRole("dialog", { name: "Nova route" });
   await route.getByLabel("Nome").fill("orders-api");

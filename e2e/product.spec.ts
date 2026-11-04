@@ -114,6 +114,9 @@ test("UI publication, key-auth traffic, viewer limits, audit and rollback on the
     await page.getByLabel("E-mail").fill(ADMIN.email);
     await page.getByLabel("Senha").fill(ADMIN.password);
     await page.getByRole("button", { name: "Entrar" }).click();
+    await expect(page.getByRole("heading", { name: "Visão geral da instância", exact: true })).toBeVisible();
+    await expect(page).toHaveURL("/");
+    await page.goto(`/e/${env.id}/services`);
     await page.getByLabel("Ambiente (legado)", { exact: true }).selectOption(env.id);
     await expect(page.getByRole("heading", { name: "Services", exact: true })).toBeVisible();
     // Also exercise /me with the cookie and SPA fallback against the production static server.
@@ -130,7 +133,7 @@ test("UI publication, key-auth traffic, viewer limits, audit and rollback on the
     expect((await serviceCreated).status()).toBe(201);
     await expect(service).toBeHidden();
 
-    await page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Routes", exact: true }).click();
+    await page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Rotas", exact: true }).click();
     await page.getByRole("button", { name: "Nova route" }).click();
     const route = page.getByRole("dialog", { name: "Nova route" });
     await route.getByLabel("Nome").fill(name);
@@ -197,6 +200,9 @@ test("UI publication, key-auth traffic, viewer limits, audit and rollback on the
       await viewerPage.getByLabel("E-mail").fill(`${name}@viewer.test`);
       await viewerPage.getByLabel("Senha").fill(viewerPassword);
       await viewerPage.getByRole("button", { name: "Entrar" }).click();
+      await expect(viewerPage.getByRole("heading", { name: "Visão geral da instância", exact: true })).toBeVisible();
+      await expect(viewerPage).toHaveURL("/");
+      await viewerPage.goto(`/e/${env.id}/services`);
       await viewerPage.getByLabel("Ambiente (legado)", { exact: true }).selectOption(env.id);
       await expect(viewerPage.getByRole("heading", { name: "Services", exact: true })).toBeVisible();
       await expect(viewerPage.getByRole("table", { name: "Services" }).getByText(name, { exact: true })).toBeVisible();
@@ -223,7 +229,7 @@ test("UI publication, key-auth traffic, viewer limits, audit and rollback on the
       await viewerEdit.getByRole("button", { name: "Cancelar" }).click();
       expect(await api<{ items: unknown[] }>("GET", `/environments/${env.id}/services`, 200)).toEqual(servicesBefore);
       const routesBefore = await api<{ items: unknown[] }>("GET", `/environments/${env.id}/routes`, 200);
-      await viewerPage.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Routes", exact: true }).click();
+      await viewerPage.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Rotas", exact: true }).click();
       await viewerPage.getByRole("button", { name: "Nova route" }).click();
       const viewerRoute = viewerPage.getByRole("dialog", { name: "Nova route" });
       await viewerRoute.getByLabel("Nome").fill(`${name}-viewer`);

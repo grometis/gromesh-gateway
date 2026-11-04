@@ -1,4 +1,5 @@
 import { navigateGlobal, openGlobalMenu } from "./global-navigation";
+import { openGateway } from "./gateway-sidebar";
 import AxeBuilder from "@axe-core/playwright";
 import type { Page } from "@playwright/test";
 import { expect, mockSession, test } from "./fixtures";
@@ -20,14 +21,14 @@ async function signIn(page: Page, user: Me) {
   for (const e of [prod, staging, sandbox]) await page.route(`**/api/v1/environments/${e.id}`, (route) => route.fulfill({ json: e }));
   await page.route("**/api/v1/environments/*/services*", (route) => route.fulfill({ json: { items: [], nextCursor: null } }));
   await page.route("**/api/v1/environments/*/consumers*", (route) => route.fulfill({ json: { items: [], nextCursor: null } }));
-  await page.goto("/login");
+  await page.goto(`/e/${prod.id}/services`);
   await page.getByLabel("E-mail").fill(user.email);
   await page.getByLabel("Senha").fill("s3nha-de-teste");
   await page.getByRole("button", { name: "Entrar" }).click();
   await expect(page.getByRole("heading", { name: "Services", exact: true })).toBeVisible();
   // A v1 screen: its actions follow the role in the environment on screen (the v2 gateway screens offer them to
   // everyone and leave the decision to the server).
-  await page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Consumers", exact: true }).click();
+  await (await openGateway(page)).getByRole("link", { name: "Consumidores", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Consumers", exact: true })).toBeVisible();
 }
 
