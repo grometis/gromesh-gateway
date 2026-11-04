@@ -58,6 +58,7 @@ async function setup(page: Page, options: { archived?: boolean; contextStatus?: 
       return json({ title: "Unexpected mutation", status: 500 }, 500);
     }
     for (const id of [A, B]) {
+      if (path === `/api/v2/workspaces/${id}/plugins`) return json(list([]));
       const base = `/api/v2/workspaces/${id}/consumers`;
       if (path === base) {
         if (options.listStatus) return json({ status: options.listStatus }, options.listStatus);
@@ -181,7 +182,7 @@ test("key-auth, JWT, basic-auth and ACL preserve one-time secrets and full-set r
   await expect(page.getByText("Nenhum grupo.", { exact: true })).toBeVisible();
   expect(fake.writes.at(-1)?.body).toEqual({ groups: [] });
   await page.getByRole("tab", { name: "Plugins", exact: true }).click();
-  await expect(page.getByText("Plugins por consumidor ainda não estão disponíveis no Workspace v2.")).toBeVisible();
+  await expect(page.getByText("Nenhum plugin neste consumidor.")).toBeVisible();
   expect(fake.writes.filter(r => r.path.endsWith("/rotate"))).toHaveLength(2);
   expect(fake.sent.some(r => r.path.startsWith("/api/v1/environments"))).toBe(false);
 });

@@ -16,6 +16,7 @@ import { Table } from "../components/Table";
 import { PageHeader } from "../components/PageHeader";
 import { EmptyState } from "../components/EmptyState";
 import { AclGroupsPanel, BasicAuthCredentials, JwtCredentials, RotateCredential } from "./ConsumerCredentials";
+import { ConsumerPlugins } from "./ConsumerPlugins";
 import { ScopedPlugins } from "./Plugins";
 import { splitList } from "./Services";
 
@@ -189,7 +190,7 @@ function CredentialsPanel(props: { envId: string; consumer: Consumer; canEdit: b
 
 function PluginsPanel({ envId, consumer }: { envId: string; consumer: Consumer; canEdit: boolean }) {
   const v2 = useIsWorkspaceRoute();
-  if (v2) return <section aria-label="Plugins do consumidor"><h2>Plugins do consumidor</h2><p>Plugins por consumidor ainda não estão disponíveis no Workspace v2.</p></section>;
+  if (v2) return <ConsumerPlugins key={`${envId}/${consumer.id}`} workspaceId={envId} consumerId={consumer.id} consumerName={consumerName(consumer)} />;
   return <ScopedPlugins envId={envId} scope={{ kind: "consumer", id: consumer.id }} title="Plugins do consumidor" />;
 }
 
