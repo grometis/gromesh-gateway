@@ -1,0 +1,9 @@
+# Captured from timberio/vector:0.57.0-alpine; timestamps identify scrapes, not event times.
+vector_buffer_max_size_events{buffer_id="requests",buffer_type="memory",component_id="requests",component_kind="sink",component_type="clickhouse",host="eec9208c144b",stage="0"} 10000 1793452517117
+vector_component_errors_total{component_id="kong",component_kind="source",component_type="http_server",error_type="connection_failed",host="eec9208c144b",stage="receiving"} 1 1793452517117
+vector_component_errors_total{component_id="kong",component_kind="source",component_type="http_server",error_code="http_response_401",error_stage="receiving",error_type="request_failed",host="eec9208c144b"} 1 1793452517117
+vector_component_received_events_total{component_id="decode",component_kind="transform",component_type="remap",host="eec9208c144b"} 0 1793452517117
+vector_component_received_events_total{component_id="requests",component_kind="sink",component_type="clickhouse",host="eec9208c144b"} 0 1793452517117
+vector_component_sent_events_total{component_id="decode",component_kind="transform",component_type="remap",host="eec9208c144b",output="_default"} 0 1793452517117
+vector_component_sent_events_total{component_id="kong",component_kind="source",component_type="http_server",host="eec9208c144b",output="_default"} 0 1793452517117
+vector_uptime_seconds{host="eec9208c144b"} 35 1793452517117

@@ -1,3 +1,4 @@
+import { clusterAnalytics, clusterHealth, healthOf, type AnalyticsHealth, type CollectorTokenFingerprints } from "../analytics/collector-health.js";
 import { Body, Controller, Get, HttpCode, Inject, Injectable, Module, Param, Post, Put, Req, Res, UseGuards } from "@nestjs/common";
 import { jcs, type KongDeclarativeConfig } from "@gromesh/compiler";
 import type { Request, Response } from "express";
@@ -53,6 +54,8 @@ export interface StatusReportV2 {
   kongConfigHash?: string | null;
   kongHealthy: boolean;
   analytics?: string;
+  analyticsHealth?: AnalyticsHealth;
+  collectorTokenFingerprints?: CollectorTokenFingerprints;
   isolationState?: string;
 }
 
@@ -200,6 +203,12 @@ export class DeliveryService {
       await isolationLock(tx, unlocked.id);
       const { cluster, node } = await this.gateway.node(tx, bearer(req), true);
       if (body.nodeId !== node.nodeId) throw unprocessable("Node identity does not match token", [{ path: "nodeId", message: "must match the registered node" }]);
+      if (body.analyticsHealth) {
+        const expected = healthOf(body.analyticsHealth);
+        if (expected.state !== body.analyticsHealth.state || expected.reasons.length !== body.analyticsHealth.reasons.length || expected.reasons.some((reason) => !body.analyticsHealth!.reasons.includes(reason))) {
+          throw unprocessable("Analytics health does not match its counters", [{ path: "analyticsHealth", message: "must follow the healthOf reading" }]);
+        }
+      }
       await this.deliverable(tx, cluster);
       const current = await latestDeployment(tx);
       const epoch = current?.epoch ?? 1;
@@ -223,6 +232,9 @@ export class DeliveryService {
       await tx
         .update(clusterNodes)
         .set({
+          analyticsHealth: body.analyticsHealth ?? null,
+          analyticsReceivedAt: sql`clock_timestamp()`,
+          collectorTokenFingerprints: body.collectorTokenFingerprints ?? null,
           epoch: body.epoch,
           appliedRevision: body.appliedRevision,
           deploymentHash: body.appliedHash,
@@ -245,6 +257,12 @@ export class DeliveryService {
           after: { clusterId: cluster.id, epoch: body.epoch, state, appliedRevision: body.appliedRevision, failedRevision: body.failedRevision ?? null, failureReason: body.failureReason ?? null, kongHealthy: body.kongHealthy },
         });
       }
+      if (body.analyticsHealth || body.collectorTokenFingerprints || node.analyticsHealth || node.collectorTokenFingerprints) {
+        await audit(tx, agentContext(req, node.nodeId), { action: "agent.analytics", entityType: "node", entityId: node.nodeId, environmentId: cluster.environmentId, after: { clusterId: cluster.id, state: body.analyticsHealth?.state ?? "unknown", reasons: body.analyticsHealth?.reasons ?? [] } });
+      }
+      const healthNodes = await tx.select().from(clusterNodes).where(eq(clusterNodes.clusterId, cluster.id));
+      const analytics = clusterHealth(healthNodes, await clock(tx));
+      await this.recordAnalytics(tx, cluster, analytics.state, agentContext(req, node.nodeId));
       await this.evaluate(tx);
       return null;
     });
@@ -506,12 +524,30 @@ export class DeliveryService {
     });
   }
 
+  async listClusters() {
+    return this.db.transaction(async (tx) => {
+      const rows = await tx.select().from(clusters).orderBy(clusters.id).for("update");
+      return { items: await Promise.all(rows.map((cluster) => this.toInstanceCluster(tx, cluster, []))) };
+    });
+  }
+
   /** A cluster as the instance sees it now (InstanceCluster): its status from current evidence only (D-3). */
   async clusterView(clusterId: string) {
     return this.db.transaction(async (tx) => {
-      const [cluster] = await tx.select().from(clusters).where(eq(clusters.id, clusterId));
+      const [cluster] = await tx.select().from(clusters).where(eq(clusters.id, clusterId)).for("update");
       if (!cluster) throw notFound("Cluster");
       return this.toInstanceCluster(tx, cluster, []);
+    });
+  }
+
+  private async recordAnalytics(tx: Executor, cluster: ClusterRow, state: AnalyticsHealth["state"], ctx: RequestContext = SYSTEM) {
+    const degraded = state === "degraded";
+    if (cluster.analyticsDegraded === degraded) return;
+    await tx.update(clusters).set({ analyticsDegraded: degraded }).where(eq(clusters.id, cluster.id));
+    await audit(tx, ctx, {
+      action: degraded ? "cluster.analytics.degraded" : "cluster.analytics.cleared",
+      entityType: "cluster", entityId: cluster.id, environmentId: cluster.environmentId,
+      after: { state },
     });
   }
 
@@ -523,6 +559,9 @@ export class DeliveryService {
   private async toInstanceCluster(tx: Executor, cluster: ClusterRow, views: NodeView[]) {
     const now = await clock(tx);
     const nodes = await tx.select().from(clusterNodes).where(eq(clusterNodes.clusterId, cluster.id)).orderBy(clusterNodes.nodeId);
+    // The cluster row is locked by every caller: expiring a stale degraded report is audited once as unknown,
+    // without interpreting silence as recovery or changing the gateway's convergence state.
+    await this.recordAnalytics(tx, cluster, clusterHealth(nodes, now).state);
     const online = (n: ClusterNodeRow) => now.getTime() - n.lastSeenAt.getTime() <= OFFLINE_SECONDS * 1000;
     const evidence = new Map(views.filter((v) => v.clusterId === cluster.id).map((v) => [v.nodeId, v.evidence]));
     const dep = cluster.deliveryProtocol === "v2" ? await latestDeployment(tx) : undefined;
@@ -549,6 +588,7 @@ export class DeliveryService {
       id: cluster.id,
       name: cluster.name,
       status,
+      analytics: await clusterAnalytics(tx, cluster.id, now),
       nodes: nodes.map((n) => ({
         nodeId: n.nodeId,
         hostname: n.hostname,
@@ -592,6 +632,10 @@ export class AgentDeploymentsController {
 @Controller("api/v2/clusters")
 export class DeliveryProtocolController {
   constructor(private readonly delivery: DeliveryService) {}
+
+  @Get()
+  @RequiredPermission("instance.read", "instance")
+  list() { return this.delivery.listClusters(); }
 
   @Put(":clusterId/delivery-protocol")
   @SessionOnly()
