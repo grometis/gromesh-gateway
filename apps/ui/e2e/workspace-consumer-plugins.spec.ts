@@ -297,3 +297,35 @@ test("a late save does not close another association dialog", async ({ page }) =
   await expect(page.getByRole("dialog", { name: "Escolha um plugin" })).toBeVisible();
   expect(heldWrites).toBe(1);
 });
+
+for (const delayedDetail of [false, true]) test(`closing during save and reopening waits for commit (delayed detail ${delayedDetail})`, async ({ page }) => {
+  const fake = await setup(page); await open(page);
+  await page.getByRole("button", { name: "Editar rate-limiting" }).click();
+  await expect(page.getByLabel("minute", { exact: false })).toHaveValue("10");
+  await page.getByLabel("minute", { exact: false }).fill("25");
+  let releaseWrite!: () => void, releaseDetail!: () => void;
+  const writeGate = new Promise<void>(resolve => { releaseWrite = resolve; });
+  const detailGate = new Promise<void>(resolve => { releaseDetail = resolve; });
+  let writes = 0, reads = 0;
+  await page.route(`**/api/v2/workspaces/${A}/plugins/${P}`, async route => {
+    if (route.request().method() === "PUT") { writes++; await writeGate; }
+    if (route.request().method() === "GET") { reads++; if (delayedDetail) await detailGate; }
+    return route.fallback();
+  });
+  try {
+    await page.getByRole("button", { name: "Salvar no rascunho" }).click();
+    await expect.poll(() => writes).toBe(1);
+    await page.getByRole("button", { name: "Fechar", exact: true }).click();
+    await page.getByRole("button", { name: "Editar rate-limiting" }).click();
+    await expect(page.getByRole("dialog").getByRole("status")).toHaveText("Carregando plugin…");
+    await expect(page.getByRole("button", { name: "Salvar no rascunho" })).toHaveCount(0);
+    expect(reads).toBe(0);
+    releaseWrite();
+    await expect.poll(() => reads).toBe(1);
+    releaseDetail();
+    await expect(page.getByLabel("minute", { exact: false })).toHaveValue("25");
+    await page.getByRole("button", { name: "Salvar no rascunho" }).click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    expect(fake.writes.map(w => (w.body?.config as Record<string, unknown>)?.minute)).toEqual([25, 25]);
+  } finally { releaseWrite(); releaseDetail(); }
+});

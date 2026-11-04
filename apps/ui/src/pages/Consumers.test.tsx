@@ -373,6 +373,133 @@ it("does not submit after workspace is invalidated while confirming the consumer
 });
 
 describe.each(["consumer", "workspace"] as const)("shared plugin editor in %s", context => {
+  it.each([204, 403])("a late deletion cannot close or put errors in a newer confirmation (HTTP %s)", async status => {
+    const transport = pluginTransport();
+    const second = { ...consumerPlugin, id: B, name: "request-size-limiting" };
+    let release!: () => void;
+    const view = await mount(context === "workspace" ? "plugins" : undefined, { respond: request => {
+      const path = new URL(request.url).pathname;
+      if (request.method === "GET" && path.endsWith("/plugins")) return Response.json(pageOf([consumerPlugin, second]));
+      if (request.method === "DELETE") return new Promise<Response>(resolve => { release = () => resolve(status === 204 ? new Response(null, { status }) : Response.json({ status, title: "Forbidden" }, { status })); });
+      return transport(request);
+    } });
+    if (context === "consumer") { await view.waitText("Nenhuma credencial basic-auth."); await view.click("Plugins"); }
+    await view.waitText("request-size-limiting");
+    const menu = async (name: string) => {
+      const node = view.container.findAll(n => n.tagName === "BUTTON" && (n.getAttribute("aria-label") ?? "").startsWith(`Mais ações para ${name}`))[0]!;
+      await act(async () => { node.dispatchEvent(new Event("click", { bubbles: true })); await tick(); });
+      await view.click("Excluir");
+    };
+    await menu("rate-limiting"); await view.click("Excluir"); await vi.waitFor(() => expect(release).toBeDefined());
+    await view.click("Cancelar"); await menu("request-size-limiting");
+    await act(async () => { release(); await tick(); }); await view.settle();
+    const dialogs = view.container.findAll(n => n.getAttribute("role") === "dialog");
+    expect(dialogs).toHaveLength(1);
+    expect(dialogs[0]!.textContent).toContain("request-size-limiting");
+    expect(dialogs[0]!.findAll(n => n.getAttribute("role") === "alert")).toHaveLength(0);
+    expect(view.requests.filter(r => r.method === "DELETE")).toHaveLength(1);
+  });
+
+  it("a save completing after close preserves the next editor and its unsaved configuration", async () => {
+    let release!: (response: Response) => void;
+    const transport = pluginTransport();
+    const view = await mount(context === "workspace" ? "plugins" : undefined, { respond: request =>
+      request.method === "PUT" && request.url.includes("/plugins/")
+        ? new Promise<Response>(resolve => { release = resolve; }) : transport(request) });
+    if (context === "consumer") { await view.waitText("Nenhuma credencial basic-auth."); await view.click("Plugins"); }
+    await view.waitText("rate-limiting"); await view.click("Editar rate-limiting"); await view.waitText("Salvar no rascunho");
+    await view.submit(); await vi.waitFor(() => expect(release).toBeDefined());
+    await view.click("Fechar"); await view.click(context === "consumer" ? "Associar plugin" : "Novo plugin");
+    await view.waitText("Controle de tráfego"); await view.click("rate-limiting"); await view.waitText("Salvar no rascunho");
+    const minute = view.container.findAll(n => n.tagName === "INPUT" && n.type === "number")[0]!;
+    await act(async () => { minute.value = "31"; minute.dispatchEvent(new Event("input", { bubbles: true })); await tick(); });
+    await act(async () => { release(Response.json(consumerPlugin)); await tick(); });
+    await view.settle();
+    expect(view.container.findAll(n => n.getAttribute("role") === "dialog")).toHaveLength(1);
+    expect(minute.parentNode).not.toBeNull();
+    expect(view.container.findAll(n => n.tagName === "INPUT" && n.type === "number")[0]!.value).toBe("31");
+    expect(view.requests.filter(r => r.method === "PUT")).toHaveLength(1);
+  });
+
+  it.each([false, true])("reopening during a pending save waits for commit before its detail read (delayed detail %s)", async delayed => {
+    const transport = pluginTransport();
+    let releaseWrite!: () => void, releaseDetail!: () => void;
+    let stored = consumerPlugin, writing = false, detailReads = 0;
+    const view = await mount(context === "workspace" ? "plugins" : undefined, { respond: request => {
+      const path = new URL(request.url).pathname;
+      if (path === `/api/v2/workspaces/${A}/plugins/${A}` && request.method === "PUT") {
+        writing = true;
+        return new Promise<Response>(resolve => { releaseWrite = () => { stored = { ...consumerPlugin, config: { minute: 25, password: "REDACTED" } }; resolve(Response.json(stored)); }; });
+      }
+      if (path === `/api/v2/workspaces/${A}/plugins/${A}` && request.method === "GET") {
+        detailReads++;
+        const snapshot = stored;
+        return writing && delayed ? new Promise<Response>(resolve => { releaseDetail = () => resolve(Response.json(snapshot)); }) : Response.json(snapshot);
+      }
+      return transport(request);
+    } });
+    try {
+      if (context === "consumer") { await view.waitText("Nenhuma credencial basic-auth."); await view.click("Plugins"); }
+      await view.waitText("rate-limiting"); await view.click("Editar rate-limiting"); await view.waitText("Salvar no rascunho");
+      const minute = view.container.findAll(n => n.tagName === "INPUT" && n.type === "number")[0]!;
+      await act(async () => { minute.value = "25"; minute.dispatchEvent(new Event("input", { bubbles: true })); await tick(); });
+      await view.submit(); await vi.waitFor(() => expect(releaseWrite).toBeDefined());
+      await view.click("Fechar"); await view.click("Editar rate-limiting"); await view.settle();
+      expect(view.find("Salvar no rascunho")).toBeUndefined();
+      expect(detailReads).toBe(1);
+      await act(async () => { releaseWrite(); await tick(); });
+      if (delayed) { await vi.waitFor(() => expect(releaseDetail).toBeDefined()); await act(async () => { releaseDetail(); await tick(); }); }
+      await view.waitText("Salvar no rascunho");
+      expect(view.container.findAll(n => n.tagName === "INPUT" && n.type === "number")[0]!.value).toBe("25");
+      expect(detailReads).toBe(2);
+      await view.click("Fechar");
+      expect(view.requests.filter(r => r.method === "PUT")).toHaveLength(1);
+    } finally { releaseWrite?.(); releaseDetail?.(); await view.settle(); }
+  });
+
+  it("cancels the first opening read and ignores its response after a second opening", async () => {
+    const transport = pluginTransport();
+    const pending: { request: Request; resolve: (response: Response) => void }[] = [];
+    const view = await mount(context === "workspace" ? "plugins" : undefined, { respond: request =>
+      request.method === "GET" && new URL(request.url).pathname === `/api/v2/workspaces/${A}/plugins/${A}`
+        ? new Promise<Response>(resolve => { pending.push({ request, resolve }); }) : transport(request) });
+    if (context === "consumer") { await view.waitText("Nenhuma credencial basic-auth."); await view.click("Plugins"); }
+    await view.waitText("rate-limiting"); await view.click("Editar rate-limiting");
+    await vi.waitFor(() => expect(pending).toHaveLength(1));
+    await view.click("Fechar"); await view.click("Editar rate-limiting");
+    await vi.waitFor(() => expect(pending).toHaveLength(2));
+    expect(pending[0]!.request.signal.aborted).toBe(true);
+    await act(async () => { pending[1]!.resolve(Response.json({ ...consumerPlugin, config: { minute: 25 } })); await tick(); });
+    await view.waitText("Salvar no rascunho");
+    const minute = view.container.findAll(n => n.tagName === "INPUT" && n.type === "number")[0]!;
+    await act(async () => { minute.value = "31"; minute.dispatchEvent(new Event("input", { bubbles: true })); pending[0]!.resolve(Response.json(consumerPlugin)); await tick(); });
+    await view.settle();
+    expect(view.container.findAll(n => n.tagName === "INPUT" && n.type === "number")[0]!.value).toBe("31");
+    await view.click("Fechar");
+    expect(view.requests.filter(r => r.method === "PUT")).toHaveLength(0);
+  });
+
+  it.each(["success", "503", "network"] as const)("a late background detail never replaces unsaved fields (%s)", async outcome => {
+    const transport = pluginTransport();
+    let hold = false, release!: (response: Response) => void, reject!: (error: Error) => void;
+    const view = await mount(context === "workspace" ? "plugins" : undefined, { respond: request =>
+      hold && request.method === "GET" && new URL(request.url).pathname === `/api/v2/workspaces/${A}/plugins/${A}`
+        ? new Promise<Response>((resolve, fail) => { release = resolve; reject = fail; }) : transport(request) });
+    if (context === "consumer") { await view.waitText("Nenhuma credencial basic-auth."); await view.click("Plugins"); }
+    await view.waitText("rate-limiting"); await view.click("Editar rate-limiting"); await view.waitText("Salvar no rascunho");
+    const minute = view.container.findAll(n => n.tagName === "INPUT" && n.type === "number")[0]!;
+    await act(async () => { minute.value = "31"; minute.dispatchEvent(new Event("input", { bubbles: true })); await tick(); });
+    hold = true;
+    let refreshed!: Promise<void>;
+    await act(async () => { refreshed = client.refetchQueries({ queryKey: ["ws-plugin", A] }); await tick(); });
+    await vi.waitFor(() => expect(release).toBeDefined());
+    await act(async () => { if (outcome === "network") reject(new TypeError("Network failure")); else release(outcome === "success" ? Response.json({ ...consumerPlugin, config: { minute: 99 } }) : Response.json({ status: 503, title: "Unavailable" }, { status: 503 })); await refreshed; await tick(); });
+    expect(view.container.findAll(n => n.tagName === "INPUT" && n.type === "number")[0]!.value).toBe("31");
+    await view.submit();
+    await vi.waitFor(() => expect(view.requests.filter(r => r.method === "PUT")).toHaveLength(1));
+    expect(await view.requests.find(r => r.method === "PUT")!.json()).toMatchObject({ config: { minute: 31 } });
+  });
+
   it.each([200, 404])("reads detail once per opening and revalidates after save (detail HTTP %s)", async status => {
     let stored = consumerPlugin;
     let saved = false, holdDetail = true;
@@ -438,4 +565,23 @@ describe.each(["consumer", "workspace"] as const)("shared plugin editor in %s", 
       await view.settle();
     }
   });
+});
+
+it("a late detail for another consumer cannot populate the current consumer editor", async () => {
+  const transport = pluginTransport();
+  let release!: (response: Response) => void;
+  const view = await mount(undefined, { respond: request => {
+    const url = new URL(request.url);
+    if (url.pathname.endsWith(`/consumers/${B}`)) return Response.json({ ...consumer, id: B, username: "other-consumer" });
+    if (url.pathname.endsWith("/plugins") && url.searchParams.get("consumerId") === B) return Response.json(pageOf([{ ...consumerPlugin, id: B, scope: { consumerId: B }, config: { minute: 45 } }]));
+    if (url.pathname.endsWith(`/plugins/${B}`)) return Response.json({ ...consumerPlugin, id: B, scope: { consumerId: B }, config: { minute: 45 } });
+    if (url.pathname.endsWith(`/plugins/${A}`)) return new Promise<Response>(resolve => { release = resolve; });
+    return transport(request);
+  } });
+  await view.waitText("Nenhuma credencial basic-auth."); await view.click("Plugins"); await view.waitText("rate-limiting"); await view.click("Editar rate-limiting");
+  await vi.waitFor(() => expect(release).toBeDefined());
+  await view.navigate(`/workspaces/${A}/consumers/${B}`); await view.waitText("Nenhuma credencial basic-auth."); await view.click("Plugins"); await view.waitText("rate-limiting"); await view.click("Editar rate-limiting"); await view.waitText("Salvar no rascunho");
+  await act(async () => { release(Response.json(consumerPlugin)); await tick(); }); await view.settle();
+  expect(view.container.findAll(n => n.tagName === "INPUT" && n.type === "number")[0]!.value).toBe("45");
+  expect(view.requests.filter(r => r.method === "PUT")).toHaveLength(0);
 });

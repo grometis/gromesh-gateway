@@ -22,18 +22,23 @@ export function ConsumerPlugins({ workspaceId, consumerId, consumerName }: { wor
     initialPageParam: "", getNextPageParam: page => page.nextCursor ?? undefined });
   const [editing, setEditing] = useState<Plugin | "new" | null>(null);
   const [deleting, setDeleting] = useState<Plugin | null>(null);
+  const deletion = useRef(0);
+  useEffect(() => () => { deletion.current++; }, []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const invalidate = () => {
     void client.invalidateQueries({ queryKey: ["ws-plugin", workspaceId], refetchType: "none" });
     for (const family of ["ws-plugins", "plugins", "environment", "preview"]) void client.invalidateQueries({ queryKey: [family, workspaceId] });
   };
+  const closeDeletion = () => { deletion.current++; setDeleting(null); setBusy(false); };
+  const openDeletion = (plugin: Plugin) => { deletion.current++; setError(null); setBusy(false); setDeleting(plugin); };
   const remove = async () => {
     if (!deleting || busy || !canWriteWorkspaceGateway(client, workspaceId, true)) return;
+    const operation = deletion.current;
     setBusy(true); setError(null);
-    try { await removeConsumerPlugin(workspaceId, consumerId, deleting.id, () => { if (!canWriteWorkspaceGateway(client, workspaceId, true)) throw new ApiError(403, undefined); }); invalidate(); if (mounted.current) setDeleting(null); }
-    catch (err) { if (mounted.current) { const errors = workspacePluginErrors(err); setError([...errors.form, ...Object.values(errors.fields).flat()].join(" ")); } }
-    finally { if (mounted.current) setBusy(false); }
+    try { await removeConsumerPlugin(workspaceId, consumerId, deleting.id, () => { if (!canWriteWorkspaceGateway(client, workspaceId, true)) throw new ApiError(403, undefined); }); invalidate(); if (mounted.current && operation === deletion.current) setDeleting(null); }
+    catch (err) { if (mounted.current && operation === deletion.current) { const errors = workspacePluginErrors(err); setError([...errors.form, ...Object.values(errors.fields).flat()].join(" ")); } }
+    finally { if (mounted.current && operation === deletion.current) setBusy(false); }
   };
   const items = plugins.data?.pages.flatMap(p => p.items) ?? [];
   return <section aria-label="Plugins do consumidor" className="gateway-list">
@@ -45,10 +50,10 @@ export function ConsumerPlugins({ workspaceId, consumerId, consumerName }: { wor
     {plugins.isSuccess && !items.length && <EmptyState title="Nenhum plugin neste consumidor." text="Associe um plugin compatível para configurar o comportamento deste consumidor." />}
     {!!items.length && <Table label="Plugins do consumidor" cards><thead><tr><th>Plugin</th><th>Ativo</th>{access.canWrite && <th aria-label="Ações" />}</tr></thead><tbody>{items.map(p => {
       const allowed = consumerPluginAllowed({ name: p.name, category: "other", source: "bundled", supportedInDbless: true }) && !p.tags?.some(t => t.startsWith("gromesh-")) && !Object.keys(consumerPluginConfigErrors(p.name, p.config ?? {})).length;
-      return <tr key={p.id}><td className="row-main"><span className="mono">{p.name}</span>{(p.scope?.serviceId || p.scope?.routeId) && <small className="muted"> · Escopo combinado (preservado)</small>}{!allowed && <small className="muted"> · Gerenciado pela plataforma (somente leitura)</small>}</td><td><Badge tone={p.enabled === false ? "off" : "converged"}>{p.enabled === false ? "Não" : "Sim"}</Badge></td>{access.canWrite && <td className="actions">{allowed && <><Button variant="quiet" aria-label={`Editar ${p.name}`} onClick={() => setEditing(p)}>Editar</Button><RowMenu label={`Mais ações para ${p.name}`} items={[{ label: "Excluir", danger: true, onSelect: () => { setError(null); setDeleting(p); } }]} /></>}</td>}</tr>;
+      return <tr key={p.id}><td className="row-main"><span className="mono">{p.name}</span>{(p.scope?.serviceId || p.scope?.routeId) && <small className="muted"> · Escopo combinado (preservado)</small>}{!allowed && <small className="muted"> · Gerenciado pela plataforma (somente leitura)</small>}</td><td><Badge tone={p.enabled === false ? "off" : "converged"}>{p.enabled === false ? "Não" : "Sim"}</Badge></td>{access.canWrite && <td className="actions">{allowed && <><Button variant="quiet" aria-label={`Editar ${p.name}`} onClick={() => setEditing(p)}>Editar</Button><RowMenu label={`Mais ações para ${p.name}`} items={[{ label: "Excluir", danger: true, onSelect: () => openDeletion(p) }]} /></>}</td>}</tr>;
     })}</tbody></Table>}
     {plugins.hasNextPage && <Button disabled={plugins.isFetchingNextPage} onClick={() => void plugins.fetchNextPage()}>Carregar mais</Button>}
     {editing && <PluginEditor workspaceId={workspaceId} current={editing === "new" ? null : editing} fixedConsumer={{ id: consumerId, name: consumerName }} onClose={() => setEditing(null)} onSaved={active => { invalidate(); if (active && mounted.current) setEditing(null); }} />}
-    {deleting && <ConfirmDialog title="Excluir plugin" message={<>Excluir <strong>{deleting.name}</strong> do rascunho deste consumidor?</>} confirmLabel="Excluir" confirmDisabled={!access.canWrite} busy={busy} error={error} onClose={() => setDeleting(null)} onConfirm={() => void remove()} />}
+    {deleting && <ConfirmDialog title="Excluir plugin" message={<>Excluir <strong>{deleting.name}</strong> do rascunho deste consumidor?</>} confirmLabel="Excluir" confirmDisabled={!access.canWrite} busy={busy} error={error} onClose={closeDeletion} onConfirm={() => void remove()} />}
   </section>;
 }

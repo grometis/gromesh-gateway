@@ -12,6 +12,7 @@ import { Badge, DraftBadge } from "../components/Badge";
 import { RowMenu } from "../components/RowMenu";
 import { consumerPluginAllowed, consumerPluginConfigErrors, consumerPluginMessage, getConsumerPlugin, saveConsumerPlugin } from "./consumer-plugins";
 import { ConsumerPluginPicker } from "./ConsumerPluginPicker";
+import { beginPluginWrite, waitForPluginWrites } from "./plugin-editor-writes";
 import { canWriteWorkspaceGateway } from "./workspace-gateway";
 import { CatalogPicker } from "../components/PluginCatalog";
 import { useEntityDraft } from "./Services";
@@ -121,23 +122,28 @@ export function WorkspacePlugins({ workspaceId }: { workspaceId: string }) {
   });
   const [editing, setEditing] = useState<Plugin | "new" | null>(null);
   const [deleting, setDeleting] = useState<Plugin | null>(null);
+  const deletion = useRef(0);
+  useEffect(() => () => { deletion.current++; }, []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const invalidate = () => {
     void client.invalidateQueries({ queryKey: ["ws-plugin", workspaceId], refetchType: "none" });
     for (const key of ["ws-plugins", "plugins", "environment", "preview"]) void client.invalidateQueries({ queryKey: [key, workspaceId] });
   };
+  const closeDeletion = () => { deletion.current++; setDeleting(null); setBusy(false); };
+  const openDeletion = (plugin: Plugin) => { deletion.current++; setError(null); setBusy(false); setDeleting(plugin); };
   const remove = async () => {
     if (!access.canWrite || !deleting || busy) return;
+    const operation = deletion.current;
     setBusy(true); setError(null);
     try {
       await unwrap(apiV2.DELETE("/workspaces/{workspaceId}/plugins/{pluginId}", { params: { path: { workspaceId, pluginId: deleting.id } } }));
-      invalidate(); setDeleting(null);
+      invalidate(); if (operation === deletion.current) setDeleting(null);
     } catch (err) {
       const errors = workspacePluginErrors(err);
-      setError([...errors.form, ...Object.values(errors.fields).flat()].join(" "));
+      if (operation === deletion.current) setError([...errors.form, ...Object.values(errors.fields).flat()].join(" "));
     }
-    finally { setBusy(false); }
+    finally { if (operation === deletion.current) setBusy(false); }
   };
   const items = plugins.data?.pages.flatMap(page => page.items) ?? [];
   return <section className="final-page gateway-list">
@@ -166,23 +172,28 @@ export function WorkspacePlugins({ workspaceId }: { workspaceId: string }) {
           </div></td>
           <td className="plugin-state"><span className="visually-hidden">Ativo: </span><Badge tone={p.enabled === false ? "off" : "converged"}>{p.enabled === false ? "Não" : "Sim"}</Badge></td>
           {access.canWrite && <td className="actions">
-            {scoped && <><Button variant="quiet" aria-label={`Editar ${p.name}`} onClick={() => setEditing(p)}>Editar</Button><RowMenu label={`Mais ações para ${p.name} (${label})`} items={[{ label: "Excluir", danger: true, onSelect: () => { setError(null); setDeleting(p); } }]} /></>}
+            {scoped && <><Button variant="quiet" aria-label={`Editar ${p.name}`} onClick={() => setEditing(p)}>Editar</Button><RowMenu label={`Mais ações para ${p.name} (${label})`} items={[{ label: "Excluir", danger: true, onSelect: () => openDeletion(p) }]} /></>}
           </td>}
         </tr>;
       })}
     </tbody></Table>}
     {plugins.hasNextPage && <Button disabled={plugins.isFetchingNextPage} onClick={() => void plugins.fetchNextPage()}>Carregar mais</Button>}
-    {editing && <PluginEditor workspaceId={workspaceId} current={editing === "new" ? null : editing} onClose={() => setEditing(null)} onSaved={() => { invalidate(); setEditing(null); }} />}
-    {deleting && <ConfirmDialog title="Excluir plugin" message={<>Excluir <strong>{deleting.name}</strong> ({scopeLabel(deleting)}) do rascunho deste Workspace?</>} confirmLabel="Excluir" busy={busy} confirmDisabled={!access.canWrite} error={error} onConfirm={() => void remove()} onClose={() => setDeleting(null)} />}
+    {editing && <PluginEditor workspaceId={workspaceId} current={editing === "new" ? null : editing} onClose={() => setEditing(null)} onSaved={active => { invalidate(); if (active) setEditing(null); }} />}
+    {deleting && <ConfirmDialog title="Excluir plugin" message={<>Excluir <strong>{deleting.name}</strong> ({scopeLabel(deleting)}) do rascunho deste Workspace?</>} confirmLabel="Excluir" busy={busy} confirmDisabled={!access.canWrite} error={error} onConfirm={() => void remove()} onClose={closeDeletion} />}
   </section>;
 }
 
 export function PluginEditor({ workspaceId, current, onClose, onSaved, fixedConsumer }: { workspaceId: string; current: Plugin | null; onClose: () => void; onSaved: (active: boolean) => void; fixedConsumer?: { id: string; name: string } }) {
+  const client = useQueryClient();
+  const initialized = useRef(false);
   const fresh = useQuery({
     queryKey: ["ws-plugin", workspaceId, fixedConsumer?.id, current?.id],
-    queryFn: ({ signal }) => fixedConsumer
+    queryFn: async ({ signal }) => {
+      await waitForPluginWrites(client, workspaceId, current!.id, signal);
+      return fixedConsumer
       ? getConsumerPlugin(workspaceId, fixedConsumer.id, current!.id, signal)
-      : unwrap(apiV2.GET("/workspaces/{workspaceId}/plugins/{pluginId}", { params: { path: { workspaceId, pluginId: current!.id } }, signal })),
+      : unwrap(apiV2.GET("/workspaces/{workspaceId}/plugins/{pluginId}", { params: { path: { workspaceId, pluginId: current!.id } }, signal }));
+    },
     enabled: !!current, refetchOnMount: "always",
   });
   const [name, setName] = useState(current?.name ?? "");
@@ -191,10 +202,12 @@ export function PluginEditor({ workspaceId, current, onClose, onSaved, fixedCons
   if (!name) return fixedConsumer ? <ConsumerPluginPicker workspaceId={workspaceId} consumerId={fixedConsumer.id} onPick={setName} onClose={onClose} /> : <CatalogPicker onPick={setName} onClose={onClose} />;
   // Cached success can predate the last PUT. Initialize form state only after this opening's GET,
   // without remounting the form during later background refetches and discarding unsaved edits.
-  if (current && (!fresh.isSuccess || !fresh.isFetchedAfterMount)) return <Modal title="Editar plugin" onClose={onClose}>{fresh.isError ? <p role="alert" className="error">{consumerPluginMessage(fresh.error)}</p> : <p role="status">Carregando plugin…</p>}</Modal>;
+  if (fresh.isSuccess && fresh.isFetchedAfterMount) initialized.current = true;
+  if (current && !initialized.current) return <Modal title="Editar plugin" onClose={onClose}>{fresh.isError ? <p role="alert" className="error">{consumerPluginMessage(fresh.error)}</p> : <p role="status">Carregando plugin…</p>}</Modal>;
   const selected = catalog.data?.items.find(p => p.name === name);
   const compatible = !fixedConsumer || (consumerPluginAllowed(selected, schema.data) && !!schema.data && !(fresh.data?.tags?.some(t => t.startsWith("gromesh-"))) && (!fresh.data || (fresh.data.name === name && !Object.keys(consumerPluginConfigErrors(name, fresh.data.config ?? {})).length)));
   return <Modal title={current ? `Editar plugin ${current.name}` : "Novo plugin"} onClose={onClose} wide>
+    {current && fresh.isError && <p role="alert" className="error">{consumerPluginMessage(fresh.error)}</p>}
     <Field label="Plugin">{id => <select id={id} value={name} disabled={!!current || !!fixedConsumer} onChange={e => setName(e.target.value)}><option value="">Escolha um plugin</option>{catalog.data?.items.filter(p => !fixedConsumer || p.name === name).map(p => <option key={p.name} value={p.name} disabled={!p.supportedInDbless}>{p.name}{!p.supportedInDbless ? " (indisponível)" : ""}</option>)}</select>}</Field>
     {(catalog.isError || schema.isError) && <p className="error" role="alert">{fixedConsumer ? consumerPluginMessage(catalog.error ?? schema.error) : statusMessage(catalog.error ?? schema.error)}</p>}
     {schema.isFetching && <p role="status">Carregando schema…</p>}
@@ -224,6 +237,7 @@ function PluginForm({ workspaceId, name, schema, current, onSaved, fixedConsumer
     if (!Object.values(scope).some(Boolean)) fields.scope = ["Escolha ao menos um escopo deste Workspace."];
     if (Object.keys(fields).length || invalidJson.size) { setErrors({ fields, form: invalidJson.size ? ["Corrija os campos JSON inválidos."] : [] }); return; }
     setBusy(true); setErrors(NO_ERRORS);
+    const finishWrite = current ? beginPluginWrite(client, workspaceId, current.id) : undefined;
     try {
       const body: PluginWrite = {
         name, enabled, scope: Object.fromEntries(Object.entries(scope).filter(([, id]) => id)), config: configToSubmit(schema.config, config),
@@ -236,7 +250,7 @@ function PluginForm({ workspaceId, name, schema, current, onSaved, fixedConsumer
       if (mounted.current) setConfig({});
       onSaved(mounted.current);
     } catch (err) { if (mounted.current) setErrors(workspacePluginErrors(err, schema)); }
-    finally { if (mounted.current) setBusy(false); }
+    finally { finishWrite?.(); if (mounted.current) setBusy(false); }
   };
   return <form onSubmit={event => void submit(event)}>
     <FormErrorList messages={[...errors.form, ...(errors.fields.protocols ?? []), ...(errors.fields.tags ?? []), ...(fixedConsumer ? [...(errors.fields["scope.serviceId"] ?? []), ...(errors.fields["scope.routeId"] ?? [])] : [])]} />
