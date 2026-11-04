@@ -44,10 +44,15 @@ describe("Gateway sidebar interactions", () => {
   });
   it("describes unavailable links separately from their visible labels, expanded and collapsed", async () => {
     const view = await screen();
+    await act(async () => { await view.router.navigate("/workspaces/W/overview"); });
     for (const collapsed of [false, true]) {
       if (collapsed) await view.click(view.button("Recolher menu Gateway"));
+      const overview = view.all((n) => n.tagName === "A" && n.getAttribute("aria-label") === "Visão geral")[0]!;
+      expect(overview.getAttribute("href")).toBe("/workspaces/W/overview");
+      expect(overview.getAttribute("aria-current")).toBe("page");
+      expect(overview.getAttribute("aria-disabled")).toBeNull();
       const unavailable = view.all((n) => n.getAttribute("aria-disabled") === "true");
-      expect(unavailable).toHaveLength(4);
+      expect(unavailable.map((n) => n.getAttribute("aria-label"))).toEqual(["Consumidores", "Upstreams", "Certificados"]);
       for (const item of unavailable) {
         const reasonId = item.getAttribute("aria-describedby")!.split(" ")[0];
         const reason = view.all((n) => n.getAttribute("id") === reasonId)[0]!;
