@@ -204,6 +204,13 @@
       "when": 1793824577897,
       "tag": "0028_analytics_route_history",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1793825048460,
+      "tag": "0029_route_history_visibility",
+      "breakpoints": true
     }
   ]
 }
