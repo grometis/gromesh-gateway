@@ -42,7 +42,7 @@ export function releaseErrors(error: unknown): string[] {
     if (problemCode(error) === "workspace-archived") return "Workspace arquivado: publicação não permitida.";
     if (/nothing to publish|draft.*empty|empty draft/i.test(detail)) return "Sem alterações para publicar: o rascunho está vazio ou é igual à release ativa.";
     if (/active release|expected.*version/i.test(detail)) return "A release ativa mudou. Atualize a página e revise antes de publicar novamente.";
-    if (/lease/i.test(detail)) return "Um deployment está em andamento. Aguarde a liberação antes de publicar.";
+    if (/lease/i.test(detail)) return "Uma implantação está em andamento. Aguarde a liberação antes de publicar.";
     if (/instance stage/i.test(detail)) return "O estágio da instância diverge da configuração. Verifique com a administração.";
     if (/variable|VarRef|\$var/i.test(detail)) return /not declared|undeclared/i.test(detail)
       ? "A variável referenciada não está declarada neste Workspace."
@@ -79,10 +79,10 @@ function WorkspaceReleases({ workspaceId }: { workspaceId: string }) {
   };
   return <section className="final-page releases-page stack">
     <PageHeader title="Releases" description={`Releases do Workspace ${workspace.data?.name ?? "selecionado"}. Publicar uma release não implanta seu conteúdo.`}
-      actions={access.canWrite && <Button variant="publish" onClick={open}>Publicar release</Button>} />
+      actions={access.canWrite && <Button variant={confirm ? "secondary" : "publish"} onClick={open}>Publicar release</Button>} />
     {access.reason && <p role="status" className="note">{access.reason}</p>}
     {published !== null && <div role="status" className="stack">
-      <p>Release v{published} publicada. Nenhum deployment foi criado.</p>
+      <p>Release v{published} publicada. Nenhuma implantação foi criada.</p>
       <a href="#release-history">Ver histórico de Releases</a>
       {user?.role === "admin" && <p>Consulte a auditoria para verificar os efeitos nos valores locais deste Workspace.</p>}
     </div>}
@@ -100,17 +100,17 @@ function WorkspaceReleases({ workspaceId }: { workspaceId: string }) {
       <p>Histórico imutável: releases publicadas não podem ser editadas ou excluídas.</p>
       <p>{workspace.isError ? "Não foi possível consultar a release ativa."
         : !workspace.data ? "Consultando release ativa…"
-        : activeVersion === null ? "Nenhuma release ativa informada." : `Release ativa: v${activeVersion}. É o conteúdo selecionado para um futuro deployment, sem comprovação de implantação.`}</p>
+        : activeVersion === null ? "Nenhuma release ativa informada." : `Release ativa: v${activeVersion}. É o conteúdo selecionado para uma futura implantação, sem comprovação de implantação.`}</p>
       <ReleasesList workspaceId={workspaceId} activeVersion={activeVersion} />
     </section>
-    <section className="stack" aria-label="Deployment">
-      <h2>Deployment</h2>
-      <p>Deployment de Workspaces indisponível nesta fase</p>
-      <p className="muted">A consulta do deployment atual ainda está planejada no contrato. Não é possível informar qual release está implantada a partir de activeRelease.</p>
+    <section className="stack" aria-label="Implantação">
+      <h2>Implantação</h2>
+      <p>Implantação de Releases do Workspace indisponível nesta interface</p>
+      <p className="muted">A consulta da implantação atual ainda está planejada no contrato. Não é possível informar qual release está implantada a partir de activeRelease.</p>
     </section>
     <section className="stack" aria-label="Convergência">
       <h2>Convergência</h2>
-      <p>Convergência indisponível nesta fase: depende da consulta do deployment atual, ainda planejada. Uma release publicada não comprova aplicação nos nós.</p>
+      <p>Aplicação nos nós indisponível neste fluxo: a consulta da implantação atual ainda não está disponível. Uma release publicada não comprova aplicação nos nós.</p>
     </section>
     {confirm && <PublishRelease workspaceId={workspaceId} expectedVersion={confirm.expectedVersion}
       onClose={() => setConfirm(null)} onPublished={(r) => { setPublished(r.version); setConfirm(null); }} />}
@@ -159,7 +159,7 @@ function PublishRelease({ workspaceId, expectedVersion, onClose, onPublished }: 
       <InstanceContext label="Instância da publicação" />
       <p>Publicar nova Release: congela o rascunho atual; não implanta em nós.</p>
     </div>
-    <p>Publicar congela o rascunho em uma release imutável e a torna ativa para um futuro deployment. Publicar não implanta, não cria deployment e não altera os snapshots nem a publicação v1.</p>
+    <p>Publicar congela o rascunho em uma release imutável e a torna ativa para uma futura implantação. Publicar não implanta, não cria implantação e não altera os snapshots nem a publicação v1.</p>
     <div className="note stack" id={impactId}>
       <h3>Impacto nos valores locais</h3>
       <p>Valores locais de variáveis cujas declarações foram removidas do rascunho serão apagados ao publicar. Esta tela não consegue listar quais; consulte a auditoria depois.</p>

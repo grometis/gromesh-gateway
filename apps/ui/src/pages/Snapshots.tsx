@@ -42,7 +42,7 @@ function SnapshotHistory({ envId }: { envId: string }) {
 
   return (
     <section className="final-page publications-page">
-      <PageHeader title="Publicações" description="O histórico de versões publicadas e as alterações entre elas." />
+      <PageHeader title="Snapshots publicados (legado)" description="Histórico e diferenças dos snapshots do fluxo legado. Este histórico é separado das Releases do Workspace." />
       {published !== null && <p role="status">Rollback publicado como v{published}.</p>}
       {history.isPending && <p className="muted">Carregando histórico…</p>}
       {history.isError && (
@@ -53,7 +53,7 @@ function SnapshotHistory({ envId }: { envId: string }) {
       {history.isSuccess && items.length === 0 && <EmptyState title="Nenhuma publicação ainda." />}
       {items.length > 0 && (
         <div className="gateway-list">
-          <Table label="Publicações" cards>
+          <Table label="Snapshots publicados (legado)" cards>
             <thead>
               <tr>
                 <th>Versão → mensagem</th>
@@ -134,7 +134,7 @@ function SnapshotDetail({ envId, version }: { envId: string; version: number }) 
     <section className="final-page publications-page stack">
       <Link className="back-link" to={`/e/${envId}/publications`}>Voltar ao histórico</Link>
       <PageHeader
-        title={<>Publicação <span className="mono">v{version}</span></>}
+        title={<>Snapshot <span className="mono">v{version}</span></>}
         actions={canEdit && snapshot.isSuccess && (
           <Button variant="danger" onClick={() => setRestoring(true)}>
             Restaurar v{version}

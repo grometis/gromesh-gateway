@@ -102,7 +102,7 @@ function Explorer({ envId }: { envId: string }) {
           </>}
         </Field>
         <ScopeFilters envId={envId} routeId={form.routeId} serviceId={form.serviceId} onRoute={(v) => set("routeId", v)} onService={(v) => set("serviceId", v)} />
-        <Field label="Consumer" errors={errors.fields.consumerId}>
+        <Field label="Consumidor" errors={errors.fields.consumerId}>
           {(id) => (
             <select id={id} value={form.consumerId} onChange={(e) => set("consumerId", e.target.value)}>
               <option value="">Todos</option>
@@ -183,9 +183,9 @@ function RequestDetail({ record, onClose }: { record: RequestRecord; onClose: ()
     ["Cliente", record.clientIp],
     ["Tamanho da requisição", `${record.requestSize} bytes`],
     ["Tamanho da resposta", `${record.responseSize} bytes`],
-    ["Service", record.serviceId ?? "—"],
-    ["Route", record.routeId ?? "—"],
-    ["Consumer", record.consumerId ?? "—"],
+    ["Serviço", record.serviceId ?? "—"],
+    ["Rota", record.routeId ?? "—"],
+    ["Consumidor", record.consumerId ?? "—"],
     ["Cluster", record.clusterId],
     ["Id", record.id],
   ];

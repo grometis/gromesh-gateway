@@ -82,7 +82,7 @@ export function WorkspacesPage() {
     <section className="final-page identity-page">
       <PageHeader
         title="Workspaces"
-        description="Cada Workspace isola services, routes, consumers e plugins de um time nesta instância."
+        description="Cada Workspace isola serviços, rotas, consumidores e plugins de um time nesta instância."
         actions={<div className="identity-actions"><Link to="/" className="back-link">Abrir Visão geral da instância</Link>{policy.data?.caller.canCreate && (
           <Button variant="primary" onClick={() => { setNotice(null); setCreating(true); }}>Criar Workspace</Button>
         )}</div>}
@@ -150,7 +150,7 @@ function StatusBadge({ workspace }: { workspace: Workspace }) {
 export function Availability({ policy }: { policy: WorkspaceCreationPolicy }) {
   const lines: string[] = [];
   if (policy.workspacesMode === "disabled") {
-    lines.push("Workspaces em modo desativado nesta instância: a criação de Workspaces só existe no laboratório isolado autorizado. Deployment e ativação operacional de Workspaces estão indisponíveis.");
+    lines.push("Workspaces em modo desativado nesta instância: a criação de Workspaces só existe no laboratório isolado autorizado. Implantação e ativação operacional de Workspaces estão indisponíveis.");
   }
   if (policy.stage === "hml" || policy.stage === "prd") {
     lines.push(`Esta instância é ${STAGES[policy.stage]}. HML e PRD recebem Workspaces só por promoção; aqui não se cria Workspace.`);
@@ -166,7 +166,7 @@ export function Availability({ policy }: { policy: WorkspaceCreationPolicy }) {
   }
   return (
     <div className="note" role="note" aria-label="Disponibilidade">
-      <p>Laboratório isolado: um Workspace criado aqui não chega a nenhum data plane sem um deployment.</p>
+      <p>Laboratório isolado: um Workspace criado aqui não chega a nenhum data plane sem uma implantação.</p>
       {policy.caller.canRequest && !policy.caller.canCreate && <p>A solicitação de Workspaces ainda não está disponível nesta interface.</p>}
     </div>
   );

@@ -24,8 +24,8 @@ import { fieldText, useAllWorkspaceServices, useInvalidateWorkspaceGateway, useW
 const PROTOCOLS = ["http", "https", "grpc", "grpcs"] as const;
 type Protocol = (typeof PROTOCOLS)[number];
 const NO_ERRORS: FormErrors = { fields: {}, form: [] };
-const PATHLESS_LEGACY = "Esta route legada sem paths é somente leitura. Ela exige o fluxo legado apropriado ou uma conversão explícita e auditada; a tela v2 não a edita.";
-const LEGACY = "Route migrada de um environment: mantém o stripPath que tinha. A conversão para o padrão do Workspace é uma ação separada e nunca acontece ao salvar.";
+const PATHLESS_LEGACY = "Esta rota legada sem paths é somente leitura. Ela exige o fluxo legado apropriado ou uma conversão explícita e auditada; a tela v2 não a edita.";
+const LEGACY = "Rota migrada de um ambiente (legado): mantém o stripPath que tinha. A conversão para o padrão do Workspace é uma ação separada e nunca acontece ao salvar.";
 
 /** Keyed by the workspace: switching it remounts the screen, so no modal or form keeps the previous one's route. */
 export function RoutesPage() {
@@ -42,7 +42,7 @@ export function RoutesPage() {
 
 export function ScopedRoutes({ envId, service, readOnly = false }: { envId: string; service: { id: string; name: string }; readOnly?: boolean }) {
   return (
-    <section aria-label="Routes do service">
+    <section aria-label="Rotas do serviço">
       <RouteList key={envId} workspaceId={envId} serviceId={service.id} service={service} readOnly={readOnly} />
     </section>
   );
@@ -84,24 +84,24 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
   // No contract operation tells the caller's v2 permissions (a binding may grant gateway.write): every signed-in user
   // is offered actions when this workspace allows writes and the server decides (its 403 is shown in Portuguese).
   const createAction = canWrite && (
-    <Button variant="primary" onClick={() => setEditing("new")} disabled={serviceList.length === 0 || !slug} title={serviceList.length === 0 ? "Crie um service primeiro" : undefined}>
-      Nova route
+    <Button variant="primary" onClick={() => setEditing("new")} disabled={serviceList.length === 0 || !slug} title={serviceList.length === 0 ? "Crie um serviço primeiro" : undefined}>
+      Nova rota
     </Button>
   );
 
   return (
     <div className="gateway-list">
-      {service ? <div className="page-head"><h2>Routes do service</h2>{createAction}</div> : (
+      {service ? <div className="page-head"><h2>Rotas do serviço</h2>{createAction}</div> : (
         <>
-          <PageHeader title="Routes" description={v2 ? "Paths configurados e previsão para a configuração v2." : "Paths configurados, publicação no fluxo v1 e previsão para a configuração v2."} actions={createAction} />
+          <PageHeader title="Rotas" description={v2 ? "Paths configurados e previsão para a configuração v2." : "Paths configurados, publicação no fluxo v1 e previsão para a configuração v2."} actions={createAction} />
           <WorkspaceGatewayNote workspaceId={workspaceId} />
         </>
       )}
       {service && !readOnly && access.reason && <p role="status">{access.reason}</p>}
       <div className="gateway-filters">
-        <input type="search" className="search" placeholder="Buscar por nome, path ou host" aria-label="Buscar routes" value={search} onChange={(e) => setSearch(e.target.value)} />
-        {onServiceChange && <select aria-label="Filtrar por service" value={serviceId} onChange={(e) => onServiceChange(e.target.value)}>
-          <option value="">Todos os services</option>
+        <input type="search" className="search" placeholder="Buscar por nome, path ou host" aria-label="Buscar rotas" value={search} onChange={(e) => setSearch(e.target.value)} />
+        {onServiceChange && <select aria-label="Filtrar por serviço" value={serviceId} onChange={(e) => onServiceChange(e.target.value)}>
+          <option value="">Todos os serviços</option>
           {serviceList.map((s) => (
             <option key={s.id} value={s.id}>
               {s.name}
@@ -111,12 +111,12 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
       </div>
       {routes.isPending && <p className="muted">Carregando…</p>}
       {routes.isError && <p className="error">{statusMessage(routes.error)}</p>}
-      {routes.isSuccess && items.length === 0 && <EmptyState title="Nenhuma route encontrada." />}
+      {routes.isSuccess && items.length === 0 && <EmptyState title="Nenhuma rota encontrada." />}
       {items.length > 0 && (
-        <Table label={service ? "Routes do service" : "Routes"} cards>
+        <Table label={service ? "Rotas do serviço" : "Rotas"} cards>
           <thead>
             <tr>
-              <th>Route → configuração e publicação / service</th>
+              <th>Rota → configuração e publicação / serviço</th>
               {!readOnly && <th className="actions" aria-label="Ações" />}
             </tr>
           </thead>
@@ -129,7 +129,7 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
                     <DraftBadge change={draft.get(r.id)} />
                     {r.pathCompatibility === "legacy-preserved" && <Badge tone="warning">Legada</Badge>}
                     <span className="arrow" aria-hidden="true">→</span>
-                    <span className="muted">Service <span className="mono">{serviceName(r.serviceId)}</span></span>
+                    <span className="muted">Serviço <span className="mono">{serviceName(r.serviceId)}</span></span>
                   </div>
                   <RoutePaths route={r} slug={slug} servicePath={servicePath(r.serviceId)} publication={publication} />
                   <div className="route-matches">
@@ -147,7 +147,7 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
                     ) : (
                       <>
                         <Button variant="quiet" onClick={() => setDetails(r)}>Ver detalhes</Button>
-                        {v2 ? <Link to={`/workspaces/${workspaceId}/plugins`}>Plugins do Workspace</Link> : <Button variant="quiet" onClick={() => setPlugins(r)}>Plugins</Button>}
+                        {v2 ? <Link className="strip-link" to={`/workspaces/${workspaceId}/plugins`}>Plugins do Workspace</Link> : <Button variant="quiet" onClick={() => setPlugins(r)}>Plugins</Button>}
                         {canWrite && <>
                           <Button variant="quiet" onClick={() => setEditing(r)}>Editar</Button>
                           <RowMenu label={`Mais ações para ${r.name}`} items={[{ label: "Excluir", danger: true, onSelect: () => setDeleting(r) }]} />
@@ -195,7 +195,7 @@ const isPathlessLegacy = (route: WorkspaceRoute | null): boolean =>
 function RouteDetails({ route, serviceName, onClose, ...paths }: { route: WorkspaceRoute; serviceName: string; onClose: () => void; slug?: string; servicePath?: string | null; publication: ReturnType<typeof useRoutePublication> }) {
   const fields = [
     ["Nome", route.name],
-    ["Service", serviceName],
+    ["Serviço", serviceName],
     ["Paths", route.paths?.join(", ") || "—"],
     ["Hosts", route.hosts?.join(", ") || "—"],
     ["Métodos", route.methods?.join(", ") || "todos"],
@@ -221,7 +221,7 @@ function RouteDetails({ route, serviceName, onClose, ...paths }: { route: Worksp
 export function saveRouteMutation(workspaceId: string, route: WorkspaceRoute | null, invalidate: () => void, onSaved: (saved: WorkspaceRoute) => void) {
   return {
     mutationFn: (body: WorkspaceRouteWrite): Promise<WorkspaceRoute> => {
-      if (isPathlessLegacy(route)) throw new Error("Pathless legacy routes are read-only.");
+      if (isPathlessLegacy(route)) throw new Error("Rotas legadas sem paths são somente leitura.");
       return route
         ? unwrap(apiV2.PUT("/workspaces/{workspaceId}/routes/{routeId}", { params: { path: { workspaceId, routeId: route.id } }, body }))
         : unwrap(apiV2.POST("/workspaces/{workspaceId}/routes", { params: { path: { workspaceId } }, body }));
@@ -290,7 +290,7 @@ function RouteForm(props: { publication: ReturnType<typeof useRoutePublication>;
     save.reset();
     const fields: Record<string, string[]> = {
       ...(form.name.trim() ? {} : { name: ["Nome: campo obrigatório."] }),
-      ...(services.some((s) => s.id === form.serviceId) ? {} : { serviceId: ["Escolha um service deste Workspace."] }),
+      ...(services.some((s) => s.id === form.serviceId) ? {} : { serviceId: ["Escolha um serviço deste Workspace."] }),
       ...(paths.length > 0 ? {} : { paths: ["Informe ao menos um path."] }),
     };
     setLocal({ fields, form: [] });
@@ -311,12 +311,12 @@ function RouteForm(props: { publication: ReturnType<typeof useRoutePublication>;
   const toggleProtocol = (p: Protocol, on: boolean) => set("protocols", on ? [...form.protocols, p] : form.protocols.filter((x) => x !== p));
 
   return (
-    <Modal title={route ? `Editar ${route.name}` : "Nova route"} onClose={onClose}>
+    <Modal title={route ? `Editar ${route.name}` : "Nova rota"} onClose={onClose}>
       <form onSubmit={submit} className="form" noValidate>
         <Field label="Nome" errors={errors.fields.name}>
           {(id, invalid) => <input id={id} aria-invalid={invalid} value={form.name} onChange={(e) => set("name", e.target.value)} />}
         </Field>
-        <Field label="Service" errors={errors.fields.serviceId} hint="Só os services deste Workspace.">
+        <Field label="Serviço" errors={errors.fields.serviceId} hint="Só os serviços deste Workspace.">
           {(id, invalid) => (
             <select id={id} aria-invalid={invalid} value={form.serviceId} onChange={(e) => set("serviceId", e.target.value)}>
               {services.map((s) => (
@@ -361,7 +361,7 @@ function RouteForm(props: { publication: ReturnType<typeof useRoutePublication>;
           <p className="warn"><Badge tone="warning">Legada</Badge> {LEGACY} stripPath atual: {route.stripPath ? "sim" : "não"}.</p>
         ) : (
           <label className="check">
-            <input type="checkbox" checked={form.stripPath} onChange={(e) => set("stripPath", e.target.checked)} /> Remover o path da route ao encaminhar (stripPath)
+            <input type="checkbox" checked={form.stripPath} onChange={(e) => set("stripPath", e.target.checked)} /> Remover o path da rota ao encaminhar (stripPath)
           </label>
         )}
         {errors.fields.stripPath?.map((m) => (
@@ -399,7 +399,7 @@ function DeleteRoute({ workspaceId, route, onClose }: { workspaceId: string; rou
   });
   return (
     <ConfirmDialog
-      title="Excluir route"
+      title="Excluir rota"
       message={
         <>
           Excluir <strong>{route.name}</strong>? A exclusão entra no rascunho e só afeta o tráfego depois de publicar.

@@ -166,8 +166,8 @@ describe("request status filters", () => {
   it("preserves the route from the query string, scope and period through status changes and clearing", async () => {
     const view = await screen({ search: `?routeId=${ROUTE}` });
     expect(view.query().routeId).toBe(ROUTE);
-    await view.input("Service", SERVICE);
-    await view.input("Consumer", CONSUMER);
+    await view.input("Serviço", SERVICE);
+    await view.input("Consumidor", CONSUMER);
     await view.input("Período", "24h");
     await view.input("Classe de status", "5xx");
     await view.submit();

@@ -68,6 +68,11 @@ export class TestNode {
     }
     return !event.defaultPrevented;
   }
+  get id() { return this.getAttribute("id") ?? ""; }
+  showModal() { this.setAttribute("open", ""); }
+  close() { this.removeAttribute("open"); }
+  hasAttribute(name: string) { return this.attributes.has(name); }
+  getBoundingClientRect() { return { left: 0, top: 0, right: 264, bottom: 900 }; }
   focus() { this.ownerDocument.activeElement = this; }
   get tabIndex() {
     const explicit = this.getAttribute("tabindex");

@@ -86,7 +86,7 @@ test("publishes an immutable release through v2 without deploying or calling v1 
   await expect(releases).toHaveAttribute("href", `/e/${W}/releases`);
   await expect(releases).toHaveAttribute("aria-current", "page");
   await page.keyboard.press("Escape");
-  await expect(page.getByRole("region", { name: "Deployment", exact: true })).toContainText("Deployment de Workspaces indisponível nesta fase");
+  await expect(page.getByRole("region", { name: "Implantação", exact: true })).toContainText("Implantação de Releases do Workspace indisponível nesta interface");
   await expect(page.getByRole("region", { name: "Convergência", exact: true })).toContainText("indisponível");
   await expect(page.getByRole("region", { name: "Publicação", exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Publicar release", exact: true }).click();
@@ -96,7 +96,7 @@ test("publishes an immutable release through v2 without deploying or calling v1 
   await dialog.getByRole("checkbox", { name: /Entendi que publicar/ }).check();
   await dialog.getByRole("button", { name: "Confirmar publicação" }).click();
   await expect(dialog).toHaveCount(0);
-  await expect(page.getByText("Release v1 publicada. Nenhum deployment foi criado.", { exact: true })).toBeVisible();
+  await expect(page.getByText("Release v1 publicada. Nenhuma implantação foi criada.", { exact: true })).toBeVisible();
   const list = page.getByRole("table", { name: "Releases publicadas" });
   await expect(list).toContainText("v1 · ativa");
   await expect(list).toContainText("Ana");
@@ -117,7 +117,7 @@ test("publishes an immutable release through v2 without deploying or calling v1 
 for (const error of [
   { status: 403, detail: "Requires release.publish", text: "release.publish" },
   { status: 409, detail: "Nothing to publish: the draft equals the active release", text: "Sem alterações para publicar" },
-  { status: 409, detail: "Deployment revision 3 holds the deployment lease", text: "Um deployment está em andamento" },
+  { status: 409, detail: "Deployment revision 3 holds the deployment lease", text: "Uma implantação está em andamento" },
   { status: 409, detail: "Active release is 2, expected 1", text: "A release ativa mudou" },
   { status: 422, errors: [{ path: "services.0.host", message: "variable has no value" }], text: "services.0.host: A variável está sem valor" },
 ] as const) {
@@ -162,7 +162,7 @@ for (const status of [403, 201] as const) {
     } else {
       await expect(dialog).toHaveCount(0);
       await expect(page.getByRole("table", { name: "Releases publicadas" })).toContainText("Publicação por binding v2");
-      await expect(page.getByText("Release v1 publicada. Nenhum deployment foi criado.", { exact: true })).toBeVisible();
+      await expect(page.getByText("Release v1 publicada. Nenhuma implantação foi criada.", { exact: true })).toBeVisible();
     }
     await expect(page.getByText("Há alterações pendentes no rascunho (indicador v1).", { exact: true })).toBeVisible();
     expect(fake.writes).toEqual([{ method: "POST", path: `/api/v2/workspaces/${W}/releases`, body: { message: "Publicação por binding v2", expectedActiveVersion: null }, csrf: "session-csrf" }]);
@@ -172,10 +172,10 @@ for (const status of [403, 201] as const) {
 
 test("v1 publication stays available on Services and disappears again on Releases", async ({ page }) => {
   const fake = await setup(page);
-  await page.getByRole("link", { name: "Services", exact: true }).click();
+  await page.getByRole("link", { name: "Serviços", exact: true }).click();
   await expect(page.getByRole("region", { name: "Publicação", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Publicar v4" })).toBeEnabled();
-  await expect(page.getByRole("link", { name: "Ver diff", exact: true })).toHaveAttribute("href", `/e/${W}/publish`);
+  await expect(page.getByRole("link", { name: "Ver alterações", exact: true })).toHaveAttribute("href", `/e/${W}/publish`);
   await navigateGlobal(page, "Releases");
   await expect(page).toHaveURL(`/e/${W}/releases`);
   await expect(page.getByRole("button", { name: "Publicar release", exact: true })).toBeVisible();
@@ -221,10 +221,10 @@ test("switching workspace discards confirmation, input and previous release data
   await page.getByRole("button", { name: "Publicar release", exact: true }).click();
   await page.getByRole("dialog").getByLabel("Resumo (opcional)").fill("Não reaproveitar");
   await page.getByLabel("Workspace v2", { exact: true }).selectOption(B, { force: true });
-  await expect(page).toHaveURL(`/e/${B}/releases`);
+  await expect(page).toHaveURL(`/workspaces/${B}/releases`);
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(page.getByText("Nenhuma release publicada neste Workspace.")).toBeVisible();
-  await expect(page.getByText("Release v1 publicada. Nenhum deployment foi criado.", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Release v1 publicada. Nenhuma implantação foi criada.", { exact: true })).toHaveCount(0);
   await expect(page.getByText(release.contentDigest, { exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Publicar release", exact: true }).click();
   await expect(page.getByRole("dialog").getByLabel("Resumo (opcional)")).toHaveValue("");

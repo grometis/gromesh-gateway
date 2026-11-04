@@ -55,7 +55,7 @@ export function TokensPage() {
     <section className="final-page identity-page">
       <PageHeader
         title="Tokens de API"
-        description={<>Um token autentica chamadas à API com <code>Authorization: Bearer</code>, sem cookie nem CSRF, com no máximo o seu maior papel (global ou de algum environment); em cada environment ele age com o menor entre o papel do token e o seu papel ali. Ele não cria nem revoga tokens e não gerencia usuários.</>}
+        description={<>Um token autentica chamadas à API com <code>Authorization: Bearer</code>, sem cookie nem CSRF, com no máximo o seu maior papel (global ou de algum ambiente (legado)); em cada ambiente (legado) ele age com o menor entre o papel do token e o seu papel ali. Ele não cria nem revoga tokens e não gerencia usuários.</>}
         actions={<Button variant="primary" onClick={() => setCreating(true)}>Novo token</Button>}
       />
       {admin && (

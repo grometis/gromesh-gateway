@@ -1,3 +1,4 @@
+import { openGateway } from "./gateway-sidebar";
 import { navigateGlobal } from "./global-navigation";
 import AxeBuilder from "@axe-core/playwright";
 import type { Page } from "@playwright/test";
@@ -53,18 +54,21 @@ for (const width of [390, 1440]) {
     const url = `${v2()}?x=1#y`;
     await page.goto(url);
     await expect(page.getByRole("link", { name: "Service A", exact: true })).toBeVisible();
+    await openGateway(page);
     // A is authorized by its GET although it is not in the loaded list page.
     await expect(page.getByLabel("Workspace v2", { exact: true })).toHaveValue(A);
     await expect(page.getByLabel("Ambiente (legado)", { exact: true })).toHaveCount(0);
-    await expect(page.getByRole("region", { name: "Publicação", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("region", { name: "Publicação", exact: true, includeHidden: true })).toHaveCount(0);
     await expect(page).toHaveURL(url);
     await page.reload();
     await expect(page.getByRole("link", { name: "Service A", exact: true })).toBeVisible();
     await expect(page).toHaveURL(url);
     await audit(page);
+    const closeGateway = page.getByRole("button", { name: "Fechar menu Gateway", exact: true });
+    if (await closeGateway.isVisible()) await closeGateway.click();
     await page.getByRole("link", { name: "Service A", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Service A", exact: true })).toBeVisible();
-    await expect(page.getByRole("link", { name: "Routes do Workspace", exact: true })).toHaveAttribute("href", `${v2(A, "routes")}?serviceId=service-${A}`);
+    await expect(page.getByRole("link", { name: "Rotas do Workspace", exact: true })).toHaveAttribute("href", `${v2(A, "routes")}?serviceId=service-${A}`);
     expect(sent.some((p) => p.startsWith("/api/v1/environments"))).toBe(false);
   });
 
@@ -73,7 +77,7 @@ for (const width of [390, 1440]) {
     await setup(page, { listIds: [A, B] });
     await page.goto(`/e/${A}?x=1#y`);
     await expect(page).toHaveURL(`${v1()}?x=1#y`);
-    await expect(page.getByRole("heading", { name: "Services", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Serviços", exact: true })).toBeVisible();
     const url = `${v1(A, "analytics")}?x#y`;
     await page.goto(url);
     await expect(page).toHaveURL(`${v1(A, "metrics")}?x#y`);
@@ -81,9 +85,10 @@ for (const width of [390, 1440]) {
     await page.reload();
     await expect(page).toHaveURL(`${v1(A, "metrics")}?x#y`);
     await expect(page.getByRole("heading", { name: "Métricas", exact: true })).toBeVisible();
-    await expect(page.getByLabel("Ambiente (legado)", { exact: true })).toHaveValue(A);
     await expect(page.getByRole("region", { name: "Publicação", exact: true })).toBeVisible();
-    await expect(page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Services", exact: true })).toHaveAttribute("href", v1());
+    await openGateway(page);
+    await expect(page.getByLabel("Ambiente (legado)", { exact: true })).toHaveValue(A);
+    await expect(page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Serviços", exact: true })).toHaveAttribute("href", v1());
     await audit(page);
   });
 
@@ -99,13 +104,18 @@ for (const width of [390, 1440]) {
       const sent = await setup(page, state.options);
       const url = state.name === "no Workspace" ? "/workspaces" : `${v2()}?x#y`;
       await page.goto(url);
+      if (state.name === "archived") await openGateway(page);
       await expect(page.getByText(state.text, { exact: state.name !== "archived" })).toBeVisible();
       await expect(page).toHaveURL(url);
       if (state.name !== "archived" && state.name !== "no Workspace") {
         await expect(page.getByRole("link", { name: "Service A", exact: true })).toHaveCount(0);
         expect(sent).not.toContain(`/api/v2/workspaces/${A}/services`);
       }
-      if (state.name === "archived") await expect(page.getByRole("button", { name: "Novo service", exact: true })).toHaveCount(0);
+      if (state.name === "archived") {
+        const close = page.getByRole("button", { name: "Fechar menu Gateway", exact: true });
+        if (await close.isVisible()) await close.click();
+        await expect(page.getByRole("button", { name: "Novo serviço", exact: true })).toHaveCount(0);
+      }
       await audit(page);
     });
   }
@@ -123,9 +133,9 @@ for (const width of [390, 1440]) {
     await expect(page.getByRole("alert").filter({ hasText: "Não foi possível verificar o contexto." })).toBeVisible();
     expect(sent.some((p) => p.startsWith("/api/v1/environments"))).toBe(false);
     await audit(page);
-    await page.goto(`${v2(A, "overview")}?x#y`);
+    await page.goto(`${v2(A, "missing")}?x#y`);
     await expect(page.getByText("Rota não encontrada.", { exact: true })).toBeVisible();
-    await expect(page).toHaveURL(`${v2(A, "overview")}?x#y`);
+    await expect(page).toHaveURL(`${v2(A, "missing")}?x#y`);
     await audit(page);
     await page.route(`**/api/v2/workspaces/${B}`, (route) => route.fulfill({ status: 401, json: { title: "Unauthorized", status: 401 } }));
     await page.goto(v2(B));
@@ -160,7 +170,7 @@ for (const namespace of ["legacy", "v2"] as const) {
       if (namespace === "v2") await page.route(`**/api/v2/workspaces/${A}/releases`, (route) => route.request().method() === "POST"
         ? route.fulfill({ status: 201, json: releaseV1 }) : route.fallback());
       try {
-        await page.getByRole("button", { name: namespace === "legacy" ? "Novo service" : "Publicar release", exact: true }).click();
+        await page.getByRole("button", { name: namespace === "legacy" ? "Novo serviço" : "Publicar release", exact: true }).click();
         if (namespace === "v2") {
           await page.getByRole("dialog").getByRole("checkbox", { name: /Entendi que publicar/ }).check();
           await page.getByRole("button", { name: "Confirmar publicação", exact: true }).click();
@@ -195,7 +205,7 @@ test("v2 publication confirmation survives pending and completed Workspace refre
     status: route.request().method() === "POST" ? 201 : 200,
     json: route.request().method() === "POST" ? releaseV1 : [releaseV1],
   }));
-  const confirmation = page.getByRole("status").filter({ hasText: "Release v1 publicada. Nenhum deployment foi criado." });
+  const confirmation = page.getByRole("status").filter({ hasText: "Release v1 publicada. Nenhuma implantação foi criada." });
   try {
     await page.getByRole("dialog").getByRole("checkbox", { name: /Entendi que publicar/ }).check();
     await page.getByRole("button", { name: "Confirmar publicação", exact: true }).click();
@@ -242,7 +252,7 @@ test("late authorization and resources of A never enter B", async ({ page }) => 
   release();
   await delivery;
   await expect(page.locator("main")).not.toContainText("Service A");
-  await expect(page.locator(".workspace-context")).toContainText("Workspace B");
+  await expect(page.locator(".gateway-context")).toContainText("Workspace B");
   await page.unroute(`**/api/v2/workspaces/${A}`);
   let releaseServices!: () => void;
   const servicesReady = new Promise<void>((resolve) => { releaseServices = resolve; });
@@ -250,7 +260,7 @@ test("late authorization and resources of A never enter B", async ({ page }) => 
   const servicesDelivery = new Promise<void>((resolve) => { servicesDelivered = resolve; });
   await page.route(`**/api/v2/workspaces/${A}/services`, async (route) => { await servicesReady; await route.fulfill({ json: { items: [service(A)], nextCursor: null } }).catch(() => {}); servicesDelivered(); });
   await page.getByLabel("Workspace v2", { exact: true }).selectOption(A);
-  await expect(page.locator(".workspace-context")).toContainText("Workspace A");
+  await expect(page.locator(".gateway-context")).toContainText("Workspace A");
   await page.getByLabel("Workspace v2", { exact: true }).selectOption(B);
   await expect(page.getByRole("link", { name: "Service B", exact: true })).toBeVisible();
   releaseServices();
@@ -271,7 +281,7 @@ test("v2 failure never becomes legacy; legacy failure never selects a v2 Workspa
   state.legacyStatus = 404;
   await page.goto(v1());
   await expect(page.getByText("Não encontrado ou indisponível para sua conta.", { exact: true })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Services", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Serviços", exact: true })).toHaveCount(0);
   await expect(page).toHaveURL(v1());
   await page.goto(v2());
   await expect(page.getByRole("link", { name: "Service A", exact: true })).toBeVisible();
