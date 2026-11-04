@@ -87,7 +87,7 @@ function WorkspaceOverview({ workspace }: { workspace: Workspace }) {
     <div className="workspace-overview-columns">
       <section className="workspace-overview-panel stack" aria-label="Release selecionada">
         <h2>Release selecionada</h2><p className="workspace-overview-release">{releaseText}</p>
-        <p className="muted">Seleção para um futuro deployment. Não comprova implantação ou versão aplicada.</p>
+        <p className="muted">Seleção para uma futura implantação. Não comprova implantação ou versão aplicada.</p>
         {releasesHref && <Link to={releasesHref}>Ver Releases</Link>}
       </section>
       <section className="workspace-overview-panel stack" aria-label="Releases recentes">

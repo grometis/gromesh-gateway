@@ -91,8 +91,8 @@ for (const width of [390, 1440]) {
           await expect(page.getByRole("dialog", { name: "Revogar token" })).toBeVisible();
         }
       } else if (screen === "consumer-detail") {
-        await page.getByRole("table", { name: "Consumers" }).locator(".row-open").first().click();
-        await expect(page.getByRole("heading", { level: 1 })).toContainText("Consumer ");
+        await page.getByRole("table", { name: "Consumidores" }).locator(".row-open").first().click();
+        await expect(page.getByRole("heading", { level: 1 })).toContainText("Consumidor ");
         await expect(page.getByRole("list", { name: "Chaves", exact: true })).toBeVisible();
       } else if (screen === "service-detail") {
         await expect(page.locator("dl.service-properties")).toContainText("Protocolo");
@@ -115,9 +115,9 @@ for (const width of [390, 1440]) {
         await expect(table.locator(".service-name").first()).toHaveText("orders.upstream");
         await expect(table.locator(".target.mono").first()).toHaveText("Round-robin");
         if (screen === "upstream-targets") {
-          await table.getByRole("button", { name: "Targets", exact: true }).first().click();
-          const dialog = page.getByRole("dialog", { name: "Targets de orders.upstream" });
-          await expect(dialog.getByRole("table", { name: "Targets", exact: true })).toHaveClass("cards");
+          await table.getByRole("button", { name: "Destinos", exact: true }).first().click();
+          const dialog = page.getByRole("dialog", { name: "Destinos de orders.upstream" });
+          await expect(dialog.getByRole("table", { name: "Destinos", exact: true })).toHaveClass("cards");
           await expect(dialog.getByLabel("Peso de 10.0.0.11:8080")).toHaveValue("100");
         } else if (screen === "upstream-healthchecks") {
           await table.getByRole("button", { name: "Editar", exact: true }).first().click();
@@ -127,7 +127,7 @@ for (const width of [390, 1440]) {
           await dialog.getByLabel("Alternativa", { exact: true }).selectOption("header");
           await dialog.getByLabel("Verificação ativa", { exact: true }).check();
           await dialog.getByLabel("Verificação passiva (pelo tráfego)").check();
-          await expect(dialog.getByLabel("Timeouts para não saudável", { exact: true })).toBeVisible();
+          await expect(dialog.getByLabel("Tempos limite para não saudável", { exact: true })).toBeVisible();
         }
       } else if (screen === "certificates" || screen === "certificate-upload" || screen === "certificate-edit") {
         const table = page.getByRole("table", { name: "Certificados", exact: true });
@@ -143,7 +143,7 @@ for (const width of [390, 1440]) {
           await expect(dialog.getByLabel("Chave privada (PEM)")).toHaveValue("");
         }
       } else if (screen === "services" || screen === "consumers") {
-        await expect(page.getByRole("table", { name: screen === "services" ? "Serviços" : "Consumers" })).toBeVisible();
+        await expect(page.getByRole("table", { name: screen === "services" ? "Serviços" : "Consumidores" })).toBeVisible();
       } else if (screen === "metrics") {
         await expect(page.locator("dl.stat-cards > .stat-card")).toHaveCount(6);
         await expect(page.locator("figure.chart")).toHaveCount(3);

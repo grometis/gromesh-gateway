@@ -178,7 +178,7 @@ function CertificateForm({ envId, certificate, onClose }: { envId: string; certi
         <label className="certificate-file">
           Carregar arquivo da chave <input type="file" accept=".pem,.key" onChange={(e) => readFile(e, (t) => set("key", t))} />
         </label>
-        <Field label="SNIs" errors={errors.fields.snis} hint="Nomes separados por vírgula; curinga só como prefixo, ex.: *.exemplo.com">
+        <Field label="SNIs" errors={errors.fields.snis} hint="Nomes de servidor TLS separados por vírgula; curinga só como prefixo, ex.: *.exemplo.com">
           {(id, invalid) => <input id={id} aria-invalid={invalid} value={form.snis} onChange={(e) => set("snis", e.target.value)} />}
         </Field>
         <Field label="Tags" errors={errors.fields.tags} hint="Separadas por vírgula">

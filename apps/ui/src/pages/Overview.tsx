@@ -40,7 +40,7 @@ function Overview({ envId }: { envId: string }) {
 
   return (
     <section className="final-page">
-      <PageHeader title="Visão geral" description="Últimas 24 horas deste environment." />
+      <PageHeader title="Visão geral" description="Últimas 24 horas deste ambiente (legado)." />
       <dl className="tiles" aria-label="Indicadores das últimas 24 horas">
         <div className="tile">
           <dt>Requisições</dt>

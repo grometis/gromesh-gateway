@@ -29,7 +29,7 @@ async function signIn(page: Page, user: Me) {
   // A v1 screen: its actions follow the role in the environment on screen (the v2 gateway screens offer them to
   // everyone and leave the decision to the server).
   await (await openGateway(page)).getByRole("link", { name: "Consumidores", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Consumers", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Consumidores", exact: true })).toBeVisible();
 }
 
 test("a global viewer who is editor in one environment edits only there, and does not see the hidden one", async ({ page }) => {
@@ -37,20 +37,20 @@ test("a global viewer who is editor in one environment edits only there, and doe
   const select = page.getByLabel("Ambiente (legado)", { exact: true });
   await expect(select.locator("option")).toHaveText(["Produção", "Homologação"]);
   await expect(page).toHaveURL(new RegExp(`/e/${prod.id}/consumers$`));
-  await expect(page.getByRole("button", { name: "Novo consumer" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Novo consumidor" })).toBeVisible();
   await select.selectOption({ label: "Homologação" });
   await expect(page).toHaveURL(new RegExp(`/e/${staging.id}/consumers$`));
-  await expect(page.getByRole("heading", { name: "Consumers", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Novo consumer" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Consumidores", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Novo consumidor" })).toHaveCount(0);
   await openGlobalMenu(page, "Instância");
   await expect(page.getByRole("navigation", { name: "Navegação global" }).getByRole("link", { name: "Usuários" })).toHaveCount(0);
 });
 
 test("a global editor who is viewer in one environment only reads there", async ({ page }) => {
   await signIn(page, person("editor", [{ environmentId: prod.id, role: "viewer" }]));
-  await expect(page.getByRole("button", { name: "Novo consumer" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Novo consumidor" })).toHaveCount(0);
   await page.getByLabel("Ambiente (legado)", { exact: true }).selectOption({ label: "Homologação" });
-  await expect(page.getByRole("button", { name: "Novo consumer" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Novo consumidor" })).toBeVisible();
 });
 
 for (const key of ["Enter", "Space"]) {

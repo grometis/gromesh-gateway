@@ -151,3 +151,12 @@ describe("workspace plugin screen", () => {
     expect(html).not.toContain('aria-label="Mais ações');
   });
 });
+
+it.each([422, 500])("never echoes unstructured HTTP %s details as a plugin form error", async status => {
+  const { saveWorkspacePlugin, workspacePluginErrors } = await load(async () => Response.json({ type: "about:blank", title: "secret", detail: "secret", status }, { status }));
+  try { await saveWorkspacePlugin(W, null, body); } catch (err) {
+    expect(JSON.stringify(workspacePluginErrors(err, schema))).not.toContain("secret");
+    return;
+  }
+  throw new Error("Expected failed save");
+});

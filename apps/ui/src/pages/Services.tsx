@@ -341,7 +341,7 @@ export function ServiceForm({ workspaceId, service, onClose }: { workspaceId: st
           )}
         </Field>
         {form.target === "upstream" ? (
-          <Field label="Upstream" errors={errors.fields.upstreamId ?? errors.fields.host} hint={chosen ? `O host do serviço passa a ser ${chosen.name}, balanceado pelos targets do upstream.` : undefined}>
+          <Field label="Upstream" errors={errors.fields.upstreamId ?? errors.fields.host} hint={chosen ? `O host do serviço passa a ser ${chosen.name}, balanceado pelos destinos do Upstream.` : undefined}>
             {(id, invalid) => (
               <select id={id} aria-invalid={invalid} value={form.upstreamId} onChange={(e) => set("upstreamId", e.target.value)}>
                 <option value="">Escolha um upstream</option>

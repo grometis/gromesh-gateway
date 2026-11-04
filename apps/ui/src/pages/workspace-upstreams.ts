@@ -64,7 +64,7 @@ export function upstreamErrorMessage(err: unknown): string {
       case "workspace-archived": return CONFLICTS["workspace-archived"];
       case "concurrent-update": return GATEWAY_MESSAGES.concurrent;
       case "upstream-captures-service": return "Já existe um Serviço com destino DNS para este nome. Escolha outro nome ou vincule o Serviço ao Upstream.";
-      default: return "Conflito: confira nomes e targets duplicados e Serviços vinculados antes de tentar novamente.";
+      default: return "Conflito: confira nomes e destinos duplicados e Serviços vinculados antes de tentar novamente.";
     }
   }
   return "Não foi possível concluir a operação. Tente novamente.";
@@ -72,7 +72,7 @@ export function upstreamErrorMessage(err: unknown): string {
 const labels: Record<string, string> = {
   name: "Nome", algorithm: "Algoritmo", hashOn: "Hash por", hashFallback: "Alternativa", hashOnHeader: "Cabeçalho do hash",
   hashFallbackHeader: "Cabeçalho da alternativa", hashOnCookie: "Cookie", hashOnCookiePath: "Caminho do cookie",
-  healthchecks: "Verificações de saúde", tags: "Tags", target: "Target", weight: "Peso",
+  healthchecks: "Verificações de saúde", tags: "Tags", target: "Destino", weight: "Peso",
 };
 export function upstreamFormErrors(err: unknown): FormErrors {
   if (!(err instanceof ApiError) || err.status !== 422) return { fields: {}, form: [upstreamErrorMessage(err)] };
@@ -80,7 +80,7 @@ export function upstreamFormErrors(err: unknown): FormErrors {
   for (const { path, message } of err.problem?.errors ?? []) {
     const field = path.split(/[.[]/)[0] ?? "";
     let text = ruleMessage(labels[field] ?? "Campo", message);
-    if (field === "target" && /variable|varref|not declared/i.test(message)) text = "Target: variáveis ainda não são aceitas. Informe um destino literal host:porta.";
+    if (field === "target" && /variable|varref|not declared/i.test(message)) text = "Destino: variáveis ainda não são aceitas. Informe um destino literal host:porta.";
     else if (/forbidden destination|reserved|gromesh\.internal/i.test(message)) text = "Destino reservado ou não permitido pela plataforma.";
     else if (field.startsWith("hash")) text = `${labels[field]}: confira a opção de hash e os campos exigidos pelo algoritmo.`;
     else if (field === "healthchecks") text = "Verificações de saúde: confira tipo, caminho, intervalos e limites.";

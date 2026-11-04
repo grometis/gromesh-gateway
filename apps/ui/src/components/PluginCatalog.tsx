@@ -23,15 +23,15 @@ export function usePluginCatalog() {
   return useQuery({ queryKey: ["plugin-catalog"], queryFn: () => unwrap(api.GET("/plugin-schemas")), staleTime: Infinity });
 }
 
-export function CatalogPicker({ onPick, onClose }: { onPick: (name: string) => void; onClose: () => void }) {
+export function CatalogPicker({ onPick, onClose, filter }: { onPick: (name: string) => void; onClose: () => void; filter?: (entry: PluginCatalogEntry) => boolean }) {
   const catalog = usePluginCatalog();
   const [search, setSearch] = useState("");
   const q = useDeferredValue(search.trim().toLowerCase());
   const groups = useMemo(() => {
     const out = new Map<PluginCatalogEntry["category"], PluginCatalogEntry[]>();
-    for (const p of catalog.data?.items ?? []) if (!q || p.name.includes(q)) out.set(p.category, [...(out.get(p.category) ?? []), p]);
+    for (const p of catalog.data?.items ?? []) if ((!filter || filter(p)) && (!q || p.name.includes(q))) out.set(p.category, [...(out.get(p.category) ?? []), p]);
     return [...out.entries()].sort(([a], [b]) => CATEGORY_LABEL[a].localeCompare(CATEGORY_LABEL[b], "pt-BR"));
-  }, [catalog.data, q]);
+  }, [catalog.data, q, filter]);
   return (
     <Modal title="Escolha um plugin" onClose={onClose} wide>
       <input type="search" className="search" placeholder="Buscar plugin" aria-label="Buscar plugin" value={search} onChange={(e) => setSearch(e.target.value)} />

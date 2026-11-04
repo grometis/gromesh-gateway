@@ -31,9 +31,9 @@ test("upstreams: list, consistent hashing with a header, health checks and targe
   await expect(dialog.getByLabel("Hash por")).toHaveCount(0);
   await dialog.getByLabel("Algoritmo").selectOption("consistent-hashing");
   await dialog.getByLabel("Hash por").selectOption("header");
-  await dialog.getByLabel("Header do hash").fill("x-user-id");
+  await dialog.getByLabel("Cabeçalho do hash").fill("x-user-id");
   await dialog.getByLabel("Verificação ativa").check();
-  await dialog.getByLabel("Path verificado").fill("/healthz");
+  await dialog.getByLabel("Caminho verificado").fill("/healthz");
   await dialog.getByLabel("Verificação passiva (pelo tráfego)").check();
   const created = page.waitForRequest((r) => r.method() === "POST" && r.url().endsWith("/upstreams"));
   await dialog.getByRole("button", { name: "Salvar" }).click();
@@ -49,16 +49,16 @@ test("upstreams: list, consistent hashing with a header, health checks and targe
   });
 
   // Targets of the upstream: listed with their weight, added with host:port and weight.
-  await table.getByRole("button", { name: "Targets" }).first().click();
-  const targets = page.getByRole("dialog", { name: "Targets de orders.upstream" });
-  await expect(targets.getByRole("table", { name: "Targets" })).toContainText("10.0.0.11:8080");
+  await table.getByRole("button", { name: "Destinos" }).first().click();
+  const targets = page.getByRole("dialog", { name: "Destinos de orders.upstream" });
+  await expect(targets.getByRole("table", { name: "Destinos" })).toContainText("10.0.0.11:8080");
   await expect(targets.getByLabel("Peso de 10.0.0.11:8080")).toHaveValue("100");
-  await expect(targets.getByRole("table", { name: "Targets" })).toHaveClass("cards");
+  await expect(targets.getByRole("table", { name: "Destinos" })).toHaveClass("cards");
   await expect(targets.getByLabel("Peso de 10.0.0.11:8080")).toHaveClass(/mono/);
-  await targets.getByLabel("Novo target").fill("10.0.0.12:8080");
+  await targets.getByLabel("Novo destino").fill("10.0.0.12:8080");
   await targets.getByLabel("Peso", { exact: true }).fill("0");
   const added = page.waitForRequest((r) => r.method() === "POST" && r.url().endsWith("/targets"));
-  await targets.getByRole("button", { name: "Adicionar target" }).click();
+  await targets.getByRole("button", { name: "Adicionar destino" }).click();
   expect((await added).postDataJSON()).toEqual({ target: "10.0.0.12:8080", weight: 0 });
   // Changing a weight replaces the target with the new weight.
   const reweighed = page.waitForRequest((r) => r.method() === "PUT" && r.url().includes("/targets/"));
@@ -76,7 +76,7 @@ test("the service form offers the workspace's upstreams or a direct DNS destinat
   await dialog.getByLabel("Destino", { exact: true }).selectOption("Upstream do Workspace");
   await expect(dialog.getByLabel("Host")).toHaveCount(0);
   await dialog.getByLabel("Upstream", { exact: true }).selectOption({ label: "orders.upstream" });
-  await expect(dialog).toContainText("O host do serviço passa a ser orders.upstream");
+  await expect(dialog).toContainText("O host do serviço passa a ser orders.upstream, balanceado pelos destinos do Upstream.");
   const created = page.waitForRequest((r) => r.method() === "POST" && r.url().endsWith("/services"));
   await dialog.getByLabel("Nome").fill("orders");
   await dialog.getByRole("button", { name: "Salvar" }).click();
@@ -166,14 +166,14 @@ test("upstream and certificate row menus keep deletion behind an outlined confir
 test("removing a target requires confirmation, preserves cancellation and sends the same DELETE", async ({ page }) => {
   await login(page);
   await menu(page).getByRole("link", { name: "Upstreams", exact: true }).click();
-  await page.getByRole("table", { name: "Upstreams" }).getByRole("button", { name: "Targets", exact: true }).first().click();
-  const targets = page.getByRole("dialog", { name: "Targets de orders.upstream", exact: true });
+  await page.getByRole("table", { name: "Upstreams" }).getByRole("button", { name: "Destinos", exact: true }).first().click();
+  const targets = page.getByRole("dialog", { name: "Destinos de orders.upstream", exact: true });
   const deletes: string[] = [];
   page.on("request", (request) => {
     if (request.method() === "DELETE" && request.url().includes("/targets/")) deletes.push(request.url());
   });
   await targets.getByRole("button", { name: "Remover", exact: true }).first().click();
-  const confirm = page.getByRole("dialog", { name: "Remover target", exact: true });
+  const confirm = page.getByRole("dialog", { name: "Remover destino", exact: true });
   await expect(confirm).toContainText("10.0.0.11:8080");
   await expect(confirm.getByRole("button", { name: "Remover", exact: true })).toHaveClass("danger");
   await confirm.getByRole("button", { name: "Cancelar", exact: true }).click();
@@ -191,10 +191,10 @@ test("empty upstream, target and certificate lists use EmptyState and retain cre
   await page.route("**/api/v1/environments/*/upstreams/*/targets", (route) => route.fulfill({ json: { items: [], nextCursor: null } }));
   await menu(page).getByRole("link", { name: "Upstreams", exact: true }).click();
   await expect(page.getByRole("table", { name: "Upstreams" })).toContainText("orders.upstream");
-  await page.getByRole("button", { name: "Targets", exact: true }).first().click();
-  const targets = page.getByRole("dialog", { name: "Targets de orders.upstream", exact: true });
-  await expect(targets.locator(".empty-state")).toContainText("Nenhum target: o tráfego deste upstream não tem destino.");
-  await expect(targets.getByRole("button", { name: "Adicionar target", exact: true })).toBeEnabled();
+  await page.getByRole("button", { name: "Destinos", exact: true }).first().click();
+  const targets = page.getByRole("dialog", { name: "Destinos de orders.upstream", exact: true });
+  await expect(targets.locator(".empty-state")).toContainText("Nenhum destino: o tráfego deste Upstream não tem destino.");
+  await expect(targets.getByRole("button", { name: "Adicionar destino", exact: true })).toBeEnabled();
   await targets.getByRole("button", { name: "Fechar", exact: true }).click();
   for (const screen of [
     { path: "upstreams", empty: "Nenhum upstream ainda.", create: "Novo upstream" },
@@ -237,9 +237,9 @@ test("upstream targets are fetched only for the opened panel", async ({ page }) 
   const selected = upstreams[1]!;
   const fetched = page.waitForResponse((response) => response.request().method() === "GET"
     && new URL(response.url()).pathname.endsWith(`/upstreams/${selected.id}/targets`));
-  await table.getByRole("row").filter({ hasText: selected.name }).getByRole("button", { name: "Targets", exact: true }).click();
+  await table.getByRole("row").filter({ hasText: selected.name }).getByRole("button", { name: "Destinos", exact: true }).click();
   await fetched;
-  await expect(page.getByRole("dialog", { name: `Targets de ${selected.name}`, exact: true }).getByRole("table", { name: "Targets", exact: true })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: `Destinos de ${selected.name}`, exact: true }).getByRole("table", { name: "Destinos", exact: true })).toBeVisible();
   await page.waitForLoadState("networkidle");
   const targetRequests = requests.filter((url) => /\/upstreams\/[^/]+\/targets$/.test(url.pathname));
   expect(targetRequests).toHaveLength(1);
