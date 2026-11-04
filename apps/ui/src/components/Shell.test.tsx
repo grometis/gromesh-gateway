@@ -69,6 +69,20 @@ async function screen(options: { stage?: unknown; policyStatus?: number; envStat
 }
 
 describe("instance and context in the shell", () => {
+  it.each([`/workspaces/${A}/services`, `/e/${A}/services`, "/tokens"])("skip link focuses main without changing URL or history: %s", async (path) => {
+    const view = await screen({ path: `${path}?keep=1#existing` });
+    const link = view.container.findAll(n => n.tagName === "A" && n.textContent === "Pular para o conteúdo")[0]!;
+    const main = view.container.findAll(n => n.getAttribute("id") === "main-content")[0]!;
+    const before = view.router.state.location;
+    link.focus();
+    const event = new Event("click", { bubbles: true, cancelable: true });
+    await act(async () => { link.dispatchEvent(event); await tick(); });
+    expect(event.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(main);
+    expect(view.router.state.location).toEqual(before);
+    expect(view.router.state.historyAction).toBe("POP");
+  });
+
   it.each(["dev", "hml", "prd"])("uses only the server stage %s, regardless of host or environment name", async (stage) => {
     const view = await screen({ stage });
     await vi.waitFor(async () => { await view.settle(); expect(view.container.textContent).toContain(`Instância ${stage.toUpperCase()}`); });

@@ -114,7 +114,7 @@ test("consumer CRUD, server search and pagination use v2 for a viewer with a wor
   await dialog.getByRole("button", { name: "Salvar", exact: true }).click();
   await expect(dialog.getByText("Informe o username ou o custom id.")).toBeVisible();
   expect(fake.writes).toHaveLength(0);
-  await dialog.getByLabel("Username", { exact: true }).fill("created-app");
+  await dialog.getByLabel("Nome de usuário", { exact: true }).fill("created-app");
   await dialog.getByRole("button", { name: "Salvar", exact: true }).click();
   await expect(page).toHaveURL(url(A, true));
   await expect(page.getByRole("heading", { name: "Consumidor created-app", exact: true })).toBeVisible();
@@ -122,7 +122,7 @@ test("consumer CRUD, server search and pagination use v2 for a viewer with a wor
   await expect(page.getByRole("heading", { name: "Consumidor created-app", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Editar", exact: true }).click();
   dialog = page.getByRole("dialog", { name: "Editar created-app", exact: true });
-  await dialog.getByLabel("Username", { exact: true }).fill("renamed-app");
+  await dialog.getByLabel("Nome de usuário", { exact: true }).fill("renamed-app");
   await dialog.getByRole("button", { name: "Salvar", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Consumidor renamed-app", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Mais ações para renamed-app" }).click();
@@ -160,7 +160,7 @@ test("key-auth, JWT, basic-auth and ACL preserve one-time secrets and full-set r
   await deleteCredential(page, "Mais ações para a credencial JWT issuer", "Excluir credencial JWT");
   await page.getByRole("button", { name: "Nova credencial basic-auth", exact: true }).click();
   const dialog = page.getByRole("dialog");
-  await dialog.getByLabel("Usuário", { exact: true }).fill("basic-app");
+  await dialog.getByLabel("Nome de usuário", { exact: true }).fill("basic-app");
   await dialog.getByLabel("Senha", { exact: true }).fill("password-test-only");
   await dialog.getByRole("button", { name: "Criar", exact: true }).click();
   await expect(dialog).toHaveCount(0);
@@ -224,7 +224,7 @@ for (const status of [403, 409, 422]) {
     const fake = await setup(page, { writeStatus: status }); await page.goto(url(A, true));
     await page.getByRole("button", { name: "Editar", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "Editar checkout-A", exact: true });
-    await dialog.getByLabel("Username", { exact: true }).fill("edited-checkout");
+    await dialog.getByLabel("Nome de usuário", { exact: true }).fill("edited-checkout");
     await dialog.getByRole("button", { name: "Salvar", exact: true }).click();
     const message = status === 403 ? "Você não tem permissão para esta ação."
       : status === 409 ? "Este Workspace publica automaticamente pelo fluxo legado. Mude para publicação manual antes de editar por aqui."
@@ -232,9 +232,9 @@ for (const status of [403, 409, 422]) {
     await expect(dialog).toBeVisible();
     await expect(dialog.getByRole("alert")).toBeVisible();
     await expect(dialog.getByRole("alert")).toHaveText(message);
-    if (status === 422) await expect(dialog.getByLabel("Username", { exact: true })).toHaveAttribute("aria-invalid", "true");
-    await expect(dialog.getByLabel("Username", { exact: true })).toHaveValue("edited-checkout");
-    await expect(dialog.getByLabel("Custom id", { exact: true })).toHaveValue("billing");
+    if (status === 422) await expect(dialog.getByLabel("Nome de usuário", { exact: true })).toHaveAttribute("aria-invalid", "true");
+    await expect(dialog.getByLabel("Nome de usuário", { exact: true })).toHaveValue("edited-checkout");
+    await expect(dialog.getByLabel("Identificador personalizado", { exact: true })).toHaveValue("billing");
     await expect(dialog.getByRole("button", { name: "Salvar", exact: true })).toBeEnabled();
     await expect(page).toHaveURL(url(A, true));
     await expect(page.locator("body")).not.toContainText("must-not-echo-secret");
@@ -265,12 +265,12 @@ test("switching A to B discards open forms and revealed secrets", async ({ page 
   await expect(page.getByText("Nenhum consumidor ainda.")).toBeVisible();
   await expect(page.getByRole("dialog")).toHaveCount(0); await expect(page.getByText("key-created-once")).toHaveCount(0);
   await page.getByRole("button", { name: "Novo consumidor" }).click();
-  await expect(page.getByRole("dialog").getByLabel("Username", { exact: true })).toHaveValue("");
-  await page.getByRole("dialog").getByLabel("Username", { exact: true }).fill("unsaved-B");
+  await expect(page.getByRole("dialog").getByLabel("Nome de usuário", { exact: true })).toHaveValue("");
+  await page.getByRole("dialog").getByLabel("Nome de usuário", { exact: true }).fill("unsaved-B");
   await page.getByLabel("Workspace v2", { exact: true }).selectOption(A, { force: true });
   await expect(page.getByRole("link", { name: "checkout-A", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Novo consumidor" }).click();
-  await expect(page.getByRole("dialog").getByLabel("Username", { exact: true })).toHaveValue("");
+  await expect(page.getByRole("dialog").getByLabel("Nome de usuário", { exact: true })).toHaveValue("");
   expect(fake.writes).toHaveLength(1);
 });
 

@@ -546,8 +546,8 @@ describe("Workspace Upstreams with controlled transport", () => {
   it("shows archived configuration and targets with no mutation controls", async () => {
     const view = await mount(`/workspaces/${A}/upstreams`, { full: true, archived: true, answers: populated });
     await view.waitText("orders-pool");
-    await click(view, "Targets de orders-pool");
-    await view.waitText("Nenhum target");
+    await click(view, "Destinos de orders-pool");
+    await view.waitText("Nenhum destino");
     expect(view.container.textContent).not.toContain("Novo upstream");
     expect(view.container.findAll((n) => n.tagName === "FORM")).toHaveLength(0);
     expect(view.writes).toEqual([]);
@@ -599,10 +599,10 @@ describe("Upstream shared form keeps the legacy flow", () => {
     const pool = { id: "legacy-pool", name: "legacy.pool", algorithm: "round-robin", hashOn: "none", hashFallback: "none", hashOnCookiePath: "/", healthchecks: {}, createdAt: stamp, updatedAt: stamp };
     const view = await mount(`/e/${A}/upstreams`, { full: true, role: "admin", answers: { [path]: () => Response.json({ items: [pool], nextCursor: null }) } });
     await view.waitText("legacy.pool");
-    expect(view.container.textContent).toContain("Um service cujo host é o nome de um upstream");
+    expect(view.container.textContent).toContain("Um serviço cujo host é o nome de um Upstream");
     const edit = view.container.findAll((n) => n.tagName === "BUTTON" && n.textContent === "Editar")[0]!;
     await act(async () => { edit.dispatchEvent(new Event("click", { bubbles: true })); await tick(); });
-    await view.waitText("use este nome como host dos services");
+    await view.waitText("use este nome como host dos serviços");
     view.answers[`${path}/${pool.id}`] = () => Response.json(pool);
     const form = view.container.findAll((n) => n.tagName === "FORM")[0]!;
     await act(async () => { form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); await tick(); });
@@ -632,8 +632,8 @@ describe("Workspace target edits and deletion", () => {
       expect(button).toBeDefined();
       await act(async () => { button.dispatchEvent(new Event("click", { bubbles: true })); await tick(); });
     };
-    await view.waitText("Targets de pool");
-    await click("Targets de pool");
+    await view.waitText("Destinos de pool");
+    await click("Destinos de pool");
     await view.waitText("backend.internal:80");
     await click("Editar peso de backend.internal:80");
     const label = view.container.findAll((n) => n.tagName === "LABEL" && n.textContent === "Peso")[0]!;
@@ -650,7 +650,7 @@ describe("Workspace target edits and deletion", () => {
     expect(view.writes.filter((r) => r.method === "DELETE")).toHaveLength(0);
     await click("Remover backend.internal:80");
     await click("Remover");
-    await view.waitText("Nenhum target");
+    await view.waitText("Nenhum destino");
     expect(view.writes.filter((r) => r.method === "DELETE")).toHaveLength(1);
     expect(view.writes.find((r) => r.method === "DELETE")!.url).toBe(`https://ui.example${targetsPath}/target`);
   });

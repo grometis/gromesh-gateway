@@ -12,7 +12,7 @@ describe("changeTitle", () => {
 
   it("names the other kinds by their kind and name", () => {
     expect(changeTitle({ kind: "services", label: "orders" })).toBe("Serviço orders");
-    expect(changeTitle({ kind: "targets", label: "echo:80" })).toBe("Target echo:80");
+    expect(changeTitle({ kind: "targets", label: "echo:80" })).toBe("Destino echo:80");
     // A label in an unexpected shape is still shown, prefixed by the kind.
     expect(changeTitle({ kind: "acls", label: "something else" })).toBe("Grupo ACL something else");
   });

@@ -165,7 +165,7 @@ test("desktop sidebar keeps collapse and instance return in the viewport while s
 test("legacy catalog stays in /e, consumer detail selects parent, Workspace selector enters v2", async ({ page }) => {
   const sent = await setup(page);
   await page.goto(v1(`consumers/${S}`));
-  await expect(page.getByRole("heading", { name: "Consumer Consumidor autorizado", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Consumidor Consumidor autorizado", exact: true })).toBeVisible();
   await expect(page.locator(".gateway-context")).toContainText("Ambiente (legado)");
   const sections = ["overview", "services", "routes", "consumers", "plugins", "upstreams", "certificates", "variables"];
   expect(await nav(page).locator("a").evaluateAll((nodes) => nodes.map((n) => n.getAttribute("href")))).toEqual(sections.map(v1));
@@ -449,3 +449,37 @@ test("collapsed sidebar keeps controls within two lines and descriptions out of 
   await expect(sidebar.getByLabel("Workspace v2", { exact: true })).toBeVisible();
   await expect(more).toBeVisible();
 });
+
+
+for (const width of [390, 768, 1440]) {
+  for (const [layout, path, heading] of [
+    ["Workspace", v2(), "Serviços"],
+    ["legado", v1(), "Serviços"],
+    ["global", "/tokens", "Tokens de API"],
+  ] as const) {
+    test(`skip link by keyboard focuses main and preserves the full URL: ${layout} at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 1000 });
+      await setup(page);
+      await page.goto(`${path}?keep=1#existing`);
+      await expect(page.getByRole("heading", { level: 1, name: heading, exact: true })).toBeVisible();
+      if (layout !== "global" && width <= 900) {
+        await trigger(page).click();
+        await expect(drawer(page)).toBeVisible();
+        await page.keyboard.press("Escape");
+        await expect(drawer(page)).toBeHidden();
+      }
+      const before = page.url();
+      const skip = page.getByRole("link", { name: "Pular para o conteúdo", exact: true });
+      // Shell initially focuses main; walk the real tab order back to the skip link.
+      for (let step = 0; step < 60 && !(await skip.evaluate(node => node === document.activeElement)); step++) {
+        await page.keyboard.press("Shift+Tab");
+      }
+      await expect(skip).toBeFocused();
+      await expect(skip).toBeVisible();
+      await page.keyboard.press("Enter");
+      await expect(page.getByRole("main")).toBeFocused();
+      expect(page.url()).toBe(before);
+      await fits(page);
+    });
+  }
+}

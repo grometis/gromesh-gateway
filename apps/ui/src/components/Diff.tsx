@@ -13,7 +13,7 @@ export const KIND_LABEL: Record<EntityChange["kind"], string> = {
   acls: "Grupo ACL",
   plugins: "Plugin",
   upstreams: "Upstream",
-  targets: "Target",
+  targets: "Destino",
   certificates: "Certificado",
 };
 
