@@ -622,6 +622,7 @@ export const clusters = pgTable("clusters", {
   // setClusterDeliveryProtocol and by the activation gate (v2-pending -> v2).
   deliveryProtocol: text("delivery_protocol", { enum: ["v1", "v2-pending", "v2"] }).notNull().default("v1"),
   deliveryProtocolChangedAt: timestamp("delivery_protocol_changed_at", { withTimezone: true }),
+  collectorTokenShared: boolean("collector_token_shared").notNull().default(false),
 }, (t) => [
   uniqueIndex("clusters_env_name_uq").on(t.environmentId, t.name),
   uniqueIndex("clusters_token_uq").on(t.registrationTokenHash),
@@ -655,6 +656,10 @@ export const clusterNodes = pgTable("cluster_nodes", {
   verifiedRevision: integer("verified_revision"),
   // The node's last ConvergenceEvidence, so a divergence is audited once when it opens and once when it clears.
   evidence: text("evidence"),
+  collectorTokenEvidence: jsonb("collector_token_evidence").$type<{
+    current: string; previous: string | null; currentHint: string; previousHint: string | null;
+  }>(),
+  collectorTokenReportedAt: timestamp("collector_token_reported_at", { withTimezone: true }),
   error: text("error"),
   kongHealthy: boolean("kong_healthy").notNull().default(false),
   reportedAt: timestamp("reported_at", { withTimezone: true }),

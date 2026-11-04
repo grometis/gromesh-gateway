@@ -105,6 +105,8 @@ export class AgentGatewayService {
             labels: body.labels ?? {},
             tokenHash: tokenHash(nodeToken),
             lastSeenAt: sql`now()`,
+            collectorTokenEvidence: null,
+            collectorTokenReportedAt: null,
           },
         });
       await audit(tx, agentContext(req, body.nodeId), {
@@ -186,6 +188,8 @@ export class AgentGatewayService {
           error,
           kongHealthy: body.kongHealthy,
           reportedAt: new Date(body.reportedAt),
+          collectorTokenEvidence: null,
+          collectorTokenReportedAt: null,
           lastSeenAt: sql`now()`,
         })
         .where(and(eq(clusterNodes.clusterId, cluster.id), eq(clusterNodes.nodeId, node.nodeId)));

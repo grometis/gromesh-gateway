@@ -4,6 +4,7 @@ import type { Request, Response } from "express";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { AgentBearerGuard, AgentGatewayModule, AgentGatewayService, agentContext, bearer } from "../agent-gateway/agent-gateway.js";
 import { audit } from "../audit/audit.js";
+import { collectorTokenEvidence, reconcileCollectorTokens, type CollectorTokenFingerprints } from "../analytics/collector-tokens.js";
 import { Ctx, Public, RequiredPermission, type RequestContext, SessionOnly } from "../auth/auth.js";
 import { AGENT_CHANNEL } from "../clusters/clusters.js";
 import { agentBodyV2, contractBodyV2, inlineBody } from "../common/contract.js";
@@ -53,6 +54,7 @@ export interface StatusReportV2 {
   kongConfigHash?: string | null;
   kongHealthy: boolean;
   analytics?: string;
+  collectorTokenFingerprints?: CollectorTokenFingerprints;
   isolationState?: string;
 }
 
@@ -132,17 +134,18 @@ export class DeliveryService {
    * The delivery rules in front of every v2 agent call: Workspaces mode on, the node's cluster in v2. A v2-pending
    * cluster becomes v2 here once the activation gate holds (system transition, audited).
    */
-  private async deliverable(tx: Tx, cluster: ClusterRow): Promise<void> {
-    if (!this.enabled) throw deliveryRefused("workspaces-mode-disabled", "Workspaces mode is disabled on this instance");
-    if (cluster.deliveryProtocol === "v1") throw deliveryRefused("delivery-protocol-v1", "This cluster receives v1 snapshots");
+  private async deliverable(tx: Tx, cluster: ClusterRow): Promise<Refusal | null> {
+    if (!this.enabled) return new Refusal("workspaces-mode-disabled", "Workspaces mode is disabled on this instance");
+    if (cluster.deliveryProtocol === "v1") return new Refusal("delivery-protocol-v1", "This cluster receives v1 snapshots");
     if (cluster.deliveryProtocol === "v2-pending") {
       if (!(await this.activateCluster(tx, cluster.id))) {
-        throw deliveryRefused("delivery-protocol-switching", "This cluster is switching to v2: the activation gate does not hold yet");
+        return new Refusal("delivery-protocol-switching", "This cluster is switching to v2: the activation gate does not hold yet");
       }
       // The activation commits even when the call is then refused: the latest revision takes the joined nodes (and the
       // lease) in the same transaction, so no path leaves it active and "empty" for the next deployment to supersede.
       await this.evaluate(tx);
     }
+    return null;
   }
 
   /**
@@ -153,13 +156,16 @@ export class DeliveryService {
     const served = await this.db.transaction(async (tx) => {
       await leaseFirst(tx);
       const { cluster } = await this.gateway.node(tx, bearer(req));
-      await this.deliverable(tx, cluster);
+      if (this.enabled && cluster.deliveryProtocol !== "v1") await reconcileCollectorTokens(tx);
+      const refused = await this.deliverable(tx, cluster);
+      if (refused) return refused;
       const row = await latestDeployment(tx);
       if (!row) return null;
       // A deadline may have passed with no agent reporting: the machine moves before the revision is served.
       await this.evaluate(tx);
       return row;
     });
+    if (served instanceof Refusal) throw deliveryRefused(served.code, served.detail);
     if (!served) throw notFound("Deployment");
     res.setHeader("X-Gromesh-Epoch", String(served.epoch));
     res.setHeader("X-Gromesh-Revision", String(served.revision));
@@ -200,25 +206,54 @@ export class DeliveryService {
       await isolationLock(tx, unlocked.id);
       const { cluster, node } = await this.gateway.node(tx, bearer(req), true);
       if (body.nodeId !== node.nodeId) throw unprocessable("Node identity does not match token", [{ path: "nodeId", message: "must match the registered node" }]);
-      await this.deliverable(tx, cluster);
+      if (!this.enabled || cluster.deliveryProtocol === "v1") return this.deliverable(tx, cluster);
       const current = await latestDeployment(tx);
       const epoch = current?.epoch ?? 1;
-      if (body.epoch < epoch) return new Refusal("epoch-outdated", `The instance's epoch is ${epoch}`);
+      if (body.epoch < epoch) return (await this.deliverable(tx, cluster)) ?? new Refusal("epoch-outdated", `The instance's epoch is ${epoch}`);
       const named = async (revision: number | null | undefined, hash: string | null | undefined) => {
         if (revision == null) return true;
         const [row] = await tx.select({ hash: deployments.configHash }).from(deployments).where(and(eq(deployments.epoch, body.epoch), eq(deployments.revision, revision)));
         return row?.hash === hash;
       };
       if (body.epoch > epoch || !(await named(body.appliedRevision, body.appliedHash)) || !(await named(body.failedRevision, body.failedHash))) {
-        return new Refusal("unknown-deployment", "No deployment of this instance has that epoch, revision and hash");
+        return (await this.deliverable(tx, cluster)) ?? new Refusal("unknown-deployment", "No deployment of this instance has that epoch, revision and hash");
       }
       const where = and(eq(clusterNodes.clusterId, cluster.id), eq(clusterNodes.nodeId, node.nodeId));
       if (body.appliedRevision !== null && node.verifiedEpoch === body.epoch && node.verifiedRevision !== null && body.appliedRevision < node.verifiedRevision) {
+        const refused = await this.deliverable(tx, cluster);
+        if (refused) return refused;
         // Not recorded: the node keeps its last report and shows revision-regression until it reports the current one.
         await tx.update(clusterNodes).set({ failureReason: "revision-regression", lastSeenAt: sql`now()` }).where(where);
         await audit(tx, agentContext(req, node.nodeId), { action: "agent.status.refused", entityType: "node", entityId: node.nodeId, environmentId: cluster.environmentId, after: { clusterId: cluster.id, code: "revision-regression", appliedRevision: body.appliedRevision, verifiedRevision: node.verifiedRevision } });
         return new Refusal("revision-regression", `The node was verified at revision ${node.verifiedRevision}`);
       }
+      // Token evidence is independent of applied revisions: pending nodes must be able to supply the gate's input.
+      // A switching refusal commits this observation, never an applied revision or a delivered configuration.
+      const tokenEvidence = collectorTokenEvidence(this.enc, body.collectorTokenFingerprints);
+      try {
+        await tx.update(clusterNodes).set({ collectorTokenEvidence: tokenEvidence, collectorTokenReportedAt: sql`clock_timestamp()`, lastSeenAt: sql`clock_timestamp()` }).where(where);
+      } catch (error: unknown) {
+        // Drizzle includes the HMAC parameters in its message/stack; retain only known HTTP conflict semantics.
+        let current: unknown = error;
+        let code: string | undefined;
+        for (let i = 0; i < 3 && current && typeof current === "object"; i++) {
+          if ("code" in current && typeof current.code === "string" && ["23505", "23503", "40P01", "40001"].includes(current.code)) {
+            code = current.code;
+            break;
+          }
+          current = "cause" in current ? current.cause : null;
+        }
+        throw Object.assign(new Error("Collector token evidence could not be recorded"), code ? { code } : {});
+      }
+      if (JSON.stringify(node.collectorTokenEvidence) !== JSON.stringify(tokenEvidence)) {
+        await audit(tx, agentContext(req, node.nodeId), {
+          action: "agent.collector-token", entityType: "node", entityId: node.nodeId, environmentId: cluster.environmentId,
+          after: { clusterId: cluster.id, currentKeyHint: tokenEvidence?.currentHint ?? null, previousKeyHint: tokenEvidence?.previousHint ?? null },
+        });
+      }
+      await reconcileCollectorTokens(tx);
+      const refused = await this.deliverable(tx, cluster);
+      if (refused) return refused;
       const state = current && body.failedRevision === current.revision ? "failed" : current && body.appliedRevision === current.revision ? "applied" : "applying";
       await tx
         .update(clusterNodes)
@@ -232,8 +267,8 @@ export class DeliveryService {
           failureReason: body.failureReason ?? null,
           state,
           kongHealthy: body.kongHealthy,
-          reportedAt: sql`now()`,
-          lastSeenAt: sql`now()`,
+          reportedAt: sql`clock_timestamp()`,
+          lastSeenAt: sql`clock_timestamp()`,
         })
         .where(where);
       if (node.state !== state || node.appliedRevision !== body.appliedRevision || node.failedRevision !== (body.failedRevision ?? null)) {
@@ -433,6 +468,12 @@ export class DeliveryService {
     const [cluster] = await tx.select().from(clusters).where(eq(clusters.id, clusterId)).for("update");
     if (cluster!.deliveryProtocol === "v2") return true;
     if (cluster!.deliveryProtocol !== "v2-pending") return false;
+    // The current agent learns its first epoch from delivery before it can report: keep the new gate lab-only/off.
+    const collectorTokenGate = this.config.workspacesDeployments?.collectorTokenGate === true;
+    if (collectorTokenGate) {
+      const tokenState = (await reconcileCollectorTokens(tx)).get(clusterId);
+      if (!tokenState || tokenState.shared || tokenState.unverified) return false;
+    }
     // Every registered node is expected (none is deregistered yet), and a node without an open admission (a v1-mode
     // agent) holds the gate: one writer per Kong.
     const nodes = await tx.select({ nodeId: clusterNodes.nodeId }).from(clusterNodes).where(eq(clusterNodes.clusterId, clusterId));
@@ -463,7 +504,7 @@ export class DeliveryService {
       entityId: clusterId,
       environmentId: cluster!.environmentId,
       before: { deliveryProtocol: "v2-pending" },
-      after: { deliveryProtocol: "v2", reason: "activation gate: every node passed a conclusive round, no pendency open", nodes: nodes.map((n) => n.nodeId) },
+      after: { deliveryProtocol: "v2", reason: `activation gate: every node passed a conclusive round, no pendency open${collectorTokenGate ? ", collector token exclusive" : ""}`, nodes: nodes.map((n) => n.nodeId) },
     });
     return true;
   }
