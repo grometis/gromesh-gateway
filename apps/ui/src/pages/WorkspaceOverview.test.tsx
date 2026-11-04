@@ -85,12 +85,10 @@ describe("Workspace overview with real components and controlled transport", () 
       expect(reads.map(url => url.search)).toEqual(["?limit=200"]);
     }
     expect(view.sent.some(request => /\/api\/v1\/environments|analytics|audit|\/releases/.test(request.url))).toBe(false);
-    for (const [label, section] of [["Serviços", "services"], ["Rotas", "routes"], ["Consumidores", "consumers"], ["Plugins", "plugins"], ["Upstreams", "upstreams"], ["Variáveis", "variables"]]) {
+    for (const [label, section] of [["Serviços", "services"], ["Rotas", "routes"], ["Consumidores", "consumers"], ["Plugins", "plugins"], ["Upstreams", "upstreams"], ["Certificados", "certificates"], ["Variáveis", "variables"]]) {
       expect(view.card(label!).findAll(node => node.tagName === "A")[0]?.getAttribute("href")).toBe(`/workspaces/${A}/${section}`);
       expect(view.card(label!).textContent).not.toContain("Página v2 em breve");
     }
-    expect(view.card("Certificados").textContent).toContain("Página v2 em breve");
-    expect(view.card("Certificados").findAll(node => node.tagName === "A")).toHaveLength(0);
     expect(view.container.textContent).toContain("Gateway de pedidos");
     expect(view.container.textContent).toContain("alpha");
   });

@@ -103,8 +103,8 @@ for (const width of [390, 768, 1440]) {
     expect(contentReads).toHaveLength(8);
     for (const resource of resources) expect(contentReads.filter(request => request.path.endsWith(`/${resource}`)).map(request => request.search)).toEqual(["?limit=200"]);
     expect(sent.some(request => /\/api\/v1\/environments|analytics|audit|\/releases/.test(request.path))).toBe(false);
-    await expect(indicator(page, "Certificados")).toContainText("Página v2 em breve");
-    await expect(indicator(page, "Certificados").getByRole("link")).toHaveCount(0);
+    await expect(indicator(page, "Certificados").getByRole("link")).toHaveAttribute("href", `/workspaces/${A}/certificates`);
+    await expect(indicator(page, "Certificados")).not.toContainText("Página v2 em breve");
     await expect(indicator(page, "Upstreams").getByRole("link")).toHaveAttribute("href", `/workspaces/${A}/upstreams`);
     await expect(indicator(page, "Upstreams")).not.toContainText("Página v2 em breve");
     await expect(indicator(page, "Consumidores").getByRole("link")).toHaveAttribute("href", `/workspaces/${A}/consumers`);
@@ -129,6 +129,11 @@ for (const width of [390, 768, 1440]) {
     await expect(page).toHaveURL(`/workspaces/${A}/upstreams`);
     await expect(page.getByRole("heading", { level: 1, name: "Upstreams", exact: true })).toBeVisible();
     await expect(page.getByRole("table", { name: "Upstreams", exact: true })).toContainText("upstream-0");
+    await page.goBack();
+    await expect(page).toHaveURL(target);
+    await indicator(page, "Certificados").getByRole("link").click();
+    await expect(page).toHaveURL(`/workspaces/${A}/certificates`);
+    await expect(page.getByRole("heading", { level: 1, name: "Certificados", exact: true })).toBeVisible();
     await page.goBack();
     await expect(page).toHaveURL(target);
     await indicator(page, "Serviços").getByRole("link").click();
