@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
+import pg from "pg";
 import { sql } from "drizzle-orm";
 import { clusterHistoryFixture } from "./cluster-history-fixtures.js";
 import { authorizeClusterDelivery, revokeClusterAssociation, confirmClusterAssociation, readClusterHistory } from "../../src/analytics/cluster-history.js";
@@ -203,3 +204,27 @@ it("rejects another cluster's bearer even when node identifiers have the same te
     await f.h.sql.query("update cluster_nodes set node_id=$2 where cluster_id=$1", [b.source.clusterId, a.source.nodeId]);
     await expect(f.db.transaction(tx => authorizeClusterDelivery(tx, a.ctx, { ...a.source, nodeToken: b.token }))).rejects.toThrow();
 });
+
+it("locks the cluster before node evidence when registration holds the cluster", async () => {
+    const c = await f.registered();
+    // Synthetic activation timestamp makes the node join the existing deployment's evidence set.
+    await f.h.sql.query("update clusters set delivery_protocol_changed_at=clock_timestamp() where id=$1", [c.source.clusterId]);
+    const registrar = new pg.Client({ connectionString: f.url });
+    await registrar.connect();
+    let request: Promise<Response> | undefined;
+    try {
+        await registrar.query("begin");
+        const pid = (await registrar.query<{ pid: number }>("select pg_backend_pid() as pid")).rows[0]!.pid;
+        await registrar.query("select id from clusters where id=$1 for update", [c.source.clusterId]);
+        request = fetch(`${f.base}/agent/v2/deployments/current`, { headers: { authorization: `Bearer ${c.token}` } });
+        await expect.poll(async () => (await f.h.sql.query("select 1 from pg_stat_activity where datname=current_database() and $1=any(pg_blocking_pids(pid))", [pid])).rows.length, { timeout: 10000 }).toBeGreaterThan(0);
+        // Registration/deletion takes cluster -> node. Delivery must use the same order.
+        await registrar.query("update cluster_nodes set hostname='synthetic-reregistered' where cluster_id=$1 and node_id=$2", [c.source.clusterId, c.source.nodeId]);
+        await registrar.query("commit");
+        expect((await request).status).toBe(200);
+    } finally {
+        await registrar.query("rollback");
+        await registrar.end();
+        await request;
+    }
+}, 20000);

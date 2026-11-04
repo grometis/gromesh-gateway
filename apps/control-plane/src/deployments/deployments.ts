@@ -158,11 +158,12 @@ export class DeliveryService {
       await this.deliverable(tx, cluster);
       const row = await latestDeployment(tx);
       if (!row) return null;
-      // A deadline may have passed with no agent reporting: the machine moves before the revision is served.
-      await this.evaluate(tx);
       const [self] = await tx.select().from(instance);
       if (!self) throw Error("Instance identity is unavailable for authorized delivery");
       const authorizationId = await authorizeClusterDelivery(tx, agentContext(req, node.nodeId), { instanceId: self.id, clusterId: cluster.id, nodeId: node.nodeId, nodeToken: bearer(req), epoch: row.epoch, revision: row.revision, configHash: row.configHash });
+      // Registration/deletion locks cluster before node; acquire the authorization lock before evidence updates.
+      // A deadline may have passed with no agent reporting: the machine moves before the revision is served.
+      await this.evaluate(tx);
       return { row, authorizationId };
     });
     if (!selection) throw notFound("Deployment");
