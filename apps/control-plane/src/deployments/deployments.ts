@@ -1,4 +1,5 @@
-import { Body, Controller, Get, HttpCode, Inject, Injectable, Module, Param, Post, Put, Req, Res, UseGuards } from "@nestjs/common";
+import { authorizeClusterDelivery, confirmClusterAssociation, revokeClusterAssociation } from "../analytics/cluster-history.js";
+import { Body, Controller, Get, HttpCode, Inject, Injectable, Logger, Module, Param, Post, Put, Req, Res, UseGuards } from "@nestjs/common";
 import { jcs, type KongDeclarativeConfig } from "@gromesh/compiler";
 import type { Request, Response } from "express";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
@@ -150,17 +151,28 @@ export class DeliveryService {
    * bytes whose md5 is the deployment's kongConfigHash (agent protocol v2, "Expected Kong hash").
    */
   async current(req: Request, res: Response) {
-    const served = await this.db.transaction(async (tx) => {
+    const selection = await this.db.transaction(async (tx) => {
       await leaseFirst(tx);
-      const { cluster } = await this.gateway.node(tx, bearer(req));
+      const { cluster, node } = await this.gateway.node(tx, bearer(req));
+      await isolationLock(tx, cluster.id);
       await this.deliverable(tx, cluster);
       const row = await latestDeployment(tx);
       if (!row) return null;
       // A deadline may have passed with no agent reporting: the machine moves before the revision is served.
       await this.evaluate(tx);
-      return row;
+      const [self] = await tx.select().from(instance);
+      if (!self) throw Error("Instance identity is unavailable for authorized delivery");
+      const authorizationId = await authorizeClusterDelivery(tx, agentContext(req, node.nodeId), { instanceId: self.id, clusterId: cluster.id, nodeId: node.nodeId, nodeToken: bearer(req), epoch: row.epoch, revision: row.revision, configHash: row.configHash });
+      return { row, authorizationId };
     });
-    if (!served) throw notFound("Deployment");
+    if (!selection) throw notFound("Deployment");
+    try {
+      await confirmClusterAssociation(this.db, selection.authorizationId);
+    } catch {
+      // Authorization already committed. Analytics stays unknown until a later observation succeeds.
+      new Logger("DeliveryService").warn("Cluster history post-commit observation is pending");
+    }
+    const served = selection.row;
     res.setHeader("X-Gromesh-Epoch", String(served.epoch));
     res.setHeader("X-Gromesh-Revision", String(served.revision));
     res.setHeader("ETag", served.configHash);
@@ -490,6 +502,7 @@ export class DeliveryService {
         to = "v1";
       }
       await tx.update(clusters).set({ deliveryProtocol: to, deliveryProtocolChangedAt: sql`clock_timestamp()` }).where(eq(clusters.id, clusterId));
+      if (to === "v1") await revokeClusterAssociation(tx, ctx, clusterId, "revoke");
       await audit(tx, ctx, {
         action: "cluster.delivery-protocol",
         entityType: "cluster",
