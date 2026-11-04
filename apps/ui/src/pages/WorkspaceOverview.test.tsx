@@ -85,10 +85,11 @@ describe("Workspace overview with real components and controlled transport", () 
       expect(reads.map(url => url.search)).toEqual(["?limit=200"]);
     }
     expect(view.sent.some(request => /\/api\/v1\/environments|analytics|audit|\/releases/.test(request.url))).toBe(false);
-    for (const [label, section] of [["Serviços", "services"], ["Rotas", "routes"], ["Plugins", "plugins"], ["Variáveis", "variables"]]) {
+    for (const [label, section] of [["Serviços", "services"], ["Rotas", "routes"], ["Consumidores", "consumers"], ["Plugins", "plugins"], ["Variáveis", "variables"]]) {
       expect(view.card(label!).findAll(node => node.tagName === "A")[0]?.getAttribute("href")).toBe(`/workspaces/${A}/${section}`);
     }
-    for (const label of ["Consumidores", "Upstreams", "Certificados"]) {
+    expect(view.card("Consumidores").textContent).not.toContain("Página v2 em breve");
+    for (const label of ["Upstreams", "Certificados"]) {
       expect(view.card(label).textContent).toContain("Página v2 em breve");
       expect(view.card(label).findAll(node => node.tagName === "A")).toHaveLength(0);
     }

@@ -29,7 +29,7 @@ const legacy = [
   ["N13", "publications", "Publicações"], ["N14", "publications/:version", "Snapshot", "N13"],
   ["N15", "clusters", "Clusters"], ["N16", "metrics", "Métricas"], ["N17", "requests", "Requisições"],
 ] as const;
-export const workspaceSections = ["overview", "services", "routes", "releases", "variables", "plugins"] as const;
+export const workspaceSections = ["services", "routes", "releases", "variables", "plugins", "consumers", "overview"] as const;
 export const destinations: readonly Destination[] = [
   { id: "instance", label: "Instância", path: "/", scope: "global" },
   { id: "N18", label: "Workspaces", path: "/workspaces", scope: "global" },
@@ -40,8 +40,8 @@ export const destinations: readonly Destination[] = [
   { id: "legacy-entry", label: "Services", path: "/e/:envId", scope: "legacy-v1", parentId: "N02" },
   { id: "legacy-analytics", label: "Métricas", path: "/e/:envId/analytics", scope: "legacy-v1", parentId: "N16" },
   { id: "workspace-entry", label: "Visão geral", path: "/workspaces/:workspaceId", scope: "workspace-v2", parentId: "v2-N01" },
-  ...legacy.filter(([, path]) => workspaceSections.some((section) => path === section || path === `${section}/:serviceId`))
-    .map(([id, path, label, ...parent]) => ({ id: `v2-${id}`, path: `/workspaces/:workspaceId/${path}`, label, scope: "workspace-v2" as const, ...(parent[0] ? { parentId: `v2-${parent[0]}` } : {}) })),
+  ...legacy.filter(([, path]) => workspaceSections.some((section) => path === section || path === `${section}/:serviceId` || path === `${section}/:consumerId`))
+    .map(([id, path, label, ...parent]) => ({ id: `v2-${id}`, path: `/workspaces/:workspaceId/${path}`, label: path === "consumers" ? "Consumidores" : path === "consumers/:consumerId" ? "Consumidor" : label, scope: "workspace-v2" as const, ...(parent[0] ? { parentId: `v2-${parent[0]}` } : {}) })),
 ];
 
 export function resolveDestination(url: string, catalog: readonly Destination[] = destinations) {

@@ -52,7 +52,7 @@ describe("Gateway sidebar interactions", () => {
       expect(overview.getAttribute("aria-current")).toBe("page");
       expect(overview.getAttribute("aria-disabled")).toBeNull();
       const unavailable = view.all((n) => n.getAttribute("aria-disabled") === "true");
-      expect(unavailable.map((n) => n.getAttribute("aria-label"))).toEqual(["Consumidores", "Upstreams", "Certificados"]);
+      expect(unavailable.map((n) => n.getAttribute("aria-label"))).toEqual(["Upstreams", "Certificados"]);
       for (const item of unavailable) {
         const reasonId = item.getAttribute("aria-describedby")!.split(" ")[0];
         const reason = view.all((n) => n.getAttribute("id") === reasonId)[0]!;
@@ -60,6 +60,20 @@ describe("Gateway sidebar interactions", () => {
         expect(reason.getAttribute("hidden") !== null).toBe(collapsed);
         expect(item.contains(reason)).toBe(false);
         expect(item.getAttribute("href")).toBeNull();
+      }
+    }
+  });
+  it("keeps Consumers linked and current on the list and detail, expanded and collapsed", async () => {
+    const view = await screen();
+    for (const collapsed of [false, true]) {
+      if (collapsed) await view.click(view.button("Recolher menu Gateway"));
+      for (const path of ["/workspaces/W/consumers", "/workspaces/W/consumers/C"]) {
+        await act(async () => { await view.router.navigate(path); });
+        const consumer = view.all(n => n.tagName === "A" && n.getAttribute("aria-label") === "Consumidores")[0]!;
+        expect(consumer.getAttribute("href")).toBe("/workspaces/W/consumers");
+        expect(consumer.getAttribute("aria-current")).toBe("page");
+        expect(consumer.getAttribute("aria-disabled")).toBeNull();
+        expect(view.all(n => n.getAttribute("aria-current") === "page")).toEqual([consumer]);
       }
     }
   });

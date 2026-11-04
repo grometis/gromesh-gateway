@@ -103,10 +103,12 @@ for (const width of [390, 768, 1440]) {
     expect(contentReads).toHaveLength(8);
     for (const resource of resources) expect(contentReads.filter(request => request.path.endsWith(`/${resource}`)).map(request => request.search)).toEqual(["?limit=200"]);
     expect(sent.some(request => /\/api\/v1\/environments|analytics|audit|\/releases/.test(request.path))).toBe(false);
-    for (const label of ["Consumidores", "Upstreams", "Certificados"]) {
+    for (const label of ["Upstreams", "Certificados"]) {
       await expect(indicator(page, label)).toContainText("Página v2 em breve");
       await expect(indicator(page, label).getByRole("link")).toHaveCount(0);
     }
+    await expect(indicator(page, "Consumidores").getByRole("link")).toHaveAttribute("href", `/workspaces/${A}/consumers`);
+    await expect(indicator(page, "Consumidores")).not.toContainText("Página v2 em breve");
     await expect(page.locator("main")).toBeFocused();
     await page.keyboard.press("Tab");
     await expect(page.getByRole("link", { name: "Novo serviço", exact: true })).toBeFocused();
@@ -118,6 +120,11 @@ for (const width of [390, 768, 1440]) {
     await expect(page.getByRole("region", { name: "Releases recentes", exact: true })).toContainText("Resumo 7");
     await expect(page.getByRole("region", { name: "Releases recentes", exact: true }).getByRole("listitem")).toHaveCount(5);
     expect(sent.filter(request => request.path.endsWith(`/${A}/releases`))).toHaveLength(1);
+    await indicator(page, "Consumidores").getByRole("link").click();
+    await expect(page).toHaveURL(`/workspaces/${A}/consumers`);
+    await expect(page.getByRole("heading", { level: 1, name: "Consumidores", exact: true })).toBeVisible();
+    await page.goBack();
+    await expect(page).toHaveURL(target);
     await indicator(page, "Serviços").getByRole("link").click();
     await expect(page).toHaveURL(`/workspaces/${A}/services`);
     await page.goBack();

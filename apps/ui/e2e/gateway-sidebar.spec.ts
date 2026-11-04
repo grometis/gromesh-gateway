@@ -34,6 +34,7 @@ async function setup(page: Page, state: State = {}) {
       if (path === `/api/v2/workspaces/${id}`) return json(workspace(id, state.archived), state.status);
       if (path === `/api/v2/workspaces/${id}/services`) return json({ items: [service(id)], nextCursor: null });
       if (path === `/api/v2/workspaces/${id}/services/${S}`) return json(service(id));
+      if (path === `/api/v2/workspaces/${id}/consumers/${S}`) return json({ id: S, environmentId: id, username: "Consumidor autorizado", customId: null, tags: [], createdAt: stamp, updatedAt: stamp });
       if (path === `/api/v2/workspaces/${id}/releases` || path === `/api/v2/workspaces/${id}/variables`) return json([]);
       if (path.startsWith(`/api/v2/workspaces/${id}/`)) return json({ items: [], nextCursor: null });
     }
@@ -72,13 +73,13 @@ test("v2 catalog uses confirmed GET outside the list; collapse preserves accessi
   await expect(page.locator(".gateway-context")).toContainText("/pedidos · ativo");
   const links = nav(page).getByRole("link");
   await expect(links).toHaveCount(8);
-  for (const label of ["Consumidores", "Upstreams", "Certificados"]) {
+  for (const label of ["Upstreams", "Certificados"]) {
     const item = nav(page).getByRole("link", { name: label, exact: true });
     await expect(item).toHaveAttribute("aria-disabled", "true");
     await expect(item).not.toHaveAttribute("href");
     await expect(item).toHaveAccessibleDescription("Disponível no ambiente legado");
   }
-  for (const [label, path] of [["Visão geral", "overview"], ["Serviços", "services"], ["Rotas", "routes"], ["Plugins", "plugins"], ["Variáveis", "variables"]]) {
+  for (const [label, path] of [["Visão geral", "overview"], ["Serviços", "services"], ["Rotas", "routes"], ["Consumidores", "consumers"], ["Plugins", "plugins"], ["Variáveis", "variables"]]) {
     await expect(nav(page).getByRole("link", { name: label!, exact: true })).toHaveAttribute("href", v2(path));
   }
   await expect(nav(page).getByRole("link", { name: "Serviços", exact: true })).toHaveAttribute("aria-current", "page");
@@ -100,6 +101,17 @@ test("v2 catalog uses confirmed GET outside the list; collapse preserves accessi
   await expect(nav(page).getByRole("tooltip", { name: "Serviços", exact: true })).toBeHidden();
   await page.getByRole("button", { name: "Expandir menu Gateway", exact: true }).click();
   await expect(page.locator(".gateway-desktop")).toHaveCSS("width", "264px");
+  const consumers = nav(page).getByRole("link", { name: "Consumidores", exact: true });
+  await expect(consumers).toHaveAttribute("href", v2("consumers"));
+  await expect(consumers).not.toHaveAttribute("aria-disabled");
+  await consumers.click();
+  await expect(page).toHaveURL(v2("consumers"));
+  await expect(consumers).toHaveAttribute("aria-current", "page");
+  await page.goto(v2(`consumers/${S}`));
+  await expect(page.getByRole("heading", { name: "Consumidor Consumidor autorizado", exact: true })).toBeVisible();
+  await expect(consumers).toHaveAttribute("href", v2("consumers"));
+  await expect(consumers).toHaveAttribute("aria-current", "page");
+  await expect(nav(page).locator('[aria-current="page"]')).toHaveCount(1);
   const overview = nav(page).getByRole("link", { name: "Visão geral", exact: true });
   await overview.click();
   await expect(page).toHaveURL(v2("overview"));
@@ -194,12 +206,19 @@ test("archived Workspace keeps navigation readable and existing write gates", as
   await setup(page, { archived: true });
   await page.goto(v2());
   await expect(page.locator(".gateway-context")).toContainText("arquivado · somente leitura");
-  await expect(nav(page).locator("a")).toHaveCount(5);
+  await expect(nav(page).locator("a")).toHaveCount(6);
   await expect(page.getByRole("button", { name: "Novo service", exact: true })).toHaveCount(0);
-  const unavailable = nav(page).getByRole("link", { name: "Consumidores", exact: true });
+  const unavailable = nav(page).getByRole("link", { name: "Upstreams", exact: true });
   await expect(unavailable).toHaveAttribute("aria-disabled", "true");
   await expect(unavailable).not.toHaveAttribute("href");
   await expect(unavailable).toHaveAccessibleDescription("Disponível no ambiente legado");
+  const consumers = nav(page).getByRole("link", { name: "Consumidores", exact: true });
+  await expect(consumers).toHaveAttribute("href", v2("consumers"));
+  await expect(consumers).not.toHaveAttribute("aria-disabled");
+  await consumers.click();
+  await expect(page).toHaveURL(v2("consumers"));
+  await expect(consumers).toHaveAttribute("aria-current", "page");
+  await expect(page.getByRole("button", { name: "Novo consumidor", exact: true })).toHaveCount(0);
   const overview = nav(page).getByRole("link", { name: "Visão geral", exact: true });
   await expect(overview).toHaveAttribute("href", v2("overview"));
   await overview.click();
@@ -372,7 +391,7 @@ test("collapsed sidebar keeps controls within two lines and descriptions out of 
   await expect(sidebar).toHaveCSS("width", "136px");
   await expect(sidebar.getByRole("combobox")).toHaveCount(0);
   await expect(more).toHaveCount(0);
-  await expect(sidebar.locator(".gateway-requirement")).toHaveCount(3);
+  await expect(sidebar.locator(".gateway-requirement")).toHaveCount(2);
   for (const reason of await sidebar.locator(".gateway-requirement").all()) await expect(reason).toBeHidden();
   const controls = await sidebar.locator("a, button, select, [role=link]").evaluateAll((nodes) => nodes
     .filter((node) => node.getClientRects().length > 0)
@@ -383,10 +402,10 @@ test("collapsed sidebar keeps controls within two lines and descriptions out of 
     .filter((node) => node.getClientRects().length > 0 && node.clientWidth > 0)
     .filter((node) => node.scrollWidth > node.clientWidth)
     .map((node) => node.textContent))).toEqual([]);
-  const unavailable = nav(page).getByRole("link", { name: "Consumidores", exact: true });
+  const unavailable = nav(page).getByRole("link", { name: "Upstreams", exact: true });
   await expect(unavailable).toHaveAccessibleDescription("Disponível no ambiente legado");
   await unavailable.focus();
-  await expect(nav(page).getByRole("tooltip").filter({ hasText: "Consumidores" })).toContainText("Disponível no ambiente legado");
+  await expect(nav(page).getByRole("tooltip").filter({ hasText: "Upstreams" })).toContainText("Disponível no ambiente legado");
   await testInfo.attach("collapsed-compact-controls", { body: await page.screenshot(), contentType: "image/png" });
   const overview = nav(page).getByRole("link", { name: "Visão geral", exact: true });
   await expect(overview).toHaveAttribute("href", v2("overview"));
