@@ -2075,12 +2075,56 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * @description Traffic of the environment as seen by its gateways, from the `requests` table fed by the observability
-         *     pipeline (7 days of retention). Totals for the period plus one point per `interval`; a bucket with no
-         *     traffic is present with zero requests and null latencies. Latencies are total request time in ms.
-         *     Rows: distinct request ids attributed to this workspace by agent-protocol-v2 "Analytics guarantees" (route_id against the deployment revisions, never the path); unattributed rows count only in getUnattributedAnalytics.
+         * Workspace analytics summary (planned)
+         * @description PLANNED, design-only. Shared normative rules and migration plan: analytics-v2-design.md.
+         *     Authenticate/authorize the mandatory workspace before traffic queries or cache lookup; instance identity
+         *     comes only from local persisted configuration. Archived workspaces remain readable with workspace.read.
+         *     Read distinct, non-conflicting stored IDs attributed by route-history-v2; no path/name/slug inference.
+         *     Resolve all retained copies and conflict tombstones before filters that could hide a conflicting copy.
+         *     from/to are required RFC 3339 with explicit offset and at most milliseconds, normalized to UTC; [from,to),
+         *     from < to, now-7d <= from and to <= now on first page. Apply per-event logical expiry at generatedAt.
+         *     Unknown/repeated parameters and incompatible filters are 422. Filters combine with AND; an entity outside
+         *     this workspace's provable history is indistinguishable from missing (404). No environmentId, SQL, regex,
+         *     free-form path, cross-workspace list or client-selected instance. Budgets apply to the whole HTTP operation,
+         *     not multiplied by internal queries; overflow throws and never returns partial/approximate data as 200.
+         *     generatedAt is observation time, not a stable snapshot. Empty traffic is not proof of collector health.
+         *     Totals and series in one operation; UI must not fetch timeseries in parallel to duplicate the same graph. Up to 2 aggregate queries; no pagination.
          */
         get: operations["getAnalyticsSummary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workspaces/{workspaceId}/analytics/timeseries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+            };
+            cookie?: never;
+        };
+        /**
+         * Workspace analytics timeseries (planned)
+         * @description PLANNED, design-only. Shared normative rules and migration plan: analytics-v2-design.md.
+         *     Authenticate/authorize the mandatory workspace before traffic queries or cache lookup; instance identity
+         *     comes only from local persisted configuration. Archived workspaces remain readable with workspace.read.
+         *     Read distinct, non-conflicting stored IDs attributed by route-history-v2; no path/name/slug inference.
+         *     Resolve all retained copies and conflict tombstones before filters that could hide a conflicting copy.
+         *     from/to are required RFC 3339 with explicit offset and at most milliseconds, normalized to UTC; [from,to),
+         *     from < to, now-7d <= from and to <= now on first page. Apply per-event logical expiry at generatedAt.
+         *     Unknown/repeated parameters and incompatible filters are 422. Filters combine with AND; an entity outside
+         *     this workspace's provable history is indistinguishable from missing (404). No environmentId, SQL, regex,
+         *     free-form path, cross-workspace list or client-selected instance. Budgets apply to the whole HTTP operation,
+         *     not multiplied by internal queries; overflow throws and never returns partial/approximate data as 200.
+         *     generatedAt is observation time, not a stable snapshot. Empty traffic is not proof of collector health.
+         *     Independent refresh of the graph; one aggregate query, no totals and no pagination.
+         */
+        get: operations["getAnalyticsTimeseries"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2099,11 +2143,20 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * @description The routes with the most traffic, the most errors or the slowest p95 over the period, from the same
-         *     `requests` table as the summary (same 7-day limit). Ordered by the chosen criterion descending, ties by
-         *     `requests` descending then `routeId`. Rows: distinct request ids attributed to this workspace by agent-protocol-v2 "Analytics guarantees" (route_id against the deployment revisions, never the path); unattributed rows count only in getUnattributedAnalytics. Traffic that matched no route of this workspace is
-         *     unattributed (reason no-route or route-not-deployed), so every row here has a routeId of this
-         *     workspace.
+         * Workspace analytics top-routes (planned)
+         * @description PLANNED, design-only. Shared normative rules and migration plan: analytics-v2-design.md.
+         *     Authenticate/authorize the mandatory workspace before traffic queries or cache lookup; instance identity
+         *     comes only from local persisted configuration. Archived workspaces remain readable with workspace.read.
+         *     Read distinct, non-conflicting stored IDs attributed by route-history-v2; no path/name/slug inference.
+         *     Resolve all retained copies and conflict tombstones before filters that could hide a conflicting copy.
+         *     from/to are required RFC 3339 with explicit offset and at most milliseconds, normalized to UTC; [from,to),
+         *     from < to, now-7d <= from and to <= now on first page. Apply per-event logical expiry at generatedAt.
+         *     Unknown/repeated parameters and incompatible filters are 422. Filters combine with AND; an entity outside
+         *     this workspace's provable history is indistinguishable from missing (404). No environmentId, SQL, regex,
+         *     free-form path, cross-workspace list or client-selected instance. Budgets apply to the whole HTTP operation,
+         *     not multiplied by internal queries; overflow throws and never returns partial/approximate data as 200.
+         *     generatedAt is observation time, not a stable snapshot. Empty traffic is not proof of collector health.
+         *     One ranking query plus one workspace-scoped batch lookup for names. No per-route queries.
          */
         get: operations["getTopRoutes"];
         put?: never;
@@ -2124,9 +2177,20 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * @description Request explorer over the same `requests` table, newest first. Credentials never reach the table (the
-         *     pipeline strips them), so a record carries no header or query values: only the path. `clientIp` is
-         *     masked for every role but admin. Rows: distinct request ids attributed to this workspace by agent-protocol-v2 "Analytics guarantees" (route_id against the deployment revisions, never the path); unattributed rows count only in getUnattributedAnalytics.
+         * Workspace requests (planned)
+         * @description PLANNED, design-only. Shared normative rules and migration plan: analytics-v2-design.md.
+         *     Authenticate/authorize the mandatory workspace before traffic queries or cache lookup; instance identity
+         *     comes only from local persisted configuration. Archived workspaces remain readable with workspace.read.
+         *     Read distinct, non-conflicting stored IDs attributed by route-history-v2; no path/name/slug inference.
+         *     Resolve all retained copies and conflict tombstones before filters that could hide a conflicting copy.
+         *     from/to are required RFC 3339 with explicit offset and at most milliseconds, normalized to UTC; [from,to),
+         *     from < to, now-7d <= from and to <= now on first page. Apply per-event logical expiry at generatedAt.
+         *     Unknown/repeated parameters and incompatible filters are 422. Filters combine with AND; an entity outside
+         *     this workspace's provable history is indistinguishable from missing (404). No environmentId, SQL, regex,
+         *     free-form path, cross-workspace list or client-selected instance. Budgets apply to the whole HTTP operation,
+         *     not multiplied by internal queries; overflow throws and never returns partial/approximate data as 200.
+         *     generatedAt is observation time, not a stable snapshot. Empty traffic is not proof of collector health.
+         *     Newest first (ts DESC,id DESC), limit 1..200 default 50; read limit+1 after identity/attribution/filtering, no COUNT total. Empty page items=[] and nextCursor=null. A cursor never changes fixed from/to or reauthorizes old grants.
          */
         get: operations["listRequests"];
         put?: never;
@@ -4204,100 +4268,186 @@ export interface components {
             hasChanges: boolean;
             changes: components["schemas"]["EntityChange"][];
         };
-        TrafficStats: {
+        /** @description Exact quantiles of total latency in ms. Errors are 4xx plus 5xx; errorRate is their count / requests, or zero without traffic. Empty quantiles are null. Overflow fails rather than rounding. */
+        WorkspaceTrafficStats: {
             requests: number;
             errors4xx: number;
             errors5xx: number;
-            /** @description (errors4xx + errors5xx) / requests; 0 without traffic */
             errorRate: number;
-            /** @description Null without traffic */
+            p50Ms: number | null;
+            p95Ms: number | null;
+            p99Ms: number | null;
+        } & unknown;
+        WorkspaceAnalyticsPoint: {
+            /** Format: date-time */
+            ts: string;
+            requests: number;
+            errors4xx: number;
+            errors5xx: number;
+            errorRate: number;
             p50Ms: number | null;
             p95Ms: number | null;
             p99Ms: number | null;
         };
-        AnalyticsSummary: {
+        WorkspaceAnalyticsSummary: {
+            /** @constant */
+            scope: "workspace";
+            /** Format: uuid */
+            instanceId: string;
+            /** Format: uuid */
+            workspaceId: string;
             /** Format: date-time */
             from: string;
             /** Format: date-time */
             to: string;
+            /** Format: date-time */
+            generatedAt: string;
+            /** @constant */
+            attributionVersion: "route-history-v2";
+            /** @constant */
+            retention: "per-route-1-to-7-days";
+            /** @constant */
+            delivery: "best-effort";
             /** @enum {string} */
             interval: "1m" | "5m" | "15m" | "1h" | "1d";
-            totals: components["schemas"]["TrafficStats"];
-            /** @description One point per bucket from `from` (inclusive) to `to` (exclusive), oldest first */
-            series: ({
-                /**
-                 * Format: date-time
-                 * @description Start of the bucket
-                 */
-                ts: string;
-            } & components["schemas"]["TrafficStats"])[];
+            totals: components["schemas"]["WorkspaceTrafficStats"];
+            /** @description Ascending buckets anchored at from, last bucket may be partial. Empty buckets have zero counts and null quantiles. */
+            series: components["schemas"]["WorkspaceAnalyticsPoint"][];
         };
-        TopRoute: {
-            /**
-             * Format: uuid
-             * @description Null for traffic that matched no route
-             */
-            routeId: string | null;
-            /** @description Current name in the control plane; null when the route was deleted or no route matched */
+        WorkspaceAnalyticsProblem: {
+            type: string;
+            title: string;
+            /** @constant */
+            status: 502;
+            /** @enum {string} */
+            code: "analytics-unavailable" | "analytics-timeout" | "analytics-budget-exceeded" | "analytics-not-ready";
+            errors?: {
+                path: string;
+                message: string;
+            }[];
+        };
+        WorkspaceAnalyticsTimeseries: {
+            /** @constant */
+            scope: "workspace";
+            /** Format: uuid */
+            instanceId: string;
+            /** Format: uuid */
+            workspaceId: string;
+            /** Format: date-time */
+            from: string;
+            /** Format: date-time */
+            to: string;
+            /** Format: date-time */
+            generatedAt: string;
+            /** @constant */
+            attributionVersion: "route-history-v2";
+            /** @constant */
+            retention: "per-route-1-to-7-days";
+            /** @constant */
+            delivery: "best-effort";
+            /** @enum {string} */
+            interval: "1m" | "5m" | "15m" | "1h" | "1d";
+            /** @description Ascending buckets anchored at from, last bucket may be partial. Empty buckets have zero counts and null quantiles. */
+            series: components["schemas"]["WorkspaceAnalyticsPoint"][];
+        };
+        /** @description One row per route UUID. Name is current and workspace-scoped, null if deleted. serviceId is the unique historical service among the filtered events, or null when several services occurred. Never split the route into misleading duplicate ranks. */
+        WorkspaceAnalyticsRoute: {
+            /** Format: uuid */
+            routeId: string;
             routeName: string | null;
             /** Format: uuid */
             serviceId: string | null;
-        } & components["schemas"]["TrafficStats"];
-        TopRoutes: {
+            requests: number;
+            errors4xx: number;
+            errors5xx: number;
+            errorRate: number;
+            p50Ms: number | null;
+            p95Ms: number | null;
+            p99Ms: number | null;
+        };
+        WorkspaceTopRoutes: {
+            /** @constant */
+            scope: "workspace";
+            /** Format: uuid */
+            instanceId: string;
+            /** Format: uuid */
+            workspaceId: string;
             /** Format: date-time */
             from: string;
             /** Format: date-time */
             to: string;
+            /** Format: date-time */
+            generatedAt: string;
+            /** @constant */
+            attributionVersion: "route-history-v2";
+            /** @constant */
+            retention: "per-route-1-to-7-days";
+            /** @constant */
+            delivery: "best-effort";
             /** @enum {string} */
             by: "requests" | "errors" | "p95";
-            items: components["schemas"]["TopRoute"][];
+            items: components["schemas"]["WorkspaceAnalyticsRoute"][];
         };
-        RequestRecord: {
-            /**
-             * Format: uuid
-             * @description Assigned by the pipeline; makes the cursor stable
-             */
+        /** @description An immutable deployment candidate selected by event time. recordedAt is the transactionally recorded CP instant, never proof of when a pod started serving. */
+        WorkspaceAnalyticsRevision: {
+            epoch: number;
+            revision: number;
+            /** Format: date-time */
+            recordedAt: string;
+        };
+        WorkspaceRequestRecord: {
+            /** Format: uuid */
             id: string;
             /** Format: date-time */
             ts: string;
             /** Format: uuid */
-            environmentId: string;
+            instanceId: string;
+            /** Format: uuid */
+            workspaceId: string;
             /** Format: uuid */
             clusterId: string;
-            /**
-             * Format: uuid
-             * @description Null when no route matched
-             */
+            /** Format: uuid */
+            routeId: string;
+            /** Format: uuid */
             serviceId: string | null;
             /** Format: uuid */
-            routeId: string | null;
-            /**
-             * Format: uuid
-             * @description Null for anonymous traffic
-             */
             consumerId: string | null;
             method: string;
-            /** @description Request path without the query string */
+            /** @description Collector-sanitized path, no query, headers or body. */
             path: string;
             status: number;
             latencyKongMs: number;
-            /** @description Null when the request never reached an upstream */
             latencyUpstreamMs: number | null;
             latencyTotalMs: number;
-            /**
-             * @description The client address as the gateway saw it: the TCP peer, or, when the data plane trusts the peer
-             *     (`kong.trustedIps`) and names a header (`kong.realIpHeader`), that header's value.
-             *     Full address for admins only. Viewers and editors get it masked: IPv4 with the last octet zeroed
-             *     (203.0.113.10 → 203.0.113.0), IPv6 truncated to its /48 (2001:db8:1234:5678::1 → 2001:db8:1234::).
-             */
+            /** @description Existing effective admin role sees full address; other principals get IPv4 /24 or IPv6 /48. No new permission is introduced. */
             clientIp: string;
-            /** @description Bytes */
-            requestSize: number;
-            /** @description Bytes */
-            responseSize: number;
+            /** @description UInt64 decimal <= 18446744073709551615, never coerced through a JS number. */
+            requestSize: string;
+            responseSize: string;
+            /** @description Always null in this slice: existing events cannot prove the revision served by a pod. Future non-null evidence requires another contract. */
+            effectiveRevision: null;
+            candidateRevisions: components["schemas"]["WorkspaceAnalyticsRevision"][];
         };
-        RequestPage: {
-            items: components["schemas"]["RequestRecord"][];
+        WorkspaceRequestPage: {
+            /** @constant */
+            scope: "workspace";
+            /** Format: uuid */
+            instanceId: string;
+            /** Format: uuid */
+            workspaceId: string;
+            /** Format: date-time */
+            from: string;
+            /** Format: date-time */
+            to: string;
+            /** Format: date-time */
+            generatedAt: string;
+            /** @constant */
+            attributionVersion: "route-history-v2";
+            /** @constant */
+            retention: "per-route-1-to-7-days";
+            /** @constant */
+            delivery: "best-effort";
+            items: components["schemas"]["WorkspaceRequestRecord"][];
             nextCursor: string | null;
         };
     };
@@ -8210,10 +8360,10 @@ export interface operations {
                 from: components["parameters"]["AnalyticsFrom"];
                 /** @description End of the period (exclusive); must be after `from`. */
                 to: components["parameters"]["AnalyticsTo"];
-                /** @description Bucket size; the period may hold at most 2000 buckets. */
-                interval?: "1m" | "5m" | "15m" | "1h" | "1d";
                 routeId?: components["parameters"]["RouteFilter"];
                 serviceId?: components["parameters"]["ServiceFilter"];
+                /** @description At most ceil((to-from)/interval) = 2000 buckets, anchored at from; ascending with zero/null empty buckets. */
+                interval?: "1m" | "5m" | "15m" | "1h" | "1d";
             };
             header?: never;
             path: {
@@ -8223,20 +8373,92 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Summary */
+            /** @description Complete result for the observed retained data; no delivery guarantee. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AnalyticsSummary"];
+                    "application/json": components["schemas"]["WorkspaceAnalyticsSummary"];
                 };
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             422: components["responses"]["ValidationError"];
-            502: components["responses"]["AnalyticsUnavailable"];
+            /** @description Admission exhausted; no query started. Retry-After is 1 second. */
+            429: {
+                headers: {
+                    "Retry-After"?: 1;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Store unavailable, deadline, budget, unsafe attribution state or numeric overflow. No partial results. Problem code is analytics-unavailable, analytics-timeout, analytics-budget-exceeded or analytics-not-ready. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["WorkspaceAnalyticsProblem"];
+                };
+            };
+        };
+    };
+    getAnalyticsTimeseries: {
+        parameters: {
+            query: {
+                /** @description Start of the period (inclusive). The period may span at most 7 days, the table's retention. */
+                from: components["parameters"]["AnalyticsFrom"];
+                /** @description End of the period (exclusive); must be after `from`. */
+                to: components["parameters"]["AnalyticsTo"];
+                routeId?: components["parameters"]["RouteFilter"];
+                serviceId?: components["parameters"]["ServiceFilter"];
+                /** @description At most ceil((to-from)/interval) = 2000 buckets, anchored at from; ascending with zero/null empty buckets. */
+                interval?: "1m" | "5m" | "15m" | "1h" | "1d";
+            };
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Complete result for the observed retained data; no delivery guarantee. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceAnalyticsTimeseries"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+            /** @description Admission exhausted; no query started. Retry-After is 1 second. */
+            429: {
+                headers: {
+                    "Retry-After"?: 1;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Store unavailable, deadline, budget, unsafe attribution state or numeric overflow. No partial results. Problem code is analytics-unavailable, analytics-timeout, analytics-budget-exceeded or analytics-not-ready. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["WorkspaceAnalyticsProblem"];
+                };
+            };
         };
     };
     getTopRoutes: {
@@ -8246,10 +8468,9 @@ export interface operations {
                 from: components["parameters"]["AnalyticsFrom"];
                 /** @description End of the period (exclusive); must be after `from`. */
                 to: components["parameters"]["AnalyticsTo"];
-                /**
-                 * @description `requests`: request count; `errors`: 4xx plus 5xx responses; `p95`: p95 of the total latency (routes
-                 *     without latency data come last).
-                 */
+                routeId?: components["parameters"]["RouteFilter"];
+                serviceId?: components["parameters"]["ServiceFilter"];
+                /** @description Descending requests, 4xx+5xx, or exact p95; null p95 last. Ties requests DESC then routeId ASC. No pagination; [] without data. */
                 by?: "requests" | "errors" | "p95";
                 limit?: number;
             };
@@ -8261,20 +8482,38 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Top routes */
+            /** @description Complete result for the observed retained data; no delivery guarantee. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TopRoutes"];
+                    "application/json": components["schemas"]["WorkspaceTopRoutes"];
                 };
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             422: components["responses"]["ValidationError"];
-            502: components["responses"]["AnalyticsUnavailable"];
+            /** @description Admission exhausted; no query started. Retry-After is 1 second. */
+            429: {
+                headers: {
+                    "Retry-After"?: 1;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Store unavailable, deadline, budget, unsafe attribution state or numeric overflow. No partial results. Problem code is analytics-unavailable, analytics-timeout, analytics-budget-exceeded or analytics-not-ready. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["WorkspaceAnalyticsProblem"];
+                };
+            };
         };
     };
     listRequests: {
@@ -8284,14 +8523,16 @@ export interface operations {
                 from: components["parameters"]["AnalyticsFrom"];
                 /** @description End of the period (exclusive); must be after `from`. */
                 to: components["parameters"]["AnalyticsTo"];
-                limit?: components["parameters"]["Limit"];
-                cursor?: components["parameters"]["Cursor"];
-                /** @description Exact status code; mutually exclusive with `statusClass`. */
-                status?: number;
-                statusClass?: "2xx" | "3xx" | "4xx" | "5xx";
                 routeId?: components["parameters"]["RouteFilter"];
                 serviceId?: components["parameters"]["ServiceFilter"];
+                limit?: components["parameters"]["Limit"];
+                /** @description Opaque authenticated cursor <=4096 chars, TTL 15 minutes; binds local instance, workspace, principal, current authorization, normalized filters, fixed from/to, attributionVersion and last (ts,id). Reauthorize every page. Invalid/tampered/expired/cross-scope cursor is 422 on cursor. Paging is live, no snapshot guarantee; late arrivals/expiry/conflicts may change later pages. See analytics-v2-design.md. */
+                cursor?: string;
                 consumerId?: string;
+                /** @description Exact status, mutually exclusive with statusClass. */
+                status?: number;
+                /** @description Mutually exclusive with status. */
+                statusClass?: "2xx" | "3xx" | "4xx" | "5xx";
             };
             header?: never;
             path: {
@@ -8301,20 +8542,38 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Requests, newest first */
+            /** @description Complete result for the observed retained data; no delivery guarantee. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RequestPage"];
+                    "application/json": components["schemas"]["WorkspaceRequestPage"];
                 };
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             422: components["responses"]["ValidationError"];
-            502: components["responses"]["AnalyticsUnavailable"];
+            /** @description Admission exhausted; no query started. Retry-After is 1 second. */
+            429: {
+                headers: {
+                    "Retry-After"?: 1;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Store unavailable, deadline, budget, unsafe attribution state or numeric overflow. No partial results. Problem code is analytics-unavailable, analytics-timeout, analytics-budget-exceeded or analytics-not-ready. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["WorkspaceAnalyticsProblem"];
+                };
+            };
         };
     };
     listClusters: {

@@ -3628,171 +3628,292 @@ paths:
     parameters:
       - $ref: "#/components/parameters/WorkspaceId"
   /workspaces/{workspaceId}/analytics/summary:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
     get:
-      tags:
-        - analytics
+      tags: [analytics]
       operationId: getAnalyticsSummary
+      summary: Workspace analytics summary (planned)
       description: |
-        Traffic of the environment as seen by its gateways, from the `requests` table fed by the observability
-        pipeline (7 days of retention). Totals for the period plus one point per `interval`; a bucket with no
-        traffic is present with zero requests and null latencies. Latencies are total request time in ms.
-        Rows: distinct request ids attributed to this workspace by agent-protocol-v2 "Analytics guarantees" (route_id against the deployment revisions, never the path); unattributed rows count only in getUnattributedAnalytics.
+        PLANNED, design-only. Shared normative rules and migration plan: analytics-v2-design.md.
+        Authenticate/authorize the mandatory workspace before traffic queries or cache lookup; instance identity
+        comes only from local persisted configuration. Archived workspaces remain readable with workspace.read.
+        Read distinct, non-conflicting stored IDs attributed by route-history-v2; no path/name/slug inference.
+        Resolve all retained copies and conflict tombstones before filters that could hide a conflicting copy.
+        from/to are required RFC 3339 with explicit offset and at most milliseconds, normalized to UTC; [from,to),
+        from < to, now-7d <= from and to <= now on first page. Apply per-event logical expiry at generatedAt.
+        Unknown/repeated parameters and incompatible filters are 422. Filters combine with AND; an entity outside
+        this workspace's provable history is indistinguishable from missing (404). No environmentId, SQL, regex,
+        free-form path, cross-workspace list or client-selected instance. Budgets apply to the whole HTTP operation,
+        not multiplied by internal queries; overflow throws and never returns partial/approximate data as 200.
+        generatedAt is observation time, not a stable snapshot. Empty traffic is not proof of collector health.
+        Totals and series in one operation; UI must not fetch timeseries in parallel to duplicate the same graph. Up to 2 aggregate queries; no pagination.
+      x-gromesh-query-policy:
+        attributionVersion: route-history-v2
+        maxPeriodDays: 7
+        maxReadRowsPerRequest: 5000000
+        maxReadBytesPerRequest: 268435456
+        maxQueryMemoryBytes: 268435456
+        maxExecutionSeconds: 5
+        maxWallSeconds: 8
+        maxResponseBytes: 2097152
+        maxConcurrentPerPrincipalWorkspace: 2
+        maxConcurrentPerInstance: 8
+      x-required-permission: workspace.read
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements: [GW-WS-12, GW-WS-16b]
       parameters:
         - $ref: ./control-plane.openapi.yaml#/components/parameters/AnalyticsFrom
         - $ref: ./control-plane.openapi.yaml#/components/parameters/AnalyticsTo
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/RouteFilter
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/ServiceFilter
         - name: interval
           in: query
-          schema:
-            type: string
-            enum:
-              - 1m
-              - 5m
-              - 15m
-              - 1h
-              - 1d
-            default: 5m
-          description: Bucket size; the period may hold at most 2000 buckets.
-        - $ref: ./control-plane.openapi.yaml#/components/parameters/RouteFilter
-        - $ref: ./control-plane.openapi.yaml#/components/parameters/ServiceFilter
+          description: At most ceil((to-from)/interval) = 2000 buckets, anchored at from; ascending with zero/null empty buckets.
+          schema: { type: string, enum: [1m, 5m, 15m, 1h, 1d], default: 5m }
       responses:
         "200":
-          description: Summary
+          description: Complete result for the observed retained data; no delivery guarantee.
           content:
             application/json:
               schema:
-                $ref: ./control-plane.openapi.yaml#/components/schemas/AnalyticsSummary
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "422":
-          $ref: "#/components/responses/ValidationError"
-        "502":
-          $ref: ./control-plane.openapi.yaml#/components/responses/AnalyticsUnavailable
+                $ref: ./analytics-v2.schemas.json#/components/schemas/WorkspaceAnalyticsSummary
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "429":
+          description: Admission exhausted; no query started. Retry-After is 1 second.
+          headers:
+            Retry-After: { schema: { type: integer, const: 1 } }
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+        "502":
+          description: Store unavailable, deadline, budget, unsafe attribution state or numeric overflow. No partial results. Problem code is analytics-unavailable, analytics-timeout, analytics-budget-exceeded or analytics-not-ready.
+          content:
+            application/problem+json:
+              schema: { $ref: ./analytics-v2.schemas.json#/components/schemas/WorkspaceAnalyticsProblem }
+  /workspaces/{workspaceId}/analytics/timeseries:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+    get:
+      tags: [analytics]
+      operationId: getAnalyticsTimeseries
+      summary: Workspace analytics timeseries (planned)
+      description: |
+        PLANNED, design-only. Shared normative rules and migration plan: analytics-v2-design.md.
+        Authenticate/authorize the mandatory workspace before traffic queries or cache lookup; instance identity
+        comes only from local persisted configuration. Archived workspaces remain readable with workspace.read.
+        Read distinct, non-conflicting stored IDs attributed by route-history-v2; no path/name/slug inference.
+        Resolve all retained copies and conflict tombstones before filters that could hide a conflicting copy.
+        from/to are required RFC 3339 with explicit offset and at most milliseconds, normalized to UTC; [from,to),
+        from < to, now-7d <= from and to <= now on first page. Apply per-event logical expiry at generatedAt.
+        Unknown/repeated parameters and incompatible filters are 422. Filters combine with AND; an entity outside
+        this workspace's provable history is indistinguishable from missing (404). No environmentId, SQL, regex,
+        free-form path, cross-workspace list or client-selected instance. Budgets apply to the whole HTTP operation,
+        not multiplied by internal queries; overflow throws and never returns partial/approximate data as 200.
+        generatedAt is observation time, not a stable snapshot. Empty traffic is not proof of collector health.
+        Independent refresh of the graph; one aggregate query, no totals and no pagination.
+      x-gromesh-query-policy:
+        attributionVersion: route-history-v2
+        maxPeriodDays: 7
+        maxReadRowsPerRequest: 5000000
+        maxReadBytesPerRequest: 268435456
+        maxQueryMemoryBytes: 268435456
+        maxExecutionSeconds: 5
+        maxWallSeconds: 8
+        maxResponseBytes: 2097152
+        maxConcurrentPerPrincipalWorkspace: 2
+        maxConcurrentPerInstance: 8
       x-required-permission: workspace.read
       x-scope: workspace
       x-gromesh-planned: true
-      x-gromesh-requirements:
-        - GW-WS-12
-        - GW-WS-16b
-    parameters:
-      - $ref: "#/components/parameters/WorkspaceId"
-  /workspaces/{workspaceId}/analytics/top-routes:
-    get:
-      tags:
-        - analytics
-      operationId: getTopRoutes
-      description: |
-        The routes with the most traffic, the most errors or the slowest p95 over the period, from the same
-        `requests` table as the summary (same 7-day limit). Ordered by the chosen criterion descending, ties by
-        `requests` descending then `routeId`. Rows: distinct request ids attributed to this workspace by agent-protocol-v2 "Analytics guarantees" (route_id against the deployment revisions, never the path); unattributed rows count only in getUnattributedAnalytics. Traffic that matched no route of this workspace is
-        unattributed (reason no-route or route-not-deployed), so every row here has a routeId of this
-        workspace.
+      x-gromesh-requirements: [GW-WS-12, GW-WS-16b]
       parameters:
         - $ref: ./control-plane.openapi.yaml#/components/parameters/AnalyticsFrom
         - $ref: ./control-plane.openapi.yaml#/components/parameters/AnalyticsTo
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/RouteFilter
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/ServiceFilter
+        - name: interval
+          in: query
+          description: At most ceil((to-from)/interval) = 2000 buckets, anchored at from; ascending with zero/null empty buckets.
+          schema: { type: string, enum: [1m, 5m, 15m, 1h, 1d], default: 5m }
+      responses:
+        "200":
+          description: Complete result for the observed retained data; no delivery guarantee.
+          content:
+            application/json:
+              schema:
+                $ref: ./analytics-v2.schemas.json#/components/schemas/WorkspaceAnalyticsTimeseries
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "429":
+          description: Admission exhausted; no query started. Retry-After is 1 second.
+          headers:
+            Retry-After: { schema: { type: integer, const: 1 } }
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+        "502":
+          description: Store unavailable, deadline, budget, unsafe attribution state or numeric overflow. No partial results. Problem code is analytics-unavailable, analytics-timeout, analytics-budget-exceeded or analytics-not-ready.
+          content:
+            application/problem+json:
+              schema: { $ref: ./analytics-v2.schemas.json#/components/schemas/WorkspaceAnalyticsProblem }
+  /workspaces/{workspaceId}/analytics/top-routes:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+    get:
+      tags: [analytics]
+      operationId: getTopRoutes
+      summary: Workspace analytics top-routes (planned)
+      description: |
+        PLANNED, design-only. Shared normative rules and migration plan: analytics-v2-design.md.
+        Authenticate/authorize the mandatory workspace before traffic queries or cache lookup; instance identity
+        comes only from local persisted configuration. Archived workspaces remain readable with workspace.read.
+        Read distinct, non-conflicting stored IDs attributed by route-history-v2; no path/name/slug inference.
+        Resolve all retained copies and conflict tombstones before filters that could hide a conflicting copy.
+        from/to are required RFC 3339 with explicit offset and at most milliseconds, normalized to UTC; [from,to),
+        from < to, now-7d <= from and to <= now on first page. Apply per-event logical expiry at generatedAt.
+        Unknown/repeated parameters and incompatible filters are 422. Filters combine with AND; an entity outside
+        this workspace's provable history is indistinguishable from missing (404). No environmentId, SQL, regex,
+        free-form path, cross-workspace list or client-selected instance. Budgets apply to the whole HTTP operation,
+        not multiplied by internal queries; overflow throws and never returns partial/approximate data as 200.
+        generatedAt is observation time, not a stable snapshot. Empty traffic is not proof of collector health.
+        One ranking query plus one workspace-scoped batch lookup for names. No per-route queries.
+      x-gromesh-query-policy:
+        attributionVersion: route-history-v2
+        maxPeriodDays: 7
+        maxReadRowsPerRequest: 5000000
+        maxReadBytesPerRequest: 268435456
+        maxQueryMemoryBytes: 268435456
+        maxExecutionSeconds: 5
+        maxWallSeconds: 8
+        maxResponseBytes: 2097152
+        maxConcurrentPerPrincipalWorkspace: 2
+        maxConcurrentPerInstance: 8
+      x-required-permission: workspace.read
+      x-scope: workspace
+      x-gromesh-planned: true
+      x-gromesh-requirements: [GW-WS-12, GW-WS-16b]
+      parameters:
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/AnalyticsFrom
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/AnalyticsTo
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/RouteFilter
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/ServiceFilter
         - name: by
           in: query
-          schema:
-            type: string
-            enum:
-              - requests
-              - errors
-              - p95
-            default: requests
-          description: |
-            `requests`: request count; `errors`: 4xx plus 5xx responses; `p95`: p95 of the total latency (routes
-            without latency data come last).
+          description: Descending requests, 4xx+5xx, or exact p95; null p95 last. Ties requests DESC then routeId ASC. No pagination; [] without data.
+          schema: { type: string, enum: [requests, errors, p95], default: requests }
         - name: limit
           in: query
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 50
-            default: 10
+          schema: { type: integer, minimum: 1, maximum: 50, default: 10 }
       responses:
         "200":
-          description: Top routes
+          description: Complete result for the observed retained data; no delivery guarantee.
           content:
             application/json:
               schema:
-                $ref: ./control-plane.openapi.yaml#/components/schemas/TopRoutes
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "422":
-          $ref: "#/components/responses/ValidationError"
-        "502":
-          $ref: ./control-plane.openapi.yaml#/components/responses/AnalyticsUnavailable
+                $ref: ./analytics-v2.schemas.json#/components/schemas/WorkspaceTopRoutes
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "429":
+          description: Admission exhausted; no query started. Retry-After is 1 second.
+          headers:
+            Retry-After: { schema: { type: integer, const: 1 } }
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+        "502":
+          description: Store unavailable, deadline, budget, unsafe attribution state or numeric overflow. No partial results. Problem code is analytics-unavailable, analytics-timeout, analytics-budget-exceeded or analytics-not-ready.
+          content:
+            application/problem+json:
+              schema: { $ref: ./analytics-v2.schemas.json#/components/schemas/WorkspaceAnalyticsProblem }
+  /workspaces/{workspaceId}/requests:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceId"
+    get:
+      tags: [analytics]
+      operationId: listRequests
+      summary: Workspace requests (planned)
+      description: |
+        PLANNED, design-only. Shared normative rules and migration plan: analytics-v2-design.md.
+        Authenticate/authorize the mandatory workspace before traffic queries or cache lookup; instance identity
+        comes only from local persisted configuration. Archived workspaces remain readable with workspace.read.
+        Read distinct, non-conflicting stored IDs attributed by route-history-v2; no path/name/slug inference.
+        Resolve all retained copies and conflict tombstones before filters that could hide a conflicting copy.
+        from/to are required RFC 3339 with explicit offset and at most milliseconds, normalized to UTC; [from,to),
+        from < to, now-7d <= from and to <= now on first page. Apply per-event logical expiry at generatedAt.
+        Unknown/repeated parameters and incompatible filters are 422. Filters combine with AND; an entity outside
+        this workspace's provable history is indistinguishable from missing (404). No environmentId, SQL, regex,
+        free-form path, cross-workspace list or client-selected instance. Budgets apply to the whole HTTP operation,
+        not multiplied by internal queries; overflow throws and never returns partial/approximate data as 200.
+        generatedAt is observation time, not a stable snapshot. Empty traffic is not proof of collector health.
+        Newest first (ts DESC,id DESC), limit 1..200 default 50; read limit+1 after identity/attribution/filtering, no COUNT total. Empty page items=[] and nextCursor=null. A cursor never changes fixed from/to or reauthorizes old grants.
+      x-gromesh-query-policy:
+        attributionVersion: route-history-v2
+        maxPeriodDays: 7
+        maxReadRowsPerRequest: 5000000
+        maxReadBytesPerRequest: 268435456
+        maxQueryMemoryBytes: 268435456
+        maxExecutionSeconds: 5
+        maxWallSeconds: 8
+        maxResponseBytes: 2097152
+        maxConcurrentPerPrincipalWorkspace: 2
+        maxConcurrentPerInstance: 8
       x-required-permission: workspace.read
       x-scope: workspace
       x-gromesh-planned: true
-      x-gromesh-requirements:
-        - GW-WS-12
-        - GW-WS-16b
-    parameters:
-      - $ref: "#/components/parameters/WorkspaceId"
-  /workspaces/{workspaceId}/requests:
-    get:
-      tags:
-        - analytics
-      operationId: listRequests
-      description: |
-        Request explorer over the same `requests` table, newest first. Credentials never reach the table (the
-        pipeline strips them), so a record carries no header or query values: only the path. `clientIp` is
-        masked for every role but admin. Rows: distinct request ids attributed to this workspace by agent-protocol-v2 "Analytics guarantees" (route_id against the deployment revisions, never the path); unattributed rows count only in getUnattributedAnalytics.
+      x-gromesh-requirements: [GW-WS-12, GW-WS-16b]
       parameters:
         - $ref: ./control-plane.openapi.yaml#/components/parameters/AnalyticsFrom
         - $ref: ./control-plane.openapi.yaml#/components/parameters/AnalyticsTo
-        - $ref: ./control-plane.openapi.yaml#/components/parameters/Limit
-        - $ref: ./control-plane.openapi.yaml#/components/parameters/Cursor
-        - name: status
-          in: query
-          schema:
-            type: integer
-            minimum: 100
-            maximum: 599
-          description: Exact status code; mutually exclusive with `statusClass`.
-        - name: statusClass
-          in: query
-          schema:
-            type: string
-            enum:
-              - 2xx
-              - 3xx
-              - 4xx
-              - 5xx
         - $ref: ./control-plane.openapi.yaml#/components/parameters/RouteFilter
         - $ref: ./control-plane.openapi.yaml#/components/parameters/ServiceFilter
+        - $ref: ./control-plane.openapi.yaml#/components/parameters/Limit
+        - name: cursor
+          in: query
+          description: Opaque authenticated cursor <=4096 chars, TTL 15 minutes; binds local instance, workspace, principal, current authorization, normalized filters, fixed from/to, attributionVersion and last (ts,id). Reauthorize every page. Invalid/tampered/expired/cross-scope cursor is 422 on cursor. Paging is live, no snapshot guarantee; late arrivals/expiry/conflicts may change later pages. See analytics-v2-design.md.
+          schema: { type: string, maxLength: 4096 }
         - name: consumerId
           in: query
-          schema:
-            type: string
-            format: uuid
+          schema: { type: string, format: uuid }
+        - name: status
+          in: query
+          description: Exact status, mutually exclusive with statusClass.
+          schema: { type: integer, minimum: 100, maximum: 599 }
+        - name: statusClass
+          in: query
+          description: Mutually exclusive with status.
+          schema: { type: string, enum: [2xx, 3xx, 4xx, 5xx] }
       responses:
         "200":
-          description: Requests, newest first
+          description: Complete result for the observed retained data; no delivery guarantee.
           content:
             application/json:
               schema:
-                $ref: ./control-plane.openapi.yaml#/components/schemas/RequestPage
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "422":
-          $ref: "#/components/responses/ValidationError"
-        "502":
-          $ref: ./control-plane.openapi.yaml#/components/responses/AnalyticsUnavailable
+                $ref: ./analytics-v2.schemas.json#/components/schemas/WorkspaceRequestPage
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
-      x-required-permission: workspace.read
-      x-scope: workspace
-      x-gromesh-planned: true
-      x-gromesh-requirements:
-        - GW-WS-12
-        - GW-WS-16b
-    parameters:
-      - $ref: "#/components/parameters/WorkspaceId"
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "429":
+          description: Admission exhausted; no query started. Retry-After is 1 second.
+          headers:
+            Retry-After: { schema: { type: integer, const: 1 } }
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+        "502":
+          description: Store unavailable, deadline, budget, unsafe attribution state or numeric overflow. No partial results. Problem code is analytics-unavailable, analytics-timeout, analytics-budget-exceeded or analytics-not-ready.
+          content:
+            application/problem+json:
+              schema: { $ref: ./analytics-v2.schemas.json#/components/schemas/WorkspaceAnalyticsProblem }
   /clusters:
     get:
       tags:
