@@ -1028,6 +1028,7 @@ export const analyticsRouteHistory = pgTable("analytics_route_history", {
     configHash: text("config_hash").notNull(), routeCount: integer("route_count").notNull(),
     mappingVersion: integer("mapping_version").notNull().default(2),
     provenance: text("provenance").notNull().default("control-plane-domain-v2"),
+    chainComplete: boolean("chain_complete").notNull().default(false),
     writeTransaction: text("write_transaction").notNull().default(sql `pg_current_xact_id()::text`),
 }, t => [
     primaryKey({ columns: [t.instanceId, t.epoch, t.revision] }),
@@ -1046,3 +1047,9 @@ export const analyticsRouteHistoryRoutes = pgTable("analytics_route_history_rout
     index("analytics_route_history_identity_idx").on(t.instanceId, t.routeId, t.workspaceId),
     check("analytics_route_history_release_ck", sql `${t.releaseVersion}>0`),
 ]);
+
+/** Post-commit CP visibility is not Agent delivery or proof of an effective served revision. */
+export const analyticsRouteHistoryVisibility = pgTable("analytics_route_history_visibility", {
+ instanceId:uuid("instance_id").notNull(),epoch:integer("epoch").notNull(),revision:integer("revision").notNull(),
+ observedAt:timestamp("observed_at",{withTimezone:true,mode:"string"}).notNull().default(sql`clock_timestamp()`),
+},t=>[primaryKey({columns:[t.instanceId,t.epoch,t.revision]}),foreignKey({columns:[t.instanceId,t.epoch,t.revision],foreignColumns:[analyticsRouteHistory.instanceId,analyticsRouteHistory.epoch,analyticsRouteHistory.revision]})]);

@@ -55,7 +55,7 @@ export async function appendRouteHistory(tx: Tx, ctx: RequestContext, v: RouteHi
         throw Error("Route history clock moved backwards");
     if (latest && (!before(latest, v) || (v.previous && before(v.previous, latest)) || !v.previous))
         throw Error("Route history predecessor conflict");
-    await tx.insert(headers).values({ instanceId: v.instanceId, epoch: v.epoch, revision: v.revision, recordedAt: v.recordedAt, previous: v.previous, genesis: v.genesis, reason: v.reason, rollbackOf: v.rollbackOf, configHash: v.configHash, routeCount: v.routes.length });
+    await tx.insert(headers).values({ instanceId: v.instanceId, epoch: v.epoch, revision: v.revision, recordedAt: v.recordedAt, previous: v.previous, genesis: v.genesis, reason: v.reason, rollbackOf: v.rollbackOf, configHash: v.configHash, routeCount: v.routes.length, chainComplete: v.genesis || previous?.chainComplete === true });
     if (v.routes.length)
         await tx.execute(sql `insert into analytics_route_history_routes(instance_id,epoch,revision,route_id,workspace_id,service_id,release_version)
     select ${v.instanceId}::uuid,${v.epoch},${v.revision},r."routeId",r."workspaceId",r."serviceId",r."releaseVersion"
@@ -65,12 +65,15 @@ export async function appendRouteHistory(tx: Tx, ctx: RequestContext, v: RouteHi
 /** Explicit finite bound; callers requiring a longer history must fail closed, never silently certify this prefix. */
 export async function readRouteHistory(db: Db | Tx, instanceId: string, options: {
     ref?: RevisionRef;
+    refs?: readonly RevisionRef[];
     limit?: number;
 } = {}): Promise<RouteHistoryRecord[]> {
     const limit = options.limit ?? 1000;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 10000)
         throw Error("Invalid route history limit");
-    const rows = await db.select({ ...getTableColumns(headers), recordedAt: sql<string> `to_char(${headers.recordedAt} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')` }).from(headers).where(options.ref ? keyWhere({ ...options.ref, instanceId }) : eq(headers.instanceId, instanceId)).orderBy(asc(headers.epoch), asc(headers.revision)).limit(limit + 1);
+    if(options.refs?.length===0)return [];
+    if(options.refs && options.refs.length>limit)throw Error("Route history budget exceeded");
+    const rows = await db.select({ ...getTableColumns(headers), recordedAt: sql<string> `to_char(${headers.recordedAt} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')` }).from(headers).where(options.ref ? keyWhere({ ...options.ref, instanceId }) : options.refs ? and(eq(headers.instanceId,instanceId),or(...options.refs.map(r=>and(eq(headers.epoch,r.epoch),eq(headers.revision,r.revision))))) : eq(headers.instanceId, instanceId)).orderBy(asc(headers.epoch), asc(headers.revision)).limit(limit + 1);
     if (rows.length > limit)
         throw Error("Route history budget exceeded");
     if (!rows.length)

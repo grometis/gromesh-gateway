@@ -1,6 +1,8 @@
+import { appendRouteHistory } from "../analytics/route-history-ledger.js";
+import { confirmRouteHistory } from "../analytics/route-history-evidence.js";
 import { workspaceTransaction } from "../common/workspace-transaction.js";
 import { createHash } from "node:crypto";
-import { Body, Controller, Get, HttpCode, HttpStatus, Inject, Injectable, Module, Param, Post } from "@nestjs/common";
+import { Body, Controller, Get, HttpCode, HttpStatus, Inject, Injectable, Logger, Module, Param, Post } from "@nestjs/common";
 import {
   buildSnapshotV2,
   CompileError,
@@ -285,7 +287,7 @@ export class ReleasesService {
    */
   async deploy(ctx: RequestContext, body: { expectedRevision: number | null; reason: string }) {
     const settings = this.settings();
-    return this.db.transaction(async (tx) => {
+    const result = await this.db.transaction(async (tx) => {
       const { self, now } = await this.lease(tx, settings.stage, true);
       const latest = await this.currentRevision(tx);
       if (body.expectedRevision !== (latest ?? null)) throw conflict(`Current revision is ${latest ?? "none"}, expected ${body.expectedRevision ?? "none"}`);
@@ -308,6 +310,15 @@ export class ReleasesService {
         clusters: [],
       };
     });
+    try {
+      const [self] = await this.db.select({ id: instance.id }).from(instance);
+      if (!self) throw Error("Instance identity is unavailable");
+      await confirmRouteHistory(this.db, ctx, { instanceId: self.id, epoch: result.epoch, revision: result.revision });
+    } catch {
+      // Deployment is already committed. Analytics remains incomplete until explicit reconciliation succeeds.
+      new Logger("Releases").warn("Route history post-commit observation is pending");
+    }
+    return result;
   }
 
   /** The next revision of the instance: every workspace's active release. */
@@ -402,6 +413,16 @@ export class ReleasesService {
       createdAt: now,
     });
     const previous = await this.currentRevision(tx, revision);
+    await appendRouteHistory(tx, ctx, {
+      instanceId: self.id, epoch: FIRST_EPOCH, revision, recordedAt: now.toISOString(),
+      previous: previous === undefined ? null : { epoch: FIRST_EPOCH, revision: previous },
+      genesis: previous === undefined && revision === 1,
+      reason: "publish", rollbackOf: null, configHash,
+      // Domain IDs from the same immutable Releases composed above; no parsing of Kong config or names.
+      routes: members.flatMap(member => member.state.routes.map(route => ({
+        routeId: route.id, workspaceId: member.id, serviceId: route.serviceId, releaseVersion: member.releaseVersion,
+      }))),
+    });
     await transition(tx, FIRST_EPOCH, revision, [
       ["composed", "deployment requested"],
       ["active", "recorded, expected nodes fixed"],
