@@ -1,0 +1,701 @@
+{
+  "components": {
+    "schemas": {
+      "WorkspaceTrafficStats": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "requests",
+          "errors4xx",
+          "errors5xx",
+          "errorRate",
+          "p50Ms",
+          "p95Ms",
+          "p99Ms"
+        ],
+        "properties": {
+          "requests": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "errors4xx": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "errors5xx": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "errorRate": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "p50Ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "p95Ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "p99Ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          }
+        },
+        "description": "Exact quantiles of total latency in ms. Errors are 4xx plus 5xx; errorRate is their count / requests, or zero without traffic. Empty quantiles are null. Overflow fails rather than rounding.",
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "requests": {
+                  "const": 0
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "errors4xx": {
+                  "const": 0
+                },
+                "errors5xx": {
+                  "const": 0
+                },
+                "errorRate": {
+                  "const": 0
+                },
+                "p50Ms": {
+                  "type": "null"
+                },
+                "p95Ms": {
+                  "type": "null"
+                },
+                "p99Ms": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "WorkspaceAnalyticsPoint": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ts",
+          "requests",
+          "errors4xx",
+          "errors5xx",
+          "errorRate",
+          "p50Ms",
+          "p95Ms",
+          "p99Ms"
+        ],
+        "properties": {
+          "ts": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "requests": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "errors4xx": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "errors5xx": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "errorRate": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "p50Ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "p95Ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "p99Ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          }
+        }
+      },
+      "WorkspaceAnalyticsRevision": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "epoch",
+          "revision",
+          "recordedAt"
+        ],
+        "properties": {
+          "epoch": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "recordedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "description": "An immutable deployment candidate selected by event time. recordedAt is the transactionally recorded CP instant, never proof of when a pod started serving."
+      },
+      "WorkspaceAnalyticsSummary": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "scope",
+          "instanceId",
+          "workspaceId",
+          "from",
+          "to",
+          "generatedAt",
+          "attributionVersion",
+          "retention",
+          "delivery",
+          "interval",
+          "totals",
+          "series"
+        ],
+        "properties": {
+          "scope": {
+            "const": "workspace"
+          },
+          "instanceId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "workspaceId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "from": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "generatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "attributionVersion": {
+            "const": "route-history-v2"
+          },
+          "retention": {
+            "const": "per-route-1-to-7-days"
+          },
+          "delivery": {
+            "const": "best-effort"
+          },
+          "interval": {
+            "type": "string",
+            "enum": [
+              "1m",
+              "5m",
+              "15m",
+              "1h",
+              "1d"
+            ]
+          },
+          "totals": {
+            "$ref": "#/components/schemas/WorkspaceTrafficStats"
+          },
+          "series": {
+            "type": "array",
+            "maxItems": 2000,
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceAnalyticsPoint"
+            },
+            "description": "Ascending buckets anchored at from, last bucket may be partial. Empty buckets have zero counts and null quantiles."
+          }
+        }
+      },
+      "WorkspaceAnalyticsTimeseries": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "scope",
+          "instanceId",
+          "workspaceId",
+          "from",
+          "to",
+          "generatedAt",
+          "attributionVersion",
+          "retention",
+          "delivery",
+          "interval",
+          "series"
+        ],
+        "properties": {
+          "scope": {
+            "const": "workspace"
+          },
+          "instanceId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "workspaceId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "from": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "generatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "attributionVersion": {
+            "const": "route-history-v2"
+          },
+          "retention": {
+            "const": "per-route-1-to-7-days"
+          },
+          "delivery": {
+            "const": "best-effort"
+          },
+          "interval": {
+            "type": "string",
+            "enum": [
+              "1m",
+              "5m",
+              "15m",
+              "1h",
+              "1d"
+            ]
+          },
+          "series": {
+            "type": "array",
+            "maxItems": 2000,
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceAnalyticsPoint"
+            },
+            "description": "Ascending buckets anchored at from, last bucket may be partial. Empty buckets have zero counts and null quantiles."
+          }
+        }
+      },
+      "WorkspaceAnalyticsRoute": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "routeId",
+          "routeName",
+          "serviceId",
+          "requests",
+          "errors4xx",
+          "errors5xx",
+          "errorRate",
+          "p50Ms",
+          "p95Ms",
+          "p99Ms"
+        ],
+        "properties": {
+          "routeId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "routeName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 255
+          },
+          "serviceId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "requests": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "errors4xx": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "errors5xx": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "errorRate": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "p50Ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "p95Ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "p99Ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          }
+        },
+        "description": "One row per route UUID. Name is current and workspace-scoped, null if deleted. serviceId is the unique historical service among the filtered events, or null when several services occurred. Never split the route into misleading duplicate ranks."
+      },
+      "WorkspaceTopRoutes": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "scope",
+          "instanceId",
+          "workspaceId",
+          "from",
+          "to",
+          "generatedAt",
+          "attributionVersion",
+          "retention",
+          "delivery",
+          "by",
+          "items"
+        ],
+        "properties": {
+          "scope": {
+            "const": "workspace"
+          },
+          "instanceId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "workspaceId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "from": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "generatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "attributionVersion": {
+            "const": "route-history-v2"
+          },
+          "retention": {
+            "const": "per-route-1-to-7-days"
+          },
+          "delivery": {
+            "const": "best-effort"
+          },
+          "by": {
+            "type": "string",
+            "enum": [
+              "requests",
+              "errors",
+              "p95"
+            ]
+          },
+          "items": {
+            "type": "array",
+            "maxItems": 50,
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceAnalyticsRoute"
+            }
+          }
+        }
+      },
+      "WorkspaceRequestRecord": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "ts",
+          "instanceId",
+          "workspaceId",
+          "clusterId",
+          "routeId",
+          "serviceId",
+          "consumerId",
+          "method",
+          "path",
+          "status",
+          "latencyKongMs",
+          "latencyUpstreamMs",
+          "latencyTotalMs",
+          "clientIp",
+          "requestSize",
+          "responseSize",
+          "effectiveRevision",
+          "candidateRevisions"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "ts": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "instanceId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "workspaceId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "clusterId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "routeId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "serviceId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "consumerId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "method": {
+            "type": "string",
+            "maxLength": 32
+          },
+          "path": {
+            "type": "string",
+            "maxLength": 8192,
+            "description": "Collector-sanitized path, no query, headers or body."
+          },
+          "status": {
+            "type": "integer",
+            "minimum": 100,
+            "maximum": 599
+          },
+          "latencyKongMs": {
+            "type": "number",
+            "minimum": 0
+          },
+          "latencyUpstreamMs": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "latencyTotalMs": {
+            "type": "number",
+            "minimum": 0
+          },
+          "clientIp": {
+            "type": "string",
+            "description": "Existing effective admin role sees full address; other principals get IPv4 /24 or IPv6 /48. No new permission is introduced."
+          },
+          "requestSize": {
+            "type": "string",
+            "pattern": "^(?:0|[1-9][0-9]{0,18}|1[0-7][0-9]{18}|18[0-3][0-9]{17}|184[0-3][0-9]{16}|1844[0-5][0-9]{15}|18446[0-6][0-9]{14}|184467[0-3][0-9]{13}|1844674[0-3][0-9]{12}|184467440[0-6][0-9]{10}|1844674407[0-2][0-9]{9}|18446744073[0-6][0-9]{8}|1844674407370[0-8][0-9]{6}|18446744073709[0-4][0-9]{5}|184467440737095[0-4][0-9]{4}|18446744073709550[0-9]{3}|18446744073709551[0-5][0-9]{2}|1844674407370955160[0-9]{1}|1844674407370955161[0-4]|18446744073709551615)$",
+            "description": "UInt64 decimal <= 18446744073709551615, never coerced through a JS number."
+          },
+          "responseSize": {
+            "type": "string",
+            "pattern": "^(?:0|[1-9][0-9]{0,18}|1[0-7][0-9]{18}|18[0-3][0-9]{17}|184[0-3][0-9]{16}|1844[0-5][0-9]{15}|18446[0-6][0-9]{14}|184467[0-3][0-9]{13}|1844674[0-3][0-9]{12}|184467440[0-6][0-9]{10}|1844674407[0-2][0-9]{9}|18446744073[0-6][0-9]{8}|1844674407370[0-8][0-9]{6}|18446744073709[0-4][0-9]{5}|184467440737095[0-4][0-9]{4}|18446744073709550[0-9]{3}|18446744073709551[0-5][0-9]{2}|1844674407370955160[0-9]{1}|1844674407370955161[0-4]|18446744073709551615)$"
+          },
+          "effectiveRevision": {
+            "type": "null",
+            "description": "Always null in this slice: existing events cannot prove the revision served by a pod. Future non-null evidence requires another contract."
+          },
+          "candidateRevisions": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 2,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceAnalyticsRevision"
+            }
+          }
+        }
+      },
+      "WorkspaceRequestPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "scope",
+          "instanceId",
+          "workspaceId",
+          "from",
+          "to",
+          "generatedAt",
+          "attributionVersion",
+          "retention",
+          "delivery",
+          "items",
+          "nextCursor"
+        ],
+        "properties": {
+          "scope": {
+            "const": "workspace"
+          },
+          "instanceId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "workspaceId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "from": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "generatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "attributionVersion": {
+            "const": "route-history-v2"
+          },
+          "retention": {
+            "const": "per-route-1-to-7-days"
+          },
+          "delivery": {
+            "const": "best-effort"
+          },
+          "items": {
+            "type": "array",
+            "maxItems": 200,
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceRequestRecord"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 4096
+          }
+        }
+      },
+      "WorkspaceAnalyticsProblem": {
+        "type": "object",
+        "required": [
+          "type",
+          "title",
+          "status",
+          "code"
+        ],
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "const": 502
+          },
+          "code": {
+            "type": "string",
+            "enum": [
+              "analytics-unavailable",
+              "analytics-timeout",
+              "analytics-budget-exceeded",
+              "analytics-not-ready"
+            ]
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "path",
+                "message"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

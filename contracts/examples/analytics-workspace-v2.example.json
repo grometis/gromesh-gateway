@@ -1,0 +1,126 @@
+{
+  "summary": {
+    "scope": "workspace",
+    "instanceId": "11111111-1111-4111-8111-111111111111",
+    "workspaceId": "22222222-2222-4222-8222-222222222222",
+    "from": "2026-11-04T10:00:00Z",
+    "to": "2026-11-04T10:05:00Z",
+    "generatedAt": "2026-11-04T10:06:00Z",
+    "attributionVersion": "route-history-v2",
+    "retention": "per-route-1-to-7-days",
+    "delivery": "best-effort",
+    "interval": "5m",
+    "totals": {
+      "requests": 0,
+      "errors4xx": 0,
+      "errors5xx": 0,
+      "errorRate": 0,
+      "p50Ms": null,
+      "p95Ms": null,
+      "p99Ms": null
+    },
+    "series": [
+      {
+        "ts": "2026-11-04T10:00:00Z",
+        "requests": 0,
+        "errors4xx": 0,
+        "errors5xx": 0,
+        "errorRate": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "p99Ms": null
+      }
+    ]
+  },
+  "timeseries": {
+    "scope": "workspace",
+    "instanceId": "11111111-1111-4111-8111-111111111111",
+    "workspaceId": "22222222-2222-4222-8222-222222222222",
+    "from": "2026-11-04T10:00:00Z",
+    "to": "2026-11-04T10:05:00Z",
+    "generatedAt": "2026-11-04T10:06:00Z",
+    "attributionVersion": "route-history-v2",
+    "retention": "per-route-1-to-7-days",
+    "delivery": "best-effort",
+    "interval": "5m",
+    "series": [
+      {
+        "ts": "2026-11-04T10:00:00Z",
+        "requests": 0,
+        "errors4xx": 0,
+        "errors5xx": 0,
+        "errorRate": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "p99Ms": null
+      }
+    ]
+  },
+  "topRoutes": {
+    "scope": "workspace",
+    "instanceId": "11111111-1111-4111-8111-111111111111",
+    "workspaceId": "22222222-2222-4222-8222-222222222222",
+    "from": "2026-11-04T10:00:00Z",
+    "to": "2026-11-04T10:05:00Z",
+    "generatedAt": "2026-11-04T10:06:00Z",
+    "attributionVersion": "route-history-v2",
+    "retention": "per-route-1-to-7-days",
+    "delivery": "best-effort",
+    "by": "requests",
+    "items": []
+  },
+  "requests": {
+    "scope": "workspace",
+    "instanceId": "11111111-1111-4111-8111-111111111111",
+    "workspaceId": "22222222-2222-4222-8222-222222222222",
+    "from": "2026-11-04T10:00:00Z",
+    "to": "2026-11-04T10:05:00Z",
+    "generatedAt": "2026-11-04T10:06:00Z",
+    "attributionVersion": "route-history-v2",
+    "retention": "per-route-1-to-7-days",
+    "delivery": "best-effort",
+    "items": [],
+    "nextCursor": null
+  },
+  "populatedRequests": {
+    "scope": "workspace",
+    "instanceId": "11111111-1111-4111-8111-111111111111",
+    "workspaceId": "22222222-2222-4222-8222-222222222222",
+    "from": "2026-11-04T10:00:00Z",
+    "to": "2026-11-04T10:05:00Z",
+    "generatedAt": "2026-11-04T10:06:00Z",
+    "attributionVersion": "route-history-v2",
+    "retention": "per-route-1-to-7-days",
+    "delivery": "best-effort",
+    "items": [
+      {
+        "id": "33333333-3333-4333-8333-333333333333",
+        "ts": "2026-11-04T10:01:00Z",
+        "instanceId": "11111111-1111-4111-8111-111111111111",
+        "workspaceId": "22222222-2222-4222-8222-222222222222",
+        "clusterId": "44444444-4444-4444-8444-444444444444",
+        "routeId": "55555555-5555-4555-8555-555555555555",
+        "serviceId": null,
+        "consumerId": null,
+        "method": "GET",
+        "path": "/pedidos/{num}",
+        "status": 503,
+        "latencyKongMs": 1.5,
+        "latencyUpstreamMs": null,
+        "latencyTotalMs": 2.5,
+        "clientIp": "203.0.113.0",
+        "requestSize": "18446744073709551615",
+        "responseSize": "0",
+        "effectiveRevision": null,
+        "candidateRevisions": [
+          {
+            "epoch": 1,
+            "revision": 7,
+            "recordedAt": "2026-11-04T09:59:00Z"
+          }
+        ]
+      }
+    ],
+    "nextCursor": null
+  }
+}
