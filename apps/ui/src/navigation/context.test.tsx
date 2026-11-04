@@ -298,6 +298,8 @@ describe("authorized route context with real transport", () => {
       await act(async () => { button.dispatchEvent(new Event("click", { bubbles: true })); await tick(); });
     };
     await click("Publicar release");
+    const acknowledgement = view.container.findAll((n) => n.tagName === "INPUT" && n.type === "checkbox")[0]!;
+    await act(async () => { acknowledgement.checked = true; acknowledgement.dispatchEvent(new Event("click", { bubbles: true })); await tick(); });
     let finish!: (response: Response) => void;
     const pending = new Promise<Response>((resolve) => { finish = resolve; });
     view.answers[`/api/v2/workspaces/${A}`] = () => pending;

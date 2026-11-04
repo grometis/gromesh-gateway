@@ -1,10 +1,12 @@
 import { useWorkspaceId, useIsWorkspaceRoute } from "../navigation/context";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, unwrap } from "../api/client";
 import { apiV2, problemCode, type Release } from "../api/client-v2";
+import { useAuth } from "../auth";
 import { Button } from "../components/Button";
 import { Field } from "../components/Field";
+import { InstanceContext } from "../components/InstanceContext";
 import { Modal } from "../components/Modal";
 import { PageHeader } from "../components/PageHeader";
 import { useLegacyEnvironment } from "../components/Shell";
@@ -61,6 +63,7 @@ export function ReleasesPage() {
 }
 
 function WorkspaceReleases({ workspaceId }: { workspaceId: string }) {
+  const { user } = useAuth();
   const v2 = useIsWorkspaceRoute();
   const workspace = useWorkspace(workspaceId);
   const environment = useLegacyEnvironment(workspaceId);
@@ -74,11 +77,15 @@ function WorkspaceReleases({ workspaceId }: { workspaceId: string }) {
     setConfirm({ expectedVersion: activeVersion });
     if (!v2) { void workspace.refetch(); void environment.refetch(); }
   };
-  return <section className="final-page stack">
+  return <section className="final-page releases-page stack">
     <PageHeader title="Releases" description={`Releases do Workspace ${workspace.data?.name ?? "selecionado"}. Publicar uma release não implanta seu conteúdo.`}
       actions={access.canWrite && <Button variant={confirm ? "secondary" : "publish"} onClick={open}>Publicar release</Button>} />
     {access.reason && <p role="status" className="note">{access.reason}</p>}
-    {published !== null && <p role="status">Release v{published} publicada. Nenhuma implantação foi criada.</p>}
+    {published !== null && <div role="status" className="stack">
+      <p>Release v{published} publicada. Nenhuma implantação foi criada.</p>
+      <a href="#release-history">Ver histórico de Releases</a>
+      {user?.role === "admin" && <p>Consulte a auditoria para verificar os efeitos nos valores locais deste Workspace.</p>}
+    </div>}
     {!v2 && <section className="stack" aria-label="Rascunho">
       <h2>Rascunho</h2>
       <p>{environment.isError ? "Não foi possível consultar o indicador de alterações pendentes."
@@ -88,7 +95,7 @@ function WorkspaceReleases({ workspaceId }: { workspaceId: string }) {
       {environment.data?.publishMode === "auto" && <p className="note">A publicação automática pertence ao fluxo v1. Publicar uma release v2 é permitido nesse modo e não dispara implantação nem publicação v1.</p>}
     </section>
     }
-    <section className="stack" aria-label="Releases publicadas">
+    <section id="release-history" className="stack" aria-label="Releases publicadas">
       <h2>Releases publicadas</h2>
       <p>Histórico imutável: releases publicadas não podem ser editadas ou excluídas.</p>
       <p>{workspace.isError ? "Não foi possível consultar a release ativa."
@@ -135,16 +142,33 @@ function releaseAuthor(actor: unknown): string {
 
 function PublishRelease({ workspaceId, expectedVersion, onClose, onPublished }: { workspaceId: string; expectedVersion: number | null; onClose: () => void; onPublished: (r: Release) => void }) {
   const client = useQueryClient();
+  const workspace = useWorkspace(workspaceId);
   const access = useWorkspaceGatewayAccess(workspaceId, "release");
   const [message, setMessage] = useState("");
+  const [acknowledged, setAcknowledged] = useState(false);
+  const acknowledgementId = useId();
+  const impactId = useId();
   const publish = useMutation(publishReleaseMutation(client, workspaceId, expectedVersion, onPublished));
-  const allowed = access.canWrite && !publish.isPending;
-  return <Modal title="Publicar release" onClose={() => { if (!publish.isPending) onClose(); }} footer={<>
+  const allowed = access.canWrite && acknowledged && !publish.isPending;
+  return <Modal title="Publicar release" bodyLabel="Confirmação de publicação" onClose={() => { if (!publish.isPending) onClose(); }} footer={<>
     <Button disabled={publish.isPending} onClick={onClose}>Cancelar</Button>
     <Button variant="publish" disabled={!allowed} onClick={() => { if (allowed) publish.mutate(message); }}>{publish.isPending ? "Publicando…" : "Confirmar publicação"}</Button>
   </>}>
+    <div className="note stack">
+      <p className="wrap">Workspace: <strong>{workspace.data?.name ?? "Nome indisponível"}</strong> · slug: <span className="mono">{workspace.data?.slug || "Não informado"}</span></p>
+      <InstanceContext label="Instância da publicação" />
+      <p>Publicar nova Release: congela o rascunho atual; não implanta em nós.</p>
+    </div>
     <p>Publicar congela o rascunho em uma release imutável e a torna ativa para uma futura implantação. Publicar não implanta, não cria implantação e não altera os snapshots nem a publicação v1.</p>
+    <div className="note stack" id={impactId}>
+      <h3>Impacto nos valores locais</h3>
+      <p>Valores locais de variáveis cujas declarações foram removidas do rascunho serão apagados ao publicar. Esta tela não consegue listar quais; consulte a auditoria depois.</p>
+    </div>
     <Field label="Resumo (opcional)">{(id) => <input id={id} value={message} disabled={publish.isPending} onChange={(e) => setMessage(e.target.value)} />}</Field>
+    <label className="check" htmlFor={acknowledgementId}>
+      <input id={acknowledgementId} type="checkbox" checked={acknowledged} disabled={publish.isPending} aria-describedby={impactId} onChange={(e) => setAcknowledged(e.target.checked)} />
+      Entendi que publicar apaga os valores locais das declarações removidas.
+    </label>
     {access.reason && <p role="status">{access.reason}</p>}
     {publish.isError && <div className="error" role="alert">{releaseErrors(publish.error).map((text, i) => <p key={i}>{text}</p>)}</div>}
   </Modal>;

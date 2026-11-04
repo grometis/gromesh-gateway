@@ -1,4 +1,5 @@
 import { navigateGlobal, openGlobalMenu } from "./global-navigation";
+import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 import type { Environment, Me } from "../src/api/client";
 import type { Release, Workspace } from "../src/api/client-v2";
@@ -13,10 +14,12 @@ const release: Release = {
 
 async function setup(page: Page, options: {
   role?: Me["role"]; status?: Workspace["status"]; publishMode?: Environment["publishMode"];
+  v2?: boolean; networkError?: boolean; contextStatus?: 401 | 403 | 404; stage?: "dev" | "hml" | "prd";
   hold?: "workspace" | "environment"; error?: { status: number; detail?: string; errors?: readonly { path: string; message: string }[] };
 } = {}) {
   const writes: { method: string; path: string; body: unknown; csrf: string | undefined }[] = [];
   const unexpected: string[] = [];
+  const reads: string[] = [];
   let items: Release[] = [];
   let activeRelease: number | null = null;
   let archived = options.status === "archived";
@@ -32,6 +35,7 @@ async function setup(page: Page, options: {
       const body: unknown = request.postData() ? request.postDataJSON() : null;
       writes.push({ method: request.method(), path, body, csrf: request.headers()["x-csrf-token"] });
       if (request.method() === "POST" && path === `/api/v2/workspaces/${W}/releases`) {
+        if (options.networkError) return route.abort("failed");
         if (options.error) return route.fulfill({ status: options.error.status, json: { title: "Refused", ...options.error } });
         const saved: Release = { ...release, version: items.length + 1, message: (body as { message?: string }).message };
         items = [saved, ...items]; activeRelease = saved.version;
@@ -40,10 +44,11 @@ async function setup(page: Page, options: {
       unexpected.push(`${request.method()} ${path}`);
       return route.fulfill({ status: 500, json: { title: "Unexpected mutation", status: 500 } });
     }
+    reads.push(path);
     if (path === "/api/v1/me") return route.fulfill({ json: { id: W, name: "Ana", email: "ana@gromesh.dev", role: options.role ?? "editor", active: true, ...timestamps } satisfies Me });
     if (path === "/api/v1/auth/csrf") return route.fulfill({ json: { csrfToken: "session-csrf" } });
     if (path === "/api/v1/environments") return route.fulfill({ json: { items: [environment(W), environment(B)], nextCursor: null } });
-    if (path === "/api/v2/workspace-creation-policy") return route.fulfill({ json: { mode: "restricted-request", creatorBecomesAdmin: false, updatedAt: null, updatedBy: null, workspacesMode: "lab", stage: "dev", caller: { canCreate: false, canRequest: false, canDecide: false } } });
+    if (path === "/api/v2/workspace-creation-policy") return route.fulfill({ json: { mode: "restricted-request", creatorBecomesAdmin: false, updatedAt: null, updatedBy: null, workspacesMode: "lab", stage: options.stage ?? "dev", caller: { canCreate: false, canRequest: false, canDecide: false } } });
     if (path === "/api/v2/workspaces") return route.fulfill({ json: { items: [W, B].map((id) => ({ id, key: id, name: environment(id).name, slug: id === W ? "billing" : "recargas", status: archived ? "archived" : "active", activeRelease: id === W ? activeRelease : null } satisfies Workspace)), nextCursor: null } });
     for (const id of [W, B]) {
       if (path === `/api/v1/environments/${id}`) {
@@ -51,6 +56,7 @@ async function setup(page: Page, options: {
         return route.fulfill({ json: environment(id) });
       }
       if (path === `/api/v2/workspaces/${id}`) {
+        if (options.contextStatus) return route.fulfill({ status: options.contextStatus, json: { title: "Refused", status: options.contextStatus } });
         if (hold === "workspace") await held;
         return route.fulfill({ json: { id, key: id, name: environment(id).name, slug: id === W ? "billing" : "recargas", status: archived ? "archived" : "active", activeRelease: id === W ? activeRelease : null } satisfies Workspace });
       }
@@ -62,9 +68,9 @@ async function setup(page: Page, options: {
     unexpected.push(`${request.method()} ${path}`);
     return route.fulfill({ status: 404, json: { title: "Unexpected query", status: 404 } });
   });
-  await page.goto(`/e/${W}/releases`);
-  await expect(page.getByRole("heading", { name: "Releases", exact: true })).toBeVisible();
-  return { writes, unexpected, releaseRead, archive: () => { archived = true; }, holdReads: (kind: typeof hold) => { hold = kind; } };
+  await page.goto(options.v2 ? `/workspaces/${W}/releases` : `/e/${W}/releases`);
+  if (!options.contextStatus) await expect(page.getByRole("heading", { name: "Releases", exact: true })).toBeVisible();
+  return { writes, reads, unexpected, releaseRead, archive: () => { archived = true; }, holdReads: (kind: typeof hold) => { hold = kind; } };
 }
 
 test.afterEach(async ({ page }) => {
@@ -87,6 +93,7 @@ test("publishes an immutable release through v2 without deploying or calling v1 
   const dialog = page.getByRole("dialog", { name: "Publicar release" });
   await expect(dialog).toContainText("Publicar não implanta");
   await dialog.getByLabel("Resumo (opcional)").fill("Serviços de cobrança");
+  await dialog.getByRole("checkbox", { name: /Entendi que publicar/ }).check();
   await dialog.getByRole("button", { name: "Confirmar publicação" }).click();
   await expect(dialog).toHaveCount(0);
   await expect(page.getByText("Release v1 publicada. Nenhuma implantação foi criada.", { exact: true })).toBeVisible();
@@ -118,6 +125,7 @@ for (const error of [
     const fake = await setup(page, { error });
     await page.getByRole("button", { name: "Publicar release", exact: true }).click();
     const dialog = page.getByRole("dialog");
+    await dialog.getByRole("checkbox", { name: /Entendi que publicar/ }).check();
     await dialog.getByRole("button", { name: "Confirmar publicação" }).click();
     await expect(dialog.getByRole("alert")).toContainText(error.text);
     await expect(page.getByRole("table", { name: "Releases publicadas" })).toHaveCount(0);
@@ -130,6 +138,7 @@ test("auto mode permits the inert v2 release", async ({ page }) => {
   const fake = await setup(page, { publishMode: "auto" });
   await expect(page.getByText(/Publicar uma release v2 é permitido/)).toBeVisible();
   await page.getByRole("button", { name: "Publicar release", exact: true }).click();
+  await page.getByRole("dialog").getByRole("checkbox", { name: /Entendi que publicar/ }).check();
   await page.getByRole("dialog").getByRole("button", { name: "Confirmar publicação" }).click();
   await expect(page.getByRole("table", { name: "Releases publicadas" })).toBeVisible();
   expect(fake.writes.map((r) => r.path)).toEqual([`/api/v2/workspaces/${W}/releases`]);
@@ -142,6 +151,7 @@ for (const status of [403, 201] as const) {
     await page.getByRole("button", { name: "Publicar release", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "Publicar release" });
     await dialog.getByLabel("Resumo (opcional)").fill("Publicação por binding v2");
+    await dialog.getByRole("checkbox", { name: /Entendi que publicar/ }).check();
     await dialog.getByRole("button", { name: "Confirmar publicação" }).click();
     if (status === 403) {
       await expect(dialog.getByRole("alert")).toContainText("Você não tem permissão para publicar (release.publish)");
@@ -193,6 +203,7 @@ test("confirmation revalidates access and blocks publication if archived meanwhi
   await page.getByRole("button", { name: "Publicar release", exact: true }).click();
   const dialog = page.getByRole("dialog");
   try {
+    await dialog.getByRole("checkbox", { name: /Entendi que publicar/ }).check();
     await expect(dialog.getByRole("button", { name: "Confirmar publicação" })).toBeDisabled();
     fake.archive();
   } finally { fake.releaseRead(); }
@@ -204,10 +215,17 @@ test("confirmation revalidates access and blocks publication if archived meanwhi
 test("switching workspace discards confirmation, input and previous release data", async ({ page }) => {
   const fake = await setup(page);
   await page.getByRole("button", { name: "Publicar release", exact: true }).click();
+  await page.getByRole("dialog").getByRole("checkbox", { name: /Entendi que publicar/ }).check();
   await page.getByRole("dialog").getByRole("button", { name: "Confirmar publicação" }).click();
   await expect(page.getByRole("table", { name: "Releases publicadas" })).toContainText(release.contentDigest);
+  // The legacy context revalidates when reopening. Hold it so the selector's remount and focus race are deterministic.
+  fake.holdReads("environment");
   await page.getByRole("button", { name: "Publicar release", exact: true }).click();
   await page.getByRole("dialog").getByLabel("Resumo (opcional)").fill("Não reaproveitar");
+  await expect(page.getByRole("complementary")).toHaveCount(0);
+  fake.holdReads(undefined); fake.releaseRead();
+  await expect(page.getByRole("complementary")).toBeVisible();
+  expect(await page.getByRole("dialog").evaluate(dialog => dialog.contains(document.activeElement))).toBe(true);
   await page.getByLabel("Workspace v2", { exact: true }).selectOption(B, { force: true });
   await expect(page).toHaveURL(`/workspaces/${B}/releases`);
   await expect(page.getByRole("dialog")).toHaveCount(0);
@@ -219,3 +237,170 @@ test("switching workspace discards confirmation, input and previous release data
   expect(fake.writes.map((r) => r.path)).toEqual([`/api/v2/workspaces/${W}/releases`]);
   expect(fake.unexpected).toEqual([]);
 });
+
+for (const width of [390, 768, 1440]) {
+  test(`v2 publication explains removal, requires acknowledgement and passes axe at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    const fake = await setup(page, { v2: true, role: "admin" });
+    await page.reload();
+    const opener = page.getByRole("button", { name: "Publicar release", exact: true });
+    await opener.focus();
+    await page.keyboard.press("Enter");
+    const dialog = page.getByRole("dialog", { name: "Publicar release", exact: true });
+    const expectFocusInside = async () => {
+      await expect.poll(() => dialog.evaluate((element) => element.contains(document.activeElement))).toBe(true);
+    };
+    await expectFocusInside();
+    await expect(dialog).toContainText("Cobrança");
+    await expect(dialog).toContainText("billing");
+    await expect(dialog.getByRole("region", { name: "Instância da publicação", exact: true })).toContainText("Instância DEV");
+    await expect(dialog).toContainText(new URL(page.url()).origin);
+    await expect(dialog).toContainText("Publicar nova Release: congela o rascunho atual; não implanta em nós.");
+    await expect(dialog).toContainText("Valores locais de variáveis cujas declarações foram removidas do rascunho serão apagados ao publicar. Esta tela não consegue listar quais; consulte a auditoria depois.");
+    const confirm = dialog.getByRole("button", { name: "Confirmar publicação" });
+    const acknowledgement = dialog.getByRole("checkbox", { name: /Entendi que publicar/ });
+    await expect(confirm).toBeDisabled();
+    await expect(acknowledgement).not.toBeChecked();
+    await expect(acknowledgement).toHaveAccessibleDescription(/Esta tela não consegue listar quais/);
+    const close = dialog.getByRole("button", { name: "Fechar", exact: true });
+    const cancel = dialog.getByRole("button", { name: "Cancelar", exact: true });
+    await close.focus();
+    await page.keyboard.press("Shift+Tab");
+    await expect(cancel).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(close).toBeFocused();
+    for (const key of ["Tab", "Shift+Tab"]) {
+      for (let step = 0; step < 8; step++) {
+        await page.keyboard.press(key);
+        await expectFocusInside();
+      }
+    }
+    await dialog.getByLabel("Resumo (opcional)").fill("Cobrança revisada");
+    await dialog.getByLabel("Resumo (opcional)").press("Enter");
+    expect(fake.writes).toEqual([]);
+    await acknowledgement.check();
+    await expect(confirm).toBeEnabled();
+    await close.focus();
+    await page.keyboard.press("Shift+Tab");
+    await expect(confirm).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(close).toBeFocused();
+    await acknowledgement.uncheck();
+    await expect(confirm).toBeDisabled();
+    const audit = async () => {
+      expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    };
+    await audit();
+    await acknowledgement.check();
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    await expect(opener).toBeFocused();
+    expect(fake.writes).toEqual([]);
+    await page.getByRole("button", { name: "Publicar release", exact: true }).click();
+    await expect(acknowledgement).not.toBeChecked();
+    await expect(dialog.getByLabel("Resumo (opcional)")).toHaveValue("");
+    await expect(confirm).toBeDisabled();
+    await dialog.getByRole("button", { name: "Cancelar", exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(opener).toBeFocused();
+    await page.getByRole("button", { name: "Publicar release", exact: true }).click();
+    await acknowledgement.check();
+    await confirm.click();
+    await expect(dialog).toHaveCount(0);
+    await expect(page.getByRole("status").filter({ hasText: "Release v1 publicada." })).toContainText("Consulte a auditoria");
+    await page.getByRole("link", { name: "Ver histórico de Releases" }).click();
+    await expect(page).toHaveURL(`/workspaces/${W}/releases#release-history`);
+    await expect(page.locator("#release-history")).toContainText("v1 · ativa");
+    await audit();
+    expect(fake.writes).toEqual([{ method: "POST", path: `/api/v2/workspaces/${W}/releases`, body: { expectedActiveVersion: null }, csrf: "session-csrf" }]);
+    expect(fake.reads.filter((path) => /variables|audit-events|publish-preview/.test(path))).toEqual([]);
+    expect(fake.unexpected).toEqual([]);
+  });
+}
+
+for (const error of [
+  { status: 403, detail: "Requires release.publish", text: "Você não tem permissão para publicar" },
+  { status: 409, detail: "Active release is 2, expected 1", text: "A release ativa mudou" },
+  { status: 422, detail: "Invalid draft SECRET_NAME=secret-value", text: "Revise o rascunho antes de publicar" },
+  { status: 0, text: "Não foi possível falar com o servidor" },
+]) {
+  test(`v2 publication keeps the dialog and reports ${error.status || "network failure"} safely`, async ({ page }) => {
+    const fake = await setup(page, { v2: true, ...(error.status ? { error } : { networkError: true }) });
+    await page.getByRole("button", { name: "Publicar release", exact: true }).click();
+    const dialog = page.getByRole("dialog");
+    await dialog.getByRole("checkbox", { name: /Entendi que publicar/ }).check();
+    await dialog.getByRole("button", { name: "Confirmar publicação" }).click();
+    await expect(dialog.getByRole("alert")).toContainText(error.text);
+    await expect(dialog).not.toContainText("SECRET_NAME");
+    await expect(dialog).not.toContainText("secret-value");
+    await expect(page.getByRole("link", { name: "Ver histórico de Releases" })).toHaveCount(0);
+    await expect(page.getByRole("table", { name: "Releases publicadas" })).toHaveCount(0);
+    await dialog.getByRole("button", { name: "Cancelar", exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    expect(fake.writes).toHaveLength(1);
+    expect(fake.unexpected).toEqual([]);
+  });
+}
+
+test("v2 workspace switch discards the acknowledgement and previous publication result", async ({ page }) => {
+  const fake = await setup(page, { v2: true, role: "viewer" });
+  await page.getByRole("button", { name: "Publicar release", exact: true }).click();
+  let dialog = page.getByRole("dialog");
+  await dialog.getByRole("checkbox", { name: /Entendi que publicar/ }).check();
+  await dialog.getByRole("button", { name: "Confirmar publicação" }).click();
+  await expect(page.getByRole("link", { name: "Ver histórico de Releases" })).toBeVisible();
+  await expect(page.getByText(/Consulte a auditoria/)).toHaveCount(0);
+  await page.getByRole("button", { name: "Publicar release", exact: true }).click();
+  await dialog.getByRole("checkbox", { name: /Entendi que publicar/ }).check();
+  await dialog.getByLabel("Resumo (opcional)").fill("Não levar para Recargas");
+  await page.getByLabel("Workspace v2", { exact: true }).selectOption(B, { force: true });
+  await expect(page).toHaveURL(`/workspaces/${B}/releases`);
+  await expect(page.getByRole("link", { name: "Ver histórico de Releases" })).toHaveCount(0);
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.getByText("Nenhuma release publicada neste Workspace.", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Publicar release", exact: true }).click();
+  dialog = page.getByRole("dialog");
+  await expect(dialog).toContainText("Recargas");
+  await expect(dialog).toContainText("recargas");
+  await expect(dialog).not.toContainText("Cobrança");
+  await expect(dialog.getByLabel("Resumo (opcional)")).toHaveValue("");
+  await expect(dialog.getByRole("checkbox", { name: /Entendi que publicar/ })).not.toBeChecked();
+  await expect(dialog.getByRole("button", { name: "Confirmar publicação" })).toBeDisabled();
+  expect(fake.writes.map((r) => r.path)).toEqual([`/api/v2/workspaces/${W}/releases`]);
+  expect(fake.unexpected).toEqual([]);
+});
+
+for (const stage of ["hml", "prd"] as const) {
+  test(`v2 server still enforces the ${stage} publication restriction`, async ({ page }) => {
+    const fake = await setup(page, { v2: true, stage, error: { status: 403, detail: `Local publishing exists only on dev; this instance is ${stage}` } });
+    await page.getByRole("button", { name: "Publicar release", exact: true }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByRole("region", { name: "Instância da publicação" })).toContainText(`Instância ${stage.toUpperCase()}`);
+    await dialog.getByRole("checkbox", { name: /Entendi que publicar/ }).check();
+    await dialog.getByRole("button", { name: "Confirmar publicação" }).click();
+    await expect(dialog.getByRole("alert")).toContainText("Somente dev permite publicar");
+    expect(fake.writes).toHaveLength(1);
+    expect(fake.unexpected).toEqual([]);
+  });
+}
+
+test("v2 archived workspace retains history access and cannot open publication", async ({ page }) => {
+  const fake = await setup(page, { v2: true, status: "archived" });
+  await expect(page.getByRole("button", { name: "Publicar release", exact: true })).toHaveCount(0);
+  await expect(page.getByText("Somente leitura: este Workspace está arquivado.", { exact: true })).toBeVisible();
+  await expect(page.locator("#release-history")).toBeVisible();
+  expect(fake.writes).toEqual([]);
+  expect(fake.unexpected).toEqual([]);
+});
+
+for (const contextStatus of [401, 403, 404] as const) {
+  test(`v2 context refusal ${contextStatus} never offers publication`, async ({ page }) => {
+    const fake = await setup(page, { v2: true, contextStatus });
+    if (contextStatus === 401) await expect(page).toHaveURL(/\/login/);
+    else await expect(page.getByText(contextStatus === 403 ? "Você não tem permissão para acessar este contexto." : "Não encontrado ou indisponível para sua conta.", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Publicar release", exact: true })).toHaveCount(0);
+    expect(fake.writes).toEqual([]);
+    expect(fake.unexpected).toEqual([]);
+  });
+}

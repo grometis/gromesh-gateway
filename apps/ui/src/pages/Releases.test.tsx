@@ -6,9 +6,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Release } from "../api/client-v2";
 import { installTestDom } from "../test/dom";
 
+const authState = vi.hoisted(() => ({ role: "viewer" as "viewer" | "admin" }));
 vi.mock("../auth", async (importOriginal) => ({
   ...await importOriginal<typeof import("../auth")>(),
-  useAuth: () => ({ user: { role: "viewer", name: "Ana" }, logout: vi.fn() }),
+  useAuth: () => ({ user: { role: authState.role, name: "Ana" }, logout: vi.fn() }),
   useCanEdit: () => false,
 }));
 
@@ -33,7 +34,84 @@ async function load(answer: (request: Request) => Promise<Response>) {
 }
 
 describe("workspace releases", () => {
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => { vi.unstubAllGlobals(); authState.role = "viewer"; });
+
+  it.each(["viewer", "admin"] as const)("requires a fresh acknowledgement and reports publication without inventing a preview (%s)", async (role) => {
+    authState.role = role;
+    const container = installTestDom();
+    Object.assign(window.location, { origin: "https://dev.example" });
+    const requests: Request[] = [];
+    const { ReleasesPage } = await load(async (request) => {
+      requests.push(request);
+      const path = new URL(request.url).pathname;
+      if (path === "/api/v1/auth/csrf") return Response.json({ csrfToken: "csrf" });
+      if (request.method === "GET" && path === `/api/v2/workspaces/${W}/releases`) return Response.json([{ ...release, version: 8 }]);
+      if (request.method === "POST" && path === `/api/v2/workspaces/${W}/releases`) return Response.json({ ...release, version: 8 }, { status: 201 });
+      throw new Error(`Unexpected request: ${request.method} ${path}`);
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    client.setQueryData(["workspace", W], { id: W, name: "Pagamentos", slug: "billing", status: "active", activeRelease: 4 });
+    client.setQueryData(["ws-releases", W], [release]);
+    client.setQueryData(["workspace-creation-policy"], { stage: "dev" });
+    const { createRoot } = await import("react-dom/client");
+    const root = createRoot(container as unknown as HTMLElement);
+    const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+    const button = (label: string) => container.findAll((node) => node.tagName === "BUTTON" && node.textContent === label)[0]!;
+    const click = async (label: string) => { await act(async () => { button(label).dispatchEvent(new Event("click", { bubbles: true })); await tick(); }); };
+    const acknowledge = async () => {
+      const input = container.findAll((node) => node.tagName === "INPUT" && node.type === "checkbox")[0]!;
+      expect(input).toBeDefined();
+      await act(async () => { input.checked = !input.checked; input.dispatchEvent(new Event("click", { bubbles: true })); await tick(); });
+    };
+    try {
+      await act(async () => {
+        root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[`/workspaces/${W}/releases`]}>
+          <Routes><Route path="/workspaces/:workspaceId/releases" element={<ReleasesPage />} /></Routes>
+        </MemoryRouter></QueryClientProvider>);
+        await tick();
+      });
+      await click("Publicar release");
+      const dialog = container.findAll((node) => node.getAttribute("role") === "dialog")[0]!;
+      expect(dialog.textContent).toContain("Pagamentos");
+      expect(dialog.textContent).toContain("billing");
+      expect(dialog.textContent).toContain("Instância DEV");
+      expect(dialog.textContent).toContain("https://dev.example");
+      expect(dialog.textContent).toContain("nova Release");
+      expect(dialog.textContent).not.toContain("v5");
+      expect(dialog.textContent).toContain("congela o rascunho atual; não implanta em nós");
+      expect(dialog.textContent).toContain("Valores locais de variáveis cujas declarações foram removidas do rascunho serão apagados ao publicar.");
+      expect(dialog.textContent).toContain("Esta tela não consegue listar quais; consulte a auditoria depois.");
+      expect(button("Confirmar publicação").getAttribute("disabled")).not.toBeNull();
+      await click("Confirmar publicação");
+      expect(requests).toHaveLength(0);
+      await acknowledge();
+      expect(button("Confirmar publicação").getAttribute("disabled")).toBeNull();
+      await acknowledge();
+      expect(button("Confirmar publicação").getAttribute("disabled")).not.toBeNull();
+      await acknowledge();
+      await click("Cancelar");
+      expect(container.findAll((node) => node.getAttribute("role") === "dialog")).toHaveLength(0);
+      expect(requests).toHaveLength(0);
+      await click("Publicar release");
+      expect(button("Confirmar publicação").getAttribute("disabled")).not.toBeNull();
+      await acknowledge();
+      await click("Confirmar publicação");
+      await act(async () => { await tick(); });
+      expect(container.textContent).toContain("Release v8 publicada.");
+      const history = container.findAll((node) => node.tagName === "A" && node.textContent === "Ver histórico de Releases")[0]!;
+      expect(history.getAttribute("href")).toBe("#release-history");
+      expect(container.findAll((node) => node.getAttribute("id") === "release-history")).toHaveLength(1);
+      expect(container.textContent.includes("Consulte a auditoria")).toBe(role === "admin");
+      expect(requests.map((r) => [r.method, new URL(r.url).pathname])).toEqual([
+        ["GET", "/api/v1/auth/csrf"], ["POST", `/api/v2/workspaces/${W}/releases`],
+        ["GET", `/api/v2/workspaces/${W}/releases`],
+      ]);
+      expect(await requests[1]!.json()).toEqual({ expectedActiveVersion: 4 });
+    } finally {
+      await act(() => root.unmount());
+      client.clear();
+    }
+  });
 
   it("uses the refreshed active version on the next publication through the screen", async () => {
     const container = installTestDom();
@@ -43,6 +121,7 @@ describe("workspace releases", () => {
     const { ReleasesPage } = await load(async (request) => {
       const path = new URL(request.url).pathname;
       if (path === "/api/v1/auth/csrf") return Response.json({ csrfToken: "csrf" });
+      if (path === "/api/v2/workspace-creation-policy") return Response.json({ stage: "dev" });
       if (path === `/api/v2/workspaces/${W}/releases`) {
         if (request.method === "GET") return Response.json(published);
         const body = await request.json() as { expectedActiveVersion: number | null };
@@ -83,6 +162,8 @@ describe("workspace releases", () => {
       expect(container.textContent).toContain("Nenhuma release ativa informada.");
       for (const version of [1, 2]) {
         await click("Publicar release");
+        const checkbox = container.findAll((node) => node.tagName === "INPUT" && node.type === "checkbox")[0]!;
+        await act(async () => { checkbox.checked = true; checkbox.dispatchEvent(new Event("click", { bubbles: true })); await tick(); });
         await click("Confirmar publicação");
         await settle();
         expect(container.findAll((node) => node.getAttribute("role") === "dialog")).toHaveLength(0);
@@ -214,6 +295,11 @@ describe("workspace releases", () => {
     expect(errors).toMatch(status === 403 ? /permissão.*release.publish/ : /services.0.host/);
     expect(errors).toMatch(status === 403 ? /Somente dev/ : status === 409 ? /Sem alterações/ : /variável.*valor/);
     client.clear();
+  });
+
+  it("reports network failure in Portuguese without echoing rejected content", async () => {
+    const { releaseErrors } = await load(() => new Promise(() => {}));
+    expect(releaseErrors(new TypeError("SECRET_NAME=secret-value"))).toEqual(["Não foi possível falar com o servidor. Tente novamente."]);
   });
 
   it("does not reuse another workspace's release list", async () => {

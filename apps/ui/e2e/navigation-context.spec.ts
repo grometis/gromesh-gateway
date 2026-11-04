@@ -171,7 +171,10 @@ for (const namespace of ["legacy", "v2"] as const) {
         ? route.fulfill({ status: 201, json: releaseV1 }) : route.fallback());
       try {
         await page.getByRole("button", { name: namespace === "legacy" ? "Novo serviço" : "Publicar release", exact: true }).click();
-        if (namespace === "v2") await page.getByRole("button", { name: "Confirmar publicação", exact: true }).click();
+        if (namespace === "v2") {
+          await page.getByRole("dialog").getByRole("checkbox", { name: /Entendi que publicar/ }).check();
+          await page.getByRole("button", { name: "Confirmar publicação", exact: true }).click();
+        }
         await requested;
         await expect(content).toBeVisible();
       } finally { finish(); }
@@ -204,6 +207,7 @@ test("v2 publication confirmation survives pending and completed Workspace refre
   }));
   const confirmation = page.getByRole("status").filter({ hasText: "Release v1 publicada. Nenhuma implantação foi criada." });
   try {
+    await page.getByRole("dialog").getByRole("checkbox", { name: /Entendi que publicar/ }).check();
     await page.getByRole("button", { name: "Confirmar publicação", exact: true }).click();
     await requested;
     await expect(confirmation).toBeVisible();
