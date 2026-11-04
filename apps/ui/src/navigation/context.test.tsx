@@ -366,7 +366,13 @@ describe("breadcrumbs through the authorized context and real queries", () => {
   ])("keeps the %s breadcrumb beside the integrated Gateway sidebar", async (section, label) => {
     const view = await mount(`/workspaces/${A}/${section}`, { full: true });
     await view.waitText("Workspace v2: Workspace A");
-    expect(labels(view)).toEqual(["Visão geral da instância", "Workspace A", label]);
+    expect(labels(view)).toEqual(section === "overview"
+      ? ["Visão geral da instância", "Workspace A"] : ["Visão geral da instância", "Workspace A", label]);
+    if (section === "overview") {
+      expect(trail(view).findAll((n) => n.getAttribute("aria-current") === "page").map((n) => [n.tagName, n.textContent]))
+        .toEqual([["SPAN", "Workspace A"]]);
+      expect(trail(view).findAll((n) => n.tagName === "A").map((n) => n.getAttribute("href"))).toEqual(["/"]);
+    }
     const menu = view.container.findAll((n) => n.tagName === "NAV" && n.getAttribute("aria-label") === "Menu principal")[0]!;
     expect(menu.findAll((n) => n.tagName === "A")).toHaveLength(8);
     expect(menu.findAll((n) => n.getAttribute("aria-current") === "page").map((n) => n.getAttribute("aria-label")))

@@ -66,8 +66,9 @@ for (const width of [390, 768, 1440]) {
       ["certificates", "Certificados"], ["variables", "Variáveis"], ["releases", "Releases"],
     ]) {
       await page.goto(`/workspaces/${A}/${section}?view=integration#page`);
-      await expect(trail(page).locator("li")).toHaveText(["Visão geral da instância", workspace(A).name, label!]);
-      await expect(trail(page).locator('[aria-current="page"]')).toHaveText(label!);
+      await expect(trail(page).locator("li")).toHaveText(section === "overview"
+        ? ["Visão geral da instância", workspace(A).name] : ["Visão geral da instância", workspace(A).name, label!]);
+      await expect(trail(page).locator('[aria-current="page"]')).toHaveText(section === "overview" ? workspace(A).name : label!);
       const menu = await openGateway(page);
       await expect(menu.getByRole("link")).toHaveCount(8);
       if (section === "releases") await expect(menu.locator('[aria-current="page"]')).toHaveCount(0);
@@ -117,12 +118,10 @@ for (const width of [390, 768, 1440]) {
     await expect(trail(page).locator('[aria-current="page"]')).toHaveText("Serviços");
     await trail(page).getByRole("link", { name: workspace(A).name, exact: true }).click();
     await expect(page).toHaveURL(`/workspaces/${A}/overview`);
-    await expect(trail(page).locator('[aria-current="page"]')).toHaveText("Visão geral");
-    if (width > 700) {
-      await trail(page).getByRole("link", { name: "Visão geral da instância", exact: true }).click();
-      await expect(page).toHaveURL("/");
-      await expect(trail(page).locator("li")).toHaveCount(1);
-    }
+    await expect(trail(page).locator('[aria-current="page"]')).toHaveText(workspace(A).name);
+    await trail(page).getByRole("link", { name: "Visão geral da instância", exact: true }).click();
+    await expect(page).toHaveURL("/");
+    await expect(trail(page).locator("li")).toHaveCount(1);
     expect(requests.every((request) => request.startsWith("GET "))).toBe(true);
     expect(requests.some((request) => request.startsWith("GET /api/v1/environments/"))).toBe(false);
   });

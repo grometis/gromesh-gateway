@@ -33,11 +33,13 @@ export function buildBreadcrumbs(url: string, context: NavigationContext | null,
   const instance = destinations.find((d) => d.id === "instance")!;
   const items: Breadcrumb[] = [{ label: labelOf(instance), href: instance.path }];
   const entryId = destination.scope === "workspace-v2" ? "workspace-entry" : "legacy-entry";
+  // The v2 entry redirects to overview, so both represent the current Workspace.
+  const isContextEntry = destination.id === entryId || destination.id === "v2-N01";
   if (confirmed) {
     const entry = destinations.find((d) => d.id === entryId)!;
     items.push({ label: confirmed.v2 ? confirmed.name : `Ambiente (legado) ${confirmed.name}`, href: destinationHref(entry, confirmed.id) });
   }
-  if (destination.id !== entryId) {
+  if (!isContextEntry) {
     const parent = destination.parentId && destinations.find((d) => d.id === destination.parentId);
     if (parent) items.push({ label: labelOf(parent), ...(confirmed ? { href: destinationHref(parent, confirmed.id) } : {}) });
     items.push({ label: confirmed && detailName ? detailName : labelOf(destination) });

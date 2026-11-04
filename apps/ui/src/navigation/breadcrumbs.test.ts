@@ -9,7 +9,7 @@ const context: NavigationContext = {
 
 describe("catalog-driven breadcrumb paths", () => {
   it.each([
-    ["overview", "Visão geral"], ["services", "Serviços"], ["routes", "Rotas"],
+    ["services", "Serviços"], ["routes", "Rotas"],
     ["consumers", "Consumidores"], ["plugins", "Plugins"], ["upstreams", "Upstreams"],
     ["certificates", "Certificados"], ["variables", "Variáveis"], ["releases", "Releases"],
   ])("builds the real v2 %s destination without a name-based URL", (section, label) => {
@@ -18,10 +18,12 @@ describe("catalog-driven breadcrumb paths", () => {
       { label: "Nome visível", href: "/workspaces/workspace-id" }, { label },
     ]);
   });
-  it("keeps the registered entry current before its redirect to overview", () => {
-    expect(buildBreadcrumbs("/workspaces/workspace-id", context)).toEqual([
-      { label: "Visão geral da instância", href: "/" }, { label: "Nome visível" },
-    ]);
+  it.each(["authorized", "archived"] as const)("keeps the %s Workspace current without a duplicate overview level", (state) => {
+    for (const suffix of ["", "/overview", "/overview?cursor=opaque#details"]) {
+      expect(buildBreadcrumbs(`/workspaces/workspace-id${suffix}`, { ...context, state })).toEqual([
+        { label: "Visão geral da instância", href: "/" }, { label: "Nome visível" },
+      ]);
+    }
   });
   it.each([
     ["services/resource", "Serviços", "Serviço"],
