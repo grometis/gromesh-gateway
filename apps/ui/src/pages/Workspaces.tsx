@@ -1,6 +1,7 @@
-import { useId, useState, type FormEvent } from "react";
+import { Link } from "react-router";
+import { useEffect, useId, useState, type FormEvent } from "react";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { unwrap } from "../api/client";
+import { ApiError, unwrap } from "../api/client";
 import { apiV2, creationPolicyQuery, workspacesQuery, type Workspace, type WorkspaceCreationPolicy, type WorkspaceWrite } from "../api/client-v2";
 import { statusMessage } from "../api/errors";
 import { Badge } from "../components/Badge";
@@ -58,14 +59,21 @@ export function archiveWorkspaceMutation(queryClient: QueryClient, workspace: Wo
 }
 
 export function WorkspacesPage() {
+  const queryClient = useQueryClient();
   const workspaces = useInfiniteQuery(workspacesQuery);
+  useEffect(() => {
+    if (workspaces.error instanceof ApiError && [401, 403].includes(workspaces.error.status)) {
+      queryClient.removeQueries({ queryKey: workspacesQuery.queryKey });
+      queryClient.removeQueries({ queryKey: ["workspace"] });
+    }
+  }, [queryClient, workspaces.error]);
   const policy = useQuery(creationPolicyQuery);
   const [creating, setCreating] = useState(false);
   const [viewing, setViewing] = useState<Workspace | null>(null);
   const [editing, setEditing] = useState<Workspace | null>(null);
   const [archiving, setArchiving] = useState<Workspace | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const items = workspaces.data?.pages.flatMap((page) => page.items) ?? [];
+  const items = workspaces.isError ? [] : workspaces.data?.pages.flatMap((page) => page.items) ?? [];
   // No contract operation tells the caller's v2 permissions (a workspace-admin binding, platform.admin): every active
   // workspace offers both actions and the server's 403 says who may (workspace.admin edits, platform.admin archives).
   const active = (w: Workspace) => w.status === "active";
@@ -75,9 +83,9 @@ export function WorkspacesPage() {
       <PageHeader
         title="Workspaces"
         description="Cada Workspace isola services, routes, consumers e plugins de um time nesta instância."
-        actions={policy.data?.caller.canCreate && (
+        actions={<div className="identity-actions"><Link to="/" className="back-link">Abrir Visão geral da instância</Link>{policy.data?.caller.canCreate && (
           <Button variant="primary" onClick={() => { setNotice(null); setCreating(true); }}>Criar Workspace</Button>
-        )}
+        )}</div>}
       />
       {policy.data && <Availability policy={policy.data} />}
       {policy.isError && <p className="error" role="alert">Não foi possível ler a política de criação: {statusMessage(policy.error)}</p>}
@@ -121,7 +129,7 @@ export function WorkspacesPage() {
           </tbody>
         </Table>
       )}
-      {workspaces.hasNextPage && (
+      {!workspaces.isError && workspaces.hasNextPage && (
         <Button disabled={workspaces.isFetchingNextPage} onClick={() => void workspaces.fetchNextPage()}>
           Carregar mais
         </Button>

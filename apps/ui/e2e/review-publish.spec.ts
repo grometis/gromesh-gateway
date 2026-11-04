@@ -27,7 +27,7 @@ async function openReview(page: Page) {
   await page.route(`**/api/v1/environments/${envId}`, (route) => route.fulfill({ json: environment }));
   await page.route("**/api/v1/environments/*/clusters", (route) => route.fulfill({ json: { items: [] } }));
   await page.route("**/api/v1/environments/*/publish-preview", (route) => route.fulfill({ json: { currentVersion: 7, draftHash: `sha256:${"b".repeat(64)}`, hasChanges: true, changes } }));
-  await page.goto("/login");
+  await page.goto(`/e/${envId}/services`);
   await page.getByLabel("E-mail").fill("ana@gromesh.dev");
   await page.getByLabel("Senha").fill("s3nha-de-teste");
   await page.getByRole("button", { name: "Entrar" }).click();

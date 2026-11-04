@@ -1,10 +1,11 @@
-import { useDeferredValue, useState, type FormEvent } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useDeferredValue, useEffect, useRef, useState, type FormEvent } from "react";
+import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router";
-import { api, unwrap, type Consumer, type ConsumerWrite, type KeyAuthCredential } from "../api/client";
-import { consumerName, useConsumers } from "../api/lists";
+import type { Consumer, ConsumerWrite, KeyAuthCredential } from "../api/client";
+import { consumerName } from "../api/lists";
 import { statusMessage, toFormErrors, type FormErrors } from "../api/errors";
-import { useCanEdit } from "../auth";
+import { useConsumerScope } from "./consumer-scope";
+import { useWorkspaceId, useIsWorkspaceRoute } from "../navigation/context";
 import { Field, FormErrorList } from "../components/Field";
 import { ConfirmDialog, Modal } from "../components/Modal";
 import { Tabs } from "../components/Tabs";
@@ -14,43 +15,64 @@ import { createdAt, CredentialCard, PendingBadge, SecretOnce } from "../componen
 import { Table } from "../components/Table";
 import { PageHeader } from "../components/PageHeader";
 import { EmptyState } from "../components/EmptyState";
-import { useEnvId } from "../components/Shell";
 import { AclGroupsPanel, BasicAuthCredentials, JwtCredentials, RotateCredential } from "./ConsumerCredentials";
 import { ScopedPlugins } from "./Plugins";
-import { splitList, useInvalidateDraft } from "./Services";
+import { splitList } from "./Services";
 
 const FIELDS = ["username", "customId", "tags"] as const;
 
+/** A completed write still invalidates its Workspace, but cannot navigate a page the user has left. */
+function useMounted() {
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+  return mounted;
+}
+
 export function ConsumersPage() {
-  const envId = useEnvId();
-  const canEdit = useCanEdit();
+  const id = useWorkspaceId();
+  const v2 = useIsWorkspaceRoute();
+  return <Consumers key={`${v2}/${id}`} envId={id} />;
+}
+
+function Consumers({ envId }: { envId: string }) {
+  const { v2, canEdit, reason, key, transport } = useConsumerScope(envId);
   const [search, setSearch] = useState("");
   const q = useDeferredValue(search.trim());
-  const consumers = useConsumers(envId, q);
+  const consumers = useInfiniteQuery({
+    queryKey: key("consumers", q),
+    queryFn: ({ pageParam }) => transport.list(q, pageParam),
+    initialPageParam: "",
+    getNextPageParam: page => page.nextCursor ?? undefined,
+  });
   const [editing, setEditing] = useState<Consumer | "new" | null>(null);
   const [deleting, setDeleting] = useState<Consumer | null>(null);
   const navigate = useNavigate();
   const items = consumers.data?.pages.flatMap((p) => p.items) ?? [];
 
   return (
-    <section className="final-page">
+    <section className={v2 ? "final-page workspace-consumers" : "final-page"}>
       <PageHeader
-        title="Consumers"
+        title={v2 ? "Consumidores" : "Consumers"}
+        description={v2 ? "Identidades e credenciais de acesso. As alterações ficam no rascunho deste Workspace." : undefined}
         actions={canEdit && (
           <button type="button" className="primary" onClick={() => setEditing("new")}>
-            Novo consumer
+            {v2 ? "Novo consumidor" : "Novo consumer"}
           </button>
         )}
       />
-      <input type="search" className="search" placeholder="Buscar por username ou custom id" aria-label="Buscar consumers" value={search} onChange={(e) => setSearch(e.target.value)} />
+      {reason && <p role="status">{reason}</p>}
+      <input type="search" className="search" placeholder="Buscar por username ou custom id" aria-label={v2 ? "Buscar consumidores" : "Buscar consumers"} value={search} onChange={(e) => setSearch(e.target.value)} />
       {consumers.isPending && <p className="muted">Carregando…</p>}
       {consumers.isError && <p className="error">{statusMessage(consumers.error)}</p>}
-      {consumers.isSuccess && items.length === 0 && <EmptyState title={q ? "Nenhum consumer encontrado." : "Nenhum consumer ainda."} />}
+      {consumers.isSuccess && items.length === 0 && <EmptyState title={v2 ? (q ? "Nenhum consumidor encontrado." : "Nenhum consumidor ainda.") : q ? "Nenhum consumer encontrado." : "Nenhum consumer ainda."} text={v2 && !q ? "Crie um consumidor para configurar suas credenciais de acesso." : undefined} />}
       {items.length > 0 && (
-        <Table label="Consumers" cards>
+        <Table label={v2 ? "Consumidores" : "Consumers"} cards>
           <thead>
             <tr>
-              <th>Consumer</th>
+              <th>{v2 ? "Consumidor" : "Consumer"}</th>
               <th>Custom id</th>
               <th>
                 <span className="visually-hidden">Ações</span>
@@ -103,27 +125,32 @@ export function ConsumersPage() {
 }
 
 export function ConsumerDetailPage() {
-  const envId = useEnvId();
+  const envId = useWorkspaceId();
   const { consumerId } = useParams();
-  const canEdit = useCanEdit();
+  const v2 = useIsWorkspaceRoute();
+  return <ConsumerDetail key={`${v2}/${envId}/${consumerId}`} envId={envId} consumerId={consumerId!} />;
+}
+
+function ConsumerDetail({ envId, consumerId }: { envId: string; consumerId: string }) {
+  const { v2, canEdit, reason, key, transport } = useConsumerScope(envId);
   const navigate = useNavigate();
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const consumer = useQuery({
-    queryKey: ["consumers", envId, "detail", consumerId],
-    queryFn: () => unwrap(api.GET("/environments/{envId}/consumers/{consumerId}", { params: { path: { envId, consumerId: consumerId! } } })),
+    queryKey: key("consumers", "detail", consumerId),
+    queryFn: () => transport.get(consumerId),
   });
 
   if (consumer.isPending) return <p className="muted">Carregando…</p>;
   if (consumer.isError) return <p className="error">{statusMessage(consumer.error)}</p>;
   const c = consumer.data;
   return (
-    <section className="stack final-page">
+    <section className={v2 ? "stack final-page workspace-consumers" : "stack final-page"}>
       <p>
-        <Link to=".." className="back-link">← Consumers</Link>
+        <Link to={v2 ? `/workspaces/${envId}/consumers` : ".."} className="back-link">← {v2 ? "Consumidores" : "Consumers"}</Link>
       </p>
       <PageHeader
-        title={<>Consumer {consumerName(c)}</>}
+        title={<>{v2 ? "Consumidor" : "Consumer"} {consumerName(c)}</>}
         actions={canEdit && (
           <div className="form-actions">
             <Button variant="primary" onClick={() => setEditing(true)}>
@@ -133,6 +160,7 @@ export function ConsumerDetailPage() {
           </div>
         )}
       />
+      {reason && <p role="status">{reason}</p>}
       <dl className="props">
         <dt>Username</dt>
         <dd>{c.username ?? "—"}</dd>
@@ -143,7 +171,7 @@ export function ConsumerDetailPage() {
       </dl>
       <CredentialTabs envId={envId} consumer={c} canEdit={canEdit} />
       {editing && <ConsumerForm envId={envId} consumer={c} onClose={() => setEditing(false)} />}
-      {deleting && <DeleteConsumer envId={envId} consumer={c} onClose={() => setDeleting(false)} onDeleted={() => navigate("..")} />}
+      {deleting && <DeleteConsumer envId={envId} consumer={c} onClose={() => setDeleting(false)} onDeleted={() => navigate(v2 ? `/workspaces/${envId}/consumers` : "..")} />}
     </section>
   );
 }
@@ -160,6 +188,8 @@ function CredentialsPanel(props: { envId: string; consumer: Consumer; canEdit: b
 }
 
 function PluginsPanel({ envId, consumer }: { envId: string; consumer: Consumer; canEdit: boolean }) {
+  const v2 = useIsWorkspaceRoute();
+  if (v2) return <section aria-label="Plugins do consumidor"><h2>Plugins do consumidor</h2><p>Plugins por consumidor ainda não estão disponíveis no Workspace v2.</p></section>;
   return <ScopedPlugins envId={envId} scope={{ kind: "consumer", id: consumer.id }} title="Plugins do consumer" />;
 }
 
@@ -171,28 +201,29 @@ const TABS = [
 
 /** Credentials and ACL groups of the consumer, one panel at a time. */
 function CredentialTabs({ envId, consumer, canEdit }: { envId: string; consumer: Consumer; canEdit: boolean }) {
+  const v2 = useIsWorkspaceRoute();
   const [active, setActive] = useState<(typeof TABS)[number]["id"]>("credentials");
   const { Panel } = TABS.find((t) => t.id === active)!;
   return (
-    <Tabs label="Seções do consumer" tabs={TABS} active={active} onChange={setActive}>
+    <Tabs label={v2 ? "Seções do consumidor" : "Seções do consumer"} tabs={TABS} active={active} onChange={setActive}>
       <Panel envId={envId} consumer={consumer} canEdit={canEdit} />
     </Tabs>
   );
 }
 
 function ConsumerForm({ envId, consumer, onClose, onCreated }: { envId: string; consumer: Consumer | null; onClose: () => void; onCreated?: (c: Consumer) => void }) {
-  const invalidate = useInvalidateDraft(envId);
+  const { v2, canEdit: writable, reason, transport, invalidate } = useConsumerScope(envId);
+  const mounted = useMounted();
   const [form, setForm] = useState({ username: consumer?.username ?? "", customId: consumer?.customId ?? "", tags: (consumer?.tags ?? []).join(", ") });
   const [errors, setErrors] = useState<FormErrors>({ fields: {}, form: [] });
 
   const save = useMutation({
     mutationFn: () => {
       const body: ConsumerWrite = { username: form.username.trim() || null, customId: form.customId.trim() || null, tags: splitList(form.tags) };
-      return consumer
-        ? unwrap(api.PUT("/environments/{envId}/consumers/{consumerId}", { params: { path: { envId, consumerId: consumer.id } }, body }))
-        : unwrap(api.POST("/environments/{envId}/consumers", { params: { path: { envId } }, body }));
+      return transport.save(consumer?.id ?? null, body);
     },
     onSuccess: (saved) => {
+      if (v2 && !mounted.current) return;
       invalidate("consumers");
       onClose();
       if (!consumer) onCreated?.(saved);
@@ -212,12 +243,13 @@ function ConsumerForm({ envId, consumer, onClose, onCreated }: { envId: string; 
   const set = (k: keyof typeof form, v: string) => setForm((f) => ({ ...f, [k]: v }));
 
   return (
-    <Modal title={consumer ? `Editar ${consumerName(consumer)}` : "Novo consumer"} onClose={onClose}>
+    <Modal title={consumer ? `Editar ${consumerName(consumer)}` : v2 ? "Novo consumidor" : "Novo consumer"} onClose={onClose}>
+      {reason && <p role="status">{reason}</p>}
       <form onSubmit={submit} className="form" noValidate>
         <Field label="Username" errors={errors.fields.username}>
           {(id, invalid) => <input id={id} aria-invalid={invalid} value={form.username} onChange={(e) => set("username", e.target.value)} />}
         </Field>
-        <Field label="Custom id" errors={errors.fields.customId} hint="Identificador do consumer no seu sistema (opcional se houver username)">
+        <Field label="Custom id" errors={errors.fields.customId} hint={v2 ? "Identificador do consumidor no seu sistema (opcional se houver username)" : "Identificador do consumer no seu sistema (opcional se houver username)"}>
           {(id, invalid) => <input id={id} aria-invalid={invalid} value={form.customId} onChange={(e) => set("customId", e.target.value)} />}
         </Field>
         <Field label="Tags" errors={errors.fields.tags} hint="Separadas por vírgula">
@@ -228,7 +260,7 @@ function ConsumerForm({ envId, consumer, onClose, onCreated }: { envId: string; 
           <button type="button" onClick={onClose}>
             Cancelar
           </button>
-          <button type="submit" className="primary" disabled={save.isPending}>
+          <button type="submit" className="primary" disabled={save.isPending || (v2 && !writable)}>
             {save.isPending ? "Salvando…" : "Salvar"}
           </button>
         </div>
@@ -238,10 +270,12 @@ function ConsumerForm({ envId, consumer, onClose, onCreated }: { envId: string; 
 }
 
 function DeleteConsumer({ envId, consumer, onClose, onDeleted }: { envId: string; consumer: Consumer; onClose: () => void; onDeleted?: () => void }) {
-  const invalidate = useInvalidateDraft(envId);
+  const { v2, canEdit: writable, reason, transport, invalidate } = useConsumerScope(envId);
+  const mounted = useMounted();
   const remove = useMutation({
-    mutationFn: () => unwrap(api.DELETE("/environments/{envId}/consumers/{consumerId}", { params: { path: { envId, consumerId: consumer.id } } })),
+    mutationFn: () => transport.remove(consumer.id),
     onSuccess: () => {
+      if (v2 && !mounted.current) return;
       invalidate("consumers", "plugins");
       onClose();
       onDeleted?.();
@@ -249,14 +283,15 @@ function DeleteConsumer({ envId, consumer, onClose, onDeleted }: { envId: string
   });
   return (
     <ConfirmDialog
-      title="Excluir consumer"
+      title={v2 ? "Excluir consumidor" : "Excluir consumer"}
       message={
         <>
           Excluir <strong>{consumerName(consumer)}</strong>? As credenciais e os plugins dele também são excluídos. A exclusão só afeta o tráfego depois de publicar.
         </>
       }
+      children={reason && <p role="status">{reason}</p>}
       confirmLabel="Excluir"
-      busy={remove.isPending}
+      busy={remove.isPending || (v2 && !writable)}
       error={remove.isError ? statusMessage(remove.error) : null}
       onConfirm={() => remove.mutate()}
       onClose={onClose}
@@ -267,11 +302,10 @@ function DeleteConsumer({ envId, consumer, onClose, onDeleted }: { envId: string
 /* ---------------- key-auth ---------------- */
 
 function KeyAuthCredentials({ envId, consumer, canEdit }: { envId: string; consumer: Consumer; canEdit: boolean }) {
-  const invalidate = useInvalidateDraft(envId);
-  const path = { envId, consumerId: consumer.id };
+  const { v2, canEdit: writable, reason, key, transport, invalidate } = useConsumerScope(envId);
   const credentials = useQuery({
-    queryKey: ["keyauth", envId, consumer.id],
-    queryFn: () => unwrap(api.GET("/environments/{envId}/consumers/{consumerId}/key-auth", { params: { path } })),
+    queryKey: key("keyauth", consumer.id),
+    queryFn: () => transport.listKeys(consumer.id),
   });
   const [creating, setCreating] = useState(false);
   const [deleting, setDeleting] = useState<KeyAuthCredential | null>(null);
@@ -320,11 +354,13 @@ function KeyAuthCredentials({ envId, consumer, canEdit }: { envId: string; consu
       {rotating && (
         <RotateCredential
           title="Gerar nova chave"
+          blocked={v2 && !writable}
+          blockedReason={reason}
           what={rotating.status === "pending-reprovision" ? <>a chave desta credencial</> : <>uma nova chave no lugar de <span className="mono">{rotating.keyHint}</span></>}
           pending={rotating.status === "pending-reprovision"}
           label="Chave"
           field="key"
-          rotate={() => unwrap(api.POST("/environments/{envId}/consumers/{consumerId}/key-auth/{credentialId}/rotate", { params: { path: { ...path, credentialId: rotating.id } } }))}
+          rotate={() => transport.rotateKey(consumer.id, rotating.id)}
           note="Copie a chave agora. Ela não será mostrada de novo: depois só aparecem os últimos caracteres. A nova chave vale depois de publicar."
           onRotated={() => invalidate("keyauth")}
           onClose={() => setRotating(null)}
@@ -349,10 +385,11 @@ function KeyAuthCredentials({ envId, consumer, canEdit }: { envId: string; consu
  * Only the server generates it (decision H-14): there is no field for a key of one's own.
  */
 function NewKey({ envId, consumerId, onDone }: { envId: string; consumerId: string; onDone: () => void }) {
+  const { v2, canEdit: writable, reason, transport } = useConsumerScope(envId);
   const create = useMutation({
     // The response carries the secret: evict it from the mutation cache as soon as the dialog lets go of it.
     gcTime: 0,
-    mutationFn: () => unwrap(api.POST("/environments/{envId}/consumers/{consumerId}/key-auth", { params: { path: { envId, consumerId } }, body: {} })),
+    mutationFn: () => transport.createKey(consumerId),
   });
   const close = () => {
     create.reset();
@@ -373,6 +410,7 @@ function NewKey({ envId, consumerId, onDone }: { envId: string; consumerId: stri
 
   return (
     <Modal title="Gerar chave" onClose={close}>
+      {reason && <p role="status">{reason}</p>}
       <form
         className="form"
         noValidate
@@ -387,7 +425,7 @@ function NewKey({ envId, consumerId, onDone }: { envId: string; consumerId: stri
           <button type="button" onClick={close}>
             Cancelar
           </button>
-          <button type="submit" className="primary" disabled={create.isPending}>
+          <button type="submit" className="primary" disabled={create.isPending || (v2 && !writable)}>
             {create.isPending ? "Gerando…" : "Gerar"}
           </button>
         </div>
@@ -398,9 +436,10 @@ function NewKey({ envId, consumerId, onDone }: { envId: string; consumerId: stri
 
 function DeleteKey(props: { envId: string; consumerId: string; credential: KeyAuthCredential; onClose: () => void; onDeleted: () => void }) {
   const { envId, consumerId, credential, onClose } = props;
+  const { v2, canEdit: writable, reason, transport } = useConsumerScope(envId);
   const remove = useMutation({
     mutationFn: () =>
-      unwrap(api.DELETE("/environments/{envId}/consumers/{consumerId}/key-auth/{credentialId}", { params: { path: { envId, consumerId, credentialId: credential.id } } })),
+      transport.removeKey(consumerId, credential.id),
     onSuccess: () => {
       props.onDeleted();
       onClose();
@@ -414,8 +453,9 @@ function DeleteKey(props: { envId: string; consumerId: string; credential: KeyAu
           Excluir a chave <span className="mono">{credential.keyHint ?? "pendente"}</span>? Quem a usa deixa de ter acesso depois de publicar.
         </>
       }
+      children={reason && <p role="status">{reason}</p>}
       confirmLabel="Excluir"
-      busy={remove.isPending}
+      busy={remove.isPending || (v2 && !writable)}
       error={remove.isError ? statusMessage(remove.error) : null}
       onConfirm={() => remove.mutate()}
       onClose={onClose}

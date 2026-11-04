@@ -181,12 +181,12 @@ describe("authorized route context with real transport", () => {
   });
   it.each(["workspaces", "e"])("preserves %s entry suffixes, back and forward", async (namespace) => {
     const view = await mount(`/${namespace}/${A}?x=1#y`, { full: true });
-    await view.waitText("Service A");
-    expect(view.router.state.location).toMatchObject({ pathname: `/${namespace}/${A}/services`, search: "?x=1", hash: "#y" });
+    await view.waitText(namespace === "workspaces" ? "Inventário no rascunho" : "Service A");
+    expect(view.router.state.location).toMatchObject({ pathname: `/${namespace}/${A}/${namespace === "workspaces" ? "overview" : "services"}`, search: "?x=1", hash: "#y" });
     await view.navigate(`/${namespace}/${B}/services?x=2#z`);
     await view.waitText("Service B");
     await view.navigate(-1);
-    await view.waitText("Service A");
+    await view.waitText(namespace === "workspaces" ? "Inventário no rascunho" : "Service A");
     expect(view.router.state.location).toMatchObject({ search: "?x=1", hash: "#y" });
     await view.navigate(1);
     await view.waitText("Service B");
@@ -205,10 +205,10 @@ describe("authorized route context with real transport", () => {
     await view.waitText("Você não tem permissão para acessar esta página.");
   });
   it("keeps an unknown route visible without selecting a default workspace", async () => {
-    const view = await mount(`/workspaces/${A}/overview?x#y`, { full: true });
+    const view = await mount(`/workspaces/${A}/missing?x#y`, { full: true });
     await view.waitText("Rota não encontrada.");
     expect(view.sent).not.toContain(`/api/v2/workspaces/${A}`);
-    expect(view.router.state.location).toMatchObject({ pathname: `/workspaces/${A}/overview`, search: "?x", hash: "#y" });
+    expect(view.router.state.location).toMatchObject({ pathname: `/workspaces/${A}/missing`, search: "?x", hash: "#y" });
   });
   it.each(["pending", "failure"])("preserves legacy reading and blocks writing with an environment %s", async (state) => {
     const view = await mount(`/e/${A}/services`, { full: true, role: "admin", answers: {
@@ -326,7 +326,7 @@ describe("authorized route context with real transport", () => {
     expect(view.sent.some((p) => p.startsWith("/api/v1/environments"))).toBe(false);
     const links = view.container.findAll((n) => n.tagName === "A").map((n) => n.getAttribute("href"));
     expect(links.some((href) => href?.startsWith("/e/"))).toBe(false);
-    for (const legacy of ["overview", "metrics", "requests", "consumers", "certificates", "publish", "publications", "clusters"])
+    for (const legacy of ["metrics", "requests", "certificates", "publish", "publications", "clusters"])
       expect(links).not.toContain(`/workspaces/${A}/${legacy}`);
   });
   it("keeps the service form and its data when v2 returns auto-publish", async () => {

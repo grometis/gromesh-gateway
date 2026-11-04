@@ -30,7 +30,7 @@ async function openConsumer(page: Page) {
   );
   await page.route(`**/api/v1/environments/*/consumers/${consumerId}/basic-auth`, (route) => route.fulfill({ json: { items: [{ id: id(5), consumerId, username: "acme-legacy", tags: [], createdAt: created }] } }));
   await page.route(`**/api/v1/environments/*/consumers/${consumerId}/acl-groups`, (route) => route.fulfill({ json: { groups: ["gold", "partners"] } }));
-  await page.goto("/login");
+  await page.goto(`/e/${envId}/services`);
   await page.getByLabel("E-mail").fill("ana@gromesh.dev");
   await page.getByLabel("Senha").fill("s3nha-de-teste");
   await page.getByRole("button", { name: "Entrar" }).click();

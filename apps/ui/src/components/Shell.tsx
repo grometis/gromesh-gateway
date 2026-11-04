@@ -1,14 +1,14 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Navigate, NavLink, Outlet, useLocation, useMatch, useNavigate, useParams } from "react-router";
+import { Navigate, Outlet, useLocation, useMatch, useNavigate, useParams } from "react-router";
 import { api, ApiError, unwrap } from "../api/client";
-import { statusMessage } from "../api/errors";
 import { effectiveRole, useAuth } from "../auth";
 import { NavigationContextBoundary, useOptionalNavigationContext, useIsWorkspaceRoute } from "../navigation/context";
 import { workspaceSections } from "../navigation/destinations";
+import { GatewaySidebar } from "./GatewaySidebar";
 import { GlobalHeader } from "./GlobalHeader";
 import { PublishStrip } from "./PublishStrip";
-import { WorkspaceContext, WorkspaceSelector } from "./WorkspaceContext";
+import { WorkspaceSelector } from "./WorkspaceContext";
 
 export const environmentsQuery = { queryKey: ["environments"], queryFn: () => unwrap(api.GET("/environments")) };
 
@@ -55,43 +55,22 @@ export function RequireAdmin() {
   return <Outlet />;
 }
 
-export function FirstEnvironment() {
-  const { user } = useAuth();
-  const envs = useVisibleEnvironments();
-  if (envs.isPending) return <p className="center muted">Carregando environments…</p>;
-  if (envs.isError) return <p className="center error">{statusMessage(envs.error)}</p>;
-  const first = envs.data[0];
-  if (!first) return user?.role === "admin"
-    ? <Navigate to="/users" replace />
-    : <p className="center muted">Nenhum environment cadastrado. Peça a um administrador para criar um.</p>;
-  return <Navigate to={`/e/${first.id}/services`} replace />;
-}
 
-const GATEWAY = [
-  ["services", "Services"],
-  ["routes", "Routes"],
-  ["variables", "Variáveis"],
-  ["consumers", "Consumers"],
-  ["plugins", "Plugins"],
-  ["upstreams", "Upstreams"],
-  ["certificates", "Certificados"],
-] as const;
 export function Shell() {
   const { envId: routeEnvId, workspaceId } = useParams();
   const context = useOptionalNavigationContext();
   const workspace = context?.workspace;
   const v2Section = useMatch("/workspaces/:workspaceId/:section/*")?.params.section;
+  const legacySection = useMatch("/e/:envId/:section/*")?.params.section;
+  const workspaceSection = v2Section ?? legacySection;
   const isReleasesRoute = useMatch("/e/:envId/releases");
   const isAccountRoute = useMatch("/tokens");
   const isWorkspacesRoute = useMatch("/workspaces");
-  const workspaceRoute = useMatch("/e/:envId/:section/*");
-  const workspaceSection = workspaceRoute?.params.section?.toLowerCase();
-  const hasWorkspaceSelector = !!workspaceId || !!isWorkspacesRoute || ["services", "routes", "variables", "plugins", "releases"].includes(workspaceSection ?? "");
+  const hasWorkspaceSelector = !!workspaceId || !!routeEnvId || !!isWorkspacesRoute;
   const navigate = useNavigate();
   const location = useLocation();
-  const envs = useVisibleEnvironments(!workspaceId);
+  const envs = useVisibleEnvironments(!!routeEnvId);
   const validRoute = envs.isSuccess && envs.data.some((e) => e.id === routeEnvId);
-  const envId = validRoute ? routeEnvId! : "";
   const contextMessage = envs.isPending ? "Carregando ambientes legados…"
     : envs.isError ? envs.error instanceof ApiError && envs.error.status === 403
       ? "Sem permissão para listar ambientes legados."
@@ -99,7 +78,8 @@ export function Shell() {
     : envs.data.length === 0 ? "Nenhum ambiente legado disponível."
     : !validRoute ? "Ambiente legado indisponível para esta URL." : null;
   const main = useRef<HTMLElement>(null);
-  useEffect(() => { main.current?.focus(); }, [location]);
+  const focusContent = useCallback(() => { main.current?.focus(); }, []);
+  useEffect(focusContent, [location, focusContent]);
 
   const switchEnv = (id: string) => {
     if (!envs.isSuccess || !envs.data.some((e) => e.id === id)) return;
@@ -108,39 +88,27 @@ export function Shell() {
     navigate(`/e/${id}/${section}`);
   };
 
+  const selectors = <>
+    {hasWorkspaceSelector && <WorkspaceSelector id={workspaceId} workspace={workspace} placeholder={routeEnvId ? "Abrir um Workspace v2…" : undefined} onSelect={(id) => navigate(`/workspaces/${encodeURIComponent(id)}/${workspaceSections.some((s) => s === workspaceSection) ? workspaceSection : "services"}`)} />}
+    {routeEnvId && <div className="env">
+      <label htmlFor="env-select">Ambiente (legado)</label>
+      <select id="env-select" value={validRoute ? routeEnvId : ""} disabled={!envs.isSuccess || envs.data.length === 0} aria-describedby={contextMessage ? "env-context-message" : undefined} onChange={(e) => switchEnv(e.target.value)}>
+        {!validRoute && <option value="" disabled>Selecione um ambiente legado</option>}
+        {envs.isSuccess && envs.data.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+      </select>
+      {contextMessage && <p id="env-context-message" role={envs.isError ? "alert" : "status"}>{contextMessage}</p>}
+    </div>}
+  </>;
+  const hasGateway = context?.workspace && ["authorized", "archived"].includes(context.state) || context?.state === "legacy" && context.environment;
+
   return (
     <div className="app">
       <a className="skip-link" href="#main-content">Pular para o conteúdo</a>
       <GlobalHeader />
-      <aside className="menu">
-        {hasWorkspaceSelector && <WorkspaceSelector id={workspaceId ?? routeEnvId} workspace={workspace} onSelect={(id) => navigate(routeEnvId ? `/e/${id}/${workspaceSection ?? "services"}` : `/workspaces/${encodeURIComponent(id)}/${workspaceSections.some((s) => s === v2Section) ? v2Section : "services"}`)} />}
-        {workspace && <p className="workspace-context" role="status">Workspace v2: {workspace.name} · /{workspace.slug} · {workspace.status === "archived" ? "arquivado · somente leitura" : "ativo"}</p>}
-        {routeEnvId ? (
-          <div className="env">
-            <label htmlFor="env-select">Ambiente (legado)</label>
-            <select id="env-select" value={validRoute ? routeEnvId : ""} disabled={!envs.isSuccess || envs.data.length === 0} aria-describedby={contextMessage ? "env-context-message" : undefined} onChange={(e) => switchEnv(e.target.value)}>
-              {!validRoute && <option value="" disabled>Selecione um ambiente legado</option>}
-              {envs.isSuccess && envs.data.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
-            </select>
-            {contextMessage && <p id="env-context-message" role={envs.isError ? "alert" : "status"}>{contextMessage}</p>}
-            {validRoute && <WorkspaceContext key={routeEnvId} id={routeEnvId} />}
-          </div>
-        ) : !workspaceId && (
-          <div className="global-context">
-            <p>{isAccountRoute ? "Escopo: minha conta nesta instância" : "Escopo: esta instância"}</p>
-          </div>
-        )}
-        <nav aria-label="Menu principal">
-          {workspace && <MenuGroup title="Gateway" items={GATEWAY.filter(([path]) => workspaceSections.some((s) => s === path)).map(([path, label]) => [`/workspaces/${encodeURIComponent(workspace.id)}/${path}`, label])} />}
-          {envId && (
-            <>
-              <MenuGroup title="Gateway" items={GATEWAY.map(([path, label]) => [`/e/${envId}/${path}`, label])} />
-              <MenuGroup title="Workspace" items={[[`/e/${envId}/overview`, "Visão geral"]]} />
-            </>
-          )}
-        </nav>
-      </aside>
+      {hasGateway && context && <GatewaySidebar key={`${context.route.kind}/${"id" in context.route ? context.route.id : ""}`} context={context} selectors={selectors} focusContent={focusContent} />}
       <main className="content" id="main-content" tabIndex={-1} ref={main}>
+        {!hasGateway && (workspaceId || routeEnvId || isWorkspacesRoute) && <div className="context-selection">{selectors}</div>}
+        {!workspaceId && !routeEnvId && <p className="global-context">{isAccountRoute ? "Escopo: minha conta nesta instância" : "Escopo: esta instância"}</p>}
         {context ? <NavigationContextBoundary>
           {routeEnvId && !isReleasesRoute && <PublishStrip envId={routeEnvId} />}
           <Outlet key={"id" in context.route ? `${context.route.kind}/${context.route.id}` : context.route.kind} />
@@ -153,15 +121,3 @@ export function Shell() {
   );
 }
 
-function MenuGroup({ title, items }: { title: string; items: readonly (readonly [string, string])[] }) {
-  return (
-    <div className="menu-group">
-      <h2>{title}</h2>
-      {items.map(([to, label]) => (
-        <NavLink key={to} to={to}>
-          {label}
-        </NavLink>
-      ))}
-    </div>
-  );
-}
