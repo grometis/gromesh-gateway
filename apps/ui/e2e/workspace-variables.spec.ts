@@ -17,6 +17,8 @@ async function setup(page: Page, options: {
   let rejection: { status: number; errors?: { path: string; message: string }[]; detail?: string } | null = null;
   const writes: { method: string; path: string; body: unknown }[] = [];
   const unexpected: string[] = [];
+  let environmentRead: Promise<void> | undefined;
+  let releaseEnvironmentRead: (() => void) | undefined;
   let release!: () => void;
   const held = new Promise<void>((resolve) => { release = resolve; });
   // Only APIs at the origin root are mocked. Vite's /src/** modules always reach Vite.
@@ -54,6 +56,7 @@ async function setup(page: Page, options: {
       if (path === "/api/v2/workspaces") return route.fulfill({ json: { items: [W, B].map((id) => ({ id, key: id, name: id === W ? "Pagamentos" : "Recargas", slug: id === W ? "pagamentos" : "recargas", status: options.status ?? "active", activeRelease: null })), nextCursor: null } });
       if (path === `/api/v1/environments/${id}`) {
         if (options.hold === "environment") await held;
+        if (environmentRead) await environmentRead;
         return route.fulfill({ json: env });
       }
       if (path === `/api/v1/environments/${id}/publish-preview`) return route.fulfill({ json: { currentVersion: 0, draftHash: `sha256:${"a".repeat(64)}`, hasChanges: true, changes: [] } });
@@ -73,7 +76,11 @@ async function setup(page: Page, options: {
   if (!options.hold) {
     await expect(page.getByRole("note", { name: "Estado do Workspace" })).toContainText(options.status === "archived" ? "arquivado" : options.publishMode === "auto" ? "publicação automática" : "rascunho");
   }
-  return { writes, unexpected, release, reject: (value: typeof rejection) => { rejection = value; } };
+  return {
+    writes, unexpected, release, reject: (value: typeof rejection) => { rejection = value; },
+    holdEnvironment: () => { environmentRead = new Promise<void>((resolve) => { releaseEnvironmentRead = resolve; }); },
+    releaseEnvironment: () => { environmentRead = undefined; releaseEnvironmentRead?.(); },
+  };
 }
 
 test("declarations use v2 PUT and DELETE without publishing or deploying, alongside the v1 publication strip", async ({ page }) => {
@@ -225,9 +232,17 @@ for (const status of [403, 404, 422, 500]) {
 for (const action of ["Declarar variável", "Editar declaração", "Definir valor", "Excluir"]) {
   test(`switching Workspace discards the ${action} form`, async ({ page }) => {
     const fake = await setup(page);
-    await page.getByRole("button", { name: action, exact: true }).click();
-    if (action === "Definir valor") await page.getByRole("dialog").getByLabel("Valor", { exact: true }).fill("discard-test-secret");
-    if (action === "Declarar variável") await page.getByRole("dialog").getByLabel("Nome", { exact: true }).fill("DISCARD_NAME");
+    // Opening a form revalidates the legacy context and recreates its selector.
+    fake.holdEnvironment();
+    try {
+      await page.getByRole("button", { name: action, exact: true }).click();
+      await expect(page.getByRole("dialog")).toBeVisible();
+      if (action === "Definir valor") await page.getByRole("dialog").getByLabel("Valor", { exact: true }).fill("discard-test-secret");
+      if (action === "Declarar variável") await page.getByRole("dialog").getByLabel("Nome", { exact: true }).fill("DISCARD_NAME");
+      await expect(page.getByRole("complementary")).toHaveCount(0);
+    } finally { fake.releaseEnvironment(); }
+    await expect(page.getByRole("complementary")).toBeVisible();
+    await expect.poll(() => page.getByRole("dialog").evaluate((dialog) => dialog.contains(document.activeElement))).toBe(true);
     await page.getByLabel("Ambiente (legado)", { exact: true }).selectOption(B, { force: true });
     await expect(page).toHaveURL(`/e/${B}/variables`);
     await expect(page.getByRole("dialog")).toHaveCount(0);
