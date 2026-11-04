@@ -5,7 +5,7 @@ export const ids = {
   instance: "10000000-0000-4000-8000-000000000001", foreign: "10000000-0000-4000-8000-000000000002",
   a: "20000000-0000-4000-8000-000000000001", b: "20000000-0000-4000-8000-000000000002",
   route: "30000000-0000-4000-8000-000000000001", otherRoute: "30000000-0000-4000-8000-000000000002", recreated: "30000000-0000-4000-8000-000000000003",
-  service: "40000000-0000-4000-8000-000000000001", otherService: "40000000-0000-4000-8000-000000000002",
+  service: "40000000-0000-4000-8000-000000000001", otherService: "40000000-0000-4000-8000-000000000002", replacementService: "40000000-0000-4000-8000-000000000003",
   cluster: "50000000-0000-4000-8000-000000000001", request: "653b06fb-b7b4-685b-d4b9-b2109eeaf6c7",
 } as const;
 export const time = (hour: number) => `2026-11-04T${String(hour).padStart(2, "0")}:00:00Z`;
@@ -66,7 +66,7 @@ export function attributionFixtures(): AttributionFixture[] {
     { name: "04 recreated route has a new technical identity", evidence: { ...e, revisions: [first, recreated], identities: [...e.identities, { routeId: ids.recreated, workspaceIds: [ids.a], complete: true }] }, request: request({ routeId: ids.recreated }), expected: attributed(ids.a) },
     { name: "05 historically ambiguous route identity", evidence: { ...e, identities: [{ routeId: ids.route, workspaceIds: [ids.a, ids.b], complete: true }] }, request: r, expected: denied("ambiguous-route", [k1, k2]) },
     { name: "06 non-adjacent revision contradicts the claimed unique identity", evidence: { ...e, revisions: [{ ...first, routes: first.routes.map((v) => v.routeId === ids.route ? { ...v, workspaceId: ids.b } : v) }, second, revision(3)] }, request: request({ ts: "2026-11-04T12:30:00Z" }), expected: denied("ambiguous-route", [k2, k3]) },
-    { name: "07 service change does not move the workspace owner", evidence: { ...e, revisions: [first, { ...second, routes: second.routes.map((v) => v.routeId === ids.route ? { ...v, serviceId: ids.otherService } : v) }] }, request: r, expected: attributed(ids.a) },
+    { name: "07 service change does not move the workspace owner", evidence: { ...e, revisions: [first, { ...second, routes: second.routes.map((v) => v.routeId === ids.route ? { ...v, serviceId: ids.replacementService } : v) }] }, request: r, expected: attributed(ids.a) },
     { name: "08 rollback is a new revision, never the served revision", evidence: { ...e, revisions: [first, withoutRoute(second), rollback] }, request: request({ ts: "2026-11-04T12:30:00Z" }), expected: attributed(ids.a, [k2, k3]) },
     { name: "09 epoch change has an explicit predecessor", evidence: { ...e, revisions: [first, second, epoch] }, request: request({ ts: "2026-11-04T12:30:00Z" }), expected: attributed(ids.a, [k2, { epoch: 2, revision: 1 }]) },
     { name: "10 exact timestamp boundary includes the new revision", evidence: { ...e, revisions: [withoutRoute(first), second] }, request: request({ ts: time(11) }), expected: attributed(ids.a) },
