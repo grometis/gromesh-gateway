@@ -147,7 +147,7 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
                     ) : (
                       <>
                         <Button variant="quiet" onClick={() => setDetails(r)}>Ver detalhes</Button>
-                        {v2 ? <Link to={`/workspaces/${workspaceId}/plugins`}>Plugins do Workspace</Link> : <Button variant="quiet" onClick={() => setPlugins(r)}>Plugins</Button>}
+                        {v2 ? <Link className="strip-link" to={`/workspaces/${workspaceId}/plugins`}>Plugins do Workspace</Link> : <Button variant="quiet" onClick={() => setPlugins(r)}>Plugins</Button>}
                         {canWrite && <>
                           <Button variant="quiet" onClick={() => setEditing(r)}>Editar</Button>
                           <RowMenu label={`Mais ações para ${r.name}`} items={[{ label: "Excluir", danger: true, onSelect: () => setDeleting(r) }]} />

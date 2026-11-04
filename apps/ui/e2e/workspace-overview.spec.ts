@@ -109,7 +109,15 @@ for (const width of [390, 768, 1440]) {
     await expect(indicator(page, "Upstreams")).not.toContainText("Página v2 em breve");
     await expect(indicator(page, "Consumidores").getByRole("link")).toHaveAttribute("href", `/workspaces/${A}/consumers`);
     await expect(indicator(page, "Consumidores")).not.toContainText("Página v2 em breve");
+    const trail = page.getByRole("navigation", { name: "Trilha", exact: true });
+    await expect(trail.getByRole("listitem")).toHaveText(["Visão geral da instância", workspace(A).name]);
+    await expect(trail.locator('span[aria-current="page"]')).toHaveText(workspace(A).name);
+    await expect(trail.getByRole("link")).toHaveText(["Visão geral da instância"]);
+    const instanceLink = trail.getByRole("link", { name: "Visão geral da instância", exact: true });
+    await expect(instanceLink).toHaveAttribute("href", "/");
     await expect(page.locator("main")).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(instanceLink).toBeFocused();
     await page.keyboard.press("Tab");
     await expect(page.getByRole("link", { name: "Novo serviço", exact: true })).toBeFocused();
     await audit(page);
