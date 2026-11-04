@@ -97,8 +97,9 @@ describe("global navigation", () => {
       expect(item.contains(reason)).toBe(false);
       expect(item.getAttribute("aria-label") ?? item.textContent).toBe(item.textContent);
     }
-    const sidebar = view.all((n) => n.getAttribute("aria-label") === "Menu principal")[0]!;
-    expect(sidebar.findAll((n) => n.tagName === "A").every((n) => !/releases|requests|metrics|publish|publications|clusters|tokens|users|audit/.test(n.getAttribute("href") ?? ""))).toBe(true);
+    const sidebars = view.all((n) => n.getAttribute("aria-label") === "Menu principal");
+    expect(sidebars).toHaveLength(path === "/tokens" ? 0 : 1);
+    expect(sidebars.flatMap((sidebar) => sidebar.findAll((n) => n.tagName === "A")).every((n) => !/releases|requests|metrics|publish|publications|clusters|tokens|users|audit/.test(n.getAttribute("href") ?? ""))).toBe(true);
     if (path.startsWith("/workspaces/")) expect(view.sent.some((p) => p.startsWith("/api/v1/environments"))).toBe(false);
   });
   it.each([
