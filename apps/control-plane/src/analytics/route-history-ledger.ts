@@ -43,8 +43,9 @@ export async function appendRouteHistory(tx: Tx, ctx: RequestContext, v: RouteHi
     }
     if (v.rollbackOf) {
         const [target] = await readRouteHistory(tx, v.instanceId, { ref: v.rollbackOf });
-        if (!target || JSON.stringify(routesOf(target)) !== JSON.stringify(routesOf(v)))
-            throw Error("Rollback target history is missing or inconsistent");
+        // Release/promotion owns content validation; a rollback creates a new Release and preserves other members.
+        if (!target)
+            throw Error("Rollback target history is missing");
     }
     const [previous] = v.previous ? await tx.select().from(headers).where(keyWhere({ ...v.previous, instanceId: v.instanceId })) : [];
     if (previous && (await tx.execute(sql `select ${previous.recordedAt}::timestamptz > ${v.recordedAt}::timestamptz as backwards`)).rows[0]?.backwards)

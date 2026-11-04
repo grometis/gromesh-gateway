@@ -165,4 +165,14 @@ describe("transactional route history ledger", () => {
         expect(await readRouteHistory(db, v.instanceId)).toHaveLength(1);
     });
 
+    it("records rollback with a new Release version without restoring unrelated Workspace members", async () => {
+        const v = input(); await save(v);
+        const other = { ...route, routeId: randomUUID(), workspaceId: randomUUID(), serviceId: randomUUID(), releaseVersion: 2 };
+        await save({ ...input(v.instanceId, 2), routes: [other] });
+        await db.transaction(tx => appendRouteHistory(tx, ctx, { ...input(v.instanceId, 3), reason: "rollback", rollbackOf: ref(1), routes: [{ ...route, releaseVersion: 3 }, other] }));
+        const history = await readRouteHistory(db, v.instanceId);
+        expect(history[2]?.routes).toEqual(expect.arrayContaining([{ ...route, releaseVersion: 3 }, other]));
+        expect(history[0]?.routes).toEqual([route]);
+    });
+
 });
