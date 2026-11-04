@@ -2079,7 +2079,7 @@ export interface paths {
          * @description PLANNED, design-only. Shared normative rules and migration plan: analytics-v2-design.md.
          *     Authenticate/authorize the mandatory workspace before traffic queries or cache lookup; instance identity
          *     comes only from local persisted configuration. Archived workspaces remain readable with workspace.read.
-         *     Read distinct, non-conflicting stored IDs attributed by route-history-v2; no path/name/slug inference.
+         *     Rows: distinct request ids attributed to this workspace by route-history-v2, excluding all conflicting copies; no path/name/slug inference.
          *     Resolve all retained copies and conflict tombstones before filters that could hide a conflicting copy.
          *     from/to are required RFC 3339 with explicit offset and at most milliseconds, normalized to UTC; [from,to),
          *     from < to, now-7d <= from and to <= now on first page. Apply per-event logical expiry at generatedAt.
@@ -2113,7 +2113,7 @@ export interface paths {
          * @description PLANNED, design-only. Shared normative rules and migration plan: analytics-v2-design.md.
          *     Authenticate/authorize the mandatory workspace before traffic queries or cache lookup; instance identity
          *     comes only from local persisted configuration. Archived workspaces remain readable with workspace.read.
-         *     Read distinct, non-conflicting stored IDs attributed by route-history-v2; no path/name/slug inference.
+         *     Rows: distinct request ids attributed to this workspace by route-history-v2, excluding all conflicting copies; no path/name/slug inference.
          *     Resolve all retained copies and conflict tombstones before filters that could hide a conflicting copy.
          *     from/to are required RFC 3339 with explicit offset and at most milliseconds, normalized to UTC; [from,to),
          *     from < to, now-7d <= from and to <= now on first page. Apply per-event logical expiry at generatedAt.
@@ -2147,7 +2147,7 @@ export interface paths {
          * @description PLANNED, design-only. Shared normative rules and migration plan: analytics-v2-design.md.
          *     Authenticate/authorize the mandatory workspace before traffic queries or cache lookup; instance identity
          *     comes only from local persisted configuration. Archived workspaces remain readable with workspace.read.
-         *     Read distinct, non-conflicting stored IDs attributed by route-history-v2; no path/name/slug inference.
+         *     Rows: distinct request ids attributed to this workspace by route-history-v2, excluding all conflicting copies; no path/name/slug inference.
          *     Resolve all retained copies and conflict tombstones before filters that could hide a conflicting copy.
          *     from/to are required RFC 3339 with explicit offset and at most milliseconds, normalized to UTC; [from,to),
          *     from < to, now-7d <= from and to <= now on first page. Apply per-event logical expiry at generatedAt.
@@ -2181,7 +2181,7 @@ export interface paths {
          * @description PLANNED, design-only. Shared normative rules and migration plan: analytics-v2-design.md.
          *     Authenticate/authorize the mandatory workspace before traffic queries or cache lookup; instance identity
          *     comes only from local persisted configuration. Archived workspaces remain readable with workspace.read.
-         *     Read distinct, non-conflicting stored IDs attributed by route-history-v2; no path/name/slug inference.
+         *     Rows: distinct request ids attributed to this workspace by route-history-v2, excluding all conflicting copies; no path/name/slug inference.
          *     Resolve all retained copies and conflict tombstones before filters that could hide a conflicting copy.
          *     from/to are required RFC 3339 with explicit offset and at most milliseconds, normalized to UTC; [from,to),
          *     from < to, now-7d <= from and to <= now on first page. Apply per-event logical expiry at generatedAt.
