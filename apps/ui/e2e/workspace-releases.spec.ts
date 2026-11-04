@@ -237,8 +237,14 @@ for (const width of [390, 768, 1440]) {
     await page.setViewportSize({ width, height: 900 });
     const fake = await setup(page, { v2: true, role: "admin" });
     await page.reload();
-    await page.getByRole("button", { name: "Publicar release", exact: true }).click();
+    const opener = page.getByRole("button", { name: "Publicar release", exact: true });
+    await opener.focus();
+    await page.keyboard.press("Enter");
     const dialog = page.getByRole("dialog", { name: "Publicar release", exact: true });
+    const expectFocusInside = async () => {
+      await expect.poll(() => dialog.evaluate((element) => element.contains(document.activeElement))).toBe(true);
+    };
+    await expectFocusInside();
     await expect(dialog).toContainText("Cobrança");
     await expect(dialog).toContainText("billing");
     await expect(dialog.getByRole("region", { name: "Instância da publicação", exact: true })).toContainText("Instância DEV");
@@ -250,11 +256,29 @@ for (const width of [390, 768, 1440]) {
     await expect(confirm).toBeDisabled();
     await expect(acknowledgement).not.toBeChecked();
     await expect(acknowledgement).toHaveAccessibleDescription(/Esta tela não consegue listar quais/);
+    const close = dialog.getByRole("button", { name: "Fechar", exact: true });
+    const cancel = dialog.getByRole("button", { name: "Cancelar", exact: true });
+    await close.focus();
+    await page.keyboard.press("Shift+Tab");
+    await expect(cancel).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(close).toBeFocused();
+    for (const key of ["Tab", "Shift+Tab"]) {
+      for (let step = 0; step < 8; step++) {
+        await page.keyboard.press(key);
+        await expectFocusInside();
+      }
+    }
     await dialog.getByLabel("Resumo (opcional)").fill("Cobrança revisada");
     await dialog.getByLabel("Resumo (opcional)").press("Enter");
     expect(fake.writes).toEqual([]);
     await acknowledgement.check();
     await expect(confirm).toBeEnabled();
+    await close.focus();
+    await page.keyboard.press("Shift+Tab");
+    await expect(confirm).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(close).toBeFocused();
     await acknowledgement.uncheck();
     await expect(confirm).toBeDisabled();
     const audit = async () => {
@@ -265,6 +289,7 @@ for (const width of [390, 768, 1440]) {
     await acknowledgement.check();
     await page.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);
+    await expect(opener).toBeFocused();
     expect(fake.writes).toEqual([]);
     await page.getByRole("button", { name: "Publicar release", exact: true }).click();
     await expect(acknowledgement).not.toBeChecked();
@@ -272,6 +297,7 @@ for (const width of [390, 768, 1440]) {
     await expect(confirm).toBeDisabled();
     await dialog.getByRole("button", { name: "Cancelar", exact: true }).click();
     await expect(dialog).toHaveCount(0);
+    await expect(opener).toBeFocused();
     await page.getByRole("button", { name: "Publicar release", exact: true }).click();
     await acknowledgement.check();
     await confirm.click();

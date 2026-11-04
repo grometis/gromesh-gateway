@@ -69,6 +69,23 @@ export class TestNode {
     return !event.defaultPrevented;
   }
   focus() { this.ownerDocument.activeElement = this; }
+  get tabIndex() {
+    const explicit = this.getAttribute("tabindex");
+    if (explicit !== null) return Number(explicit);
+    return /^(BUTTON|INPUT|SELECT|TEXTAREA)$/.test(this.tagName) || (this.tagName === "A" && this.getAttribute("href") !== null) ? 0 : -1;
+  }
+  matches(selector: string): boolean {
+    if (selector === ":disabled") return this.disabled || this.getAttribute("disabled") !== null;
+    const match = /^([a-z]+)?(?:\[([a-z]+)\])?$/i.exec(selector.trim());
+    if (!match) throw new Error(`Unsupported test selector: ${selector}`);
+    return (!match[1] || this.tagName === match[1].toUpperCase()) && (!match[2] || this.getAttribute(match[2]) !== null);
+  }
+  querySelectorAll(selector: string): TestNode[] {
+    return this.findAll((node) => node.nodeType === 1 && selector.split(",").some((part) => node.matches(part)));
+  }
+  getClientRects(): object[] {
+    return this.getAttribute("hidden") !== null || this.style.display === "none" || (this.parentNode && !this.parentNode.getClientRects().length) ? [] : [{}];
+  }
   contains(node: TestNode): boolean { return node === this || this.childNodes.some((child) => child.contains(node)); }
   findAll(predicate: (node: TestNode) => boolean): TestNode[] {
     return this.childNodes.flatMap((node) => [...(predicate(node) ? [node] : []), ...node.findAll(predicate)]);
