@@ -9,19 +9,36 @@ const context: NavigationContext = {
 
 describe("catalog-driven breadcrumb paths", () => {
   it.each([
-    ["services", "Serviços"], ["routes", "Rotas"], ["plugins", "Plugins"],
-    ["variables", "Variáveis"], ["releases", "Releases"],
+    ["overview", "Visão geral"], ["services", "Serviços"], ["routes", "Rotas"],
+    ["consumers", "Consumidores"], ["plugins", "Plugins"], ["upstreams", "Upstreams"],
+    ["certificates", "Certificados"], ["variables", "Variáveis"], ["releases", "Releases"],
   ])("builds the real v2 %s destination without a name-based URL", (section, label) => {
     expect(buildBreadcrumbs(`/workspaces/workspace-id/${section}?cursor=opaque#details`, context)).toEqual([
       { label: "Visão geral da instância", href: "/" },
       { label: "Nome visível", href: "/workspaces/workspace-id" }, { label },
     ]);
   });
-  it("keeps the registered entry current and does not invent an overview route", () => {
+  it("keeps the registered entry current before its redirect to overview", () => {
     expect(buildBreadcrumbs("/workspaces/workspace-id", context)).toEqual([
       { label: "Visão geral da instância", href: "/" }, { label: "Nome visível" },
     ]);
-    expect(buildBreadcrumbs("/workspaces/workspace-id/overview", context)).toEqual([{ label: "Página não encontrada" }]);
+  });
+  it.each([
+    ["services/resource", "Serviços", "Serviço"],
+    ["consumers/resource", "Consumidores", "Consumidor"],
+  ])("keeps the list ancestor and generic detail for v2 %s", (path, list, detail) => {
+    expect(buildBreadcrumbs(`/workspaces/workspace-id/${path}`, context)).toEqual([
+      { label: "Visão geral da instância", href: "/" },
+      { label: "Nome visível", href: "/workspaces/workspace-id" },
+      { label: list, href: `/workspaces/workspace-id/${path.split("/")[0]}` }, { label: detail },
+    ]);
+  });
+  it.each([
+    ["workspaces", "ws-consumers", context],
+    ["e", "consumers", { route: { kind: "legacy-v1", id: "workspace-id" }, state: "legacy" } as NavigationContext],
+  ] as const)("observes only the %s Consumer detail cache", (namespace, family, scope) => {
+    expect(breadcrumbDetail(`/${namespace}/workspace-id/consumers/resource`, scope)?.queryKey)
+      .toEqual([family, "workspace-id", "detail", "resource"]);
   });
   it.each(["loading", "forbidden", "not-found", "error", "expired"] as const)("ignores retained metadata in %s", (state) => {
     expect(buildBreadcrumbs("/workspaces/workspace-id/services/resource", { ...context, state }, "Nome anterior")).toEqual([

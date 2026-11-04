@@ -102,7 +102,7 @@ test("MVP: install → publish → converge → traffic in the dashboard → rol
     await service.getByLabel("Porta").fill("80");
     await service.getByRole("button", { name: "Salvar" }).click();
     await expect(service).toBeHidden();
-    await page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Routes", exact: true }).click();
+    await page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Rotas", exact: true }).click();
     await page.getByRole("button", { name: "Nova route" }).click();
     const route = page.getByRole("dialog", { name: "Nova route" });
     await route.getByLabel("Nome").fill(name);

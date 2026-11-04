@@ -21,11 +21,13 @@ export function Field({ label, errors, hint, children }: { label: string; errors
 export function FormErrorList({ messages }: { messages: string[] }) {
   if (messages.length === 0) return null;
   return (
-    <ul className="error form-errors" role="alert">
-      {messages.map((m) => (
-        <li key={m}>{m}</li>
-      ))}
-    </ul>
+    <div role="alert">
+      <ul className="error form-errors">
+        {messages.map((m) => (
+          <li key={m}>{m}</li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

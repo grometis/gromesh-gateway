@@ -133,7 +133,7 @@ test("UI publication, key-auth traffic, viewer limits, audit and rollback on the
     expect((await serviceCreated).status()).toBe(201);
     await expect(service).toBeHidden();
 
-    await page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Routes", exact: true }).click();
+    await page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Rotas", exact: true }).click();
     await page.getByRole("button", { name: "Nova route" }).click();
     const route = page.getByRole("dialog", { name: "Nova route" });
     await route.getByLabel("Nome").fill(name);
@@ -229,7 +229,7 @@ test("UI publication, key-auth traffic, viewer limits, audit and rollback on the
       await viewerEdit.getByRole("button", { name: "Cancelar" }).click();
       expect(await api<{ items: unknown[] }>("GET", `/environments/${env.id}/services`, 200)).toEqual(servicesBefore);
       const routesBefore = await api<{ items: unknown[] }>("GET", `/environments/${env.id}/routes`, 200);
-      await viewerPage.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Routes", exact: true }).click();
+      await viewerPage.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Rotas", exact: true }).click();
       await viewerPage.getByRole("button", { name: "Nova route" }).click();
       const viewerRoute = viewerPage.getByRole("dialog", { name: "Nova route" });
       await viewerRoute.getByLabel("Nome").fill(`${name}-viewer`);

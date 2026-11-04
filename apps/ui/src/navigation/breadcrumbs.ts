@@ -54,7 +54,7 @@ export function breadcrumbDetail(url: string, context: NavigationContext | null)
   const kind = match.destination.detailKind;
   const id = match.params[kind === "service" ? "serviceId" : kind === "consumer" ? "consumerId" : "version"]!;
   const queryKey = kind === "service" ? ["ws-service", confirmed.id, id]
-    : kind === "consumer" ? ["consumers", confirmed.id, "detail", id] : ["snapshot", confirmed.id, Number(id)];
+    : kind === "consumer" ? [confirmed.v2 ? "ws-consumers" : "consumers", confirmed.id, "detail", id] : ["snapshot", confirmed.id, Number(id)];
   return { kind, id, contextId: confirmed.id, queryKey };
 }
 

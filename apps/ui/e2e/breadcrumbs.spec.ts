@@ -2,6 +2,7 @@ import AxeBuilder from "@axe-core/playwright";
 import type { Page } from "@playwright/test";
 import { expect, mockSession, test } from "./fixtures";
 import { checkLayout } from "./layout";
+import { openGateway } from "./gateway-sidebar";
 
 const A = "7c1d2e3f-4a5b-4c6d-8e7f-00000000000a";
 const B = "7c1d2e3f-4a5b-4c6d-8e7f-00000000000b";
@@ -31,10 +32,14 @@ async function setup(page: Page, state: State = {}) {
         ? json({ title: "Failure", status: state.status }, state.status) : json(workspace(id, state.archived));
       if (url.pathname === `/api/v1/environments/${id}`) return json({ ...environment(id), hasUnpublishedChanges: state.pendingDraft ?? false });
       if (url.pathname === `/api/v1/environments/${id}/publish-preview`) return json({ currentVersion: null, hasChanges: true, changes: [] });
-      if (url.pathname === `/api/v2/workspaces/${id}/services`) return json({ items: state.empty ? [] : [service(id)], nextCursor: null });
-      if (url.pathname === `/api/v2/workspaces/${id}/services/${S}`) return json(service(id));
+      if ([`/api/v2/workspaces/${id}/services`, `/api/v1/environments/${id}/services`].includes(url.pathname)) return json({ items: state.empty ? [] : [service(id)], nextCursor: null });
+      if ([`/api/v2/workspaces/${id}/services/${S}`, `/api/v1/environments/${id}/services/${S}`].includes(url.pathname)) return json(service(id));
       if (url.pathname === `/api/v2/workspaces/${id}/releases`) return json([]);
-      if (url.pathname === `/api/v2/workspaces/${id}/upstreams` || url.pathname === `/api/v1/environments/${id}/clusters`) return json({ items: [], nextCursor: null });
+      if (url.pathname === `/api/v2/workspaces/${id}/variables`) return json([]);
+      if (["routes", "consumers", "plugins", "upstreams", "certificates"].some((section) => url.pathname === `/api/v2/workspaces/${id}/${section}`)
+        || url.pathname === `/api/v1/environments/${id}/clusters`) return json({ items: [], nextCursor: null });
+      if (url.pathname === `/api/v2/workspaces/${id}/consumers/${S}`) return json({ id: S, username: `Cliente ${id === A ? "A" : "B"}`, customId: null, tags: [], createdAt: stamp, updatedAt: stamp });
+      if (["key-auth", "jwt", "basic-auth"].some((kind) => url.pathname === `/api/v2/workspaces/${id}/consumers/${S}/${kind}`)) return json({ items: [], nextCursor: null });
     }
     return json({ title: `Unexpected request: ${url.pathname}`, status: 404 }, 404);
   });
@@ -52,6 +57,36 @@ async function audit(page: Page) {
 }
 
 for (const width of [390, 768, 1440]) {
+  test(`integrated catalog breadcrumbs and Consumer detail at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    const requests = await setup(page);
+    for (const [section, label] of [
+      ["overview", "Visão geral"], ["services", "Serviços"], ["routes", "Rotas"],
+      ["consumers", "Consumidores"], ["plugins", "Plugins"], ["upstreams", "Upstreams"],
+      ["certificates", "Certificados"], ["variables", "Variáveis"], ["releases", "Releases"],
+    ]) {
+      await page.goto(`/workspaces/${A}/${section}?view=integration#page`);
+      await expect(trail(page).locator("li")).toHaveText(["Visão geral da instância", workspace(A).name, label!]);
+      await expect(trail(page).locator('[aria-current="page"]')).toHaveText(label!);
+      const menu = await openGateway(page);
+      await expect(menu.getByRole("link")).toHaveCount(8);
+      if (section === "releases") await expect(menu.locator('[aria-current="page"]')).toHaveCount(0);
+      else await expect(menu.getByRole("link", { name: label, exact: true })).toHaveAttribute("aria-current", "page");
+      const close = page.getByRole("button", { name: "Fechar menu Gateway", exact: true });
+      if (await close.isVisible()) await close.click();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    }
+    await page.goto(`/workspaces/${A}/consumers/${S}?view=detail#credentials`);
+    await expect(trail(page).locator("li")).toHaveText(["Visão geral da instância", workspace(A).name, "Consumidores", "Cliente A"]);
+    await audit(page);
+    await page.reload();
+    await expect(trail(page).locator('[aria-current="page"]')).toHaveText("Cliente A");
+    await trail(page).getByRole("link", { name: "Consumidores", exact: true }).click();
+    await expect(page).toHaveURL(`/workspaces/${A}/consumers`);
+    expect(requests.every((request) => request.startsWith("GET "))).toBe(true);
+    expect(requests.some((request) => request.startsWith("GET /api/v1/environments/"))).toBe(false);
+  });
+
   test(`detail deep link, refresh, history and breadcrumb links at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
     const requests = await setup(page);
@@ -81,7 +116,8 @@ for (const width of [390, 768, 1440]) {
     await expect(page).toHaveURL(path());
     await expect(trail(page).locator('[aria-current="page"]')).toHaveText("Serviços");
     await trail(page).getByRole("link", { name: workspace(A).name, exact: true }).click();
-    await expect(page).toHaveURL(path()); // The real Workspace entry currently redirects to Services.
+    await expect(page).toHaveURL(`/workspaces/${A}/overview`);
+    await expect(trail(page).locator('[aria-current="page"]')).toHaveText("Visão geral");
     if (width > 700) {
       await trail(page).getByRole("link", { name: "Visão geral da instância", exact: true }).click();
       await expect(page).toHaveURL("/");
@@ -145,6 +181,7 @@ for (const width of [390, 768, 1440]) {
       await page.goto(`${path()}/${S}`);
       await expect(trail(page).locator('[aria-current="page"]')).toHaveText(service(A).name);
       state.status = status;
+      await openGateway(page);
       await page.getByLabel("Workspace v2", { exact: true }).selectOption(B);
       await expect(page.getByRole("alert")).toContainText(status === 403 ? "Você não tem permissão" : "Não encontrado ou indisponível");
       await expect(trail(page).locator("li")).toHaveText(["Visão geral da instância", "Serviços"]);
@@ -172,6 +209,7 @@ test("pending B discards A before authorization; a late A resource cannot rename
   await page.goto(`${path()}/${S}`);
   await expect(trail(page).locator('[aria-current="page"]')).toHaveText("Serviço");
   await expect(trail(page)).toContainText(workspace(A).name);
+  await openGateway(page);
   await page.getByLabel("Workspace v2", { exact: true }).selectOption(B);
   await expect(page.getByText("Verificando contexto…", { exact: true })).toBeVisible();
   await expect(trail(page).locator("li")).toHaveText(["Visão geral da instância", "Serviços"]);
