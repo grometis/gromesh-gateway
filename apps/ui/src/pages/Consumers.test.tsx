@@ -373,7 +373,7 @@ it("does not submit after workspace is invalidated while confirming the consumer
 });
 
 describe.each(["consumer", "workspace"] as const)("shared plugin editor in %s", context => {
-  it.each([200, 404])("revalidates before reopening after save (detail HTTP %s)", async status => {
+  it.each([200, 404])("reads detail once per opening and revalidates after save (detail HTTP %s)", async status => {
     let stored = consumerPlugin;
     let saved = false, holdDetail = true;
     const details: ((response: Response) => void)[] = [];
@@ -397,19 +397,24 @@ describe.each(["consumer", "workspace"] as const)("shared plugin editor in %s", 
       }
       return transport(request);
     } });
+    const detailReads = () => view.requests.filter(r => r.method === "GET" && new URL(r.url).pathname === `${base}/${A}`).length;
     const minute = () => view.container.findAll(n => n.tagName === "INPUT" && n.type === "number")[0];
     const closed = () => vi.waitFor(async () => { await view.settle(); expect(view.container.findAll(n => n.getAttribute("role") === "dialog")).toHaveLength(0); });
     try {
       if (context === "consumer") { await view.waitText("Nenhuma credencial basic-auth."); await view.click("Plugins"); }
       await view.waitText("rate-limiting"); await view.click("Editar rate-limiting"); await view.waitText("Salvar no rascunho");
+      expect(detailReads()).toBe(1);
       expect(minute()!.value).toBe("10");
       await act(async () => { minute()!.value = "25"; minute()!.dispatchEvent(new Event("input", { bubbles: true })); await tick(); });
       await view.submit(); await closed();
+      expect(detailReads()).toBe(1);
+      expect(lists).toHaveLength(1);
       await view.click("Editar rate-limiting"); await view.settle();
       expect(view.container.textContent).toContain("Carregando plugin…");
       expect(minute()).toBeUndefined();
       expect(view.find("Salvar no rascunho")).toBeUndefined();
-      await vi.waitFor(() => expect(details.length).toBeGreaterThan(0));
+      await vi.waitFor(() => expect(details).toHaveLength(1));
+      expect(detailReads()).toBe(2);
       await act(async () => {
         holdDetail = false;
         for (const resolve of details.splice(0)) resolve(status === 200 ? Response.json(stored) : Response.json({ title: "Gone", status }, { status }));
@@ -424,6 +429,7 @@ describe.each(["consumer", "workspace"] as const)("shared plugin editor in %s", 
         expect(minute()).toBeUndefined(); expect(view.find("Salvar no rascunho")).toBeUndefined();
       }
       const writes = view.requests.filter(r => r.method === "PUT");
+      expect(detailReads()).toBe(2);
       expect(writes).toHaveLength(status === 200 ? 2 : 1);
       expect(await Promise.all(writes.map(r => r.json()))).toEqual(writes.map(() => expect.objectContaining({ scope: { consumerId: C }, config: { minute: 25, password: "REDACTED" } })));
     } finally {

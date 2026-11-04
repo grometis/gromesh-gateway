@@ -124,7 +124,8 @@ export function WorkspacePlugins({ workspaceId }: { workspaceId: string }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const invalidate = () => {
-    for (const key of ["ws-plugins", "ws-plugin", "plugins", "environment", "preview"]) void client.invalidateQueries({ queryKey: [key, workspaceId] });
+    void client.invalidateQueries({ queryKey: ["ws-plugin", workspaceId], refetchType: "none" });
+    for (const key of ["ws-plugins", "plugins", "environment", "preview"]) void client.invalidateQueries({ queryKey: [key, workspaceId] });
   };
   const remove = async () => {
     if (!access.canWrite || !deleting || busy) return;

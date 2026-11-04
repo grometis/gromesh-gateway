@@ -126,7 +126,7 @@ test("reopening a saved workspace plugin waits for fresh detail and never PUTs t
   await page.getByLabel("minute", { exact: false }).fill("25");
   let release!: () => void, detailReads = 0;
   const held = new Promise<void>(resolve => { release = resolve; });
-  // Hold both invalidation reads so the row and cached detail still contain minute:10.
+  // Hold the list refetch and the next opening's detail so both caches retain minute:10.
   await page.route(u => u.pathname === `/api/v2/workspaces/${A}/plugins` || u.pathname === `/api/v2/workspaces/${A}/plugins/${P}`, async route => {
     if (route.request().method() === "GET") {
       if (new URL(route.request().url()).pathname.endsWith(`/${P}`)) detailReads++;
@@ -137,16 +137,18 @@ test("reopening a saved workspace plugin waits for fresh detail and never PUTs t
   try {
     await page.getByRole("button", { name: "Salvar no rascunho" }).click();
     await expect(page.getByRole("dialog")).toHaveCount(0);
+    expect(detailReads).toBe(0);
     await page.getByRole("button", { name: "Editar rate-limiting" }).click();
     await expect(page.getByRole("dialog").getByRole("status")).toHaveText("Carregando plugin…");
     await expect(page.getByLabel("minute", { exact: false })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Salvar no rascunho" })).toHaveCount(0);
-    await expect.poll(() => detailReads).toBeGreaterThan(0);
+    await expect.poll(() => detailReads).toBe(1);
     expect(fake.writes.map(w => w.method)).toEqual(["PUT"]);
     release();
     await expect(page.getByLabel("minute", { exact: false })).toHaveValue("25");
     await page.getByRole("button", { name: "Salvar no rascunho" }).click();
     await expect(page.getByRole("dialog")).toHaveCount(0);
+    expect(detailReads).toBe(1);
     expect(fake.writes.map(w => [w.method, w.path, (w.body?.config as Record<string, unknown>)?.minute])).toEqual([
       ["PUT", `/api/v2/workspaces/${A}/plugins/${P}`, 25],
       ["PUT", `/api/v2/workspaces/${A}/plugins/${P}`, 25],

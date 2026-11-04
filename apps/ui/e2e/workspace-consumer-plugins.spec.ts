@@ -136,16 +136,18 @@ test("reopening a saved consumer plugin waits for fresh detail and never PUTs th
   try {
     await page.getByRole("button", { name: "Salvar no rascunho" }).click();
     await expect(page.getByRole("dialog")).toHaveCount(0);
+    expect(detailReads).toBe(0);
     await page.getByRole("button", { name: "Editar rate-limiting" }).click();
     await expect(page.getByRole("dialog").getByRole("status")).toHaveText("Carregando plugin…");
     await expect(page.getByLabel("minute", { exact: true })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Salvar no rascunho" })).toHaveCount(0);
-    await expect.poll(() => detailReads).toBeGreaterThan(0);
+    await expect.poll(() => detailReads).toBe(1);
     expect(fake.writes.map(w => w.method)).toEqual(["PUT"]);
     release();
     await expect(page.getByLabel("minute", { exact: true })).toHaveValue("25");
     await page.getByRole("button", { name: "Salvar no rascunho" }).click();
     await expect(page.getByRole("dialog")).toHaveCount(0);
+    expect(detailReads).toBe(1);
     expect(fake.writes.map(w => [w.method, w.path, w.body?.scope, (w.body?.config as Record<string, unknown>)?.minute])).toEqual([
       ["PUT", `/api/v2/workspaces/${A}/plugins/${P}`, { consumerId: C }, 25],
       ["PUT", `/api/v2/workspaces/${A}/plugins/${P}`, { consumerId: C }, 25],
