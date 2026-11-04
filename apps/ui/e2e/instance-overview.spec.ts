@@ -215,6 +215,7 @@ for (const width of [390, 768, 1440]) {
       await expect(overview(page)).toBeVisible();
       await expect(page).toHaveURL("/");
       await expect(page.getByRole("heading", { name: "Visão geral do Workspace", exact: true })).toHaveCount(0);
+      await expect(page.locator(".workspace-context")).toHaveCount(0);
       await expect(row(page, target.name)).toBeVisible();
       expect(contextual(sent.slice(beforeReturn))).toEqual([]);
     });
