@@ -72,13 +72,13 @@ test("v2 catalog uses confirmed GET outside the list; collapse preserves accessi
   await expect(page.locator(".gateway-context")).toContainText("/pedidos · ativo");
   const links = nav(page).getByRole("link");
   await expect(links).toHaveCount(8);
-  for (const label of ["Visão geral", "Consumidores", "Upstreams", "Certificados"]) {
+  for (const label of ["Consumidores", "Upstreams", "Certificados"]) {
     const item = nav(page).getByRole("link", { name: label, exact: true });
     await expect(item).toHaveAttribute("aria-disabled", "true");
     await expect(item).not.toHaveAttribute("href");
     await expect(item).toHaveAccessibleDescription("Disponível no ambiente legado");
   }
-  for (const [label, path] of [["Serviços", "services"], ["Rotas", "routes"], ["Plugins", "plugins"], ["Variáveis", "variables"]]) {
+  for (const [label, path] of [["Visão geral", "overview"], ["Serviços", "services"], ["Rotas", "routes"], ["Plugins", "plugins"], ["Variáveis", "variables"]]) {
     await expect(nav(page).getByRole("link", { name: label!, exact: true })).toHaveAttribute("href", v2(path));
   }
   await expect(nav(page).getByRole("link", { name: "Serviços", exact: true })).toHaveAttribute("aria-current", "page");
@@ -100,6 +100,14 @@ test("v2 catalog uses confirmed GET outside the list; collapse preserves accessi
   await expect(nav(page).getByRole("tooltip", { name: "Serviços", exact: true })).toBeHidden();
   await page.getByRole("button", { name: "Expandir menu Gateway", exact: true }).click();
   await expect(page.locator(".gateway-desktop")).toHaveCSS("width", "264px");
+  const overview = nav(page).getByRole("link", { name: "Visão geral", exact: true });
+  await overview.click();
+  await expect(page).toHaveURL(v2("overview"));
+  await expect(page.getByRole("heading", { name: "Visão geral do Workspace", exact: true })).toBeVisible();
+  await expect(overview).toHaveAttribute("href", v2("overview"));
+  await expect(overview).toHaveAttribute("aria-current", "page");
+  await expect(overview).not.toHaveAttribute("aria-disabled");
+  await expect(services).not.toHaveAttribute("aria-current");
   expect(sent.some((p) => p.startsWith("/api/v1/environments"))).toBe(false);
   await navigateGlobal(page, "Releases");
   await expect(nav(page).locator('[aria-current="page"]')).toHaveCount(0);
@@ -186,8 +194,19 @@ test("archived Workspace keeps navigation readable and existing write gates", as
   await setup(page, { archived: true });
   await page.goto(v2());
   await expect(page.locator(".gateway-context")).toContainText("arquivado · somente leitura");
-  await expect(nav(page).locator("a")).toHaveCount(4);
+  await expect(nav(page).locator("a")).toHaveCount(5);
   await expect(page.getByRole("button", { name: "Novo service", exact: true })).toHaveCount(0);
+  const unavailable = nav(page).getByRole("link", { name: "Consumidores", exact: true });
+  await expect(unavailable).toHaveAttribute("aria-disabled", "true");
+  await expect(unavailable).not.toHaveAttribute("href");
+  await expect(unavailable).toHaveAccessibleDescription("Disponível no ambiente legado");
+  const overview = nav(page).getByRole("link", { name: "Visão geral", exact: true });
+  await expect(overview).toHaveAttribute("href", v2("overview"));
+  await overview.click();
+  await expect(page).toHaveURL(v2("overview"));
+  await expect(overview).toHaveAttribute("aria-current", "page");
+  await expect(page.locator(".gateway-context")).toContainText("arquivado · somente leitura");
+  await expect(page.getByRole("link", { name: "Novo serviço", exact: true })).toHaveCount(0);
 });
 
 for (const width of [390, 768]) {
@@ -353,7 +372,7 @@ test("collapsed sidebar keeps controls within two lines and descriptions out of 
   await expect(sidebar).toHaveCSS("width", "136px");
   await expect(sidebar.getByRole("combobox")).toHaveCount(0);
   await expect(more).toHaveCount(0);
-  await expect(sidebar.locator(".gateway-requirement")).toHaveCount(4);
+  await expect(sidebar.locator(".gateway-requirement")).toHaveCount(3);
   for (const reason of await sidebar.locator(".gateway-requirement").all()) await expect(reason).toBeHidden();
   const controls = await sidebar.locator("a, button, select, [role=link]").evaluateAll((nodes) => nodes
     .filter((node) => node.getClientRects().length > 0)
@@ -369,6 +388,12 @@ test("collapsed sidebar keeps controls within two lines and descriptions out of 
   await unavailable.focus();
   await expect(nav(page).getByRole("tooltip").filter({ hasText: "Consumidores" })).toContainText("Disponível no ambiente legado");
   await testInfo.attach("collapsed-compact-controls", { body: await page.screenshot(), contentType: "image/png" });
+  const overview = nav(page).getByRole("link", { name: "Visão geral", exact: true });
+  await expect(overview).toHaveAttribute("href", v2("overview"));
+  await overview.click();
+  await expect(page).toHaveURL(v2("overview"));
+  await expect(overview).toHaveAttribute("aria-current", "page");
+  await expect(sidebar).toHaveCSS("width", "136px");
   await sidebar.getByRole("button", { name: "Expandir menu Gateway", exact: true }).click();
   await expect(sidebar.getByLabel("Workspace v2", { exact: true })).toBeVisible();
   await expect(more).toBeVisible();

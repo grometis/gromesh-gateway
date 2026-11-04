@@ -22,6 +22,7 @@ import { ReviewPublishPage } from "./pages/ReviewPublish";
 import { WorkspacesPage } from "./pages/Workspaces";
 import { ReleasesPage } from "./pages/Releases";
 import { VariablesPage } from "./pages/Variables";
+import { WorkspaceOverviewPage } from "./pages/WorkspaceOverview";
 
 function LegacyEntry() {
   const { search, hash } = useLocation();
@@ -50,6 +51,7 @@ export const appRoutes: RouteObject[] = [
             path: "workspaces/:workspaceId",
             children: [
               { index: true, element: <WorkspaceEntry /> },
+              { path: "overview", element: <WorkspaceOverviewPage /> },
               { path: "services", element: <ServicesPage /> },
               { path: "services/:serviceId", element: <ServiceDetailPage /> },
               { path: "routes", element: <RoutesPage /> },

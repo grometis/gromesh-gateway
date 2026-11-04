@@ -181,8 +181,8 @@ for (const width of [390, 768, 1440]) {
       await expect(open).toHaveAttribute("href", `/workspaces/${target.id}`);
       expect(contextual(sent)).toEqual([]);
       await open.click();
-      await expect(page).toHaveURL(`/workspaces/${target.id}/services`);
-      await expect(page.getByRole("heading", { name: "Services", exact: true })).toBeVisible();
+      await expect(page).toHaveURL(`/workspaces/${target.id}/overview`);
+      await expect(page.getByRole("heading", { name: "Visão geral do Workspace", exact: true })).toBeVisible();
       const mobile = width <= 900;
       const trigger = page.getByRole("button", { name: `Abrir menu Gateway · ${target.name} — Workspace`, exact: true });
       if (mobile) {
@@ -205,7 +205,7 @@ for (const width of [390, 768, 1440]) {
         await expect(trigger).toHaveText(`Gateway · ${target.name}`);
       }
       if (archived) {
-        await expect(page.getByRole("button", { name: "Novo service", exact: true })).toHaveCount(0);
+        await expect(page.getByRole("link", { name: "Novo serviço", exact: true })).toHaveCount(0);
       }
       await audit(page, width);
       expect(sent.some((u) => u.pathname === `/api/v2/workspaces/${target.id}`)).toBe(true);
@@ -214,7 +214,8 @@ for (const width of [390, 768, 1440]) {
       await page.getByRole("link", { name: "gromesh, início", exact: true }).click();
       await expect(overview(page)).toBeVisible();
       await expect(page).toHaveURL("/");
-      await expect(page.getByRole("heading", { name: "Services", exact: true })).toHaveCount(0);
+      await expect(page.getByRole("heading", { name: "Visão geral do Workspace", exact: true })).toHaveCount(0);
+      await expect(page.locator(".workspace-context")).toHaveCount(0);
       await expect(row(page, target.name)).toBeVisible();
       expect(contextual(sent.slice(beforeReturn))).toEqual([]);
     });
@@ -230,6 +231,7 @@ test("removed Workspace stays at the v2 404 with no selection or legacy fallback
   await page.getByRole("link", { name: `Abrir Workspace ${A.name}`, exact: true }).click();
   await expect(page.getByText("Não encontrado ou indisponível para sua conta.", { exact: true })).toBeVisible();
   await expect(page).toHaveURL(`/workspaces/${A.id}`);
+  await expect(page.getByRole("heading", { name: "Visão geral do Workspace", exact: true })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Services", exact: true })).toHaveCount(0);
   expect(sent.some((u) => u.pathname.startsWith("/api/v1/environments/"))).toBe(false);
   expect(sent.some((u) => u.pathname === `/api/v2/workspaces/${B.id}`)).toBe(false);

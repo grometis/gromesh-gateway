@@ -259,7 +259,7 @@ describe("instance overview with real queries and authenticated routes", () => {
   it("keeps an authorized list when instance identity is unavailable", async () => {
     const view = await mount(() => page([A]), 403);
     await view.waitText(A.name);
-    expect(view.container.textContent).toContain("Instância não identificada");
+    await view.waitText("Instância não identificada");
     expect(view.counts()).toEqual(["1", "1", "0"]);
   });
   it("uses existing 401 session handling and clears cached workspaces", async () => {

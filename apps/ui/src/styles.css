@@ -525,6 +525,26 @@ table.cards tr:hover td { background: var(--line); }
 .request-properties dd { font-family: var(--font-mono); font-size: var(--text-sm); }
 
 /* ---------------- overview ---------------- */
+.workspace-overview { min-width: 0; }
+.workspace-overview h2, .workspace-overview h3, .workspace-overview p { margin: 0; overflow-wrap: anywhere; }
+.workspace-overview-panel { min-width: 0; padding: var(--space-4); border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg); }
+.workspace-overview-identity, .workspace-overview-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-3); }
+.workspace-overview .page-head { flex-wrap: wrap; }
+.workspace-overview-actions .button { text-decoration: none; }
+.workspace-overview-actions .publish { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+.workspace-overview-actions .publish:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+.workspace-overview-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-3); }
+.workspace-overview-grid article { display: flex; flex-direction: column; gap: var(--space-2); background: var(--surface); }
+.workspace-overview-card-link { display: flex; flex-direction: column; gap: var(--space-2); color: inherit; text-decoration: none; }
+.workspace-overview-card-link:hover h3 { text-decoration: underline; }
+.workspace-overview .workspace-overview-count { font-size: 30px; line-height: 1.2; }
+.workspace-overview .workspace-overview-release { font-size: var(--h3); }
+.workspace-overview-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4); }
+.workspace-overview-releases { list-style: none; padding: 0; margin: var(--space-3) 0 0; display: grid; gap: var(--space-3); }
+.workspace-overview-releases li { display: flex; flex-wrap: wrap; gap: var(--space-2); padding-bottom: var(--space-3); border-bottom: 1px solid var(--line); }
+.workspace-overview-releases p { flex-basis: 100%; }
+@media (max-width: 1100px) { .workspace-overview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 600px) { .workspace-overview-grid, .workspace-overview-columns { grid-template-columns: minmax(0, 1fr); } }
 .tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-3); margin: 0 0 var(--space-5); }
 .tile { background: var(--surface); border-radius: var(--radius); padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-1); }
 .tile dt { font-size: var(--text-sm); font-weight: 600; color: var(--text-2); }
