@@ -122,7 +122,8 @@ describe("instance and context in the shell", () => {
     { path: `/e/${A}/consumers`, target: `/workspaces/${C}/consumers` },
     { path: `/e/${A}/consumers/entity`, target: `/workspaces/${C}/consumers` },
     { path: `/e/${A}/upstreams`, target: `/workspaces/${C}/upstreams` },
-    { path: `/e/${A}/certificates`, target: `/workspaces/${C}/services` },
+    { path: `/e/${A}/certificates`, target: `/workspaces/${C}/certificates` },
+    { path: `/e/${A}/metrics`, target: `/workspaces/${C}/services` },
   ])("opens a real v2 Workspace from legacy $path without assuming a selection", async ({ path, target }) => {
     const view = await screen({ path, paginated: true });
     const select = () => view.container.findAll((n) => n.tagName === "SELECT" && n.getAttribute("id") === "workspace-select")[0];
@@ -141,7 +142,12 @@ describe("instance and context in the shell", () => {
     expect(view.router.state.location.pathname).toBe(target);
     expect(view.methods.every((method) => method === "GET")).toBe(true);
   });
-  it.each(["/workspaces", `/workspaces/${A}/releases`, `/workspaces/${A}/services/entity`, `/workspaces/${A}/consumers`, `/workspaces/${A}/consumers/entity`, `/workspaces/${A}/overview`, `/workspaces/${A}/upstreams`])("offers real v2 Workspaces in the explicit v2 namespace on %s", async (path) => {
+  it.each([
+    ["/workspaces", "services"], [`/workspaces/${A}/releases`, "releases"],
+    [`/workspaces/${A}/services/entity`, "services"], [`/workspaces/${A}/consumers`, "consumers"],
+    [`/workspaces/${A}/consumers/entity`, "consumers"], [`/workspaces/${A}/overview`, "overview"],
+    [`/workspaces/${A}/upstreams`, "upstreams"], [`/workspaces/${A}/certificates`, "certificates"],
+  ])("offers real v2 Workspaces in the explicit v2 namespace on %s", async (path, section) => {
     const view = await screen({ path, envs: [A], workspaces: [A, C] });
     const select = () => view.container.findAll((n) => n.tagName === "SELECT" && n.getAttribute("id") === "workspace-select")[0];
     await vi.waitFor(async () => { await view.settle(); expect(select()).toBeDefined(); });
@@ -149,7 +155,6 @@ describe("instance and context in the shell", () => {
     expect(select()!.options.filter((n) => n.getAttribute("value")).map((n) => n.textContent)).toEqual(["Pedidos v2", "Catálogo v2"]);
     if (path === "/workspaces") expect(select()!.value).toBe("");
     await act(async () => { select()!.value = C; select()!.dispatchEvent(new Event("change", { bubbles: true })); await tick(); });
-    const section = path.includes("/consumers") ? "consumers" : path.endsWith("overview") ? "overview" : path.endsWith("releases") ? "releases" : path.endsWith("upstreams") ? "upstreams" : "services";
     expect(view.router.state.location.pathname).toBe(`/workspaces/${C}/${section}`);
     expect(view.methods.every((method) => method === "GET")).toBe(true);
     await vi.waitFor(async () => { await view.settle(); expect(view.container.textContent).toContain("Instância DEV"); });
