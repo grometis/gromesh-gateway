@@ -18,7 +18,7 @@ it("deduplicates identical retries exactly and does not mutate input", () => {
 });
 it.each(["status", "environmentId", "clusterId", "serviceId", "routeId", "retentionDays", "ts", "requestSize", "futureLogicalColumn"])("keeps a conflict in %s without selecting a representative", field => {
     const value = content[field as keyof typeof content];
-    const changed = field === "retentionDays" ? 7 : field === "ts" ? "2026-11-01T01:00:00.000Z" : typeof value === "number" ? value + 1 : value === null ? "present" : "different";
+    const changed = field === "requestSize" ? "9007199254740992" : field === "retentionDays" ? 7 : field === "ts" ? "2026-11-01T01:00:00.000Z" : typeof value === "number" ? value + 1 : value === null ? "present" : "different";
     const a = fold([copy(), copy({ [field]: changed })]);
     expect(a.evidence?.kind).toBe("conflicting-copies");
     expect(evaluateStorageEvidence(a.evidence, proof).kind).toBe("conflicting-copies");
@@ -111,3 +111,6 @@ it("preserves submillisecond observation boundaries from the PostgreSQL clock", 
     expect(evaluateStorageEvidence(a, { ...proof, asOf: "2026-11-01T23:59:59.999999999Z" }).kind).toBe("ready");
     expect(evaluateStorageEvidence(a, { ...proof, asOf: "2026-11-02T00:00:00.000000001Z" }).kind).toBe("expired");
 });
+it.each([0,Number.MAX_SAFE_INTEGER+1,NaN,Infinity,-1,"18446744073709551616","-1","01"])("rejects lossy or noncanonical UInt64 decoded sizes: %s",requestSize=>{expect(()=>fold([copy({requestSize})])).toThrow();});
+it("accepts exact UInt64 bounds without number conversion",()=>{expect(fold([copy({requestSize:"18446744073709551615",responseSize:0n})]).evidence?.kind).toBe("identical");});
+it("rejects an unsafe decoded response size too",()=>{expect(()=>fold([copy({responseSize:Number.MAX_SAFE_INTEGER+1})])).toThrow();});

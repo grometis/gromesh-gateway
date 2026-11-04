@@ -46,6 +46,13 @@ function expiry(content: Readonly<Record<string, unknown>>): string {
   return result;
 }
 function identical(id: string, content: Readonly<Record<string, unknown>>, provenanceComplete: boolean): StorageCopyEvidence {
+  for (const field of ["requestSize", "responseSize"] as const) {
+    const value = content[field];
+    // A UInt64 already rounded through JS number cannot be repaired by canonical encoding.
+    if (typeof value === "bigint") {
+      if (value < 0n || value > 18_446_744_073_709_551_615n) return invalid();
+    } else if (typeof value !== "string" || !/^(?:0|[1-9][0-9]*)$/.test(value) || value.length > 20 || BigInt(value) > 18_446_744_073_709_551_615n) return invalid();
+  }
   // copyStateOf validates every scalar, including future columns, before taking an immutable flat copy.
   copyStateOf(id, content);
   return Object.freeze({ kind: "identical", id, content: Object.freeze({ ...content }), expiresAt: expiry(content), provenanceComplete });
