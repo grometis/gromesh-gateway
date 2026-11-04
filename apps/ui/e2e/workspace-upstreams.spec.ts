@@ -3,6 +3,7 @@ import type { Page } from "@playwright/test";
 import type { Me } from "../src/api/client";
 import type { Upstream, Target } from "../src/pages/workspace-upstreams";
 import { expect, mockSession, test } from "./fixtures";
+import { openGateway } from "./gateway-sidebar";
 
 const A = "7c1d2e3f-4a5b-4c6d-8e7f-00000000000a";
 const B = "7c1d2e3f-4a5b-4c6d-8e7f-00000000000b";
@@ -105,7 +106,16 @@ for (const width of [390, 768, 1440]) {
     await expect(page.getByText(/Lista parcial de Serviços/)).toBeVisible();
     await expect(page.getByRole("link", { name: "Serviço vinculado", exact: true })).toHaveAttribute("href", `/workspaces/${A}/services/${S}`);
     await expect(page.getByRole("link", { name: "Somente DNS" })).toHaveCount(0);
-    await expect(page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Upstreams", exact: true })).toHaveAttribute("href", url());
+    const navigation = await openGateway(page);
+    const upstreams = navigation.getByRole("link", { name: "Upstreams", exact: true });
+    await expect(upstreams).toHaveAttribute("href", url());
+    await expect(upstreams).toHaveAttribute("aria-current", "page");
+    await expect(upstreams).not.toHaveAttribute("aria-disabled");
+    await expect(navigation.locator('[aria-current="page"]')).toHaveCount(1);
+    if (width <= 900) {
+      await page.getByRole("button", { name: "Fechar menu Gateway", exact: true }).click();
+      await expect(navigation).toHaveCount(0);
+    }
     await page.reload();
     await expect(page).toHaveURL(`${url()}?keep=1#targets`);
     await page.getByRole("button", { name: "Carregar mais Upstreams" }).click();
