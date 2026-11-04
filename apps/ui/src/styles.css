@@ -19,7 +19,7 @@
   --line-strong: #d3dedc;
   /* form controls need 3:1 against white and the surface */
   --control-line: #6f8481;
-  /* accent: only the publish action and error states */
+  /* accent: publishing, the instance main action, and error states */
   --accent: #c93a1e;
   --accent-hover: #a8301a;
   --on-accent: #ffffff;
@@ -111,7 +111,7 @@ button, .button {
 }
 button:hover:not(:disabled), .button:hover { background: var(--surface); }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
-/* The accent is reserved for publishing; every other main action is the ink outline. */
+/* Publishing uses the accent; primary actions use ink unless a page explicitly opts in. */
 button.publish { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
 button.publish:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
 /* Nothing to publish: a calm, legible state rather than a faded accent. */
@@ -268,7 +268,7 @@ table.cards td:last-child { border-radius: 0 var(--radius) var(--radius) 0; }
 .strip-draft .sep, .strip-live .sep { opacity: 0.7; }
 .strip-draft .strip-link { color: var(--draft-text); font-weight: 600; }
 .strip-draft.clean { background: var(--surface); color: var(--text-2); }
-.publish-strip > button.publish { min-height: 56px; padding: 0 var(--space-5); font-size: 16px; }
+.publish-strip > button { min-height: 56px; padding: 0 var(--space-5); font-size: 16px; }
 .strip-live { background: var(--ink); color: var(--ink-text); }
 .strip-live strong, .strip-live .mono { color: var(--bg); }
 /* Every node on the live version, a rollout under way, a failed node, no node: each 3:1 or more on the ink. */
@@ -337,6 +337,10 @@ table.cards tr:hover td { background: var(--line); }
 .upstreams-page .modal .cards th.actions { width: 120px; }
 .certificates-page .cards th.actions { width: 160px; }
 .certificates-page .badge { white-space: normal; }
+.workspace-certificates-page td.actions { white-space: normal; }
+.workspace-certificates-page .form fieldset { min-width: 0; display: flex; flex-direction: column; gap: var(--space-3); }
+.workspace-certificates-page .certificate-metadata { overflow-wrap: anywhere; }
+.workspace-certificates-page .certificate-metadata dd { margin: var(--space-1) 0 var(--space-3); }
 .certificate-file { display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--text-sm); min-width: 0; }
 .certificate-file input { min-width: 0; max-width: 100%; }
 .certificate-file input::file-selector-button {
@@ -665,6 +669,11 @@ table.numeric td, table.numeric th { white-space: nowrap; }
   .global-panel, .global-account .global-panel { position: static; width: 100%; max-width: 100%; margin-top: 4px; max-height: 52vh; box-shadow: none; }
 }
 
+/* Workspace names and literal IPv6 targets can exceed a row's available width. */
+.workspace-upstreams-page td.actions { white-space: normal; }
+.workspace-upstreams-page td.actions button { max-width: 100%; overflow-wrap: anywhere; white-space: normal; }
+.workspace-upstreams-page .service-route > * { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.workspace-upstreams-page .route-matches { overflow-wrap: anywhere; }
 /* Consumer v2 can contain long external identifiers without widening its page or dialogs. */
 .workspace-consumers .page-head > div, .workspace-consumers .cred-card > div { min-width: 0; }
 .workspace-consumers :is(h1, h2, .row-main, td, dd, .modal-body) { overflow-wrap: anywhere; }

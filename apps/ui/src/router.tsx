@@ -12,7 +12,9 @@ import { SnapshotsPage, SnapshotDetailPage } from "./pages/Snapshots";
 import { ClustersPage } from "./pages/Clusters";
 import { TokensPage } from "./pages/Tokens";
 import { UpstreamsPage } from "./pages/Upstreams";
+import { WorkspaceUpstreamsPage } from "./pages/WorkspaceUpstreams";
 import { CertificatesPage } from "./pages/Certificates";
+import { WorkspaceCertificatesPage } from "./pages/WorkspaceCertificates";
 import { UsersPage } from "./pages/Users";
 import { AuditPage } from "./pages/Audit";
 import { AnalyticsPage, AnalyticsRedirect } from "./pages/Analytics";
@@ -57,9 +59,11 @@ export const appRoutes: RouteObject[] = [
               { path: "routes", element: <RoutesPage /> },
               { path: "consumers", element: <ConsumersPage /> },
               { path: "consumers/:consumerId", element: <ConsumerDetailPage /> },
+              { path: "certificates", element: <WorkspaceCertificatesPage /> },
               { path: "releases", element: <ReleasesPage /> },
               { path: "variables", element: <VariablesPage /> },
               { path: "plugins", element: <PluginsPage /> },
+              { path: "upstreams", element: <WorkspaceUpstreamsPage /> },
             ],
           },
           {

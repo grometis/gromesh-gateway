@@ -97,18 +97,18 @@ function WorkspaceServices({ workspaceId }: { workspaceId: string }) {
   return (
     <section className="final-page">
       <PageHeader
-        title="Services"
+        title="Serviços"
         description="Os destinos para onde o gateway encaminha as requisições deste Workspace."
         // No contract operation tells the caller's v2 permissions (a binding may grant gateway.write): every signed-in
         // user is offered the actions and the server decides (its 403 is shown in Portuguese).
         actions={canWrite && (
           <Button variant="primary" onClick={() => setEditing("new")}>
-            Novo service
+            Novo serviço
           </Button>
         )}
       />
       <WorkspaceGatewayNote workspaceId={workspaceId} />
-      {!v2 && <div className="pills" role="group" aria-label="Filtrar services">
+      {!v2 && <div className="pills" role="group" aria-label="Filtrar serviços">
         <button type="button" aria-pressed={!onlyChanged} onClick={() => setOnlyChanged(false)}>
           Todos <span className="count">{all.length}</span>
         </button>
@@ -116,20 +116,20 @@ function WorkspaceServices({ workspaceId }: { workspaceId: string }) {
           Com alterações <span className="count">{changed.length}</span>
         </button>
       </div>}
-      <input type="search" className="search" placeholder="Buscar por nome" aria-label="Buscar services" value={search} onChange={(e) => setSearch(e.target.value)} />
+      <input type="search" className="search" placeholder="Buscar por nome" aria-label="Buscar serviços" value={search} onChange={(e) => setSearch(e.target.value)} />
       {services.isPending && <p className="muted">Carregando…</p>}
       {services.isError && <p className="error">{statusMessage(services.error)}</p>}
       {services.isSuccess && items.length === 0 && (
         <EmptyState
-          title={onlyChanged ? "Nenhum service com alterações não publicadas." : q ? "Nenhum service encontrado." : "Nenhum service ainda."}
+          title={onlyChanged ? "Nenhum serviço com alterações não publicadas." : q ? "Nenhum serviço encontrado." : "Nenhum serviço ainda."}
           text={canWrite && !onlyChanged && !q ? "Crie o primeiro para começar a rotear tráfego." : undefined}
         />
       )}
       {items.length > 0 && (
-        <Table label="Services" cards>
+        <Table label="Serviços" cards>
           <thead>
             <tr>
-              <th>Service → destino</th>
+              <th>Serviço → destino</th>
               <th>
                 <span className="visually-hidden">Ações</span>
               </th>
@@ -201,7 +201,7 @@ function WorkspaceServiceDetail({ workspaceId, serviceId }: { workspaceId: strin
   return (
     <section className="stack final-page service-detail">
       <p>
-        <Link to=".." className="back-link">← Services</Link>
+        <Link to=".." className="back-link">← Serviços</Link>
       </p>
       <PageHeader
         title={
@@ -221,7 +221,7 @@ function WorkspaceServiceDetail({ workspaceId, serviceId }: { workspaceId: strin
         )}
       />
       <WorkspaceGatewayNote workspaceId={workspaceId} />
-      <dl className="service-properties" aria-label="Propriedades do service">
+      <dl className="service-properties" aria-label="Propriedades do serviço">
         <dt>Destino</dt>
         <dd>{s.upstreamId ? <>Upstream do Workspace <span className="mono">{upstream?.name ?? fieldText(s.host)}</span></> : "Destino direto (DNS)"}</dd>
         <dt>Protocolo</dt>
@@ -235,10 +235,10 @@ function WorkspaceServiceDetail({ workspaceId, serviceId }: { workspaceId: strin
         <dt>Tags</dt>
         <dd>{s.tags?.join(", ") || "—"}</dd>
       </dl>
-      <p className="muted">Gerencie as routes na tela de <Link className="strip-link" to={`${v2 ? "/workspaces" : "/e"}/${workspaceId}/routes?serviceId=${s.id}`}>Routes do Workspace</Link>.</p>
+      <p className="muted">Gerencie as rotas na tela de <Link className="strip-link" to={`${v2 ? "/workspaces" : "/e"}/${workspaceId}/routes?serviceId=${s.id}`}>Rotas do Workspace</Link>.</p>
       <ScopedRoutes envId={workspaceId} service={s} readOnly />
       <p className="muted">Plugins por Workspace ainda não são editáveis aqui.</p>
-      {v2 ? <p><Link to={`/workspaces/${workspaceId}/plugins`}>Plugins do Workspace</Link></p> : <ScopedPlugins envId={workspaceId} scope={{ kind: "service", id: s.id }} title="Plugins do service" readOnly />}
+      {v2 ? <p><Link className="strip-link" to={`/workspaces/${workspaceId}/plugins`}>Plugins do Workspace</Link></p> : <ScopedPlugins envId={workspaceId} scope={{ kind: "service", id: s.id }} title="Plugins do serviço" readOnly />}
       {editing && <ServiceForm workspaceId={workspaceId} service={s} onClose={() => setEditing(false)} />}
       {deleting && <DeleteService workspaceId={workspaceId} service={s} onClose={() => setDeleting(false)} onDeleted={() => navigate("..")} />}
     </section>
@@ -324,7 +324,7 @@ export function ServiceForm({ workspaceId, service, onClose }: { workspaceId: st
   };
   const set = <K extends keyof typeof form>(k: K, v: (typeof form)[K]) => setForm((f) => ({ ...f, [k]: v }));
 
-  const title = service ? `Editar ${service.name}` : "Novo service";
+  const title = service ? `Editar ${service.name}` : "Novo serviço";
   if (!access.canWrite && !access.isRevalidating) return <Modal title={title} onClose={onClose}><p role="status">{access.reason}</p></Modal>;
   return (
     <Modal title={title} onClose={onClose}>
@@ -341,7 +341,7 @@ export function ServiceForm({ workspaceId, service, onClose }: { workspaceId: st
           )}
         </Field>
         {form.target === "upstream" ? (
-          <Field label="Upstream" errors={errors.fields.upstreamId ?? errors.fields.host} hint={chosen ? `O host do service passa a ser ${chosen.name}, balanceado pelos targets do upstream.` : undefined}>
+          <Field label="Upstream" errors={errors.fields.upstreamId ?? errors.fields.host} hint={chosen ? `O host do serviço passa a ser ${chosen.name}, balanceado pelos targets do upstream.` : undefined}>
             {(id, invalid) => (
               <select id={id} aria-invalid={invalid} value={form.upstreamId} onChange={(e) => set("upstreamId", e.target.value)}>
                 <option value="">Escolha um upstream</option>
@@ -407,7 +407,7 @@ function DeleteService({ workspaceId, service, onClose, onDeleted }: { workspace
   });
   return (
     <ConfirmDialog
-      title="Excluir service"
+      title="Excluir serviço"
       message={
         <>
           Excluir <strong>{service.name}</strong>? A exclusão entra no rascunho e só afeta o tráfego depois de publicar.

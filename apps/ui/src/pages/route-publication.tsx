@@ -39,7 +39,7 @@ export function useRoutePublication(workspaceId: string) {
     draftKnown: !v2 && env.isSuccess && (!env.data?.hasUnpublishedChanges || (preview.isSuccess && !preview.isError && preview.data.currentVersion === version)),
     changes: !v2 && env.data?.hasUnpublishedChanges && !preview.isError ? preview.data?.changes : undefined,
     releaseState: activeRelease
-      ? `Release v2 do Workspace publicada v${activeRelease.version}${activeRelease.contentRevoked ? " (conteúdo revogado)" : ""}; inclusão desta configuração da route não comprovada`
+      ? `Release v2 do Workspace publicada v${activeRelease.version}${activeRelease.contentRevoked ? " (conteúdo revogado)" : ""}; inclusão desta configuração da rota não comprovada`
       : workspace.isSuccess && workspace.data.activeRelease === null
         ? "nenhuma Release v2 ativa no Workspace"
         : "estado da Release v2 não comprovado",
@@ -72,10 +72,10 @@ export function RoutePaths({ route, config = route, slug, servicePath, publicati
     : published ? null : "publicação não comprovada; ainda não implantado";
   const pathText = (values: string[] | undefined) => values?.length ? values.join(", ") : route ? "sem paths (outros critérios de correspondência)" : "nenhum path informado";
   const effects = (values: string[], stripped: boolean, base: string | null | undefined, flow: "v1" | "v2") => base === undefined
-    ? <p><small>Upstream {flow} · stripPath {String(stripped)}: path do service não comprovado.</small></p>
+    ? <p><small>Upstream {flow} · stripPath {String(stripped)}: path do serviço não comprovado.</small></p>
     : values.length
     ? values.map((p) => <p key={p}><small>Upstream {flow} · stripPath {String(stripped)} · simulação: {upstreamEffect(slug ?? "", p, stripped, base, flow)}</small></p>)
-    : <p><small>Upstream {flow} · stripPath {String(stripped)}: sem match de path para remover; o upstream recebe o path completo da requisição, combinado com o path do service {base || "/"}.</small></p>;
+    : <p><small>Upstream {flow} · stripPath {String(stripped)}: sem match de path para remover; o upstream recebe o path completo da requisição, combinado com o path do serviço {base || "/"}.</small></p>;
 
   return (
     <div className="note route-paths" role="group" aria-label="Configuração e publicação por fluxo">
@@ -89,9 +89,9 @@ export function RoutePaths({ route, config = route, slug, servicePath, publicati
         <p>Path no fluxo v1{published ? " (rascunho)" : ""}: <span className="mono">{pathText(paths)}</span> — {draftState}.</p>
         {(route || paths.length > 0) && effects(paths, strip, servicePath, "v1")}
       </>}
-      <p>Path previsto na configuração v2: <span className="mono">{paths.length && slug ? paths.map((p) => plannedV2Path(slug, p)).join(", ") : "não comprovado"}</span> — previsão; ainda não implantado.</p>
-      {!paths.length && <p><small>{route?.pathCompatibility === "legacy-preserved" ? "Route legada sem paths: a configuração v2 exige conversão explícita; nenhum path é acrescentado aqui." : "Informe paths para prever a configuração v2."}</small></p>}
-      <p><small>{publication.releaseState}. Deployment v2 indisponível nesta fase.</small></p>
+      <p>Path previsto do Workspace: <span className="mono">{paths.length && slug ? paths.map((p) => plannedV2Path(slug, p)).join(", ") : "não comprovado"}</span> — previsão; ainda não implantado.</p>
+      {!paths.length && <p><small>{route?.pathCompatibility === "legacy-preserved" ? "Rota legada sem paths: a configuração v2 exige conversão explícita; nenhum path é acrescentado aqui." : "Informe paths para prever a configuração v2."}</small></p>}
+      <p><small>{publication.releaseState}. Implantação de Releases do Workspace indisponível nesta interface.</small></p>
       {slug && paths.length > 0 && effects(paths, strip, servicePath, "v2")}
     </div>
   );

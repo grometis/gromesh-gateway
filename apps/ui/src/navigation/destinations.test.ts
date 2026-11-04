@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { matchRoutes } from "react-router";
+import { matchRoutes, type RouteObject } from "react-router";
 import { appRoutes } from "../router";
 import { classifyRoute } from "./context";
 import { destinationHref, destinations, resolveDestination } from "./destinations";
@@ -10,6 +10,27 @@ describe("route classification and declarative destinations", () => {
     expect(new Set(destinations.map(destination => destination.id)).size).toBe(destinations.length);
     expect(new Set(destinations.map(destination => `${destination.scope}:${destination.path}`)).size).toBe(destinations.length);
   });
+  it("registers each router path only once through pathless wrappers", () => {
+    const paths: string[] = [];
+    const visit = (routes: readonly RouteObject[], parent = "") => {
+      for (const route of routes) {
+        const path = route.path?.startsWith("/") ? route.path : `${parent}/${route.path ?? ""}`.replace(/\/+/g, "/");
+        if (route.path !== undefined || route.index) paths.push(route.index ? `${path}/(index)` : path);
+        if (route.children) visit(route.children, path);
+      }
+    };
+    visit(appRoutes);
+    expect(paths.filter((path, index) => paths.indexOf(path) !== index)).toEqual([]);
+  });
+  it.each(["overview", "services", "routes", "consumers", "plugins", "upstreams", "certificates", "variables", "releases"])(
+    "preserves the integrated %s route in both namespaces", section => {
+      for (const [prefix, scope] of [["/workspaces/w", "workspace-v2"], ["/e/w", "legacy-v1"]] as const) {
+        expect(classifyRoute(`${prefix}/${section}`)).toEqual({ kind: scope, id: "w" });
+        expect(matchRoutes(appRoutes, `${prefix}/${section}`)?.at(-1)?.route.path).toBe(section);
+        expect(destinations.filter(destination => destination.scope === scope && destination.path.endsWith(`/${section}`))).toHaveLength(1);
+      }
+    },
+  );
   it.each([
     ["/", "global"], ["/workspaces?cursor=x#list", "global"], ["/users", "admin"],
     ["/audit/", "admin"], ["/tokens?x#y", "account"], ["/Tokens/", "account"],
@@ -28,7 +49,12 @@ describe("route classification and declarative destinations", () => {
     },
   );
 
-  it.each(["metrics", "requests", "publish", "publications", "clusters", "upstreams", "certificates", "analytics"])("excludes v1 page %s from v2", (page) => {
+  it("resolves Workspace certificates independently from the legacy route", () => {
+    expect(classifyRoute(`${v2}/certificates`)).toEqual({ kind: "workspace-v2", id: "w" });
+    expect(resolveDestination(`${v2}/certificates`)?.activeId).toBe("v2-N09");
+    expect(matchRoutes(appRoutes, `${v2}/certificates`)?.at(-1)?.route.path).toBe("certificates");
+  });
+  it.each(["metrics", "requests", "publish", "publications", "clusters", "analytics"])("excludes v1 page %s from v2", (page) => {
     expect(classifyRoute(`${v2}/${page}`)).toEqual({ kind: "unknown" });
     expect(classifyRoute(`/e/w/${page}`)).toEqual({ kind: "legacy-v1", id: "w" });
   });

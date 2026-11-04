@@ -11,7 +11,7 @@ export const CONFLICTS: Record<WorkspaceProblemCode, string> = {
   "name-taken": "Já existe um Workspace com este nome nesta instância.",
   "workspace-archived": "Este Workspace está arquivado e não aceita alterações.",
   "active-release": "O Workspace tem uma release ativa com entidades. Remova-a com uma promoção de tombstone antes de arquivar.",
-  deployed: "O Workspace faz parte do deployment mais recente desta instância e ainda pode estar sendo servido. Retire-o do deployment antes de arquivar.",
+  deployed: "O Workspace faz parte da implantação mais recente desta instância e ainda pode estar sendo servido. Retire-o da implantação antes de arquivar.",
   "published-configuration": "Uma configuração já foi publicada neste Workspace. Nesta fase, um Workspace que publicou não pode ser arquivado.",
   clusters: "Há um cluster registrado neste Workspace. Remova os clusters antes de arquivar.",
   "request-decided": "Esta solicitação já foi decidida.",

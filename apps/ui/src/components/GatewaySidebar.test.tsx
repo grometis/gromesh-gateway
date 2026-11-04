@@ -3,16 +3,18 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Root } from "react-dom/client";
 import { installTestDom, type TestNode } from "../test/dom";
 import { GatewaySidebar } from "./GatewaySidebar";
+import * as gatewayNavigation from "../navigation/gateway-destinations";
+import { destinations } from "../navigation/destinations";
 import type { NavigationContext } from "../navigation/context";
 
 let root: Root;
-afterEach(async () => { if (root) await act(() => root.unmount()); vi.unstubAllGlobals(); });
-async function screen(mobile = false) {
+afterEach(async () => { if (root) await act(() => root.unmount()); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+async function screen(mobile = false, state: "authorized" | "archived" = "authorized") {
   const container = installTestDom();
   const media = Object.assign(new EventTarget(), { matches: mobile });
   Object.assign(window, { matchMedia: () => media });
   const [{ createMemoryRouter, RouterProvider }, { createRoot }] = await Promise.all([import("react-router"), import("react-dom/client")]);
-  const context: NavigationContext = { route: { kind: "workspace-v2", id: "W" }, state: "authorized", workspace: { id: "W", key: "W", name: "Pedidos", slug: "pedidos", status: "active", activeRelease: null } };
+  const context: NavigationContext = { route: { kind: "workspace-v2", id: "W" }, state, workspace: { id: "W", key: "W", name: "Pedidos", slug: "pedidos", status: state === "archived" ? "archived" : "active", activeRelease: null } };
   const router = createMemoryRouter([{ path: "*", element: <GatewaySidebar context={context} selectors={<button>Trocar Workspace</button>} focusContent={() => document.body.focus()} /> }], { initialEntries: ["/workspaces/W/services/S"] });
   root = createRoot(container as unknown as HTMLElement);
   await act(() => root.render(<RouterProvider router={router} />));
@@ -43,6 +45,10 @@ describe("Gateway sidebar interactions", () => {
     }
   });
   it("describes unavailable links separately from their visible labels, expanded and collapsed", async () => {
+    const catalog = destinations.filter(destination => destination.path !== "/workspaces/:workspaceId/certificates");
+    const resolveGateway = gatewayNavigation.gatewayDestinations;
+    // Render the real sidebar and resolver against a catalog with one missing registration.
+    vi.spyOn(gatewayNavigation, "gatewayDestinations").mockImplementation((context, pathname) => resolveGateway(context, pathname, catalog));
     const view = await screen();
     await act(async () => { await view.router.navigate("/workspaces/W/overview"); });
     for (const collapsed of [false, true]) {
@@ -52,7 +58,7 @@ describe("Gateway sidebar interactions", () => {
       expect(overview.getAttribute("aria-current")).toBe("page");
       expect(overview.getAttribute("aria-disabled")).toBeNull();
       const unavailable = view.all((n) => n.getAttribute("aria-disabled") === "true");
-      expect(unavailable.map((n) => n.getAttribute("aria-label"))).toEqual(["Upstreams", "Certificados"]);
+      expect(unavailable.map((n) => n.getAttribute("aria-label"))).toEqual(["Certificados"]);
       for (const item of unavailable) {
         const reasonId = item.getAttribute("aria-describedby")!.split(" ")[0];
         const reason = view.all((n) => n.getAttribute("id") === reasonId)[0]!;
@@ -60,6 +66,45 @@ describe("Gateway sidebar interactions", () => {
         expect(reason.getAttribute("hidden") !== null).toBe(collapsed);
         expect(item.contains(reason)).toBe(false);
         expect(item.getAttribute("href")).toBeNull();
+        expect(item.getAttribute("role")).toBe("link");
+        expect(item.getAttribute("aria-label")).toBe("Certificados");
+        expect(item.textContent).toBe("Certificados");
+        if (collapsed) {
+          expect(item.getAttribute("tabindex")).toBe("0");
+          await view.focus(item);
+          expect(document.activeElement).toBe(item);
+          const tooltip = view.all(n => n.getAttribute("role") === "tooltip" && n.textContent.startsWith("Certificados"))[0]!;
+          expect(tooltip.textContent).toBe("CertificadosDisponível no ambiente legado");
+          const row = item.parentNode!;
+          expect(row.getAttribute("data-tooltip-dismissed")).toBe("false");
+          await act(() => {
+            const event = new Event("keydown", { bubbles: true });
+            Object.assign(event, { key: "Escape" });
+            item.dispatchEvent(event);
+          });
+          expect(row.getAttribute("data-tooltip-dismissed")).toBe("true");
+          await view.focus(item);
+          expect(row.getAttribute("data-tooltip-dismissed")).toBe("false");
+        }
+      }
+    }
+  });
+  it.each(["authorized", "archived"] as const)("links all eight v2 destinations and selects each list or detail parent in %s Workspaces, expanded and collapsed", async (state) => {
+    const view = await screen(false, state);
+    const lists = [["Visão geral", "overview"], ["Serviços", "services"], ["Rotas", "routes"],
+      ["Consumidores", "consumers"], ["Plugins", "plugins"], ["Upstreams", "upstreams"],
+      ["Certificados", "certificates"], ["Variáveis", "variables"]] as const;
+    for (const collapsed of [false, true]) {
+      if (collapsed) await view.click(view.button("Recolher menu Gateway"));
+      expect(view.all(n => n.tagName === "A" && n.getAttribute("href")?.startsWith("/workspaces/W/") === true)).toHaveLength(8);
+      expect(view.all(n => n.getAttribute("aria-disabled") === "true")).toEqual([]);
+      for (const [label, section] of [...lists, ["Serviços", "services/S"] as const, ["Consumidores", "consumers/C"] as const]) {
+        await act(async () => { await view.router.navigate(`/workspaces/W/${section}?keep=1#detail`); });
+        const current = view.all(n => n.tagName === "A" && n.getAttribute("aria-label") === label)[0]!;
+        expect(current.getAttribute("href")).toBe(`/workspaces/W/${section.split("/")[0]}`);
+        expect(current.getAttribute("aria-current")).toBe("page");
+        expect(current.getAttribute("aria-disabled")).toBeNull();
+        expect(view.all(n => n.getAttribute("aria-current") === "page")).toEqual([current]);
       }
     }
   });
@@ -75,6 +120,18 @@ describe("Gateway sidebar interactions", () => {
         expect(consumer.getAttribute("aria-disabled")).toBeNull();
         expect(view.all(n => n.getAttribute("aria-current") === "page")).toEqual([consumer]);
       }
+    }
+  });
+  it("keeps Upstreams linked and current, expanded and collapsed", async () => {
+    const view = await screen();
+    await act(async () => { await view.router.navigate("/workspaces/W/upstreams?keep=1#targets"); });
+    for (const collapsed of [false, true]) {
+      if (collapsed) await view.click(view.button("Recolher menu Gateway"));
+      const upstream = view.all(n => n.tagName === "A" && n.getAttribute("aria-label") === "Upstreams")[0]!;
+      expect(upstream.getAttribute("href")).toBe("/workspaces/W/upstreams");
+      expect(upstream.getAttribute("aria-current")).toBe("page");
+      expect(upstream.getAttribute("aria-disabled")).toBeNull();
+      expect(view.all(n => n.getAttribute("aria-current") === "page")).toEqual([upstream]);
     }
   });
   it("hides context selectors while collapsed and restores them on expansion", async () => {

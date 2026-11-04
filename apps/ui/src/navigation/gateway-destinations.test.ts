@@ -22,8 +22,9 @@ describe("Gateway destinations", () => {
       expect(gatewayDestinations({ ...context, route: { kind: "workspace-v2", id: "a/b?#" }, workspace: { ...workspace, id: "a/b?#" } }, "", catalog)
         .find((item) => item.label === label)?.href).toBe(`/workspaces/a%2Fb%3F%23/${section}`);
     }
-    expect(gatewayDestinations(v2, `/workspaces/W/${section}`, unregistered).find((item) => item.label === label))
-      .toMatchObject({ requirement: "Disponível no ambiente legado", active: false });
+    const unavailable = gatewayDestinations(v2, `/workspaces/W/${section}`, unregistered).find((item) => item.label === label);
+    expect(unavailable).toMatchObject({ requirement: "Disponível no ambiente legado", active: false });
+    expect(unavailable?.href).toBeUndefined();
     expect(gatewayDestinations(v1, `/e/E/${section}`, catalog).find((item) => item.label === label)?.href).toBe(`/e/E/${section}`);
   });
   it("selects the registered v2 consumer list as the detail's active parent", () => {
@@ -44,12 +45,11 @@ describe("Gateway destinations", () => {
     expect(item?.requirement).toBe("Disponível no ambiente legado");
     expect(item?.active).toBe(false);
   });
-  it("exposes only real v2 routes with explicit unavailable legacy destinations", () => {
+  it("exposes all eight Gateway links within the real v2 namespace", () => {
     const items = gatewayDestinations(v2, "/workspaces/W/services/S");
     expect(items.map((i) => i.label)).toEqual(["Visão geral", "Serviços", "Rotas", "Consumidores", "Plugins", "Upstreams", "Certificados", "Variáveis"]);
-    expect(items.filter((i) => i.href).map((i) => i.href)).toEqual(["/workspaces/W/overview", "/workspaces/W/services", "/workspaces/W/routes", "/workspaces/W/consumers", "/workspaces/W/plugins", "/workspaces/W/variables"]);
-    expect(items.filter((i) => !i.href).map((i) => i.label)).toEqual(["Upstreams", "Certificados"]);
-    expect(items.filter((i) => !i.href).every((i) => i.requirement === "Disponível no ambiente legado")).toBe(true);
+    expect(items.filter((i) => i.href).map((i) => i.href)).toEqual(["/workspaces/W/overview", "/workspaces/W/services", "/workspaces/W/routes", "/workspaces/W/consumers", "/workspaces/W/plugins", "/workspaces/W/upstreams", "/workspaces/W/certificates", "/workspaces/W/variables"]);
+    expect(items.filter((i) => !i.href || i.requirement)).toEqual([]);
     expect(items.filter((i) => i.active).map((i) => i.label)).toEqual(["Serviços"]);
   });
   it("keeps eight real legacy links and the consumer detail ancestor", () => {
@@ -65,7 +65,7 @@ describe("Gateway destinations", () => {
   });
   it("keeps archived reading, without selecting Gateway on Releases", () => {
     expect(gatewayDestinations({ ...v2, state: "archived" }, "/workspaces/W/releases").filter((i) => i.active)).toEqual([]);
-    expect(gatewayDestinations({ ...v2, state: "archived" }, "/workspaces/W/services").filter((i) => i.href)).toHaveLength(6);
+    expect(gatewayDestinations({ ...v2, state: "archived" }, "/workspaces/W/services").filter((i) => i.href)).toHaveLength(8);
   });
   it.each(["authorized", "archived"] as const)("selects the real consumer list and detail parent in %s Workspaces", (state) => {
     for (const path of ["/workspaces/W/consumers", "/workspaces/W/consumers/C?x=1#y"]) {
@@ -79,7 +79,12 @@ describe("Gateway destinations", () => {
     expect(items.filter((i) => i.active)).toEqual([
       { id: "v2-N01", label: "Visão geral", shortLabel: "Geral", href: "/workspaces/W/overview", active: true },
     ]);
-    expect(items.filter((i) => !i.href).map((i) => i.label)).toEqual(["Upstreams", "Certificados"]);
+    expect(items.filter((i) => !i.href || i.requirement)).toEqual([]);
+  });
+  it.each(["authorized", "archived"] as const)("selects the real upstream link in %s Workspaces", (state) => {
+    expect(gatewayDestinations({ ...v2, state }, "/workspaces/W/upstreams?keep=1#targets").filter(item => item.active)).toEqual([
+      { id: "v2-N08", label: "Upstreams", shortLabel: "Upstreams", href: "/workspaces/W/upstreams", active: true },
+    ]);
   });
   it.each(["global", "admin", "account", "unknown"] as const)("has no sidebar destinations for %s", (kind) => {
     expect(gatewayDestinations({ route: { kind }, state: "none" }, "/tokens")).toEqual([]);

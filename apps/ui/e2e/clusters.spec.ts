@@ -31,8 +31,8 @@ async function openClusters(page: Page) {
   await page.getByLabel("E-mail").fill("ana@gromesh.dev");
   await page.getByLabel("Senha").fill("s3nha-de-teste");
   await page.getByRole("button", { name: "Entrar" }).click();
-  await expect(page.getByRole("heading", { name: "Services" })).toBeVisible();
-  await navigateGlobal(page, "Clusters");
+  await expect(page.getByRole("heading", { name: "Serviços" })).toBeVisible();
+  await navigateGlobal(page, "Clusters (legado)");
   await expect(page.getByRole("region", { name: "Cluster edge-sp" })).toBeVisible();
   await page.evaluate(() => document.fonts.ready);
 }

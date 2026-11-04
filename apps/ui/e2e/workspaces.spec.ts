@@ -108,7 +108,7 @@ async function signIn(page: Page, user: Me, initialPath = "/login") {
   await page.getByLabel("E-mail").fill(user.email);
   await page.getByLabel("Senha").fill("s3nha-de-teste");
   await page.getByRole("button", { name: "Entrar" }).click();
-  await expect(page.getByRole("heading", { name: initialPath === "/login" ? "Visão geral da instância" : "Services", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: initialPath === "/login" ? "Visão geral da instância" : "Serviços", exact: true })).toBeVisible();
 }
 
 async function openWorkspaces(page: Page, user: Me) {
@@ -290,7 +290,7 @@ test("disabled Workspaces mode and HML/PRD stages say why creation is unavailabl
   await openWorkspaces(page, admin);
   const strip = page.getByRole("note", { name: "Disponibilidade" });
   await expect(strip).toContainText("a criação de Workspaces só existe no laboratório isolado autorizado");
-  await expect(strip).toContainText("Deployment e ativação operacional de Workspaces estão indisponíveis.");
+  await expect(strip).toContainText("Implantação e ativação operacional de Workspaces estão indisponíveis.");
   await expect(strip.locator("a, button")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Criar Workspace" })).toHaveCount(0);
 
@@ -330,7 +330,7 @@ test("a platform admin archives from the row menu with a confirmation; refusals 
   let dialog = page.getByRole("dialog", { name: "Arquivar Workspace" });
   await expect(dialog).toContainText("Nada é apagado");
   await dialog.getByRole("button", { name: "Arquivar" }).click();
-  await expect(dialog.getByRole("alert")).toHaveText(/faz parte do deployment mais recente desta instância/);
+  await expect(dialog.getByRole("alert")).toHaveText(/faz parte da implantação mais recente desta instância/);
   await dialog.getByRole("button", { name: "Cancelar" }).click();
   await expect(row(page, "Pagamentos")).toContainText("Ativo");
 
@@ -365,7 +365,7 @@ test("the selector switches workspace and shows nothing of the previous one whil
   await expect(page.getByText("Carregando…")).toBeVisible();
   await expect(page.getByText("cobranca-api")).toHaveCount(0);
   release();
-  await expect(page.getByText("Nenhum service ainda.")).toBeVisible();
+  await expect(page.getByText("Nenhum serviço ainda.")).toBeVisible();
   await expect(page.getByText("cobranca-api")).toHaveCount(0);
 });
 

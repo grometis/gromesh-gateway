@@ -82,7 +82,7 @@ async function uiLogin(page: Page) {
   await expect(page).toHaveURL("/");
   await page.goto(`/e/${envId}/services`);
   await page.getByLabel("Ambiente (legado)", { exact: true }).selectOption(envId);
-  await expect(page.getByRole("heading", { name: "Services", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Serviços", exact: true })).toBeVisible();
 }
 
 test("MVP: install → publish → converge → traffic in the dashboard → rollback → audit", async ({ page, browser, playwright }) => {
@@ -95,18 +95,18 @@ test("MVP: install → publish → converge → traffic in the dashboard → rol
   try {
     // Service and route through the UI.
     await uiLogin(page);
-    await page.getByRole("button", { name: "Novo service" }).click();
-    const service = page.getByRole("dialog", { name: "Novo service" });
+    await page.getByRole("button", { name: "Novo serviço" }).click();
+    const service = page.getByRole("dialog", { name: "Novo serviço" });
     await service.getByLabel("Nome").fill(name);
     await service.getByLabel("Host").fill("echo");
     await service.getByLabel("Porta").fill("80");
     await service.getByRole("button", { name: "Salvar" }).click();
     await expect(service).toBeHidden();
     await page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Rotas", exact: true }).click();
-    await page.getByRole("button", { name: "Nova route" }).click();
-    const route = page.getByRole("dialog", { name: "Nova route" });
+    await page.getByRole("button", { name: "Nova rota" }).click();
+    const route = page.getByRole("dialog", { name: "Nova rota" });
     await route.getByLabel("Nome").fill(name);
-    await route.getByLabel("Service", { exact: true }).selectOption({ label: name });
+    await route.getByLabel("Serviço", { exact: true }).selectOption({ label: name });
     await route.getByLabel("Paths").fill(path);
     const routeCreated = page.waitForResponse((r) => r.request().method() === "POST" && r.url().endsWith(`/api/v2/workspaces/${envId}/routes`));
     await route.getByRole("button", { name: "Salvar" }).click();
@@ -121,7 +121,7 @@ test("MVP: install → publish → converge → traffic in the dashboard → rol
 
     // Publish through the UI (the data plane is NotReady until now) and wait for the cluster.
     await page.getByRole("region", { name: "Publicação" }).getByRole("button", { name: /^Publicar v\d+$/ }).click();
-    const publish = page.getByRole("region", { name: "Revisar e publicar" });
+    const publish = page.getByRole("region", { name: "Revisar snapshot (legado)" });
     await expect(publish.locator('[data-change="added"]')).toHaveCount(8); // service, route, consumer, key, key-auth, rate-limiting and the 2 platform plugins
     const published = page.waitForResponse((r) => r.request().method() === "POST" && r.url().endsWith(`/environments/${envId}/snapshots`));
     await publish.getByRole("button", { name: /^Publicar v\d+$/ }).click();
@@ -170,7 +170,7 @@ test("MVP: install → publish → converge → traffic in the dashboard → rol
     await api("PUT", `/environments/${envId}/services/${(await api<{ items: Entity[] }>("GET", `/environments/${envId}/services`, 200)).items[0]!.id}`, 200, { name, protocol: "http", host: "echo", port: 8080 });
     const v2 = await api<Publication>("POST", `/environments/${envId}/snapshots`, 201, { message: "move to 8080" });
     await converge(api, v2.version);
-    await navigateGlobal(page, "Snapshots publicados");
+    await navigateGlobal(page, "Publicações");
     await page.getByRole("button", { name: `Restaurar v${v1.version}` }).first().click();
     const restore = page.getByRole("dialog", { name: `Restaurar v${v1.version}` });
     await expect(restore.locator("[data-change]")).toHaveCount(1);
@@ -183,7 +183,7 @@ test("MVP: install → publish → converge → traffic in the dashboard → rol
 
     // The audit log, in the UI and the API, shows the publications with their author.
     await navigateGlobal(page, "Auditoria");
-    await page.getByLabel("ID do environment").fill(envId);
+    await page.getByLabel("ID do ambiente (legado)").fill(envId);
     await page.getByLabel("Tipo de entidade").fill("snapshot");
     await page.getByRole("button", { name: "Filtrar" }).click();
     await expect(page.getByRole("heading", { name: "snapshot.rollback" }).first()).toBeVisible();

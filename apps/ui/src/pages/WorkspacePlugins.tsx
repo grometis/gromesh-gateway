@@ -107,7 +107,7 @@ export function WorkspacePlugins({ workspaceId }: { workspaceId: string }) {
   const [scopeFilter, setScopeFilter] = useState("");
   const filter = scopeFilter === "global" ? { global: true } : scopeFilter ? { [scopeFilter.split(":")[0]!]: scopeFilter.split(":")[1]! } : {};
   const scopeLabel = (plugin: Plugin) => {
-    const parts = ([ ["serviceId", "Service"], ["routeId", "Route"], ["consumerId", "Consumer"] ] as const)
+    const parts = ([ ["serviceId", "Serviço"], ["routeId", "Rota"], ["consumerId", "Consumidor"] ] as const)
       .flatMap(([kind, label]) => {
         const id = plugin.scope?.[kind];
         return id ? [`${label} ${names.data?.[kind].find(item => item.id === id)?.name ?? id}`] : [];
@@ -143,12 +143,12 @@ export function WorkspacePlugins({ workspaceId }: { workspaceId: string }) {
   return <section className="final-page gateway-list">
     <PageHeader title="Plugins" description="Plugins com escopo neste Workspace. As alterações ficam no rascunho." actions={access.canWrite && <Button variant="primary" onClick={() => setEditing("new")}>Novo plugin</Button>} />
     <WorkspaceGatewayNote workspaceId={workspaceId} />
-    <p className="muted">Escolha ao menos um service, route ou consumer. Plugins globais do Workspace ainda não estão disponíveis; os obrigatórios da plataforma são protegidos pelo servidor.</p>
+    <p className="muted">Escolha ao menos um serviço, rota ou consumidor. Plugins globais do Workspace ainda não estão disponíveis; os obrigatórios da plataforma são protegidos pelo servidor.</p>
     <div className="gateway-filters">
       <select aria-label="Filtrar por escopo" value={scopeFilter} onChange={event => setScopeFilter(event.target.value)}>
         <option value="">Todos os escopos</option>
         <option value="global">Só globais</option>
-        {([ ["serviceId", "Service"], ["routeId", "Route"], ["consumerId", "Consumer"] ] as const).map(([kind, label]) =>
+        {([ ["serviceId", "Serviço"], ["routeId", "Rota"], ["consumerId", "Consumidor"] ] as const).map(([kind, label]) =>
           names.data?.[kind].map(item => <option key={`${kind}:${item.id}`} value={`${kind}:${item.id}`}>{label} {item.name}</option>))}
       </select>
     </div>
@@ -245,7 +245,7 @@ function PluginForm({ workspaceId, name, schema, current, onSaved, fixedConsumer
     <fieldset disabled={busy || (!access.canWrite && !access.isRevalidating)}>
       <legend>Escopo e configuração</legend>
       {fixedConsumer && <Field label="Consumidor" errors={errors.fields["scope.consumerId"]}>{(id, invalid) => <input id={id} aria-invalid={invalid} value={fixedConsumer.name} readOnly />}</Field>}
-      {([ ["serviceId", "Service", schema.scopes.service], ["routeId", "Route", schema.scopes.route], ["consumerId", "Consumer", schema.scopes.consumer] ] as const).map(([key, label, allowed]) => allowed && !fixedConsumer && <Field key={key} label={label} errors={errors.fields[`scope.${key}`]}>{(id, invalid) => <select disabled={!!fixedConsumer} id={id} aria-invalid={invalid} value={scope[key]} onChange={e => setScope(s => ({ ...s, [key]: e.target.value }))}><option value="">(nenhum)</option>{scope[key] && !choices.data?.[key].some(item => item.id === scope[key]) && <option value={scope[key]}>{scope[key]}</option>}{choices.data?.[key].map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select>}</Field>)}
+      {([ ["serviceId", "Serviço", schema.scopes.service], ["routeId", "Rota", schema.scopes.route], ["consumerId", "Consumidor", schema.scopes.consumer] ] as const).map(([key, label, allowed]) => allowed && !fixedConsumer && <Field key={key} label={label} errors={errors.fields[`scope.${key}`]}>{(id, invalid) => <select disabled={!!fixedConsumer} id={id} aria-invalid={invalid} value={scope[key]} onChange={e => setScope(s => ({ ...s, [key]: e.target.value }))}><option value="">(nenhum)</option>{scope[key] && !choices.data?.[key].some(item => item.id === scope[key]) && <option value={scope[key]}>{scope[key]}</option>}{choices.data?.[key].map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select>}</Field>)}
       {errors.fields.scope?.map(message => <p key={message} className="error" role="alert">{message}</p>)}
       <CheckboxField label="Ativo" checked={enabled} onChange={setEnabled} errors={errors.fields.enabled} />
       <SchemaFields fields={schema.config} value={config} onChange={setConfig} errors={errors.fields} onJsonError={(path, invalid) => setInvalidJson(old => { const next = new Set(old); if (invalid) next.add(path); else next.delete(path); return next; })} />
