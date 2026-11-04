@@ -6,6 +6,10 @@ import { destinationHref, destinations, resolveDestination } from "./destination
 
 const v2 = "/workspaces/w";
 describe("route classification and declarative destinations", () => {
+  it("registers each destination id and scoped path only once", () => {
+    expect(new Set(destinations.map(destination => destination.id)).size).toBe(destinations.length);
+    expect(new Set(destinations.map(destination => `${destination.scope}:${destination.path}`)).size).toBe(destinations.length);
+  });
   it.each([
     ["/", "global"], ["/workspaces?cursor=x#list", "global"], ["/users", "admin"],
     ["/audit/", "admin"], ["/tokens?x#y", "account"], ["/Tokens/", "account"],
@@ -31,6 +35,9 @@ describe("route classification and declarative destinations", () => {
   it.each(["consumers", "consumers/c"])("registers v2 %s", page => {
     expect(classifyRoute(`${v2}/${page}`)).toEqual({ kind: "workspace-v2", id: "w" });
     expect(matchRoutes(appRoutes, `${v2}/${page}`)?.at(-1)?.route.path).toBe(page === "consumers" ? page : "consumers/:consumerId");
+    expect(resolveDestination(`${v2}/${page}?x=1#y`)).toMatchObject({
+      activeId: "v2-N05", destination: { label: page === "consumers" ? "Consumidores" : "Consumidor" },
+    });
   });
   it("resolves the Workspace entry and overview to their shared v2 destination", () => {
     expect(classifyRoute(`${v2}/overview`)).toEqual({ kind: "workspace-v2", id: "w" });
