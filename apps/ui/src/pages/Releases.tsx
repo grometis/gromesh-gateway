@@ -76,7 +76,7 @@ function WorkspaceReleases({ workspaceId }: { workspaceId: string }) {
   };
   return <section className="final-page stack">
     <PageHeader title="Releases" description={`Releases do Workspace ${workspace.data?.name ?? "selecionado"}. Publicar uma release não implanta seu conteúdo.`}
-      actions={access.canWrite && <Button variant="publish" onClick={open}>Publicar release</Button>} />
+      actions={access.canWrite && <Button variant={confirm ? "secondary" : "publish"} onClick={open}>Publicar release</Button>} />
     {access.reason && <p role="status" className="note">{access.reason}</p>}
     {published !== null && <p role="status">Release v{published} publicada. Nenhuma implantação foi criada.</p>}
     {!v2 && <section className="stack" aria-label="Rascunho">

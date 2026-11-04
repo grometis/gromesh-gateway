@@ -1,3 +1,4 @@
+import { openGateway } from "./gateway-sidebar";
 import type { Page } from "@playwright/test";
 import { expect, mockSession, test } from "./fixtures";
 
@@ -38,6 +39,7 @@ async function openOverview(page: Page) {
   await page.getByLabel("Senha").fill("s3nha-de-teste");
   await page.getByRole("button", { name: "Entrar" }).click();
   await expect(page.getByRole("heading", { name: "Serviços" })).toBeVisible();
+  await openGateway(page);
   await page.getByRole("navigation", { name: "Menu principal" }).getByRole("link", { name: "Visão geral" }).click();
   await expect(page.getByRole("heading", { name: "Visão geral" })).toBeVisible();
   await expect(page.getByRole("table", { name: "Principais rotas" })).toBeVisible();

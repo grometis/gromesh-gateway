@@ -1,11 +1,12 @@
+import { useConsumerScope } from "./consumer-scope";
 import { useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { api, unwrap, type BasicAuthCredential, type Consumer, type JwtCredential } from "../api/client";
+import type { BasicAuthCredential, Consumer, JwtCredential } from "../api/client";
 import { statusMessage, toFormErrors, type FormErrors } from "../api/errors";
 import { Field, FormErrorList } from "../components/Field";
 import { createdAt, CredentialCard, PendingBadge, SecretOnce } from "../components/Credentials";
 import { ConfirmDialog, Modal } from "../components/Modal";
-import { splitList, useInvalidateDraft } from "./Services";
+import { splitList } from "./Services";
 
 const GROUP_RE = /^[a-z0-9_-]{1,64}$/;
 const noErrors: FormErrors = { fields: {}, form: [] };
@@ -13,11 +14,10 @@ const noErrors: FormErrors = { fields: {}, form: [] };
 /* ---------------- JWT ---------------- */
 
 export function JwtCredentials({ envId, consumer, canEdit }: { envId: string; consumer: Consumer; canEdit: boolean }) {
-  const invalidate = useInvalidateDraft(envId);
-  const path = { envId, consumerId: consumer.id };
+  const { v2, canEdit: writable, reason, key, transport, invalidate } = useConsumerScope(envId);
   const credentials = useQuery({
-    queryKey: ["jwt", envId, consumer.id],
-    queryFn: () => unwrap(api.GET("/environments/{envId}/consumers/{consumerId}/jwt", { params: { path } })),
+    queryKey: key("jwt", consumer.id),
+    queryFn: () => transport.listJwt(consumer.id),
   });
   const [creating, setCreating] = useState(false);
   const [deleting, setDeleting] = useState<JwtCredential | null>(null);
@@ -75,11 +75,13 @@ export function JwtCredentials({ envId, consumer, canEdit }: { envId: string; co
       {rotating && (
         <RotateCredential
           title="Gerar novo segredo"
+          blocked={v2 && !writable}
+          blockedReason={reason}
           what={<>o segredo da credencial JWT <span className="mono">{rotating.key}</span></>}
           pending={rotating.status === "pending-reprovision"}
           label="Segredo"
           field="secret"
-          rotate={() => unwrap(api.POST("/environments/{envId}/consumers/{consumerId}/jwt/{credentialId}/rotate", { params: { path: { ...path, credentialId: rotating.id } } }))}
+          rotate={() => transport.rotateJwt(consumer.id, rotating.id)}
           note={
             <>
               Copie o segredo agora. Ele não será mostrado de novo. Os tokens devem ter <span className="mono">iss</span> = <span className="mono">{rotating.key}</span>; o novo segredo vale depois de publicar.
@@ -91,10 +93,12 @@ export function JwtCredentials({ envId, consumer, canEdit }: { envId: string; co
       )}
       {deleting && (
         <DeleteCredential
+          blocked={v2 && !writable}
+          blockedReason={reason}
           title="Excluir credencial JWT"
           what={<>a credencial JWT <span className="mono">{deleting.key}</span></>}
           remove={() =>
-            unwrap(api.DELETE("/environments/{envId}/consumers/{consumerId}/jwt/{credentialId}", { params: { path: { ...path, credentialId: deleting.id } } }))
+            transport.removeJwt(consumer.id, deleting.id)
           }
           onClose={() => setDeleting(null)}
           onDeleted={() => invalidate("jwt")}
@@ -110,6 +114,7 @@ export function JwtCredentials({ envId, consumer, canEdit }: { envId: string; co
  * (decision H-14): the form has no field for it.
  */
 function NewJwt({ envId, consumerId, onDone }: { envId: string; consumerId: string; onDone: () => void }) {
+  const { v2, canEdit: writable, reason, transport } = useConsumerScope(envId);
   const [form, setForm] = useState({ key: "", algorithm: "HS256" as JwtCredential["algorithm"], rsaPublicKey: "" });
   const [errors, setErrors] = useState<FormErrors>(noErrors);
   const hs = form.algorithm === "HS256";
@@ -117,16 +122,11 @@ function NewJwt({ envId, consumerId, onDone }: { envId: string; consumerId: stri
     // The response carries the secret: evict it from the mutation cache as soon as the dialog lets go of it.
     gcTime: 0,
     mutationFn: () =>
-      unwrap(
-        api.POST("/environments/{envId}/consumers/{consumerId}/jwt", {
-          params: { path: { envId, consumerId } },
-          body: {
-            algorithm: form.algorithm,
-            ...(form.key.trim() ? { key: form.key.trim() } : {}),
-            ...(hs ? {} : { rsaPublicKey: form.rsaPublicKey.trim() + "\n" }),
-          },
-        }),
-      ),
+      transport.createJwt(consumerId, {
+        algorithm: form.algorithm,
+        ...(form.key.trim() ? { key: form.key.trim() } : {}),
+        ...(hs ? {} : { rsaPublicKey: form.rsaPublicKey.trim() + "\n" }),
+      }),
     onSuccess: (created) => {
       if (!created.secret) close();
     },
@@ -162,6 +162,7 @@ function NewJwt({ envId, consumerId, onDone }: { envId: string; consumerId: stri
 
   return (
     <Modal title="Nova credencial JWT" onClose={close}>
+      {reason && <p role="status">{reason}</p>}
       <form className="form" noValidate onSubmit={submit}>
         <Field label="Key (iss)" errors={errors.fields.key} hint="Opcional. Vazio = uma key aleatória é gerada.">
           {(id, invalid) => <input id={id} aria-invalid={invalid} value={form.key} onChange={(e) => setForm((f) => ({ ...f, key: e.target.value }))} />}
@@ -189,7 +190,7 @@ function NewJwt({ envId, consumerId, onDone }: { envId: string; consumerId: stri
           <button type="button" onClick={close}>
             Cancelar
           </button>
-          <button type="submit" className="primary" disabled={create.isPending}>
+          <button type="submit" className="primary" disabled={create.isPending || (v2 && !writable)}>
             {create.isPending ? "Criando…" : "Criar"}
           </button>
         </div>
@@ -201,11 +202,10 @@ function NewJwt({ envId, consumerId, onDone }: { envId: string; consumerId: stri
 /* ---------------- basic-auth ---------------- */
 
 export function BasicAuthCredentials({ envId, consumer, canEdit }: { envId: string; consumer: Consumer; canEdit: boolean }) {
-  const invalidate = useInvalidateDraft(envId);
-  const path = { envId, consumerId: consumer.id };
+  const { v2, canEdit: writable, reason, key, transport, invalidate } = useConsumerScope(envId);
   const credentials = useQuery({
-    queryKey: ["basicauth", envId, consumer.id],
-    queryFn: () => unwrap(api.GET("/environments/{envId}/consumers/{consumerId}/basic-auth", { params: { path } })),
+    queryKey: key("basicauth", consumer.id),
+    queryFn: () => transport.listBasic(consumer.id),
   });
   const [creating, setCreating] = useState(false);
   const [deleting, setDeleting] = useState<BasicAuthCredential | null>(null);
@@ -249,10 +249,12 @@ export function BasicAuthCredentials({ envId, consumer, canEdit }: { envId: stri
       )}
       {deleting && (
         <DeleteCredential
+          blocked={v2 && !writable}
+          blockedReason={reason}
           title="Excluir credencial basic-auth"
           what={<>a credencial do usuário <span className="mono">{deleting.username}</span></>}
           remove={() =>
-            unwrap(api.DELETE("/environments/{envId}/consumers/{consumerId}/basic-auth/{credentialId}", { params: { path: { ...path, credentialId: deleting.id } } }))
+            transport.removeBasic(consumer.id, deleting.id)
           }
           onClose={() => setDeleting(null)}
           onDeleted={() => invalidate("basicauth")}
@@ -264,11 +266,13 @@ export function BasicAuthCredentials({ envId, consumer, canEdit }: { envId: stri
 
 /** The password goes to the API once and is cleared from state right after: it is never shown or read back. */
 function NewBasicAuth({ envId, consumerId, onDone }: { envId: string; consumerId: string; onDone: () => void }) {
+  const { v2, canEdit: writable, reason, transport } = useConsumerScope(envId);
   const [form, setForm] = useState({ username: "", password: "" });
   const [errors, setErrors] = useState<FormErrors>(noErrors);
   const create = useMutation({
+    gcTime: 0,
     mutationFn: () =>
-      unwrap(api.POST("/environments/{envId}/consumers/{consumerId}/basic-auth", { params: { path: { envId, consumerId } }, body: { username: form.username.trim(), password: form.password } })),
+      transport.createBasic(consumerId, { username: form.username.trim(), password: form.password }),
     onSuccess: () => {
       setForm({ username: "", password: "" });
       onDone();
@@ -285,8 +289,9 @@ function NewBasicAuth({ envId, consumerId, onDone }: { envId: string; consumerId
   };
   return (
     <Modal title="Nova credencial basic-auth" onClose={onDone}>
+      {reason && <p role="status">{reason}</p>}
       <form className="form" noValidate onSubmit={submit}>
-        <Field label="Usuário" errors={errors.fields.username} hint="Único no ambiente">
+        <Field label="Usuário" errors={errors.fields.username} hint={v2 ? "Único na instância" : "Único no ambiente"}>
           {(id, invalid) => <input id={id} autoComplete="off" aria-invalid={invalid} value={form.username} onChange={(e) => setForm((f) => ({ ...f, username: e.target.value }))} />}
         </Field>
         <Field label="Senha" errors={errors.fields.password} hint="Não é mostrada nem guardada: o gateway recebe só um hash dela.">
@@ -297,7 +302,7 @@ function NewBasicAuth({ envId, consumerId, onDone }: { envId: string; consumerId
           <button type="button" onClick={onDone}>
             Cancelar
           </button>
-          <button type="submit" className="primary" disabled={create.isPending}>
+          <button type="submit" className="primary" disabled={create.isPending || (v2 && !writable)}>
             {create.isPending ? "Criando…" : "Criar"}
           </button>
         </div>
@@ -309,16 +314,15 @@ function NewBasicAuth({ envId, consumerId, onDone }: { envId: string; consumerId
 /* ---------------- ACL groups ---------------- */
 
 export function AclGroupsPanel({ envId, consumer, canEdit }: { envId: string; consumer: Consumer; canEdit: boolean }) {
-  const invalidate = useInvalidateDraft(envId);
-  const path = { envId, consumerId: consumer.id };
+  const { v2, canEdit: writable, key, transport, invalidate } = useConsumerScope(envId);
   const groups = useQuery({
-    queryKey: ["aclgroups", envId, consumer.id],
-    queryFn: () => unwrap(api.GET("/environments/{envId}/consumers/{consumerId}/acl-groups", { params: { path } })),
+    queryKey: key("aclgroups", consumer.id),
+    queryFn: () => transport.getGroups(consumer.id),
   });
   const [draft, setDraft] = useState<string | null>(null);
   const [errors, setErrors] = useState<FormErrors>(noErrors);
   const save = useMutation({
-    mutationFn: (list: string[]) => unwrap(api.PUT("/environments/{envId}/consumers/{consumerId}/acl-groups", { params: { path }, body: { groups: list } })),
+    mutationFn: (list: string[]) => transport.replaceGroups(consumer.id, list),
     onSuccess: () => {
       invalidate("aclgroups");
       setDraft(null);
@@ -342,13 +346,13 @@ export function AclGroupsPanel({ envId, consumer, canEdit }: { envId: string; co
     <section aria-label="Grupos ACL">
       <div className="page-head">
         <h2>Grupos ACL</h2>
-        {canEdit && draft === null && (
+        {canEdit && (!v2 || groups.isSuccess) && draft === null && (
           <button type="button" className="primary" onClick={() => setDraft(current.join(", "))}>
             Editar grupos
           </button>
         )}
       </div>
-      <p className="muted">O plugin acl libera ou bloqueia o consumer pelos nomes destes grupos (allow/deny).</p>
+      <p className="muted">O plugin acl libera ou bloqueia {v2 ? "o consumidor" : "o consumer"} pelos nomes destes grupos (allow/deny).</p>
       {groups.isPending && <p className="muted">Carregando…</p>}
       {groups.isError && <p className="error">{statusMessage(groups.error)}</p>}
       {groups.isSuccess && draft === null && (current.length === 0 ? <p className="muted">Nenhum grupo.</p> : (
@@ -370,7 +374,7 @@ export function AclGroupsPanel({ envId, consumer, canEdit }: { envId: string; co
             <button type="button" onClick={() => setDraft(null)}>
               Cancelar
             </button>
-            <button type="submit" className="primary" disabled={save.isPending}>
+            <button type="submit" className="primary" disabled={save.isPending || (v2 && !writable)}>
               {save.isPending ? "Salvando…" : "Salvar grupos"}
             </button>
           </div>
@@ -394,6 +398,8 @@ export function RotateCredential(props: {
   /** Which field of the response is the new value: a JWT response carries its (public) key too. */
   field: "key" | "secret";
   rotate: () => Promise<{ key?: string; secret?: string }>;
+  blocked?: boolean;
+  blockedReason?: string | null;
   note: ReactNode;
   onRotated: () => void;
   onClose: () => void;
@@ -420,8 +426,9 @@ export function RotateCredential(props: {
           <>Gerar {props.what}? O valor atual deixa de funcionar depois de publicar; quem o usa precisa receber o novo.</>
         )
       }
+      children={props.blockedReason && <p role="status">{props.blockedReason}</p>}
       confirmLabel="Gerar"
-      busy={rotate.isPending}
+      busy={rotate.isPending || !!props.blocked}
       error={rotate.isError ? statusMessage(rotate.error) : null}
       onConfirm={() => rotate.mutate()}
       onClose={close}
@@ -429,7 +436,7 @@ export function RotateCredential(props: {
   );
 }
 
-function DeleteCredential(props: { title: string; what: ReactNode; remove: () => Promise<unknown>; onClose: () => void; onDeleted: () => void }) {
+function DeleteCredential(props: { title: string; what: ReactNode; remove: () => Promise<unknown>; onClose: () => void; onDeleted: () => void; blocked?: boolean; blockedReason?: string | null }) {
   const remove = useMutation({
     mutationFn: props.remove,
     onSuccess: () => {
@@ -441,8 +448,9 @@ function DeleteCredential(props: { title: string; what: ReactNode; remove: () =>
     <ConfirmDialog
       title={props.title}
       message={<>Excluir {props.what}? Quem a usa deixa de ter acesso depois de publicar.</>}
+      children={props.blockedReason && <p role="status">{props.blockedReason}</p>}
       confirmLabel="Excluir"
-      busy={remove.isPending}
+      busy={remove.isPending || !!props.blocked}
       error={remove.isError ? statusMessage(remove.error) : null}
       onConfirm={() => remove.mutate()}
       onClose={props.onClose}

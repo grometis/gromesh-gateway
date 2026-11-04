@@ -56,7 +56,7 @@ export function PublishStrip({ envId }: { envId: string }) {
         )}
       </div>
       {canEdit && (
-        <button type="button" className="publish" disabled={!pending} onClick={review}>
+        <button type="button" className={location.pathname.split("/")[3] === "publish" ? undefined : "publish"} disabled={!pending} onClick={review}>
           {pending ? (
             <>
               Publicar v{(current ?? 0) + 1}

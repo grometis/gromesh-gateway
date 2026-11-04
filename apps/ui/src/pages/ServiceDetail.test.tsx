@@ -75,7 +75,7 @@ describe("service detail route and plugin access", () => {
     expect(html).toContain('href="/e/' + W + '/routes?serviceId=' + service.id + '"');
     expect(html).toContain("Gerencie as rotas na tela de");
     expect(html).toContain("Plugins por Workspace ainda não são editáveis aqui.");
-    expect(html).not.toMatch(/Nova route|Adicionar plugin|Novo plugin|type="checkbox"|role="switch"/);
+    expect(html).not.toMatch(/Nova rota|Adicionar plugin|Novo plugin|type="checkbox"|role="switch"/);
     // Only the Service's own v2 Edit/Delete actions remain.
     expect(html.match(/>Editar<\/button>/g)).toHaveLength(1);
     expect(html.match(/aria-haspopup="menu"/g)).toHaveLength(1);
@@ -164,7 +164,7 @@ describe("workspace service write access", () => {
         const html = render(element);
         if (view === "hook") expect(html).toContain(">blocked</output>");
         else {
-          expect(html).not.toMatch(/>Novo service<\/button>|>Editar<|Mais ações para cobranca/);
+          expect(html).not.toMatch(/>Novo serviço<\/button>|>Editar<|Mais ações para cobranca/);
           expect(html).toContain("Somente leitura enquanto");
           if (index >= 2) {
             expect(html).toMatch(/<input[^>]*value="(?:cobranca)?"/);

@@ -98,10 +98,10 @@ test("viewer conserva restrições v1; gateway v2 usa permissões do servidor e 
   await expect(page.getByRole("navigation", { name: "Navegação global" }).getByRole("link", { name: /Usuários|Auditoria/ })).toHaveCount(0);
   // Services, Routes and Plugins go through v2, where no operation tells the caller's permissions: the actions are offered
   // and the server's 403 decides (Services/Routes below; Plugins in workspace-plugins.spec.ts). The v1 screens hide v1 edits.
-  for (const [section, title] of [["Consumidores", "Consumers"], ["Publicações", "Snapshots publicados (legado)"], ["Clusters (legado)", "Clusters (legado)"]] as const) {
-    if (section === "Consumidores") await menu.getByRole("link", { name: section, exact: true }).click();
-    else await navigateGlobal(page, section);
-    await expect(page.getByRole("heading", { name: title, exact: true })).toBeVisible();
+  for (const section of ["Consumers", "Snapshots publicados (legado)", "Clusters (legado)"]) {
+    if (section === "Consumers") await menu.getByRole("link", { name: "Consumidores", exact: true }).click();
+    else await navigateGlobal(page, section === "Snapshots publicados (legado)" ? "Publicações" : section);
+    await expect(page.getByRole("heading", { name: section, exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: /^(Novo |Nova |Editar|Excluir|Publicar$|Restaurar |Rotacionar |Gerar )/ })).toHaveCount(0);
   }
   await menu.getByRole("link", { name: "Plugins", exact: true }).click();

@@ -143,6 +143,6 @@ describe("v1 publication strip on workspace gateway screens", () => {
     const html = render(client, `/e/${A}/plugins`);
     expect(html).toContain('aria-label="Publicação"');
     expect(html).not.toContain('class="publish"');
-    expect(html).not.toContain('>Ver diff</a>');
+    expect(html).not.toContain('>Ver alterações</a>');
   });
 });

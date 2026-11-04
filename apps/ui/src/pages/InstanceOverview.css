@@ -39,3 +39,6 @@
   .instance-overview-counts dd { margin: 0; }
   .instance-overview-panel { padding: var(--space-4); }
 }
+/* The instance's main action uses the accent; list and row actions remain neutral. */
+.instance-overview .button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.instance-overview .button.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
