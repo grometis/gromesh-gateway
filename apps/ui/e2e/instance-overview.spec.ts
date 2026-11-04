@@ -170,32 +170,55 @@ test("401 on the next page clears previous data and existing login returns to ro
   await expect(loadedCounts(page)).toHaveText(["1", "0", "1"]);
 });
 
-for (const archived of [false, true]) {
-  test(`explicit open establishes v2 context; archived=${archived}; brand returns to global`, async ({ page }) => {
-    const target = archived ? B : A;
-    const sent = await setup(page, { items: [target] });
-    await page.goto("/");
-    const open = page.getByRole("link", { name: `Abrir Workspace ${target.name}`, exact: true });
-    await expect(open).toHaveAttribute("href", `/workspaces/${target.id}`);
-    expect(contextual(sent)).toEqual([]);
-    await open.click();
-    await expect(page).toHaveURL(`/workspaces/${target.id}/services`);
-    await expect(page.getByRole("heading", { name: "Services", exact: true })).toBeVisible();
-    await expect(page.locator(".workspace-context")).toContainText(target.name);
-    if (archived) {
-      await expect(page.locator(".workspace-context")).toContainText("somente leitura");
-      await expect(page.getByRole("button", { name: "Novo service", exact: true })).toHaveCount(0);
-    }
-    expect(sent.some((u) => u.pathname === `/api/v2/workspaces/${target.id}`)).toBe(true);
-    expect(sent.some((u) => u.pathname.startsWith("/api/v1/environments/"))).toBe(false);
-    const beforeReturn = sent.length;
-    await page.getByRole("link", { name: "gromesh, início", exact: true }).click();
-    await expect(overview(page)).toBeVisible();
-    await expect(page).toHaveURL("/");
-    await expect(page.getByRole("heading", { name: "Services", exact: true })).toHaveCount(0);
-    await expect(row(page, target.name)).toBeVisible();
-    expect(contextual(sent.slice(beforeReturn))).toEqual([]);
-  });
+for (const width of [390, 768, 1440]) {
+  for (const archived of [false, true]) {
+    test(`explicit open establishes v2 context at ${width}px; archived=${archived}; brand returns to global`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 900 });
+      const target = archived ? B : A;
+      const sent = await setup(page, { items: [target] });
+      await page.goto("/");
+      const open = page.getByRole("link", { name: `Abrir Workspace ${target.name}`, exact: true });
+      await expect(open).toHaveAttribute("href", `/workspaces/${target.id}`);
+      expect(contextual(sent)).toEqual([]);
+      await open.click();
+      await expect(page).toHaveURL(`/workspaces/${target.id}/overview`);
+      await expect(page.getByRole("heading", { name: "Visão geral do Workspace", exact: true })).toBeVisible();
+      const mobile = width <= 900;
+      const trigger = page.getByRole("button", { name: `Abrir menu Gateway · ${target.name} — Workspace`, exact: true });
+      if (mobile) {
+        await expect(trigger).toBeVisible();
+        await expect(trigger).toHaveText(`Gateway · ${target.name}`);
+        await expect(trigger).toHaveAttribute("aria-expanded", "false");
+        await trigger.click();
+      }
+      const context = mobile
+        ? page.getByRole("dialog", { name: `Navegação Gateway do Workspace ${target.name}`, exact: true })
+        : page.getByRole("complementary", { name: `Gateway do Workspace ${target.name}`, exact: true });
+      await expect(context).toBeVisible();
+      await expect(context.locator(".gateway-context > strong")).toHaveText(target.name);
+      await expect(context.locator(".gateway-context > strong")).toBeVisible();
+      await expect(context.getByRole("status")).toHaveText(`Workspace v2 · /${target.slug} · ${archived ? "arquivado · somente leitura" : "ativo"}`);
+      await expect(context.getByRole("status")).toBeVisible();
+      if (mobile) {
+        await context.getByRole("button", { name: "Fechar menu Gateway", exact: true }).click();
+        await expect(trigger).toBeVisible();
+        await expect(trigger).toHaveText(`Gateway · ${target.name}`);
+      }
+      if (archived) {
+        await expect(page.getByRole("link", { name: "Novo serviço", exact: true })).toHaveCount(0);
+      }
+      await audit(page, width);
+      expect(sent.some((u) => u.pathname === `/api/v2/workspaces/${target.id}`)).toBe(true);
+      expect(sent.some((u) => u.pathname.startsWith("/api/v1/environments/"))).toBe(false);
+      const beforeReturn = sent.length;
+      await page.getByRole("link", { name: "gromesh, início", exact: true }).click();
+      await expect(overview(page)).toBeVisible();
+      await expect(page).toHaveURL("/");
+      await expect(page.getByRole("heading", { name: "Visão geral do Workspace", exact: true })).toHaveCount(0);
+      await expect(row(page, target.name)).toBeVisible();
+      expect(contextual(sent.slice(beforeReturn))).toEqual([]);
+    });
+  }
 }
 
 test("removed Workspace stays at the v2 404 with no selection or legacy fallback", async ({ page }) => {
@@ -207,6 +230,7 @@ test("removed Workspace stays at the v2 404 with no selection or legacy fallback
   await page.getByRole("link", { name: `Abrir Workspace ${A.name}`, exact: true }).click();
   await expect(page.getByText("Não encontrado ou indisponível para sua conta.", { exact: true })).toBeVisible();
   await expect(page).toHaveURL(`/workspaces/${A.id}`);
+  await expect(page.getByRole("heading", { name: "Visão geral do Workspace", exact: true })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Services", exact: true })).toHaveCount(0);
   expect(sent.some((u) => u.pathname.startsWith("/api/v1/environments/"))).toBe(false);
   expect(sent.some((u) => u.pathname === `/api/v2/workspaces/${B.id}`)).toBe(false);

@@ -22,7 +22,7 @@ type Target = Schemas["Target"];
 type HashOn = Schemas["HashOn"];
 type Algorithm = NonNullable<UpstreamWrite["algorithm"]>;
 
-const ALGORITHMS: Record<Algorithm, string> = {
+export const ALGORITHMS: Record<Algorithm, string> = {
   "round-robin": "Round-robin",
   "least-connections": "Menos conexões",
   "consistent-hashing": "Hash consistente",
@@ -42,7 +42,7 @@ export function useUpstreams(envId: string) {
   });
 }
 
-function healthSummary(u: Upstream): string {
+export function healthSummary(u: Upstream): string {
   const parts = [];
   if (u.healthchecks?.active) parts.push(`ativa (${u.healthchecks.active.type})`);
   if (u.healthchecks?.passive) parts.push("passiva");
@@ -120,7 +120,10 @@ export function UpstreamsPage() {
   );
 }
 
-function UpstreamForm({ envId, upstream, onClose }: { envId: string; upstream: Upstream | null; onClose: () => void }) {
+export function UpstreamForm({ envId, upstream, onClose, workspace }: {
+  envId: string; upstream: Upstream | null; onClose: () => void;
+  workspace?: { save: (body: UpstreamWrite) => Promise<unknown>; canSubmit: boolean; errors: (err: unknown) => FormErrors };
+}) {
   const invalidate = useInvalidateDraft(envId);
   const active = upstream?.healthchecks?.active;
   const passive = upstream?.healthchecks?.passive;
@@ -177,15 +180,16 @@ function UpstreamForm({ envId, upstream, onClose }: { envId: string; upstream: U
         },
         tags: splitList(form.tags),
       };
+      if (workspace) return workspace.save(body);
       return upstream
         ? unwrap(api.PUT("/environments/{envId}/upstreams/{upstreamId}", { params: { path: { envId, upstreamId: upstream.id } }, body }))
         : unwrap(api.POST("/environments/{envId}/upstreams", { params: { path: { envId } }, body }));
     },
     onSuccess: () => {
-      invalidate("upstreams");
+      if (!workspace) invalidate("upstreams");
       onClose();
     },
-    onError: (err) => setErrors(problemCode(err) === "upstream-captures-service"
+    onError: (err) => setErrors(workspace ? workspace.errors(err) : problemCode(err) === "upstream-captures-service"
       ? { fields: { name: [GATEWAY_MESSAGES.upstreamCapturesService] }, form: [] }
       : toFormErrors(err, FIELDS)),
   });
@@ -193,7 +197,7 @@ function UpstreamForm({ envId, upstream, onClose }: { envId: string; upstream: U
   const submit = (e: FormEvent) => {
     e.preventDefault();
     setErrors({ fields: {}, form: [] });
-    save.mutate();
+    if (!workspace || workspace.canSubmit) save.mutate();
   };
   const hashSelect = (label: string, key: "hashOn" | "hashFallback", options: HashOn[]) => (
     <Field label={label} errors={errors.fields[key]}>
@@ -201,7 +205,7 @@ function UpstreamForm({ envId, upstream, onClose }: { envId: string; upstream: U
         <select id={id} value={form[key]} onChange={(e) => set(key, e.target.value as HashOn)}>
           {options.map((h) => (
             <option key={h} value={h}>
-              {HASH_ON[h]}
+              {workspace && h === "consumer" ? "Consumidor" : HASH_ON[h]}
             </option>
           ))}
         </select>
@@ -212,7 +216,7 @@ function UpstreamForm({ envId, upstream, onClose }: { envId: string; upstream: U
   return (
     <Modal title={upstream ? `Editar ${upstream.name}` : "Novo upstream"} onClose={onClose} wide>
       <form onSubmit={submit} className="form" noValidate>
-        <Field label="Nome" errors={errors.fields.name} hint="Hostname em minúsculas; use este nome como host dos services">
+        <Field label="Nome" errors={errors.fields.name} hint={workspace ? "Nome local do Upstream. Nos Serviços, selecione o Upstream pelo vínculo; não use o nome como host." : "Hostname em minúsculas; use este nome como host dos services"}>
           {(id, invalid) => <input id={id} aria-invalid={invalid} value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="orders.upstream" />}
         </Field>
         <Field label="Algoritmo" errors={errors.fields.algorithm}>
@@ -256,7 +260,7 @@ function UpstreamForm({ envId, upstream, onClose }: { envId: string; upstream: U
           </fieldset>
         )}
         <fieldset>
-          <legend>Saúde dos targets</legend>
+          <legend>{workspace ? "Configuração das verificações de saúde" : "Saúde dos targets"}</legend>
           <label className="check">
             <input type="checkbox" checked={form.activeOn} onChange={(e) => set("activeOn", e.target.checked)} /> Verificação ativa
           </label>
@@ -317,7 +321,7 @@ function UpstreamForm({ envId, upstream, onClose }: { envId: string; upstream: U
           <button type="button" onClick={onClose}>
             Cancelar
           </button>
-          <button type="submit" className="primary" disabled={save.isPending}>
+          <button type="submit" className="primary" disabled={save.isPending || (workspace && !workspace.canSubmit)}>
             {save.isPending ? "Salvando…" : "Salvar"}
           </button>
         </div>

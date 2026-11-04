@@ -68,6 +68,16 @@ export class TestNode {
     }
     return !event.defaultPrevented;
   }
+  get id() { return this.getAttribute("id") ?? ""; }
+  querySelectorAll(selector: string): TestNode[] {
+    const tags = selector.split(",").map((tag) => tag.toUpperCase());
+    return this.findAll((node) => tags.includes(node.tagName));
+  }
+  showModal() { this.setAttribute("open", ""); }
+  close() { this.removeAttribute("open"); }
+  hasAttribute(name: string) { return this.attributes.has(name); }
+  getClientRects() { return [this.getBoundingClientRect()]; }
+  getBoundingClientRect() { return { left: 0, top: 0, right: 264, bottom: 900 }; }
   focus() { this.ownerDocument.activeElement = this; }
   contains(node: TestNode): boolean { return node === this || this.childNodes.some((child) => child.contains(node)); }
   findAll(predicate: (node: TestNode) => boolean): TestNode[] {

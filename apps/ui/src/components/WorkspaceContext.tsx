@@ -2,7 +2,7 @@ import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { ApiError, unwrap } from "../api/client";
 import { apiV2, workspacesQuery, type Workspace } from "../api/client-v2";
 
-export function WorkspaceSelector({ id, workspace, onSelect }: { id?: string; workspace?: Workspace; onSelect: (id: string) => void }) {
+export function WorkspaceSelector({ id, workspace, placeholder = "Selecione um Workspace", onSelect }: { id?: string; workspace?: Workspace; placeholder?: string; onSelect: (id: string) => void }) {
   const workspaces = useInfiniteQuery({ ...workspacesQuery, retry: false });
   const listed = workspaces.data?.pages.flatMap((page) => page.items) ?? [];
   const items = workspace && workspace.id === id ? [workspace, ...listed.filter((w) => w.id !== id)] : listed;
@@ -18,7 +18,7 @@ export function WorkspaceSelector({ id, workspace, onSelect }: { id?: string; wo
       <select id="workspace-select" value={selected} disabled={!workspaces.isSuccess || items.length === 0} aria-describedby={message ? "workspace-context-message" : undefined} onChange={(event) => {
         if (workspaces.isSuccess && items.some((w) => w.id === event.target.value)) onSelect(event.target.value);
       }}>
-        {!selected && <option value="" disabled>Selecione um Workspace</option>}
+        {!selected && <option value="" disabled>{placeholder}</option>}
         {items.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
       </select>
       {message && <p id="workspace-context-message" role={workspaces.isError ? "alert" : "status"}>{message}</p>}
