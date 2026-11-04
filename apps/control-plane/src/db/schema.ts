@@ -1011,3 +1011,38 @@ export const deploymentStates = pgTable(
   ],
 );
 
+
+/** Analytics evidence survives deletion of mutable domain entities; no cascading domain foreign keys. */
+export const analyticsRouteHistory = pgTable("analytics_route_history", {
+    instanceId: uuid("instance_id").notNull(), epoch: integer("epoch").notNull(), revision: integer("revision").notNull(),
+    recordedAt: timestamp("recorded_at", { withTimezone: true, mode: "string" }).notNull(),
+    previous: jsonb("previous").$type<{
+        epoch: number;
+        revision: number;
+    } | null>(),
+    genesis: boolean("genesis").notNull(), reason: text("reason").notNull(),
+    rollbackOf: jsonb("rollback_of").$type<{
+        epoch: number;
+        revision: number;
+    } | null>(),
+    configHash: text("config_hash").notNull(), routeCount: integer("route_count").notNull(),
+    mappingVersion: integer("mapping_version").notNull().default(2),
+    provenance: text("provenance").notNull().default("control-plane-domain-v2"),
+    writeTransaction: text("write_transaction").notNull().default(sql `pg_current_xact_id()::text`),
+}, t => [
+    primaryKey({ columns: [t.instanceId, t.epoch, t.revision] }),
+    index("analytics_route_history_time_idx").on(t.instanceId, t.recordedAt),
+    check("analytics_route_history_ref_ck", sql `${t.epoch}>0 and ${t.revision}>0 and ${t.routeCount}>=0 and ${t.mappingVersion}=2`),
+    check("analytics_route_history_hash_ck", sql `${t.configHash} ~ '^sha256:[0-9a-f]{64}$'`),
+    check("analytics_route_history_reason_ck", sql `${t.reason} in ('publish','rollback','promotion','reconcile','mandatory-plugins','values') and ((${t.reason}='rollback') = (${t.rollbackOf} is not null))`),
+    check("analytics_route_history_genesis_ck", sql `not ${t.genesis} or (${t.previous} is null and ${t.epoch}=1 and ${t.revision}=1)`),
+]);
+export const analyticsRouteHistoryRoutes = pgTable("analytics_route_history_routes", {
+    instanceId: uuid("instance_id").notNull(), epoch: integer("epoch").notNull(), revision: integer("revision").notNull(),
+    routeId: uuid("route_id").notNull(), workspaceId: uuid("workspace_id").notNull(), serviceId: uuid("service_id").notNull(), releaseVersion: integer("release_version").notNull(),
+}, t => [
+    primaryKey({ columns: [t.instanceId, t.epoch, t.revision, t.routeId] }),
+    foreignKey({ columns: [t.instanceId, t.epoch, t.revision], foreignColumns: [analyticsRouteHistory.instanceId, analyticsRouteHistory.epoch, analyticsRouteHistory.revision] }),
+    index("analytics_route_history_identity_idx").on(t.instanceId, t.routeId, t.workspaceId),
+    check("analytics_route_history_release_ck", sql `${t.releaseVersion}>0`),
+]);
