@@ -28,7 +28,7 @@ describe("route classification and declarative destinations", () => {
     },
   );
 
-  it.each(["metrics", "requests", "publish", "publications", "clusters", "upstreams", "certificates", "analytics"])("excludes v1 page %s from v2", (page) => {
+  it.each(["metrics", "requests", "publish", "publications", "clusters", "certificates", "analytics"])("excludes v1 page %s from v2", (page) => {
     expect(classifyRoute(`${v2}/${page}`)).toEqual({ kind: "unknown" });
     expect(classifyRoute(`/e/w/${page}`)).toEqual({ kind: "legacy-v1", id: "w" });
   });

@@ -29,7 +29,7 @@ const legacy = [
   ["N13", "publications", "Publicações"], ["N14", "publications/:version", "Snapshot", "N13"],
   ["N15", "clusters", "Clusters"], ["N16", "metrics", "Métricas"], ["N17", "requests", "Requisições"],
 ] as const;
-export const workspaceSections = ["services", "routes", "releases", "variables", "plugins", "consumers", "overview"] as const;
+export const workspaceSections = ["services", "routes", "releases", "variables", "plugins", "upstreams", "consumers", "overview"] as const;
 export const destinations: readonly Destination[] = [
   { id: "instance", label: "Instância", path: "/", scope: "global" },
   { id: "N18", label: "Workspaces", path: "/workspaces", scope: "global" },

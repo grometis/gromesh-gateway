@@ -52,7 +52,7 @@ describe("Gateway sidebar interactions", () => {
       expect(overview.getAttribute("aria-current")).toBe("page");
       expect(overview.getAttribute("aria-disabled")).toBeNull();
       const unavailable = view.all((n) => n.getAttribute("aria-disabled") === "true");
-      expect(unavailable.map((n) => n.getAttribute("aria-label"))).toEqual(["Upstreams", "Certificados"]);
+      expect(unavailable.map((n) => n.getAttribute("aria-label"))).toEqual(["Certificados"]);
       for (const item of unavailable) {
         const reasonId = item.getAttribute("aria-describedby")!.split(" ")[0];
         const reason = view.all((n) => n.getAttribute("id") === reasonId)[0]!;
@@ -75,6 +75,18 @@ describe("Gateway sidebar interactions", () => {
         expect(consumer.getAttribute("aria-disabled")).toBeNull();
         expect(view.all(n => n.getAttribute("aria-current") === "page")).toEqual([consumer]);
       }
+    }
+  });
+  it("keeps Upstreams linked and current, expanded and collapsed", async () => {
+    const view = await screen();
+    await act(async () => { await view.router.navigate("/workspaces/W/upstreams?keep=1#targets"); });
+    for (const collapsed of [false, true]) {
+      if (collapsed) await view.click(view.button("Recolher menu Gateway"));
+      const upstream = view.all(n => n.tagName === "A" && n.getAttribute("aria-label") === "Upstreams")[0]!;
+      expect(upstream.getAttribute("href")).toBe("/workspaces/W/upstreams");
+      expect(upstream.getAttribute("aria-current")).toBe("page");
+      expect(upstream.getAttribute("aria-disabled")).toBeNull();
+      expect(view.all(n => n.getAttribute("aria-current") === "page")).toEqual([upstream]);
     }
   });
   it("hides context selectors while collapsed and restores them on expansion", async () => {
