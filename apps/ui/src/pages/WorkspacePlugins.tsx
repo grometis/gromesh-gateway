@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useInfiniteQuery, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, api, unwrap, type Plugin } from "../api/client";
 import { apiV2 } from "../api/client-v2";
@@ -10,6 +10,9 @@ import { PageHeader } from "../components/PageHeader";
 import { EmptyState } from "../components/EmptyState";
 import { Badge, DraftBadge } from "../components/Badge";
 import { RowMenu } from "../components/RowMenu";
+import { consumerPluginAllowed, consumerPluginConfigErrors, consumerPluginMessage, getConsumerPlugin, saveConsumerPlugin } from "./consumer-plugins";
+import { ConsumerPluginPicker } from "./ConsumerPluginPicker";
+import { canWriteWorkspaceGateway } from "./workspace-gateway";
 import { CatalogPicker } from "../components/PluginCatalog";
 import { useEntityDraft } from "./Services";
 import { Table } from "../components/Table";
@@ -50,14 +53,15 @@ export function workspacePluginConfig(schema: PluginSchema, saved: Config | unde
 
 export function workspacePluginErrors(error: unknown, schema?: PluginSchema): FormErrors {
   if (error instanceof ApiError && error.status === 422) {
-    if (!error.problem?.errors?.length) return { fields: {}, form: [statusMessage(error)] };
+    if (!error.problem?.errors?.length) return { fields: {}, form: ["Configuração de plugin inválida. Confira os campos."] };
     const known = new Set(["name", "scope", "scope.serviceId", "scope.routeId", "scope.consumerId", "enabled", "protocols", "tags", ...(schema ? fieldPaths(schema.config) : [])]);
     return placeErrors((error.problem?.errors ?? []).map(item => ({ ...item, message: gatewayMessage(item.path, item.message) })), known);
   }
   if (error instanceof ApiError && error.status === 409 && !(error.problem && "code" in error.problem)) {
     return { fields: {}, form: ["Já existe um plugin com este nome e escopo neste Workspace."] };
   }
-  return { fields: {}, form: [gatewayErrorMessage(error)] };
+  const safe = error instanceof ApiError && error.status !== 409 ? new ApiError(error.status, undefined) : error;
+  return { fields: {}, form: [gatewayErrorMessage(safe)] };
 }
 
 async function allPages<T>(read: (cursor?: string) => Promise<{ items: T[]; nextCursor?: string | null }>) {
@@ -67,7 +71,7 @@ async function allPages<T>(read: (cursor?: string) => Promise<{ items: T[]; next
   return items;
 }
 
-function usePluginChoices(workspaceId: string) {
+function usePluginChoices(workspaceId: string, enabled = true) {
   const path = { workspaceId };
   // A slow or unavailable scope must not hide names and filters from the others.
   const [services, routes, consumers] = useQueries({
@@ -84,11 +88,11 @@ function usePluginChoices(workspaceId: string) {
         queryKey: ["ws-plugin-choices", workspaceId, "consumers"],
         queryFn: async () => (await allPages(cursor => unwrap(apiV2.GET("/workspaces/{workspaceId}/consumers", { params: { path, query: { limit: 200, cursor } } })))).map(c => ({ id: c.id, name: c.username ?? c.customId ?? c.id })),
       },
-    ],
+    ].filter(() => enabled),
   });
-  const queries = [services, routes, consumers];
+  const queries = [services, routes, consumers].filter(query => query !== undefined);
   return {
-    data: { serviceId: services.data ?? [], routeId: routes.data ?? [], consumerId: consumers.data ?? [] },
+    data: { serviceId: services?.data ?? [], routeId: routes?.data ?? [], consumerId: consumers?.data ?? [] },
     isSuccess: queries.every(query => query.isSuccess),
     isError: queries.some(query => query.isError),
     error: queries.find(query => query.isError)?.error,
@@ -172,23 +176,32 @@ export function WorkspacePlugins({ workspaceId }: { workspaceId: string }) {
   </section>;
 }
 
-function PluginEditor({ workspaceId, current, onClose, onSaved }: { workspaceId: string; current: Plugin | null; onClose: () => void; onSaved: () => void }) {
+export function PluginEditor({ workspaceId, current, onClose, onSaved, fixedConsumer }: { workspaceId: string; current: Plugin | null; onClose: () => void; onSaved: (active: boolean) => void; fixedConsumer?: { id: string; name: string } }) {
+  const fresh = useQuery({ queryKey: ["ws-consumer-plugin", workspaceId, fixedConsumer?.id, current?.id], queryFn: ({ signal }) => getConsumerPlugin(workspaceId, fixedConsumer!.id, current!.id, signal), enabled: !!fixedConsumer && !!current });
   const [name, setName] = useState(current?.name ?? "");
   const catalog = useQuery({ queryKey: ["plugin-catalog"], queryFn: () => unwrap(api.GET("/plugin-schemas")), staleTime: Infinity });
   const schema = useQuery({ queryKey: ["plugin-schema", name], queryFn: async () => parsePluginSchema(await unwrap(api.GET("/plugin-schemas/{pluginName}", { params: { path: { pluginName: name } } }))), enabled: !!name, staleTime: Infinity });
-  if (!name) return <CatalogPicker onPick={setName} onClose={onClose} />;
+  if (!name) return fixedConsumer ? <ConsumerPluginPicker workspaceId={workspaceId} consumerId={fixedConsumer.id} onPick={setName} onClose={onClose} /> : <CatalogPicker onPick={setName} onClose={onClose} />;
+  if (fixedConsumer && current && !fresh.isSuccess) return <Modal title="Editar plugin" onClose={onClose}>{fresh.isError ? <p role="alert" className="error">{consumerPluginMessage(fresh.error)}</p> : <p role="status">Carregando plugin…</p>}</Modal>;
+  const selected = catalog.data?.items.find(p => p.name === name);
+  const compatible = !fixedConsumer || (consumerPluginAllowed(selected, schema.data) && !!schema.data && !(fresh.data?.tags?.some(t => t.startsWith("gromesh-"))) && (!fresh.data || (fresh.data.name === name && !Object.keys(consumerPluginConfigErrors(name, fresh.data.config ?? {})).length)));
   return <Modal title={current ? `Editar plugin ${current.name}` : "Novo plugin"} onClose={onClose} wide>
-    <Field label="Plugin">{id => <select id={id} value={name} disabled={!!current} onChange={e => setName(e.target.value)}><option value="">Escolha um plugin</option>{catalog.data?.items.map(p => <option key={p.name} value={p.name} disabled={!p.supportedInDbless}>{p.name}{!p.supportedInDbless ? " (indisponível)" : ""}</option>)}</select>}</Field>
-    {(catalog.isError || schema.isError) && <p className="error" role="alert">{statusMessage(catalog.error ?? schema.error)}</p>}
+    <Field label="Plugin">{id => <select id={id} value={name} disabled={!!current || !!fixedConsumer} onChange={e => setName(e.target.value)}><option value="">Escolha um plugin</option>{catalog.data?.items.filter(p => !fixedConsumer || p.name === name).map(p => <option key={p.name} value={p.name} disabled={!p.supportedInDbless}>{p.name}{!p.supportedInDbless ? " (indisponível)" : ""}</option>)}</select>}</Field>
+    {(catalog.isError || schema.isError) && <p className="error" role="alert">{fixedConsumer ? consumerPluginMessage(catalog.error ?? schema.error) : statusMessage(catalog.error ?? schema.error)}</p>}
     {schema.isFetching && <p role="status">Carregando schema…</p>}
-    {name && schema.data && <PluginForm key={name} workspaceId={workspaceId} name={name} schema={schema.data} current={current} onSaved={onSaved} />}
+    {fixedConsumer && schema.isSuccess && catalog.isSuccess && !compatible && <p role="alert" className="error">Este plugin não é permitido no escopo de consumidor.</p>}
+    {fixedConsumer && !current && <Button onClick={() => setName("")}>Trocar plugin</Button>}
+    {name && schema.data && compatible && <PluginForm key={name} workspaceId={workspaceId} name={name} schema={schema.data} current={fixedConsumer && current ? fresh.data! : current} onSaved={onSaved} fixedConsumer={fixedConsumer} />}
   </Modal>;
 }
 
-function PluginForm({ workspaceId, name, schema, current, onSaved }: { workspaceId: string; name: string; schema: PluginSchema; current: Plugin | null; onSaved: () => void }) {
+function PluginForm({ workspaceId, name, schema, current, onSaved, fixedConsumer }: { workspaceId: string; name: string; schema: PluginSchema; current: Plugin | null; onSaved: (active: boolean) => void; fixedConsumer?: { id: string; name: string } }) {
+  const client = useQueryClient();
+  const mounted = useRef(false);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const access = useWorkspaceGatewayAccess(workspaceId);
-  const choices = usePluginChoices(workspaceId);
-  const [scope, setScope] = useState({ serviceId: current?.scope?.serviceId ?? "", routeId: current?.scope?.routeId ?? "", consumerId: current?.scope?.consumerId ?? "" });
+  const choices = usePluginChoices(workspaceId, !fixedConsumer);
+  const [scope, setScope] = useState({ serviceId: current?.scope?.serviceId ?? "", routeId: current?.scope?.routeId ?? "", consumerId: fixedConsumer?.id ?? current?.scope?.consumerId ?? "" });
   const [enabled, setEnabled] = useState(current?.enabled ?? true);
   const [config, setConfig] = useState(() => workspacePluginConfig(schema, isObject(current?.config) ? current.config : undefined));
   const [errors, setErrors] = useState<FormErrors>(NO_ERRORS);
@@ -196,30 +209,38 @@ function PluginForm({ workspaceId, name, schema, current, onSaved }: { workspace
   const [busy, setBusy] = useState(false);
   const submit = async (event: FormEvent) => {
     event.preventDefault();
-    if (!access.canWrite || busy) return;
+    if (!access.canWrite || busy || (fixedConsumer && !canWriteWorkspaceGateway(client, workspaceId, true))) return;
     const fields = validateConfig(schema.config, config);
+    if (fixedConsumer) Object.assign(fields, consumerPluginConfigErrors(name, config));
     if (!Object.values(scope).some(Boolean)) fields.scope = ["Escolha ao menos um escopo deste Workspace."];
     if (Object.keys(fields).length || invalidJson.size) { setErrors({ fields, form: invalidJson.size ? ["Corrija os campos JSON inválidos."] : [] }); return; }
     setBusy(true); setErrors(NO_ERRORS);
     try {
-      await saveWorkspacePlugin(workspaceId, current, {
+      const body: PluginWrite = {
         name, enabled, scope: Object.fromEntries(Object.entries(scope).filter(([, id]) => id)), config: configToSubmit(schema.config, config),
         ...(current?.protocols ? { protocols: current.protocols } : {}), tags: current?.tags ?? [],
+      };
+      if (fixedConsumer) await saveConsumerPlugin(workspaceId, fixedConsumer.id, current, body, () => {
+        if (!canWriteWorkspaceGateway(client, workspaceId, true)) throw new ApiError(403, undefined);
       });
-      setConfig({}); onSaved();
-    } catch (err) { setErrors(workspacePluginErrors(err, schema)); }
-    finally { setBusy(false); }
+      else await saveWorkspacePlugin(workspaceId, current, body);
+      if (mounted.current) setConfig({});
+      onSaved(mounted.current);
+    } catch (err) { if (mounted.current) setErrors(workspacePluginErrors(err, schema)); }
+    finally { if (mounted.current) setBusy(false); }
   };
   return <form onSubmit={event => void submit(event)}>
-    <FormErrorList messages={errors.form} />
+    <FormErrorList messages={[...errors.form, ...(errors.fields.protocols ?? []), ...(errors.fields.tags ?? []), ...(fixedConsumer ? [...(errors.fields["scope.serviceId"] ?? []), ...(errors.fields["scope.routeId"] ?? [])] : [])]} />
+    {errors.fields.name && <Field label="Tipo do plugin" errors={errors.fields.name}>{id => <input id={id} value={name} readOnly aria-invalid="true" />}</Field>}
     {choices.isError && <p className="error" role="alert">{statusMessage(choices.error)}</p>}
     <fieldset disabled={busy || (!access.canWrite && !access.isRevalidating)}>
       <legend>Escopo e configuração</legend>
-      {([ ["serviceId", "Service", schema.scopes.service], ["routeId", "Route", schema.scopes.route], ["consumerId", "Consumer", schema.scopes.consumer] ] as const).map(([key, label, allowed]) => allowed && <Field key={key} label={label} errors={errors.fields[`scope.${key}`]}>{(id, invalid) => <select id={id} aria-invalid={invalid} value={scope[key]} onChange={e => setScope(s => ({ ...s, [key]: e.target.value }))}><option value="">(nenhum)</option>{scope[key] && !choices.data?.[key].some(item => item.id === scope[key]) && <option value={scope[key]}>{scope[key]}</option>}{choices.data?.[key].map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select>}</Field>)}
+      {fixedConsumer && <Field label="Consumidor" errors={errors.fields["scope.consumerId"]}>{(id, invalid) => <input id={id} aria-invalid={invalid} value={fixedConsumer.name} readOnly />}</Field>}
+      {([ ["serviceId", "Service", schema.scopes.service], ["routeId", "Route", schema.scopes.route], ["consumerId", "Consumer", schema.scopes.consumer] ] as const).map(([key, label, allowed]) => allowed && !fixedConsumer && <Field key={key} label={label} errors={errors.fields[`scope.${key}`]}>{(id, invalid) => <select disabled={!!fixedConsumer} id={id} aria-invalid={invalid} value={scope[key]} onChange={e => setScope(s => ({ ...s, [key]: e.target.value }))}><option value="">(nenhum)</option>{scope[key] && !choices.data?.[key].some(item => item.id === scope[key]) && <option value={scope[key]}>{scope[key]}</option>}{choices.data?.[key].map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select>}</Field>)}
       {errors.fields.scope?.map(message => <p key={message} className="error" role="alert">{message}</p>)}
       <CheckboxField label="Ativo" checked={enabled} onChange={setEnabled} errors={errors.fields.enabled} />
       <SchemaFields fields={schema.config} value={config} onChange={setConfig} errors={errors.fields} onJsonError={(path, invalid) => setInvalidJson(old => { const next = new Set(old); if (invalid) next.add(path); else next.delete(path); return next; })} />
     </fieldset>
-    <Button type="submit" variant="primary" disabled={busy || !access.canWrite || !choices.isSuccess}>{busy ? "Salvando…" : "Salvar no rascunho"}</Button>
+    <Button type="submit" variant="primary" disabled={busy || !access.canWrite || (!fixedConsumer && !choices.isSuccess)}>{busy ? "Salvando…" : "Salvar no rascunho"}</Button>
   </form>;
 }
