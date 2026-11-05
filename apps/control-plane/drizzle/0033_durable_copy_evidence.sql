@@ -33,8 +33,8 @@ BEGIN
   IF TG_OP = 'INSERT' THEN
     SELECT * INTO source FROM analytics_ingestion_batches WHERE id=NEW.source_batch_id;
     SELECT max((d->>'expiresAt')::timestamptz) INTO minimum_expiry FROM jsonb_array_elements(source.descriptor) d WHERE d->>'id'=NEW.request_id::text;
-    IF source.id IS NULL OR source.write_transaction=pg_current_xact_id()::text OR source.generation<>NEW.generation OR minimum_expiry IS NULL OR NEW.expires_at<minimum_expiry OR NEW.expires_at>clock_timestamp()+interval '7 days' THEN
-      RAISE EXCEPTION 'Invalid committed copy evidence source or retention';
+    IF source.id IS NULL OR source.generation<>NEW.generation OR minimum_expiry IS NULL OR NEW.expires_at<minimum_expiry OR NEW.expires_at>clock_timestamp()+interval '7 days' THEN
+      RAISE EXCEPTION 'Invalid copy evidence source or retention';
     END IF;
     NEW.observed_at:=clock_timestamp();
     RETURN NEW;

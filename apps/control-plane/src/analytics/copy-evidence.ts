@@ -25,6 +25,10 @@ export async function recordCopyEvidence(db: Db, ctx: RequestContext, batchId: s
     (o.kind === "conflicting-copies" ? !o.rightHash || !hash.test(o.rightHash) || o.leftHash === o.rightHash : o.kind !== "comparison-unavailable" || o.rightHash !== null))) return invalid();
   return db.transaction(async tx => {
     await lock(tx);
+    return recordCopyEvidenceTx(tx,ctx,batchId,observations);
+  });
+}
+async function recordCopyEvidenceTx(tx:Tx,ctx:RequestContext,batchId:string,observations:readonly CopyObservation[]){
     const [source] = await tx.select().from(batches).where(eq(batches.id, batchId));
     if (!source) return invalid();
     const [lost] = await tx.select().from(coverage);
@@ -41,7 +45,22 @@ export async function recordCopyEvidence(db: Db, ctx: RequestContext, batchId: s
     }
     if (inserted) await audit(tx,ctx,{action:"analytics.copy-evidence.record",entityType:"ingestion-batch",entityId:batchId,after:{count:inserted,generation:source.generation.toString()}});
     return {inserted};
-  });
+}
+/** Admission and extension commit atomically, even when older raw witnesses are gone. */
+export async function extendAdmittedCopyEvidence(tx:Tx,ctx:RequestContext,batchId:string){
+  const [source]=await tx.select().from(batches).where(eq(batches.id,batchId));if(!source)return invalid();
+  const ids=[...new Set(source.descriptor.map(d=>d.id))];
+  const existing=await tx.select().from(facts).where(inArray(facts.requestId,ids)).limit(10001);
+  if(existing.length>10000)throw new Error("Copy evidence budget exceeded");
+  const [lost]=await tx.select().from(coverage);
+  const observations:CopyObservation[]=[];
+  for(const id of ids){
+    const descriptors=source.descriptor.filter(d=>d.id===id),expiry=Math.max(...descriptors.map(d=>Date.parse(d.expiresAt)));
+    const previous=existing.filter(r=>r.requestId===id),conflict=previous.find(r=>r.kind==="conflicting-copies"),negative=conflict??previous[0];
+    if(negative&&expiry>Math.max(...previous.map(r=>Date.parse(r.expiresAt)))) observations.push({id,kind:negative.kind,leftHash:negative.leftHash,rightHash:negative.rightHash||null,expiresAt:new Date(expiry).toISOString()});
+    else if(!negative&&lost)observations.push({id,kind:"comparison-unavailable",leftHash:descriptors[0]!.commitment,rightHash:null,expiresAt:new Date(expiry).toISOString()});
+  }
+  return recordCopyEvidenceTx(tx,ctx,batchId,observations);
 }
 /** Retains expired negatives until physical pruning; callers must evaluate their original retention. */
 export async function readCopyEvidence(db: Db, ids: readonly string[]): Promise<{items:CopyObservation[];historyPruned:boolean}> {

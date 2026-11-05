@@ -3,7 +3,7 @@ import { beforeAll,afterAll,it,expect } from "vitest";
 import { IngestionAdmissions } from "../../src/analytics/ingestion-admissions.js";
 import { AgentGatewayService } from "../../src/agent-gateway/agent-gateway.js";
 import { authorizeClusterDelivery,confirmClusterAssociation } from "../../src/analytics/cluster-history.js";
-import { recordCopyEvidence,readCopyEvidence,pruneCopyEvidence,type CopyObservation } from "../../src/analytics/copy-evidence.js";
+import { recordCopyEvidence,readCopyEvidence,pruneCopyEvidence,extendAdmittedCopyEvidence,type CopyObservation } from "../../src/analytics/copy-evidence.js";
 import { clusterHistoryFixture } from "./cluster-history-fixtures.js";
 import type { RequestContext } from "../../src/auth/auth.js";
 let f:Awaited<ReturnType<typeof clusterHistoryFixture>>,streamId:string;
@@ -68,4 +68,12 @@ it("database guards reject updates, truncation, early deletion and loss-marker r
  await expect(f.h.sql.query(query,[id])).rejects.toThrow();
  for(const query of ["truncate analytics_copy_evidence","truncate analytics_copy_coverage","delete from analytics_copy_coverage","update analytics_copy_coverage set pruned_through=0,pruned_at=null,prune_transaction=null"])
  await expect(f.h.sql.query(query)).rejects.toThrow();
+});
+
+it("extends known expired negatives atomically with a later admission without raw witnesses",async()=>{
+ const id=randomUUID(),old=await seed(id,expired);await recordCopyEvidence(f.db,ctx,old.batch,[observation(id,expired)]);
+ const expiry=await liveExpiry(2),later=await seed(id,expiry);
+ await f.db.transaction(async tx=>{await extendAdmittedCopyEvidence(tx,ctx,later.batch);});
+ const negative=(await readCopyEvidence(f.db,[id])).items[0]!;expect(negative.kind).toBe("conflicting-copies");expect(Date.parse(negative.expiresAt)).toBe(Date.parse(expiry));
+ await pruneCopyEvidence(f.db,ctx,1000);expect((await readCopyEvidence(f.db,[id])).items[0]!.kind).toBe("conflicting-copies");
 });

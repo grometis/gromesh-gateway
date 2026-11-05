@@ -7,7 +7,7 @@ import { audit } from "../audit/audit.js";
 import type { RequestContext } from "../auth/auth.js";
 import { ProblemException } from "../common/problem.js";
 import { copyStateOf } from "./copy-state.js";
-import { recordCopyEvidence } from "./copy-evidence.js";
+import { extendAdmittedCopyEvidence, recordCopyEvidence } from "./copy-evidence.js";
 import { CopyEvidenceError, IngestionCopyPersistence } from "./ingestion-copy-persistence.js";
 import { encodeRawRequestCopy } from "./request-copy-store.js";
 
@@ -85,6 +85,7 @@ export class IngestionAdmissions {
       await tx.insert(counter).values({singleton:true,position:0n}).onConflictDoNothing();
       const [position]=await tx.update(counter).set({position:sql`${counter.position}+1`}).where(eq(counter.singleton,true)).returning();
       await tx.insert(batches).values({id:batchId,streamId,generation:position!.position,descriptor});
+      await extendAdmittedCopyEvidence(tx,a.ctx,batchId);
       await audit(tx,a.ctx,{action:"analytics.ingestion.prepare",entityType:"ingestion-batch",entityId:batchId,after:{streamId,generation:position!.position.toString(),copyCount:descriptor.length}});
       return {id:batchId,generation:position!.position.toString(),state:"prepared" as const};
     });
