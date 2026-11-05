@@ -13,9 +13,11 @@ export class HistoricalCopyReader{
    const abort=AbortSignal.any([deadline,...(signal?[signal]:[])]);
    const prefix=await readAdmissionPrefix(db);
    const raw=await this.reader.read(window,budget,abort);
+   abort.throwIfAborted();
    const negatives=await readCopyEvidenceSnapshot(db,raw.items.map(i=>i.id));
    const contents=raw.items.flatMap(i=>i.evidence?.kind==="identical"?[i.evidence.content]:[]);
    const strings=(key:string)=>[...new Set(contents.flatMap(c=>typeof c[key]==="string"?[c[key] as string]:[]))];
+   abort.throwIfAborted();
    const history=await routeHistoryEvidenceSnapshot(db,window.instanceId,{from:window.from,to:window.to,routeIds:strings("routeId"),clusterIds:strings("clusterId")});
    const items=raw.items.map(item=>{
     const negative=negatives.items.find(n=>n.id===item.id);
@@ -29,6 +31,6 @@ export class HistoricalCopyReader{
    });
    if(abort.aborted)throw Error("Historical copy read cancelled");
    return {items,next:raw.next,usage:raw.usage,prefix,historyPruned:negatives.historyPruned,proof:raw.proof};
-  });
+  },signal);
  }
 }

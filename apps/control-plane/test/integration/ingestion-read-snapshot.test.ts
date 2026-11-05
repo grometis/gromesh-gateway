@@ -1,4 +1,4 @@
-import { afterAll,beforeAll,it,expect } from "vitest";
+import { afterAll,beforeAll,it,expect,vi } from "vitest";
 import { sql } from "drizzle-orm";
 import { withIngestionReadSnapshot,readAdmissionPrefix } from "../../src/analytics/ingestion-read-snapshot.js";
 import { clusterHistoryFixture } from "./cluster-history-fixtures.js";
@@ -36,3 +36,12 @@ it("history helpers reject a pool query without an actual coherent read snapshot
  await expect(readCopyEvidenceSnapshot(f.db,[])).rejects.toThrow("coherent read-only snapshot");
  await expect(withIngestionReadSnapshot(f.h.sql,db=>db.execute(sql`update analytics_ingestion_counter set position=2`))).rejects.toThrow();
 });
+
+it("caller cancellation interrupts a real PG query and releases its session lock before more history can run",async()=>{
+ const abort=new AbortController();let pid=0,continued=false;
+ const result=withIngestionReadSnapshot(f.h.sql,async db=>{pid=(await db.execute<{pid:number}>(sql`select pg_backend_pid() pid`)).rows[0]!.pid;await db.execute(sql`select pg_sleep(60)`);continued=true;},abort.signal).then(()=>null,error=>error as unknown);
+ await vi.waitFor(async()=>{expect(pid).toBeGreaterThan(0);expect((await f.h.sql.query("select wait_event from pg_stat_activity where pid=$1",[pid])).rows[0]?.wait_event).toBe("PgSleep");});
+ abort.abort();expect(await result).toBeTruthy();expect(continued).toBe(false);
+ await vi.waitFor(async()=>{const c=await f.h.sql.connect();try{await c.query("begin");expect((await c.query("select pg_try_advisory_xact_lock(1818,1801) unlocked")).rows[0]!.unlocked).toBe(true);}finally{await c.query("rollback");c.release();}});
+});
+it("an already aborted caller never begins a read transaction",async()=>{let called=false;const a=new AbortController();a.abort();await expect(withIngestionReadSnapshot(f.h.sql,async()=>{called=true;},a.signal)).rejects.toThrow();expect(called).toBe(false);});
