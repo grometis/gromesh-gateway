@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   boolean,
+  bigint,
   check,
   date,
   foreignKey,
@@ -1086,3 +1087,23 @@ export const analyticsClusterVisibility = pgTable("analytics_cluster_visibility"
     authorizationId: uuid("authorization_id").primaryKey().references(() => analyticsClusterEvents.id),
     observedAt: timestamp("observed_at", { withTimezone: true, mode: "string" }).notNull().default(sql `clock_timestamp()`),
 });
+
+
+/** Accepted admission positions, not native producer offsets or proof of ClickHouse persistence. */
+export const analyticsIngestionCounter = pgTable("analytics_ingestion_counter", {
+  singleton: boolean("singleton").primaryKey().default(true),
+  position: bigint("position", {mode:"bigint"}).notNull().default(sql`0`),
+}, t => [check("analytics_ingestion_singleton_ck",sql`${t.singleton}=true`),check("analytics_ingestion_position_ck",sql`${t.position}>=0`)]);
+export const analyticsIngestionStreams = pgTable("analytics_ingestion_streams", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  instanceId: uuid("instance_id").notNull().references(()=>instance.id),
+  clusterId: uuid("cluster_id").notNull(), nodeId: text("node_id").notNull(), podUid: uuid("pod_uid").notNull(),
+  authorizationId: uuid("authorization_id").notNull().references(()=>analyticsClusterEvents.id),
+  recordedAt: timestamp("recorded_at",{withTimezone:true,mode:"string"}).notNull().default(sql`clock_timestamp()`),
+});
+export const analyticsIngestionBatches = pgTable("analytics_ingestion_batches", {
+  id: uuid("id").primaryKey(), streamId: uuid("stream_id").notNull().references(()=>analyticsIngestionStreams.id),
+  generation: bigint("generation",{mode:"bigint"}).notNull(),
+  descriptor: jsonb("descriptor").$type<readonly {copyId:string;id:string;commitment:string;expiresAt:string}[]>().notNull(),
+  recordedAt: timestamp("recorded_at",{withTimezone:true,mode:"string"}).notNull().default(sql`clock_timestamp()`),
+},t=>[uniqueIndex("analytics_ingestion_generation_uq").on(t.generation),check("analytics_ingestion_generation_ck",sql`${t.generation}>0`),check("analytics_ingestion_descriptor_ck",sql`jsonb_typeof(${t.descriptor})='array' and jsonb_array_length(${t.descriptor}) between 1 and 100`)]);
