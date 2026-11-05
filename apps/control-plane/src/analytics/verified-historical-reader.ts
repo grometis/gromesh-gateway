@@ -99,7 +99,7 @@ export async function openVerifiedHistoricalReader(input: { pool: pg.Pool; setti
           await assertCopyStorageSchema(observed.data);
           const final = await observePhysicalCopyCut(observed.data, true);
           if (final.tableId !== observed.physical.tableId || final.definition !== registered.definition || JSON.stringify(final.parts) !== JSON.stringify(observed.physical.parts)) throw copyReadNotReady();
-        });
+        },budget.operation);
       } finally { busy = false; }
     };
     return Object.freeze({ read, close });

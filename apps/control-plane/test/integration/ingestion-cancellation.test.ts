@@ -111,3 +111,11 @@ it('rejects a cleanup failure and recovers with the next pooled request',async()
  const healthy=new pg.Pool({connectionString:url,max:1});
  try{expect(await withIngestionReadSnapshot(healthy,async db=>(await db.execute<{value:number}>(sql`select 42 value`)).rows[0]!.value)).toBe(42);}finally{await healthy.end();}
 });
+it('does not retain snapshot lifecycle listeners on a healthy reused connection',async()=>{
+ const pool=new pg.Pool({connectionString:url,max:1});
+ try{
+  const probe=await pool.connect(),baseline={end:probe.listenerCount('end'),error:probe.listenerCount('error')};probe.release();
+  for(let n=0;n<12;n++)expect(await withIngestionReadSnapshot(pool,async()=>42)).toBe(42);
+  const reused=await pool.connect();try{expect(reused.listenerCount('end')).toBe(baseline.end);expect(reused.listenerCount('error')).toBe(baseline.error);}finally{reused.release();}
+ }finally{await pool.end();}
+});

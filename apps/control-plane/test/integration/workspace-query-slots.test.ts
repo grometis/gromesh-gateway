@@ -26,3 +26,11 @@ it('rejects an already cancelled request before invoking storage work',async()=>
  const pool=new pg.Pool({connectionString:url,max:1}),abort=new AbortController();abort.abort();let ran=false;
  try{await expect(withWorkspaceQuerySlots(pool,input(abort.signal),async()=>{ran=true;})).rejects.toThrow();expect(ran).toBe(false);expect(pool.totalCount).toBe(0);}finally{await pool.end();}
 });
+it('does not retain end/error listeners across repeated successful requests on one real connection',async()=>{
+ const pool=new pg.Pool({connectionString:url,max:1});
+ try{
+  const probe=await pool.connect(),baseline={end:probe.listenerCount('end'),error:probe.listenerCount('error')};probe.release();
+  for(let n=0;n<12;n++)expect(await withWorkspaceQuerySlots(pool,input(new AbortController().signal),async()=>42)).toBe(42);
+  const reused=await pool.connect();try{expect(reused.listenerCount('end')).toBe(baseline.end);expect(reused.listenerCount('error')).toBe(baseline.error);}finally{reused.release();}
+ }finally{await pool.end();}
+});

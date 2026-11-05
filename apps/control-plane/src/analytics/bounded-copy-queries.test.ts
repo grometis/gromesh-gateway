@@ -14,3 +14,14 @@ it('does not accept a write without final engine accounting',async()=>{
  const client={insert:vi.fn(async()=>({executed:true,query_id:'synthetic',response_headers:{}}))} as unknown as ClickHouseClient;
  await expect(new BoundedCopyQueries(client).insert({table:'requests_v2_copies',format:'JSONEachRow',values:[]})).rejects.toMatchObject({code:'analytics-not-ready'});
 });
+it('shares the PostgreSQL preflight execution allowance with a later ClickHouse query',async()=>{
+ const {AnalyticsRequestBudget}=await import('./analytics-request-budget.js');
+ const operation=new AnalyticsRequestBudget();const now=vi.spyOn(performance,'now');
+ try{
+  now.mockReturnValue(100);const finish=operation.beginPostgres();now.mockReturnValue(5000);finish([]);now.mockRestore();
+  const query=vi.fn(async(_params:Parameters<ClickHouseClient['query']>[0])=>({response_headers:summary('200000000'),stream:async function*(){},close:vi.fn()}));
+  const reads=new BoundedCopyQueries({query} as unknown as ClickHouseClient,{operation});
+  await expect(reads.query('SELECT 1',{},1)).rejects.toMatchObject({code:'analytics-budget-exceeded'});
+  expect(Number(query.mock.calls[0]![0].clickhouse_settings!.max_execution_time)).toBeLessThanOrEqual(.1);
+ }finally{now.mockRestore();operation.close();}
+});

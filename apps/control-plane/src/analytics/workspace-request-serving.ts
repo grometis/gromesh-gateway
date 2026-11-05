@@ -1,3 +1,4 @@
+import {AnalyticsRequestBudget} from "./analytics-request-budget.js";
 import { terminateIngestionBackend } from "./ingestion-cancellation.js";
 import { createHash, randomUUID } from "node:crypto";
 import { HttpException } from "@nestjs/common";
@@ -12,7 +13,7 @@ import { StorageConsistencyError } from "./storage-consistency.js";
 export const WORKSPACE_REQUEST_SERVING = Symbol("WORKSPACE_REQUEST_SERVING");
 export interface VerifiedWorkspaceRequestInput {
   instanceId: string; workspaceId: string; principalId: string; role: Role; query: WorkspaceRequestQuery;
-  after?: { ts: string; id: string }; issueCursor: (last: { ts: string; id: string }) => string; signal: AbortSignal;
+  after?: { ts: string; id: string }; issueCursor: (last: { ts: string; id: string }) => string; signal: AbortSignal; budget?:AnalyticsRequestBudget;
 }
 export interface WorkspaceRequestServing { query(input: VerifiedWorkspaceRequestInput): Promise<unknown> }
 const unavailable = () => new StorageConsistencyError("analytics-not-ready", "Workspace request evidence is incomplete");
@@ -28,14 +29,17 @@ export async function withWorkspaceQuerySlots<T>(pool: pg.Pool, input: VerifiedW
     const aborted = () => reject(busy()); queue.addEventListener("abort",aborted,{once:true});
     void pool.connect().then(client => { queue.removeEventListener("abort",aborted); if(queue.aborted){client.release();reject(busy());}else resolve(client); },error => { queue.removeEventListener("abort",aborted);reject(error); });
   });
+  let restore:(()=>void)|undefined;
   const locks: string[] = []; let destroy = false, released = false, admitted = false, previousName="",pid=0;
   const name=`gromesh-analytics-query:${randomUUID()}`;let cancelling:Promise<boolean>|undefined;
   const leaseLost=new AbortController(),signal=AbortSignal.any([input.signal,leaseLost.signal,AbortSignal.timeout(4500)]);
   const lost=()=>{destroy=true;leaseLost.abort();};
-  client.on("error",lost);client.once("end",()=>{lost();client.removeListener("error",lost);});
+  const ended=()=>{lost();client.removeListener("error",lost);};
+  client.on("error",lost);client.once("end",ended);
   const abort = () => { if(!released){released=true;client.release(true);cancelling=terminateIngestionBackend(pool,pid,name);} };
   queue.addEventListener("abort",abort,{once:true});
   try {
+    restore=input.budget?.instrument(client);
     const backend=(await client.query<{name:string;pid:number}>("select pg_catalog.current_setting('application_name') name,pg_catalog.pg_backend_pid() pid")).rows[0]!;previousName=backend.name;pid=backend.pid;
     await client.query("select pg_catalog.set_config('application_name',$1,false)",[name]);
     const acquire = async (parts: string[], slots: number) => {
@@ -61,7 +65,7 @@ export async function withWorkspaceQuerySlots<T>(pool: pg.Pool, input: VerifiedW
       if(!released){released=true;client.release(destroy);}
     }
     if(cancelling)await cancelling;signal.throwIfAborted();if(destroy)throw unavailable();
-    }finally{queue.removeEventListener("abort",abort);signal.removeEventListener("abort",abort);if(!destroy&&!signal.aborted)client.removeListener("error",lost);}
+    }finally{restore?.();queue.removeEventListener("abort",abort);signal.removeEventListener("abort",abort);if(!destroy&&!signal.aborted){client.removeListener("error",lost);client.removeListener("end",ended);}}
   }
 }
 
@@ -83,7 +87,7 @@ export async function createVerifiedWorkspaceRequests(input: { pool: pg.Pool; se
         const slot = readers.find(row=>!row.busy);if(!slot)throw busy();slot.busy=true;
         try {
           const q=queryInput.query;
-          const page=await slot.reader.read({instanceId:queryInput.instanceId,from:q.from,to:q.to,pageSize:200,...(queryInput.after?{after:queryInput.after}:{})},{},signal);
+          const page=await slot.reader.read({instanceId:queryInput.instanceId,from:q.from,to:q.to,pageSize:200,...(queryInput.after?{after:queryInput.after}:{})},{operation:queryInput.budget},signal);
           if(page.next||page.items.some(item=>item.storage.kind!=="ready"||item.attribution.workspaceId===null))throw unavailable();
           const selected=page.items.filter(item=>{
             if(item.attribution.workspaceId!==queryInput.workspaceId||item.storage.kind!=="ready")return false;
@@ -102,7 +106,7 @@ export async function createVerifiedWorkspaceRequests(input: { pool: pg.Pool; se
           const last=items.at(-1),nextCursor=selected.length>items.length&&last?queryInput.issueCursor({ts:last.ts,id:last.id}):null;
           const result={scope:"workspace",instanceId:queryInput.instanceId,workspaceId:queryInput.workspaceId,from:q.from,to:q.to,generatedAt:page.asOf,attributionVersion:"route-history-v2",retention:"per-route-1-to-7-days",delivery:"best-effort",items,nextCursor};
           if(Buffer.byteLength(JSON.stringify(result))>2*1024*1024||performance.now()-started>=5000)throw budget();
-          signal.throwIfAborted();return result;
+          queryInput.budget?.serialize(result);signal.throwIfAborted();return result;
         } finally {slot.busy=false;}
       });
     };

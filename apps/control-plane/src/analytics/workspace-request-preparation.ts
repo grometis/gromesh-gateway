@@ -1,3 +1,4 @@
+import {AnalyticsRequestBudget} from "./analytics-request-budget.js";
 import { Controller,Get,HttpException,Inject,Module,Optional,Param,Query,Req,type DynamicModule } from "@nestjs/common";
 import { and,eq } from "drizzle-orm";
 import { RequiredPermission,type AuthenticatedRequest } from "../auth/auth.js";
@@ -21,6 +22,7 @@ export class WorkspaceRequestPreparationController{
  async list(@Param("workspaceId",uuidParam())workspaceId:string,@Query()input:Record<string,unknown>,@Req()request:AuthenticatedRequest):Promise<unknown>{
   const now=Date.now(),started=performance.now(),query=parseWorkspaceRequestQuery(input,now);
   const cancel=new AbortController(),signal=AbortSignal.any([cancel.signal,AbortSignal.timeout(4500)]);
+  const budget=new AnalyticsRequestBudget(signal);
   const aborted=()=>cancel.abort(),closed=()=>{if(!request.res?.writableEnded)cancel.abort();};
   request.once("aborted",aborted);request.res?.once("close",closed);
   try{
@@ -40,17 +42,19 @@ export class WorkspaceRequestPreparationController{
   }
 
     return {instanceId:self.id,context,after};
-   },signal);
+   },budget.signal,budget);
    if(!this.serving)throw notReady();
-   const result=await this.serving.query({instanceId:scope.instanceId,workspaceId,principalId:request.user!.id,role:request.auth!.role,query,after:scope.after,signal,issueCursor:last=>cursor.issue(scope.context,last,now)});
-   signal.throwIfAborted();
+   const result=await this.serving.query({instanceId:scope.instanceId,workspaceId,principalId:request.user!.id,role:request.auth!.role,query,after:scope.after,signal:budget.signal,budget,issueCursor:last=>cursor.issue(scope.context,last,now)});
+   budget.check();
    if(performance.now()-started>=5000||Buffer.byteLength(JSON.stringify(result))>2*1024*1024)throw new StorageConsistencyError("analytics-budget-exceeded","Workspace request budget exceeded");
-   return result;
+   budget.serialize(result);return result;
   }catch(error){
    if(error instanceof HttpException&&!signal.aborted){if(error.getStatus()===429)request.res?.setHeader("Retry-After","1");throw error;}
+   let budgetError:unknown;try{budget.check();}catch(e){budgetError=e;}
+   if(budgetError instanceof StorageConsistencyError)error=budgetError;
    const code=signal.aborted?"analytics-timeout":error instanceof StorageConsistencyError?error.code:"analytics-unavailable";
    throw new HttpException({type:`https://gromesh.dev/problems/${code}`,title:"Bad Gateway",status:502,code,detail:"Workspace analytics query could not be verified"},502);
-  }finally{request.removeListener("aborted",aborted);request.res?.removeListener("close",closed);}
+  }finally{budget.close();request.removeListener("aborted",aborted);request.res?.removeListener("close",closed);}
 
  }
 }
