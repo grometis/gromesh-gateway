@@ -38,8 +38,14 @@ it("rejects a whole invalid batch before a write and never leaks the event in it
 });
 it("rejects unsafe sizes, non-finite latency, unknown columns, false identities and oversized batches", async () => {
  const a=event();
- for(const content of [{...a.content,requestSize:9007199254740992},{...a.content,responseSize:"18446744073709551616"},{...a.content,latencyTotalMs:Infinity},{...a.content,workspaceId:randomUUID()},{...a.content,clusterId:"unknown"},{...a.content,retentionDays:8}])
+ for(const content of [{...a.content,requestSize:9007199254740992},{...a.content,responseSize:"18446744073709551616"},{...a.content,latencyTotalMs:Infinity},{...a.content,latencyTotalMs:-0},{...a.content,workspaceId:randomUUID()},{...a.content,clusterId:"unknown"},{...a.content,retentionDays:8}])
    await expect(new RawRequestCopyStore(writer).append([{id:a.id,content}])).rejects.toThrow("Invalid raw request copies");
  await expect(new RawRequestCopyStore(writer).append(Array.from({length:101},()=>a))).rejects.toThrow("Invalid raw request copies");
  expect(await count(a.id)).toBe("0");
+});
+
+it("accepts Unicode paths by JSON Schema code points, bounded separately by the batch byte budget", async () => {
+ const a=event();a.content.path="/"+"é".repeat(1024);await new RawRequestCopyStore(writer).append([a]);expect(await count(a.id)).toBe("1");
+ const b=event();b.content.path="/"+"😀".repeat(2047);await new RawRequestCopyStore(writer).append([b]);expect(await count(b.id)).toBe("1");
+ const c=event();c.content.path="/"+"😀".repeat(2048);await expect(new RawRequestCopyStore(writer).append([c])).rejects.toThrow("Invalid raw request copies");expect(await count(c.id)).toBe("0");
 });

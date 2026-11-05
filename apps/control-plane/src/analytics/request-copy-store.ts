@@ -13,18 +13,18 @@ function uint64(value: unknown): string {
   if (typeof value !== "string" || !/^(?:0|[1-9][0-9]{0,19})$/.test(value) || BigInt(value) > 18_446_744_073_709_551_615n) return invalid();
   return value;
 }
-function encode(copy: RawRequestCopy): Record<string, unknown> {
+export function encodeRawRequestCopy(copy: RawRequestCopy): Record<string, unknown> {
   const c = copy.content;
   if (!uuid.test(copy.id) || !c || Object.keys(c).length !== fields.length || fields.some(key => !Object.hasOwn(c, key))) return invalid();
   for (const key of ["environmentId", "clusterId"] as const) if (typeof c[key] !== "string" || !uuid.test(c[key])) return invalid();
   for (const key of ["serviceId", "routeId", "consumerId"] as const) if (c[key] !== null && (typeof c[key] !== "string" || !uuid.test(c[key]))) return invalid();
   if (typeof c.ts !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(c.ts) || !Number.isFinite(Date.parse(c.ts)) || new Date(c.ts).toISOString() !== c.ts) return invalid();
   if (typeof c.method !== "string" || !["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE", "CONNECT"].includes(c.method)) return invalid();
-  if (typeof c.path !== "string" || !c.path.startsWith("/") || /[?#\u0000-\u001f\u007f]/.test(c.path) || Buffer.byteLength(c.path) > 2048) return invalid();
+  if (typeof c.path !== "string" || !c.path.startsWith("/") || /[?#\u0000-\u001f\u007f]/.test(c.path) || [...c.path].length > 2048) return invalid();
   if (typeof c.status !== "number" || !Number.isInteger(c.status) || c.status < 100 || c.status > 599) return invalid();
   for (const key of ["latencyKongMs", "latencyUpstreamMs", "latencyTotalMs"] as const) {
     if (key === "latencyUpstreamMs" && c[key] === null) continue;
-    if (typeof c[key] !== "number" || !Number.isFinite(c[key]) || c[key] < 0) return invalid();
+    if (typeof c[key] !== "number" || !Number.isFinite(c[key]) || Object.is(c[key], -0) || c[key] < 0) return invalid();
   }
   if (typeof c.clientIp !== "string" || isIP(c.clientIp) !== 6 || typeof c.retentionDays !== "number" || !Number.isInteger(c.retentionDays) || c.retentionDays < 1 || c.retentionDays > 7) return invalid();
   return { id: copy.id, ts: c.ts.replace("T", " ").replace("Z", ""), environment_id: c.environmentId, cluster_id: c.clusterId,
@@ -38,7 +38,7 @@ export class RawRequestCopyStore {
   constructor(private readonly writer: ClickHouseClient) {}
   async append(copies: readonly RawRequestCopy[], signal?: AbortSignal): Promise<void> {
     if (!Array.isArray(copies) || copies.length < 1 || copies.length > 100) return invalid();
-    const rows = copies.map(encode);
+    const rows = copies.map(encodeRawRequestCopy);
     if (Buffer.byteLength(JSON.stringify(rows)) > 2 * 1024 * 1024) return invalid();
     try {
       // Never collapse by id: a retry can repeat rows, and divergent copies must survive for exact comparison.
