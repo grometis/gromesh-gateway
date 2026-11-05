@@ -1,3 +1,4 @@
+import { WorkspaceRequestsPage } from "./pages/WorkspaceRequests";
 import { Navigate, useLocation, type RouteObject } from "react-router";
 import { Shell, RequireAuth, RequireAdmin } from "./components/Shell";
 import { NavigationContextProvider } from "./navigation/context";
@@ -54,6 +55,7 @@ export const appRoutes: RouteObject[] = [
             children: [
               { index: true, element: <WorkspaceEntry /> },
               { path: "overview", element: <WorkspaceOverviewPage /> },
+              { path: "requests", element: <WorkspaceRequestsPage /> },
               { path: "services", element: <ServicesPage /> },
               { path: "services/:serviceId", element: <ServiceDetailPage /> },
               { path: "routes", element: <RoutesPage /> },
