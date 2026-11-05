@@ -1,5 +1,6 @@
+import { assertAnalyticsReadSnapshot } from "./ingestion-read-snapshot.js";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
-import type { Db, Tx } from "../db/db.js";
+import type { Db, Tx, Executor } from "../db/db.js";
 import type { RequestContext } from "../auth/auth.js";
 import { audit } from "../audit/audit.js";
 import { analyticsCopyEvidence as facts, analyticsCopyCoverage as coverage, analyticsIngestionBatches as batches } from "../db/schema.js";
@@ -70,7 +71,12 @@ export async function extendAdmittedCopyEvidence(tx:Tx,ctx:RequestContext,batchI
 /** Retains expired negatives until physical pruning; callers must evaluate their original retention. */
 export async function readCopyEvidence(db: Db, ids: readonly string[]): Promise<{items:CopyObservation[];historyPruned:boolean}> {
   if (ids.length > 200 || ids.some(id => !uuid.test(id))) return invalid();
-  return db.transaction(async tx => {
+  return db.transaction(tx=>readCopyEvidenceSnapshot(tx,ids),{isolationLevel:"repeatable read",accessMode:"read only"});
+}
+/** Caller supplies an already coherent read snapshot. */
+export async function readCopyEvidenceSnapshot(tx:Executor,ids:readonly string[]):Promise<{items:CopyObservation[];historyPruned:boolean}>{
+  await assertAnalyticsReadSnapshot(tx);
+  if(ids.length>200||ids.some(id=>!uuid.test(id)))return invalid();
     await tx.execute(sql`set local statement_timeout='5s'`);
     const [lost] = await tx.select().from(coverage);
     const rows = ids.length ? await tx.select().from(facts).where(inArray(facts.requestId,[...new Set(ids)])).orderBy(asc(facts.requestId),asc(facts.id)).limit(10001) : [];
@@ -83,7 +89,6 @@ export async function readCopyEvidence(db: Db, ids: readonly string[]): Promise<
       items.set(row.requestId,{id:row.requestId,kind:row.kind,expiresAt,leftHash:row.leftHash,rightHash:row.rightHash || null});
     }
     return {items:[...items.values()],historyPruned:(lost?.prunedThrough ?? 0n)>0n};
-  },{isolationLevel:"repeatable read",accessMode:"read only"});
 }
 /** Bounded GC records irreversible loss in the same transaction, never converting a gap to a clean history. */
 export async function pruneCopyEvidence(db: Db, ctx: RequestContext, limit: number) {

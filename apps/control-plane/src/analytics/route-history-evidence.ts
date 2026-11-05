@@ -1,5 +1,6 @@
+import { assertAnalyticsReadSnapshot } from "./ingestion-read-snapshot.js";
 import { and, asc, desc, eq, gte, inArray, lt, lte, sql, or } from "drizzle-orm";
-import type { Db } from "../db/db.js";
+import type { Db, Executor } from "../db/db.js";
 import type { RequestContext } from "../auth/auth.js";
 import { audit } from "../audit/audit.js";
 import { analyticsRouteHistory as history, analyticsRouteHistoryRoutes as routes, analyticsRouteHistoryVisibility as visibility } from "../db/schema.js";
@@ -34,7 +35,13 @@ export async function routeHistoryEvidence(db: Db, instanceId: string, window: H
     const from = Date.parse(window.from), to = Date.parse(window.to);
     if (!Number.isFinite(from) || !Number.isFinite(to) || from >= to || to - from > 7 * 86400000 || window.routeIds.length > 200 || (window.clusterIds?.length ?? 0) > 200)
         throw Error("Invalid route history window");
-    return db.transaction(async (tx) => {
+    return db.transaction(tx=>routeHistoryEvidenceSnapshot(tx,instanceId,window),{isolationLevel:"repeatable read",accessMode:"read only"});
+}
+/** Both ledgers participate in the caller's existing read-only snapshot. */
+export async function routeHistoryEvidenceSnapshot(tx:Executor,instanceId:string,window:HistoryWindow):Promise<RouteHistoryEvidence>{
+    await assertAnalyticsReadSnapshot(tx);
+    const from=Date.parse(window.from),to=Date.parse(window.to);
+    if(!Number.isFinite(from)||!Number.isFinite(to)||from>=to||to-from>7*86400000||window.routeIds.length>200||(window.clusterIds?.length??0)>200)throw Error("Invalid route history window");
         await tx.execute(sql `set local statement_timeout='5s'`);
         const clock = (await tx.execute<{
             asOf: string;
@@ -76,5 +83,4 @@ export async function routeHistoryEvidence(db: Db, instanceId: string, window: H
         return { instanceId, asOf: clock!.asOf, revisionsComplete: complete, firstRevision: genesis ?? null,
             revisions: maps.filter(m => seen.has(refKey(m))).map(m => ({ ...m, complete: true, visibleAt: seen.get(refKey(m))! })),
             identities: requested.map(routeId => ({ routeId, workspaceIds: owners.filter(x => x.routeId === routeId).map(x => x.workspaceId).sort(), complete: latest?.chainComplete === true })), clusterHistory };
-    }, { isolationLevel: "repeatable read", accessMode: "read only" });
 }
