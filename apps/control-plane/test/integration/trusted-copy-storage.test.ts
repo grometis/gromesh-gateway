@@ -85,6 +85,9 @@ it("keeps writer clients private and persists only authenticated current admissi
     try {
       expect(Object.keys(service).sort()).toEqual(["close", "open", "persist", "prefix", "prepare"]);
       const podUid = randomUUID(), stream = await service.open(producer.token, podUid);
+      // Pooled session state cannot replace the authoritative admission counter.
+      await db.execute(sql`create temporary table analytics_ingestion_counter(singleton boolean,position bigint)`);
+      await db.execute(sql`insert into pg_temp.analytics_ingestion_counter values(true,999)`);
       const requestId = randomBytes(16).toString("hex"), hex = createHash("sha256").update(`${producer.source.clusterId}|${podUid}|${requestId}`).digest("hex").slice(0,32);
       const id = `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
       const ts = (await f.h.sql.query<{ ts: string }>(`select to_char(clock_timestamp() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') ts`)).rows[0]!.ts;
@@ -94,7 +97,7 @@ it("keeps writer clients private and persists only authenticated current admissi
       const batch = randomUUID();
       await expect(service.persist("invalid", stream.id, batch, [copy])).rejects.toThrow();
       const receipt = await service.persist(producer.token, stream.id, batch, [copy]);
-      expect(receipt).toMatchObject({ status: "persisted", storedCopies: 1 });
+      expect(receipt).toMatchObject({ status: "persisted", storedCopies: 1, generation: "1" });
       expect(await service.persist(producer.token, stream.id, batch, [copy])).toEqual(receipt);
       await expect(service.persist(producer.token, stream.id, batch, [{ ...copy, event: { ...copy.event, status: 500 } }])).rejects.toThrow();
       const data = client(settings, "reader");
