@@ -1141,3 +1141,11 @@ export const analyticsCopyCoverage = pgTable("analytics_copy_coverage",{
  prunedAt:timestamp("pruned_at",{withTimezone:true,mode:"string"}),
  pruneTransaction:text("prune_transaction"),
 },t=>[check("analytics_copy_coverage_ck",sql`${t.singleton}=true and ${t.prunedThrough}>=0 and ((${t.prunedThrough}=0 and ${t.prunedAt} is null and ${t.pruneTransaction} is null) or (${t.prunedThrough}>0 and ${t.prunedAt} is not null and ${t.pruneTransaction} is not null))`)]);
+
+/** Internal per-batch worker fencing, independent of the wire admission position. */
+export const analyticsIngestionWorkers = pgTable("analytics_ingestion_workers", {
+ batchId:uuid("batch_id").primaryKey().references(()=>analyticsIngestionBatches.id),
+ epoch:bigint("epoch",{mode:"bigint"}).notNull(),token:uuid("token").notNull(),
+ state:text("state",{enum:["persisting","verified","failed"]}).notNull(),
+ leaseUntil:timestamp("lease_until",{withTimezone:true,mode:"string"}).notNull(),
+},t=>[check("analytics_ingestion_worker_ck",sql`${t.epoch}>0 and ${t.state} in ('persisting','verified','failed')`)]);

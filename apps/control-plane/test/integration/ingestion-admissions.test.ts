@@ -150,3 +150,43 @@ it("unverifiable raw copies create an incomplete-comparison tombstone, never a c
  await expect(admissions.persist(producer.token,s.id,randomUUID(),[a])).rejects.toThrow();
  expect((await readCopyEvidence(f.db,[id])).items[0]!.kind).toBe("comparison-unavailable");
 });
+function barrier(){let release!:()=>void;const promise=new Promise<void>(resolve=>{release=resolve;});return {promise,release};}
+it("fences an old worker after a controlled crash and replica takeover, without a false receipt",async()=>{
+ const ready=barrier(),resume=barrier();
+ class PausedAfterReadback extends IngestionCopyPersistence{
+  override async persist(input:Parameters<IngestionCopyPersistence["persist"]>[0]){const result=await super.persist(input);ready.release();await resume.promise;return result;}
+ }
+ const slow=new IngestionAdmissions(f.db,f.h.app.get(AgentGatewayService),new PausedAfterReadback(writer,reader));
+ const s=await slow.open(producer.token,podUid),a=await copy(),batch=randomUUID();
+ const outcome=slow.persist(producer.token,s.id,batch,[a]).then(value=>({value,error:null}),error=>({value:null,error: error as unknown}));
+ await ready.promise;
+ try{
+  // A second replica cannot own an active lease. No sleep is used as synchronization.
+  await expect(admissions.persist(producer.token,s.id,batch,[a])).rejects.toThrow();
+  expect((await f.h.sql.query("select epoch::text,state from analytics_ingestion_workers where batch_id=$1",[batch])).rows[0]).toEqual({epoch:"1",state:"persisting"});
+  // Synthetic clock expiry models a crashed process; only this disposable coordination row is touched.
+  await f.h.sql.query("update analytics_ingestion_workers set lease_until=clock_timestamp()-interval '1 second' where batch_id=$1",[batch]);
+  expect(await admissions.persist(producer.token,s.id,batch,[a])).toMatchObject({status:"persisted"});
+ }finally{resume.release();}
+ expect((await outcome).error).toBeTruthy();
+ expect((await f.h.sql.query("select epoch::text,state from analytics_ingestion_workers where batch_id=$1",[batch])).rows[0]).toEqual({epoch:"2",state:"verified"});
+ expect((await f.h.sql.query("select count(*)::int n from analytics_ingestion_receipts where batch_id=$1",[batch])).rows[0]!.n).toBe(1);
+});
+it("failed workers release their lease for authenticated retries and keep wire generation unchanged",async()=>{
+ const bad=createClient({url:"http://127.0.0.1:9",request_timeout:250});
+ try{
+  const broken=new IngestionAdmissions(f.db,f.h.app.get(AgentGatewayService),new IngestionCopyPersistence(bad,reader));
+  const s=await broken.open(producer.token,podUid),a=await copy(),batch=randomUUID();await expect(broken.persist(producer.token,s.id,batch,[a])).rejects.toThrow();
+  expect((await f.h.sql.query("select state from analytics_ingestion_workers where batch_id=$1",[batch])).rows[0]!.state).toBe("failed");
+  const prepared=await admissions.prepare(producer.token,s.id,batch,[a]);const receipt=await admissions.persist(producer.token,s.id,batch,[a]);expect(receipt.generation).toBe(prepared.generation);
+  expect((await f.h.sql.query("select epoch::text,state from analytics_ingestion_workers where batch_id=$1",[batch])).rows[0]).toEqual({epoch:"2",state:"verified"});
+ }finally{await bad.close();}
+});
+it("authorization revoked after CH readback prevents receipt and cannot be bypassed by a worker lease",async()=>{
+ const ready=barrier(),resume=barrier();
+ class PausedAfterReadback extends IngestionCopyPersistence{override async persist(input:Parameters<IngestionCopyPersistence["persist"]>[0]){const result=await super.persist(input);ready.release();await resume.promise;return result;}}
+ const service=new IngestionAdmissions(f.db,f.h.app.get(AgentGatewayService),new PausedAfterReadback(writer,reader));const s=await service.open(producer.token,podUid),a=await copy(),batch=randomUUID();
+ const outcome=service.persist(producer.token,s.id,batch,[a]).then(value=>({value,error:null}),error=>({value:null,error: error as unknown}));await ready.promise;
+ try{await f.db.transaction(tx=>revokeClusterAssociation(tx,{actor:{type:"system",id:"synthetic-revocation"},role:"admin",ip:null},producer.source.clusterId,"revoke"));}finally{resume.release();}
+ expect((await outcome).error).toBeTruthy();expect((await f.h.sql.query("select count(*)::int n from analytics_ingestion_receipts where batch_id=$1",[batch])).rows[0]!.n).toBe(0);
+});

@@ -239,6 +239,13 @@
       "when": 1793853628872,
       "tag": "0033_durable_copy_evidence",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1793854258927,
+      "tag": "0034_ingestion_worker_leases",
+      "breakpoints": true
     }
   ]
 }
