@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { ProblemException } from "../common/problem.js";
 import { and, asc, desc, eq, getTableColumns, inArray, isNotNull, lt, lte, notExists, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
-import type { Db, Tx } from "../db/db.js";
+import type { Db, Tx, Executor } from "../db/db.js";
 import type { RequestContext } from "../auth/auth.js";
 import { audit } from "../audit/audit.js";
 import { analyticsClusterEvents as events, analyticsClusterVisibility as visibility, clusters, clusterNodes, deployments, instance } from "../db/schema.js";
@@ -88,7 +88,7 @@ export async function confirmClusterAssociation(db: Db, authorizationId: string)
     });
 }
 /** Caller supplies one coherent read transaction. Scope is requested Cluster IDs, not a current registry lookup. */
-export async function readClusterHistory(tx: Tx, clusterIds: readonly string[], window: {
+export async function readClusterHistory(tx: Executor, clusterIds: readonly string[], window: {
     from: string;
     to: string;
 }): Promise<RouteHistoryEvidence["clusterHistory"]> {

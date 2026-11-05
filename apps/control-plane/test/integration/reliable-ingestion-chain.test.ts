@@ -1,9 +1,11 @@
+import { integrationInputs } from "../../../../scripts/integration-databases.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import { createClient } from "@clickhouse/client";
 import { expect,it } from "vitest";
 import { AgentGatewayService } from "../../src/agent-gateway/agent-gateway.js";
 import { IngestionAdmissions } from "../../src/analytics/ingestion-admissions.js";
 import { IngestionCopyPersistence } from "../../src/analytics/ingestion-copy-persistence.js";
+import { HistoricalCopyReader } from "../../src/analytics/historical-copy-reader.js";
 import { BoundedCopyReader } from "../../src/analytics/bounded-copy-reader.js";
 import { authorizeClusterDelivery,confirmClusterAssociation } from "../../src/analytics/cluster-history.js";
 import { routeHistoryEvidence } from "../../src/analytics/route-history-evidence.js";
@@ -33,5 +35,21 @@ it("real bearer→admission→CH→receipt→reader→history→policy remains u
    expect(decision).toMatchObject({workspaceId:null,effectiveRevision:null,reason:"attribution-evidence-missing"});
   }
   expect((await service.prefix()).copiesComplete).toBe(false);
+  const integrated=await new HistoricalCopyReader(f.h.sql,new BoundedCopyReader(reader)).read({instanceId:f.instanceId,from,to,pageSize:200});
+  expect(integrated.prefix.receiptPrefixComplete).toBe(true);expect(integrated.proof).toEqual({copiesComplete:false,conflictHistoryComplete:false,coherentSnapshot:false});
+  expect(integrated.items).toHaveLength(2);for(const item of integrated.items){expect(item.attribution).toMatchObject({workspaceId:null,effectiveRevision:null});expect(item.storage.kind).toBe("not-ready");}
+  const conflicting={...copies[0]!,copyId:randomUUID(),event:{...copies[0]!.event,status:500}};
+  await expect(service.persist(source.token,stream.id,randomUUID(),[conflicting])).rejects.toThrow();
+  const blocked=await new HistoricalCopyReader(f.h.sql,new BoundedCopyReader(reader)).read({instanceId:f.instanceId,from,to,pageSize:200});
+  expect(blocked.prefix.receiptPrefixComplete).toBe(false);expect(blocked.items.find(i=>i.id===conflicting.event.id)!.evidenceKind).toBe("conflicting-copies");
+  expect(blocked.items.every(i=>i.attribution.workspaceId===null&&i.attribution.effectiveRevision===null)).toBe(true);
+  const admin=integrationInputs(process.env).clickhouse;
+  if(!/^gromesh_test_[0-9a-f]{32}$/.test(CLICKHOUSE.database)||admin.url!==CLICKHOUSE.url)throw Error("Unowned maintenance target");
+  const maintenance=createClient({url:admin.url,database:CLICKHOUSE.database,username:admin.user,password:admin.password});
+  try{await maintenance.command({query:"ALTER TABLE requests_v2_copies DELETE WHERE id={id:UUID}",query_params:{id:conflicting.event.id},clickhouse_settings:{mutations_sync:"2"}});}finally{await maintenance.close();}
+  await service.persist(source.token,stream.id,randomUUID(),[{...copies[0]!,copyId:randomUUID()}]);
+  const retained=await new HistoricalCopyReader(f.h.sql,new BoundedCopyReader(reader)).read({instanceId:f.instanceId,from,to,pageSize:200});
+  expect(retained.items.find(i=>i.id===conflicting.event.id)!.evidenceKind).toBe("conflicting-copies");
+  expect(retained.items.every(i=>i.attribution.workspaceId===null)).toBe(true);
  }finally{await reader.close();await writer.close();await f.close();}
 });
