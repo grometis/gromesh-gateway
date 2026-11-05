@@ -1,0 +1,34 @@
+{
+  "synthetic": true,
+  "note": "Schema validity is not provenance. Runtime must authenticate and bind the producer, verify normative ID, commit admission and verify actual persistence.",
+  "openStream": {
+    "podUid": "00000000-0000-4000-8000-000000000002"
+  },
+  "copies": [
+    {
+      "schemaVersion": 1,
+      "copyId": "00000000-0000-4000-8000-000000000001",
+      "podUid": "00000000-0000-4000-8000-000000000002",
+      "requestId": "0123456789abcdef0123456789abcdef",
+      "event": {
+        "id": "db8aa15b-755d-8480-d8a1-37803b8988d7",
+        "environmentId": "00000000-0000-4000-8000-000000000004",
+        "clusterId": "00000000-0000-4000-8000-000000000005",
+        "routeId": "00000000-0000-4000-8000-000000000006",
+        "serviceId": "00000000-0000-4000-8000-000000000007",
+        "consumerId": null,
+        "ts": "2026-11-04T12:00:00.000Z",
+        "method": "GET",
+        "path": "/synthetic",
+        "status": 200,
+        "latencyKongMs": 1,
+        "latencyUpstreamMs": null,
+        "latencyTotalMs": 2,
+        "clientIp": "::ffff:192.0.2.1",
+        "requestSize": "9007199254740993",
+        "responseSize": "18446744073709551615",
+        "retentionDays": 1
+      }
+    }
+  ]
+}
