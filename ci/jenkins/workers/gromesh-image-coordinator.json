@@ -1,0 +1,17 @@
+{
+  "id": "gromesh-image-coordinator",
+  "role": "image-coordinator",
+  "architecture": "amd64",
+  "minimumCpus": 2,
+  "minimumMemoryMiB": 4096,
+  "minimumDiskGiB": 300,
+  "credentialDomains": [
+    "artifact-signing"
+  ],
+  "allowedJobs": [
+    "gromesh-artifacts/gromesh-images"
+  ],
+  "enabled": false,
+  "publicationEnabled": false,
+  "applyEnabled": false
+}

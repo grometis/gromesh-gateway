@@ -1,0 +1,18 @@
+{
+  "id": "gromesh-publisher",
+  "role": "image-publisher",
+  "architecture": "amd64",
+  "minimumCpus": 2,
+  "minimumMemoryMiB": 2048,
+  "minimumDiskGiB": 400,
+  "credentialDomains": [
+    "dockerhub-write",
+    "release-signing"
+  ],
+  "allowedJobs": [
+    "gromesh-artifacts/gromesh-images"
+  ],
+  "enabled": false,
+  "publicationEnabled": false,
+  "applyEnabled": false
+}

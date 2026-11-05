@@ -1,0 +1,6 @@
+{
+  "Rules": [
+    {"ID":"abort-incomplete-gromesh-only","Status":"Disabled","Filter":{"Prefix":"jenkins-gromesh/"},"AbortIncompleteMultipartUpload":{"DaysAfterInitiation":1}},
+    {"ID":"scratch-only-after-retention-review","Status":"Disabled","Filter":{"Prefix":"jenkins-gromesh/scratch/"},"Expiration":{"Days":7}}
+  ]
+}

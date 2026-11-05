@@ -1,0 +1,18 @@
+# INACTIVE TEMPLATE. Not loaded by Controller. Select backend + separate credential before activation.
+unclassified:
+  artifactManager:
+    artifactManagerFactories:
+      - jclouds:
+          provider: s3
+aws:
+  awsCredentials:
+    credentialsId: REQUIRES_DEDICATED_STORAGE_CREDENTIAL
+    region: REQUIRES_SELECTED_SIGNING_REGION
+  s3:
+    container: REQUIRES_PRIVATE_BUCKET
+    prefix: jenkins-gromesh/
+    customEndpoint: REQUIRES_TLS_ENDPOINT
+    customSigningRegion: REQUIRES_SELECTED_SIGNING_REGION
+    usePathStyleUrl: true
+    useHttp: false
+    disableSessionToken: false

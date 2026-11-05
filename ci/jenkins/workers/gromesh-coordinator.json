@@ -1,0 +1,22 @@
+{
+  "id": "gromesh-coordinator",
+  "role": "github-coordinator",
+  "architecture": "amd64",
+  "minimumCpus": 1,
+  "minimumMemoryMiB": 512,
+  "minimumDiskGiB": 5,
+  "credentialDomains": [
+    "github-app",
+    "ci-attestation"
+  ],
+  "allowedJobs": [
+    "gromesh-gateway/gromesh-ci/gromesh-main",
+    "gromesh-gateway/gromesh-ci/gromesh-prs",
+    "gromesh-gateway/gromesh-ci/gromesh-branches",
+    "gromesh-gateway/gromesh-ci/gromesh-discovery",
+    "gromesh-gateway/gromesh-ci/gromesh-status"
+  ],
+  "enabled": false,
+  "publicationEnabled": false,
+  "applyEnabled": false
+}
