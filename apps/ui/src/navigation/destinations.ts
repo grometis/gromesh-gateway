@@ -40,7 +40,7 @@ const breadcrumbMetadata: Record<string, Pick<Destination, "breadcrumbLabel" | "
   N09: { breadcrumbLabel: "Certificados" }, N10: { breadcrumbLabel: "Variáveis" },
   N11: { breadcrumbLabel: "Releases" }, N14: { detailKind: "snapshot" },
 };
-export const workspaceSections = ["services", "routes", "releases", "variables", "plugins", "upstreams", "consumers", "overview", "certificates"] as const;
+export const workspaceSections = ["services", "routes", "releases", "variables", "plugins", "upstreams", "consumers", "overview", "certificates", "requests"] as const;
 export const destinations: readonly Destination[] = [
   { id: "instance", label: "Instância", breadcrumbLabel: "Visão geral da instância", path: "/", scope: "global" },
   { id: "N18", label: "Workspaces", path: "/workspaces", scope: "global" },

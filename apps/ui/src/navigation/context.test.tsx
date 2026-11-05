@@ -329,7 +329,7 @@ describe("authorized route context with real transport", () => {
     const links = view.container.findAll((n) => n.tagName === "A").map((n) => n.getAttribute("href"));
     expect(links.some((href) => href?.startsWith("/e/"))).toBe(false);
     expect(links).toContain(`/workspaces/${A}/certificates`);
-    for (const legacy of ["metrics", "requests", "publish", "publications", "clusters"])
+    for (const legacy of ["metrics", "publish", "publications", "clusters"])
       expect(links).not.toContain(`/workspaces/${A}/${legacy}`);
   });
   it("keeps the service form and its data when v2 returns auto-publish", async () => {
