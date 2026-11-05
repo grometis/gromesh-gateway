@@ -1,0 +1,6 @@
+.workspace-requests .request-filters { display:flex; flex-wrap:wrap; align-items:flex-end; gap:var(--space-3); }
+.workspace-requests .request-filters .field { flex:1 1 220px; max-width:360px; }
+.workspace-requests table { min-width:1000px; }
+.workspace-requests th,.workspace-requests td { white-space:nowrap; }
+.workspace-requests nav { display:flex; flex-wrap:wrap; gap:var(--space-2); }
+.workspace-requests .table-scroll:focus-visible { outline:2px solid currentColor; outline-offset:2px; }
