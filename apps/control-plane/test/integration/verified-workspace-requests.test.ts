@@ -49,6 +49,7 @@ it("delivers proven persisted requests through real HTTP with scope, cursor and 
     const second = await get(f.workspaceId, next);
     expect(second.status).toBe(200); expect(second.body.items).toHaveLength(1); expect(second.body.nextCursor).toBeNull();
     expect(second.body.items![0]!.id).not.toBe(first.body.items![0]!.id);
+    const other=await get(f.otherWorkspaceId);expect(other.status).toBe(200);expect(other.body.items).toHaveLength(1);expect(other.body.items![0]).toMatchObject({workspaceId:f.otherWorkspaceId,routeId:f.otherRouteId});
     expect((await get(f.otherWorkspaceId, next)).status).toBe(422);
     const tampered = new URLSearchParams(next); tampered.set("cursor", first.body.nextCursor!+"0"); expect((await get(f.workspaceId, tampered)).status).toBe(422);
     const foreign = new URLSearchParams(fixed); foreign.set("routeId", f.otherRouteId); expect((await get(f.workspaceId, foreign)).status).toBe(404);
@@ -63,8 +64,11 @@ it("delivers proven persisted requests through real HTTP with scope, cursor and 
     try {
       await Promise.race([observed.promise,Promise.all([a,b]).then(()=>{throw Error("Expected controlled in-flight queries");})]);
       const third=await get(f.workspaceId);expect(third.status).toBe(429);expect(third.retryAfter).toBe("1");expect(observers).toBe(2);
+      const leases=await f.h.sql.query<{pid:number}>("select pid from pg_stat_activity where datname=current_database() and application_name like 'gromesh-analytics-query:%' order by pid");
+      expect(leases.rows).toHaveLength(2);
+      await f.h.sql.query("select pg_terminate_backend($1)",[leases.rows[0]!.pid]);
     } finally {blocked=false;release.release();}
-    expect((await a).status).toBe(200);expect((await b).status).toBe(200);
+    expect([(await a).status,(await b).status].sort()).toEqual([200,502]);
     await producer.prepare(token, streamId, randomUUID(), [{ ...original, copyId: randomUUID() }]);
     const unavailable = await get(f.workspaceId); expect(unavailable.status).toBe(502); expect(unavailable.body.code).toBe("analytics-not-ready"); expect(unavailable.body).not.toHaveProperty("items");
   } finally { release.release();await app?.close(); await serving.close();await proxy.close(); }

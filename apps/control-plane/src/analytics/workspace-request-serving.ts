@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { HttpException } from "@nestjs/common";
 import type pg from "pg";
 import type { Role } from "../auth/auth.js";
@@ -20,17 +20,22 @@ const busy = () => new HttpException({ type: "about:blank", title: "Too Many Req
 const key = (parts: readonly string[]) => BigInt.asIntN(64, BigInt("0x"+createHash("sha256").update(JSON.stringify(["analytics-v2-query-slot",...parts])).digest("hex").slice(0,16))).toString();
 
 /** Session locks coordinate all replicas without holding a transaction during remote storage work. */
-async function querySlots<T>(pool: pg.Pool, input: VerifiedWorkspaceRequestInput, run: () => Promise<T>): Promise<T> {
+async function querySlots<T>(pool: pg.Pool, input: VerifiedWorkspaceRequestInput, run: (signal:AbortSignal) => Promise<T>): Promise<T> {
   const queue = AbortSignal.any([input.signal, AbortSignal.timeout(1000)]);
   if(queue.aborted)throw busy();
   const client = await new Promise<pg.PoolClient>((resolve,reject) => {
     const aborted = () => reject(busy()); queue.addEventListener("abort",aborted,{once:true});
     void pool.connect().then(client => { queue.removeEventListener("abort",aborted); if(queue.aborted){client.release();reject(busy());}else resolve(client); },error => { queue.removeEventListener("abort",aborted);reject(error); });
   });
-  const locks: string[] = []; let destroy = false, released = false, admitted = false;
+  const locks: string[] = []; let destroy = false, released = false, admitted = false, previousName="";
+  const leaseLost=new AbortController(),signal=AbortSignal.any([input.signal,leaseLost.signal]);
+  const lost=()=>{destroy=true;leaseLost.abort();};
+  client.on("error",lost);client.once("end",lost);
   const abort = () => { if(!released){released=true;client.release(true);} };
   queue.addEventListener("abort",abort,{once:true});
   try {
+    previousName=(await client.query<{name:string}>("select pg_catalog.current_setting('application_name') name")).rows[0]!.name;
+    await client.query("select pg_catalog.set_config('application_name',$1,false)",[`gromesh-analytics-query:${randomUUID()}`]);
     const acquire = async (parts: string[], slots: number) => {
       for(let slot=0;slot<slots;slot++){
         queue.throwIfAborted(); const identity = key([...parts,String(slot)]);
@@ -40,15 +45,17 @@ async function querySlots<T>(pool: pg.Pool, input: VerifiedWorkspaceRequestInput
     };
     await acquire(["instance",input.instanceId],8);
     await acquire(["principal-workspace",input.instanceId,input.workspaceId,input.principalId],2);
+    queue.throwIfAborted();if(released||destroy)throw busy();
     admitted=true;
     queue.removeEventListener("abort",abort);input.signal.addEventListener("abort",abort,{once:true});
-    if(input.signal.aborted)abort();input.signal.throwIfAborted();return await run();
+    if(input.signal.aborted)abort();signal.throwIfAborted();const result=await run(signal);signal.throwIfAborted();return result;
   } catch(error) {
     if(!admitted&&queue.aborted&&!input.signal.aborted)throw busy();throw error;
   } finally {
     queue.removeEventListener("abort",abort);input.signal.removeEventListener("abort",abort);
+    client.removeListener("error",lost);client.removeListener("end",lost);
     if(!released){
-      try { for(const identity of locks.reverse())await client.query("select pg_catalog.pg_advisory_unlock($1::pg_catalog.int8)",[identity]); }
+      try { if(!destroy){for(const identity of locks.reverse())await client.query("select pg_catalog.pg_advisory_unlock($1::pg_catalog.int8)",[identity]);await client.query("select pg_catalog.set_config('application_name',$1,false)",[previousName]);} }
       catch { destroy = true; }
       released=true;client.release(destroy);
     }
@@ -69,11 +76,11 @@ export async function createVerifiedWorkspaceRequests(input: { pool: pg.Pool; se
       const queryInput = { ...raw, query: structuredClone(raw.query), after: raw.after ? { ...raw.after } : undefined };
       const started = performance.now();
       if(closed)throw unavailable();
-      return querySlots(input.pool,queryInput,async()=>{
+      return querySlots(input.pool,queryInput,async signal=>{
         const slot = readers.find(row=>!row.busy);if(!slot)throw busy();slot.busy=true;
         try {
           const q=queryInput.query;
-          const page=await slot.reader.read({instanceId:queryInput.instanceId,from:q.from,to:q.to,pageSize:200,...(queryInput.after?{after:queryInput.after}:{})},{},queryInput.signal);
+          const page=await slot.reader.read({instanceId:queryInput.instanceId,from:q.from,to:q.to,pageSize:200,...(queryInput.after?{after:queryInput.after}:{})},{},signal);
           if(page.next||page.items.some(item=>item.storage.kind!=="ready"||item.attribution.workspaceId===null))throw unavailable();
           const selected=page.items.filter(item=>{
             if(item.attribution.workspaceId!==queryInput.workspaceId||item.storage.kind!=="ready")return false;
@@ -92,7 +99,7 @@ export async function createVerifiedWorkspaceRequests(input: { pool: pg.Pool; se
           const last=items.at(-1),nextCursor=selected.length>items.length&&last?queryInput.issueCursor({ts:last.ts,id:last.id}):null;
           const result={scope:"workspace",instanceId:queryInput.instanceId,workspaceId:queryInput.workspaceId,from:q.from,to:q.to,generatedAt:page.asOf,attributionVersion:"route-history-v2",retention:"per-route-1-to-7-days",delivery:"best-effort",items,nextCursor};
           if(Buffer.byteLength(JSON.stringify(result))>2*1024*1024||performance.now()-started>=5000)throw budget();
-          queryInput.signal.throwIfAborted();return result;
+          signal.throwIfAborted();return result;
         } finally {slot.busy=false;}
       });
     };
