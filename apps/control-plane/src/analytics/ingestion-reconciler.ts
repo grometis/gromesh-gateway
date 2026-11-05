@@ -11,7 +11,8 @@ export function reconciliationPoolConfig(source:pg.Pool):pg.PoolConfig{
  const config:pg.PoolConfig={...source.options,password:source.options.password,max:1,connectionTimeoutMillis:1000,statement_timeout:5000,query_timeout:6000,idle_in_transaction_session_timeout:5000};
  if(source.options.options?.trim())throw Error("Unsupported reconciliation connection options");
  if(config.connectionString){
-  const url=new URL(config.connectionString);if(!["postgres:","postgresql:"].includes(url.protocol)||url.searchParams.get("options")?.trim())throw Error("Unsupported reconciliation connection options");
+  let url:URL;try{url=new URL(config.connectionString);}catch{throw Error("Unsupported reconciliation connection options");}
+  if(!["postgres:","postgresql:"].includes(url.protocol)||url.searchParams.get("options")?.trim())throw Error("Unsupported reconciliation connection options");
   for(const [key,value]of Object.entries({statement_timeout:"5000",query_timeout:"6000",idle_in_transaction_session_timeout:"5000",options:"-c lock_timeout=1000"}))url.searchParams.set(key,value);
   config.connectionString=url.toString();
  }

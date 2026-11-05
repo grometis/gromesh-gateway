@@ -16,3 +16,9 @@ it("refuses unreviewed startup options that could disable server budgets",async(
   const source=new pg.Pool(input);try{expect(()=>reconciliationPoolConfig(source)).toThrow("Unsupported reconciliation connection options");}finally{await source.end();}
  }
 });
+it("refuses unsupported hostless DSNs without attaching their credentials to errors",async()=>{
+ const secret="synthetic-only-secret",source=new pg.Pool({connectionString:`postgres://synthetic:${secret}@/test`});
+ try{let failure:unknown;try{reconciliationPoolConfig(source);}catch(error){failure=error;}
+  expect(failure).toBeInstanceOf(Error);expect(String(failure)).not.toContain(secret);expect(failure).not.toHaveProperty("input");expect(failure).not.toHaveProperty("cause");
+ }finally{await source.end();}
+});
