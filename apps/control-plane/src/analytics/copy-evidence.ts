@@ -58,13 +58,12 @@ export async function extendAdmittedCopyEvidence(tx:Tx,ctx:RequestContext,batchI
   const ids=[...new Set(source.descriptor.map(d=>d.id))];
   const existing=await tx.select().from(facts).where(inArray(facts.requestId,ids)).limit(10001);
   if(existing.length>10000)throw new Error("Copy evidence budget exceeded");
-  const [lost]=await tx.select().from(coverage);
   const observations:CopyObservation[]=[];
   for(const id of ids){
     const descriptors=source.descriptor.filter(d=>d.id===id),expiry=Math.max(...descriptors.map(d=>Date.parse(d.expiresAt)));
     const previous=existing.filter(r=>r.requestId===id),conflict=previous.find(r=>r.kind==="conflicting-copies"),negative=conflict??previous[0];
     if(negative&&expiry>Math.max(...previous.map(r=>Date.parse(r.expiresAt)))) observations.push({id,kind:negative.kind,leftHash:negative.leftHash,rightHash:negative.rightHash||null,expiresAt:new Date(expiry).toISOString()});
-    else if(!negative&&lost)observations.push({id,kind:"comparison-unavailable",leftHash:descriptors[0]!.commitment,rightHash:null,expiresAt:new Date(expiry).toISOString()});
+
   }
   return recordCopyEvidenceTx(tx,ctx,batchId,observations);
 }
@@ -104,4 +103,28 @@ export async function pruneCopyEvidence(db: Db, ctx: RequestContext, limit: numb
     await audit(tx,ctx,{action:"analytics.copy-evidence.prune",entityType:"copy-evidence",after:{count:expired.length,prunedThrough:through.toString()}});
     return {removed:expired.length};
   });
+}
+
+export interface ObservedCopyIdentity {batchId:string;copyId:string;generation:string}
+/** Negative-only reconciliation, under the same writer lock as receipt/admission. Never equate hashes. */
+export async function reconcileAdmittedComparisons(tx:Tx,ctx:RequestContext,batchId:string,observed:readonly ObservedCopyIdentity[]){
+ const [source]=await tx.select().from(batches).where(eq(batches.id,batchId));if(!source||observed.length>10000)return invalid();
+ const ids=[...new Set(source.descriptor.map(d=>d.id))];
+ const earlier=(await tx.execute<{batchId:string;generation:string;id:string;copyId:string;commitment:string;expiresAt:string}>(sql`
+  select b.id as "batchId",b.generation::text as generation,d->>'id' as id,d->>'copyId' as "copyId",d->>'commitment' as commitment,d->>'expiresAt' as "expiresAt"
+  from analytics_ingestion_batches b cross join lateral jsonb_array_elements(b.descriptor) d
+  where b.generation<${source.generation} and d->>'id' in (${sql.join(ids.map(id=>sql`${id}`),sql`,`)}) limit 10001`)).rows;
+ if(earlier.length>10000)throw new Error("Copy comparison budget exceeded");
+ const present=new Set(observed.map(o=>JSON.stringify([o.batchId,o.generation,o.copyId]))),observations:CopyObservation[]=[];
+ for(const id of ids){
+  const admitted=source.descriptor.filter(d=>d.id===id),previous=earlier.filter(d=>d.id===id);
+  const differing=previous.find(old=>old.commitment!==admitted[0]!.commitment);
+  const missing=previous.some(old=>!present.has(JSON.stringify([old.batchId,old.generation,old.copyId])));
+  if(differing||missing)observations.push({id,kind:differing?"conflicting-copies":"comparison-unavailable",leftHash:admitted[0]!.commitment,rightHash:differing?.commitment??null,expiresAt:new Date(Math.max(...admitted.map(d=>Date.parse(d.expiresAt)),...previous.map(d=>Date.parse(d.expiresAt)))).toISOString()});
+ }
+ await recordCopyEvidenceTx(tx,ctx,batchId,observations);
+ // Previously known uncertainty cannot disappear just because its raw witness no longer appears today.
+ const negatives=await tx.select({id:facts.id}).from(facts).where(and(inArray(facts.requestId,ids),eq(facts.kind,"conflicting-copies"))).limit(1);
+ // A historical individual-batch receipt is not a claim that globally pruned history is complete.
+ return {blocked:observations.length>0||negatives.length>0};
 }

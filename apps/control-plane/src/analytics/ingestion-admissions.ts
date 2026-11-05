@@ -8,7 +8,7 @@ import { audit } from "../audit/audit.js";
 import type { RequestContext } from "../auth/auth.js";
 import { ProblemException } from "../common/problem.js";
 import { copyStateOf } from "./copy-state.js";
-import { extendAdmittedCopyEvidence, recordCopyEvidence } from "./copy-evidence.js";
+import { extendAdmittedCopyEvidence, reconcileAdmittedComparisons, recordCopyEvidence } from "./copy-evidence.js";
 import { CopyEvidenceError, IngestionCopyPersistence } from "./ingestion-copy-persistence.js";
 import { encodeRawRequestCopy } from "./request-copy-store.js";
 
@@ -103,27 +103,31 @@ export class IngestionAdmissions {
       if(!stream||stream.nodeId!==a.current.node.nodeId||stream.authorizationId!==a.last.id)return denied();
       return claimIngestionWork(tx,a.ctx,batchId);
     });
-    const asOf=(await this.db.execute<{now:string}>(sql`select to_char(clock_timestamp() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as now`)).rows[0]!.now;
     // No network call is performed while holding a PostgreSQL transaction or cluster/admission lock.
-    let observed:{storedCopies:number;expiredCopies:number};
-    try { observed=await this.persistence.persist({streamId,batchId,generation:prepared.generation,copies,asOf}); }
+    let observed:Awaited<ReturnType<IngestionCopyPersistence["persist"]>>;
+    try {
+      const asOf=(await this.db.execute<{now:string}>(sql`select to_char(clock_timestamp() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as now`)).rows[0]!.now;
+      observed=await this.persistence.persist({streamId,batchId,generation:prepared.generation,copies,asOf}); }
     catch(error) {
-      if(error instanceof CopyEvidenceError) await recordCopyEvidence(this.db,{actor:{type:"system",id:"analytics-copy-observer"},role:"viewer",ip:null},batchId,error.observations);
-      await this.db.transaction(async tx=>{await lock(tx);await finishIngestionWork(tx,{actor:{type:"system",id:"analytics-persistence-worker"},role:"viewer",ip:null},work,"failed");});
+      try{if(error instanceof CopyEvidenceError) await recordCopyEvidence(this.db,{actor:{type:"system",id:"analytics-copy-observer"},role:"viewer",ip:null},batchId,error.observations);}
+      finally{await this.db.transaction(async tx=>{await lock(tx);await finishIngestionWork(tx,{actor:{type:"system",id:"analytics-persistence-worker"},role:"viewer",ip:null},work,"failed");});}
       throw error;
     }
-    try{return await this.db.transaction(async tx=>{
+    try{const confirmed=await this.db.transaction(async tx=>{
       await lock(tx);const a=await this.authorized(tx,token);
       await assertIngestionWork(tx,work);
       const [stream]=await tx.select().from(streams).where(eq(streams.id,streamId));
       if(!stream||stream.instanceId!==a.self.id||stream.clusterId!==a.current.cluster.id||stream.nodeId!==a.current.node.nodeId||stream.authorizationId!==a.last.id)return denied();
       const [existing]=await tx.select().from(receipts).where(eq(receipts.batchId,batchId));
       if(existing)return receipt(existing);
-      await tx.insert(receipts).values({batchId,...observed});
-      await audit(tx,a.ctx,{action:"analytics.ingestion.persist",entityType:"ingestion-batch",entityId:batchId,after:{streamId,generation:prepared.generation,...observed,evidence:"exact-clickhouse-read-back"}});
+      const comparison=await reconcileAdmittedComparisons(tx,a.ctx,batchId,observed.observedCopies);
+      if(comparison.blocked){await finishIngestionWork(tx,a.ctx,work,"failed");return null;}
+      const counts={storedCopies:observed.storedCopies,expiredCopies:observed.expiredCopies};
+      await tx.insert(receipts).values({batchId,...counts});
+      await audit(tx,a.ctx,{action:"analytics.ingestion.persist",entityType:"ingestion-batch",entityId:batchId,after:{streamId,generation:prepared.generation,...counts,evidence:"exact-clickhouse-read-back"}});
       await finishIngestionWork(tx,a.ctx,work,"verified");
       return receipt(observed);
-    });}catch(error){
+    });if(!confirmed)throw new Error("Ingestion persistence is not confirmed");return confirmed;}catch(error){
       await this.db.transaction(async tx=>{await lock(tx);await finishIngestionWork(tx,{actor:{type:"system",id:"analytics-persistence-worker"},role:"viewer",ip:null},work,"failed");});
       throw error;
     }
