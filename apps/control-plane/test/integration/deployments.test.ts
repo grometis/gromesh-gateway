@@ -250,6 +250,8 @@ describe("v2 delivery and convergence in a laboratory", () => {
 
     const res = await agentCall(base, c.token, "GET", "v2/deployments/current");
     expect(res.status).toBe(200);
+    // R17: actual bearer + explicit protocol + signed activation gate authorize this prospective CP association.
+    expect((await h.sql.query(`select e.instance_id, e.source_node_id, e.provenance from analytics_cluster_events e join analytics_cluster_visibility v on v.authorization_id=e.id where e.cluster_id=$1 and e.operation='authorize'`, [c.id])).rows).toEqual([{ instance_id: res.body!.instanceId, source_node_id: "node-1", provenance: "cp-authorized-v2-delivery" }]);
     expect(res.headers.get("x-gromesh-epoch")).toBe("1");
     expect(res.headers.get("x-gromesh-revision")).toBe(String(dep.revision));
     expect(res.headers.get("etag")).toBe(dep.config_hash);
@@ -406,6 +408,7 @@ describe("v2 delivery and convergence in a laboratory", () => {
     const back = await v2(h.api, "PUT", `/clusters/${c.id}/delivery-protocol`, { protocol: "v1", reason: "controlled return drill" });
     expect(back.status, JSON.stringify(back.body)).toBe(200);
     expect(back.body.deliveryProtocol).toBe("v1");
+    expect((await h.sql.query(`select operation from analytics_cluster_events where cluster_id=$1 order by sequence desc limit 1`, [c.id])).rows[0].operation).toBe("revoke");
     // No expected node left: nothing proves the revision, so it never converges; it is degraded and frees the lease.
     expect((await history(waiting.revision)).at(-1)).toBe("degraded");
     expect((await h.sql.query(`select revision from deployment_lease`)).rows[0].revision).toBeNull();
