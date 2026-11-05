@@ -16,12 +16,12 @@ function decodeMetadata(rows:Record<string,unknown>[]){
 export class PhysicalCopyFence {
  private busy=false;
  constructor(private readonly client:ClickHouseClient){}
- async observe(ids:readonly string[],budget:CopyReadBudget={},signal?:AbortSignal){
+ async observe(ids:readonly string[],budget:CopyReadBudget={},signal?:AbortSignal,context?:BoundedCopyQueries,sessionExists=false){
   if(ids.length>10000||ids.some(id=>!uuid.test(id)))throw Error("Invalid physical copy read");
   if(this.busy)throw copyReadNotReady();this.busy=true;
   try{
-   const queries=new BoundedCopyQueries(this.client,budget,signal,`gromesh-copy-fence-${randomUUID()}`);
-   const before=decodeMetadata(await queries.query(metadata,{},1));
+   const queries=context??new BoundedCopyQueries(this.client,budget,signal,`gromesh-copy-fence-${randomUUID()}`);
+   const before=decodeMetadata(await queries.query(metadata,{},1,sessionExists));
    await assertCopyStorageSchema(queries);
    // A new part cannot silently enter the read cut, even if a later merge or TTL removes it.
    const rows=ids.length?await queries.query(`SELECT id,toString(ts) AS ts,environment_id,cluster_id,service_id,route_id,consumer_id,method,path,status,

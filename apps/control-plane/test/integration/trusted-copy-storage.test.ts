@@ -1,58 +1,14 @@
+import { trustedFixture as fixture, trustedRuntime as runtime, trustedContext as ctx, trustedClient as client } from "./trusted-copy-storage-fixtures.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import pg from "pg";
-import { drizzle } from "drizzle-orm/node-postgres";
-import * as schema from "../../src/db/schema.js";
 import { sql } from "drizzle-orm";
-import type { Db } from "../../src/db/db.js";
 import { AgentGatewayService } from "../../src/agent-gateway/agent-gateway.js";
 import { authorizeClusterDelivery, confirmClusterAssociation, revokeClusterAssociation } from "../../src/analytics/cluster-history.js";
 import { openTrustedIngestion } from "../../src/analytics/trusted-ingestion.js";
-import { createClient, ClickHouseLogLevel, type ClickHouseClient } from "@clickhouse/client";
 import { expect, it } from "vitest";
-import { clusterHistoryFixture } from "./cluster-history-fixtures.js";
 import { integrationInputs } from "../../../../scripts/integration-databases.mjs";
-import { provisionTrustedCopyStorage, type TrustedCopyStorageSettings } from "../../src/analytics/trusted-copy-storage.js";
+import { provisionTrustedCopyStorage } from "../../src/analytics/trusted-copy-storage.js";
 import { readRuntimeCopyStorage } from "../../src/analytics/ingestion-storage-registration.js";
 
-async function fixture(run: (f: Awaited<ReturnType<typeof clusterHistoryFixture>>, admin: ClickHouseClient, settings: TrustedCopyStorageSettings) => Promise<void>) {
-  const f = await clusterHistoryFixture(), input = integrationInputs(process.env).clickhouse;
-  const admin = createClient({ url: input.url, username: input.user, password: input.password, log: { level: ClickHouseLogLevel.OFF }, clickhouse_settings: { log_queries: 0 } });
-  const name = `gromesh_test_${randomBytes(12).toString("hex")}`;
-  const settings: TrustedCopyStorageSettings = { url: input.url, databaseName: name,
-    writer: { user: `${name}_w`, password: randomBytes(24).toString("hex") },
-    reader: { user: `${name}_r`, password: randomBytes(24).toString("hex") },
-    auditor: { user: `${name}_a`, password: randomBytes(24).toString("hex") } };
-  // These exact names were absent before this fixture and can only be created by its trusted provisioner.
-  const users = [settings.writer.user, settings.reader.user, settings.auditor.user];
-  expect(await (await admin.query({ query: "SELECT name FROM system.users WHERE name IN {users:Array(String)}", query_params: { users }, format: "JSONEachRow" })).json()).toEqual([]);
-  expect(await (await admin.query({ query: "SELECT name FROM system.databases WHERE name={database:String}", query_params: { database: name }, format: "JSONEachRow" })).json()).toEqual([]);
-  try { await run(f, admin, settings); }
-  finally {
-    await f.close();
-    // Only execution-owned databases/users on the already disposable server, never operational names or prefixes.
-    await admin.command({ query: `DROP DATABASE IF EXISTS ${name}`, clickhouse_settings: { log_queries: 0 } });
-    for (const user of users) await admin.command({ query: `DROP USER IF EXISTS ${user}`, clickhouse_settings: { log_queries: 0 } });
-    await admin.close();
-  }
-}
-const ctx = { actor: { type: "system" as const, id: "synthetic-storage-provisioner" }, role: "admin" as const, ip: null };
-async function runtime(f: Awaited<ReturnType<typeof clusterHistoryFixture>>, run: (db: Db, role: string, pool: pg.Pool) => Promise<void>) {
-  const role = `r21_${randomBytes(12).toString("hex")}`, password = randomBytes(24).toString("hex");
-  await f.h.sql.query(`CREATE ROLE ${role} LOGIN PASSWORD '${password}'`);
-  let pool: pg.Pool | undefined;
-  try {
-    await f.h.sql.query(`GRANT USAGE ON SCHEMA public TO ${role}; GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA public TO ${role}; REVOKE INSERT,UPDATE,DELETE ON public.analytics_ingestion_storage FROM ${role}; GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA public TO ${role}`);
-    const url = new URL(f.url); url.username = role; url.password = password;
-    pool = new pg.Pool({ connectionString: url.toString() });
-    await run(drizzle(pool, { schema }), role, pool);
-  } finally {
-    await pool?.end();
-    await f.h.sql.query(`DROP OWNED BY ${role}; DROP ROLE ${role}`);
-  }
-}
-function client(settings: TrustedCopyStorageSettings, kind: "writer" | "reader" | "auditor") {
-  return createClient({ url: settings.url, database: settings.databaseName, username: settings[kind].user, password: settings[kind].password, log: { level: ClickHouseLogLevel.OFF }, clickhouse_settings: { log_queries: 0 } });
-}
 it("provisions a fresh real resource and enforces separate data/metadata identities", () => fixture(async (f, admin, settings) => {
   const registration = await provisionTrustedCopyStorage({ db: f.db, ctx, admin, settings, administratorNames: [integrationInputs(process.env).clickhouse.user] });
   expect(registration.databaseName).toBe(settings.databaseName);
