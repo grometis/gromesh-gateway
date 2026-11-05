@@ -85,6 +85,6 @@ export async function readAdmissionPrefix(db:Db){
 }
 
 export async function assertAnalyticsReadSnapshot(db:Executor){
- const row=(await db.execute<{isolation:string;readOnly:string}>(sql`select current_setting('transaction_isolation') as isolation,current_setting('transaction_read_only') as "readOnly"`)).rows[0]!;
+ const row=(await db.execute<{isolation:string;readOnly:string}>(sql`select pg_catalog.current_setting('transaction_isolation') as isolation,pg_catalog.current_setting('transaction_read_only') as "readOnly"`)).rows[0]!;
  if(!["repeatable read","serializable"].includes(row.isolation)||row.readOnly!=="on")throw Error("Analytics history requires a coherent read-only snapshot");
 }
