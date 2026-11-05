@@ -29,6 +29,7 @@ function micros(value:string):bigint {
   return BigInt(ms)*1000n+BigInt(fraction.padEnd(6,"0").slice(3));
 }
 async function lock(tx:Tx) {
+  await tx.execute(sql`set local search_path=pg_catalog,public,pg_temp`);
   await tx.execute(sql`set local lock_timeout='1s'`);
   await tx.execute(sql`set local statement_timeout='5s'`);
   await tx.execute(sql`select pg_advisory_xact_lock(1818,1801)`);

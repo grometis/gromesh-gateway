@@ -18,6 +18,7 @@ const digest = (text: string) => createHash("sha256").update(text).digest("hex")
 
 /** These checks run both before INSERT and inside the receipt transaction. No network I/O here. */
 async function assertAdmittedWrite(tx: Tx, gateway: AgentGatewayService, registration: RegisteredCopyStorage, input: IngestionPersistenceInput) {
+  await tx.execute(sql`set local search_path=pg_catalog,public,pg_temp`);
   await tx.execute(sql`set local lock_timeout='1s'`);
   await tx.execute(sql`set local statement_timeout='5s'`);
   await tx.execute(sql`select pg_advisory_xact_lock(1818,1801)`);

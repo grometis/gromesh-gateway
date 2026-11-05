@@ -36,12 +36,12 @@ export async function readRuntimeCopyStorage(tx: Executor): Promise<RegisteredCo
         or rolname in ('pg_read_server_files','pg_write_server_files','pg_execute_server_program')
         or pg_catalog.has_schema_privilege(oid,'public','CREATE'))
       and pg_catalog.pg_has_role(session_user,oid,'MEMBER'))) privileged,
-      (pg_catalog.pg_has_role(current_user,(select relowner from pg_catalog.pg_class where oid='public.analytics_ingestion_storage'::regclass),'MEMBER')
+      (pg_catalog.pg_has_role(current_user,(select relowner from pg_catalog.pg_class where oid='public.analytics_ingestion_storage'::pg_catalog.regclass),'MEMBER')
        or pg_catalog.pg_has_role(session_user,(select nspowner from pg_catalog.pg_namespace where nspname='public'),'MEMBER')
-       or pg_catalog.pg_has_role(session_user,(select datdba from pg_catalog.pg_database where datname=current_database()),'MEMBER')) owning,
+       or pg_catalog.pg_has_role(session_user,(select datdba from pg_catalog.pg_database where datname=pg_catalog.current_database()),'MEMBER')) owning,
       pg_catalog.has_table_privilege(current_user,'public.analytics_ingestion_storage','INSERT,UPDATE,DELETE,TRUNCATE,TRIGGER') writable,
       pg_catalog.has_table_privilege(current_user,'public.analytics_ingestion_storage','SELECT') readable`)).rows;
-  if (!row || row.privileged || row.owning || row.writable || !row.readable) throw copyReadNotReady();
+  if (!row || row.privileged !== false || row.owning !== false || row.writable !== false || row.readable !== true) throw copyReadNotReady();
   const registrations = (await tx.execute<typeof storage.$inferSelect>(sql`
     select singleton,instance_id as "instanceId",server_id as "serverId",database_name as "databaseName",database_id as "databaseId",
       table_id as "tableId",definition,writer_id as "writerId",reader_id as "readerId",auditor_id as "auditorId",administrator_ids as "administratorIds",
