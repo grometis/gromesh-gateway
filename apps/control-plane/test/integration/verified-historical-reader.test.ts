@@ -1,6 +1,8 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
 import type { ClickHouseClient } from "@clickhouse/client";
+import type pg from "pg";
+import { copyStorageProxy } from "./copy-storage-proxy.js";
 import type { TrustedCopyStorageSettings } from "../../src/analytics/trusted-copy-storage.js";
 import { integrationInputs } from "../../../../scripts/integration-databases.mjs";
 import { AgentGatewayService } from "../../src/agent-gateway/agent-gateway.js";
@@ -9,7 +11,7 @@ import { provisionTrustedCopyStorage } from "../../src/analytics/trusted-copy-st
 import { openVerifiedHistoricalReader } from "../../src/analytics/verified-historical-reader.js";
 import { trustedFixture, trustedRuntime, trustedContext as ctx } from "./trusted-copy-storage-fixtures.js";
 
-async function chain(run: (f: Parameters<Parameters<typeof trustedFixture>[0]>[0], reader: Awaited<ReturnType<typeof openVerifiedHistoricalReader>>, producer: Awaited<ReturnType<typeof openTrustedIngestion>>, copies: ReturnType<typeof make>[], streamId: string, token: string, admin: ClickHouseClient, settings: TrustedCopyStorageSettings) => Promise<void>) {
+async function chain(run: (f: Parameters<Parameters<typeof trustedFixture>[0]>[0], reader: Awaited<ReturnType<typeof openVerifiedHistoricalReader>>, producer: Awaited<ReturnType<typeof openTrustedIngestion>>, copies: ReturnType<typeof make>[], streamId: string, token: string, admin: ClickHouseClient, settings: TrustedCopyStorageSettings, pool: pg.Pool) => Promise<void>) {
   await trustedFixture(async (f, admin, settings) => {
     await provisionTrustedCopyStorage({ db: f.db, ctx, admin, settings, administratorNames: [integrationInputs(process.env).clickhouse.user] });
     const source = await f.registered();
@@ -23,7 +25,7 @@ async function chain(run: (f: Parameters<Parameters<typeof trustedFixture>[0]>[0
         const ts = (await f.h.sql.query<{ ts: string }>(`select to_char(clock_timestamp() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') ts`)).rows[0]!.ts;
         const copies = [make(f.instanceId, source.source.clusterId, pod, ts, f.routeId, f.serviceId), make(f.instanceId, source.source.clusterId, pod, ts, f.otherRouteId, f.otherServiceId)];
         await producer.persist(source.token, stream.id, randomUUID(), copies);
-        await run(f, reader, producer, copies, stream.id, source.token, admin, settings);
+        await run(f, reader, producer, copies, stream.id, source.token, admin, settings, pool);
       } finally { await reader.close(); await producer.close(); }
     });
   });
@@ -73,4 +75,20 @@ it("refuses another instance and exposes neither clients nor resource mutation c
 it("does not accept a receipt whose storage witness was removed or rebound", () => chain(async (f, reader, _producer, copies) => {
   await f.h.sql.query("update audit_events set after=after-'storageWitness' where action='analytics.ingestion.persist'");
   await expect(reader.read(window(f.instanceId, copies[0]!.event.ts))).rejects.toMatchObject({ code: "analytics-not-ready" });
+}));
+it("rechecks parts after the historical transaction commits and refuses a late physical deletion", () => chain(async (f, _reader, _producer, copies, _stream, _token, admin, settings, pool) => {
+  let cuts = 0, noTransaction = false;
+  const proxy = await copyStorageProxy(settings.url, async query => {
+    if (query.includes("FROM system.parts") && ++cuts === 3) {
+      const result = await f.h.sql.query<{ n: number }>("select count(*)::int n from pg_stat_activity where datname=current_database() and application_name like 'gromesh-analytics-read:%' and state='idle in transaction'");
+      noTransaction = result.rows[0]!.n === 0;
+      await admin.command({ query: `ALTER TABLE ${settings.databaseName}.requests_v2_copies DELETE WHERE id={id:UUID}`, query_params: { id: copies[0]!.event.id }, clickhouse_settings: { mutations_sync: "2" } });
+    }
+  });
+  try {
+    const guarded = await openVerifiedHistoricalReader({ pool, settings: { ...settings, url: proxy.url } });
+    try { await expect(guarded.read(window(f.instanceId, copies[0]!.event.ts))).rejects.toMatchObject({ code: "analytics-not-ready" }); }
+    finally { await guarded.close(); }
+    expect(cuts).toBe(3); expect(noTransaction).toBe(true);
+  } finally { await proxy.close(); }
 }));

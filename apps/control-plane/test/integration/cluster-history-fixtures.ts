@@ -3,6 +3,7 @@ import { startHarness, type Harness } from "./harness.js";
 import { runMigrations } from "../../src/db/migrate.js";
 import { DB, type Db } from "../../src/db/db.js";
 import type { RequestContext } from "../../src/auth/auth.js";
+import { awaitDatabaseDisconnect } from "./postgres-disconnect.js";
 /** Synthetic disposable fixture: real CP-issued UUIDs/tokens/deployment; direct v2 state is NOT activation proof. */
 export async function clusterHistoryFixture() {
     const name = integrationDatabaseName("r17cluster");
@@ -51,6 +52,7 @@ export async function clusterHistoryFixture() {
         };
         return { h, db, url, base, instanceId, workspaceId, serviceId, routeId, otherWorkspaceId, otherServiceId, otherRouteId, registered, close: async () => {
                 await h!.close();
+                await awaitDatabaseDisconnect(url);
                 await dropIntegrationDatabase(name);
             } };
     }

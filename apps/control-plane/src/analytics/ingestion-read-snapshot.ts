@@ -56,8 +56,11 @@ export function withIngestionReadSnapshot<T>(pool:pg.Pool,read:(db:Db,signal:Abo
  return withIngestionReadSession(pool,(snapshot,signal)=>snapshot(db=>read(db,signal)),caller);
 }
 /** Planning and final validation share the ingestion lock, but ClickHouse I/O runs with NO open PG transaction. */
-export function withIngestionReadFence<P,O,T>(pool:pg.Pool,prepare:(db:Db)=>Promise<P>,observe:(plan:P,signal:AbortSignal)=>Promise<O>,confirm:(db:Db,plan:P,observed:O)=>Promise<T>,caller?:AbortSignal):Promise<T>{
- return withIngestionReadSession(pool,async(snapshot,signal)=>{const plan=await snapshot(prepare);const observed=await observe(plan,signal);return snapshot(db=>confirm(db,plan,observed));},caller);
+export function withIngestionReadFence<P,O,T>(pool:pg.Pool,prepare:(db:Db)=>Promise<P>,observe:(plan:P,signal:AbortSignal)=>Promise<O>,confirm:(db:Db,plan:P,observed:O)=>Promise<T>,caller?:AbortSignal,verify?:(plan:P,observed:O,result:T,signal:AbortSignal)=>Promise<void>):Promise<T>{
+ return withIngestionReadSession(pool,async(snapshot,signal)=>{const plan=await snapshot(prepare);const observed=await observe(plan,signal);const result=await snapshot(db=>confirm(db,plan,observed));
+  // Final physical verification happens after COMMIT, still under the same shared session lock.
+  if(verify)await verify(plan,observed,result,signal);return result;
+ },caller);
 }
 
 /** This observes a receipt prefix only; it does NOT prove current CH survival or delivery since Kong. */
