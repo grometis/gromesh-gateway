@@ -1,0 +1,30 @@
+// Outbound GitHub App polling; no public webhook or Cloudflare bypass.
+properties([disableConcurrentBuilds(),pipelineTriggers([cron('H/5 * * * *')]),buildDiscarder(logRotator(numToKeepStr:'30'))])
+if(env.JOB_NAME!='gromesh-gateway/gromesh-ci/gromesh-discovery')error('UNAPPROVED_DISCOVERY_JOB')
+def revision=scm.branches[0].name
+if(!(revision==~/[a-f0-9]{40}/))error('IMMUTABLE_REVIEWED_PIPELINE_REVISION_REQUIRED')
+timeout(time:5,unit:'MINUTES') {
+  node('gromesh-coordinator') {
+    withEnv(['GROMESH_PIPELINE_SHA='+revision,'PATH=/opt/gromesh/tools/node/bin:/opt/gromesh/tools/bin:/usr/local/bin:/usr/bin:/bin']) {
+      withCredentials([file(credentialsId:'gromesh-github-app-private-key',variable:'GROMESH_GITHUB_APP_KEY_FILE')]) {
+        stage('Discover canonical main, PR and branch heads') {
+          sh '/opt/gromesh/tools/node/bin/node /opt/gromesh/jenkins/discovery.mjs list'
+          archiveArtifacts(artifacts:'discovery-pending.json',fingerprint:true)
+        }
+        def pending=readJSON(file:'discovery-pending.json',returnPojo:true).pending
+        for(def candidate in pending) {
+          def allowed=['gromesh-gateway/gromesh-ci/gromesh-main','gromesh-gateway/gromesh-ci/gromesh-prs','gromesh-gateway/gromesh-ci/gromesh-branches']
+          if(!allowed.contains(candidate.job)||!(candidate.source.sha==~/[a-f0-9]{40}/))error('UNAPPROVED_CI_DISPATCH')
+          stage('Queue '+candidate.source.sha.take(12)) {
+            build(job:candidate.job,wait:false,parameters:[
+              string(name:'SHA',value:candidate.source.sha),string(name:'PR_NUMBER',value:candidate.source.pr?candidate.source.pr.toString():''),string(name:'BRANCH',value:candidate.source.branch)
+            ])
+            // Persist only after Jenkins accepted the request. A failed request remains pending.
+            writeJSON(file:'discovery-ack.json',json:candidate.source)
+            sh '/opt/gromesh/tools/node/bin/node /opt/gromesh/jenkins/discovery.mjs acknowledge'
+          }
+        }
+      }
+    }
+  }
+}

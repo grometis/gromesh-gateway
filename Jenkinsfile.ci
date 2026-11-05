@@ -1,0 +1,142 @@
+// The job's SCM revision must be an independently reviewed, immutable SHA.
+// PR/branch code is checked out separately; it never supplies this orchestration.
+properties([
+  disableConcurrentBuilds(),
+  buildDiscarder(logRotator(numToKeepStr: '30', daysToKeepStr: '30')),
+  parameters([
+    string(name: 'SHA', defaultValue: '', description: 'Exact candidate commit; independently checked against GitHub'),
+    string(name: 'PR_NUMBER', defaultValue: '', description: 'PR job only'),
+    string(name: 'BRANCH', defaultValue: '', description: 'Branch job only')
+  ])
+])
+def jobs = [
+  'gromesh-gateway/gromesh-ci/gromesh-main': 'main',
+  'gromesh-gateway/gromesh-ci/gromesh-prs': 'pr',
+  'gromesh-gateway/gromesh-ci/gromesh-branches': 'branch'
+]
+def profile = jobs[env.JOB_NAME]
+if (!profile || !(params.SHA ==~ /[a-f0-9]{40}/)) error('INVALID_CI_JOB_OR_SHA')
+def pipelineSha = scm.branches[0].name
+if (!(pipelineSha ==~ /[a-f0-9]{40}/)) error('IMMUTABLE_REVIEWED_PIPELINE_REVISION_REQUIRED')
+def github = { path ->
+  readJSON(text: httpRequest(url: 'https://api.github.com/repos/grometis/gromesh-gateway/' + path,
+    httpMode: 'GET', quiet: true, consoleLogResponseBody: false, validResponseCodes: '200', timeout: 30).content, returnPojo: true)
+}
+def source = [repository: 'grometis/gromesh-gateway', sha: params.SHA, event: 'manual', branch: 'main', pr: null, baseSha: null]
+def comparisonBase
+def results = []
+def tools = [:]
+def bindings = []
+def nonce = UUID.randomUUID().toString().replace('-', '')
+def fullJob = env.JOB_NAME
+def buildId = env.BUILD_NUMBER
+def buildUrl = env.BUILD_URL
+def sourceRef
+timeout(time: 6, unit: 'HOURS') {
+  stage('Resolve exact GitHub source') {
+    if (profile == 'pr') {
+      if (!(params.PR_NUMBER ==~ /[1-9][0-9]*/)) error('INVALID_PR')
+      def pr = github('pulls/' + params.PR_NUMBER)
+      if (pr.state != 'open' || pr.base.repo.full_name != source.repository || pr.head.sha != params.SHA) error('PR_SOURCE_CHANGED')
+      if (!(pr.merge_commit_sha ==~ /[a-f0-9]{40}/) || pr.mergeable == false) error('PR_TEST_MERGE_UNAVAILABLE')
+      def merge = github('commits/' + pr.merge_commit_sha)
+      def parents = merge.parents.collect { it.sha }
+      if (merge.sha != pr.merge_commit_sha || !parents.contains(pr.head.sha) || !parents.contains(pr.base.sha)) error('PR_TEST_MERGE_PARENTS_CHANGED')
+      source.event = 'pull_request'; source.branch = pr.head.ref; source.pr = pr.number; source.baseSha = pr.base.sha
+      source.headSha = pr.head.sha; source.sha = pr.merge_commit_sha
+      comparisonBase = pr.base.sha; sourceRef = 'refs/pull/' + pr.number + '/merge'
+    } else {
+      def branch = profile == 'main' ? 'main' : params.BRANCH
+      if (!(branch ==~ /[A-Za-z0-9][A-Za-z0-9._\/-]{0,199}/) || branch.contains('..') || (profile == 'branch' && branch == 'main')) error('INVALID_BRANCH')
+      def encoded = java.net.URLEncoder.encode(branch, 'UTF-8')
+      def comparison = github('compare/' + params.SHA + '...' + encoded)
+      if (comparison.merge_base_commit.sha != params.SHA) error('SHA_OUTSIDE_BRANCH')
+      def commit = github('commits/' + params.SHA)
+      if (commit.sha != params.SHA || !commit.parents || !(commit.parents[0].sha ==~ /[a-f0-9]{40}/)) error('COMPARISON_BASE_REQUIRED')
+      comparisonBase = commit.parents[0].sha; source.branch = branch; sourceRef = 'refs/heads/' + branch
+      def upstream = currentBuild.getBuildCauses('hudson.model.Cause$UpstreamCause')
+      if (upstream.any { it.upstreamProject == 'gromesh-gateway/gromesh-ci/gromesh-discovery' }) source.event = 'push'
+    }
+    bindings = [
+      'PATH=/opt/gromesh/tools/node/bin:/opt/gromesh/tools/bin:/usr/local/bin:/usr/bin:/bin',
+      'DOCKER_HOST=unix:///run/user/1000/docker.sock', 'JENKINS_URL=https://jenkins.grometis.com/',
+      'GROMESH_SOURCE_SHA=' + source.sha, 'GROMESH_SOURCE_EVENT=' + source.event,
+      'GROMESH_SOURCE_BRANCH=' + source.branch, 'GROMESH_PR_NUMBER=' + (source.pr ?: ''),
+      'GROMESH_PR_HEAD_SHA=' + (source.headSha ?: ''),
+      'GROMESH_BASE_SHA=' + (source.baseSha ?: ''), 'GROMESH_DIFF_BASE_SHA=' + comparisonBase,
+      'GROMESH_PIPELINE_SHA=' + pipelineSha, 'GROMESH_CI_RUN=' + nonce
+    ]
+  }
+  def checkoutCandidate = {
+    checkout([$class: 'GitSCM', branches: [[name: source.sha]],
+      userRemoteConfigs: [[url: 'https://github.com/grometis/gromesh-gateway.git', refspec: '+refs/heads/*:refs/remotes/origin/* +refs/pull/*/head:refs/remotes/origin/pr/* +refs/pull/*/merge:refs/remotes/origin/pr-merge/*']],
+      extensions: [[$class: 'CloneOption', noTags: true, shallow: false, timeout: 10]]])
+    sh 'git config core.hooksPath .githooks'
+  }
+  def domain = profile == 'main' ? 'main' : 'untrusted'
+  try {
+    node('gromesh-ci-' + domain + '-arm64') {
+      dir('source') {
+        checkoutCandidate()
+        withEnv(bindings) {
+          tools = readJSON(text: sh(returnStdout: true, script: '/opt/gromesh/tools/node/bin/node /opt/gromesh/jenkins/runner.mjs tools').trim(), returnPojo: true)
+          for (def id in ['install','generated-client','contracts','typecheck','unit-integration','build','charts','ui-acceptance','agent','isolation','compose-e2e','kind-e2e','migration-regression','dependency-scan']) {
+            stage(id) {
+              def code = sh(returnStatus: true, script: '/opt/gromesh/tools/node/bin/node /opt/gromesh/jenkins/runner.mjs stage ' + id)
+              def evidence = readJSON(file:'../results/' + id + '.json',returnPojo:true)
+              dir('../results') { archiveArtifacts(artifacts:id+'/**,'+id+'.json',fingerprint:true,onlyIfSuccessful:false,allowEmptyArchive:false) }
+              if(evidence.id!=id || evidence.sha!=source.sha || evidence.pipelineSha!=pipelineSha || evidence.build.id!=buildId || (code==0 && (evidence.exitCode!=0||evidence.complete!=true)))error('STAGE_EVIDENCE_IDENTITY_MISMATCH')
+              results << evidence
+              if (code != 0) error('CI_STAGE_FAILED: ' + id)
+            }
+          }
+        }
+      }
+    }
+    stage('Native image scan matrix') {
+      def scans = [:]
+      def matrix = [:]
+      for (def arch in ['amd64','arm64']) {
+        def architecture = arch
+        matrix[architecture] = {
+          node('gromesh-ci-' + domain + '-' + architecture) {
+            dir('source') {
+              checkoutCandidate()
+              withEnv(bindings + ['SCAN_PLATFORM=linux/' + architecture]) {
+                // Each native worker has its own clean dependency store/workspace.
+                sh '/opt/gromesh/tools/node/bin/node /opt/gromesh/jenkins/runner.mjs stage install'
+                def code = sh(returnStatus: true, script: '/opt/gromesh/tools/node/bin/node /opt/gromesh/jenkins/runner.mjs stage image-scan')
+                def evidence=readJSON(file:'../results/image-scan.json',returnPojo:true)
+                dir('../results') { archiveArtifacts(artifacts:'image-scan/**,image-scan.json',fingerprint:true,onlyIfSuccessful:false,allowEmptyArchive:false) }
+                if(evidence.sha!=source.sha||evidence.pipelineSha!=pipelineSha||(code==0&&(evidence.exitCode!=0||evidence.complete!=true)))error('SCAN_EVIDENCE_IDENTITY_MISMATCH')
+                scans[architecture] = evidence
+                if (code != 0) error('IMAGE_SCAN_FAILED: ' + architecture)
+              }
+            }
+          }
+        }
+      }
+      parallel matrix
+      if(scans.values().any{it.complete!=true})error('SCAN_EVIDENCE_INCOMPLETE')
+      results << [id:'image-scan', status:'SUCCESS', exitCode:0, durationMs:scans.values().collect { it.durationMs }.sum(), complete:true,artifacts:scans.arm64.artifacts,platformEvidence:scans, platforms:['linux/amd64','linux/arm64']]
+    }
+  } finally {
+    // The coordinator never checks out or executes the untrusted source tree.
+    timeout(time: 2, unit: 'MINUTES') {
+      node('gromesh-coordinator') {
+        withEnv(bindings) {
+          def report = [schema:'gromesh-jenkins-ci/v1',source:source,pipelineSha:pipelineSha,build:[job:fullJob,id:buildId,url:buildUrl],stages:results,tools:tools]
+          writeJSON(file:'ci-result.json',json:report,pretty:2)
+          def complete = sh(returnStatus:true,script:'/opt/gromesh/tools/node/bin/node /opt/gromesh/jenkins/runner.mjs verify-report ci-result.json') == 0
+          archiveArtifacts(artifacts:'ci-result.json',fingerprint:true,onlyIfSuccessful:false)
+          withCredentials([file(credentialsId:'gromesh-github-app-private-key',variable:'GROMESH_GITHUB_APP_KEY_FILE')]) {
+            withEnv(['GROMESH_CHECK_CONCLUSION=' + (complete ? 'success' : 'failure')]) {
+              sh '/opt/gromesh/tools/node/bin/node /opt/gromesh/jenkins/github-report.mjs ci-result.json'
+            }
+          }
+          if (!complete) error('CI_INCOMPLETE; GitHub Actions remains authoritative')
+        }
+      }
+    }
+  }
+}

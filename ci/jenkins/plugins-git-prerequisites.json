@@ -1,0 +1,162 @@
+{
+  "status": "PREPARED_NOT_INSTALLED",
+  "source": "https://updates.jenkins.io/current/update-center.actual.json",
+  "controllerCore": "2.580.2",
+  "baselineCount": 65,
+  "baselineMustRemainUnchanged": true,
+  "additions": [
+    {
+      "name": "git-client",
+      "version": "6.6.1",
+      "requiredCore": "2.516.3",
+      "sha256": "69ab80e3bd51e2e4e676a18722c02c7b163eb11a758b52ecf179d58e1ca1738f",
+      "url": "https://updates.jenkins.io/download/plugins/git-client/6.6.1/git-client.hpi",
+      "dependencies": [
+        {
+          "name": "mina-sshd-api-common",
+          "optional": false,
+          "version": "2.16.0-167.va_269f38cc024"
+        },
+        {
+          "name": "mina-sshd-api-core",
+          "optional": false,
+          "version": "2.16.0-167.va_269f38cc024"
+        },
+        {
+          "name": "commons-lang3-api",
+          "optional": false,
+          "version": "3.20.0-109.ve43756e2d2b_4"
+        },
+        {
+          "name": "gson-api",
+          "optional": false,
+          "version": "2.13.2-173.va_a_092315913c"
+        },
+        {
+          "name": "apache-httpcomponents-client-4-api",
+          "optional": false,
+          "version": "4.5.14-269.vfa_2321039a_83"
+        },
+        {
+          "name": "credentials",
+          "optional": false,
+          "version": "1487.va_d001ede2c31"
+        },
+        {
+          "name": "script-security",
+          "optional": false,
+          "version": "1399.ve6a_66547f6e1"
+        },
+        {
+          "name": "ssh-credentials",
+          "optional": false,
+          "version": "361.vb_f6760818e8c"
+        },
+        {
+          "name": "structs",
+          "optional": false,
+          "version": "362.va_b_695ef4fdf9"
+        }
+      ]
+    },
+    {
+      "name": "gson-api",
+      "version": "2.15.0-212.v085f60a_8093b_",
+      "requiredCore": "2.492.3",
+      "sha256": "db390356191cd010beccf9f775c78b206b5a5d132d5c2ceda6a49dfab82dd631",
+      "url": "https://updates.jenkins.io/download/plugins/gson-api/2.15.0-212.v085f60a_8093b_/gson-api.hpi",
+      "dependencies": []
+    },
+    {
+      "name": "mina-sshd-api-core",
+      "version": "2.19.0-192.v2b_a_7b_2c1dc71",
+      "requiredCore": "2.479.3",
+      "sha256": "5039ea17ea1aa9e349712ccc1e036c38ea9f20f722affc220c2c751369f32495",
+      "url": "https://updates.jenkins.io/download/plugins/mina-sshd-api-core/2.19.0-192.v2b_a_7b_2c1dc71/mina-sshd-api-core.hpi",
+      "dependencies": [
+        {
+          "name": "mina-sshd-api-common",
+          "optional": false,
+          "version": "2.19.0-192.v2b_a_7b_2c1dc71"
+        }
+      ]
+    },
+    {
+      "name": "mina-sshd-api-common",
+      "version": "2.19.0-192.v2b_a_7b_2c1dc71",
+      "requiredCore": "2.479.3",
+      "sha256": "887ebd645e43919b6113201257821b990fc923f375382a5dada0c089e49b85bc",
+      "url": "https://updates.jenkins.io/download/plugins/mina-sshd-api-common/2.19.0-192.v2b_a_7b_2c1dc71/mina-sshd-api-common.hpi",
+      "dependencies": []
+    },
+    {
+      "name": "git",
+      "version": "5.11.0",
+      "requiredCore": "2.504.3",
+      "sha256": "bf4639abb65e6ca210bd0d7cb9b6570e93717894bdcd008b2e7e5a916dd818f6",
+      "url": "https://updates.jenkins.io/download/plugins/git/5.11.0/git.hpi",
+      "dependencies": [
+        {
+          "name": "commons-lang3-api",
+          "optional": false,
+          "version": "3.20.0-109.ve43756e2d2b_4"
+        },
+        {
+          "name": "ionicons-api",
+          "optional": false,
+          "version": "94.vcc3065403257"
+        },
+        {
+          "name": "workflow-scm-step",
+          "optional": false,
+          "version": "466.va_d69e602552b_"
+        },
+        {
+          "name": "workflow-step-api",
+          "optional": false,
+          "version": "710.v3e456cc85233"
+        },
+        {
+          "name": "credentials",
+          "optional": false,
+          "version": "1480.v2246fd131e83"
+        },
+        {
+          "name": "git-client",
+          "optional": false,
+          "version": "6.5.0"
+        },
+        {
+          "name": "mailer",
+          "optional": false,
+          "version": "525.v2458b_d8a_1a_71"
+        },
+        {
+          "name": "scm-api",
+          "optional": false,
+          "version": "724.v7d839074eb_5c"
+        },
+        {
+          "name": "script-security",
+          "optional": false,
+          "version": "1385.v7d2d9ec4d909"
+        },
+        {
+          "name": "ssh-credentials",
+          "optional": false,
+          "version": "361.vb_f6760818e8c"
+        },
+        {
+          "name": "structs",
+          "optional": false,
+          "version": "362.va_b_695ef4fdf9"
+        }
+      ]
+    }
+  ],
+  "requiredClasses": [
+    "hudson.plugins.git.GitSCM",
+    "org.jenkinsci.plugins.gitclient.GitClient"
+  ],
+  "activation": "Verify baseline65 versions unchanged, additions exact active versions, required dependency minimums using hudson.util.VersionNumber, and required classes loadable before any job XML application"
+}
