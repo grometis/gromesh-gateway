@@ -1104,6 +1104,13 @@ export const analyticsIngestionStreams = pgTable("analytics_ingestion_streams", 
 export const analyticsIngestionBatches = pgTable("analytics_ingestion_batches", {
   id: uuid("id").primaryKey(), streamId: uuid("stream_id").notNull().references(()=>analyticsIngestionStreams.id),
   generation: bigint("generation",{mode:"bigint"}).notNull(),
+  writeTransaction: text("write_transaction").notNull().default(sql`pg_current_xact_id()::text`),
   descriptor: jsonb("descriptor").$type<readonly {copyId:string;id:string;commitment:string;expiresAt:string}[]>().notNull(),
   recordedAt: timestamp("recorded_at",{withTimezone:true,mode:"string"}).notNull().default(sql`clock_timestamp()`),
 },t=>[uniqueIndex("analytics_ingestion_generation_uq").on(t.generation),check("analytics_ingestion_generation_ck",sql`${t.generation}>0`),check("analytics_ingestion_descriptor_ck",sql`jsonb_typeof(${t.descriptor})='array' and jsonb_array_length(${t.descriptor}) between 1 and 100`)]);
+
+export const analyticsIngestionReceipts = pgTable("analytics_ingestion_receipts", {
+ batchId:uuid("batch_id").primaryKey().references(()=>analyticsIngestionBatches.id),
+ storedCopies:integer("stored_copies").notNull(),expiredCopies:integer("expired_copies").notNull(),
+ confirmedAt:timestamp("confirmed_at",{withTimezone:true,mode:"string"}).notNull().default(sql`clock_timestamp()`),
+},t=>[check("analytics_ingestion_receipt_counts_ck",sql`${t.storedCopies}>=0 and ${t.expiredCopies}>=0 and ${t.storedCopies}+${t.expiredCopies} between 1 and 100`)]);
