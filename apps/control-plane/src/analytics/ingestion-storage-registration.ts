@@ -31,12 +31,13 @@ export async function registerCopyStorage(db: Db, ctx: RequestContext, observed:
 /** Runtime may read the binding but cannot reset it, own it, or assume an owning role. */
 export async function readRuntimeCopyStorage(tx: Executor): Promise<RegisteredCopyStorage> {
   const [row] = (await tx.execute<{ privileged: boolean; owning: boolean; writable: boolean; readable: boolean }>(sql`
-    select (session_user<>current_user or exists(select 1 from pg_roles where
-      (rolsuper or rolcreaterole or rolcreatedb or rolreplication or rolbypassrls)
-      and pg_has_role(session_user,oid,'MEMBER'))) privileged,
-      pg_has_role(current_user,(select relowner from pg_class where oid='public.analytics_ingestion_storage'::regclass),'MEMBER') owning,
-      has_table_privilege(current_user,'public.analytics_ingestion_storage','INSERT,UPDATE,DELETE,TRUNCATE,TRIGGER') writable,
-      has_table_privilege(current_user,'public.analytics_ingestion_storage','SELECT') readable`)).rows;
+    select (session_user<>current_user or exists(select 1 from pg_catalog.pg_roles where
+      (rolsuper or rolcreaterole or rolcreatedb or rolreplication or rolbypassrls
+        or rolname in ('pg_read_server_files','pg_write_server_files','pg_execute_server_program'))
+      and pg_catalog.pg_has_role(session_user,oid,'MEMBER'))) privileged,
+      pg_catalog.pg_has_role(current_user,(select relowner from pg_catalog.pg_class where oid='public.analytics_ingestion_storage'::regclass),'MEMBER') owning,
+      pg_catalog.has_table_privilege(current_user,'public.analytics_ingestion_storage','INSERT,UPDATE,DELETE,TRUNCATE,TRIGGER') writable,
+      pg_catalog.has_table_privilege(current_user,'public.analytics_ingestion_storage','SELECT') readable`)).rows;
   if (!row || row.privileged || row.owning || row.writable || !row.readable) throw copyReadNotReady();
   const registrations = (await tx.execute<typeof storage.$inferSelect>(sql`
     select singleton,instance_id as "instanceId",server_id as "serverId",database_name as "databaseName",database_id as "databaseId",

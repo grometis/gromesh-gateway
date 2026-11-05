@@ -84,8 +84,9 @@ export async function openTrustedIngestion(input: { db: Db; gateway: AgentGatewa
     const current = () => { if (closed) throw copyReadNotReady(); };
     return Object.freeze({
       open: (...args: Parameters<IngestionAdmissions["open"]>) => { current(); return admissions.open(...args); },
-      prepare: (...args: Parameters<IngestionAdmissions["prepare"]>) => { current(); return admissions.prepare(...args); },
-      persist: (...args: Parameters<IngestionAdmissions["persist"]>) => { current(); return admissions.persist(...args); },
+      // Snapshot before the first await: caller-owned objects cannot change the admitted payload in flight.
+      prepare: (...args: Parameters<IngestionAdmissions["prepare"]>) => { current(); return admissions.prepare(args[0], args[1], args[2], structuredClone(args[3]), args[4]); },
+      persist: (...args: Parameters<IngestionAdmissions["persist"]>) => { current(); return admissions.persist(args[0], args[1], args[2], structuredClone(args[3]), args[4]); },
       prefix: () => { current(); return admissions.prefix(); }, close,
     });
   } catch { await close(); throw copyReadNotReady(); }

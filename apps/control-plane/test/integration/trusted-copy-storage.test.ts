@@ -7,6 +7,7 @@ import type { Db } from "../../src/db/db.js";
 import { AgentGatewayService } from "../../src/agent-gateway/agent-gateway.js";
 import { authorizeClusterDelivery, confirmClusterAssociation, revokeClusterAssociation } from "../../src/analytics/cluster-history.js";
 import { openTrustedIngestion } from "../../src/analytics/trusted-ingestion.js";
+import { copyStorageProxy, phaseBarrier } from "./copy-storage-proxy.js";
 import { createClient, ClickHouseLogLevel, type ClickHouseClient } from "@clickhouse/client";
 import { expect, it } from "vitest";
 import { clusterHistoryFixture } from "./cluster-history-fixtures.js";
@@ -148,4 +149,82 @@ it("keeps writer clients private and persists only authenticated current admissi
       expect((await service.prefix()).copiesComplete).toBe(false);
     } finally { await service.close(); }
   });
+}));
+
+it("captures caller-owned copies before waiting for admission locks", () => fixture(async (f, admin, settings) => {
+  await provisionTrustedCopyStorage({ db: f.db, ctx, admin, settings, administratorNames: [integrationInputs(process.env).clickhouse.user] });
+  const producer = await f.registered(), authorization = await f.db.transaction(tx => authorizeClusterDelivery(tx, producer.ctx, producer.source));
+  await confirmClusterAssociation(f.db, authorization);
+  await runtime(f, async db => {
+    const service = await openTrustedIngestion({ db, gateway: f.h.app.get(AgentGatewayService), settings }), blocker = await f.h.sql.connect();
+    try {
+      const podUid = randomUUID(), stream = await service.open(producer.token, podUid), requestId = randomBytes(16).toString("hex");
+      const h = createHash("sha256").update(`${producer.source.clusterId}|${podUid}|${requestId}`).digest("hex").slice(0,32);
+      const ts = (await f.h.sql.query<{ts:string}>(`select to_char(clock_timestamp() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') ts`)).rows[0]!.ts;
+      const copies = [{ schemaVersion: 1 as const, copyId: randomUUID(), podUid, requestId, event: {
+        id: `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`, ts, environmentId: f.instanceId, clusterId: producer.source.clusterId,
+        routeId: f.routeId, serviceId: f.serviceId, consumerId: null, method: "GET", path: "/same", status: 200, latencyKongMs: 1, latencyUpstreamMs: null,
+        latencyTotalMs: 2, clientIp: "2001:db8::1", requestSize: "1", responseSize: "2", retentionDays: 7 } }];
+      await blocker.query("select pg_advisory_lock(1818,1801)");
+      const pending = service.persist(producer.token, stream.id, randomUUID(), copies);
+      copies[0]!.event.status = 500;
+      await blocker.query("select pg_advisory_unlock(1818,1801)");
+      expect(await pending).toMatchObject({status:"persisted"});
+      const reader = client(settings,"reader");
+      try { expect(await (await reader.query({query:"SELECT status FROM requests_v2_copies",format:"JSONEachRow"})).json()).toEqual([{status:200}]); }
+      finally { await reader.close(); }
+    } finally { await blocker.query("select pg_advisory_unlock_all()"); blocker.release(); await service.close(); }
+  });
+}));
+it("refuses server-file and process capabilities reachable through predefined PostgreSQL roles", () => fixture(async (f, admin, settings) => {
+  await provisionTrustedCopyStorage({ db: f.db, ctx, admin, settings, administratorNames: [integrationInputs(process.env).clickhouse.user] });
+  await runtime(f, async (db, role) => {
+    for (const capability of ["pg_read_server_files", "pg_write_server_files", "pg_execute_server_program"]) {
+      await f.h.sql.query(`GRANT ${capability} TO ${role}`);
+      try {
+        await expect(readRuntimeCopyStorage(db)).rejects.toThrow();
+        await db.transaction(async tx => {
+          await tx.execute(sql`create temporary table pg_roles on commit drop as select * from pg_catalog.pg_roles where false`);
+          await expect(readRuntimeCopyStorage(tx)).rejects.toThrow();
+        });
+      }
+      finally { await f.h.sql.query(`REVOKE ${capability} FROM ${role}`); }
+    }
+    expect((await readRuntimeCopyStorage(db)).databaseName).toBe(settings.databaseName);
+  });
+}));
+it("cannot ACK altered content restored after readback but before receipt confirmation", () => fixture(async (f, admin, settings) => {
+  await provisionTrustedCopyStorage({ db: f.db, ctx, admin, settings, administratorNames: [integrationInputs(process.env).clickhouse.user] });
+  const producer = await f.registered(), authorization = await f.db.transaction(tx => authorizeClusterDelivery(tx, producer.ctx, producer.source));
+  await confirmClusterAssociation(f.db, authorization);
+  const before = phaseBarrier(), allowInsert = phaseBarrier(), after = phaseBarrier(), allowReceipt = phaseBarrier();
+  let armed = false, paused = false, readback = false;
+  const proxy = await copyStorageProxy(settings.url, async query => {
+    if (!armed) return;
+    if (query.includes("FROM requests_v2_copies WHERE id IN")) readback = true;
+    if (query.includes("currentUser() AS principal")) {
+      if (!paused) { paused = true; before.release(); await allowInsert.promise; }
+      else if (readback) { readback = false; after.release(); await allowReceipt.promise; }
+    }
+  });
+  try { await runtime(f, async db => {
+    const service = await openTrustedIngestion({ db, gateway: f.h.app.get(AgentGatewayService), settings: { ...settings, url: proxy.url } });
+    try {
+      const podUid = randomUUID(), stream = await service.open(producer.token, podUid), requestId = randomBytes(16).toString("hex");
+      const h = createHash("sha256").update(`${producer.source.clusterId}|${podUid}|${requestId}`).digest("hex").slice(0,32);
+      const ts = (await f.h.sql.query<{ts:string}>(`select to_char(clock_timestamp() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') ts`)).rows[0]!.ts;
+      const copy = { schemaVersion: 1 as const, copyId: randomUUID(), podUid, requestId, event: {
+        id: `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`, ts, environmentId: f.instanceId, clusterId: producer.source.clusterId,
+        routeId: f.routeId, serviceId: f.serviceId, consumerId: null, method: "GET", path: "/same", status: 200, latencyKongMs: 1, latencyUpstreamMs: null,
+        latencyTotalMs: 2, clientIp: "2001:db8::1", requestSize: "1", responseSize: "2", retentionDays: 7 } };
+      armed = true;
+      const outcome = service.persist(producer.token, stream.id, randomUUID(), [copy]).then(value => ({ value, error: null }), error => ({ value: null, error: error as unknown }));
+      await before.promise; copy.event.status = 500; allowInsert.release();
+      await after.promise; copy.event.status = 200; allowReceipt.release();
+      expect((await outcome).error).toBeNull();
+      const reader = client(settings,"reader");
+      try { expect(await (await reader.query({query:"SELECT status FROM requests_v2_copies",format:"JSONEachRow"})).json()).toEqual([{status:200}]); }
+      finally { await reader.close(); }
+    } finally { allowInsert.release(); allowReceipt.release(); await service.close(); }
+  }); } finally { allowInsert.release(); allowReceipt.release(); await proxy.close(); }
 }));
