@@ -35,6 +35,8 @@ async function withIngestionReadSession<T>(pool:pg.Pool,read:(snapshot:SnapshotR
   const snapshot:SnapshotRead=async read=>{
    signal.throwIfAborted();if(begun)throw Error("Nested ingestion snapshot");
    await client.query("begin isolation level repeatable read read only");begun=true;
+   // A pooled TEMP relation must never replace authoritative ledger/history tables.
+   await client.query("set local search_path=pg_catalog,public,pg_temp");
    await client.query("set local statement_timeout='5s'");
    const result=await read(drizzle(client,{schema}));signal.throwIfAborted();
    const committed=await client.query("commit");begun=false;if(committed.command!=="COMMIT")throw Error("Ingestion read transaction aborted");return result;
