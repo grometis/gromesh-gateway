@@ -33,7 +33,7 @@ if(!(revision==~/[a-f0-9]{40}/))error('IMMUTABLE_REVIEWED_PIPELINE_REQUIRED')
 def runs=completedRuns(revision)
 timeout(time:10,unit:'MINUTES'){node('gromesh-coordinator'){
  withEnv(['GROMESH_PIPELINE_SHA='+revision,'PATH=/opt/gromesh/tools/node/bin:/opt/gromesh/tools/bin:/usr/local/bin:/usr/bin:/bin']){
-  withCredentials([file(credentialsId:'gromesh-github-app-private-key',variable:'GROMESH_GITHUB_APP_KEY_FILE')]){
+  withCredentials([file(credentialsId:'gromesh-github-ci-app-private-key',variable:'GROMESH_GITHUB_APP_KEY_FILE')]){
    for(def run in runs){dir('final-'+env.BUILD_NUMBER+'/'+run.job.tokenize('/').last()+'-'+run.id){
     // Never consume files left by another Run. Missing artifacts become failure, never a green fallback.
     copyArtifacts(projectName:run.job,selector:specific(run.id),filter:'github-check.json,ci-result.json',optional:true,fingerprintArtifacts:true)

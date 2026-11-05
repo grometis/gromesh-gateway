@@ -13,7 +13,7 @@ if(!(revision==~/[a-f0-9]{40}/))error('IMMUTABLE_REVIEWED_PIPELINE_REVISION_REQU
 timeout(time:5,unit:'MINUTES') {
   node('gromesh-coordinator') {
     withEnv(['GROMESH_PIPELINE_SHA='+revision,'PATH=/opt/gromesh/tools/node/bin:/opt/gromesh/tools/bin:/usr/local/bin:/usr/bin:/bin']) {
-      withCredentials([file(credentialsId:'gromesh-github-app-private-key',variable:'GROMESH_GITHUB_APP_KEY_FILE')]) {
+      withCredentials([file(credentialsId:'gromesh-github-ci-app-private-key',variable:'GROMESH_GITHUB_APP_KEY_FILE')]) {
         stage('Discover canonical main, PR and branch heads') {
           sh '/opt/gromesh/tools/node/bin/node /opt/gromesh/jenkins/discovery.mjs list'
           archiveArtifacts(artifacts:'discovery-pending.json',fingerprint:true)
