@@ -1,0 +1,109 @@
+{
+  "status": "PREPARED_NOT_INSTALLED",
+  "baseline65Preserved": true,
+  "source": "https://updates.jenkins.io/current/update-center.actual.json",
+  "additions": [
+    {
+      "name": "authorize-project",
+      "version": "534.v2f208c45e11c",
+      "requiredCore": "2.479.3",
+      "sha256": "8359bda7a49ef9e20046df1004ccab1f459fc9f4340e610ea3883825c3d59be7",
+      "url": "https://updates.jenkins.io/download/plugins/authorize-project/534.v2f208c45e11c/authorize-project.hpi",
+      "dependencies": []
+    },
+    {
+      "name": "ssh-slaves",
+      "version": "3.1097.v868116049892",
+      "requiredCore": "2.504.1",
+      "sha256": "8d6c4996aad23c885928a0d0dc742200ed94473189434a93833b8f0de306597f",
+      "url": "https://updates.jenkins.io/download/plugins/ssh-slaves/3.1097.v868116049892/ssh-slaves.hpi",
+      "dependencies": [
+        {
+          "name": "commons-lang3-api",
+          "optional": false,
+          "version": "3.18.0-98.v3a_674c06072d"
+        },
+        {
+          "name": "credentials",
+          "optional": false,
+          "version": "1442.v292d4234d1b_f"
+        },
+        {
+          "name": "ssh-credentials",
+          "optional": false,
+          "version": "361.vb_f6760818e8c"
+        },
+        {
+          "name": "trilead-api",
+          "optional": false,
+          "version": "2.209.v0e69b_c43c245"
+        }
+      ]
+    },
+    {
+      "name": "trilead-api",
+      "version": "2.284.v1974ea_324382",
+      "requiredCore": "2.504.1",
+      "sha256": "804d2ba841f2c6d5cfca354451e47d409c4d3a71be1bba74df550abd2810dfed",
+      "url": "https://updates.jenkins.io/download/plugins/trilead-api/2.284.v1974ea_324382/trilead-api.hpi",
+      "dependencies": [
+        {
+          "name": "eddsa-api",
+          "optional": false,
+          "version": "0.3.0.1-19.vc432d923e5ee"
+        },
+        {
+          "name": "gson-api",
+          "optional": false,
+          "version": "2.13.2-173.va_a_092315913c"
+        }
+      ]
+    },
+    {
+      "name": "gson-api",
+      "version": "2.15.0-212.v085f60a_8093b_",
+      "requiredCore": "2.492.3",
+      "sha256": "db390356191cd010beccf9f775c78b206b5a5d132d5c2ceda6a49dfab82dd631",
+      "url": "https://updates.jenkins.io/download/plugins/gson-api/2.15.0-212.v085f60a_8093b_/gson-api.hpi",
+      "dependencies": []
+    },
+    {
+      "name": "eddsa-api",
+      "version": "0.3.0.1-29.v67e9a_1c969b_b_",
+      "requiredCore": "2.479.1",
+      "sha256": "edaefd759bda946e5c123141bc928b6c0a5d9c8f44b4d0389335376ee1d196a3",
+      "url": "https://updates.jenkins.io/download/plugins/eddsa-api/0.3.0.1-29.v67e9a_1c969b_b_/eddsa-api.hpi",
+      "dependencies": []
+    },
+    {
+      "name": "copyartifact",
+      "version": "805.v9d1393350780",
+      "requiredCore": "2.541.3",
+      "sha256": "6c5f79ab6cab339cfa8ce5b774c758f7b0a44662204142cc4fc670af94232741",
+      "url": "https://updates.jenkins.io/download/plugins/copyartifact/805.v9d1393350780/copyartifact.hpi",
+      "dependencies": [
+        {
+          "name": "commons-lang3-api",
+          "optional": false,
+          "version": "3.20.0-109.ve43756e2d2b_4"
+        },
+        {
+          "name": "apache-httpcomponents-client-4-api",
+          "optional": false,
+          "version": "4.5.14-269.vfa_2321039a_83"
+        },
+        {
+          "name": "structs",
+          "optional": false,
+          "version": "362.va_b_695ef4fdf9"
+        }
+      ]
+    }
+  ],
+  "artifactManager": {
+    "status": "SELECTION_AND_QUALIFICATION_PENDING",
+    "controllerLocalManagerForbiddenForOci": true,
+    "paidProvisioningAuthorized": false
+  },
+  "activation": "Pin and verify additions/dependencies/classes without upgrading base65; verify nonadmin per-job identities and isolated SSH agents; external artifact manager must be configured and measured before enabling images"
+}

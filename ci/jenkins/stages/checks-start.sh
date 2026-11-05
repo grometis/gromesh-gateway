@@ -10,6 +10,7 @@ if [[ ! -f "$GROMESH_CI_STATE/checks.env" ]]; then
   printf 'export TEST_DATABASE_URL=%q\n' "postgres://gromesh:${pg}@127.0.0.1:5432/gromesh" > "$GROMESH_CI_STATE/checks.env"
   printf 'export TEST_CLICKHOUSE_URL=%q TEST_CLICKHOUSE_ADMIN_USER=gromesh TEST_CLICKHOUSE_ADMIN_PASSWORD=%q KONG_VALIDATOR_URL=%q\n' http://127.0.0.1:8123 "$ch" http://127.0.0.1:8011 >> "$GROMESH_CI_STATE/checks.env"
   export POSTGRES_PASSWORD="$pg" CLICKHOUSE_PASSWORD="$ch"
+  printf '%s\n' "$pg" "$ch" >> "$GROMESH_CI_STATE/redactions.txt"
   docker run -d --name "gromesh-j5-${GROMESH_CI_RUN}-postgres" --label "gromesh.j5.run=$GROMESH_CI_RUN" --memory=512m --cpus=1 \
     --tmpfs /var/lib/postgresql/data:rw,size=512m -p 127.0.0.1:5432:5432 -e POSTGRES_USER=gromesh -e POSTGRES_DB=gromesh -e POSTGRES_PASSWORD \
     postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea

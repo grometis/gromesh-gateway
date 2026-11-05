@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile,readFile,lstat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { requiredStages } from './policy.mjs';
@@ -30,12 +30,17 @@ export async function runCommand(argv, { cwd, env = process.env, signal, timeout
     const finish = async exitCode => {
       if (settled) return; settled = true; clearTimeout(timer); signal?.removeEventListener('abort', abort);
       if (cleanup) await cleanup;
+      let outputFailure=false;
+      try {
+      const runtimeSecrets=[];
+      if(env.GROMESH_CI_STATE){try{const file=join(env.GROMESH_CI_STATE,'redactions.txt'),s=await lstat(file);if(s.isFile()&&!s.isSymbolicLink()&&s.uid===process.getuid()&&(s.mode&0o077)===0&&s.size<=65536)runtimeSecrets.push(...(await readFile(file,'utf8')).split('\n').filter(Boolean));}catch{}}
       if(output)for(const key of ['stdout','stderr']){
         let raw=Buffer.concat(streams[key]).toString('utf8');if(outputTruncated)raw=raw.slice(0,raw.lastIndexOf('\n')+1);
-        const secrets=[...redactions,...Object.entries(env).filter(([k])=>/password|secret|token|authorization|cookie|encryption|fingerprint/i.test(k)).map(([,v])=>v)];
+        const secrets=[...redactions,...runtimeSecrets,...Object.entries(env).filter(([k])=>/password|secret|token|authorization|cookie|encryption|fingerprint/i.test(k)).map(([,v])=>v)];
         await writeFile(join(output,key+'.log'),sanitize(raw,secrets),{mode:0o600});
       }
-      resolve({ status: reason ?? (exitCode === 0 ? 'SUCCESS' : 'FAILURE'), exitCode, durationMs: Date.now() - start, started: Boolean(child.pid),...(output?{outputTruncated}:{}) });
+      }catch{outputFailure=true;}
+      resolve({ status: outputFailure?'FAILURE':reason ?? (exitCode === 0 ? 'SUCCESS' : 'FAILURE'), exitCode, durationMs: Date.now() - start, started: Boolean(child.pid),...(output?{outputTruncated,outputFailure}:{}) });
     };
     child.once('error', () => finish(null));
     child.once('close', code => finish(code));

@@ -31,7 +31,7 @@ test('checks are attached to the exact SHA with the official Jenkins URL', async
     transport: async(url,options)=>{ requests.push({ url,options }); return { ok:true,status:201,json:async()=> url.includes('access_tokens') ? {token:'fixture-only',expires_at:'2099-01-01T00:00:00Z'} : {id:101} }; } });
   await client.check({ sha:'a'.repeat(40), buildUrl:'https://jenkins.grometis.com/job/gromesh-gateway/job/gromesh-ci/job/gromesh-main/17/', externalId:'main:17', conclusion:'failure', summary:'Required stage did not run' });
   const body=JSON.parse(requests.at(-1).options.body);
-  assert.equal(body.head_sha,'a'.repeat(40));assert.equal(body.name,'jenkins-ci');assert.equal(body.conclusion,'failure');
+  assert.equal(body.head_sha,'a'.repeat(40));assert.equal(body.name,'jenkins-ci-main');assert.equal(body.conclusion,'failure');
   assert.equal(requests.at(-1).url,'https://api.github.com/repos/grometis/gromesh-gateway/check-runs');
   await assert.rejects(client.check({ sha:'bad', buildUrl:'http://localhost:18081', externalId:'x', conclusion:'success', summary:'x' }));
 });
