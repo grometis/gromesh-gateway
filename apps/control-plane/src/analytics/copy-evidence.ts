@@ -33,6 +33,7 @@ async function recordCopyEvidenceTx(tx:Tx,ctx:RequestContext,batchId:string,obse
     const [source] = await tx.select().from(batches).where(eq(batches.id, batchId));
     if (!source) return invalid();
     const [lost] = await tx.select().from(coverage);
+    const [admissionLoss]=await tx.execute<{lost:boolean}>(sql`select exists(select 1 from analytics_ingestion_prune_coverage where pruned_through>0) as lost`).then(r=>r.rows);
     const ids=[...new Set(observations.map(o=>o.id))];
     const admitted=ids.length?(await tx.execute<{id:string;expiresAt:string}>(sql`select d->>'id' as id,d->>'expiresAt' as "expiresAt" from analytics_ingestion_batches b cross join lateral jsonb_array_elements(b.descriptor) d where d->>'id' in (${sql.join(ids.map(id=>sql`${id}`),sql`,`)}) limit 10001`)).rows:[];
     if(admitted.length>10000)throw new Error("Copy evidence budget exceeded");
@@ -78,6 +79,7 @@ export async function readCopyEvidenceSnapshot(tx:Executor,ids:readonly string[]
   if(ids.length>200||ids.some(id=>!uuid.test(id)))return invalid();
     await tx.execute(sql`set local statement_timeout='5s'`);
     const [lost] = await tx.select().from(coverage);
+    const [admissionLoss]=await tx.execute<{lost:boolean}>(sql`select exists(select 1 from analytics_ingestion_prune_coverage where pruned_through>0) as lost`).then(r=>r.rows);
     const rows = ids.length ? await tx.select().from(facts).where(inArray(facts.requestId,[...new Set(ids)])).orderBy(asc(facts.requestId),asc(facts.id)).limit(10001) : [];
     if (rows.length > 10000) throw new Error("Copy evidence budget exceeded");
     const items = new Map<string,CopyObservation>();
@@ -87,7 +89,7 @@ export async function readCopyEvidenceSnapshot(tx:Executor,ids:readonly string[]
       if (previous?.kind === "conflicting-copies" && row.kind !== "conflicting-copies") { previous.expiresAt=expiresAt; continue; }
       items.set(row.requestId,{id:row.requestId,kind:row.kind,expiresAt,leftHash:row.leftHash,rightHash:row.rightHash || null});
     }
-    return {items:[...items.values()],historyPruned:(lost?.prunedThrough ?? 0n)>0n};
+    return {items:[...items.values()],historyPruned:(lost?.prunedThrough ?? 0n)>0n||admissionLoss!.lost};
 }
 /** Bounded GC records irreversible loss in the same transaction, never converting a gap to a clean history. */
 export async function pruneCopyEvidence(db: Db, ctx: RequestContext, limit: number) {

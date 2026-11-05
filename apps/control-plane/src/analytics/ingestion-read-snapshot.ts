@@ -55,10 +55,13 @@ export async function readAdmissionPrefix(db:Db){
  let through=0n,expected=1n,gap=false;
  for(const row of rows){if(row.generation!==expected)gap=true;expected=row.generation+1n;if(row.receipt&&row.generation===through+1n)through=row.generation;}
  const accepted=counter?.position??0n;if((rows.at(-1)?.generation??0n)!==accepted)gap=true;
+ const [pruned]=await db.select().from(schema.analyticsIngestionPruneCoverage);
+ const admissionHistoryPruned=(pruned?.prunedThrough??0n)>0n;
+ if(admissionHistoryPruned)gap=true;
  const pending=rows.filter(r=>!r.receipt).map(r=>r.batchId);
  const clock=(await db.execute<{asOf:string}>(sql`select to_char(transaction_timestamp() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "asOf"`)).rows[0]!.asOf;
  return {acceptedThrough:accepted.toString(),receiptThrough:through.toString(),pendingBatchIds:pending,gapDetected:gap,
-  receiptPrefixComplete:!gap&&!pending.length&&through===accepted,asOf:clock,
+  admissionHistoryPruned,receiptPrefixComplete:!gap&&!pending.length&&through===accepted,asOf:clock,
   copiesComplete:false as const,conflictHistoryComplete:false as const,coherentSnapshot:false as const,deliveryFromKongComplete:false as const};
 }
 

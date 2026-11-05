@@ -1106,7 +1106,7 @@ export const analyticsIngestionBatches = pgTable("analytics_ingestion_batches", 
   writeTransaction: text("write_transaction").notNull().default(sql`pg_current_xact_id()::text`),
   descriptor: jsonb("descriptor").$type<readonly {copyId:string;id:string;commitment:string;expiresAt:string}[]>().notNull(),
   recordedAt: timestamp("recorded_at",{withTimezone:true,mode:"string"}).notNull().default(sql`clock_timestamp()`),
-},t=>[uniqueIndex("analytics_ingestion_generation_uq").on(t.generation),check("analytics_ingestion_generation_ck",sql`${t.generation}>0`),check("analytics_ingestion_descriptor_ck",sql`jsonb_typeof(${t.descriptor})='array' and jsonb_array_length(${t.descriptor}) between 1 and 100`)]);
+},t=>[uniqueIndex("analytics_ingestion_generation_uq").on(t.generation),index("analytics_ingestion_retention_idx").on(t.recordedAt,t.id),check("analytics_ingestion_generation_ck",sql`${t.generation}>0`),check("analytics_ingestion_descriptor_ck",sql`jsonb_typeof(${t.descriptor})='array' and jsonb_array_length(${t.descriptor}) between 1 and 100`)]);
 
 export const analyticsIngestionReceipts = pgTable("analytics_ingestion_receipts", {
  batchId:uuid("batch_id").primaryKey().references(()=>analyticsIngestionBatches.id),
@@ -1149,3 +1149,11 @@ export const analyticsIngestionWorkers = pgTable("analytics_ingestion_workers", 
  state:text("state",{enum:["persisting","verified","failed"]}).notNull(),
  leaseUntil:timestamp("lease_until",{withTimezone:true,mode:"string"}).notNull(),
 },t=>[check("analytics_ingestion_worker_ck",sql`${t.epoch}>0 and ${t.state} in ('persisting','verified','failed')`)]);
+
+/** Constant-size, irreversible admission-history loss marker; contains no request identity or payload. */
+export const analyticsIngestionPruneCoverage=pgTable("analytics_ingestion_prune_coverage",{
+ singleton:boolean("singleton").primaryKey().default(true),
+ prunedThrough:bigint("pruned_through",{mode:"bigint"}).notNull(),
+ prunedAt:timestamp("pruned_at",{withTimezone:true,mode:"string"}).notNull(),
+ pruneTransaction:text("prune_transaction").notNull(),
+},t=>[check("analytics_ingestion_prune_coverage_ck",sql`${t.singleton}=true and ${t.prunedThrough}>0`)]);
