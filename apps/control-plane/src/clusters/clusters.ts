@@ -1,3 +1,4 @@
+import { revokeClusterAssociation } from "../analytics/cluster-history.js";
 import { createHash, randomBytes } from "node:crypto";
 import { Body, Controller, Delete, Get, HttpCode, Inject, Injectable, Module, Param, Post } from "@nestjs/common";
 import { and, asc, eq, sql } from "drizzle-orm";
@@ -130,6 +131,7 @@ export class ClustersService {
   async remove(ctx: RequestContext, id: string) {
     await this.db.transaction(async (tx) => {
       const row = await this.requireCluster(tx, id, true);
+      await revokeClusterAssociation(tx, ctx, id, "delete");
       await tx.delete(clusters).where(eq(clusters.id, id));
       await audit(tx, ctx, {
         action: "cluster.delete",

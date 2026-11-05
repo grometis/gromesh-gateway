@@ -1053,3 +1053,36 @@ export const analyticsRouteHistoryVisibility = pgTable("analytics_route_history_
  instanceId:uuid("instance_id").notNull(),epoch:integer("epoch").notNull(),revision:integer("revision").notNull(),
  observedAt:timestamp("observed_at",{withTimezone:true,mode:"string"}).notNull().default(sql`clock_timestamp()`),
 },t=>[primaryKey({columns:[t.instanceId,t.epoch,t.revision]}),foreignKey({columns:[t.instanceId,t.epoch,t.revision],foreignColumns:[analyticsRouteHistory.instanceId,analyticsRouteHistory.epoch,analyticsRouteHistory.revision]})]);
+
+/** New CP authorization decisions only: no inferred history from the mutable cluster registry. */
+export const analyticsClusterEvents = pgTable("analytics_cluster_events", {
+    id: uuid("id").primaryKey().defaultRandom(),
+    instanceId: uuid("instance_id").notNull().references(() => instance.id),
+    clusterId: uuid("cluster_id").notNull(), sequence: integer("sequence").notNull(),
+    previousEventId: uuid("previous_event_id"), authorizationId: uuid("authorization_id"),
+    operation: text("operation", { enum: ["authorize", "revoke", "delete"] }).notNull(),
+    sourceNodeId: text("source_node_id"), sourceEpoch: integer("source_epoch"), sourceRevision: integer("source_revision"), configHash: text("config_hash"),
+    provenance: text("provenance").notNull(),
+    actor: jsonb("actor").$type<Actor>().notNull(),
+    recordedAt: timestamp("recorded_at", { withTimezone: true, mode: "string" }).notNull().default(sql `clock_timestamp()`),
+    complete: boolean("complete").notNull(),
+    writeTransaction: text("write_transaction").notNull().default(sql `pg_current_xact_id()::text`),
+}, t => [
+    uniqueIndex("analytics_cluster_sequence_uq").on(t.clusterId, t.sequence),
+    index("analytics_cluster_authorization_idx").on(t.authorizationId),
+    index("analytics_cluster_time_idx").on(t.clusterId, t.recordedAt),
+    foreignKey({ columns: [t.previousEventId], foreignColumns: [t.id] }),
+    foreignKey({ columns: [t.authorizationId], foreignColumns: [t.id] }),
+    foreignKey({ columns: [t.sourceEpoch, t.sourceRevision], foreignColumns: [deployments.epoch, deployments.revision] }),
+    check("analytics_cluster_sequence_ck", sql `${t.sequence}>0 and (${t.previousEventId} is null)=(${t.sequence}=1)`),
+    check("analytics_cluster_operation_ck", sql `${t.operation} in ('authorize','revoke','delete')`),
+    check("analytics_cluster_source_ck", sql `coalesce((
+    ${t.operation}='authorize' and ${t.authorizationId} is null and ${t.sourceNodeId} is not null and ${t.sourceEpoch}>0 and ${t.sourceRevision}>0 and ${t.configHash} ~ '^sha256:[0-9a-f]{64}$' and ${t.provenance}='cp-authorized-v2-delivery' and ${t.actor}->>'type'='agent' and ${t.actor}->>'id'=${t.sourceNodeId}
+  ) or (
+    ${t.operation} in ('revoke','delete') and ${t.sourceNodeId} is null and ${t.sourceEpoch} is null and ${t.sourceRevision} is null and ${t.configHash} is null and ${t.provenance}='cp-cluster-lifecycle'
+  ),false)`),
+]);
+export const analyticsClusterVisibility = pgTable("analytics_cluster_visibility", {
+    authorizationId: uuid("authorization_id").primaryKey().references(() => analyticsClusterEvents.id),
+    observedAt: timestamp("observed_at", { withTimezone: true, mode: "string" }).notNull().default(sql `clock_timestamp()`),
+});
