@@ -248,3 +248,24 @@ it("refuses database/schema owners and schema creation capabilities without tabl
     expect((await readRuntimeCopyStorage(db)).databaseName).toBe(settings.databaseName);
   });
 }));
+it("does not trust a substituted current_database function when evaluating database ownership", () => fixture(async (f, admin, settings) => {
+  await provisionTrustedCopyStorage({ db: f.db, ctx, admin, settings, administratorNames: [integrationInputs(process.env).clickhouse.user] });
+  await runtime(f, async (db, role) => {
+    const schemaRestore=(await f.h.sql.query<{command:string}>("select format('ALTER SCHEMA public OWNER TO %I',pg_get_userbyid(nspowner)) command from pg_namespace where nspname='public'")).rows[0]!.command;
+    const databaseRestore=(await f.h.sql.query<{command:string}>("select format('ALTER DATABASE %I OWNER TO %I',datname,pg_get_userbyid(datdba)) command from pg_database where datname=current_database()")).rows[0]!.command;
+    const schemaOwner=(await f.h.sql.query<{command:string}>("select format('ALTER SCHEMA public OWNER TO %I',current_user) command")).rows[0]!.command;
+    await f.h.sql.query(schemaOwner);
+    await f.h.sql.query(`ALTER DATABASE ${new URL(f.url).pathname.slice(1)} OWNER TO ${role}`);
+    try {
+      await db.execute(sql`create schema fakeauth`);
+      await db.execute(sql`create function fakeauth.current_database() returns pg_catalog.name language sql as 'select ''template1''::pg_catalog.name'`);
+      await db.execute(sql`set search_path=fakeauth,pg_catalog,public`);
+      expect((await db.execute<{name:string}>(sql`select current_database() as name`)).rows[0]!.name).toBe("template1");
+      await expect(readRuntimeCopyStorage(db)).rejects.toThrow();
+    } finally {
+      await db.execute(sql`reset search_path`);
+      await f.h.sql.query("drop schema if exists fakeauth cascade");
+      await f.h.sql.query(databaseRestore);await f.h.sql.query(schemaRestore);
+    }
+  });
+}));
