@@ -1,5 +1,5 @@
 {
-  "id": "d5805f6e-f114-440a-bc83-2616a0ede740",
+  "id": "a787f181-9346-4421-8258-23be0f599fcd",
   "prevId": "bc5314ea-3391-441c-a488-62f7046c28b1",
   "version": "7",
   "dialect": "postgresql",
@@ -304,6 +304,13 @@
           "primaryKey": false,
           "notNull": true
         },
+        "write_transaction": {
+          "name": "write_transaction",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "pg_current_xact_id()::text"
+        },
         "descriptor": {
           "name": "descriptor",
           "type": "jsonb",
@@ -397,6 +404,63 @@
         "analytics_ingestion_position_ck": {
           "name": "analytics_ingestion_position_ck",
           "value": "\"analytics_ingestion_counter\".\"position\">=0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.analytics_ingestion_receipts": {
+      "name": "analytics_ingestion_receipts",
+      "schema": "",
+      "columns": {
+        "batch_id": {
+          "name": "batch_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "stored_copies": {
+          "name": "stored_copies",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expired_copies": {
+          "name": "expired_copies",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "confirmed_at": {
+          "name": "confirmed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "clock_timestamp()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "analytics_ingestion_receipts_batch_id_analytics_ingestion_batches_id_fk": {
+          "name": "analytics_ingestion_receipts_batch_id_analytics_ingestion_batches_id_fk",
+          "tableFrom": "analytics_ingestion_receipts",
+          "tableTo": "analytics_ingestion_batches",
+          "columnsFrom": [
+            "batch_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "analytics_ingestion_receipt_counts_ck": {
+          "name": "analytics_ingestion_receipt_counts_ck",
+          "value": "\"analytics_ingestion_receipts\".\"stored_copies\">=0 and \"analytics_ingestion_receipts\".\"expired_copies\">=0 and \"analytics_ingestion_receipts\".\"stored_copies\"+\"analytics_ingestion_receipts\".\"expired_copies\" between 1 and 100"
         }
       },
       "isRLSEnabled": false

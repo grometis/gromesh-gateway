@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
-import { desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, ne, sql } from "drizzle-orm";
 import type { Db, Tx } from "../db/db.js";
-import { analyticsClusterEvents, analyticsClusterVisibility, analyticsIngestionBatches as batches, analyticsIngestionCounter as counter, analyticsIngestionStreams as streams, clusters, instance } from "../db/schema.js";
+import { analyticsClusterEvents, analyticsClusterVisibility, analyticsIngestionBatches as batches, analyticsIngestionReceipts as receipts, analyticsIngestionCounter as counter, analyticsIngestionStreams as streams, clusters, instance } from "../db/schema.js";
 import { AgentGatewayService } from "../agent-gateway/agent-gateway.js";
 import { audit } from "../audit/audit.js";
 import type { RequestContext } from "../auth/auth.js";
 import { ProblemException } from "../common/problem.js";
 import { copyStateOf } from "./copy-state.js";
+import { IngestionCopyPersistence } from "./ingestion-copy-persistence.js";
 import { encodeRawRequestCopy } from "./request-copy-store.js";
 
 export interface IngestionCopy {
@@ -32,7 +33,7 @@ async function lock(tx:Tx) {
 }
 /** Internal admission only: there is deliberately no HTTP handler or persistence-confirmation shortcut. */
 export class IngestionAdmissions {
-  constructor(private readonly db:Db,private readonly gateway:AgentGatewayService) {}
+  constructor(private readonly db:Db,private readonly gateway:AgentGatewayService,private readonly persistence?:IngestionCopyPersistence) {}
   private async authorized(tx:Tx,token:string) {
     // Identify first, then lock the cluster before revalidating the bearer, matching its lifecycle lock order.
     const found=await this.gateway.node(tx,token);
@@ -50,6 +51,8 @@ export class IngestionAdmissions {
     if(!uuid.test(podUid))return invalid();
     return this.db.transaction(async tx=>{
       await lock(tx);const a=await this.authorized(tx,token);
+      const [foreignOwner]=await tx.select({id:streams.id}).from(streams).where(and(eq(streams.instanceId,a.self.id),eq(streams.clusterId,a.current.cluster.id),eq(streams.podUid,podUid),ne(streams.nodeId,a.current.node.nodeId))).limit(1);
+      if(foreignOwner)return denied();
       const [stream]=await tx.insert(streams).values({instanceId:a.self.id,clusterId:a.current.cluster.id,nodeId:a.current.node.nodeId,podUid,authorizationId:a.last.id}).returning();
       await audit(tx,a.ctx,{action:"analytics.ingestion.open",entityType:"ingestion-stream",entityId:stream!.id,after:{instanceId:stream!.instanceId,clusterId:stream!.clusterId,podUid,authorizationId:a.last.id}});
       return stream!;
@@ -67,6 +70,7 @@ export class IngestionAdmissions {
         ids.add(copy.copyId);
         const hex=hash(stream.clusterId+"|"+stream.podUid+"|"+copy.requestId).slice(0,32);
         const id=`${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
+        if(!copy.event||typeof copy.event!=="object"||Array.isArray(copy.event))return invalid();
         const {id:declared,...content}=copy.event;
         if(declared!==id||content.environmentId!==stream.instanceId||content.clusterId!==stream.clusterId)return invalid();
         try{encodeRawRequestCopy({id,content});}catch{return invalid();}
@@ -84,14 +88,37 @@ export class IngestionAdmissions {
       return {id:batchId,generation:position!.position.toString(),state:"prepared" as const};
     });
   }
+  async persist(token:string,streamId:string,batchId:string,copies:readonly IngestionCopy[]) {
+    if(!this.persistence)throw new Error("Ingestion persistence is not configured");
+    const prepared=await this.prepare(token,streamId,batchId,copies);
+    const prior=await this.db.select().from(receipts).where(eq(receipts.batchId,batchId));
+    const receipt=(counts:{storedCopies:number;expiredCopies:number})=>({schemaVersion:1 as const,streamId,batchId,generation:prepared.generation,status:"persisted" as const,storedCopies:counts.storedCopies,expiredCopies:counts.expiredCopies});
+    if(prior[0])return receipt(prior[0]);
+    const asOf=(await this.db.execute<{now:string}>(sql`select to_char(clock_timestamp() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as now`)).rows[0]!.now;
+    // No network call is performed while holding a PostgreSQL transaction or cluster/admission lock.
+    const observed=await this.persistence.persist({streamId,batchId,generation:prepared.generation,copies,asOf});
+    return this.db.transaction(async tx=>{
+      await lock(tx);const a=await this.authorized(tx,token);
+      const [stream]=await tx.select().from(streams).where(eq(streams.id,streamId));
+      if(!stream||stream.instanceId!==a.self.id||stream.clusterId!==a.current.cluster.id||stream.nodeId!==a.current.node.nodeId||stream.authorizationId!==a.last.id)return denied();
+      const [existing]=await tx.select().from(receipts).where(eq(receipts.batchId,batchId));
+      if(existing)return receipt(existing);
+      await tx.insert(receipts).values({batchId,...observed});
+      await audit(tx,a.ctx,{action:"analytics.ingestion.persist",entityType:"ingestion-batch",entityId:batchId,after:{streamId,generation:prepared.generation,...observed,evidence:"exact-clickhouse-read-back"}});
+      return receipt(observed);
+    });
+  }
   async prefix() {
     return this.db.transaction(async tx=>{
       await tx.execute(sql`set local statement_timeout='5s'`);
       const [position]=await tx.select().from(counter).where(eq(counter.singleton,true));
-      const pending=await tx.select({id:batches.id}).from(batches).limit(10001);
-      if(pending.length>10000)throw new Error("Ingestion admission budget exceeded");
-      // No CH observation or receipt exists in this increment. Even an empty PG prefix is not a complete store.
-      return {acceptedThrough:(position?.position??0n).toString(),pendingBatches:pending.length,copiesComplete:false as const,conflictHistoryComplete:false as const,coherentSnapshot:false as const,reason:"persistence-not-confirmed" as const};
+      const rows=await tx.select({generation:batches.generation,receiptId:receipts.batchId}).from(batches).leftJoin(receipts,eq(receipts.batchId,batches.id)).orderBy(asc(batches.generation)).limit(10001);
+      if(rows.length>10000)throw new Error("Ingestion admission budget exceeded");
+      let persistedThrough=0n;
+      for(const row of rows){if(!row.receiptId||row.generation!==persistedThrough+1n)break;persistedThrough=row.generation;}
+      const pending=rows.filter(row=>!row.receiptId);
+      // Receipts certify individual batches, not global conflict retention or a coherent PG/CH serving snapshot.
+      return {acceptedThrough:(position?.position??0n).toString(),persistedThrough:persistedThrough.toString(),pendingBatches:pending.length,copiesComplete:false as const,conflictHistoryComplete:false as const,coherentSnapshot:false as const,reason:pending.length?"persistence-not-confirmed" as const:"serving-evidence-incomplete" as const};
     },{isolationLevel:"repeatable read",accessMode:"read only"});
   }
 }
