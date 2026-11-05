@@ -129,7 +129,7 @@ export class IngestionAdmissions {
       if(comparison.blocked){await finishIngestionWork(tx,a.ctx,work,"failed");return null;}
       const counts={storedCopies:observed.storedCopies,expiredCopies:observed.expiredCopies};
       signal?.throwIfAborted();await tx.insert(receipts).values({batchId,...counts});
-      await audit(tx,a.ctx,{action:"analytics.ingestion.persist",entityType:"ingestion-batch",entityId:batchId,after:{streamId,generation:prepared.generation,...counts,evidence:"exact-clickhouse-read-back"}});
+      await audit(tx,a.ctx,{action:"analytics.ingestion.persist",entityType:"ingestion-batch",entityId:batchId,after:{streamId,generation:prepared.generation,...counts,evidence:"exact-clickhouse-read-back",...(observed.storageWitness?{storageWitness:observed.storageWitness}:{})}});
       await finishIngestionWork(tx,a.ctx,work,"verified");
       signal?.throwIfAborted();return receipt(observed);
     });if(!confirmed)throw new Error("Ingestion persistence is not confirmed");return confirmed;}catch(error){

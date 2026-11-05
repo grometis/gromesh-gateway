@@ -191,8 +191,9 @@ export async function provisionClickhouse(admin, requestsDdl, options = {}) {
     if (options.copyFenceMetadata) {
       // Only the run-owned reader receives technical part/schema inspection; never operational credentials.
       await command(`GRANT SELECT(name,uuid,rows,bytes_on_disk,data_version,database,table,active) ON system.parts TO ${reader.user}`);
-      await command(`GRANT SELECT(uuid,engine,create_table_query,database,name) ON system.tables TO ${reader.user}`);
+      await command(`GRANT SELECT(uuid,engine,engine_full,create_table_query,database,name) ON system.tables TO ${reader.user}`);
     }
+    if(options.syncCopyWitnessMetadata)await command(`GRANT SELECT(uuid,engine_full,database,name) ON system.tables TO ${writer.user}`);
     return { reader, writer, close };
   }
   catch (error) {

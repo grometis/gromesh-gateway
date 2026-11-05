@@ -11,12 +11,15 @@ function natural(value:unknown):number {
 /** One aggregate budget across metadata, candidate, copy and final-fence queries. */
 export class BoundedCopyQueries {
  readonly usage={readRows:0,readBytes:0,decodedBytes:0,dbElapsedNs:0};
- private readonly limits;private readonly started=performance.now();
+ private readonly limits:{rows:number;bytes:number;decoded:number};private readonly started=performance.now();
  readonly signal:AbortSignal;
- constructor(private readonly client:ClickHouseClient,budget:CopyReadBudget={},signal?:AbortSignal,private readonly sessionId?:string){
+ constructor(private readonly client:ClickHouseClient,budget:CopyReadBudget={},signal?:AbortSignal,private readonly sessionId?:string,parent?:BoundedCopyQueries){
+  if(parent){this.limits=parent.limits;this.usage=parent.usage;this.started=parent.started;this.signal=parent.signal;return;}
   this.limits={rows:bounded(budget.maxReadRows,5_000_000),bytes:bounded(budget.maxReadBytes,256*1024*1024),decoded:bounded(budget.maxDecodedBytes,2*1024*1024)};
   this.signal=AbortSignal.any([AbortSignal.timeout(8000),...(signal?[signal]:[])]);
  }
+ /** Two authenticated HTTP identities may share one budget without pretending they share a server session. */
+ withSession(client:ClickHouseClient,sessionId:string){return new BoundedCopyQueries(client,{},undefined,sessionId,this);}
  get maxDecodedBytes(){return this.limits.decoded;}
  async query(text:string,params:Record<string,unknown>,maxRows:number,sessionExists=false){
   const {usage,limits,signal}=this;
