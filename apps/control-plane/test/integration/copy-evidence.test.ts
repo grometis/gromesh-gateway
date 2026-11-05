@@ -77,3 +77,10 @@ it("extends known expired negatives atomically with a later admission without ra
  const negative=(await readCopyEvidence(f.db,[id])).items[0]!;expect(negative.kind).toBe("conflicting-copies");expect(Date.parse(negative.expiresAt)).toBe(Date.parse(expiry));
  await pruneCopyEvidence(f.db,ctx,1000);expect((await readCopyEvidence(f.db,[id])).items[0]!.kind).toBe("conflicting-copies");
 });
+
+it("a delayed observer covers a later admission that committed before the first negative fact",async()=>{
+ const id=randomUUID(),short=await liveExpiry(),long=await liveExpiry(2),earlier=await seed(id,short);await seed(id,long);
+ await recordCopyEvidence(f.db,ctx,earlier.batch,[observation(id,short)]);
+ const negative=(await readCopyEvidence(f.db,[id])).items[0]!;expect(Date.parse(negative.expiresAt)).toBe(Date.parse(long));
+ expect((await f.h.sql.query("select expires_at from analytics_copy_evidence where request_id=$1",[id])).rows).toHaveLength(1);
+});

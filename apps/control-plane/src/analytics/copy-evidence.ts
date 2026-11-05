@@ -32,14 +32,19 @@ async function recordCopyEvidenceTx(tx:Tx,ctx:RequestContext,batchId:string,obse
     const [source] = await tx.select().from(batches).where(eq(batches.id, batchId));
     if (!source) return invalid();
     const [lost] = await tx.select().from(coverage);
+    const ids=[...new Set(observations.map(o=>o.id))];
+    const admitted=ids.length?(await tx.execute<{id:string;expiresAt:string}>(sql`select d->>'id' as id,d->>'expiresAt' as "expiresAt" from analytics_ingestion_batches b cross join lateral jsonb_array_elements(b.descriptor) d where d->>'id' in (${sql.join(ids.map(id=>sql`${id}`),sql`,`)}) limit 10001`)).rows:[];
+    if(admitted.length>10000)throw new Error("Copy evidence budget exceeded");
     let inserted = 0;
     for (const o of observations) {
       const descriptors = source.descriptor.filter(d => d.id === o.id);
       if (!descriptors.length || Date.parse(o.expiresAt) < Math.max(...descriptors.map(d => Date.parse(d.expiresAt)))) return invalid();
+      // A delayed observer also covers copies admitted before its observation committed.
+      const expiresAt=new Date(Math.max(Date.parse(o.expiresAt),...admitted.filter(d=>d.id===o.id).map(d=>Date.parse(d.expiresAt)))).toISOString();
       // A replay must not repopulate already pruned, expired evidence. The loss marker remains sticky.
-      if (lost?.prunedAt && source.generation <= lost.prunedThrough && Date.parse(o.expiresAt) <= Date.parse(lost.prunedAt)) continue;
+      if (lost?.prunedAt && source.generation <= lost.prunedThrough && Date.parse(expiresAt) <= Date.parse(lost.prunedAt)) continue;
       const pair = o.rightHash ? [o.leftHash, o.rightHash].sort() : [o.leftHash, ""];
-      const rows = await tx.insert(facts).values({requestId:o.id,sourceBatchId:batchId,generation:source.generation,kind:o.kind,leftHash:pair[0]!,rightHash:pair[1]!,expiresAt:new Date(o.expiresAt).toISOString()})
+      const rows = await tx.insert(facts).values({requestId:o.id,sourceBatchId:batchId,generation:source.generation,kind:o.kind,leftHash:pair[0]!,rightHash:pair[1]!,expiresAt})
         .onConflictDoNothing({target:[facts.sourceBatchId,facts.requestId,facts.kind,facts.leftHash,facts.rightHash,facts.expiresAt]}).returning({id:facts.id});
       inserted += rows.length;
     }
