@@ -23,7 +23,7 @@ export default async function setup({ provide }: TestProject) {
   try {
     const databaseUrl = await postgres.create(dbName);
     await runMigrations(postgres.assertOwned(databaseUrl));
-    const ddl = ["001-requests.sql", "002-retention.sql", "003-request-copies.sql"].map((name) => readFileSync(new URL(`../../../../deploy/observability/clickhouse/${name}`, import.meta.url), "utf8")).join("\n");
+    const ddl = ["001-requests.sql", "002-retention.sql", "003-request-copies.sql", "004-ingestion-envelopes.sql"].map((name) => readFileSync(new URL(`../../../../deploy/observability/clickhouse/${name}`, import.meta.url), "utf8")).join("\n");
     clickhouse = await provisionClickhouse(clickhouseAdmin, ddl);
     provide("databaseUrl", databaseUrl);
     provide("databaseAdminUrl", adminUrl);
