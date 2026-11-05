@@ -7,7 +7,7 @@ function validatePlan(plan){
  if(plan?.eligibleForFutureApproval===false||plan?.blockers?.length)refuse('blocked plan cannot be approved');
  if(plan?.schema!=='gromesh-cd-plan/v1'||!['DEV','HML','PRD'].includes(plan.environment)||!isSha(plan.sourceSha)
   ||!/^[a-f0-9]{64}$/.test(plan.releaseHash??'')||!/^[a-f0-9]{32}$/.test(plan.nonce??'')||!plan.requester
-  ||!/^gromesh-gateway\/gromesh-(dev|hml|prd)\/gromesh-(dev|hml|prd|rollback)$/.test(plan.job??'')||!/^[1-9][0-9]*$/.test(plan.buildId??''))refuse('plan identity');
+  ||!/^gromesh-gateway\/gromesh-(dev|hml|prd)\/gromesh-(deploy|rollback)$/.test(plan.job??'')||!/^[1-9][0-9]*$/.test(plan.buildId??''))refuse('plan identity');
  if(!plan.job.startsWith('gromesh-gateway/gromesh-'+plan.environment.toLowerCase()+'/'))refuse('environment/job identity');
  const start=Date.parse(plan.issuedAt),end=Date.parse(plan.expiresAt);if(!Number.isFinite(start)||!Number.isFinite(end)||end<=start||end-start>30*60*1000)refuse('plan expiry');
 }

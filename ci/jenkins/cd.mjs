@@ -45,7 +45,7 @@ export function createPlan(input){
  if(scopedPlan.changes?.length!==1||scopedPlan.changes[0].after!==expected||scopedPlan.changes[0].name!==target.deployment
   ||scopedPlan.changes[0].path!=='.spec.template.spec.containers[name=ui].image'||scopedPlan.changes[0].namespace!==target.namespace
   ||!scopedPlan.renderProof?.chartSha256||!scopedPlan.renderProof?.manifestSha256||!scopedPlan.liveObjects?.length)refuse('exact image/render/live-object proof');
- if(!context?.requester||!/^gromesh-gateway\/gromesh-dev\/gromesh-dev$/.test(context.job??'')||!/^[1-9][0-9]*$/.test(context.buildId??''))refuse('authenticated Jenkins requester/build');
+ if(!context?.requester||!/^gromesh-gateway\/gromesh-dev\/gromesh-deploy$/.test(context.job??'')||!/^[1-9][0-9]*$/.test(context.buildId??''))refuse('authenticated Jenkins requester/build');
  const blockers=[];
  if(migrations?.liveSchemaVerified!==true||migrations.status!=='NO_PENDING_MIGRATIONS')blockers.push('LIVE_SCHEMA_OR_PENDING_MIGRATIONS');
  if(compatibility?.uiDigest!==image.indexDigest||typeof input.unchangedCpImage!=='string'||!/@sha256:[a-f0-9]{64}$/.test(input.unchangedCpImage)||compatibility.cpImage!==input.unchangedCpImage||compatibility.tested!==true||compatibility.schemaJournalHash!==migrations?.journalHash)blockers.push('UI_OLD_CP_SCHEMA_COMPATIBILITY');

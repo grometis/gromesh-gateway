@@ -4,7 +4,7 @@ import runtimeRequirements from './plugins-b-prerequisites.json' with {type:'jso
 const names=['main','prs','branches','discovery','status'];
 export function imageJobDefinition(pipelineSha){if(!isSha(pipelineSha))throw new Error('Reviewed immutable pipeline SHA required');return {name:'gromesh-artifacts/gromesh-images',pipelineSha,scriptPath:'Jenkinsfile.images'};}
 export function referenceJobDefinition(pipelineSha){if(!isSha(pipelineSha))throw new Error('Reviewed immutable pipeline SHA required');return {name:'gromesh-delivery/gromesh-references',pipelineSha,scriptPath:'Jenkinsfile.references'};}
-const cdScripts={'gromesh-gateway/gromesh-dev/gromesh-dev':'Jenkinsfile.dev','gromesh-gateway/gromesh-dev/gromesh-rollback':'Jenkinsfile.rollback'};
+const cdScripts={'gromesh-gateway/gromesh-dev/gromesh-deploy':'Jenkinsfile.dev','gromesh-gateway/gromesh-dev/gromesh-rollback':'Jenkinsfile.rollback'};
 export function cdJobDefinitions(pipelineSha){if(!isSha(pipelineSha))throw new Error('Reviewed immutable pipeline SHA required');return Object.entries(cdScripts).map(([name,scriptPath])=>({name,scriptPath,pipelineSha,preserveExistingHistory:true,replaceExistingJob:false}));}
 // Supply snapshots read by the authenticated operator from PluginManager; never from a build parameter.
 export function assertScmActivation({baseline,current,classes,dependencyMinimumsSatisfied}){

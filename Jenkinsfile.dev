@@ -19,7 +19,7 @@ String requesterFor(def run){
  def previous=jenkins.model.Jenkins.get().getItemByFullName(upstream.upstreamProject)?.getBuildByNumber(upstream.upstreamBuild)
  return previous?.getCause(hudson.model.Cause.UserIdCause)?.userId
 }
-if(env.JOB_NAME!='gromesh-gateway/gromesh-dev/gromesh-dev'||!(params.IMAGE_BUILD_ID==~/[1-9][0-9]*/)||!['PLAN','ROLLBACK_PLAN'].contains(params.OPERATION))error('INVALID_DEV_REQUEST')
+if(env.JOB_NAME!='gromesh-gateway/gromesh-dev/gromesh-deploy'||!(params.IMAGE_BUILD_ID==~/[1-9][0-9]*/)||!['PLAN','ROLLBACK_PLAN'].contains(params.OPERATION))error('INVALID_DEV_REQUEST')
 def pipelineSha=scm.branches[0].name
 if(!(pipelineSha==~/[a-f0-9]{40}/))error('IMMUTABLE_REVIEWED_PIPELINE_REQUIRED')
 def requester=requesterFor(currentBuild.rawBuild)

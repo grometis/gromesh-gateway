@@ -10,4 +10,4 @@ properties([disableConcurrentBuilds(),parameters([string(name:'IMAGE_BUILD_ID',d
 if(env.JOB_NAME!='gromesh-gateway/gromesh-dev/gromesh-rollback'||!(params.IMAGE_BUILD_ID==~/[1-9][0-9]*/))error('INVALID_ROLLBACK_REQUEST')
 if(!(scm.branches[0].name==~/[a-f0-9]{40}/))error('IMMUTABLE_REVIEWED_PIPELINE_REQUIRED')
 if(!currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause'))error('AUTHENTICATED_HUMAN_REQUEST_REQUIRED')
-build(job:'gromesh-gateway/gromesh-dev/gromesh-dev',wait:true,propagate:true,parameters:[string(name:'IMAGE_BUILD_ID',value:params.IMAGE_BUILD_ID),string(name:'OPERATION',value:'ROLLBACK_PLAN')])
+build(job:'gromesh-gateway/gromesh-dev/gromesh-deploy',wait:true,propagate:true,parameters:[string(name:'IMAGE_BUILD_ID',value:params.IMAGE_BUILD_ID),string(name:'OPERATION',value:'ROLLBACK_PLAN')])

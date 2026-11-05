@@ -20,6 +20,6 @@ test('image availability proof cannot pull an arbitrary image or use another tar
  assert.throws(()=>validateImageProof(image.replace('gromesh-ui','gromesh-control-plane'),'dev','gateway',c));assert.throws(()=>validateImageProof(image,'prod','gateway',c));
 });
 test('target pull subprocess keeps protected runtime build identity without inheriting unrelated credentials',()=>{
- const e=targetProofEnvironment({PATH:'/tools',KUBECONFIG:'/private/dev'}, {JOB_NAME:'gromesh-gateway/gromesh-dev/gromesh-dev',BUILD_NUMBER:'1',BUILD_URL:'https://jenkins.grometis.com/job/x/1/',GROMESH_PIPELINE_SHA:'a'.repeat(40),GROMESH_DEV_PLAN_KUBECONFIG:'/private/dev',GH_TOKEN:'unrelated'});
+ const e=targetProofEnvironment({PATH:'/tools',KUBECONFIG:'/private/dev'}, {JOB_NAME:'gromesh-gateway/gromesh-dev/gromesh-deploy',BUILD_NUMBER:'1',BUILD_URL:'https://jenkins.grometis.com/job/x/1/',GROMESH_PIPELINE_SHA:'a'.repeat(40),GROMESH_DEV_PLAN_KUBECONFIG:'/private/dev',GH_TOKEN:'unrelated'});
  assert.equal(e.BUILD_NUMBER,'1');assert.equal(e.GROMESH_PIPELINE_SHA,'a'.repeat(40));assert.equal(e.GH_TOKEN,undefined);
 });
