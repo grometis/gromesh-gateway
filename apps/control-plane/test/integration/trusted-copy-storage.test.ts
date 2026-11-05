@@ -231,3 +231,20 @@ it("cannot ACK altered content restored after readback but before receipt confir
     } finally { allowInsert.release(); allowReceipt.release(); await service.close(); }
   }); } finally { allowInsert.release(); allowReceipt.release(); await proxy.close(); }
 }));
+it("refuses database/schema owners and schema creation capabilities without table write grants", () => fixture(async (f, admin, settings) => {
+  await provisionTrustedCopyStorage({ db: f.db, ctx, admin, settings, administratorNames: [integrationInputs(process.env).clickhouse.user] });
+  await runtime(f, async (db, role) => {
+    await f.h.sql.query(`GRANT CREATE ON SCHEMA public TO ${role}`);
+    try { await expect(readRuntimeCopyStorage(db)).rejects.toThrow(); }
+    finally { await f.h.sql.query(`REVOKE CREATE ON SCHEMA public FROM ${role}`); }
+    const schemaRestore=(await f.h.sql.query<{command:string}>("select format('ALTER SCHEMA public OWNER TO %I',pg_get_userbyid(nspowner)) command from pg_namespace where nspname='public'")).rows[0]!.command;
+    await f.h.sql.query(`ALTER SCHEMA public OWNER TO ${role}`);
+    try { await expect(readRuntimeCopyStorage(db)).rejects.toThrow(); }
+    finally { await f.h.sql.query(schemaRestore); }
+    const databaseRestore=(await f.h.sql.query<{command:string}>("select format('ALTER DATABASE %I OWNER TO %I',datname,pg_get_userbyid(datdba)) command from pg_database where datname=current_database()")).rows[0]!.command;
+    await f.h.sql.query(`ALTER DATABASE ${new URL(f.url).pathname.slice(1)} OWNER TO ${role}`);
+    try { await expect(readRuntimeCopyStorage(db)).rejects.toThrow(); }
+    finally { await f.h.sql.query(databaseRestore); }
+    expect((await readRuntimeCopyStorage(db)).databaseName).toBe(settings.databaseName);
+  });
+}));
