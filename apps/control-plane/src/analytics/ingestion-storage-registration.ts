@@ -5,6 +5,7 @@ import { audit } from "../audit/audit.js";
 import { analyticsIngestionStorage as storage, instance } from "../db/schema.js";
 import { copyReadNotReady } from "./bounded-copy-queries.js";
 import type { RegisteredCopyStorage } from "./copy-storage-authority-observer.js";
+import { assertAnalyticsReadSnapshot } from "./ingestion-read-snapshot.js";
 
 export async function assertUnusedCopyStorageNamespace(tx: Executor) {
   const row = (await tx.execute<{ unused: boolean }>(sql`select public.analytics_ingestion_storage_is_unused() unused`)).rows[0];
@@ -30,6 +31,18 @@ export async function registerCopyStorage(db: Db, ctx: RequestContext, observed:
 }
 /** Runtime may read the binding but cannot reset it, own it, or assume an owning role. */
 export async function readRuntimeCopyStorage(tx: Executor): Promise<RegisteredCopyStorage> {
+  return tx.transaction(async nested => {
+    await nested.execute(sql`set local search_path=pg_catalog,public,pg_temp`);
+    return readRuntimeBinding(nested);
+  });
+}
+/** Manual read-fence snapshots already own their transaction; never BEGIN/COMMIT one inside them. */
+export async function readRuntimeCopyStorageSnapshot(tx: Executor): Promise<RegisteredCopyStorage> {
+  await assertAnalyticsReadSnapshot(tx);
+  await tx.execute(sql`set local search_path=pg_catalog,public,pg_temp`);
+  return readRuntimeBinding(tx);
+}
+async function readRuntimeBinding(tx:Executor):Promise<RegisteredCopyStorage> {
   const [row] = (await tx.execute<{ privileged: boolean; owning: boolean; writable: boolean; readable: boolean }>(sql`
     select (session_user<>current_user or exists(select 1 from pg_catalog.pg_roles where
       (rolsuper or rolcreaterole or rolcreatedb or rolreplication or rolbypassrls

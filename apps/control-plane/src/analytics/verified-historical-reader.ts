@@ -9,7 +9,7 @@ import { BoundedCopyQueries, copyReadNotReady, type CopyReadBudget } from "./bou
 import type { CopyReadWindow } from "./bounded-copy-reader.js";
 import { PhysicalCopyFence, observePhysicalCopyCut } from "./physical-copy-fence.js";
 import { assertCopyStorageSchema } from "./copy-storage-schema.js";
-import { readRuntimeCopyStorage } from "./ingestion-storage-registration.js";
+import { readRuntimeCopyStorage, readRuntimeCopyStorageSnapshot } from "./ingestion-storage-registration.js";
 import { observeCopyStorageAuthority, observeCopyStorageResource } from "./copy-storage-authority-observer.js";
 import { privateCopyStorageClient, type TrustedCopyStorageSettings } from "./trusted-copy-storage.js";
 import { routeHistoryEvidenceSnapshot } from "./route-history-evidence.js";
@@ -38,7 +38,7 @@ export async function openVerifiedHistoricalReader(input: { pool: pg.Pool; setti
       busy = true;
       try {
         return await withIngestionReadFence(input.pool, async snapshot => {
-          const binding = await readRuntimeCopyStorage(snapshot);
+          const binding = await readRuntimeCopyStorageSnapshot(snapshot);
           if (JSON.stringify(binding) !== JSON.stringify(registered)) throw copyReadNotReady();
           return planPersistedPrefix(snapshot);
         }, async (plan, signal) => {
