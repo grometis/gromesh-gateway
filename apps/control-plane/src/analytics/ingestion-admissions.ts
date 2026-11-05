@@ -1,3 +1,4 @@
+import { claimIngestionWork,assertIngestionWork,finishIngestionWork } from "./ingestion-workers.js";
 import { createHash } from "node:crypto";
 import { and, asc, desc, eq, ne, sql } from "drizzle-orm";
 import type { Db, Tx } from "../db/db.js";
@@ -96,24 +97,36 @@ export class IngestionAdmissions {
     const prior=await this.db.select().from(receipts).where(eq(receipts.batchId,batchId));
     const receipt=(counts:{storedCopies:number;expiredCopies:number})=>({schemaVersion:1 as const,streamId,batchId,generation:prepared.generation,status:"persisted" as const,storedCopies:counts.storedCopies,expiredCopies:counts.expiredCopies});
     if(prior[0])return receipt(prior[0]);
+    const work=await this.db.transaction(async tx=>{
+      await lock(tx);const a=await this.authorized(tx,token);
+      const [stream]=await tx.select().from(streams).where(eq(streams.id,streamId));
+      if(!stream||stream.nodeId!==a.current.node.nodeId||stream.authorizationId!==a.last.id)return denied();
+      return claimIngestionWork(tx,a.ctx,batchId);
+    });
     const asOf=(await this.db.execute<{now:string}>(sql`select to_char(clock_timestamp() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as now`)).rows[0]!.now;
     // No network call is performed while holding a PostgreSQL transaction or cluster/admission lock.
     let observed:{storedCopies:number;expiredCopies:number};
     try { observed=await this.persistence.persist({streamId,batchId,generation:prepared.generation,copies,asOf}); }
     catch(error) {
       if(error instanceof CopyEvidenceError) await recordCopyEvidence(this.db,{actor:{type:"system",id:"analytics-copy-observer"},role:"viewer",ip:null},batchId,error.observations);
+      await this.db.transaction(async tx=>{await lock(tx);await finishIngestionWork(tx,{actor:{type:"system",id:"analytics-persistence-worker"},role:"viewer",ip:null},work,"failed");});
       throw error;
     }
-    return this.db.transaction(async tx=>{
+    try{return await this.db.transaction(async tx=>{
       await lock(tx);const a=await this.authorized(tx,token);
+      await assertIngestionWork(tx,work);
       const [stream]=await tx.select().from(streams).where(eq(streams.id,streamId));
       if(!stream||stream.instanceId!==a.self.id||stream.clusterId!==a.current.cluster.id||stream.nodeId!==a.current.node.nodeId||stream.authorizationId!==a.last.id)return denied();
       const [existing]=await tx.select().from(receipts).where(eq(receipts.batchId,batchId));
       if(existing)return receipt(existing);
       await tx.insert(receipts).values({batchId,...observed});
       await audit(tx,a.ctx,{action:"analytics.ingestion.persist",entityType:"ingestion-batch",entityId:batchId,after:{streamId,generation:prepared.generation,...observed,evidence:"exact-clickhouse-read-back"}});
+      await finishIngestionWork(tx,a.ctx,work,"verified");
       return receipt(observed);
-    });
+    });}catch(error){
+      await this.db.transaction(async tx=>{await lock(tx);await finishIngestionWork(tx,{actor:{type:"system",id:"analytics-persistence-worker"},role:"viewer",ip:null},work,"failed");});
+      throw error;
+    }
   }
   async prefix() {
     return this.db.transaction(async tx=>{
