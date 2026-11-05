@@ -49,14 +49,14 @@ it("an already cancelled reconciliation does not mutate its admission or start s
 it("a bounded pass stops on a gap and resumes without duplicating earlier receipts",async()=>{
  const a=await copy(),b=await copy(),one=randomUUID(),two=randomUUID();const first=await admissions.prepare(producer.token,streamId,one,[a]),second=await admissions.prepare(producer.token,streamId,two,[b]);
  const jobs=[{streamId,batchId:one,generation:first.generation,copies:[a]},{streamId,batchId:two,generation:(BigInt(second.generation)+1n).toString(),copies:[b]}];
- const runner=new IngestionReconciler(admissions);const partial=await runner.run(producer.token,jobs);
+ const runner=new IngestionReconciler(f.h.sql,f.h.app.get(AgentGatewayService),new IngestionCopyPersistence(writer,reader));const partial=await runner.run(producer.token,jobs);
  expect(partial.completed).toHaveLength(1);expect(partial.pending).toEqual([{batchId:two,generation:jobs[1]!.generation}]);expect(partial.reason).toBe("admission-conflict");
  jobs[1]!.generation=second.generation;const resumed=await runner.run(producer.token,jobs);expect(resumed.completed).toHaveLength(2);expect(resumed.pending).toEqual([]);expect(resumed.reason).toBeNull();
  const before=await admissions.prefix();await expect(runner.run(producer.token,Array(21).fill(jobs[0]))).rejects.toThrow("budget");expect(await admissions.prefix()).toEqual(before);
 });
 it("unknown bearers cannot reconcile an already admitted batch",async()=>{
  const a=await copy(),batchId=randomUUID(),prepared=await admissions.prepare(producer.token,streamId,batchId,[a]);
- const result=await new IngestionReconciler(admissions).run("unknown",[{streamId,batchId,generation:prepared.generation,copies:[a]}]);
+ const result=await new IngestionReconciler(f.h.sql,f.h.app.get(AgentGatewayService),new IngestionCopyPersistence(writer,reader)).run("unknown",[{streamId,batchId,generation:prepared.generation,copies:[a]}]);
  expect(result.completed).toEqual([]);expect(result.reason).toBe("unauthorized");
  expect((await f.h.sql.query("select count(*)::int n from analytics_ingestion_receipts where batch_id=$1",[batchId])).rows[0]!.n).toBe(0);
 });
@@ -76,4 +76,19 @@ it("two workers cannot verify the same in-flight attempt concurrently",async()=>
  const running=first.persist(producer.token,streamId,batchId,[a],{expectedGeneration:prepared.generation});await ready;
  try{await expect(admissions.persist(producer.token,streamId,batchId,[a],{expectedGeneration:prepared.generation})).rejects.toMatchObject({status:409});}finally{resume();}
  expect(await running).toMatchObject({status:"persisted",storedCopies:1});
+});
+
+it("rejects a missing generation before any admission can be created",async()=>{
+ const a=await copy(),batchId=randomUUID(),before=await admissions.prefix(),runner=new IngestionReconciler(f.h.sql,f.h.app.get(AgentGatewayService),new IngestionCopyPersistence(writer,reader));
+ const jobs=[{streamId,batchId,copies:[a]}] as unknown as Parameters<IngestionReconciler["run"]>[1];
+ await expect(runner.run(producer.token,jobs)).rejects.toThrow("budget");expect(await admissions.prefix()).toEqual(before);
+});
+it("a blocked receipt probe terminates under real PostgreSQL timeout without acknowledging persistence",async()=>{
+ const a=await copy(),batchId=randomUUID(),prepared=await admissions.prepare(producer.token,streamId,batchId,[a]),locker=await f.h.sql.connect();
+ await locker.query("begin");await locker.query("lock analytics_ingestion_receipts in access exclusive mode");
+ try{
+  const result=await new IngestionReconciler(f.h.sql,f.h.app.get(AgentGatewayService),new IngestionCopyPersistence(writer,reader)).run(producer.token,[{streamId,batchId,generation:prepared.generation,copies:[a]}]);
+  expect(result.completed).toEqual([]);expect(result.reason).toBe("persistence-unconfirmed");expect(result.pending).toHaveLength(1);
+ }finally{await locker.query("rollback");locker.release();}
+ expect((await f.h.sql.query("select count(*)::int n from analytics_ingestion_receipts where batch_id=$1",[batchId])).rows[0]!.n).toBe(0);
 });
