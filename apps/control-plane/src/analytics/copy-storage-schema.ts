@@ -10,6 +10,7 @@ const columns:readonly (readonly [string,string])[]=[
  ["ingress_stream_id","Nullable(UUID)"],["ingress_batch_id","Nullable(UUID)"],["ingress_copy_id","Nullable(UUID)"],
  ["ingress_generation","Nullable(UInt64)"],["ingress_wire","Nullable(String)"],
 ];
+export const copyStorageColumns = columns;
 
 /** Internal, bounded catalog read in the same authenticated resource/session/budget as the copy observation. */
 export async function assertCopyStorageSchema(queries:BoundedCopyQueries){

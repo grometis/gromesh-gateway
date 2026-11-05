@@ -1157,3 +1157,22 @@ export const analyticsIngestionPruneCoverage=pgTable("analytics_ingestion_prune_
  prunedAt:timestamp("pruned_at",{withTimezone:true,mode:"string"}).notNull(),
  pruneTransaction:text("prune_transaction").notNull(),
 },t=>[check("analytics_ingestion_prune_coverage_ck",sql`${t.singleton}=true and ${t.prunedThrough}>0`)]);
+
+/** One irreversible storage genesis for this admission namespace; never a replacement for lost history. */
+export const analyticsIngestionStorage = pgTable("analytics_ingestion_storage", {
+  singleton: boolean("singleton").primaryKey().default(true).notNull(),
+  instanceId: uuid("instance_id").notNull().references(() => instance.id),
+  serverId: uuid("server_id").notNull(),
+  databaseName: text("database_name").notNull(),
+  databaseId: uuid("database_id").notNull(),
+  tableId: uuid("table_id").notNull(),
+  definition: text("definition").notNull(),
+  writerId: uuid("writer_id").notNull(),
+  readerId: uuid("reader_id").notNull(),
+  auditorId: uuid("auditor_id").notNull(),
+  administratorIds: uuid("administrator_ids").array().notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).defaultNow().notNull(),
+  createdXid: text("created_xid").notNull(),
+}, t => [
+  check("analytics_ingestion_storage_identity_ck", sql`${t.singleton}=true and ${t.databaseName} ~ '^[a-z][a-z0-9_]{0,62}$' and ${t.writerId}<>${t.readerId} and ${t.writerId}<>${t.auditorId} and ${t.readerId}<>${t.auditorId} and cardinality(${t.administratorIds}) between 1 and 8 and ${t.writerId}<>all(${t.administratorIds}) and ${t.readerId}<>all(${t.administratorIds}) and ${t.auditorId}<>all(${t.administratorIds})`),
+]);
