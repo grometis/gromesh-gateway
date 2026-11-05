@@ -78,7 +78,12 @@ export async function openVerifiedHistoricalReader(input: { pool: pg.Pool; setti
             if (storage.kind !== "ready") throw copyReadNotReady();
             const attribution = attributeRouteHistoryV2(history, { copiesComplete: proof.copiesComplete,
               copies: copies.map(row => ({ ...row, content: row.content as AnalyticsRow })), retainedCopyState: null });
-            return { id, ts: String(storage.content.ts), storage, attribution };
+            const candidateRevisions = attribution.candidateRevisions.map(ref => {
+              const revision = history.revisions.find(row => row.epoch === ref.epoch && row.revision === ref.revision);
+              if (!revision) throw copyReadNotReady();
+              return { ...ref, recordedAt: revision.recordedAt };
+            });
+            return { id, ts: String(storage.content.ts), storage, attribution, candidateRevisions };
           }).filter(row => Date.parse(row.ts) >= from && Date.parse(row.ts) < to)
             .sort((a,b) => a.ts === b.ts ? a.id === b.id ? 0 : a.id < b.id ? 1 : -1 : a.ts < b.ts ? 1 : -1);
           const after = window.after;
