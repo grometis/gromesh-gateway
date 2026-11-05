@@ -47,3 +47,26 @@ for(const [name,change] of [
  ['missing SBOM subject',p=>delete p.trusted.artifactProofs.ui.sbomSubject],['unverified native build',p=>p.trusted.artifactProofs.agent.nativePlatformsVerified=false],['mutable release tags',p=>p.trusted.registry.immutableTagsVerified=false],['another registry',p=>p.trusted.registry.namespace='elsewhere']
  ,['another image-producing build',p=>p.trusted.imageBuild={job:'gromesh-artifacts/gromesh-images',id:'99',url:'https://jenkins.grometis.com/job/gromesh-artifacts/job/gromesh-images/99/',pipelineSha:'b'.repeat(40)}]
 ])test(`publication refuses ${name}`,()=>{const p=publication();change(p);assert.throws(()=>validatePublication(p.request,p.trusted));});
+
+function ownerApprovedPat(p){
+ p.trusted.registry={...p.trusted.registry,writerScoped:false,writerUsername:'fabriciobackend',writerAuthorization:{
+  kind:'OWNER_APPROVED_PERSONAL_PAT',account:'fabriciobackend',credentialId:'gromesh-dockerhub-write-authfile',credentialFolder:'gromesh-artifacts',consumerJob:'gromesh-artifacts/gromesh-images',
+  permission:'Repo Read & Write',expirationDays:90,delete:false,cloudSandboxes:false,accountWideReachAccepted:true,authorizationId:'J6-owner-pat-20261105',credentialBoundaryQualified:true,
+  repositories:['fabriciobackend/gromesh-control-plane','fabriciobackend/gromesh-ui','fabriciobackend/gromesh-agent','fabriciobackend/gromesh-kong']}};
+ return p;
+}
+test('owner-approved account PAT needs the qualified existing folder binding and never promotes a candidate to an official release',()=>{
+ const p=ownerApprovedPat(publication()),r=validatePublication(p.request,p.trusted);
+ assert.equal(r.official,false);assert.equal(r.artifacts.length,4);assert.throws(()=>assertDeployableRelease(r));
+ p.trusted.registry.publicationClass='OFFICIAL';p.trusted.registry.publisherMode='JENKINS_ONLY';assert.throws(()=>validatePublication(p.request,p.trusted),/cutover/i);
+});
+for(const [name,change]of[
+ ['unqualified binding',a=>a.credentialBoundaryQualified=false],['missing owner acceptance',a=>a.accountWideReachAccepted=false],
+ ['another credential',a=>a.credentialId='another-project'],['another folder',a=>a.credentialFolder='gromesh-gateway'],['PR consumer',a=>a.consumerJob='gromesh-gateway/gromesh-ci/gromesh-prs'],
+ ['another account',a=>a.account='elsewhere'],['delete permission',a=>a.delete=true],['Cloud Sandboxes',a=>a.cloudSandboxes=true],
+ ['unapproved lifetime',a=>a.expirationDays=365],['missing authorization',a=>a.authorizationId=''],
+ ['foreign repository',a=>a.repositories[3]='fabriciobackend/evolution-api'],['duplicate destination',a=>a.repositories[3]=a.repositories[0]]
+])test(`personal PAT publication refuses ${name}`,()=>{
+ const p=ownerApprovedPat(publication());change(p.trusted.registry.writerAuthorization);assert.throws(()=>validatePublication(p.request,p.trusted),/registry authorization/i);
+});
+test('owner approval of the PAT never overrides a failed final CI Run',()=>{const p=ownerApprovedPat(publication());p.trusted.latestCi.result='FAILURE';assert.throws(()=>validatePublication(p.request,p.trusted),/completed CI/i);});

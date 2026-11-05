@@ -58,7 +58,18 @@ export function validatePublication(request,trusted){
   seen.add(a.component);artifacts.push(a);
  }
  const registry=trusted.registry,official=registry?.publicationClass==='OFFICIAL';
- if(registry?.namespace!=='fabriciobackend'||registry.visibility!=='public'||registry.writerScoped!==true||registry.immutableTagsVerified!==true
+ const authorization=registry?.writerAuthorization;
+ // This exception represents the owner's explicit acceptance of account-wide PAT reach.
+ // It never establishes runtime binding, CI, provenance, immutability or cutover proof.
+ const approvedPersonalPat=registry?.writerScoped===false&&registry.writerUsername==='fabriciobackend'
+   &&authorization?.kind==='OWNER_APPROVED_PERSONAL_PAT'&&authorization.account==='fabriciobackend'
+   &&authorization.credentialId==='gromesh-dockerhub-write-authfile'&&authorization.credentialFolder==='gromesh-artifacts'
+   &&authorization.consumerJob===producer.job&&authorization.permission==='Repo Read & Write'&&authorization.expirationDays===90
+   &&authorization.delete===false&&authorization.cloudSandboxes===false&&authorization.accountWideReachAccepted===true
+   &&typeof authorization.authorizationId==='string'&&/^[A-Za-z0-9-]{8,100}$/.test(authorization.authorizationId)
+   &&authorization.credentialBoundaryQualified===true&&Array.isArray(authorization.repositories)
+   &&canonicalJson([...authorization.repositories].sort())===canonicalJson(components.map(c=>'fabriciobackend/gromesh-'+c).sort());
+ if(registry?.namespace!=='fabriciobackend'||registry.visibility!=='public'||!(registry.writerScoped===true||approvedPersonalPat)||registry.immutableTagsVerified!==true
    ||!(official?registry.publisherMode==='JENKINS_ONLY':registry.publicationClass==='CANDIDATE'&&registry.publisherMode==='ACTIONS_OFFICIAL_JENKINS_CANDIDATE'))refuse('registry authorization/cutover');
  if(official)assertOfficialCutover({cutover:registry.cutover,state:trusted.publisherState,pipelineSha:trusted.expected.pipelineSha,now:trusted.now});
  return {schema:official?'gromesh-release/v1':'gromesh-candidate-release/v1',official,source:ci.report.source,pipelineSha:ci.report.pipelineSha,ci:ci.report.build,producer,ciHash:canonicalHash(request.ci),artifacts,
