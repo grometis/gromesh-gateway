@@ -190,3 +190,37 @@ it("authorization revoked after CH readback prevents receipt and cannot be bypas
  try{await f.db.transaction(tx=>revokeClusterAssociation(tx,{actor:{type:"system",id:"synthetic-revocation"},role:"admin",ip:null},producer.source.clusterId,"revoke"));}finally{resume.release();}
  expect((await outcome).error).toBeTruthy();expect((await f.h.sql.query("select count(*)::int n from analytics_ingestion_receipts where batch_id=$1",[batch])).rows[0]!.n).toBe(0);
 });
+async function forgetRaw(id:string){
+ const admin=integrationInputs(process.env).clickhouse;if(!/^gromesh_test_[0-9a-f]{32}$/.test(CLICKHOUSE.database)||admin.url!==CLICKHOUSE.url)throw Error("Unowned maintenance target");
+ const maintenance=createClient({url:admin.url,database:CLICKHOUSE.database,username:admin.user,password:admin.password});
+ try{await maintenance.command({query:"ALTER TABLE requests_v2_copies DELETE WHERE id={id:UUID}",query_params:{id},clickhouse_settings:{mutations_sync:"2"}});}finally{await maintenance.close();}
+}
+it("persists missing-comparison history when a prior admitted copy is gone, without equating equal hashes",async()=>{
+ producer=await f.registered();const auth=await f.db.transaction(tx=>authorizeClusterDelivery(tx,producer.ctx,producer.source));await confirmClusterAssociation(f.db,auth);
+ const {readCopyEvidence}=await import("../../src/analytics/copy-evidence.js"),s=await admissions.open(producer.token,podUid),a=await copy();
+ await admissions.persist(producer.token,s.id,randomUUID(),[a]);await forgetRaw(a.event.id);
+ const b={...a,copyId:randomUUID()},batch=randomUUID();await expect(admissions.persist(producer.token,s.id,batch,[b])).rejects.toThrow("Ingestion persistence is not confirmed");
+ expect((await readCopyEvidence(f.db,[a.event.id])).items[0]!.kind).toBe("comparison-unavailable");expect((await f.h.sql.query("select count(*)::int n from analytics_ingestion_receipts where batch_id=$1",[batch])).rows[0]!.n).toBe(0);
+ const restarted=new IngestionAdmissions(f.db,f.h.app.get(AgentGatewayService),new IngestionCopyPersistence(writer,reader));await expect(restarted.persist(producer.token,s.id,batch,[b])).rejects.toThrow();
+});
+it("detects conflicting earlier admissions after all their raw witnesses have expired or disappeared",async()=>{
+ const {readCopyEvidence}=await import("../../src/analytics/copy-evidence.js"),s=await admissions.open(producer.token,podUid),a=await copy();await admissions.persist(producer.token,s.id,randomUUID(),[a]);await forgetRaw(a.event.id);
+ const b={...a,copyId:randomUUID(),event:{...a.event,status:503}},batch=randomUUID();await expect(admissions.persist(producer.token,s.id,batch,[b])).rejects.toThrow();
+ expect((await readCopyEvidence(f.db,[a.event.id])).items[0]!.kind).toBe("conflicting-copies");expect((await f.h.sql.query("select state from analytics_ingestion_workers where batch_id=$1",[batch])).rows[0]!.state).toBe("failed");
+});
+it("failed negative-evidence auditing leaves no receipt and releases the still-owned worker for retry",async()=>{
+ const s=await admissions.open(producer.token,podUid),a=await copy(),b={...a,copyId:randomUUID(),event:{...a.event,status:503}},batch=randomUUID();
+ await f.h.sql.query(`create function fail_reconciliation_audit() returns trigger language plpgsql as $$begin if NEW.action='analytics.copy-evidence.record' then raise exception 'synthetic evidence failure';end if;return NEW;end$$;create trigger fail_reconciliation_audit before insert on audit_events for each row execute function fail_reconciliation_audit()`);
+ try{await expect(admissions.persist(producer.token,s.id,batch,[a,b])).rejects.toThrow();}finally{await f.h.sql.query("drop trigger fail_reconciliation_audit on audit_events;drop function fail_reconciliation_audit()");}
+ expect((await f.h.sql.query("select state from analytics_ingestion_workers where batch_id=$1",[batch])).rows[0]!.state).toBe("failed");expect((await f.h.sql.query("select count(*)::int n from analytics_ingestion_receipts where batch_id=$1",[batch])).rows[0]!.n).toBe(0);
+ await expect(admissions.persist(producer.token,s.id,batch,[a,b])).rejects.toThrow("Ingestion persistence is not confirmed");
+ expect((await f.h.sql.query("select count(*)::int n from analytics_copy_evidence where source_batch_id=$1",[batch])).rows[0]!.n).toBe(1);
+});
+it("measures bounded persistence and engine reads for 100 synthetic unique copies without a serving claim",async()=>{
+ const {BoundedCopyReader}=await import("../../src/analytics/bounded-copy-reader.js"),s=await admissions.open(producer.token,podUid),template=await copy();
+ const copies=Array.from({length:100},(_,n)=>{const requestId=(n+1).toString(16).padStart(32,"f"),hex=createHash("sha256").update(producer.source.clusterId+"|"+podUid+"|"+requestId).digest("hex").slice(0,32),id=`${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;return {...template,copyId:randomUUID(),requestId,event:{...template.event,id}};});
+ const started=performance.now();expect(await admissions.persist(producer.token,s.id,randomUUID(),copies)).toMatchObject({storedCopies:100});const persistenceMs=performance.now()-started;
+ const from=new Date(Date.parse(template.event.ts)-1).toISOString(),to=new Date(Date.parse(template.event.ts)+1).toISOString(),readStarted=performance.now();
+ const result=await new BoundedCopyReader(reader).read({instanceId:f.instanceId,from,to,pageSize:200});expect(result.items).toHaveLength(100);expect(result.proof.copiesComplete).toBe(false);
+ process.stdout.write("R19_SYNTHETIC_MEASUREMENT "+JSON.stringify({copies:100,persistenceMs,readWallMs:performance.now()-readStarted,engineUsage:result.usage,servingProof:false})+"\n");
+});

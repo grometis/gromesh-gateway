@@ -47,7 +47,7 @@ it("real bearer→admission→CH→receipt→reader→history→policy remains u
   if(!/^gromesh_test_[0-9a-f]{32}$/.test(CLICKHOUSE.database)||admin.url!==CLICKHOUSE.url)throw Error("Unowned maintenance target");
   const maintenance=createClient({url:admin.url,database:CLICKHOUSE.database,username:admin.user,password:admin.password});
   try{await maintenance.command({query:"ALTER TABLE requests_v2_copies DELETE WHERE id={id:UUID}",query_params:{id:conflicting.event.id},clickhouse_settings:{mutations_sync:"2"}});}finally{await maintenance.close();}
-  await service.persist(source.token,stream.id,randomUUID(),[{...copies[0]!,copyId:randomUUID()}]);
+  await expect(service.persist(source.token,stream.id,randomUUID(),[{...copies[0]!,copyId:randomUUID()}])).rejects.toThrow();
   const retained=await new HistoricalCopyReader(f.h.sql,new BoundedCopyReader(reader)).read({instanceId:f.instanceId,from,to,pageSize:200});
   expect(retained.items.find(i=>i.id===conflicting.event.id)!.evidenceKind).toBe("conflicting-copies");
   expect(retained.items.every(i=>i.attribution.workspaceId===null)).toBe(true);
