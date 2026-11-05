@@ -16,17 +16,17 @@ CREATE TABLE "analytics_ingestion_storage" (
 );
 --> statement-breakpoint
 ALTER TABLE "analytics_ingestion_storage" ADD CONSTRAINT "analytics_ingestion_storage_instance_id_instance_id_fk" FOREIGN KEY ("instance_id") REFERENCES "public"."instance"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-CREATE FUNCTION analytics_ingestion_storage_is_unused() RETURNS boolean LANGUAGE sql STABLE AS $$
- SELECT COALESCE((SELECT position FROM analytics_ingestion_counter WHERE singleton),0)=0
-  AND NOT EXISTS(SELECT 1 FROM analytics_ingestion_batches)
-  AND NOT EXISTS(SELECT 1 FROM analytics_ingestion_receipts)
-  AND NOT EXISTS(SELECT 1 FROM analytics_ingestion_workers)
-  AND NOT EXISTS(SELECT 1 FROM analytics_copy_evidence)
-  AND NOT EXISTS(SELECT 1 FROM analytics_ingestion_prune_coverage)
+CREATE FUNCTION analytics_ingestion_storage_is_unused() RETURNS boolean LANGUAGE sql STABLE SET search_path=pg_catalog,public AS $$
+ SELECT COALESCE((SELECT position FROM public.analytics_ingestion_counter WHERE singleton),0)=0
+  AND NOT EXISTS(SELECT 1 FROM public.analytics_ingestion_batches)
+  AND NOT EXISTS(SELECT 1 FROM public.analytics_ingestion_receipts)
+  AND NOT EXISTS(SELECT 1 FROM public.analytics_ingestion_workers)
+  AND NOT EXISTS(SELECT 1 FROM public.analytics_copy_evidence)
+  AND NOT EXISTS(SELECT 1 FROM public.analytics_ingestion_prune_coverage)
   AND NOT EXISTS(SELECT 1 FROM public.analytics_ingestion_storage)
 $$;
 --> statement-breakpoint
-CREATE FUNCTION analytics_ingestion_storage_genesis_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE FUNCTION analytics_ingestion_storage_genesis_guard() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog,public AS $$
 BEGIN
  PERFORM pg_advisory_xact_lock(1818,1801);
  IF NEW.created_xid<>pg_current_xact_id()::text OR NEW.created_at>clock_timestamp()

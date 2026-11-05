@@ -1,3 +1,5 @@
+import type { Tx } from "../db/db.js";
+import type { IngestionWork } from "./ingestion-workers.js";
 import { BoundedCopyQueries } from "./bounded-copy-queries.js";
 import { createHash } from "node:crypto";
 import type { CopyObservation,ObservedCopyIdentity } from "./copy-evidence.js";
@@ -5,6 +7,11 @@ import type { ClickHouseClient } from "@clickhouse/client";
 import type { IngestionCopy } from "./ingestion-admissions.js";
 import { encodeRawRequestCopy } from "./request-copy-store.js";
 import { decodeStoredIngestionCopy, ingestionWire as wire, ingestionLogicalContent as logicalKey } from "./stored-ingestion-copy.js";
+export interface IngestionPersistenceInput {streamId:string;batchId:string;generation:string;copies:readonly IngestionCopy[];asOf:string;admissionProof?:{bearer:string;work:IngestionWork}}
+export interface IngestionPersistence {
+ persist(input:IngestionPersistenceInput,caller?:AbortSignal):Promise<CopyPersistenceObservation>;
+ confirm?(tx:Tx,input:IngestionPersistenceInput):Promise<void>;
+}
 export interface SyncCopyWitness {readonly kind:"observed-sync-policy-readback-v1";readonly serverId:string;readonly tableId:string;readonly serverVersion:string;readonly insertQueryId:string}
 export interface CopyPersistenceObservation {storedCopies:number;expiredCopies:number;observedCopies:ObservedCopyIdentity[];insertQueryId?:string;storageWitness?:SyncCopyWitness}
 /** Only negative technical facts escape the reader; no request content is attached to errors. */
@@ -16,7 +23,7 @@ const failed=()=>new Error("Ingestion persistence is not confirmed");
 /** Only constructed with the dedicated writer/reader. Observation is actual read-back, never a supplied boolean. */
 export class IngestionCopyPersistence {
  constructor(private readonly writer:ClickHouseClient,private readonly reader:ClickHouseClient,private readonly context?:{queries:BoundedCopyQueries;writes:BoundedCopyQueries}) {}
- async persist(input:{streamId:string;batchId:string;generation:string;copies:readonly IngestionCopy[];asOf:string},caller?:AbortSignal):Promise<CopyPersistenceObservation> {
+ async persist(input:IngestionPersistenceInput,caller?:AbortSignal):Promise<CopyPersistenceObservation> {
   const signal=AbortSignal.any([AbortSignal.timeout(8000),...(caller?[caller]:[])]);
   signal.throwIfAborted();
   try{

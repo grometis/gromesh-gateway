@@ -1,4 +1,12 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import pg from "pg";
+import { drizzle } from "drizzle-orm/node-postgres";
+import * as schema from "../../src/db/schema.js";
+import { sql } from "drizzle-orm";
+import type { Db } from "../../src/db/db.js";
+import { AgentGatewayService } from "../../src/agent-gateway/agent-gateway.js";
+import { authorizeClusterDelivery, confirmClusterAssociation, revokeClusterAssociation } from "../../src/analytics/cluster-history.js";
+import { openTrustedIngestion } from "../../src/analytics/trusted-ingestion.js";
 import { createClient, ClickHouseLogLevel, type ClickHouseClient } from "@clickhouse/client";
 import { expect, it } from "vitest";
 import { clusterHistoryFixture } from "./cluster-history-fixtures.js";
@@ -28,6 +36,20 @@ async function fixture(run: (f: Awaited<ReturnType<typeof clusterHistoryFixture>
   }
 }
 const ctx = { actor: { type: "system" as const, id: "synthetic-storage-provisioner" }, role: "admin" as const, ip: null };
+async function runtime(f: Awaited<ReturnType<typeof clusterHistoryFixture>>, run: (db: Db, role: string, pool: pg.Pool) => Promise<void>) {
+  const role = `r21_${randomBytes(12).toString("hex")}`, password = randomBytes(24).toString("hex");
+  await f.h.sql.query(`CREATE ROLE ${role} LOGIN PASSWORD '${password}'`);
+  let pool: pg.Pool | undefined;
+  try {
+    await f.h.sql.query(`GRANT USAGE ON SCHEMA public TO ${role}; GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA public TO ${role}; REVOKE INSERT,UPDATE,DELETE ON public.analytics_ingestion_storage FROM ${role}; GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA public TO ${role}`);
+    const url = new URL(f.url); url.username = role; url.password = password;
+    pool = new pg.Pool({ connectionString: url.toString() });
+    await run(drizzle(pool, { schema }), role, pool);
+  } finally {
+    await pool?.end();
+    await f.h.sql.query(`DROP OWNED BY ${role}; DROP ROLE ${role}`);
+  }
+}
 function client(settings: TrustedCopyStorageSettings, kind: "writer" | "reader" | "auditor") {
   return createClient({ url: settings.url, database: settings.databaseName, username: settings[kind].user, password: settings[kind].password, log: { level: ClickHouseLogLevel.OFF }, clickhouse_settings: { log_queries: 0 } });
 }
@@ -64,11 +86,11 @@ it("does not adopt an existing resource or reset a committed genesis", () => fix
   expect((await f.h.sql.query("select table_id from analytics_ingestion_storage")).rows).toEqual([{ table_id: first.tableId }]);
 }));
 
-it("rejects a residual wildcard writer before creating a fresh database", () => fixture(async (f, admin, settings) => {
+it.each(["*.*", "gromesh_test*.*"])("rejects a residual wildcard writer %s before creating a fresh database", scope => fixture(async (f, admin, settings) => {
   const legacy = `${settings.databaseName}_legacy`, password = randomBytes(24).toString("hex");
   await admin.command({ query: `CREATE USER ${legacy} IDENTIFIED WITH sha256_password BY '${password}'`, clickhouse_settings: { log_queries: 0 } });
   try {
-    await admin.command({ query: `GRANT INSERT ON *.* TO ${legacy}` });
+    await admin.command({ query: `GRANT INSERT ON ${scope} TO ${legacy}` });
     await expect(provisionTrustedCopyStorage({ db: f.db, ctx, admin, settings, administratorNames: [integrationInputs(process.env).clickhouse.user] })).rejects.toThrow();
     expect(await (await admin.query({ query: "SELECT name FROM system.databases WHERE name={database:String}", query_params: { database: settings.databaseName }, format: "JSONEachRow" })).json()).toEqual([]);
     expect((await f.h.sql.query("select count(*)::int n from analytics_ingestion_storage")).rows[0]!.n).toBe(0);
@@ -79,4 +101,48 @@ it("does not provision a resource over a consumed PostgreSQL namespace", () => f
   await f.h.sql.query("insert into analytics_ingestion_counter(singleton,position) values(true,1)");
   await expect(provisionTrustedCopyStorage({ db: f.db, ctx, admin, settings, administratorNames: [integrationInputs(process.env).clickhouse.user] })).rejects.toThrow();
   expect(await (await admin.query({ query: "SELECT name FROM system.databases WHERE name={database:String}", query_params: { database: settings.databaseName }, format: "JSONEachRow" })).json()).toEqual([]);
+}));
+
+it("rejects an owning login disguised with SET ROLE while accepting a genuine limited login", () => fixture(async (f, admin, settings) => {
+  await provisionTrustedCopyStorage({ db: f.db, ctx, admin, settings, administratorNames: [integrationInputs(process.env).clickhouse.user] });
+  await runtime(f, async (db, role) => {
+    expect((await readRuntimeCopyStorage(db)).databaseName).toBe(settings.databaseName);
+    await f.db.transaction(async tx => {
+      await tx.execute(sql.raw(`SET LOCAL ROLE ${role}`));
+      await expect(readRuntimeCopyStorage(tx)).rejects.toThrow();
+    });
+  });
+}));
+
+it("keeps writer clients private and persists only authenticated current admissions, preserving retry identity", () => fixture(async (f, admin, settings) => {
+  await provisionTrustedCopyStorage({ db: f.db, ctx, admin, settings, administratorNames: [integrationInputs(process.env).clickhouse.user] });
+  const producer = await f.registered();
+  const auth = await f.db.transaction(tx => authorizeClusterDelivery(tx, producer.ctx, producer.source));
+  await confirmClusterAssociation(f.db, auth);
+  await expect(openTrustedIngestion({ db: f.db, gateway: f.h.app.get(AgentGatewayService), settings })).rejects.toThrow();
+  await runtime(f, async db => {
+    const service = await openTrustedIngestion({ db, gateway: f.h.app.get(AgentGatewayService), settings });
+    try {
+      expect(Object.keys(service).sort()).toEqual(["close", "open", "persist", "prefix", "prepare"]);
+      const podUid = randomUUID(), stream = await service.open(producer.token, podUid);
+      const requestId = randomBytes(16).toString("hex"), hex = createHash("sha256").update(`${producer.source.clusterId}|${podUid}|${requestId}`).digest("hex").slice(0,32);
+      const id = `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
+      const ts = (await f.h.sql.query<{ ts: string }>(`select to_char(clock_timestamp() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') ts`)).rows[0]!.ts;
+      const copy = { schemaVersion: 1 as const, copyId: randomUUID(), podUid, requestId, event: { id, ts, environmentId: f.instanceId, clusterId: producer.source.clusterId,
+        routeId: f.routeId, serviceId: f.serviceId, consumerId: null, method: "GET", path: "/same", status: 200, latencyKongMs: 1, latencyUpstreamMs: null,
+        latencyTotalMs: 2, clientIp: "2001:db8::1", requestSize: "9007199254740993", responseSize: "18446744073709551615", retentionDays: 7 } };
+      const batch = randomUUID();
+      await expect(service.persist("invalid", stream.id, batch, [copy])).rejects.toThrow();
+      const receipt = await service.persist(producer.token, stream.id, batch, [copy]);
+      expect(receipt).toMatchObject({ status: "persisted", storedCopies: 1 });
+      expect(await service.persist(producer.token, stream.id, batch, [copy])).toEqual(receipt);
+      await expect(service.persist(producer.token, stream.id, batch, [{ ...copy, event: { ...copy.event, status: 500 } }])).rejects.toThrow();
+      const data = client(settings, "reader");
+      try { expect(await (await data.query({ query: "SELECT toString(count()) n FROM requests_v2_copies", format: "JSONEachRow" })).json()).toEqual([{ n: "1" }]); }
+      finally { await data.close(); }
+      await f.db.transaction(tx => revokeClusterAssociation(tx, ctx, producer.source.clusterId, "revoke"));
+      await expect(service.persist(producer.token, stream.id, randomUUID(), [copy])).rejects.toThrow();
+      expect((await service.prefix()).copiesComplete).toBe(false);
+    } finally { await service.close(); }
+  });
 }));

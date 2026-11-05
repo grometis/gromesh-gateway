@@ -96,7 +96,7 @@ it("upgrades schema 0034 without rewriting data and rolls back a failed 0035 mig
   expect((await client.query("select to_regclass('analytics_ingestion_prune_coverage') table_name")).rows[0]!.table_name).toBeNull();
   expect((await client.query("select position::text from analytics_ingestion_counter")).rows[0]!.position).toBe("17");
   await runMigrations(url);await runMigrations(url);
-  expect((await client.query("select count(*)::int n from drizzle.__drizzle_migrations")).rows[0]!.n).toBe(36);
+  expect((await client.query("select count(*)::int n from drizzle.__drizzle_migrations")).rows[0]!.n).toBe(journal.entries.length);
   expect((await client.query("select position::text from analytics_ingestion_counter")).rows[0]!.position).toBe("17");
  }finally{await client?.end();await dropIntegrationDatabase(name);rmSync(folder,{recursive:true});}
 });

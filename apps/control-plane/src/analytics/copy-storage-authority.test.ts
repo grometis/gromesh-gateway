@@ -28,6 +28,8 @@ it.each([
   ["INSERT", "trusted_copies", "requests_v2_copies"],
   ["INSERT", null, null],
   ["INSERT", "trusted*", "requests_v2_*"],
+  // system.grants omits the wildcard marker on this server; raw prefixes are ambiguous.
+  ["INSERT", "trusted", "requests_v2_"],
   ["ALTER", "trusted_copies", null],
   ["TRUNCATE", "trusted_copies", "requests_v2_copies"],
   ["ALTER USER", null, null],

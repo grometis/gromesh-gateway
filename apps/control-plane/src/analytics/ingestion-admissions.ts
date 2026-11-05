@@ -9,7 +9,7 @@ import type { RequestContext } from "../auth/auth.js";
 import { ProblemException } from "../common/problem.js";
 import { copyStateOf } from "./copy-state.js";
 import { extendAdmittedCopyEvidence, reconcileAdmittedComparisons, recordCopyEvidence } from "./copy-evidence.js";
-import { CopyEvidenceError, IngestionCopyPersistence } from "./ingestion-copy-persistence.js";
+import { CopyEvidenceError, type IngestionPersistence } from "./ingestion-copy-persistence.js";
 import { encodeRawRequestCopy } from "./request-copy-store.js";
 
 export interface IngestionCopy {
@@ -33,14 +33,11 @@ async function lock(tx:Tx) {
   await tx.execute(sql`set local statement_timeout='5s'`);
   await tx.execute(sql`select pg_advisory_xact_lock(1818,1801)`);
 }
-/** Internal admission only: there is deliberately no HTTP handler or persistence-confirmation shortcut. */
-export class IngestionAdmissions {
-  constructor(private readonly db:Db,private readonly gateway:AgentGatewayService,private readonly persistence?:IngestionCopyPersistence) {}
-  private async authorized(tx:Tx,token:string) {
+export async function authorizeIngestionProducer(tx:Tx,gateway:AgentGatewayService,token:string) {
     // Identify first, then lock the cluster before revalidating the bearer, matching its lifecycle lock order.
-    const found=await this.gateway.node(tx,token);
+    const found=await gateway.node(tx,token);
     await tx.select().from(clusters).where(eq(clusters.id,found.cluster.id)).for("update");
-    const current=await this.gateway.node(tx,token);
+    const current=await gateway.node(tx,token);
     const [self]=await tx.select().from(instance);
     const [last]=await tx.select().from(analyticsClusterEvents).where(eq(analyticsClusterEvents.clusterId,current.cluster.id)).orderBy(desc(analyticsClusterEvents.sequence)).limit(1);
     const [visible]=last?await tx.select({observedAt:analyticsClusterVisibility.observedAt}).from(analyticsClusterVisibility).where(eq(analyticsClusterVisibility.authorizationId,last.id)):[];
@@ -48,7 +45,12 @@ export class IngestionAdmissions {
     const now=(await tx.execute<{now:string}>(sql`select to_char(clock_timestamp() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as now`)).rows[0]!.now;
     if(micros(visible.observedAt)>micros(now))return denied();
     return {current,self,last,visible,now,ctx:{actor:{type:"agent",id:current.node.nodeId},role:"viewer",ip:null} satisfies RequestContext};
-  }
+}
+
+/** Internal admission only: there is deliberately no HTTP handler or persistence-confirmation shortcut. */
+export class IngestionAdmissions {
+  constructor(private readonly db:Db,private readonly gateway:AgentGatewayService,private readonly persistence?:IngestionPersistence) {}
+  private authorized(tx:Tx,token:string) {return authorizeIngestionProducer(tx,this.gateway,token);}
   async open(token:string,podUid:string) {
     if(!uuid.test(podUid))return invalid();
     return this.db.transaction(async tx=>{
@@ -113,10 +115,10 @@ export class IngestionAdmissions {
       signal?.throwIfAborted();return claimIngestionWork(tx,a.ctx,batchId);
     });
     // No network call is performed while holding a PostgreSQL transaction or cluster/admission lock.
-    let observed:Awaited<ReturnType<IngestionCopyPersistence["persist"]>>;
+    let observed:Awaited<ReturnType<IngestionPersistence["persist"]>>;
     try {
       const asOf=(await this.db.execute<{now:string}>(sql`select to_char(clock_timestamp() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as now`)).rows[0]!.now;
-      signal?.throwIfAborted();observed=await this.persistence.persist({streamId,batchId,generation:prepared.generation,copies,asOf},signal);signal?.throwIfAborted(); }
+      signal?.throwIfAborted();observed=await this.persistence.persist({streamId,batchId,generation:prepared.generation,copies,asOf,admissionProof:{bearer:token,work}},signal);signal?.throwIfAborted(); }
     catch(error) {
       try{if(error instanceof CopyEvidenceError) await recordCopyEvidence(this.db,{actor:{type:"system",id:"analytics-copy-observer"},role:"viewer",ip:null},batchId,error.observations);}
       finally{await this.db.transaction(async tx=>{await lock(tx);await finishIngestionWork(tx,{actor:{type:"system",id:"analytics-persistence-worker"},role:"viewer",ip:null},work,"failed");});}
@@ -129,6 +131,7 @@ export class IngestionAdmissions {
       if(!stream||stream.instanceId!==a.self.id||stream.clusterId!==a.current.cluster.id||stream.nodeId!==a.current.node.nodeId||stream.authorizationId!==a.last.id)return denied();
       const [existing]=await tx.select().from(receipts).where(eq(receipts.batchId,batchId));
       if(existing)return receipt(existing);
+      await this.persistence?.confirm?.(tx,{streamId,batchId,generation:prepared.generation,copies,asOf:a.now,admissionProof:{bearer:token,work}});
       const comparison=await reconcileAdmittedComparisons(tx,a.ctx,batchId,observed.observedCopies);
       if(comparison.blocked){await finishIngestionWork(tx,a.ctx,work,"failed");return null;}
       const counts={storedCopies:observed.storedCopies,expiredCopies:observed.expiredCopies};

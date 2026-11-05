@@ -34,7 +34,9 @@ function scope(value: unknown, target: string): boolean {
     if (!/^[a-zA-Z0-9_]*\*$/.test(name)) throw copyReadNotReady();
     return target.startsWith(name.slice(0, -1));
   }
-  return name === target;
+  // system.grants loses the wildcard marker on 25.8. An exact raw name may be a
+  // prefix grant, so conservatively refuse even harmless exact-prefix scopes.
+  return target.startsWith(name);
 }
 function bounded(catalog: CopyStorageAuthorityCatalog) {
   for (const rows of [catalog.users, catalog.grants, catalog.roleGrants, catalog.tables]) {

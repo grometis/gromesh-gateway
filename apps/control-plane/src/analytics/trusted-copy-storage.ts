@@ -31,16 +31,16 @@ export function validateTrustedCopyStorageSettings(settings: TrustedCopyStorageS
     if (url.protocol === "http:" && !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)) throw copyReadNotReady();
     identifier(settings.databaseName);
     if (["gromesh", "default", "system", "information_schema"].includes(settings.databaseName)) throw copyReadNotReady();
-    const names = new Set<string>();
+    const names = new Set<string>(), secrets = new Set<string>();
     for (const login of [settings.writer, settings.reader, settings.auditor]) {
       identifier(login.user);
       // New dedicated credentials only; no existing/operational credential is changed or adopted.
-      if (names.has(login.user) || !/^[0-9a-f]{48,128}$/.test(login.password)) throw copyReadNotReady();
-      names.add(login.user);
+      if (names.has(login.user) || secrets.has(login.password) || !/^[0-9a-f]{48,128}$/.test(login.password)) throw copyReadNotReady();
+      names.add(login.user); secrets.add(login.password);
     }
   } catch { throw copyReadNotReady(); }
 }
-function privateClient(settings: TrustedCopyStorageSettings, login: TrustedCopyStorageLogin, database = settings.databaseName) {
+export function privateCopyStorageClient(settings: TrustedCopyStorageSettings, login: TrustedCopyStorageLogin, database = settings.databaseName) {
   return createClient({ url: settings.url, database, username: login.user, password: login.password, request_timeout: 5000,
     max_open_connections: 1, log: { level: ClickHouseLogLevel.OFF }, clickhouse_settings: { log_queries: 0 } });
 }
@@ -95,7 +95,7 @@ export async function provisionTrustedCopyStorage(input: {
       await command(`GRANT SELECT(uuid,name,engine) ON system.databases TO ${login}`);
     }
     await command(`GRANT SELECT(name,uuid,rows,bytes_on_disk,data_version,database,table,active) ON system.parts TO ${reader}`);
-    phase="preflight";const initial = privateClient(settings, settings.auditor, "default"); clients.push(initial);
+    phase="preflight";const initial = privateCopyStorageClient(settings, settings.auditor, "default"); clients.push(initial);
     const pre = await readCopyStorageCatalog(new BoundedCopyQueries(initial, {}, signal, `gromesh-genesis-pre-${randomUUID()}`));
     if(pre.serverId!==administrator.serverId)throw copyReadNotReady();
     const byName = new Map(pre.catalog.users.map(row => [String(row.name), String(row.id)]));
@@ -104,7 +104,7 @@ export async function provisionTrustedCopyStorage(input: {
     evaluateCopyStorageGenesisAccess(policy, pre.catalog);
     phase="create";await command(`CREATE DATABASE ${identifier(settings.databaseName)} ENGINE=Atomic`);
     await command(trustedDdl(settings.databaseName));
-    const observer = privateClient(settings, settings.auditor); clients.push(observer);
+    const observer = privateCopyStorageClient(settings, settings.auditor); clients.push(observer);
     const queries = new BoundedCopyQueries(observer, {}, signal, `gromesh-genesis-post-${randomUUID()}`);
     phase="resource";const resource = await readCopyStorageResource(queries);
     if (resource.serverId !== pre.serverId || resource.databaseName !== settings.databaseName) throw copyReadNotReady();
