@@ -105,18 +105,21 @@
         },
         "latencyKongMs": {
           "type": "number",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 1.7976931348623157e+308
         },
         "latencyUpstreamMs": {
           "type": [
             "number",
             "null"
           ],
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 1.7976931348623157e+308
         },
         "latencyTotalMs": {
           "type": "number",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 1.7976931348623157e+308
         },
         "clientIp": {
           "type": "string",
@@ -171,7 +174,8 @@
       "maxItems": 100,
       "items": {
         "$ref": "#/$defs/IngestionCopy"
-      }
+      },
+      "description": "Schema validates shape; admission also enforces unique copyIds, decoded byte budget and binding to the authenticated stream."
     },
     "OpenStream": {
       "type": "object",
@@ -224,7 +228,24 @@
           "minimum": 0,
           "maximum": 100
         }
-      }
+      },
+      "anyOf": [
+        {
+          "properties": {
+            "storedCopies": {
+              "minimum": 1
+            }
+          }
+        },
+        {
+          "properties": {
+            "expiredCopies": {
+              "minimum": 1
+            }
+          }
+        }
+      ],
+      "description": "Output only after concrete persistence proof. Semantic validation matches both counts to the admitted descriptor and their total to 1..100."
     }
   }
 }

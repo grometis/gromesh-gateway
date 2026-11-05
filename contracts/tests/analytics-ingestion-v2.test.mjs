@@ -5,7 +5,7 @@ import test from 'node:test';
 const require=createRequire(new URL('../../apps/control-plane/package.json',import.meta.url));
 const Ajv=require('ajv/dist/2020.js').default, addFormats=require('ajv-formats').default;
 const schema=JSON.parse(readFileSync(new URL('../analytics-ingestion-v2.schemas.json',import.meta.url),'utf8'));
-const ajv=new Ajv({strict:false,allErrors:true});addFormats(ajv);ajv.addSchema(schema,'ingestion');
+const ajv=new Ajv({strict:false,strictNumbers:true,allErrors:true});addFormats(ajv);ajv.addSchema(schema,'ingestion');
 const validate=name=>ajv.compile({$ref:`ingestion#/$defs/${name}`});
 const uuid=n=>`00000000-0000-4000-8000-${String(n).padStart(12,'0')}`;
 const copy=()=>({schemaVersion:1,copyId:uuid(1),podUid:uuid(2),requestId:'0123456789abcdef0123456789abcdef',event:{id:uuid(3),environmentId:uuid(4),clusterId:uuid(5),routeId:uuid(6),serviceId:uuid(7),consumerId:null,ts:'2026-11-04T12:00:00.000Z',method:'GET',path:'/synthetic',status:200,latencyKongMs:1,latencyUpstreamMs:null,latencyTotalMs:2,clientIp:'::ffff:192.0.2.1',requestSize:'9007199254740993',responseSize:'18446744073709551615',retentionDays:1}});
@@ -21,3 +21,6 @@ test('batch count and producer binding are bounded and do not let the client sel
 test('only a confirmed server receipt is an acknowledgement',()=>{const check=validate('IngestionReceipt'),v={schemaVersion:1,streamId:uuid(1),batchId:uuid(2),generation:'1',status:'persisted',storedCopies:1,expiredCopies:0};assert.equal(check(v),true);assert.equal(check({...v,status:'prepared'}),false);assert.equal(check({...v,generation:'0'}),false);});
 
 test('admission position is a lossless positive signed PostgreSQL bigint',()=>{const check=validate('IngestionReceipt'),v={schemaVersion:1,streamId:uuid(1),batchId:uuid(2),generation:'9223372036854775807',status:'persisted',storedCopies:1,expiredCopies:0};assert.equal(check(v),true);for(const generation of ['9223372036854775808','0','-1',1])assert.equal(check({...v,generation}),false);});
+
+for(const field of ['latencyKongMs','latencyUpstreamMs','latencyTotalMs'])for(const value of [JSON.parse('1e400'),JSON.parse('-1e400'),NaN])test(`decoded ${field} must be finite (${String(value)})`,()=>{assert.equal(validate('IngestionCopy')({...copy(),event:{...copy().event,[field]:value}}),false);});
+test('a receipt cannot acknowledge zero declared copies',()=>{assert.equal(validate('IngestionReceipt')({schemaVersion:1,streamId:uuid(1),batchId:uuid(2),generation:'1',status:'persisted',storedCopies:0,expiredCopies:0}),false);});
