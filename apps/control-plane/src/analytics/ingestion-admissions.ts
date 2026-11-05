@@ -7,7 +7,8 @@ import { audit } from "../audit/audit.js";
 import type { RequestContext } from "../auth/auth.js";
 import { ProblemException } from "../common/problem.js";
 import { copyStateOf } from "./copy-state.js";
-import { IngestionCopyPersistence } from "./ingestion-copy-persistence.js";
+import { recordCopyEvidence } from "./copy-evidence.js";
+import { CopyEvidenceError, IngestionCopyPersistence } from "./ingestion-copy-persistence.js";
 import { encodeRawRequestCopy } from "./request-copy-store.js";
 
 export interface IngestionCopy {
@@ -96,7 +97,12 @@ export class IngestionAdmissions {
     if(prior[0])return receipt(prior[0]);
     const asOf=(await this.db.execute<{now:string}>(sql`select to_char(clock_timestamp() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as now`)).rows[0]!.now;
     // No network call is performed while holding a PostgreSQL transaction or cluster/admission lock.
-    const observed=await this.persistence.persist({streamId,batchId,generation:prepared.generation,copies,asOf});
+    let observed:{storedCopies:number;expiredCopies:number};
+    try { observed=await this.persistence.persist({streamId,batchId,generation:prepared.generation,copies,asOf}); }
+    catch(error) {
+      if(error instanceof CopyEvidenceError) await recordCopyEvidence(this.db,{actor:{type:"system",id:"analytics-copy-observer"},role:"viewer",ip:null},batchId,error.observations);
+      throw error;
+    }
     return this.db.transaction(async tx=>{
       await lock(tx);const a=await this.authorized(tx,token);
       const [stream]=await tx.select().from(streams).where(eq(streams.id,streamId));

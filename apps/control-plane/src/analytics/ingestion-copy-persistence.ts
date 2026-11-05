@@ -1,8 +1,15 @@
+import { createHash } from "node:crypto";
+import type { CopyObservation } from "./copy-evidence.js";
 import type { ClickHouseClient } from "@clickhouse/client";
 import type { IngestionCopy } from "./ingestion-admissions.js";
 import { encodeRawRequestCopy } from "./request-copy-store.js";
 import { copyStateOf } from "./copy-state.js";
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/** Only negative technical facts escape the reader; no request content is attached to errors. */
+export class CopyEvidenceError extends Error {
+ constructor(readonly observations: readonly CopyObservation[]) { super("Ingestion persistence is not confirmed"); }
+}
+const digest=(value:string)=>createHash("sha256").update(value).digest("hex");
 const failed=()=>new Error("Ingestion persistence is not confirmed");
 const canonicalIp=(value:unknown)=>{if(typeof value!=="string")throw failed();return new URL(`http://[${value}]/`).hostname;};
 const wire=(copy:IngestionCopy)=>JSON.stringify({schemaVersion:copy.schemaVersion,copyId:copy.copyId,podUid:copy.podUid,requestId:copy.requestId,event:Object.fromEntries(Object.keys(copy.event).sort().map(k=>[k,copy.event[k]]))});
@@ -32,30 +39,50 @@ export class IngestionCopyPersistence {
    if(Buffer.byteLength(body)>2*1024*1024)throw failed();
    const seen=new Set<string>();
    const logicalKey=(copy:IngestionCopy)=>JSON.stringify([copy.podUid,copy.requestId,copyStateOf(String(copy.event.id),copy.event).minContent]);
-   const incoming=new Map([...expected.values()].map(x=>[String(x.copy.event.id),logicalKey(x.copy)]));
+   const witnesses=new Map<string,{values:Set<string>;expires:number;unavailable:boolean}>();
+   for(const x of expected.values()){
+    const id=String(x.copy.event.id),prior=witnesses.get(id)??{values:new Set<string>(),expires:0,unavailable:false};
+    prior.values.add(logicalKey(x.copy));prior.expires=Math.max(prior.expires,Date.parse(x.copy.event.ts as string)+(x.copy.event.retentionDays as number)*86400000);witnesses.set(id,prior);
+   }
    for(const line of body.split("\n").filter(Boolean)){
-    const value:unknown=JSON.parse(line);if(!value||typeof value!=="object"||Array.isArray(value))throw failed();
-    const {ingress_stream_id,ingress_batch_id,ingress_copy_id,ingress_generation,ingress_wire,...encoded}=value as Record<string,unknown>;
-    if(typeof ingress_wire!=="string"||typeof ingress_stream_id!=="string"||!uuid.test(ingress_stream_id)||typeof ingress_batch_id!=="string"||!uuid.test(ingress_batch_id)||typeof ingress_copy_id!=="string"||!uuid.test(ingress_copy_id)||typeof ingress_generation!=="string"||!/^[1-9][0-9]{0,18}$/.test(ingress_generation)||BigInt(ingress_generation)>9223372036854775807n)throw failed();
-    const parsed:unknown=JSON.parse(ingress_wire);if(!parsed||typeof parsed!=="object"||Array.isArray(parsed))throw failed();const stored=parsed as Record<string,unknown>;
-    if(Object.keys(stored).sort().join(",")!=="copyId,event,podUid,requestId,schemaVersion"||stored.schemaVersion!==1||stored.copyId!==ingress_copy_id||typeof stored.podUid!=="string"||!uuid.test(stored.podUid)||typeof stored.requestId!=="string"||!/^[0-9a-f]{32}$/.test(stored.requestId)||!stored.event||typeof stored.event!=="object"||Array.isArray(stored.event))throw failed();
-    const copy:IngestionCopy={schemaVersion:1,copyId:ingress_copy_id,podUid:stored.podUid,requestId:stored.requestId,event:stored.event as Record<string,unknown>};
-    const {id,...content}=copy.event;if(typeof id!=="string"||id!==encoded.id||wire(copy)!==ingress_wire||logicalKey(copy)!==incoming.get(id))throw failed();
-    const original=encodeRawRequestCopy({id,content});
-    // The typed IPv6 column normalizes spelling; the original wire above remains byte-exact evidence.
-    if(copyStateOf(id,{...encoded,client_ip:canonicalIp(encoded.client_ip)}).minContent!==copyStateOf(id,{...original,client_ip:canonicalIp(original.client_ip)}).minContent)throw failed();
-    if(ingress_batch_id===input.batchId){
-     const x=expected.get(ingress_copy_id);if(!x||ingress_stream_id!==input.streamId||ingress_generation!==input.generation||ingress_wire!==x.wire)throw failed();seen.add(ingress_copy_id);
+    let requestId:unknown;
+    try{
+     const value:unknown=JSON.parse(line);if(!value||typeof value!=="object"||Array.isArray(value))throw failed();
+     const {ingress_stream_id,ingress_batch_id,ingress_copy_id,ingress_generation,ingress_wire,...encoded}=value as Record<string,unknown>;
+     requestId=encoded.id;
+     if(typeof ingress_wire!=="string"||typeof ingress_stream_id!=="string"||!uuid.test(ingress_stream_id)||typeof ingress_batch_id!=="string"||!uuid.test(ingress_batch_id)||typeof ingress_copy_id!=="string"||!uuid.test(ingress_copy_id)||typeof ingress_generation!=="string"||!/^[1-9][0-9]{0,18}$/.test(ingress_generation)||BigInt(ingress_generation)>9223372036854775807n)throw failed();
+     const parsed:unknown=JSON.parse(ingress_wire);if(!parsed||typeof parsed!=="object"||Array.isArray(parsed))throw failed();const stored=parsed as Record<string,unknown>;
+     if(Object.keys(stored).sort().join(",")!=="copyId,event,podUid,requestId,schemaVersion"||stored.schemaVersion!==1||stored.copyId!==ingress_copy_id||typeof stored.podUid!=="string"||!uuid.test(stored.podUid)||typeof stored.requestId!=="string"||!/^[0-9a-f]{32}$/.test(stored.requestId)||!stored.event||typeof stored.event!=="object"||Array.isArray(stored.event))throw failed();
+     const copy:IngestionCopy={schemaVersion:1,copyId:ingress_copy_id,podUid:stored.podUid,requestId:stored.requestId,event:stored.event as Record<string,unknown>};
+     const {id,...content}=copy.event;
+     if(typeof id!=="string"||id!==encoded.id||wire(copy)!==ingress_wire)throw failed();
+     const hex=digest(String(copy.event.clusterId)+"|"+copy.podUid+"|"+copy.requestId).slice(0,32);
+     if(id.replaceAll("-","")!==hex)throw failed();
+     const original=encodeRawRequestCopy({id,content});
+     // Only a self-consistent stored row is a witness of difference. Corruption means missing evidence.
+     if(copyStateOf(id,{...encoded,client_ip:canonicalIp(encoded.client_ip)}).minContent!==copyStateOf(id,{...original,client_ip:canonicalIp(original.client_ip)}).minContent)throw failed();
+     const witness=witnesses.get(id);if(!witness)throw failed();
+     const expiry=Date.parse(copy.event.ts as string)+(copy.event.retentionDays as number)*86400000;
+     if(expiry>now+7*86400000)throw failed();
+     witness.values.add(logicalKey(copy));witness.expires=Math.max(witness.expires,expiry);
+     if(ingress_batch_id===input.batchId){
+      const x=expected.get(ingress_copy_id);if(!x||ingress_stream_id!==input.streamId||ingress_generation!==input.generation||ingress_wire!==x.wire)throw failed();seen.add(ingress_copy_id);
+     }
+    }catch{
+     const witness=typeof requestId==="string"?witnesses.get(requestId):undefined;
+     if(witness)witness.unavailable=true;else for(const w of witnesses.values())w.unavailable=true;
     }
    }
-   if(live.some(x=>!seen.has(x.copy.copyId)))throw failed();
-   const logical=new Map<string,string>();
-   for(const x of expected.values()){
-    const id=String(x.copy.event.id),canonical=JSON.stringify([x.copy.podUid,x.copy.requestId,copyStateOf(id,x.copy.event).minContent]);
-    if(logical.has(id)&&logical.get(id)!==canonical)throw failed();logical.set(id,canonical);
+   for(const x of live)if(!seen.has(x.copy.copyId))witnesses.get(String(x.copy.event.id))!.unavailable=true;
+   const observations:CopyObservation[]=[];
+   for(const [id,w]of witnesses){
+    const hashes=[...new Set([...w.values].map(digest))].sort();
+    if(hashes.length>1)observations.push({id,kind:"conflicting-copies",expiresAt:new Date(w.expires).toISOString(),leftHash:hashes[0]!,rightHash:hashes[1]!});
+    else if(w.unavailable||w.values.size>1)observations.push({id,kind:"comparison-unavailable",expiresAt:new Date(w.expires).toISOString(),leftHash:hashes[0]!,rightHash:null});
    }
+   if(observations.length)throw new CopyEvidenceError(observations);
    if(signal.aborted)throw failed();
    return {storedCopies:live.length,expiredCopies:expected.size-live.length};
-  }catch{throw failed();}
+  }catch(error){if(error instanceof CopyEvidenceError)throw error;throw failed();}
  }
 }
