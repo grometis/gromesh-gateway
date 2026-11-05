@@ -78,7 +78,7 @@ async function screen({ path = "/tokens", role = "viewer", status = 200, compact
 describe("global navigation", () => {
   it.each([
     { path: "/tokens", releases: undefined, requests: undefined },
-    { path: `/workspaces/${W}/services`, releases: `/workspaces/${W}/releases`, requests: undefined },
+    { path: `/workspaces/${W}/services`, releases: `/workspaces/${W}/releases`, requests: `/workspaces/${W}/requests` },
     { path: `/e/${E}/services`, releases: `/e/${E}/releases`, requests: `/e/${E}/requests` },
   ])("uses confirmed namespaces on $path", async ({ path, releases, requests }) => {
     const view = await screen({ path });
@@ -89,7 +89,7 @@ describe("global navigation", () => {
     expect(items.find((n) => n.textContent === "Releases")?.getAttribute("href")).toBe(releases);
     expect(items.find((n) => n.textContent === "Requisições")?.getAttribute("href")).toBe(requests);
     const disabled = view.panel("Operações").findAll((n) => n.getAttribute("aria-disabled") === "true");
-    expect(disabled.length).toBe(path === "/tokens" ? 6 : requests ? 0 : 5);
+    expect(disabled.length).toBe(path === "/tokens" ? 6 : path.startsWith("/workspaces/") ? 4 : requests ? 0 : 5);
     for (const item of disabled) {
       expect(item.getAttribute("href")).toBeNull();
       const reason = view.all((n) => n.getAttribute("id") === item.getAttribute("aria-describedby"))[0]!;
@@ -172,7 +172,7 @@ describe("global navigation", () => {
     expect(requirement.textContent).toBe(path.startsWith("/e/") ? "Requer ambiente legado" : "Requer Workspace");
   });
   it.each([
-    { path: `/workspaces/${W}/services`, pending: "workspace" as const, links: 1 },
+    { path: `/workspaces/${W}/services`, pending: "workspace" as const, links: 2 },
     { path: `/e/${E}/services`, pending: "environment" as const, links: 6 },
   ])("enables only the confirmed namespace after loading on $path", async ({ path, pending, links }) => {
     const view = await screen({ path, pending });
@@ -185,7 +185,7 @@ describe("global navigation", () => {
   it("keeps archived Workspace Releases readable without enabling legacy destinations", async () => {
     const view = await screen({ path: `/workspaces/${W}/releases`, archived: true });
     await view.click(view.button("Operações"));
-    expect(view.panel("Operações").findAll((n) => n.tagName === "A").map((n) => n.getAttribute("href"))).toEqual([`/workspaces/${W}/releases`]);
+    expect(view.panel("Operações").findAll((n) => n.tagName === "A").map((n) => n.getAttribute("href"))).toEqual([`/workspaces/${W}/releases`,`/workspaces/${W}/requests`]);
   });
   it.each([`/e/${E}/publications/3`, `/e/${E}/releases`])("marks the operations section once within its own navigation on %s", async (path) => {
     const view = await screen({ path });

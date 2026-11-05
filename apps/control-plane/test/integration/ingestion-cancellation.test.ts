@@ -1,4 +1,7 @@
 import pg from "pg";
+import {createServer,createConnection,type Socket} from "node:net";
+import {mkdtempSync,rmSync} from "node:fs";
+import {join} from "node:path";
 import{randomUUID}from"node:crypto";
 import{sql}from"drizzle-orm";
 import{afterAll,afterEach,beforeAll,expect,it,vi}from"vitest";
@@ -32,4 +35,40 @@ it('enforces a real one-second control query timeout despite a ten-minute DSN ov
   let message='';try{await client.query('select pg_sleep(10)');}catch(error){message=error instanceof Error?error.message:'unknown';}
   expect(watchdogFired).toBe(false);expect(message).toMatch(/timeout/i);
  }finally{clearTimeout(watchdog);await client.end();if(pid)await admin.query('select pg_terminate_backend(pid) from pg_stat_activity where pid=$1 and application_name=$2 and datname=current_database() and usename=current_user',[pid,nonce]);await pool.end();}
+});
+it.each(['hostless','socket','path'] as const)('cancels actual PostgreSQL work through a driver-supported %s Unix connection',async kind=>{
+ const target=new URL(url),directory=mkdtempSync('/tmp/gromesh-pg-cancel-'),connections=new Set<Socket>();
+ const server=createServer(incoming=>{
+  const upstream=createConnection({host:target.hostname,port:Number(target.port)});
+  connections.add(incoming);connections.add(upstream);
+  incoming.on('error',()=>upstream.destroy());upstream.on('error',()=>incoming.destroy());
+  incoming.on('close',()=>{connections.delete(incoming);upstream.destroy();});
+  upstream.on('close',()=>{connections.delete(upstream);incoming.destroy();});
+  incoming.pipe(upstream);upstream.pipe(incoming);
+ });
+ let pool:pg.Pool|undefined,backend:{pid:number;name:string}|undefined,reading:Promise<unknown>|undefined;
+ const abort=new AbortController();
+ try{
+  await new Promise<void>((resolve,reject)=>{server.once('error',reject);server.listen(join(directory,`.s.PGSQL.${target.port}`),resolve);});
+  const database=target.pathname.slice(1),query=new URLSearchParams({host:directory,port:target.port,query_timeout:'600000',statement_timeout:'600000'});
+  const connectionString=kind==='hostless'?`postgres://${target.username}:${target.password}@/${database}?${query}`:
+   kind==='socket'?`socket:${directory}?db=${database}&port=${target.port}&query_timeout=600000&statement_timeout=600000`:`${directory} ${database}`;
+  // Socket DSNs carry no password; authenticate the original driver path through its supported env fallback.
+  vi.stubEnv('PGPASSWORD',decodeURIComponent(target.password));
+  vi.stubEnv('PGUSER',decodeURIComponent(target.username));
+  pool=new pg.Pool({connectionString,user:decodeURIComponent(target.username),password:decodeURIComponent(target.password),port:Number(target.port),max:1});
+  await pool.query('select 1');
+  reading=withIngestionReadSnapshot(pool,db=>db.execute(sql.raw('select pg_sleep(30)')),abort.signal).then(()=>({ok:true}),()=>({ok:false}));
+  const deadline=performance.now()+2500;
+  while(performance.now()<deadline){backend=(await admin.query<{pid:number;name:string}>("select pid,application_name name from pg_stat_activity where datname=current_database() and application_name like 'gromesh-analytics-read:%' and state='active' and query='select pg_sleep(30)' limit 1")).rows[0];if(backend)break;}
+  expect(backend).toBeDefined();abort.abort();expect(await reading).toEqual({ok:false});
+  expect((await admin.query('select 1 from pg_stat_activity where pid=$1 and application_name=$2',[backend!.pid,backend!.name])).rowCount).toBe(0);
+  const locked=(await admin.query<{locked:boolean}>('select pg_try_advisory_lock(1818,1801) locked')).rows[0]!.locked;
+  try{expect(locked).toBe(true);}finally{if(locked)await admin.query('select pg_advisory_unlock(1818,1801)');}
+ }finally{
+  abort.abort();if(backend)await admin.query('select pg_terminate_backend(pid) from pg_stat_activity where pid=$1 and application_name=$2 and datname=current_database() and usename=current_user',[backend.pid,backend.name]);
+  await reading;await pool?.end();for(const socket of connections)socket.destroy();
+  if(server.listening)await new Promise<void>((resolve,reject)=>server.close(error=>error?reject(error):resolve()));
+  rmSync(directory,{recursive:true});
+ }
 });
