@@ -121,6 +121,9 @@ it("keeps writer clients private and persists only authenticated current admissi
   await confirmClusterAssociation(f.db, auth);
   await expect(openTrustedIngestion({ db: f.db, gateway: f.h.app.get(AgentGatewayService), settings })).rejects.toThrow();
   await runtime(f, async db => {
+    const root = integrationInputs(process.env).clickhouse;
+    for (const kind of ["writer", "reader"] as const)
+      await expect(openTrustedIngestion({ db, gateway: f.h.app.get(AgentGatewayService), settings: { ...settings, [kind]: { user: root.user, password: root.password } } })).rejects.toThrow();
     const service = await openTrustedIngestion({ db, gateway: f.h.app.get(AgentGatewayService), settings });
     try {
       expect(Object.keys(service).sort()).toEqual(["close", "open", "persist", "prefix", "prepare"]);

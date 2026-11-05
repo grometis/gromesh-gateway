@@ -51,7 +51,8 @@ export async function openTrustedIngestion(input: { db: Db; gateway: AgentGatewa
   let closed = false;
   const close = async () => { closed = true; await Promise.all([writer.close(), reader.close(), auditor.close()]); };
   try {
-    await observeCopyStorageAuthority(new BoundedCopyQueries(auditor, {}, input.signal), registration);
+    const opening = await observeCopyStorageAuthority(new BoundedCopyQueries(auditor, {}, input.signal), registration);
+    if (input.settings.writer.user !== opening.authority.writer || input.settings.reader.user !== opening.authority.reader || input.settings.auditor.user !== opening.authority.auditor) throw copyReadNotReady();
     const persistence = {
       confirm: (tx: Tx, value: IngestionPersistenceInput) => assertAdmittedWrite(tx, input.gateway, registration, value),
       persist: async (value: IngestionPersistenceInput, caller?: AbortSignal): Promise<CopyPersistenceObservation> => {
@@ -62,8 +63,9 @@ export async function openTrustedIngestion(input: { db: Db; gateway: AgentGatewa
         const writes = queries.withSession(writer, `gromesh-admitted-write-${randomUUID()}`);
         const before = await observeCopyStorageAuthority(queries, registration);
         let serverVersion = "";
-        for (const q of [reads, writes]) {
+        for (const [q, principal] of [[reads, before.authority.reader], [writes, before.authority.writer]] as const) {
           const resource = await observeCopyStorageResource(q, registration);
+          if (resource.principal !== principal) throw copyReadNotReady();
           synchronousCopyResource({ ...resource, serverVersion: resource.version });
           serverVersion = resource.version;
         }
