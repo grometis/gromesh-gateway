@@ -261,6 +261,9 @@ it("does not trust a substituted current_database function when evaluating datab
       await db.execute(sql`create function fakeauth.current_database() returns pg_catalog.name language sql as 'select ''template1''::pg_catalog.name'`);
       await db.execute(sql`set search_path=fakeauth,pg_catalog,public`);
       expect((await db.execute<{name:string}>(sql`select current_database() as name`)).rows[0]!.name).toBe("template1");
+      await db.execute(sql`create function fakeauth.name_equal(a pg_catalog.name,b pg_catalog.name) returns boolean language sql as 'select case when a::text operator(pg_catalog.=) ''public''::text then b::text operator(pg_catalog.=) ''public''::text else a::text operator(pg_catalog.=) ''template1''::text end'`);
+      await db.execute(sql`create operator fakeauth.= (leftarg=pg_catalog.name,rightarg=pg_catalog.name,function=fakeauth.name_equal)`);
+      expect((await db.execute<{spoof:boolean}>(sql`select 'template1'::pg_catalog.name = pg_catalog.current_database() as spoof`)).rows[0]!.spoof).toBe(true);
       await expect(readRuntimeCopyStorage(db)).rejects.toThrow();
     } finally {
       await db.execute(sql`reset search_path`);
