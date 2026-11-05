@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
+import pg from "pg";
 import { copyStorageProxy } from "./copy-storage-proxy.js";
 import { openVerifiedHistoricalReader } from "../../src/analytics/verified-historical-reader.js";
 import { verifiedChain as chain } from "./verified-ingestion-fixtures.js";
@@ -57,4 +58,17 @@ it("rechecks parts after the historical transaction commits and refuses a late p
     finally { await guarded.close(); }
     expect(cuts).toBe(3); expect(noTransaction).toBe(true);
   } finally { await proxy.close(); }
+}));
+it("uses authoritative public history even if a pooled session contains a divergent TEMP route map", () => chain(async (f, _reader, _producer, copies, _stream, _token, _admin, settings, pool) => {
+  const scoped = new pg.Pool({ ...pool.options, max: 1 });
+  try {
+    await scoped.query("create temporary table analytics_route_history_routes as select * from public.analytics_route_history_routes");
+    await scoped.query("update analytics_route_history_routes set workspace_id=$1 where route_id=$2", [f.otherWorkspaceId,f.routeId]);
+    expect((await scoped.query("select workspace_id from analytics_route_history_routes where route_id=$1 limit 1",[f.routeId])).rows[0]!.workspace_id).toBe(f.otherWorkspaceId);
+    const reader = await openVerifiedHistoricalReader({ pool: scoped, settings });
+    try {
+      const result = await reader.read(window(f.instanceId,copies[0]!.event.ts));
+      expect(result.items.find(item=>item.id===copies[0]!.event.id)!.attribution).toMatchObject({workspaceId:f.workspaceId,reason:null,effectiveRevision:null});
+    } finally { await reader.close(); }
+  } finally { await scoped.end(); }
 }));

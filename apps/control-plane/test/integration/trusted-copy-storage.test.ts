@@ -85,6 +85,9 @@ it("keeps writer clients private and persists only authenticated current admissi
     try {
       expect(Object.keys(service).sort()).toEqual(["close", "open", "persist", "prefix", "prepare"]);
       const podUid = randomUUID(), stream = await service.open(producer.token, podUid);
+      // Pooled session state cannot replace the authoritative admission counter.
+      await db.execute(sql`create temporary table analytics_ingestion_counter(singleton boolean,position bigint)`);
+      await db.execute(sql`insert into pg_temp.analytics_ingestion_counter values(true,999)`);
       const requestId = randomBytes(16).toString("hex"), hex = createHash("sha256").update(`${producer.source.clusterId}|${podUid}|${requestId}`).digest("hex").slice(0,32);
       const id = `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
       const ts = (await f.h.sql.query<{ ts: string }>(`select to_char(clock_timestamp() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') ts`)).rows[0]!.ts;
@@ -94,7 +97,7 @@ it("keeps writer clients private and persists only authenticated current admissi
       const batch = randomUUID();
       await expect(service.persist("invalid", stream.id, batch, [copy])).rejects.toThrow();
       const receipt = await service.persist(producer.token, stream.id, batch, [copy]);
-      expect(receipt).toMatchObject({ status: "persisted", storedCopies: 1 });
+      expect(receipt).toMatchObject({ status: "persisted", storedCopies: 1, generation: "1" });
       expect(await service.persist(producer.token, stream.id, batch, [copy])).toEqual(receipt);
       await expect(service.persist(producer.token, stream.id, batch, [{ ...copy, event: { ...copy.event, status: 500 } }])).rejects.toThrow();
       const data = client(settings, "reader");
@@ -183,4 +186,42 @@ it("cannot ACK altered content restored after readback but before receipt confir
       finally { await reader.close(); }
     } finally { allowInsert.release(); allowReceipt.release(); await service.close(); }
   }); } finally { allowInsert.release(); allowReceipt.release(); await proxy.close(); }
+}));
+it("refuses database/schema owners and schema creation capabilities without table write grants", () => fixture(async (f, admin, settings) => {
+  await provisionTrustedCopyStorage({ db: f.db, ctx, admin, settings, administratorNames: [integrationInputs(process.env).clickhouse.user] });
+  await runtime(f, async (db, role) => {
+    await f.h.sql.query(`GRANT CREATE ON SCHEMA public TO ${role}`);
+    try { await expect(readRuntimeCopyStorage(db)).rejects.toThrow(); }
+    finally { await f.h.sql.query(`REVOKE CREATE ON SCHEMA public FROM ${role}`); }
+    const schemaRestore=(await f.h.sql.query<{command:string}>("select format('ALTER SCHEMA public OWNER TO %I',pg_get_userbyid(nspowner)) command from pg_namespace where nspname='public'")).rows[0]!.command;
+    await f.h.sql.query(`ALTER SCHEMA public OWNER TO ${role}`);
+    try { await expect(readRuntimeCopyStorage(db)).rejects.toThrow(); }
+    finally { await f.h.sql.query(schemaRestore); }
+    const databaseRestore=(await f.h.sql.query<{command:string}>("select format('ALTER DATABASE %I OWNER TO %I',datname,pg_get_userbyid(datdba)) command from pg_database where datname=current_database()")).rows[0]!.command;
+    await f.h.sql.query(`ALTER DATABASE ${new URL(f.url).pathname.slice(1)} OWNER TO ${role}`);
+    try { await expect(readRuntimeCopyStorage(db)).rejects.toThrow(); }
+    finally { await f.h.sql.query(databaseRestore); }
+    expect((await readRuntimeCopyStorage(db)).databaseName).toBe(settings.databaseName);
+  });
+}));
+it("does not trust a substituted current_database function when evaluating database ownership", () => fixture(async (f, admin, settings) => {
+  await provisionTrustedCopyStorage({ db: f.db, ctx, admin, settings, administratorNames: [integrationInputs(process.env).clickhouse.user] });
+  await runtime(f, async (db, role) => {
+    const schemaRestore=(await f.h.sql.query<{command:string}>("select format('ALTER SCHEMA public OWNER TO %I',pg_get_userbyid(nspowner)) command from pg_namespace where nspname='public'")).rows[0]!.command;
+    const databaseRestore=(await f.h.sql.query<{command:string}>("select format('ALTER DATABASE %I OWNER TO %I',datname,pg_get_userbyid(datdba)) command from pg_database where datname=current_database()")).rows[0]!.command;
+    const schemaOwner=(await f.h.sql.query<{command:string}>("select format('ALTER SCHEMA public OWNER TO %I',current_user) command")).rows[0]!.command;
+    await f.h.sql.query(schemaOwner);
+    await f.h.sql.query(`ALTER DATABASE ${new URL(f.url).pathname.slice(1)} OWNER TO ${role}`);
+    try {
+      await db.execute(sql`create schema fakeauth`);
+      await db.execute(sql`create function fakeauth.current_database() returns pg_catalog.name language sql as 'select ''template1''::pg_catalog.name'`);
+      await db.execute(sql`set search_path=fakeauth,pg_catalog,public`);
+      expect((await db.execute<{name:string}>(sql`select current_database() as name`)).rows[0]!.name).toBe("template1");
+      await expect(readRuntimeCopyStorage(db)).rejects.toThrow();
+    } finally {
+      await db.execute(sql`reset search_path`);
+      await f.h.sql.query("drop schema if exists fakeauth cascade");
+      await f.h.sql.query(databaseRestore);await f.h.sql.query(schemaRestore);
+    }
+  });
 }));

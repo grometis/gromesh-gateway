@@ -29,11 +29,13 @@ function micros(value:string):bigint {
   return BigInt(ms)*1000n+BigInt(fraction.padEnd(6,"0").slice(3));
 }
 async function lock(tx:Tx) {
+  await tx.execute(sql`set local search_path=pg_catalog,public,pg_temp`);
   await tx.execute(sql`set local lock_timeout='1s'`);
   await tx.execute(sql`set local statement_timeout='5s'`);
   await tx.execute(sql`select pg_advisory_xact_lock(1818,1801)`);
 }
 export async function authorizeIngestionProducer(tx:Tx,gateway:AgentGatewayService,token:string) {
+    await tx.execute(sql`set local search_path=pg_catalog,public,pg_temp`);
     // Identify first, then lock the cluster before revalidating the bearer, matching its lifecycle lock order.
     const found=await gateway.node(tx,token);
     await tx.select().from(clusters).where(eq(clusters.id,found.cluster.id)).for("update");
@@ -146,6 +148,7 @@ export class IngestionAdmissions {
   }
   async prefix() {
     return this.db.transaction(async tx=>{
+      await tx.execute(sql`set local search_path=pg_catalog,public,pg_temp`);
       await tx.execute(sql`set local statement_timeout='5s'`);
       const [position]=await tx.select().from(counter).where(eq(counter.singleton,true));
       const rows=await tx.select({generation:batches.generation,receiptId:receipts.batchId}).from(batches).leftJoin(receipts,eq(receipts.batchId,batches.id)).orderBy(asc(batches.generation)).limit(10001);
