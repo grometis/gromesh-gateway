@@ -15,7 +15,7 @@ const digest=(value:string)=>createHash("sha256").update(value).digest("hex");
 const failed=()=>new Error("Ingestion persistence is not confirmed");
 /** Only constructed with the dedicated writer/reader. Observation is actual read-back, never a supplied boolean. */
 export class IngestionCopyPersistence {
- constructor(private readonly writer:ClickHouseClient,private readonly reader:ClickHouseClient,private readonly context?:{queries:BoundedCopyQueries;writeSessionId:string}) {}
+ constructor(private readonly writer:ClickHouseClient,private readonly reader:ClickHouseClient,private readonly context?:{queries:BoundedCopyQueries;writes:BoundedCopyQueries}) {}
  async persist(input:{streamId:string;batchId:string;generation:string;copies:readonly IngestionCopy[];asOf:string},caller?:AbortSignal):Promise<CopyPersistenceObservation> {
   const signal=AbortSignal.any([AbortSignal.timeout(8000),...(caller?[caller]:[])]);
   signal.throwIfAborted();
@@ -28,10 +28,11 @@ export class IngestionCopyPersistence {
     return [copy.copyId,{copy,encoded,wire:wire(copy),expired:expires<=now}] as const;
    }));
    const live=[...expected.values()].filter(x=>!x.expired);
-   const inserted=live.length?await this.writer.insert({table:"requests_v2_copies",format:"JSONEachRow",abort_signal:signal,...(this.context?{session_id:this.context.writeSessionId}:{}),
-    values:live.map(x=>({...x.encoded,ingress_stream_id:input.streamId,ingress_batch_id:input.batchId,ingress_copy_id:x.copy.copyId,ingress_generation:input.generation,ingress_wire:x.wire})),
-    clickhouse_settings:{async_insert:0,insert_deduplicate:0,max_threads:2,max_memory_usage:String(256*1024*1024),max_execution_time:5,timeout_overflow_mode:"throw",max_rows_to_read:"5000000",max_bytes_to_read:String(256*1024*1024),read_overflow_mode:"throw",wait_end_of_query:1,...(this.context?{session_check:1 as const}:{})}}):undefined;
    const queries=this.context?.queries??new BoundedCopyQueries(this.reader,{},signal);
+   const writes=this.context?.writes??queries.withSession(this.writer);
+   const inserted=live.length?await writes.insert({table:"requests_v2_copies",format:"JSONEachRow",abort_signal:signal,
+    values:live.map(x=>({...x.encoded,ingress_stream_id:input.streamId,ingress_batch_id:input.batchId,ingress_copy_id:x.copy.copyId,ingress_generation:input.generation,ingress_wire:x.wire})),
+    clickhouse_settings:{async_insert:0,insert_deduplicate:0}}):undefined;
    const rows=await queries.query(`SELECT id,toString(ts) AS ts,environment_id,cluster_id,service_id,route_id,consumer_id,method,path,status,
     latency_kong_ms,latency_upstream_ms,latency_total_ms,toString(client_ip) AS client_ip,toString(request_size) AS request_size,toString(response_size) AS response_size,retention_days,
     ingress_stream_id,ingress_batch_id,ingress_copy_id,toString(ingress_generation) AS ingress_generation,ingress_wire

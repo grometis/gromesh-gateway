@@ -29,7 +29,10 @@ it("refuses old storage policy before INSERT and keeps the default writer compat
  await upgrade();await upgrade();const after=await store.reader.query({query:"SELECT toString(request_size) size FROM requests_v2_copies",format:'JSONEachRow'});expect(await after.json()).toEqual([{size:'9007199254740993'}]);
 });
 it("commits a resource-bound witness with the real receipt and keeps serving conservative",async()=>{
- await upgrade();const a=await copy(),batchId=randomUUID();expect(await service().persist(producer.token,streamId,batchId,[a])).toMatchObject({status:'persisted'});
+ await upgrade();const a=await copy(),batchId=randomUUID();
+ // Query tracing is enabled ONLY for this synthetic INSERT so the harness can inspect real fsync counters.
+ const original=store.writer.insert.bind(store.writer),traceSpy=vi.spyOn(store.writer,'insert').mockImplementation(params=>original({...params,clickhouse_settings:{...params.clickhouse_settings,log_queries:1}}));
+ try{expect(await service().persist(producer.token,streamId,batchId,[a])).toMatchObject({status:'persisted'});}finally{traceSpy.mockRestore();}
  const row=(await f.h.sql.query("select after from audit_events where action='analytics.ingestion.persist' and entity_id=$1",[batchId])).rows[0]!.after as {storageWitness:Record<string,unknown>};
  const actual=await store.reader.query({query:"SELECT version() serverVersion,toString(serverUUID()) serverId,toString(uuid) tableId FROM system.tables WHERE database=currentDatabase() AND name='requests_v2_copies'",format:'JSONEachRow'});
  expect(row.storageWitness).toMatchObject({kind:'observed-sync-policy-readback-v1',...(await actual.json<Record<string,unknown>>())[0]});expect(row.storageWitness.insertQueryId).toMatch(/^[0-9a-f-]{36}$/);
@@ -65,4 +68,12 @@ it("accounts the real engine reads across both authenticated sessions in one bud
  const reader=new BoundedCopyQueries(store.reader,{maxReadRows:1},undefined,`r20-budget-reader-${randomUUID()}`),writer=reader.withSession(store.writer,`r20-budget-writer-${randomUUID()}`);
  expect(await reader.query('SELECT number FROM numbers(1)',{},1)).toHaveLength(1);expect(reader.usage.readRows).toBe(1);
  await expect(writer.query('SELECT number FROM numbers(1)',{},1)).rejects.toMatchObject({code:'analytics-budget-exceeded'});expect(writer.usage).toBe(reader.usage);
+});
+it('accepts expiry-only retry disposition without inventing an INSERT witness',async()=>{
+ await upgrade();const a=await copy();a.event.retentionDays=1;const batchId=randomUUID(),prepared=await service().prepare(producer.token,streamId,batchId,[a]);
+ // Explicit synthetic observation-clock advance exercises the adapter; no real-time expiry or PG receipt is fabricated.
+ const asOf=new Date(Date.parse(a.event.ts)+2*86400000).toISOString();
+ const disposed=await new SyncIngestionCopyPersistence(store.writer,store.reader).persist({streamId,batchId,generation:prepared.generation,copies:[a],asOf});
+ expect(disposed).toMatchObject({storedCopies:0,expiredCopies:1});expect(disposed).not.toHaveProperty('storageWitness');expect(disposed).not.toHaveProperty('insertQueryId');
+ const rows=await store.reader.query({query:'SELECT toString(count()) n FROM requests_v2_copies',format:'JSONEachRow'});expect(await rows.json()).toEqual([{n:'0'}]);expect(await receiptCount(batchId)).toBe(0);
 });

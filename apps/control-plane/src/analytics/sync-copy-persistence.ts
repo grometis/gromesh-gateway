@@ -24,9 +24,11 @@ export class SyncIngestionCopyPersistence extends IngestionCopyPersistence{
   const resource=async(queries:BoundedCopyQueries,exists:boolean)=>{const rows=await queries.query(metadata,{},1,exists);if(rows.length!==1)throw failed();return synchronousCopyResource(rows[0]);};
   const beforeRead=await resource(reads,false),beforeWrite=await resource(writes,false);
   if(JSON.stringify(beforeRead)!==JSON.stringify(beforeWrite))throw failed();
-  const observed=await new IngestionCopyPersistence(this.writeClient,this.readClient,{queries:reads,writeSessionId:writeSession}).persist(input,reads.signal);
+  const observed=await new IngestionCopyPersistence(this.writeClient,this.readClient,{queries:reads,writes}).persist(input,reads.signal);
   const afterWrite=await resource(writes,true),afterRead=await resource(reads,true);
-  if(JSON.stringify(beforeRead)!==JSON.stringify(afterRead)||JSON.stringify(beforeWrite)!==JSON.stringify(afterWrite)||!observed.insertQueryId||!uuid.test(observed.insertQueryId))throw failed();
+  if(JSON.stringify(beforeRead)!==JSON.stringify(afterRead)||JSON.stringify(beforeWrite)!==JSON.stringify(afterWrite))throw failed();
+  if(observed.storedCopies===0)return observed;
+  if(!observed.insertQueryId||!uuid.test(observed.insertQueryId))throw failed();
   return {...observed,storageWitness:{kind:'observed-sync-policy-readback-v1',serverId:beforeRead.serverId,tableId:beforeRead.tableId,serverVersion:beforeRead.serverVersion,insertQueryId:observed.insertQueryId}};
  }
 }
