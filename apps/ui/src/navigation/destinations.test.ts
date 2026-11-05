@@ -54,7 +54,7 @@ describe("route classification and declarative destinations", () => {
     expect(resolveDestination(`${v2}/certificates`)?.activeId).toBe("v2-N09");
     expect(matchRoutes(appRoutes, `${v2}/certificates`)?.at(-1)?.route.path).toBe("certificates");
   });
-  it.each(["metrics", "requests", "publish", "publications", "clusters", "analytics"])("excludes v1 page %s from v2", (page) => {
+  it.each(["metrics", "publish", "publications", "clusters", "analytics"])("excludes v1 page %s from v2", (page) => {
     expect(classifyRoute(`${v2}/${page}`)).toEqual({ kind: "unknown" });
     expect(classifyRoute(`/e/w/${page}`)).toEqual({ kind: "legacy-v1", id: "w" });
   });
@@ -77,4 +77,10 @@ describe("route classification and declarative destinations", () => {
     expect(destinationHref(d, "a/b?#")).toBe("/workspaces/a%2Fb%3F%23/services");
     expect(classifyRoute("/workspaces/%zz/services")).toEqual({ kind: "unknown" });
   });
+});
+
+it("registers the v2 Requests activation notice without changing the legacy explorer",()=>{
+ expect(classifyRoute("/workspaces/w/requests")).toEqual({kind:"workspace-v2",id:"w"});
+ expect(resolveDestination("/workspaces/w/requests")?.activeId).toBe("v2-N17");
+ expect(classifyRoute("/e/w/requests")).toEqual({kind:"legacy-v1",id:"w"});
 });

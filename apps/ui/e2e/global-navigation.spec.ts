@@ -108,7 +108,7 @@ for (const width of [390, 768, 1440]) {
         await expect(nav(page).getByRole("heading", { name: "Legado v1", exact: true })).toBeVisible();
         const expected = [
           ["Releases", scope === "v2" ? `/workspaces/${W}/releases` : scope === "v1" ? `/e/${E}/releases` : null, "Requer Workspace ou ambiente legado"],
-          ["Requisições", scope === "v1" ? `/e/${E}/requests` : null, "Requer ambiente legado"],
+          ["Requisições", scope === "v2" ? `/workspaces/${W}/requests` : scope === "v1" ? `/e/${E}/requests` : null, "Requer ambiente legado"],
           ["Métricas", scope === "v1" ? `/e/${E}/metrics` : null, "Requer ambiente legado"],
           ["Revisar snapshot", scope === "v1" ? `/e/${E}/publish` : null, "Requer ambiente legado"],
           ["Publicações", scope === "v1" ? `/e/${E}/publications` : null, "Requer ambiente legado"],
