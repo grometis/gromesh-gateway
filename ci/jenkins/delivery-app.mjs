@@ -5,7 +5,7 @@ import { mkdtemp,writeFile,unlink,rmdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 const exec=promisify(execFile),remote='https://github.com/grometis/gromesh-gateway.git';
-const branches=['task/J5-A-jenkins-ci','task/J5-B-dockerhub','task/J5-C-dev-rollback','task/J5-D-transition'];
+const branches=['task/J5-A-jenkins-ci','task/J5-B-dockerhub','task/J5-C-dev-rollback','task/J5-D-transition','task/J6-sync-main'];
 const permitted=branch=>branches.includes(branch)||/^task\/J5-digests-[a-f0-9]{40}$/.test(branch??'');
 export function deliveryPlan({branch,sha,base,title,body}){
  if(!permitted(branch)||!/^[a-f0-9]{40}$/.test(sha??'')||!['main',...branches].includes(base)||base===branch
