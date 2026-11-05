@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { CopyObservation } from "./copy-evidence.js";
+import type { CopyObservation,ObservedCopyIdentity } from "./copy-evidence.js";
 import type { ClickHouseClient } from "@clickhouse/client";
 import type { IngestionCopy } from "./ingestion-admissions.js";
 import { encodeRawRequestCopy } from "./request-copy-store.js";
@@ -37,7 +37,7 @@ export class IngestionCopyPersistence {
     clickhouse_settings:{max_rows_to_read:"5000000",max_bytes_to_read:String(256*1024*1024),read_overflow_mode:"throw",max_result_rows:"10000",max_result_bytes:String(2*1024*1024),result_overflow_mode:"throw",max_memory_usage:String(256*1024*1024),max_execution_time:5,max_threads:2,wait_end_of_query:1,cancel_http_readonly_queries_on_client_close:1,log_queries:0,output_format_json_quote_64bit_integers:1}});
    let body:string;try{body=await result.text();}finally{result.close();}
    if(Buffer.byteLength(body)>2*1024*1024)throw failed();
-   const seen=new Set<string>();
+   const seen=new Set<string>(),observedCopies:ObservedCopyIdentity[]=[];
    const logicalKey=(copy:IngestionCopy)=>JSON.stringify([copy.podUid,copy.requestId,copyStateOf(String(copy.event.id),copy.event).minContent]);
    const witnesses=new Map<string,{values:Set<string>;expires:number;unavailable:boolean}>();
    for(const x of expected.values()){
@@ -64,6 +64,7 @@ export class IngestionCopyPersistence {
      const witness=witnesses.get(id);if(!witness)throw failed();
      const expiry=Date.parse(copy.event.ts as string)+(copy.event.retentionDays as number)*86400000;
      if(expiry>now+7*86400000)throw failed();
+     observedCopies.push({batchId:ingress_batch_id,copyId:ingress_copy_id,generation:ingress_generation});
      witness.values.add(logicalKey(copy));witness.expires=Math.max(witness.expires,expiry);
      if(ingress_batch_id===input.batchId){
       const x=expected.get(ingress_copy_id);if(!x||ingress_stream_id!==input.streamId||ingress_generation!==input.generation||ingress_wire!==x.wire)throw failed();seen.add(ingress_copy_id);
@@ -82,7 +83,7 @@ export class IngestionCopyPersistence {
    }
    if(observations.length)throw new CopyEvidenceError(observations);
    if(signal.aborted)throw failed();
-   return {storedCopies:live.length,expiredCopies:expected.size-live.length};
+   return {storedCopies:live.length,expiredCopies:expected.size-live.length,observedCopies};
   }catch(error){if(error instanceof CopyEvidenceError)throw error;throw failed();}
  }
 }
