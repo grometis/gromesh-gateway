@@ -1,5 +1,6 @@
 import { sign,verify } from 'node:crypto';
 import { canonicalJson,canonicalHash,assertPublishable,isDigest } from './policy.mjs';
+import { assertOfficialCutover } from './actions-state.mjs';
 const refuse=reason=>{throw new Error(`Release refused: ${reason}`);};
 export function signEnvelope(payload,{privateKey,keyId,purpose}){
  if(!/^[a-z0-9-]{1,80}$/.test(keyId)||!['ci','artifact','release','approval'].includes(purpose))refuse('envelope identity');
@@ -12,6 +13,10 @@ export function verifyEnvelope(envelope,{publicKey,keyId,purpose}){
  const {signature,...body}=envelope;
  if(!/^[A-Za-z0-9+/]{86}==$/.test(signature)||!verify(null,Buffer.from(canonicalJson(body)),publicKey,Buffer.from(signature,'base64')))refuse('signature');
  return envelope.payload;
+}
+export function assertDeployableRelease(release){
+ if(release?.schema!=='gromesh-release/v1'||release.official!==true||release.registry!=='docker.io/fabriciobackend')refuse('official release required; candidate cannot enter DEV');
+ return release;
 }
 function timeWindow(value,now){
  const start=Date.parse(value.issuedAt),end=Date.parse(value.expiresAt);
@@ -52,8 +57,10 @@ export function validatePublication(request,trusted){
     ||proof.toolchainVerified!==true)refuse('verified OCI bytes, native builds, SBOM and scan required');
   seen.add(a.component);artifacts.push(a);
  }
- if(trusted.registry?.namespace!=='fabriciobackend'||trusted.registry.visibility!=='public'||trusted.registry.writerScoped!==true
-   ||trusted.registry.immutableTagsVerified!==true||trusted.registry.publisherMode!=='JENKINS_ONLY')refuse('registry authorization/cutover');
- return {schema:'gromesh-release/v1',source:ci.report.source,pipelineSha:ci.report.pipelineSha,ci:ci.report.build,producer,ciHash:canonicalHash(request.ci),artifacts,
+ const registry=trusted.registry,official=registry?.publicationClass==='OFFICIAL';
+ if(registry?.namespace!=='fabriciobackend'||registry.visibility!=='public'||registry.writerScoped!==true||registry.immutableTagsVerified!==true
+   ||!(official?registry.publisherMode==='JENKINS_ONLY':registry.publicationClass==='CANDIDATE'&&registry.publisherMode==='ACTIONS_OFFICIAL_JENKINS_CANDIDATE'))refuse('registry authorization/cutover');
+ if(official)assertOfficialCutover({cutover:registry.cutover,state:trusted.publisherState,pipelineSha:trusted.expected.pipelineSha,now:trusted.now});
+ return {schema:official?'gromesh-release/v1':'gromesh-candidate-release/v1',official,source:ci.report.source,pipelineSha:ci.report.pipelineSha,ci:ci.report.build,producer,ciHash:canonicalHash(request.ci),artifacts,
    issuedAt:new Date(trusted.now).toISOString(),registry:'docker.io/fabriciobackend'};
 }

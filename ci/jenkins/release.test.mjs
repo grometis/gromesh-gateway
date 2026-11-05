@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
-import { signEnvelope,verifyEnvelope,validatePublication } from './release.mjs';
+import { signEnvelope,verifyEnvelope,validatePublication,assertDeployableRelease } from './release.mjs';
 import { canonicalHash,requiredStages } from './policy.mjs';
 const {privateKey,publicKey}=generateKeyPairSync('ed25519');
 const subject={schema:'test/v1',sha:'a'.repeat(40),nested:{a:1}};
@@ -25,8 +25,19 @@ function publication(){
   artifactProofs[component]={indexDigest:d,archiveHash,sbomHash,sbomSubject:d,scannedDigest:d,scanStatus:'PASS',critical:0,verifiedGraph:true,nativePlatformsVerified:true,kongTestsPassed:component==='kong',toolchainVerified:true};
   return signEnvelope({schema:'gromesh-image-attestation/v1',component,producer,nativeProducers:['amd64','arm64'].map(a=>({platform:'linux/'+a,build:producer,workerId:nativeWorkers[a]})),sourceSha:sha,pipelineSha,ciHash:canonicalHash(ci),indexDigest:d,archiveHash,sbomHash,platforms:['linux/amd64','linux/arm64'],...window},{privateKey,keyId:'builder-2026',purpose:'artifact'});
  });
- return {request:{ci,artifacts},trusted:{now,imageBuild:producer,nativeWorkers,ciKey:{publicKey,keyId:'ci-2026'},artifactKey:{publicKey,keyId:'builder-2026'},expected:{source,pipelineSha,job:report.build.job,buildId:'17'},latestCi:{building:false,result:'SUCCESS',id:'17',job:report.build.job,latestAttemptId:'17',sourceSha:sha,pipelineSha},artifactProofs,registry:{namespace:'fabriciobackend',visibility:'public',writerScoped:true,immutableTagsVerified:true,publisherMode:'JENKINS_ONLY'}}};
+ return {request:{ci,artifacts},trusted:{now,imageBuild:producer,nativeWorkers,ciKey:{publicKey,keyId:'ci-2026'},artifactKey:{publicKey,keyId:'builder-2026'},expected:{source,pipelineSha,job:report.build.job,buildId:'17'},latestCi:{building:false,result:'SUCCESS',id:'17',job:report.build.job,latestAttemptId:'17',sourceSha:sha,pipelineSha},artifactProofs,registry:{namespace:'fabriciobackend',visibility:'public',writerScoped:true,immutableTagsVerified:true,publicationClass:'CANDIDATE',publisherMode:'ACTIONS_OFFICIAL_JENKINS_CANDIDATE'}}};
 }
+test('candidate releases are explicitly ineligible for deploy; official publication requires fresh disabled Actions plus cutover',()=>{
+ const p=publication(),candidate=validatePublication(p.request,p.trusted);
+ assert.equal(candidate.schema,'gromesh-candidate-release/v1');assert.equal(candidate.official,false);
+ assert.throws(()=>assertDeployableRelease(candidate));
+ const registry={...p.trusted.registry,publicationClass:'OFFICIAL',publisherMode:'JENKINS_ONLY'};
+ assert.throws(()=>validatePublication(p.request,{...p.trusted,registry}));
+ registry.cutover={approved:true,pipelineSha:p.trusted.expected.pipelineSha,authorizedBy:'owner',authorizedAt:new Date(p.trusted.now-1000).toISOString(),authorizationId:'J5-approved-cutover'};
+ const publisherState={repository:'grometis/gromesh-gateway',observedAt:new Date(p.trusted.now).toISOString(),workflows:['images.yml','kong-image.yml','image-digests.yml'].map(file=>({file,state:'disabled_manually',activeRuns:0}))};
+ assert.equal(validatePublication(p.request,{...p.trusted,registry,publisherState}).official,true);
+ publisherState.workflows[0].state='active';assert.throws(()=>validatePublication(p.request,{...p.trusted,registry,publisherState}));
+});
 test('a signed exact complete build with verified artifact bytes prepares an auditable release',()=>{
  const p=publication();const r=validatePublication(p.request,p.trusted);assert.equal(r.artifacts.length,4);assert.equal(r.source.sha,'a'.repeat(40));
 });

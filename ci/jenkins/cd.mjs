@@ -2,7 +2,7 @@ import { readFile,lstat,realpath } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { createHash,randomBytes } from 'node:crypto';
 import { canonicalHash,isSha,isDigest } from './policy.mjs';
-import { verifyEnvelope } from './release.mjs';
+import { verifyEnvelope,assertDeployableRelease } from './release.mjs';
 import { J5_POLICY,authorizePlan } from './approval.mjs';
 const refuse=reason=>{throw new Error(`CD refused: ${reason}`);};
 export async function runGuardPlan(options,{guardPath,expectedSha256,execute}){
@@ -35,7 +35,7 @@ export function semanticScopedPlan(plan){
 export function createPlan(input){
  if(input.component!=='ui')refuse('original guard permits UI image scope only; CP/schema need a separate reviewed procedure');
  const {target,scopedPlan,migrations,compatibility,context}=input;
- const release=verifyEnvelope(input.releaseEnvelope,{...input.releaseKey,purpose:'release'});
+ const release=assertDeployableRelease(verifyEnvelope(input.releaseEnvelope,{...input.releaseKey,purpose:'release'}));
  const image=release.artifacts?.find(a=>a.component==='ui');
  if(release.schema!=='gromesh-release/v1'||!isSha(release.source?.sha)||!isDigest(image?.indexDigest))refuse('signed release');
  if(target?.environment!=='DEV'||target.component!=='ui'||target.deployment!==`${target.release}-control-plane-ui`||target.container!=='ui'

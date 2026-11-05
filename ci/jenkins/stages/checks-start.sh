@@ -6,6 +6,8 @@ require_disposable_worker || exit 78
 umask 077
 mkdir -p "$GROMESH_CI_STATE"
 if [[ ! -f "$GROMESH_CI_STATE/checks.env" ]]; then
+  read -r kong_ref _ < <(node scripts/kong-image-ref.mjs)
+  [[ "$kong_ref" =~ ^(ghcr\.io/grometis|docker\.io/fabriciobackend)/gromesh-kong@sha256:[a-f0-9]{64}$ ]] || exit 78
   pg="$(openssl rand -hex 24)"; ch="$(openssl rand -hex 24)"
   printf 'export TEST_DATABASE_URL=%q\n' "postgres://gromesh:${pg}@127.0.0.1:5432/gromesh" > "$GROMESH_CI_STATE/checks.env"
   printf 'export TEST_CLICKHOUSE_URL=%q TEST_CLICKHOUSE_ADMIN_USER=gromesh TEST_CLICKHOUSE_ADMIN_PASSWORD=%q KONG_VALIDATOR_URL=%q\n' http://127.0.0.1:8123 "$ch" http://127.0.0.1:8011 >> "$GROMESH_CI_STATE/checks.env"
@@ -17,8 +19,6 @@ if [[ ! -f "$GROMESH_CI_STATE/checks.env" ]]; then
   docker run -d --name "gromesh-j5-${GROMESH_CI_RUN}-clickhouse" --label "gromesh.j5.run=$GROMESH_CI_RUN" --memory=2g --cpus=2 \
     --tmpfs /var/lib/clickhouse:rw,size=1g -p 127.0.0.1:8123:8123 -e CLICKHOUSE_USER=gromesh -e CLICKHOUSE_DB=gromesh -e CLICKHOUSE_PASSWORD -e CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1 \
     clickhouse/clickhouse-server:25.8.33.6-alpine@sha256:87e0a5b72f5465b18eacca7c76850e7ff551c9795c50e451f5646299e5e24146
-  read -r kong_ref _ < <(node scripts/kong-image-ref.mjs)
-  [[ "$kong_ref" =~ ^ghcr.io/grometis/gromesh-kong@sha256:[a-f0-9]{64}$ ]] || exit 78
   docker run -d --name "gromesh-j5-${GROMESH_CI_RUN}-validator" --label "gromesh.j5.run=$GROMESH_CI_RUN" --memory=512m --cpus=1 \
     -p 127.0.0.1:8011:8001 -e KONG_DATABASE=off -e KONG_ADMIN_LISTEN=0.0.0.0:8001 -e KONG_PLUGINS=bundled "$kong_ref"
 fi

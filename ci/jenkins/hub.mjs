@@ -3,7 +3,7 @@ import { isDigest } from './policy.mjs';
 const refuse=reason=>{throw new Error(`Hub lookup refused: ${reason}`);};
 export async function resolveHubDigest(component,reference,{transport=fetch}={}){
  hubReference(component,'a'.repeat(40));
- if(!/^sha-[a-f0-9]{40}$/.test(reference)&&!isDigest(reference))refuse('immutable reference');
+ if(!/^(?:sha-[a-f0-9]{40}|ci-[a-f0-9]{40}-[1-9][0-9]*)$/.test(reference)&&!isDigest(reference))refuse('immutable reference');
  const repository=`fabriciobackend/gromesh-${component}`;
  const auth=await transport('https://auth.docker.io/token?service=registry.docker.io&scope='+encodeURIComponent('repository:'+repository+':pull'),{redirect:'error',signal:AbortSignal.timeout(20000)});
  if(!auth.ok)refuse('anonymous pull authorization');

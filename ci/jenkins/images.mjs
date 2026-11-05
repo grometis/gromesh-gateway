@@ -16,7 +16,7 @@ export function nativeBuildPlan({component,sha,architecture,workerArchitecture,d
  ];
 }
 export function publicationPlan(input){
- const reference=hubReference(input.component,input.sha);
+ const reference=hubReference(input.component,input.sha,input.publication);
  if(!isDigest(input.digest)||!(input.existingDigest===null||isDigest(input.existingDigest)))refuse('verified registry lookup required');
  if(input.existingDigest!==null&&input.existingDigest!==input.digest)refuse('SHA tag already exists with different bytes');
  const verify={phase:'verify-anonymous-pull',file:'skopeo',args:['inspect','--raw',`docker://${reference.split(':')[0]}@${input.digest}`],expectedDigest:input.digest};
