@@ -1099,8 +1099,7 @@ export const analyticsIngestionStreams = pgTable("analytics_ingestion_streams", 
   instanceId: uuid("instance_id").notNull().references(()=>instance.id),
   clusterId: uuid("cluster_id").notNull(), nodeId: text("node_id").notNull(), podUid: uuid("pod_uid").notNull(),
   authorizationId: uuid("authorization_id").notNull().references(()=>analyticsClusterEvents.id),
-  recordedAt: timestamp("recorded_at",{withTimezone:true,mode:"string"}).notNull().default(sql`clock_timestamp()`),
-});
+  recordedAt: timestamp("recorded_at",{withTimezone:true,mode:"string"}).notNull().default(sql`clock_timestamp()`),},t=>[index("analytics_ingestion_pod_identity_idx").on(t.instanceId,t.clusterId,t.podUid,t.nodeId)]);
 export const analyticsIngestionBatches = pgTable("analytics_ingestion_batches", {
   id: uuid("id").primaryKey(), streamId: uuid("stream_id").notNull().references(()=>analyticsIngestionStreams.id),
   generation: bigint("generation",{mode:"bigint"}).notNull(),

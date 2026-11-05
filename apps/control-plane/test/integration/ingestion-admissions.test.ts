@@ -90,6 +90,32 @@ it("SQL guard rejects a receipt inside the admission's own transaction",async()=
  const s=await admissions.open(producer.token,podUid),client=await f.h.sql.connect(),id=randomUUID();
  try{await client.query("begin");await client.query(`insert into analytics_ingestion_batches(id,stream_id,generation,descriptor) select $1,$2,coalesce(max(generation),0)+100,'[{"copyId":"00000000-0000-4000-8000-000000000001","id":"00000000-0000-4000-8000-000000000002","commitment":"synthetic","expiresAt":"2099-01-01T00:00:00.000Z"}]' from analytics_ingestion_batches`,[id,s.id]);await expect(client.query("insert into analytics_ingestion_receipts(batch_id,stored_copies,expired_copies) values($1,1,0)",[id])).rejects.toThrow("receipt requires a committed admission");}finally{await client.query("rollback");client.release();}
 });
+it("preserves original IPv6 text while confirming the typed IPv6 value",async()=>{
+ const s=await admissions.open(producer.token,podUid);
+ for(const clientIp of ["2001:0db8:0000:0000:0000:0000:0000:0001","2001:DB8::ABCD","::ffff:192.0.2.1"]){const a=await copy();a.event.clientIp=clientIp;expect(await admissions.persist(producer.token,s.id,randomUUID(),[a])).toMatchObject({status:"persisted"});}
+});
+it("conflicts in different batches keep the later batch unconfirmed",async()=>{
+ const s=await admissions.open(producer.token,podUid),a=await copy(),first=randomUUID(),later=randomUUID();await admissions.persist(producer.token,s.id,first,[a]);
+ await expect(admissions.persist(producer.token,s.id,later,[{...a,copyId:randomUUID(),event:{...a.event,status:500}}])).rejects.toThrow("Ingestion persistence is not confirmed");
+ expect((await f.h.sql.query("select count(*)::int as n from analytics_ingestion_receipts where batch_id=$1",[later])).rows[0]!.n).toBe(0);
+});
+it("read-back remains bounded by request identities after unrelated raw traffic exceeds ten thousand rows",async()=>{
+ const a=await copy(),{id,...content}=a.event,encoded=encodeRawRequestCopy({id,content}),other=randomUUID();
+ await writer.insert({table:"requests_v2_copies",format:"JSONEachRow",values:Array.from({length:10020},()=>({...encoded,id:randomUUID(),environment_id:other}))});
+ const s=await admissions.open(producer.token,podUid);expect(await admissions.persist(producer.token,s.id,randomUUID(),[await copy()])).toMatchObject({status:"persisted"});
+});
+it("does not let another authenticated node claim an existing pod identity",async()=>{
+ const created=await f.h.api("POST",`/environments/${f.workspaceId}/clusters`,{name:"synthetic-owner-"+randomUUID()});expect(created.status).toBe(201);const clusterId=created.body.id as string;
+ const register=async(nodeId:string)=>{const response=await fetch(`${f.base}/agent/v1/register`,{method:"POST",headers:{authorization:`Bearer ${created.body.registrationToken as string}`,"content-type":"application/json"},body:JSON.stringify({nodeId,hostname:"synthetic-not-authority",kongVersion:"3.9.4",agentVersion:"0.3.0"})});expect(response.status).toBe(200);return (await response.json() as {nodeToken:string}).nodeToken;};
+ const firstId="synthetic-owner-1",first=await register(firstId),second=await register("synthetic-owner-2");
+ // Explicit synthetic fixture activation; no operational delivery/attestation claim.
+ await f.h.sql.query("update clusters set delivery_protocol='v2' where id=$1",[clusterId]);
+ const auth=await f.db.transaction(tx=>authorizeClusterDelivery(tx,{actor:{type:"agent",id:firstId},role:"viewer",ip:null},{...producer.source,clusterId,nodeId:firstId,nodeToken:first}));await confirmClusterAssociation(f.db,auth);
+ const pod=randomUUID();await admissions.open(first,pod);await expect(admissions.open(second,pod)).rejects.toThrow("ingestion identity");expect(await admissions.open(second,randomUUID())).toMatchObject({clusterId});
+});
+it("SQL cannot override the admission transaction marker",async()=>{
+ const s=await admissions.open(producer.token,podUid);await expect(f.h.sql.query(`insert into analytics_ingestion_batches(id,stream_id,generation,descriptor,write_transaction) select $1,$2,coalesce(max(generation),0)+100,'[{}]','synthetic-forged' from analytics_ingestion_batches`,[randomUUID(),s.id])).rejects.toThrow("invalid ingestion admission transaction");
+});
 it("revocation invalidates an existing producer stream without rewriting prior admissions",async()=>{
  const s=await admissions.open(producer.token,podUid),a=await copy();await f.db.transaction(tx=>revokeClusterAssociation(tx,{actor:{type:"system",id:"synthetic-revocation"},role:"admin",ip:null},producer.source.clusterId,"revoke"));
  await expect(admissions.prepare(producer.token,s.id,randomUUID(),[a])).rejects.toThrow();

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, ne, sql } from "drizzle-orm";
 import type { Db, Tx } from "../db/db.js";
 import { analyticsClusterEvents, analyticsClusterVisibility, analyticsIngestionBatches as batches, analyticsIngestionReceipts as receipts, analyticsIngestionCounter as counter, analyticsIngestionStreams as streams, clusters, instance } from "../db/schema.js";
 import { AgentGatewayService } from "../agent-gateway/agent-gateway.js";
@@ -51,6 +51,8 @@ export class IngestionAdmissions {
     if(!uuid.test(podUid))return invalid();
     return this.db.transaction(async tx=>{
       await lock(tx);const a=await this.authorized(tx,token);
+      const [foreignOwner]=await tx.select({id:streams.id}).from(streams).where(and(eq(streams.instanceId,a.self.id),eq(streams.clusterId,a.current.cluster.id),eq(streams.podUid,podUid),ne(streams.nodeId,a.current.node.nodeId))).limit(1);
+      if(foreignOwner)return denied();
       const [stream]=await tx.insert(streams).values({instanceId:a.self.id,clusterId:a.current.cluster.id,nodeId:a.current.node.nodeId,podUid,authorizationId:a.last.id}).returning();
       await audit(tx,a.ctx,{action:"analytics.ingestion.open",entityType:"ingestion-stream",entityId:stream!.id,after:{instanceId:stream!.instanceId,clusterId:stream!.clusterId,podUid,authorizationId:a.last.id}});
       return stream!;
