@@ -20,7 +20,7 @@ export function validateWorker(policy, facts) {
     if (!Number.isFinite(policy[minimum]) || policy[minimum] <= 0 || !Number.isFinite(facts[key]) || facts[key] < policy[minimum]) refuse('capacity');
   if (!facts.docker?.rootless || facts.docker.endpoint !== `unix:///run/user/${facts.uid}/docker.sock`
       || !Array.isArray(facts.docker.projects) || facts.docker.projects.length) refuse('dedicated rootless engine');
-  const domains = { ci: [], 'image-publisher': ['dockerhub-write'], 'cd-plan': ['dev-read'], 'cd-apply': ['dev-write'] };
+  const domains = { ci: [], 'image-builder': [], 'image-publisher': ['dockerhub-write'], 'cd-plan': ['dev-read'], 'cd-apply': ['dev-write'] };
   if (!domains[facts.role] || !Array.isArray(facts.credentialDomains)
       || facts.credentialDomains.some(c => !domains[facts.role].includes(c))) refuse('credential domain');
   return facts;

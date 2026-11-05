@@ -1,5 +1,6 @@
 import { sign } from 'node:crypto';
 import { repository, isSha, validateSource, assertCompleteCi } from './policy.mjs';
+import { checkIdentity,checkName,finalConclusion } from './final-status.mjs';
 
 export function appJwt(appId, privateKey, now = Math.floor(Date.now()/1000)) {
   if (!/^[1-9][0-9]*$/.test(appId) || !Number.isSafeInteger(now)) throw new Error('Invalid GitHub App identity');
@@ -27,7 +28,11 @@ export class GitHubApp {
     this.#token=data.token;this.#expires=Date.parse(data.expires_at);return this.#token;
   }
   async api(path,{method='GET',body}={}) {
-    if (!/^\/(branches(?:\/main)?|pulls|check-runs)(?:\?[^\r\n]*)?$/.test(path)) throw new Error('Unapproved GitHub API path');
+    const ordinary=/^\/(branches(?:\/main)?|pulls|check-runs)(?:\?[^\r\n]*)?$/.test(path);
+    const check=/^\/check-runs\/[1-9][0-9]*$/.test(path);
+    const list=/^\/commits\/[a-f0-9]{40}\/check-runs\?check_name=jenkins-ci-(main|pr|branch)&per_page=100&page=[1-9][0-9]*$/.test(path);
+    const source=/^\/(?:pulls\/[1-9][0-9]*|commits\/[a-f0-9]{40}|compare\/[a-f0-9]{40}\.\.\.[A-Za-z0-9._%/-]+)$/.test(path);
+    if ((!ordinary&&!check&&!list&&!source)||check&&!['GET','PATCH'].includes(method)||(list||source)&&method!=='GET'||ordinary&&path!=='/check-runs'&&method!=='GET') throw new Error('Unapproved GitHub API path/method');
     const token=await this.installationToken();
     const response=await this.transport(`https://api.github.com/repos/${repository}${path}`,{
       method,headers:{Authorization:`Bearer ${token}`,Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'},
@@ -45,7 +50,33 @@ export class GitHubApp {
       assertCompleteCi(report,expected);
       if ((report.source.headSha??report.source.sha)!==sha || report.build.url!==buildUrl) throw new Error('GitHub check does not match CI build');
     }
-    return this.api('/check-runs',{method:'POST',body:{name:'jenkins-ci',head_sha:sha,details_url:buildUrl,external_id:externalId,status:'completed',conclusion,output:{title:`Jenkins CI: ${conclusion}`,summary}}});
+    const job=buildUrl.split('/').filter((_,i,a)=>a[i-1]==='job').join('/');
+    return this.api('/check-runs',{method:'POST',body:{name:checkName(job),head_sha:sha,details_url:buildUrl,external_id:externalId,status:'completed',conclusion,output:{title:`Jenkins CI: ${conclusion}`,summary}}});
+  }
+  async findCheck(context){
+    const identity=checkIdentity(context);
+    for(let page=1;page<=10;page++){
+      const data=await this.api(`/commits/${identity.sha}/check-runs?check_name=${identity.name}&per_page=100&page=${page}`);
+      if(!Array.isArray(data.check_runs))throw new Error('Invalid check list');
+      const matches=data.check_runs.filter(c=>c.app?.id===Number(this.appId)&&c.external_id===identity.externalId&&c.head_sha===identity.sha&&c.details_url===identity.url);
+      if(matches.length)return matches.sort((a,b)=>b.id-a.id)[0];if(data.check_runs.length<100)return null;
+    }
+    throw new Error('Bounded check pagination exceeded');
+  }
+  async beginCheck(context){
+    const identity=checkIdentity(context),existing=await this.findCheck(context);
+    if(existing){if(existing.status==='completed')throw new Error('Completed check cannot become running again');return existing;}
+    return this.api('/check-runs',{method:'POST',body:{name:identity.name,head_sha:identity.sha,details_url:identity.url,external_id:identity.externalId,status:'in_progress',output:{title:'Jenkins CI running',summary:'Final status is reconciled only after the Jenkins Run terminates.'}}});
+  }
+  async finishCheck(report,context,run){
+    const identity=checkIdentity(context),conclusion=finalConclusion(report,context,run);
+    if(run?.building!==false||run.job!==context.build.job||run.id!==context.build.id||run.pipelineSha!==context.pipelineSha||run.sourceSha!==identity.sha)throw new Error('Exact completed Run required for finalization');
+    let check=await this.findCheck(context);
+    if(!check)check=await this.beginCheck(context);
+    if(!Number.isSafeInteger(check.id))throw new Error('Invalid check ID');
+    if(check.status==='completed'&&check.conclusion===conclusion)return {id:check.id,conclusion,unchanged:true};
+    await this.api('/check-runs/'+check.id,{method:'PATCH',body:{status:'completed',conclusion,details_url:identity.url,output:{title:'Jenkins final result: '+conclusion,summary:`Jenkins Run ${run.result ?? 'UNKNOWN'}; immutable pipeline ${context.pipelineSha}. Actual final result and mandatory evidence are required for success.`}}});
+    return {id:check.id,conclusion,unchanged:false};
   }
   async pages(path) {
     const all=[];

@@ -13,7 +13,7 @@ test('an incomplete report posts failure to the trusted SHA instead of claiming 
   const c=context();
   const result=await postCiCheck(client,{...c,schema:'gromesh-jenkins-ci/v1',source:{...c.source,sha:'f'.repeat(40)},stages:[],tools:{}},c);
   assert.equal(result.conclusion,'failure');
-  const body=JSON.parse(requests.at(-1).options.body);assert.equal(body.head_sha,'a'.repeat(40));assert.equal(body.conclusion,'failure');assert.equal(body.name,'jenkins-ci');
+  const body=JSON.parse(requests.at(-1).options.body);assert.equal(body.head_sha,'a'.repeat(40));assert.equal(body.conclusion,'failure');assert.equal(body.name,'jenkins-ci-main');
 });
 test('the reporting CLI cannot borrow a host gh credential or run without protected configuration',()=>{
   const r=spawnSync(process.execPath,[fileURLToPath(new URL('./github-report.mjs',import.meta.url)),'does-not-exist.json'],{encoding:'utf8',env:{PATH:process.env.PATH,GH_TOKEN:'DO_NOT_USE_OPERATOR_TOKEN'}});

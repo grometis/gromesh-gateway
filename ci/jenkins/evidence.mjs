@@ -7,7 +7,7 @@ export function sanitize(text,secrets=[]){
  for(const secret of secrets.filter(s=>typeof s==='string'&&s.length>=4).sort((a,b)=>b.length-a.length))out=out.split(secret).join('[REDACTED]');
  return out.replace(/((?:password|secret|token|authorization|cookie|encryption_key|fingerprint_key)["']?\s*[:=]\s*)[^\s,;]+/gi,'$1[REDACTED]')
   .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|dckr_pat_[A-Za-z0-9_-]+|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)\b/g,'[REDACTED]')
-  .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/g,'$1[REDACTED]@');
+  .replace(/((?:https?|postgres(?:ql)?|redis):\/\/)[^\s/@]+:[^\s/@]+@/g,'$1[REDACTED]@');
 }
 export function summarizeTests(text){
  const totals={passed:0,failed:0,skipped:0,known:false};
@@ -36,6 +36,11 @@ export async function collectEvidence({id,output,cwd,execution}){
   }
  }
  const tests=summarizeTests(text);
- return {artifacts,tests,complete:execution.outputTruncated!==true&&(!testStages.includes(id)||(tests.known&&tests.passed>0&&tests.failed===0))
+ let kongCandidate=null,candidateLogsPresent=false;
+ if(id==='image-scan'){
+  try{const b=await readFile(join(output,'kong-candidate.json'));kongCandidate=JSON.parse(b);await add('kong-candidate.json',join(output,'kong-candidate.json'),'report');await add('kong-candidate.log',join(output,'kong-candidate.log'),'log');candidateLogsPresent=artifacts.some(a=>a.path==='kong-candidate.log');}catch{}
+ }
+ const candidateValid=id!=='image-scan'||candidateLogsPresent&&kongCandidate?.schema==='gromesh-kong-candidate/v1'&&typeof kongCandidate.required==='boolean'&&(!kongCandidate.required||kongCandidate.passed===true);
+ return {artifacts,tests,...(id==='image-scan'?{kongCandidate}:{}),complete:candidateValid&&execution.outputFailure!==true&&execution.outputTruncated!==true&&(!testStages.includes(id)||(tests.known&&tests.passed>0&&tests.failed===0))
   &&(id!=='ui-acceptance'||artifacts.some(a=>a.kind==='screenshot'))};
 }

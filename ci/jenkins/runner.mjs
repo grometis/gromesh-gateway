@@ -52,6 +52,9 @@ export function buildTaskEnvironment(context,e) {
     npm_config_userconfig:'/opt/gromesh/jenkins/npmrc',npm_config_globalconfig:'/opt/gromesh/jenkins/npmrc',
     GIT_TERMINAL_PROMPT:'0',GIT_CONFIG_COUNT:'1',GIT_CONFIG_KEY_0:'credential.helper',GIT_CONFIG_VALUE_0:'',
     NODE_OPTIONS:'--max-old-space-size=2048'};
+  Object.assign(clean,{JOB_NAME:context.build.job,BUILD_NUMBER:context.build.id,BUILD_URL:context.build.url,GROMESH_SOURCE_SHA:context.source.sha,
+    GROMESH_SOURCE_EVENT:context.source.event,GROMESH_SOURCE_BRANCH:context.source.branch,GROMESH_PR_NUMBER:context.source.pr?String(context.source.pr):'',GROMESH_PR_HEAD_SHA:context.source.headSha??'',GROMESH_PIPELINE_SHA:context.pipelineSha,
+    GROMESH_PR_BASE_SHA:context.source.baseSha??'',GIT_NO_REPLACE_OBJECTS:'1'});
   return clean;
 }
 
@@ -77,7 +80,8 @@ async function main() {
   const output=resolve(process.env.GROMESH_CI_OUTPUT||'../results');
   const abort=new AbortController();
   for(const signal of ['SIGINT','SIGTERM'])process.once(signal,()=>abort.abort());
-  const result=await runStage(id,{cwd:process.cwd(),output,env,signal:abort.signal,timeoutMs:90*60*1000});
+  env.GROMESH_CI_EVIDENCE=join(output,id);
+  const result=await runStage(id,{cwd:process.cwd(),output,env,signal:abort.signal,timeoutMs:(id==='image-scan'?240:90)*60*1000});
   const row={...result,sha:context.source.sha,pipelineSha:context.pipelineSha,build:context.build,workerId:qualified.facts.id};
   if(id==='image-scan' && result.status==='SUCCESS')row.platforms=[env.SCAN_PLATFORM];
   await writeFile(join(output,id+'.json'),JSON.stringify(row,null,2)+'\n',{mode:0o600});

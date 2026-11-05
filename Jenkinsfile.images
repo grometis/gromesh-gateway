@@ -1,0 +1,65 @@
+// Protected SCM only. All jobs remain disabled until credentials, native workers,
+// least-privilege identities and external artifact storage have been qualified.
+@NonCPS
+Map completedCiContext(String buildId,String pipelineSha,String imageBuildId){
+ def ciName='gromesh-gateway/gromesh-ci/gromesh-main'
+ def job=jenkins.model.Jenkins.get().getItemByFullName(ciName)
+ def run=job?.getBuildByNumber(buildId.toInteger())
+ if(run==null||run.isBuilding()||run.result.toString()!='SUCCESS')throw new IllegalStateException('COMPLETED_SUCCESSFUL_MAIN_CI_REQUIRED')
+ def sha=run.getAction(hudson.model.ParametersAction)?.getParameter('SHA')?.value
+ if(!(sha==~/[a-f0-9]{40}/))throw new IllegalStateException('CI_SOURCE_SHA_REQUIRED')
+ def same=job.builds.findAll{it.getAction(hudson.model.ParametersAction)?.getParameter('SHA')?.value==sha}
+ def latest=same? same[0]:null
+ if(latest?.number!=run.number||latest.isBuilding()||latest.result.toString()!='SUCCESS')throw new IllegalStateException('CI_RETRY_CHANGED_ELIGIBILITY')
+ if(jenkins.model.Jenkins.get().queue.items.any{it.task instanceof org.jenkinsci.plugins.workflow.job.WorkflowJob&&it.task.fullName==ciName&&it.getAction(hudson.model.ParametersAction)?.getParameter('SHA')?.value==sha})throw new IllegalStateException('CI_RETRY_QUEUED')
+ return [expected:[source:[repository:'grometis/gromesh-gateway',sha:sha,event:'push',branch:'main',pr:null,baseSha:null],pipelineSha:pipelineSha,job:ciName,buildId:run.number.toString()],latestCi:[building:false,result:'SUCCESS',id:run.number.toString(),job:ciName,latestAttemptId:latest.number.toString(),sourceSha:sha,pipelineSha:pipelineSha],imageBuild:[job:'gromesh-artifacts/gromesh-images',id:imageBuildId,url:'https://jenkins.grometis.com/job/gromesh-artifacts/job/gromesh-images/'+imageBuildId+'/',pipelineSha:pipelineSha]]
+}
+properties([disableConcurrentBuilds(),buildDiscarder(logRotator(numToKeepStr:'10')),parameters([string(name:'CI_BUILD_ID',defaultValue:'',description:'Exact completed main CI build')])])
+if(env.JOB_NAME!='gromesh-artifacts/gromesh-images'||!(params.CI_BUILD_ID==~/[1-9][0-9]*/))error('INVALID_IMAGE_JOB_OR_CI_BUILD')
+def pipelineSha=scm.branches[0].name
+if(!(pipelineSha==~/[a-f0-9]{40}/))error('IMMUTABLE_REVIEWED_PIPELINE_REQUIRED')
+def ciName='gromesh-gateway/gromesh-ci/gromesh-main'
+def context={completedCiContext(params.CI_BUILD_ID,pipelineSha,env.BUILD_NUMBER)}
+def sha=context().expected.source.sha
+def work='/workspace/builds/'+env.BUILD_NUMBER
+def bindings=['PATH=/opt/gromesh/tools/node/bin:/opt/gromesh/tools/bin:/usr/local/bin:/usr/bin:/bin','GROMESH_PIPELINE_SHA='+pipelineSha,'GROMESH_SOURCE_SHA='+sha,'DOCKER_HOST=unix:///run/user/1000/docker.sock']
+timeout(time:24,unit:'HOURS') {
+ stage('Verify completed signed CI and storage') {
+  // Default controller-local artifact storage is deliberately refused for large OCI bundles.
+  if(currentBuild.rawBuild.getArtifactManager().class.name=='jenkins.model.StandardArtifactManager')error('QUALIFIED_EXTERNAL_ARTIFACT_MANAGER_REQUIRED')
+  node('gromesh-image-coordinator') {dir(work) {withEnv(bindings) {
+   copyArtifacts(projectName:ciName,selector:specific(params.CI_BUILD_ID),filter:'ci-attestation.json',fingerprintArtifacts:true)
+   writeJSON(file:'ci-context.json',json:context())
+   sh '/opt/gromesh/tools/node/bin/node /opt/gromesh/jenkins/bundle.mjs verify-ci'
+   stash(name:'ci-proof',includes:'ci-attestation.json,ci-context.json')
+  }}}
+ }
+ stage('Native build, SBOM, scan and Kong acceptance') {
+  def legs=[:]
+  for(def arch in ['amd64','arm64']) {def architecture=arch
+   legs[architecture]={node('gromesh-build-'+architecture){dir(work+'/source'){withEnv(bindings){
+    checkout([$class:'GitSCM',branches:[[name:sha]],userRemoteConfigs:[[url:'https://github.com/grometis/gromesh-gateway.git']],extensions:[[$class:'CloneOption',noTags:true,shallow:false,timeout:10]]])
+    sh 'git config core.hooksPath .githooks'
+    try {for(def component in ['control-plane','ui','agent','kong']){
+      stage(component+' '+architecture){sh '/opt/gromesh/tools/node/bin/node /opt/gromesh/jenkins/image-pipeline.mjs build '+component}
+    }}finally{dir(work){archiveArtifacts(artifacts:'*.result.json,*.spdx.json,*.trivy.json,evidence/**',fingerprint:true,allowEmptyArchive:true,onlyIfSuccessful:false)}}
+    dir(work){stash(name:'native-'+architecture,includes:'*.oci.tar,*.result.json,*.spdx.json,*.trivy.json')}
+   }}}}
+  }
+  parallel legs
+ }
+ stage('Seal exact scanned bytes') {node('gromesh-image-coordinator'){dir(work){withEnv(bindings){
+  unstash 'ci-proof';unstash 'native-amd64';unstash 'native-arm64';writeJSON(file:'ci-context.json',json:context())
+  withCredentials([file(credentialsId:'gromesh-artifact-signing-key',variable:'GROMESH_ARTIFACT_SIGNING_KEY_FILE')]){sh '/opt/gromesh/tools/node/bin/node /opt/gromesh/jenkins/bundle.mjs assemble'}
+  archiveArtifacts(artifacts:'release-request.json,*.sbom-index.json',fingerprint:true)
+  stash(name:'sealed-release',includes:'release-request.json,ci-context.json,*.sbom-index.json,*.spdx.json,*.trivy.json,control-plane.oci.tar,ui.oci.tar,agent.oci.tar,kong.oci.tar')
+ }}}}
+ stage('Protected publisher and anonymous pull') {node('gromesh-image-publisher'){dir(work){withEnv(bindings){
+  unstash 'sealed-release';writeJSON(file:'ci-context.json',json:context())
+  withCredentials([file(credentialsId:'gromesh-dockerhub-write-authfile',variable:'GROMESH_HUB_AUTH_FILE'),file(credentialsId:'gromesh-release-signing-key',variable:'GROMESH_RELEASE_SIGNING_KEY_FILE')]){
+   sh '/opt/gromesh/tools/node/bin/node /opt/gromesh/jenkins/publisher.mjs publish'
+  }
+  context() // A new attempt invalidates official release eligibility before archiving.
+  archiveArtifacts(artifacts:'release-manifest.json',fingerprint:true,allowEmptyArchive:false)
+ }}}}
+}

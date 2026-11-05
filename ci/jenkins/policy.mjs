@@ -50,7 +50,7 @@ export function assertCompleteCi(result, expected) {
     ids.add(stage.id);
     if(stage.complete!==true||stage.outputTruncated===true||stage.artifacts.length<2
       ||!['stdout.log','stderr.log'].every(p=>stage.artifacts.some(a=>a.path===p&&a.kind==='log'))
-      ||stage.artifacts.some(a=>!a||!Number.isSafeInteger(a.bytes)||a.bytes<0||!/^[a-f0-9]{64}$/.test(a.sha256??'')||!(/^(stdout|stderr)\.log$|^screenshots\/[A-Za-z0-9._-]+\.png$/).test(a.path??'')))refuse('CI execution evidence missing or truncated');
+      ||stage.artifacts.some(a=>!a||!Number.isSafeInteger(a.bytes)||a.bytes<0||!/^[a-f0-9]{64}$/.test(a.sha256??'')||!(/^(stdout|stderr)\.log$|^kong-candidate\.(json|log)$|^screenshots\/[A-Za-z0-9._-]+\.png$/).test(a.path??'')))refuse('CI execution evidence missing or truncated');
     if(testStages.includes(stage.id)&&(!stage.tests?.known||!Number.isSafeInteger(stage.tests.passed)||stage.tests.passed<1
       ||stage.tests.failed!==0||!Number.isSafeInteger(stage.tests.skipped)||stage.tests.skipped<0))refuse('CI test counts missing/failed');
     if(stage.id==='ui-acceptance'&&!stage.artifacts.some(a=>a.kind==='screenshot'&&a.path.startsWith('screenshots/')))refuse('UI screenshot missing');

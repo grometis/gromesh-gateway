@@ -18,10 +18,7 @@ def profile = jobs[env.JOB_NAME]
 if (!profile || !(params.SHA ==~ /[a-f0-9]{40}/)) error('INVALID_CI_JOB_OR_SHA')
 def pipelineSha = scm.branches[0].name
 if (!(pipelineSha ==~ /[a-f0-9]{40}/)) error('IMMUTABLE_REVIEWED_PIPELINE_REVISION_REQUIRED')
-def github = { path ->
-  readJSON(text: httpRequest(url: 'https://api.github.com/repos/grometis/gromesh-gateway/' + path,
-    httpMode: 'GET', quiet: true, consoleLogResponseBody: false, validResponseCodes: '200', timeout: 30).content, returnPojo: true)
-}
+env.GROMESH_REVIEWED_PIPELINE_SHA=pipelineSha
 def source = [repository: 'grometis/gromesh-gateway', sha: params.SHA, event: 'manual', branch: 'main', pr: null, baseSha: null]
 def comparisonBase
 def results = []
@@ -31,32 +28,21 @@ def nonce = UUID.randomUUID().toString().replace('-', '')
 def fullJob = env.JOB_NAME
 def buildId = env.BUILD_NUMBER
 def buildUrl = env.BUILD_URL
-def sourceRef
 timeout(time: 6, unit: 'HOURS') {
   stage('Resolve exact GitHub source') {
-    if (profile == 'pr') {
-      if (!(params.PR_NUMBER ==~ /[1-9][0-9]*/)) error('INVALID_PR')
-      def pr = github('pulls/' + params.PR_NUMBER)
-      if (pr.state != 'open' || pr.base.repo.full_name != source.repository || pr.head.sha != params.SHA) error('PR_SOURCE_CHANGED')
-      if (!(pr.merge_commit_sha ==~ /[a-f0-9]{40}/) || pr.mergeable == false) error('PR_TEST_MERGE_UNAVAILABLE')
-      def merge = github('commits/' + pr.merge_commit_sha)
-      def parents = merge.parents.collect { it.sha }
-      if (merge.sha != pr.merge_commit_sha || !parents.contains(pr.head.sha) || !parents.contains(pr.base.sha)) error('PR_TEST_MERGE_PARENTS_CHANGED')
-      source.event = 'pull_request'; source.branch = pr.head.ref; source.pr = pr.number; source.baseSha = pr.base.sha
-      source.headSha = pr.head.sha; source.sha = pr.merge_commit_sha
-      comparisonBase = pr.base.sha; sourceRef = 'refs/pull/' + pr.number + '/merge'
-    } else {
-      def branch = profile == 'main' ? 'main' : params.BRANCH
-      if (!(branch ==~ /[A-Za-z0-9][A-Za-z0-9._\/-]{0,199}/) || branch.contains('..') || (profile == 'branch' && branch == 'main')) error('INVALID_BRANCH')
-      def encoded = java.net.URLEncoder.encode(branch, 'UTF-8')
-      def comparison = github('compare/' + params.SHA + '...' + encoded)
-      if (comparison.merge_base_commit.sha != params.SHA) error('SHA_OUTSIDE_BRANCH')
-      def commit = github('commits/' + params.SHA)
-      if (commit.sha != params.SHA || !commit.parents || !(commit.parents[0].sha ==~ /[a-f0-9]{40}/)) error('COMPARISON_BASE_REQUIRED')
-      comparisonBase = commit.parents[0].sha; source.branch = branch; sourceRef = 'refs/heads/' + branch
-      def upstream = currentBuild.getBuildCauses('hudson.model.Cause$UpstreamCause')
-      if (upstream.any { it.upstreamProject == 'gromesh-gateway/gromesh-ci/gromesh-discovery' }) source.event = 'push'
+    def resolved
+    node('gromesh-coordinator') {
+      withEnv(['GROMESH_PIPELINE_SHA='+pipelineSha,'PATH=/opt/gromesh/tools/node/bin:/opt/gromesh/tools/bin:/usr/local/bin:/usr/bin:/bin']) {
+        def upstream=currentBuild.getBuildCauses('hudson.model.Cause$UpstreamCause')
+        writeJSON(file:'source-request.json',json:[profile:profile,sha:params.SHA,pr:params.PR_NUMBER,branch:params.BRANCH,fromDiscovery:upstream.any{it.upstreamProject=='gromesh-gateway/gromesh-ci/gromesh-discovery'}])
+        withCredentials([file(credentialsId:'gromesh-github-app-private-key',variable:'GROMESH_GITHUB_APP_KEY_FILE')]) {
+          sh '/opt/gromesh/tools/node/bin/node /opt/gromesh/jenkins/source-resolver.mjs'
+        }
+        resolved=readJSON(file:'resolved-source.json',returnPojo:true)
+        archiveArtifacts(artifacts:'resolved-source.json',fingerprint:true,allowEmptyArchive:false)
+      }
     }
+    source=resolved.source;comparisonBase=resolved.comparisonBase
     bindings = [
       'PATH=/opt/gromesh/tools/node/bin:/opt/gromesh/tools/bin:/usr/local/bin:/usr/bin:/bin',
       'DOCKER_HOST=unix:///run/user/1000/docker.sock', 'JENKINS_URL=https://jenkins.grometis.com/',
@@ -75,6 +61,12 @@ timeout(time: 6, unit: 'HOURS') {
   }
   def domain = profile == 'main' ? 'main' : 'untrusted'
   try {
+    stage('Report CI started') {node('gromesh-coordinator'){withEnv(bindings){
+      withCredentials([file(credentialsId:'gromesh-github-app-private-key',variable:'GROMESH_GITHUB_APP_KEY_FILE')]){
+        sh '/opt/gromesh/tools/node/bin/node /opt/gromesh/jenkins/github-report.mjs begin'
+      }
+      archiveArtifacts(artifacts:'github-check.json',fingerprint:true,allowEmptyArchive:false)
+    }}}
     node('gromesh-ci-' + domain + '-arm64') {
       dir('source') {
         checkoutCandidate()
@@ -129,11 +121,13 @@ timeout(time: 6, unit: 'HOURS') {
           writeJSON(file:'ci-result.json',json:report,pretty:2)
           def complete = sh(returnStatus:true,script:'/opt/gromesh/tools/node/bin/node /opt/gromesh/jenkins/runner.mjs verify-report ci-result.json') == 0
           archiveArtifacts(artifacts:'ci-result.json',fingerprint:true,onlyIfSuccessful:false)
-          withCredentials([file(credentialsId:'gromesh-github-app-private-key',variable:'GROMESH_GITHUB_APP_KEY_FILE')]) {
-            withEnv(['GROMESH_CHECK_CONCLUSION=' + (complete ? 'success' : 'failure')]) {
-              sh '/opt/gromesh/tools/node/bin/node /opt/gromesh/jenkins/github-report.mjs ci-result.json'
+          if(complete && source.event=='push' && source.branch=='main') {
+            withCredentials([file(credentialsId:'gromesh-ci-attestation-signing-key',variable:'GROMESH_CI_SIGNING_KEY_FILE')]) {
+              sh '/opt/gromesh/tools/node/bin/node /opt/gromesh/jenkins/attest.mjs'
             }
+            archiveArtifacts(artifacts:'ci-attestation.json',fingerprint:true,allowEmptyArchive:false)
           }
+          echo('Final GitHub conclusion is deferred until the Jenkins Run terminates; the protected status job reconciles it.')
           if (!complete) error('CI_INCOMPLETE; GitHub Actions remains authoritative')
         }
       }

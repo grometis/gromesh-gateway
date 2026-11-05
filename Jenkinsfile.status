@@ -1,0 +1,38 @@
+// Outbound-only final Run reconciliation; executes no candidate code.
+@NonCPS
+List completedRuns(String pipelineSha){
+ def result=[]
+ for(def name in ['main','prs','branches']){
+  def fullName='gromesh-gateway/gromesh-ci/gromesh-'+name
+  def job=jenkins.model.Jenkins.get().getItemByFullName(fullName)
+  if(job==null)continue
+  def seen=[] as Set
+  for(def run in job.builds.take(30)){
+   def sha=run.getAction(hudson.model.ParametersAction)?.getParameter('SHA')?.value
+   if(!(sha==~/[a-f0-9]{40}/)||seen.contains(sha))continue
+   seen.add(sha) // A newer running attempt suppresses finalization of an older attempt at the same head.
+   if(run.isBuilding())continue
+   def revision=run.getAction(org.jenkinsci.plugins.workflow.cps.EnvActionImpl)?.overriddenEnvironment?.get('GROMESH_REVIEWED_PIPELINE_SHA')
+   if(revision!=pipelineSha)continue
+   result<<[job:fullName,id:run.number.toString(),sourceSha:sha,pipelineSha:revision,building:false,result:run.result?.toString()?:'UNKNOWN']
+  }
+ }
+ return result
+}
+properties([disableConcurrentBuilds(),pipelineTriggers([cron('H/5 * * * *')]),buildDiscarder(logRotator(numToKeepStr:'30'))])
+if(env.JOB_NAME!='gromesh-gateway/gromesh-ci/gromesh-status')error('UNAPPROVED_STATUS_JOB')
+def revision=scm.branches[0].name
+if(!(revision==~/[a-f0-9]{40}/))error('IMMUTABLE_REVIEWED_PIPELINE_REQUIRED')
+def runs=completedRuns(revision)
+timeout(time:10,unit:'MINUTES'){node('gromesh-coordinator'){
+ withEnv(['GROMESH_PIPELINE_SHA='+revision,'PATH=/opt/gromesh/tools/node/bin:/opt/gromesh/tools/bin:/usr/local/bin:/usr/bin:/bin']){
+  withCredentials([file(credentialsId:'gromesh-github-app-private-key',variable:'GROMESH_GITHUB_APP_KEY_FILE')]){
+   for(def run in runs){dir('final-'+env.BUILD_NUMBER+'/'+run.job.tokenize('/').last()+'-'+run.id){
+    // Never consume files left by another Run. Missing artifacts become failure, never a green fallback.
+    copyArtifacts(projectName:run.job,selector:specific(run.id),filter:'github-check.json,ci-result.json',optional:true,fingerprintArtifacts:true)
+    writeJSON(file:'final-run.json',json:run)
+    sh '/opt/gromesh/tools/node/bin/node /opt/gromesh/jenkins/github-report.mjs final'
+   }}
+  }
+ }
+}}

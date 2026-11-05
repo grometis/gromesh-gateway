@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { jobDefinitions,renderJobXml,assertScmActivation } from './jobs.mjs';
 test('all prepared jobs stay disabled and pin the trusted pipeline separately from candidate SHA',()=>{
   const jobs=jobDefinitions('a'.repeat(40));
-  assert.equal(jobs.length,4);
+  assert.equal(jobs.length,5);
   for(const job of jobs){const xml=renderJobXml(job);assert.match(xml,/<disabled>true<\/disabled>/);assert.match(xml,/<name>a{40}<\/name>/);assert.doesNotMatch(xml,/credentialsId|localhost|scriptText/);}
 });
 test('job activation is blocked on the original controller without Git plugins/readback',()=>{
