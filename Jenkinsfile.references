@@ -1,0 +1,31 @@
+@NonCPS
+String requireServiceIdentity(String expected){
+ def auth=org.jenkinsci.plugins.workflow.cps.CpsThread.current()?.execution?.authentication2
+ if(auth==null||auth.name!=expected||jenkins.model.Jenkins.get().getACL().hasPermission2(auth,jenkins.model.Jenkins.ADMINISTER))throw new IllegalStateException('DEDICATED_NON_ADMIN_RUN_IDENTITY_REQUIRED')
+ return auth.name
+}
+def effectiveJenkinsUser=requireServiceIdentity('gromesh-delivery-runner')
+@NonCPS
+Map producerContext(String id,String pipelineSha){
+ def run=jenkins.model.Jenkins.get().getItemByFullName('gromesh-artifacts/gromesh-images')?.getBuildByNumber(id.toInteger())
+ if(run==null||run.isBuilding()||run.result.toString()!='SUCCESS')throw new IllegalStateException('COMPLETED_SUCCESSFUL_IMAGE_BUILD_REQUIRED')
+ return [building:false,result:'SUCCESS',build:[job:'gromesh-artifacts/gromesh-images',id:id,url:'https://jenkins.grometis.com/job/gromesh-artifacts/job/gromesh-images/'+id+'/',pipelineSha:pipelineSha]]
+}
+properties([disableConcurrentBuilds(),[$class:'DisableResumeJobProperty'],parameters([string(name:'IMAGE_BUILD_ID',defaultValue:'',description:'Exact official signed image build')])])
+if(env.JOB_NAME!='gromesh-delivery/gromesh-references'||!(params.IMAGE_BUILD_ID==~/[1-9][0-9]*/))error('INVALID_REFERENCE_REQUEST')
+def pipelineSha=scm.branches[0].name
+if(!(pipelineSha==~/[a-f0-9]{40}/))error('IMMUTABLE_REVIEWED_PIPELINE_REQUIRED')
+if(!currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause'))error('AUTHENTICATED_JENKINS_REQUEST_REQUIRED')
+timeout(time:30,unit:'MINUTES'){node('gromesh-reference-coordinator'){dir('/workspace/builds/'+env.BUILD_NUMBER){
+ copyArtifacts(projectName:'gromesh-artifacts/gromesh-images',selector:specific(params.IMAGE_BUILD_ID),filter:'release-manifest.json',fingerprintArtifacts:true)
+ writeJSON(file:'producer-context.json',json:producerContext(params.IMAGE_BUILD_ID,pipelineSha))
+ withEnv(['PATH=/opt/gromesh/tools/node/bin:/opt/gromesh/tools/bin:/usr/local/bin:/usr/bin:/bin','GROMESH_PIPELINE_SHA='+pipelineSha]){
+  try{
+   sh '/opt/gromesh/tools/node/bin/node /opt/gromesh/jenkins/reference-pipeline.mjs policy'
+   def policy=readJSON(file:'reference-policy.json',returnPojo:true)
+   if(policy.prPublicationEnabled==true){withCredentials([file(credentialsId:'gromesh-github-delivery-app-private-key',variable:'GROMESH_DELIVERY_APP_PRIVATE_KEY_FILE')]){
+    sh '/opt/gromesh/tools/node/bin/node /opt/gromesh/jenkins/reference-pipeline.mjs publish-pr'
+   }}else{sh '/opt/gromesh/tools/node/bin/node /opt/gromesh/jenkins/reference-pipeline.mjs prepare'}
+  }finally{archiveArtifacts(artifacts:'reference-edits.json,reference-pr.json',allowEmptyArchive:true,fingerprint:true)}
+ }
+}}}

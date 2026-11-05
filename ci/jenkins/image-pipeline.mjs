@@ -1,3 +1,4 @@
+import {assertImageToolchain} from './image-toolchain.mjs';
 import { readFile,writeFile,mkdir } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -70,9 +71,11 @@ async function main(){
   DOCKER_HOST:worker.facts.docker.endpoint,DOCKER_CONFIG:directory+'/.docker-no-credentials',GIT_TERMINAL_PROMPT:'0',GROMESH_CI_RUN:candidate?process.env.GROMESH_CI_RUN:randomBytes(16).toString('hex'),npm_config_userconfig:'/opt/gromesh/jenkins/npmrc',npm_config_globalconfig:'/opt/gromesh/jenkins/npmrc'};
  tools.GROMESH_CI_STATE='/tmp/gromesh-jenkins-'+tools.GROMESH_CI_RUN;
  await mkdir(tools.DOCKER_CONFIG,{recursive:true,mode:0o700});
- for(const [file,args,pattern] of [['syft',['version'],/Version:\s+1\.18\.1\b/],['trivy',['--version'],/Version:\s+0\.58\.1\b/],['docker',['buildx','version'],/v0\.25\.0\b/]]){
-  const r=await exec(file,args,{env:tools,timeout:10000,maxBuffer:65536});if(!pattern.test(r.stdout))refuse('pinned image toolchain');
+ const versions={};
+ for(const [name,file,args] of [['syft','syft',['version']],['trivy','trivy',['--version']],['buildx','docker',['buildx','version']]]){
+  versions[name]=(await exec(file,args,{env:tools,timeout:10000,maxBuffer:65536})).stdout;
  }
+ assertImageToolchain(versions);
  tools=await configureNativeBuilder(worker.policy.buildkit,architecture,directory,tools,async(argv,options)=>exec(argv[0],argv.slice(1),{...options,signal:abort.signal}));
  const checkedOutSha=(await exec('git',['rev-parse','HEAD'],{env:tools,timeout:10000})).stdout.trim();
  const clean=(await exec('git',['status','--porcelain','--untracked-files=all'],{env:tools,timeout:10000})).stdout.trim()==='';

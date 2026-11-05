@@ -1,0 +1,17 @@
+{
+  "id": "gromesh-references",
+  "role": "reference-coordinator",
+  "architecture": "amd64",
+  "minimumCpus": 1,
+  "minimumMemoryMiB": 1024,
+  "minimumDiskGiB": 10,
+  "credentialDomains": [
+    "github-delivery-app"
+  ],
+  "allowedJobs": [
+    "gromesh-delivery/gromesh-references"
+  ],
+  "enabled": false,
+  "publicationEnabled": false,
+  "applyEnabled": false
+}

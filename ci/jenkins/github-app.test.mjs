@@ -49,3 +49,16 @@ test('discovery also finds non-main branches without granting publication trust'
   const client=new GitHubApp({appId:'123',installationId:'456',privateKey,transport:async url=>({ok:true,status:200,json:async()=>url.includes('access_tokens')?{token:'fixture-only',expires_at:'2099-01-01T00:00:00Z'}:url.includes('/branches/main')?{commit:{sha:'a'.repeat(40)}}:url.includes('/branches?')?[{name:'feature/ci',commit:{sha:'b'.repeat(40)}}]:[]})});
   const sources=await client.discover();assert.equal(sources.length,2);assert.equal(sources[1].checkoutRef,'refs/heads/feature/ci');assert.equal(sources[1].branch,'feature/ci');
 });
+
+test('protected Jenkinsfiles bind the approved credential IDs for their separate folders', async () => {
+  const {readFile}=await import('node:fs/promises');
+  for(const [name,expected] of [
+    ['ci','gromesh-github-ci-app-private-key'],['discovery','gromesh-github-ci-app-private-key'],['status','gromesh-github-ci-app-private-key'],
+    ['references','gromesh-github-delivery-app-private-key'],['images','gromesh-dockerhub-write-authfile']
+  ]){
+    const source=await readFile(new URL('../../Jenkinsfile.'+name,import.meta.url),'utf8');
+    const ids=[...source.matchAll(/file\(credentialsId:'([^']+)'/g)].map(m=>m[1]).filter(id=>id.startsWith('gromesh-github-')||id.startsWith('gromesh-dockerhub-'));
+    assert.ok(ids.length>0,`${name}: protected binding missing`);
+    assert.ok(ids.every(id=>id===expected),`${name}: credential ID does not match its protected folder store`);
+  }
+});

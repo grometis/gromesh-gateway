@@ -11,16 +11,19 @@ export async function runCommand(argv, { cwd, env = process.env, signal, timeout
   const start = Date.now();
   if(output)await mkdir(output,{recursive:true,mode:0o700});
   return new Promise(resolve => {
-    const child = spawn(argv[0], argv.slice(1), { cwd, env, detached: true, stdio: output?['ignore','pipe','pipe']:'ignore' });
+    // A nested executor must stay in the outer supervisor's private process group.
+    // Otherwise the outer KILL can remove the inner supervisor before it kills its own group.
+    const inheritedGroup=process.env.GROMESH_COMMAND_GROUP_MEMBER==='1';
+    const child = spawn(argv[0], argv.slice(1), { cwd, env:{...env,GROMESH_COMMAND_GROUP_MEMBER:'1'}, detached:!inheritedGroup, stdio: output?['ignore','pipe','pipe']:'ignore' });
     const streams={stdout:[],stderr:[]},sizes={stdout:0,stderr:0};let outputTruncated=false;
     if(output)for(const key of ['stdout','stderr'])child[key].on('data',chunk=>{const room=2*1024*1024-sizes[key];if(chunk.length>room)outputTruncated=true;if(room>0){streams[key].push(chunk.subarray(0,room));sizes[key]+=Math.min(chunk.length,room);}});
     let reason = null, cleanup = null, settled = false;
     const terminate = why => {
       if (reason || settled) return;
       reason = why;
-      try { process.kill(-child.pid, 'SIGTERM'); } catch (e) { if (e.code !== 'ESRCH') reason = 'FAILURE'; }
+      try { inheritedGroup?child.kill('SIGTERM'):process.kill(-child.pid, 'SIGTERM'); } catch (e) { if (e.code !== 'ESRCH') reason = 'FAILURE'; }
       cleanup = new Promise(done => setTimeout(() => {
-        try { process.kill(-child.pid, 'SIGKILL'); } catch { /* Private group already exited. */ }
+        try { inheritedGroup?child.kill('SIGKILL'):process.kill(-child.pid, 'SIGKILL'); } catch { /* Private group already exited. */ }
         done();
       }, terminationGraceMs));
     };

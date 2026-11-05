@@ -8,7 +8,7 @@ import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { runtimeConfig,privateCredential } from './protected.mjs';
 import { inventoryMigrations } from './migrations.mjs';
-import { verifyEnvelope } from './release.mjs';
+import { verifyEnvelope,assertDeployableRelease } from './release.mjs';
 import { createPlan,runGuardPlan,createRollbackPlan,applyPlan } from './cd.mjs';
 import { J5_POLICY } from './approval.mjs';
 const exec=promisify(execFile),refuse=reason=>{throw new Error(`DEV pipeline refused: ${reason}`);};
@@ -25,10 +25,13 @@ export async function liveLedger(sourceInventory,query,expectedDatabase){
   return {source:'authenticated-plan-identity',verified:true,files};
  }catch{return null;}
 }
+export function targetProofEnvironment(env,context){
+ return {...env,...Object.fromEntries(['JOB_NAME','BUILD_NUMBER','BUILD_URL','GROMESH_PIPELINE_SHA','GROMESH_DEV_PLAN_KUBECONFIG','GROMESH_DEV_APPLY_KUBECONFIG'].filter(k=>typeof context[k]==='string').map(k=>[k,context[k]]))};
+}
 export async function prepareRuntimePlan(config,{envelope,credentialRole='plan',operation='plan',context}){
  if(config.target?.environment!=='DEV'||config.guardSha256!=='fc43f4f3aa10d709b2abac79baa791b15bb14846a9436e33ef0f88f2fd25f314')refuse('trusted DEV policy');
  const key={publicKey:createPublicKey(config.releasePublicKey),keyId:config.releaseKeyId};
- const release=verifyEnvelope(envelope,{...key,purpose:'release'});
+ const release=assertDeployableRelease(verifyEnvelope(envelope,{...key,purpose:'release'}));
  // Reading a dedicated secret-file credential never copies or imports an administrative kubeconfig.
  const kubeconfig=process.env[credentialRole==='apply'?'GROMESH_DEV_APPLY_KUBECONFIG':'GROMESH_DEV_PLAN_KUBECONFIG'];
  await privateCredential(kubeconfig);
@@ -58,7 +61,7 @@ export async function prepareRuntimePlan(config,{envelope,credentialRole='plan',
  const after=await kube(['get','Deployment',options.release+'-control-plane','-n',options.namespace,'-o','json']);
  const cpImage=before.spec?.template?.spec?.containers?.find(c=>c.name==='control-plane')?.image;
  if(before.metadata?.uid!==after.metadata?.uid||before.metadata?.resourceVersion!==after.metadata?.resourceVersion)refuse('CP changed during plan');
- const pulled=JSON.parse((await exec('/opt/gromesh/tools/node/bin/node',['/opt/gromesh/jenkins/image-proof.mjs',options.image,kubeconfig,options.kubeContext,options.namespace],{env:{...env,GROMESH_DEV_PLAN_KUBECONFIG:process.env.GROMESH_DEV_PLAN_KUBECONFIG,GROMESH_DEV_APPLY_KUBECONFIG:process.env.GROMESH_DEV_APPLY_KUBECONFIG},timeout:31*60000,maxBuffer:65536})).stdout);
+ const pulled=JSON.parse((await exec('/opt/gromesh/tools/node/bin/node',['/opt/gromesh/jenkins/image-proof.mjs',options.image,kubeconfig,options.kubeContext,options.namespace],{env:targetProofEnvironment(env,process.env),timeout:31*60000,maxBuffer:65536})).stdout);
  if(pulled.status!=='PREVIOUS_IMAGE_AVAILABLE_FULL_PULL'||pulled.image!==options.image)refuse('target full pull proof');
  const targetImageProof={reference:options.image,available:true,method:'ANONYMOUS_FULL_PULL',observedAt:new Date().toISOString()};
  const plan=createPlan({component:'ui',operation:operation==='rollback-plan'?'ROLLBACK_PLAN':'DEPLOY_PLAN',rollbackProof:config.rollbackProof,targetImageProof,releaseEnvelope:envelope,releaseKey:key,target:config.target,scopedPlan,migrations,compatibility:config.compatibility,backup:config.backup,unchangedCpImage:cpImage,rollbackImageAvailable:config.rollbackImageAvailable,

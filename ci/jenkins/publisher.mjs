@@ -9,22 +9,26 @@ import { resolveHubDigest } from './hub.mjs';
 import { signEnvelope } from './release.mjs';
 import { runCommand } from './ci.mjs';
 import { imageWorkspace } from './workspaces.mjs';
+import { collectPublisherState,assertOfficialCutover } from './actions-state.mjs';
 const refuse=reason=>{throw new Error(`Publisher refused: ${reason}`);};
-export async function publishVerifiedBundle(request,trusted,{directory='/workspace',execute=runCommand,lookup=resolveHubDigest,env,authfile}={}){
+export async function publishVerifiedBundle(request,trusted,{directory='/workspace',execute=runCommand,lookup=resolveHubDigest,ownership=collectPublisherState,env,authfile}={}){
  const {release}=await inspectBundle(request,directory,trusted);
  if(directory!==`/workspace/builds/${trusted.imageBuild.id}`||!authfile?.startsWith(directory+'@tmp/secretFiles/'))refuse('private per-build publisher paths');
  const receipts=[];
  for(const a of release.artifacts){
-  const existingDigest=await lookup(a.component,'sha-'+release.source.sha);
-  const commands=publicationPlan({component:a.component,sha:release.source.sha,archive:`${directory}/${a.component}.oci.tar`,authfile,digest:a.indexDigest,existingDigest});
+  if(release.official)assertOfficialCutover({cutover:trusted.registry.cutover,state:await ownership(),pipelineSha:release.pipelineSha,now:Date.now()});
+  const publication={class:release.official?'OFFICIAL':'CANDIDATE',buildId:trusted.imageBuild.id};
+  const reference=hubReference(a.component,release.source.sha,publication),tag=reference.split(':').at(-1);
+  const existingDigest=await lookup(a.component,tag);
+  const commands=publicationPlan({component:a.component,sha:release.source.sha,publication,archive:`${directory}/${a.component}.oci.tar`,authfile,digest:a.indexDigest,existingDigest});
   for(const command of commands.filter(c=>c.phase==='publish')){
    const r=await execute([command.file,...command.args],{env,timeoutMs:60*60000});if(r.status!=='SUCCESS'||r.exitCode!==0)refuse('push failed');
   }
-  if(await lookup(a.component,'sha-'+release.source.sha)!==a.indexDigest||await lookup(a.component,a.indexDigest)!==a.indexDigest)refuse('published digest readback');
+  if(await lookup(a.component,tag)!==a.indexDigest||await lookup(a.component,a.indexDigest)!==a.indexDigest)refuse('published digest readback');
   // Explicit anonymous full pull of every architecture/layer, outside the writer authfile.
   const pull=await execute(['skopeo','copy','--all','--preserve-digests','--authfile',directory+'/anonymous-auth.json',`docker://${hubReference(a.component,release.source.sha).split(':')[0]}@${a.indexDigest}`,`oci:${directory}/anonymous-pull/${a.component}`],{env:{...env,DOCKER_CONFIG:directory+'/anonymous-docker'},timeoutMs:60*60000});
   if(pull.status!=='SUCCESS'||pull.exitCode!==0)refuse('anonymous complete pull');
-  receipts.push({component:a.component,indexDigest:a.indexDigest,shaTagVerified:true,anonymousPull:'SUCCESS',publishedAt:new Date().toISOString()});
+  receipts.push({component:a.component,indexDigest:a.indexDigest,tag,official:release.official,shaTagVerified:true,anonymousPull:'SUCCESS',publishedAt:new Date().toISOString()});
  }
  return {...release,publication:receipts};
 }
@@ -34,6 +38,7 @@ async function main(){
  if(config.publicationEnabled!==true||config.artifactTransport?.qualified!==true)refuse('publication activation/capacity');
  const request=JSON.parse(await readFile(directory+'/release-request.json','utf8')),context=JSON.parse(await readFile(directory+'/ci-context.json','utf8'));
  const trusted={...context,now:Date.now(),nativeWorkers:config.nativeWorkers,registry:config.registry,ciKey:{publicKey:createPublicKey(config.ciPublicKey),keyId:config.ciKeyId},artifactKey:{publicKey:createPublicKey(config.artifactPublicKey),keyId:config.artifactKeyId}};
+ if(config.registry.publicationClass==='OFFICIAL'){trusted.publisherState=await collectPublisherState();trusted.now=Date.now();}
  await inspectBundle(request,directory,trusted);
  if(process.argv[2]!=='publish')refuse('operation');
  const auth=JSON.parse(await privateCredential(process.env.GROMESH_HUB_AUTH_FILE));

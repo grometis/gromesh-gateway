@@ -8,14 +8,16 @@ export async function hashVerifiedBlob(chunks){
  const hash=createHash('sha256');let size=0;for await(const b of chunks){if(!Buffer.isBuffer(b))refuse('blob stream');size+=b.length;hash.update(b);}
  const proof={digest:'sha256:'+hash.digest('hex'),size};streamedBlobs.add(proof);return proof;
 }
-export function hubReference(component,sha){
+export function hubReference(component,sha,publication){
  if(!components.includes(component)||!isSha(sha))refuse('authorized component/full source SHA');
- return `docker.io/fabriciobackend/gromesh-${component}:sha-${sha}`;
+ if(publication&&(!['CANDIDATE','OFFICIAL'].includes(publication.class)||publication.class==='CANDIDATE'&&!/^[1-9][0-9]*$/.test(publication.buildId??'')))refuse('publication class/build');
+ const tag=publication?.class==='CANDIDATE'?`ci-${sha}-${publication.buildId}`:`sha-${sha}`;
+ return `docker.io/fabriciobackend/gromesh-${component}:${tag}`;
 }
-export function pushArguments({component,sha,archive,authfile}){
+export function pushArguments({component,sha,archive,authfile,publication}){
  if(!/^\/workspace\/[a-zA-Z0-9._/-]+\.oci\.tar$/.test(archive)||archive.includes('..')
   ||!(authfile==='/run/secrets/hub.json'||/^\/workspace\/builds\/[1-9][0-9]*@tmp\/secretFiles\/[a-zA-Z0-9-]+\/[A-Za-z0-9._-]+$/.test(authfile)))refuse('publisher paths');
- return ['copy','--all','--preserve-digests','--authfile',authfile,`oci-archive:${archive}`,`docker://${hubReference(component,sha)}`];
+ return ['copy','--all','--preserve-digests','--authfile',authfile,`oci-archive:${archive}`,`docker://${hubReference(component,sha,publication)}`];
 }
 export function verifyOciGraph({raw,blobs},{sha,platforms}){
  if(!isSha(sha)||!Buffer.isBuffer(raw)||!(blobs instanceof Map)||raw.length>1024*1024)refuse('graph input');

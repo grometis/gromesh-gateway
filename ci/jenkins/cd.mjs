@@ -2,7 +2,7 @@ import { readFile,lstat,realpath } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { createHash,randomBytes } from 'node:crypto';
 import { canonicalHash,isSha,isDigest } from './policy.mjs';
-import { verifyEnvelope } from './release.mjs';
+import { verifyEnvelope,assertDeployableRelease } from './release.mjs';
 import { J5_POLICY,authorizePlan } from './approval.mjs';
 const refuse=reason=>{throw new Error(`CD refused: ${reason}`);};
 export async function runGuardPlan(options,{guardPath,expectedSha256,execute}){
@@ -35,7 +35,7 @@ export function semanticScopedPlan(plan){
 export function createPlan(input){
  if(input.component!=='ui')refuse('original guard permits UI image scope only; CP/schema need a separate reviewed procedure');
  const {target,scopedPlan,migrations,compatibility,context}=input;
- const release=verifyEnvelope(input.releaseEnvelope,{...input.releaseKey,purpose:'release'});
+ const release=assertDeployableRelease(verifyEnvelope(input.releaseEnvelope,{...input.releaseKey,purpose:'release'}));
  const image=release.artifacts?.find(a=>a.component==='ui');
  if(release.schema!=='gromesh-release/v1'||!isSha(release.source?.sha)||!isDigest(image?.indexDigest))refuse('signed release');
  if(target?.environment!=='DEV'||target.component!=='ui'||target.deployment!==`${target.release}-control-plane-ui`||target.container!=='ui'
@@ -45,7 +45,7 @@ export function createPlan(input){
  if(scopedPlan.changes?.length!==1||scopedPlan.changes[0].after!==expected||scopedPlan.changes[0].name!==target.deployment
   ||scopedPlan.changes[0].path!=='.spec.template.spec.containers[name=ui].image'||scopedPlan.changes[0].namespace!==target.namespace
   ||!scopedPlan.renderProof?.chartSha256||!scopedPlan.renderProof?.manifestSha256||!scopedPlan.liveObjects?.length)refuse('exact image/render/live-object proof');
- if(!context?.requester||!/^gromesh-gateway\/gromesh-dev\/gromesh-dev$/.test(context.job??'')||!/^[1-9][0-9]*$/.test(context.buildId??''))refuse('authenticated Jenkins requester/build');
+ if(!context?.requester||!/^gromesh-gateway\/gromesh-dev\/gromesh-deploy$/.test(context.job??'')||!/^[1-9][0-9]*$/.test(context.buildId??''))refuse('authenticated Jenkins requester/build');
  const blockers=[];
  if(migrations?.liveSchemaVerified!==true||migrations.status!=='NO_PENDING_MIGRATIONS')blockers.push('LIVE_SCHEMA_OR_PENDING_MIGRATIONS');
  if(compatibility?.uiDigest!==image.indexDigest||typeof input.unchangedCpImage!=='string'||!/@sha256:[a-f0-9]{64}$/.test(input.unchangedCpImage)||compatibility.cpImage!==input.unchangedCpImage||compatibility.tested!==true||compatibility.schemaJournalHash!==migrations?.journalHash)blockers.push('UI_OLD_CP_SCHEMA_COMPATIBILITY');

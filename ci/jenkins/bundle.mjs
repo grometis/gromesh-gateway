@@ -5,6 +5,7 @@ import { mergeNativeArchives,readOciArchive } from './oci-archive.mjs';
 import { byteDigest } from './registry.mjs';
 import { canonicalHash,isSha } from './policy.mjs';
 import { verifyPublishableCi,verifyEnvelope,signEnvelope,validatePublication } from './release.mjs';
+import { collectPublisherState } from './actions-state.mjs';
 import { runtimeConfig,privateCredential } from './protected.mjs';
 import { imageWorkspace } from './workspaces.mjs';
 const components=['control-plane','ui','agent','kong'],refuse=reason=>{throw new Error(`Bundle refused: ${reason}`);};
@@ -59,7 +60,9 @@ async function main(){
   artifacts.push(signEnvelope({schema:'gromesh-image-attestation/v1',component,producer:context.imageBuild,nativeProducers:records.map(r=>({platform:r.platform,build:r.build,workerId:r.workerId})),sourceSha:context.expected.source.sha,pipelineSha:config.pipelineSha,ciHash:canonicalHash(ci),indexDigest:merged.proof.digest,archiveHash:merged.archiveHash,sbomHash:proof.sbomHash,platforms:['linux/amd64','linux/arm64'],proof,
    issuedAt:new Date(timestamp).toISOString(),expiresAt:new Date(timestamp+24*3600000).toISOString()},{privateKey,keyId:config.artifactKeyId,purpose:'artifact'}));
  }
- const request={ci,artifacts};await inspectBundle(request,directory,trusted);
+ const request={ci,artifacts};
+ if(config.registry.publicationClass==='OFFICIAL'){trusted.publisherState=await collectPublisherState();trusted.now=Date.now();}
+ await inspectBundle(request,directory,trusted);
  await writeFile(directory+'/release-request.json',JSON.stringify(request,null,2)+'\n',{mode:0o600});
  console.log(JSON.stringify({status:'SIGNED_IMAGE_BUNDLE_NOT_PUBLISHED',components}));
 }

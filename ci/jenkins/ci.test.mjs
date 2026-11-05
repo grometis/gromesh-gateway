@@ -43,3 +43,12 @@ test('an unavailable executable is a failed result, never success', async () => 
   const r = await runCommand(['/definitely/not/a/program'], { timeoutMs: 1000 });
   assert.equal(r.status, 'FAILURE'); assert.notEqual(r.exitCode, 0);
 });
+test('nested command cancellation with default grace cannot orphan an independently TERM-resistant descendant',async()=>{
+ const dir=await mkdtemp(join(tmpdir(),'gromesh-j5-nested-')),marker=join(dir,'survived');
+ const child=`process.on('SIGTERM',()=>{});setTimeout(()=>require('node:fs').writeFileSync(${JSON.stringify(marker)},'bad'),5700);setTimeout(()=>process.exit(0),6400)`;
+ const wrapper=`import {runCommand} from ${JSON.stringify(new URL('./ci.mjs',import.meta.url).href)};const c=new AbortController();process.on('SIGTERM',()=>c.abort());await runCommand([process.execPath,'-e',${JSON.stringify(child)}],{signal:c.signal,timeoutMs:30000});`;
+ try{
+  const result=await runCommand([process.execPath,'--input-type=module','-e',wrapper],{timeoutMs:250});
+  assert.equal(result.status,'TIMED_OUT');await new Promise(r=>setTimeout(r,900));await assert.rejects(access(marker));
+ }finally{await new Promise(r=>setTimeout(r,500));await rm(dir,{recursive:true,force:true});}
+});

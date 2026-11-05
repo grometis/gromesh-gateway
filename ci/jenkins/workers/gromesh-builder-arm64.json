@@ -1,0 +1,15 @@
+{
+  "id": "gromesh-builder-arm64",
+  "role": "image-builder",
+  "architecture": "arm64",
+  "minimumCpus": 8,
+  "minimumMemoryMiB": 16384,
+  "minimumDiskGiB": 100,
+  "credentialDomains": [],
+  "allowedJobs": [
+    "gromesh-artifacts/gromesh-images"
+  ],
+  "enabled": false,
+  "publicationEnabled": false,
+  "applyEnabled": false
+}
