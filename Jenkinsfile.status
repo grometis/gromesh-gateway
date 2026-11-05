@@ -1,3 +1,10 @@
+@NonCPS
+String requireServiceIdentity(String expected){
+ def auth=org.jenkinsci.plugins.workflow.cps.CpsThread.current()?.execution?.authentication2
+ if(auth==null||auth.name!=expected||jenkins.model.Jenkins.get().getACL().hasPermission2(auth,jenkins.model.Jenkins.ADMINISTER))throw new IllegalStateException('DEDICATED_NON_ADMIN_RUN_IDENTITY_REQUIRED')
+ return auth.name
+}
+def effectiveJenkinsUser=requireServiceIdentity('gromesh-ci-runner')
 // Outbound-only final Run reconciliation; executes no candidate code.
 @NonCPS
 List completedRuns(String pipelineSha){

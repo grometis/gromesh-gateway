@@ -1,0 +1,103 @@
+# PREPARED ONLY. No object in this file was applied by J5.
+# Apply through an explicitly authorized, audited Jenkins bootstrap job using a delegated identity.
+# Helm storage mutation is intentionally denied until the separately reviewed admission/storage gate is ready.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gromesh-jenkins-dev-plan
+  namespace: gromesh-n2-gateway
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gromesh-jenkins-dev-apply
+  namespace: gromesh-n2-gateway
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gromesh-jenkins-dev-read
+  namespace: gromesh-n2-gateway
+rules:
+  - apiGroups: [""]
+    resources: [pods, services, persistentvolumeclaims, configmaps, secrets]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [deployments, replicasets]
+    verbs: [get, list, watch]
+  - apiGroups: [batch]
+    resources: [jobs, cronjobs]
+    verbs: [get, list, watch]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies, ingresses]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gromesh-jenkins-dev-read
+  namespace: gromesh-n2-gateway
+subjects:
+  - kind: ServiceAccount
+    name: gromesh-jenkins-dev-plan
+    namespace: gromesh-n2-gateway
+  - kind: ServiceAccount
+    name: gromesh-jenkins-dev-apply
+    namespace: gromesh-n2-gateway
+roleRef:
+  kind: Role
+  name: gromesh-jenkins-dev-read
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gromesh-jenkins-dev-ui-write
+  namespace: gromesh-n2-gateway
+rules:
+  - apiGroups: [apps]
+    resources: [deployments]
+    resourceNames: [cp-control-plane-ui]
+    verbs: [get, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gromesh-jenkins-dev-ui-write
+  namespace: gromesh-n2-gateway
+subjects:
+  - kind: ServiceAccount
+    name: gromesh-jenkins-dev-apply
+    namespace: gromesh-n2-gateway
+roleRef:
+  kind: Role
+  name: gromesh-jenkins-dev-ui-write
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gromesh-jenkins-cluster-identity-read
+rules:
+  - apiGroups: [""]
+    resources: [namespaces]
+    resourceNames: [kube-system]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gromesh-jenkins-cluster-identity-read
+subjects:
+  - kind: ServiceAccount
+    name: gromesh-jenkins-dev-plan
+    namespace: gromesh-n2-gateway
+  - kind: ServiceAccount
+    name: gromesh-jenkins-dev-apply
+    namespace: gromesh-n2-gateway
+roleRef:
+  kind: ClusterRole
+  name: gromesh-jenkins-cluster-identity-read
+  apiGroup: rbac.authorization.k8s.io

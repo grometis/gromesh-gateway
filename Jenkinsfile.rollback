@@ -1,0 +1,13 @@
+@NonCPS
+String requireServiceIdentity(String expected){
+ def auth=org.jenkinsci.plugins.workflow.cps.CpsThread.current()?.execution?.authentication2
+ if(auth==null||auth.name!=expected||jenkins.model.Jenkins.get().getACL().hasPermission2(auth,jenkins.model.Jenkins.ADMINISTER))throw new IllegalStateException('DEDICATED_NON_ADMIN_RUN_IDENTITY_REQUIRED')
+ return auth.name
+}
+def effectiveJenkinsUser=requireServiceIdentity('gromesh-dev-runner')
+// Both PLAN directions use the same serialized DEV job, credentials and capacity gates.
+properties([disableConcurrentBuilds(),parameters([string(name:'IMAGE_BUILD_ID',defaultValue:'',description:'Previous signed release build, never an arbitrary image/tag')])])
+if(env.JOB_NAME!='gromesh-gateway/gromesh-dev/gromesh-rollback'||!(params.IMAGE_BUILD_ID==~/[1-9][0-9]*/))error('INVALID_ROLLBACK_REQUEST')
+if(!(scm.branches[0].name==~/[a-f0-9]{40}/))error('IMMUTABLE_REVIEWED_PIPELINE_REQUIRED')
+if(!currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause'))error('AUTHENTICATED_HUMAN_REQUEST_REQUIRED')
+build(job:'gromesh-gateway/gromesh-dev/gromesh-dev',wait:true,propagate:true,parameters:[string(name:'IMAGE_BUILD_ID',value:params.IMAGE_BUILD_ID),string(name:'OPERATION',value:'ROLLBACK_PLAN')])

@@ -1,0 +1,32 @@
+{
+  "status": "PREPARED_NOT_APPLIED",
+  "controllerExecutors": 0,
+  "preserveExisting65Plugins": true,
+  "preserveExistingJobsAndHistory": true,
+  "servicePrincipals": [
+    {"id": "gromesh-ci-runner", "admin": false, "interactiveCredentialsDistributed": false, "folders": ["gromesh-gateway/gromesh-ci"], "credentialScope": ["github-app", "ci-attestation"]},
+    {"id": "gromesh-release-runner", "admin": false, "interactiveCredentialsDistributed": false, "folders": ["gromesh-artifacts"], "credentialScope": ["dockerhub-write", "artifact-signing", "release-signing"]},
+    {"id": "gromesh-dev-runner", "admin": false, "interactiveCredentialsDistributed": false, "folders": ["gromesh-gateway/gromesh-dev"], "credentialScope": ["dev-plan", "dev-approval", "dev-apply"]}
+  ],
+  "folderInheritance": "NonInheritingStrategy; explicit owner-admin access retained",
+  "servicePermissions": ["Overall/Read", "Job/Read", "Job/Build", "Job/Cancel", "Credentials/UseItem in its own folder only"],
+  "agentGrants": [
+    {"principal":"gromesh-ci-runner","permissions":["Agent/Build"],"agents":["gromesh-coordinator","gromesh-ci-untrusted-arm64","gromesh-ci-untrusted-amd64","gromesh-ci-main-arm64","gromesh-ci-main-amd64"]},
+    {"principal":"gromesh-release-runner","permissions":["Agent/Build"],"agents":["gromesh-image-coordinator","gromesh-build-arm64","gromesh-build-amd64","gromesh-image-publisher"]},
+    {"principal":"gromesh-dev-runner","permissions":["Agent/Build"],"agents":["gromesh-cd-dev-plan","gromesh-cd-dev-apply"]}
+  ],
+  "agentPermissionInheritance":"Per-node matrix allowlists, no global Agent/Build grant; unrelated nodes denied",
+  "producerReadGrants": [
+    {"principal":"gromesh-release-runner","job":"gromesh-gateway/gromesh-ci/gromesh-main","ancestors":["gromesh-gateway","gromesh-gateway/gromesh-ci"],"permissions":["Job/Read"],"credentialsVisible":false},
+    {"principal":"gromesh-dev-runner","job":"gromesh-artifacts/gromesh-images","ancestors":["gromesh-artifacts"],"permissions":["Job/Read"],"credentialsVisible":false}
+  ],
+  "deniedToServices": ["Overall/Administer", "Overall/RunScripts", "Job/Configure", "Credentials/Create", "Credentials/Update", "Credentials/Delete", "access to other project folders", "HML", "PRD"],
+  "requirements": [
+    "Create dedicated realm users with random undistributed credentials; do not reuse j1-admin or another project's identity",
+    "Apply least-privilege folder ACLs and AuthorizeProject strategies before enabling any job",
+    "Every production Jenkinsfile verifies actual nonadmin CpsFlowExecution authentication before allocating agents",
+    "Keep credentials in the purpose-specific folder; no product code on coordinator, publisher or CD agents",
+    "Update persistent JCasC/seed definitions through the authenticated official HTTPS interface so reboot cannot restore old job definitions",
+    "Verify principal, ACL, credential denial, controller executor count and unchanged baseline plugins after first run and restart"
+  ]
+}

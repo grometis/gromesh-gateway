@@ -1,0 +1,15 @@
+{
+  "status": "PREPARED_BLOCKED_NOT_APPLIED",
+  "namespace": "gromesh-n2-gateway",
+  "release": "cp",
+  "helmStorageAdmissionVerified": false,
+  "helmReleaseSecretWriteGranted": false,
+  "reason": "Kubernetes RBAC resourceNames cannot restrict Secret creation. Do not grant namespace-wide Secret mutation without a verified admission/storage boundary for this Helm release.",
+  "requiredBeforeActivation": [
+    "Separate explicit bootstrap authorization and delegated non-cluster-admin identity",
+    "Server-validated admission/storage policy restricting the APPLY SA to approved Helm release records",
+    "Proof that application credentials, other releases, PVCs, CP and migration Jobs cannot be mutated",
+    "Short-lived TokenRequest credentials, pinned audience/CA/server/cluster UID and rotation",
+    "Persistent atomic nonce storage and verified backup/compatibility evidence"
+  ]
+}
