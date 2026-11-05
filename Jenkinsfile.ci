@@ -42,7 +42,7 @@ timeout(time: 6, unit: 'HOURS') {
       withEnv(['GROMESH_PIPELINE_SHA='+pipelineSha,'PATH=/opt/gromesh/tools/node/bin:/opt/gromesh/tools/bin:/usr/local/bin:/usr/bin:/bin']) {
         def upstream=currentBuild.getBuildCauses('hudson.model.Cause$UpstreamCause')
         writeJSON(file:'source-request.json',json:[profile:profile,sha:params.SHA,pr:params.PR_NUMBER,branch:params.BRANCH,fromDiscovery:upstream.any{it.upstreamProject=='gromesh-gateway/gromesh-ci/gromesh-discovery'}])
-        withCredentials([file(credentialsId:'gromesh-github-app-private-key',variable:'GROMESH_GITHUB_APP_KEY_FILE')]) {
+        withCredentials([file(credentialsId:'gromesh-github-ci-app-private-key',variable:'GROMESH_GITHUB_APP_KEY_FILE')]) {
           sh '/opt/gromesh/tools/node/bin/node /opt/gromesh/jenkins/source-resolver.mjs'
         }
         resolved=readJSON(file:'resolved-source.json',returnPojo:true)
@@ -69,7 +69,7 @@ timeout(time: 6, unit: 'HOURS') {
   def domain = profile == 'main' ? 'main' : 'untrusted'
   try {
     stage('Report CI started') {node('gromesh-coordinator'){withEnv(bindings){
-      withCredentials([file(credentialsId:'gromesh-github-app-private-key',variable:'GROMESH_GITHUB_APP_KEY_FILE')]){
+      withCredentials([file(credentialsId:'gromesh-github-ci-app-private-key',variable:'GROMESH_GITHUB_APP_KEY_FILE')]){
         sh '/opt/gromesh/tools/node/bin/node /opt/gromesh/jenkins/github-report.mjs begin'
       }
       archiveArtifacts(artifacts:'github-check.json',fingerprint:true,allowEmptyArchive:false)
