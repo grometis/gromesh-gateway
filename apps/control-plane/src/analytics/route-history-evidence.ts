@@ -3,6 +3,7 @@ import type { Db } from "../db/db.js";
 import type { RequestContext } from "../auth/auth.js";
 import { audit } from "../audit/audit.js";
 import { analyticsRouteHistory as history, analyticsRouteHistoryRoutes as routes, analyticsRouteHistoryVisibility as visibility } from "../db/schema.js";
+import { readClusterHistory } from "./cluster-history.js";
 import { readRouteHistory } from "./route-history-ledger.js";
 import type { RevisionRef, RouteHistoryEvidence } from "./route-history-v2.js";
 const refKey = (r: RevisionRef) => `${r.epoch}:${r.revision}`;
@@ -26,11 +27,12 @@ export interface HistoryWindow {
     from: string;
     to: string;
     routeIds: readonly string[];
+    clusterIds?: readonly string[];
 }
-/** No authorized historical cluster producer exists yet. An empty cluster history is intentional and fails closed. */
+/** Both immutable ledgers are read in the same read-only snapshot; absent authorization stays absent. */
 export async function routeHistoryEvidence(db: Db, instanceId: string, window: HistoryWindow): Promise<RouteHistoryEvidence> {
     const from = Date.parse(window.from), to = Date.parse(window.to);
-    if (!Number.isFinite(from) || !Number.isFinite(to) || from >= to || to - from > 7 * 86400000 || window.routeIds.length > 200)
+    if (!Number.isFinite(from) || !Number.isFinite(to) || from >= to || to - from > 7 * 86400000 || window.routeIds.length > 200 || (window.clusterIds?.length ?? 0) > 200)
         throw Error("Invalid route history window");
     return db.transaction(async (tx) => {
         await tx.execute(sql `set local statement_timeout='5s'`);
@@ -69,9 +71,10 @@ export async function routeHistoryEvidence(db: Db, instanceId: string, window: H
         const owners = requested.length ? await tx.selectDistinct({ routeId: routes.routeId, workspaceId: routes.workspaceId }).from(routes).where(and(eq(routes.instanceId, instanceId), inArray(routes.routeId, requested))).limit(10001) : [];
         if (owners.length > 10000)
             throw Error("Route identity budget exceeded");
+        const clusterHistory = await readClusterHistory(tx, window.clusterIds ?? [], window);
         const complete = latest?.chainComplete === true && maps.length === refs.length && refs.every(h => seen.has(refKey(h)) && h.chainComplete);
         return { instanceId, asOf: clock!.asOf, revisionsComplete: complete, firstRevision: genesis ?? null,
             revisions: maps.filter(m => seen.has(refKey(m))).map(m => ({ ...m, complete: true, visibleAt: seen.get(refKey(m))! })),
-            identities: requested.map(routeId => ({ routeId, workspaceIds: owners.filter(x => x.routeId === routeId).map(x => x.workspaceId).sort(), complete: latest?.chainComplete === true })), clusterHistory: [] };
+            identities: requested.map(routeId => ({ routeId, workspaceIds: owners.filter(x => x.routeId === routeId).map(x => x.workspaceId).sort(), complete: latest?.chainComplete === true })), clusterHistory };
     }, { isolationLevel: "repeatable read", accessMode: "read only" });
 }
