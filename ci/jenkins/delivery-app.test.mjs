@@ -12,3 +12,8 @@ test('delivery App mints a one-repository token with contents/PR write only; no 
  assert.throws(()=>deliveryPlan({branch:'main',sha:'a'.repeat(40),base:'main',title:'oops',body:'x'}));
  assert.throws(()=>deliveryPlan({branch:'task/other-project',sha:'a'.repeat(40),base:'main',title:'oops',body:'x'}));
 });
+test('only the explicitly authorized J6 synchronization branch extends the preserved J5 delivery scope',()=>{
+ const input={branch:'task/J6-sync-main',sha:'a'.repeat(40),base:'main',title:'chore(ci): synchronize J5 with main',body:'Additional synchronization commit; no merge or deployment.'};
+ assert.doesNotThrow(()=>deliveryPlan(input));
+ assert.throws(()=>deliveryPlan({...input,branch:'task/J6-unapproved'}));
+});
