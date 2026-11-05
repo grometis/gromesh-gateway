@@ -111,7 +111,7 @@ it("does not let another authenticated node claim an existing pod identity",asyn
  // Explicit synthetic fixture activation; no operational delivery/attestation claim.
  await f.h.sql.query("update clusters set delivery_protocol='v2' where id=$1",[clusterId]);
  const auth=await f.db.transaction(tx=>authorizeClusterDelivery(tx,{actor:{type:"agent",id:firstId},role:"viewer",ip:null},{...producer.source,clusterId,nodeId:firstId,nodeToken:first}));await confirmClusterAssociation(f.db,auth);
- const pod=randomUUID();await admissions.open(first,pod);await expect(admissions.open(second,pod)).rejects.toThrow("ingestion identity");expect(await admissions.open(second,randomUUID())).toMatchObject({clusterId});
+ const pod=randomUUID();await admissions.open(first,pod);await expect(admissions.open(second,pod)).rejects.toMatchObject({status:401,response:{detail:"Missing, invalid or revoked ingestion identity"}});expect(await admissions.open(second,randomUUID())).toMatchObject({clusterId});
 });
 it("SQL cannot override the admission transaction marker",async()=>{
  const s=await admissions.open(producer.token,podUid);await expect(f.h.sql.query(`insert into analytics_ingestion_batches(id,stream_id,generation,descriptor,write_transaction) select $1,$2,coalesce(max(generation),0)+100,'[{}]','synthetic-forged' from analytics_ingestion_batches`,[randomUUID(),s.id])).rejects.toThrow("invalid ingestion admission transaction");
