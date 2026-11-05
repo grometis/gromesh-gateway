@@ -1,6 +1,7 @@
 import {randomUUID} from "node:crypto";
 import type {ClickHouseClient} from "@clickhouse/client";
 import {BoundedCopyQueries} from "./bounded-copy-queries.js";
+import {assertCopyStorageSchema} from "./copy-storage-schema.js";
 import {IngestionCopyPersistence,type CopyPersistenceObservation} from "./ingestion-copy-persistence.js";
 const failed=()=>Error("Synchronous copy storage is not confirmed");
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -24,8 +25,10 @@ export class SyncIngestionCopyPersistence extends IngestionCopyPersistence{
   const resource=async(queries:BoundedCopyQueries,exists:boolean)=>{const rows=await queries.query(metadata,{},1,exists);if(rows.length!==1)throw failed();return synchronousCopyResource(rows[0]);};
   const beforeRead=await resource(reads,false),beforeWrite=await resource(writes,false);
   if(JSON.stringify(beforeRead)!==JSON.stringify(beforeWrite))throw failed();
+  await assertCopyStorageSchema(reads);
   const observed=await new IngestionCopyPersistence(this.writeClient,this.readClient,{queries:reads,writes}).persist(input,reads.signal);
   const afterWrite=await resource(writes,true),afterRead=await resource(reads,true);
+  await assertCopyStorageSchema(reads);
   if(JSON.stringify(beforeRead)!==JSON.stringify(afterRead)||JSON.stringify(beforeWrite)!==JSON.stringify(afterWrite))throw failed();
   if(observed.storedCopies===0)return observed;
   if(!observed.insertQueryId||!uuid.test(observed.insertQueryId))throw failed();
