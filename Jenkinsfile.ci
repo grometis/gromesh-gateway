@@ -1,3 +1,10 @@
+@NonCPS
+String requireServiceIdentity(String expected){
+ def auth=org.jenkinsci.plugins.workflow.cps.CpsThread.current()?.execution?.authentication2
+ if(auth==null||auth.name!=expected||jenkins.model.Jenkins.get().getACL().hasPermission2(auth,jenkins.model.Jenkins.ADMINISTER))throw new IllegalStateException('DEDICATED_NON_ADMIN_RUN_IDENTITY_REQUIRED')
+ return auth.name
+}
+def effectiveJenkinsUser=requireServiceIdentity('gromesh-ci-runner')
 // The job's SCM revision must be an independently reviewed, immutable SHA.
 // PR/branch code is checked out separately; it never supplies this orchestration.
 properties([

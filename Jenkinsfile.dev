@@ -1,0 +1,84 @@
+@NonCPS
+String requireServiceIdentity(String expected){
+ def auth=org.jenkinsci.plugins.workflow.cps.CpsThread.current()?.execution?.authentication2
+ if(auth==null||auth.name!=expected||jenkins.model.Jenkins.get().getACL().hasPermission2(auth,jenkins.model.Jenkins.ADMINISTER))throw new IllegalStateException('DEDICATED_NON_ADMIN_RUN_IDENTITY_REQUIRED')
+ return auth.name
+}
+def effectiveJenkinsUser=requireServiceIdentity('gromesh-dev-runner')
+// Reconfigure the existing DEV job in place only after activation review; retain its history.
+properties([disableConcurrentBuilds(),[$class:'DisableResumeJobProperty'],buildDiscarder(logRotator(numToKeepStr:'30')),parameters([
+ string(name:'IMAGE_BUILD_ID',defaultValue:'',description:'Exact protected images build containing a signed release'),
+ choice(name:'OPERATION',choices:['PLAN','ROLLBACK_PLAN'],description:'Read-only preparation. APPLY has no parameter.')
+])])
+@NonCPS
+String requesterFor(def run){
+ def user=run.getCause(hudson.model.Cause.UserIdCause)
+ if(user?.userId)return user.userId
+ def upstream=run.getCause(hudson.model.Cause.UpstreamCause)
+ if(upstream?.upstreamProject!='gromesh-gateway/gromesh-dev/gromesh-rollback')return null
+ def previous=jenkins.model.Jenkins.get().getItemByFullName(upstream.upstreamProject)?.getBuildByNumber(upstream.upstreamBuild)
+ return previous?.getCause(hudson.model.Cause.UserIdCause)?.userId
+}
+if(env.JOB_NAME!='gromesh-gateway/gromesh-dev/gromesh-dev'||!(params.IMAGE_BUILD_ID==~/[1-9][0-9]*/)||!['PLAN','ROLLBACK_PLAN'].contains(params.OPERATION))error('INVALID_DEV_REQUEST')
+def pipelineSha=scm.branches[0].name
+if(!(pipelineSha==~/[a-f0-9]{40}/))error('IMMUTABLE_REVIEWED_PIPELINE_REQUIRED')
+def requester=requesterFor(currentBuild.rawBuild)
+if(!requester)error('AUTHENTICATED_JENKINS_REQUESTER_REQUIRED')
+def plan
+timeout(time:45,unit:'MINUTES') {
+ stage('Signed release and scoped PLAN') {node('gromesh-cd-dev-plan'){dir('source'){
+  copyArtifacts(projectName:'gromesh-artifacts/gromesh-images',selector:specific(params.IMAGE_BUILD_ID),filter:'release-manifest.json',fingerprintArtifacts:true)
+  def release=readJSON(file:'release-manifest.json',returnPojo:true)
+  def sha=release.payload?.source?.sha
+  if(!(sha==~/[a-f0-9]{40}/))error('SIGNED_SOURCE_REQUIRED')
+  // No source scripts are executed; only immutable orchestration and the original protected guard.
+  withEnv(['GIT_CONFIG_COUNT=1','GIT_CONFIG_KEY_0=core.hooksPath','GIT_CONFIG_VALUE_0=/dev/null']) {
+   checkout([$class:'GitSCM',branches:[[name:sha]],userRemoteConfigs:[[url:'https://github.com/grometis/gromesh-gateway.git']],extensions:[[$class:'CloneOption',noTags:true,shallow:false,timeout:10]]])
+  }
+  sh 'git config core.hooksPath .githooks'
+  withEnv(['PATH=/opt/gromesh/tools/node/bin:/opt/gromesh/tools/bin:/usr/local/bin:/usr/bin:/bin','GROMESH_PIPELINE_SHA='+pipelineSha,'GROMESH_REQUESTER='+requester]){
+   sh '/opt/gromesh/tools/node/bin/node /opt/gromesh/jenkins/cd-pipeline.mjs policy'
+   def policy=readJSON(file:'plan-policy.json',returnPojo:true)
+   def credentials=[file(credentialsId:'gromesh-dev-plan-kubeconfig',variable:'GROMESH_DEV_PLAN_KUBECONFIG')]
+   if(policy.databaseReadIdentityConfigured)credentials<<file(credentialsId:'gromesh-dev-plan-pgservice',variable:'GROMESH_DEV_PLAN_PGSERVICEFILE')
+   if(policy.ghcrReadCredentialConfigured)credentials<<file(credentialsId:'gromesh-ghcr-ui-read-authfile',variable:'GROMESH_GHCR_READ_AUTHFILE')
+   withCredentials(credentials){
+    sh '/opt/gromesh/tools/node/bin/node /opt/gromesh/jenkins/cd-pipeline.mjs '+(params.OPERATION=='ROLLBACK_PLAN'?'rollback-plan':'plan')
+   }
+  }
+  plan=readJSON(file:'dev-plan.json',returnPojo:true)
+  archiveArtifacts(artifacts:'dev-plan.json,release-manifest.json',fingerprint:true,allowEmptyArchive:false)
+  stash(name:'dev-plan-input',includes:'dev-plan.json,release-manifest.json')
+ }}}
+ stage('Approval and APPLY gate') {
+  // This literal is part of the reviewed orchestration, never a parameter or candidate file.
+  def writesAuthorizedThisRound=false
+  if(!writesAuthorizedThisRound){echo('APPLY_DISABLED_J5: no approval requested and no operational write authorized');return}
+  if(plan.blockers||plan.eligibleForFutureApproval!=true)error('BLOCKED_PLAN_CANNOT_REQUEST_APPROVAL')
+  node('gromesh-cd-dev-apply'){dir('/workspace/dev/'+env.BUILD_NUMBER+'/source'){
+   unstash 'dev-plan-input'
+   withEnv(['PATH=/opt/gromesh/tools/node/bin:/opt/gromesh/tools/bin:/usr/local/bin:/usr/bin:/bin','GROMESH_PIPELINE_SHA='+pipelineSha,'GROMESH_REQUESTER='+requester]){
+    sh '/opt/gromesh/tools/node/bin/node /opt/gromesh/jenkins/approval-cli.mjs policy'
+    def policy=readJSON(file:'approval-policy.json',returnPojo:true)
+    if(policy.applyEnabled!=true||!policy.allowedApprovers)error('REVIEWED_WRITE_POLICY_AND_APPROVERS_REQUIRED')
+    def response=input(message:'DEV '+plan.target.namespace+' / '+plan.target.release+'; SHA '+plan.sourceSha+'; UI '+plan.changes[0].after+'; plan hash '+plan.planHash+'. Review dev-plan.json before approving.',ok:'Approve exact plan',submitter:policy.allowedApprovers.join(','),submitterParameter:'APPROVER')
+    def approver=response instanceof Map?response.APPROVER:response
+    if(!policy.allowedApprovers.contains(approver)||approver==requester)error('INDEPENDENT_AUTHENTICATED_APPROVER_REQUIRED')
+    writeJSON(file:'approval-context.json',json:[authentication:'JENKINS_INPUT_SUBMITTER',submitters:[approver]])
+    withCredentials([file(credentialsId:'gromesh-dev-approval-signing-key',variable:'GROMESH_DEV_APPROVAL_SIGNING_KEY_FILE')]){
+     sh '/opt/gromesh/tools/node/bin/node /opt/gromesh/jenkins/approval-cli.mjs approve'
+    }
+    archiveArtifacts(artifacts:'dev-approval.json,approval-context.json',fingerprint:true,allowEmptyArchive:false)
+    withEnv(['GIT_CONFIG_COUNT=1','GIT_CONFIG_KEY_0=core.hooksPath','GIT_CONFIG_VALUE_0=/dev/null']){
+     checkout([$class:'GitSCM',branches:[[name:plan.sourceSha]],userRemoteConfigs:[[url:'https://github.com/grometis/gromesh-gateway.git']],extensions:[[$class:'CloneOption',noTags:true,shallow:false,timeout:10]]])
+    }
+    sh 'git config core.hooksPath .githooks'
+    def credentials=[file(credentialsId:'gromesh-dev-apply-kubeconfig',variable:'GROMESH_DEV_APPLY_KUBECONFIG')]
+    if(policy.databaseReadIdentityConfigured)credentials<<file(credentialsId:'gromesh-dev-plan-pgservice',variable:'GROMESH_DEV_PLAN_PGSERVICEFILE')
+    if(policy.ghcrReadCredentialConfigured)credentials<<file(credentialsId:'gromesh-ghcr-ui-read-authfile',variable:'GROMESH_GHCR_READ_AUTHFILE')
+    withCredentials(credentials){sh '/opt/gromesh/tools/node/bin/node /opt/gromesh/jenkins/cd-pipeline.mjs apply'}
+    archiveArtifacts(artifacts:'dev-apply-result.json',fingerprint:true,allowEmptyArchive:false)
+   }
+  }}
+ }
+}
