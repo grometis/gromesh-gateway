@@ -30,3 +30,11 @@ it("uses deterministic cursor pagination while preserving the fixed query window
 
 it("renders only contract rows without exposing IP or request payload",async()=>{const v=await mount(url=>Response.json(page(A,url,[record(url)])));await v.wait("GET");expect(v.container.textContent).toContain("200");expect(v.container.textContent).not.toMatch(/2001:db8|synthetic-user|synthetic\//);});
 it("rejects another Workspace hidden inside a correctly scoped envelope",async()=>{const v=await mount(url=>Response.json(page(A,url,[record(url,B)])));await v.wait("Falha de consulta");expect(v.container.textContent).not.toContain("GET");});
+
+it("never displays an earlier page before current authorization/conflict/TTL revalidation succeeds",async()=>{
+ let calls=0,release!:(response:Response)=>void;const delayed=new Promise<Response>(resolve=>{release=resolve;});
+ const v=await mount(url=>{calls++;return calls===3?delayed:Response.json(page(A,url,[{...record(url),method:calls===1?"GET":"POST"}],calls===1?"signed-cursor":null));});
+ await v.wait("GET");await v.click("Próxima página");await v.wait("POST");await v.click("Página anterior");
+ expect(v.container.textContent).toContain("Carregando requisições");expect(v.container.textContent).not.toContain("GET");expect(v.container.textContent).not.toContain("POST");
+ await act(async()=>{release(Response.json({title:"Forbidden",status:403},{status:403}));await tick();});await v.wait("Acesso negado");expect(v.container.textContent).not.toContain("GET");
+});
