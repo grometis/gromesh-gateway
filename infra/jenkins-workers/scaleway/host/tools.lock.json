@@ -1,0 +1,251 @@
+{
+  "schema": "gromesh-host-tools/v1",
+  "pipelineBaseline": "dc17460c42b68d655aa2e21d8f44a4531fd8559c",
+  "architectures": {
+    "amd64": [
+      {
+        "name": "node",
+        "version": "26.13.0",
+        "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-linux-x64.tar.xz",
+        "sha256": "d28a96af6c38596f6d9d97c0ee531c13d238d757742387d1928de822d959e997",
+        "format": "tar.xz",
+        "strip": 1
+      },
+      {
+        "name": "go",
+        "version": "1.27.3",
+        "url": "https://go.dev/dl/go1.27.3.linux-amd64.tar.gz",
+        "sha256": "65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40",
+        "format": "tar.gz",
+        "strip": 1
+      },
+      {
+        "name": "pnpm",
+        "version": "10.28.0",
+        "url": "https://registry.npmjs.org/pnpm/-/pnpm-10.28.0.tgz",
+        "sha256": "9b0b04e6e79945566917f8411bb6f65fd2f3e1590426904e8500e1acc4b33561",
+        "format": "tar.gz",
+        "strip": 1
+      },
+      {
+        "name": "buildkit",
+        "version": "0.23.2",
+        "url": "https://github.com/moby/buildkit/releases/download/v0.23.2/buildkit-v0.23.2.linux-amd64.tar.gz",
+        "sha256": "2771c3403e3a1f75a83cde387a05365794d3b900c355e864772a36c3ce541f82",
+        "format": "tar.gz",
+        "strip": 0
+      },
+      {
+        "name": "buildx",
+        "version": "0.25.0",
+        "url": "https://github.com/docker/buildx/releases/download/v0.25.0/buildx-v0.25.0.linux-amd64",
+        "sha256": "4104d79a791a8744c0b43fd5bd0a6172dff29040c5229946a1cdb2d27b0b5bfa",
+        "format": "binary",
+        "strip": 0
+      },
+      {
+        "name": "compose",
+        "version": "2.39.2",
+        "url": "https://github.com/docker/compose/releases/download/v2.39.2/docker-compose-linux-x86_64",
+        "sha256": "a55a8cd4ef103aac282812554e531aac8df7e914a287ee81e14d695556a22902",
+        "format": "binary",
+        "strip": 0
+      },
+      {
+        "name": "syft",
+        "version": "1.18.1",
+        "url": "https://github.com/anchore/syft/releases/download/v1.18.1/syft_1.18.1_linux_amd64.tar.gz",
+        "sha256": "066c251652221e4d44fcc4d115ce3df33a91769da38c830a8533199db2f65aab",
+        "format": "tar.gz",
+        "strip": 0
+      },
+      {
+        "name": "trivy",
+        "version": "0.69.3",
+        "url": "https://github.com/aquasecurity/trivy/releases/download/v0.69.3/trivy_0.69.3_Linux-64bit.tar.gz",
+        "sha256": "1816b632dfe529869c740c0913e36bd1629cb7688bd5634f4a858c1d57c88b75",
+        "format": "tar.gz",
+        "strip": 0
+      },
+      {
+        "name": "helm",
+        "version": "3.18.6",
+        "url": "https://get.helm.sh/helm-v3.18.6-linux-amd64.tar.gz",
+        "sha256": "3f43c0aa57243852dd542493a0f54f1396c0bc8ec7296bbb2c01e802010819ce",
+        "format": "tar.gz",
+        "strip": 1
+      },
+      {
+        "name": "kind",
+        "version": "0.26.0",
+        "url": "https://github.com/kubernetes-sigs/kind/releases/download/v0.26.0/kind-linux-amd64",
+        "sha256": "d445b44c28297bc23fd67e51cc24bb294ae7b977712be2d4d312883d0835829b",
+        "format": "binary",
+        "strip": 0
+      },
+      {
+        "name": "kubectl",
+        "version": "1.32.2",
+        "url": "https://dl.k8s.io/release/v1.32.2/bin/linux/amd64/kubectl",
+        "sha256": "4f6a959dcc5b702135f8354cc7109b542a2933c46b808b248a214c1f69f817ea",
+        "format": "binary",
+        "strip": 0
+      },
+      {
+        "name": "docker-ce",
+        "version": "5:29.3.1-1~ubuntu.24.04~noble",
+        "url": "https://download.docker.com/linux/ubuntu/dists/noble/pool/stable/amd64/docker-ce_29.3.1-1~ubuntu.24.04~noble_amd64.deb",
+        "sha256": "5ed720ce3652e3eadc5674d8c75e6a47a67c1679154ee56ee89aedbd2e156ff0",
+        "format": "deb",
+        "strip": 0
+      },
+      {
+        "name": "docker-ce-cli",
+        "version": "5:29.3.1-1~ubuntu.24.04~noble",
+        "url": "https://download.docker.com/linux/ubuntu/dists/noble/pool/stable/amd64/docker-ce-cli_29.3.1-1~ubuntu.24.04~noble_amd64.deb",
+        "sha256": "c887a1fef3fa7a26d1a645592670db4b6bbd792134e07ce09999b2f7692496bb",
+        "format": "deb",
+        "strip": 0
+      },
+      {
+        "name": "docker-ce-rootless-extras",
+        "version": "5:29.3.1-1~ubuntu.24.04~noble",
+        "url": "https://download.docker.com/linux/ubuntu/dists/noble/pool/stable/amd64/docker-ce-rootless-extras_29.3.1-1~ubuntu.24.04~noble_amd64.deb",
+        "sha256": "084b59a61c99aa8c0b92066a9f1adedc3fc159ed270edbc40050924d893321d2",
+        "format": "deb",
+        "strip": 0
+      },
+      {
+        "name": "containerd.io",
+        "version": "2.4.2-3~ubuntu.24.04~noble",
+        "url": "https://download.docker.com/linux/ubuntu/dists/noble/pool/stable/amd64/containerd.io_2.4.2-3~ubuntu.24.04~noble_amd64.deb",
+        "sha256": "f811ab57d1f4bb0cce19df7d526da8c711d8ebea0447cc83da1999188e664122",
+        "format": "deb",
+        "strip": 0
+      }
+    ],
+    "arm64": [
+      {
+        "name": "node",
+        "version": "26.13.0",
+        "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-linux-arm64.tar.xz",
+        "sha256": "406fe3fbde1c054adff8b297c16fdb5af6659db327c1ac8acd46b56ef1af9a92",
+        "format": "tar.xz",
+        "strip": 1
+      },
+      {
+        "name": "go",
+        "version": "1.27.3",
+        "url": "https://go.dev/dl/go1.27.3.linux-arm64.tar.gz",
+        "sha256": "a06e99309dbcbdca1a8ccd2282c3ee146e55930886e26b4f1193269587165f49",
+        "format": "tar.gz",
+        "strip": 1
+      },
+      {
+        "name": "pnpm",
+        "version": "10.28.0",
+        "url": "https://registry.npmjs.org/pnpm/-/pnpm-10.28.0.tgz",
+        "sha256": "9b0b04e6e79945566917f8411bb6f65fd2f3e1590426904e8500e1acc4b33561",
+        "format": "tar.gz",
+        "strip": 1
+      },
+      {
+        "name": "buildkit",
+        "version": "0.23.2",
+        "url": "https://github.com/moby/buildkit/releases/download/v0.23.2/buildkit-v0.23.2.linux-arm64.tar.gz",
+        "sha256": "6385ff70b2fb4134b50ac3183eea3a0b06c6f6129173940d73178ae0477368f1",
+        "format": "tar.gz",
+        "strip": 0
+      },
+      {
+        "name": "buildx",
+        "version": "0.25.0",
+        "url": "https://github.com/docker/buildx/releases/download/v0.25.0/buildx-v0.25.0.linux-arm64",
+        "sha256": "f07063844bb750172c1f25cef61b07a8314d24bedffc015517b3ec4016b16de8",
+        "format": "binary",
+        "strip": 0
+      },
+      {
+        "name": "compose",
+        "version": "2.39.2",
+        "url": "https://github.com/docker/compose/releases/download/v2.39.2/docker-compose-linux-aarch64",
+        "sha256": "54488fffb60782f3c8787a48b95ed15f49f5a3a85f4105304bd46db5edd9db61",
+        "format": "binary",
+        "strip": 0
+      },
+      {
+        "name": "syft",
+        "version": "1.18.1",
+        "url": "https://github.com/anchore/syft/releases/download/v1.18.1/syft_1.18.1_linux_arm64.tar.gz",
+        "sha256": "cd228306e5cb0654baecb454f76611606b84899d27fa9ceb7da4df46b94fe84e",
+        "format": "tar.gz",
+        "strip": 0
+      },
+      {
+        "name": "trivy",
+        "version": "0.69.3",
+        "url": "https://github.com/aquasecurity/trivy/releases/download/v0.69.3/trivy_0.69.3_Linux-ARM64.tar.gz",
+        "sha256": "7e3924a974e912e57b4a99f65ece7931f8079584dae12eb7845024f97087bdfd",
+        "format": "tar.gz",
+        "strip": 0
+      },
+      {
+        "name": "helm",
+        "version": "3.18.6",
+        "url": "https://get.helm.sh/helm-v3.18.6-linux-arm64.tar.gz",
+        "sha256": "5b8e00b6709caab466cbbb0bc29ee09059b8dc9417991dd04b497530e49b1737",
+        "format": "tar.gz",
+        "strip": 1
+      },
+      {
+        "name": "kind",
+        "version": "0.26.0",
+        "url": "https://github.com/kubernetes-sigs/kind/releases/download/v0.26.0/kind-linux-arm64",
+        "sha256": "53fffdc37bd7149ccea440b1bdde2464f517d2c462dc8913ad37e7939e7f422d",
+        "format": "binary",
+        "strip": 0
+      },
+      {
+        "name": "kubectl",
+        "version": "1.32.2",
+        "url": "https://dl.k8s.io/release/v1.32.2/bin/linux/arm64/kubectl",
+        "sha256": "7381bea99c83c264100f324c2ca6e7e13738a73b8928477ac805991440a065cd",
+        "format": "binary",
+        "strip": 0
+      },
+      {
+        "name": "docker-ce",
+        "version": "5:29.3.1-1~ubuntu.24.04~noble",
+        "url": "https://download.docker.com/linux/ubuntu/dists/noble/pool/stable/arm64/docker-ce_29.3.1-1~ubuntu.24.04~noble_arm64.deb",
+        "sha256": "ce6c1b7cbd7d4d93886805355553360af300165c03d9929c776ac853ab5a50cf",
+        "format": "deb",
+        "strip": 0
+      },
+      {
+        "name": "docker-ce-cli",
+        "version": "5:29.3.1-1~ubuntu.24.04~noble",
+        "url": "https://download.docker.com/linux/ubuntu/dists/noble/pool/stable/arm64/docker-ce-cli_29.3.1-1~ubuntu.24.04~noble_arm64.deb",
+        "sha256": "dd222c4c09569a012252e94ff980d88c3890909f469090194da8f5c5c21b5aa1",
+        "format": "deb",
+        "strip": 0
+      },
+      {
+        "name": "docker-ce-rootless-extras",
+        "version": "5:29.3.1-1~ubuntu.24.04~noble",
+        "url": "https://download.docker.com/linux/ubuntu/dists/noble/pool/stable/arm64/docker-ce-rootless-extras_29.3.1-1~ubuntu.24.04~noble_arm64.deb",
+        "sha256": "f942d81cada395b42aa14b8090d071dc24d49a9ffe5e95e32f531b696e977e9a",
+        "format": "deb",
+        "strip": 0
+      },
+      {
+        "name": "containerd.io",
+        "version": "2.4.2-3~ubuntu.24.04~noble",
+        "url": "https://download.docker.com/linux/ubuntu/dists/noble/pool/stable/arm64/containerd.io_2.4.2-3~ubuntu.24.04~noble_arm64.deb",
+        "sha256": "7837470e586f0b5d228a5eefdd9674b6bd0f127c47841ae808b086ae7fe3f41a",
+        "format": "deb",
+        "strip": 0
+      }
+    ]
+  },
+  "sources": "Official Node SHASUMS; Go download catalog; GitHub release digests/checksums; npm integrity; Docker signed-APT-origin package catalog retrieved over HTTPS. Exact bytes pinned, no latest installers."
+}
