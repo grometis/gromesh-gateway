@@ -40,13 +40,14 @@ export class BoundedCopyReader {
   if(window.after&&(!uuid.test(window.after.id)||time(window.after.ts)<from||time(window.after.ts)>=to))throw new Error("Invalid copy read");
   const limits={rows:bounded(budget.maxReadRows,5_000_000),bytes:bounded(budget.maxReadBytes,256*1024*1024),decoded:bounded(budget.maxDecodedBytes,2*1024*1024)};
   if(this.busy)throw notReady();this.busy=true;
-  const usage={readRows:0,readBytes:0,decodedBytes:0};
+  const usage={readRows:0,readBytes:0,decodedBytes:0,dbElapsedNs:0};
   const abort=AbortSignal.any([AbortSignal.timeout(8000),...(signal?[signal]:[])]);
   const started=performance.now();
   const query=async(text:string,params:Record<string,unknown>,maxRows:number)=>{
    if(abort.aborted)throw notReady();
    if(usage.readRows>=limits.rows||usage.readBytes>=limits.bytes||usage.decodedBytes>=limits.decoded)throw exceeded();
-   const seconds=Math.min(5,(8000-(performance.now()-started))/1000);if(seconds<=0)throw notReady();
+   if(usage.dbElapsedNs>=5_000_000_000)throw exceeded();
+   const seconds=Math.min((5_000_000_000-usage.dbElapsedNs)/1_000_000_000,(8000-(performance.now()-started))/1000);if(seconds<=0)throw notReady();
    const result=await this.client.query({query:text,query_params:params,format:"JSONEachRowWithProgress",abort_signal:abort,
     clickhouse_settings:{max_threads:2,max_block_size:"100",max_execution_time:seconds,timeout_overflow_mode:"throw",max_memory_usage:String(256*1024*1024),
      max_rows_to_read:String(limits.rows-usage.readRows),max_bytes_to_read:String(limits.bytes-usage.readBytes),read_overflow_mode:"throw",
@@ -72,8 +73,8 @@ export class BoundedCopyReader {
    if(typeof summary!=="string")throw notReady();const total=object(JSON.parse(summary));
    const readRows=natural(total.read_rows),readBytes=natural(total.read_bytes);
    if(readRows<progressRows||readBytes<progressBytes)throw notReady();
-   usage.readRows+=readRows;usage.readBytes+=readBytes;
-   if(usage.readRows>limits.rows||usage.readBytes>limits.bytes)throw exceeded();
+   usage.readRows+=readRows;usage.readBytes+=readBytes;usage.dbElapsedNs+=natural(total.elapsed_ns);
+   if(usage.readRows>limits.rows||usage.readBytes>limits.bytes||usage.dbElapsedNs>5_000_000_000)throw exceeded();
    return rows;
   };
   try{
