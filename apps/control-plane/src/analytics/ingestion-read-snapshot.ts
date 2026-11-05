@@ -1,5 +1,5 @@
 import pg from "pg";
-import {ingestionCancellationConfig} from "./ingestion-cancellation.js";
+import {terminateIngestionBackend} from "./ingestion-cancellation.js";
 import { randomUUID } from "node:crypto";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { asc, eq, sql } from "drizzle-orm";
@@ -9,21 +9,21 @@ import type { Db, Executor } from "../db/db.js";
 /** Session lock precedes BEGIN: a waiting reader must not keep a snapshot from before the writer committed. */
 type SnapshotRead=<T>(read:(db:Db)=>Promise<T>)=>Promise<T>;
 async function withIngestionReadSession<T>(pool:pg.Pool,read:(snapshot:SnapshotRead,signal:AbortSignal)=>Promise<T>,caller?:AbortSignal):Promise<T>{
- const signal=AbortSignal.any([AbortSignal.timeout(8000),...(caller?[caller]:[])]);
+ const signal=AbortSignal.any([AbortSignal.timeout(7500),...(caller?[caller]:[])]);
  signal.throwIfAborted();
  const client=await new Promise<pg.PoolClient>((resolve,reject)=>{
   const cancel=()=>reject(Error("Ingestion snapshot cancelled"));signal.addEventListener("abort",cancel,{once:true});
   void pool.connect().then(client=>{signal.removeEventListener("abort",cancel);if(signal.aborted){client.release();reject(Error("Ingestion snapshot cancelled"));}else resolve(client);},error=>{signal.removeEventListener("abort",cancel);reject(error);});
  });
  let locked=false,begun=false,released=false,destroy=false,previousName="",pid=0;
- let cancelling:Promise<void>|undefined;
+ let cancelling:Promise<boolean>|undefined;
  const name=`gromesh-analytics-read:${randomUUID()}`;
  // Socket loss alone does not interrupt pg_sleep or server work. Terminate ONLY our nonce-bound backend.
  const cancel=()=>{if(!released){released=true;client.release(true);
-  cancelling=(async()=>{const control=new pg.Client(ingestionCancellationConfig(pool));
-   try{await control.connect();await control.query("select pg_catalog.pg_terminate_backend(pid) from pg_catalog.pg_stat_activity where pid=$1 and application_name=$2 and usename=current_user and datname=pg_catalog.current_database()",[pid,name]);}finally{await control.end();}
-  })().catch(()=>undefined);
+  cancelling=terminateIngestionBackend(pool,pid,name);
  }};
+ const connectionError=()=>{destroy=true;cancel();};
+ client.on("error",connectionError);client.once("end",()=>client.removeListener("error",connectionError));
  signal.addEventListener("abort",cancel,{once:true});
  try{
   signal.throwIfAborted();
@@ -43,13 +43,15 @@ async function withIngestionReadSession<T>(pool:pg.Pool,read:(snapshot:SnapshotR
   };
   const result=await read(snapshot,signal);signal.throwIfAborted();return result;
  }finally{
-  signal.removeEventListener("abort",cancel);
-  if(cancelling)await cancelling;
+  try{
   if(!released){
    try{if(begun)await client.query("rollback");if(locked)await client.query("select pg_catalog.pg_advisory_unlock_shared(1818,1801)");await client.query("reset lock_timeout");await client.query("select pg_catalog.set_config('application_name',$1,false)",[previousName]);}
    catch{destroy=true;}
-   released=true;client.release(destroy);
+   if(!released){released=true;client.release(destroy);}
   }
+  if(cancelling)await cancelling;
+  signal.throwIfAborted();if(destroy)throw Error("Ingestion snapshot cleanup failed");
+  }finally{signal.removeEventListener("abort",cancel);if(!destroy&&!signal.aborted)client.removeListener("error",connectionError);}
  }
 }
 

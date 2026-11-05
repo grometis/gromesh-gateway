@@ -1,3 +1,4 @@
+import { terminateIngestionBackend } from "./ingestion-cancellation.js";
 import { createHash, randomUUID } from "node:crypto";
 import { HttpException } from "@nestjs/common";
 import type pg from "pg";
@@ -20,22 +21,23 @@ const busy = () => new HttpException({ type: "about:blank", title: "Too Many Req
 const key = (parts: readonly string[]) => BigInt.asIntN(64, BigInt("0x"+createHash("sha256").update(JSON.stringify(["analytics-v2-query-slot",...parts])).digest("hex").slice(0,16))).toString();
 
 /** Session locks coordinate all replicas without holding a transaction during remote storage work. */
-async function querySlots<T>(pool: pg.Pool, input: VerifiedWorkspaceRequestInput, run: (signal:AbortSignal) => Promise<T>): Promise<T> {
+export async function withWorkspaceQuerySlots<T>(pool: pg.Pool, input: VerifiedWorkspaceRequestInput, run: (signal:AbortSignal) => Promise<T>): Promise<T> {
   const queue = AbortSignal.any([input.signal, AbortSignal.timeout(1000)]);
   if(queue.aborted)throw busy();
   const client = await new Promise<pg.PoolClient>((resolve,reject) => {
     const aborted = () => reject(busy()); queue.addEventListener("abort",aborted,{once:true});
     void pool.connect().then(client => { queue.removeEventListener("abort",aborted); if(queue.aborted){client.release();reject(busy());}else resolve(client); },error => { queue.removeEventListener("abort",aborted);reject(error); });
   });
-  const locks: string[] = []; let destroy = false, released = false, admitted = false, previousName="";
-  const leaseLost=new AbortController(),signal=AbortSignal.any([input.signal,leaseLost.signal]);
+  const locks: string[] = []; let destroy = false, released = false, admitted = false, previousName="",pid=0;
+  const name=`gromesh-analytics-query:${randomUUID()}`;let cancelling:Promise<boolean>|undefined;
+  const leaseLost=new AbortController(),signal=AbortSignal.any([input.signal,leaseLost.signal,AbortSignal.timeout(4500)]);
   const lost=()=>{destroy=true;leaseLost.abort();};
-  client.on("error",lost);client.once("end",lost);
-  const abort = () => { if(!released){released=true;client.release(true);} };
+  client.on("error",lost);client.once("end",()=>{lost();client.removeListener("error",lost);});
+  const abort = () => { if(!released){released=true;client.release(true);cancelling=terminateIngestionBackend(pool,pid,name);} };
   queue.addEventListener("abort",abort,{once:true});
   try {
-    previousName=(await client.query<{name:string}>("select pg_catalog.current_setting('application_name') name")).rows[0]!.name;
-    await client.query("select pg_catalog.set_config('application_name',$1,false)",[`gromesh-analytics-query:${randomUUID()}`]);
+    const backend=(await client.query<{name:string;pid:number}>("select pg_catalog.current_setting('application_name') name,pg_catalog.pg_backend_pid() pid")).rows[0]!;previousName=backend.name;pid=backend.pid;
+    await client.query("select pg_catalog.set_config('application_name',$1,false)",[name]);
     const acquire = async (parts: string[], slots: number) => {
       for(let slot=0;slot<slots;slot++){
         queue.throwIfAborted(); const identity = key([...parts,String(slot)]);
@@ -47,18 +49,19 @@ async function querySlots<T>(pool: pg.Pool, input: VerifiedWorkspaceRequestInput
     await acquire(["principal-workspace",input.instanceId,input.workspaceId,input.principalId],2);
     queue.throwIfAborted();if(released||destroy)throw busy();
     admitted=true;
-    queue.removeEventListener("abort",abort);input.signal.addEventListener("abort",abort,{once:true});
-    if(input.signal.aborted)abort();signal.throwIfAborted();const result=await run(signal);signal.throwIfAborted();return result;
+    queue.removeEventListener("abort",abort);signal.addEventListener("abort",abort,{once:true});
+    if(signal.aborted)abort();signal.throwIfAborted();const result=await run(signal);signal.throwIfAborted();return result;
   } catch(error) {
     if(!admitted&&queue.aborted&&!input.signal.aborted)throw busy();throw error;
   } finally {
-    queue.removeEventListener("abort",abort);input.signal.removeEventListener("abort",abort);
-    client.removeListener("error",lost);client.removeListener("end",lost);
+    try{
     if(!released){
       try { if(!destroy){for(const identity of locks.reverse())await client.query("select pg_catalog.pg_advisory_unlock($1::pg_catalog.int8)",[identity]);await client.query("select pg_catalog.set_config('application_name',$1,false)",[previousName]);} }
       catch { destroy = true; }
-      released=true;client.release(destroy);
+      if(!released){released=true;client.release(destroy);}
     }
+    if(cancelling)await cancelling;signal.throwIfAborted();if(destroy)throw unavailable();
+    }finally{queue.removeEventListener("abort",abort);signal.removeEventListener("abort",abort);if(!destroy&&!signal.aborted)client.removeListener("error",lost);}
   }
 }
 
@@ -76,7 +79,7 @@ export async function createVerifiedWorkspaceRequests(input: { pool: pg.Pool; se
       const queryInput = { ...raw, query: structuredClone(raw.query), after: raw.after ? { ...raw.after } : undefined };
       const started = performance.now();
       if(closed)throw unavailable();
-      return querySlots(input.pool,queryInput,async signal=>{
+      return withWorkspaceQuerySlots(input.pool,queryInput,async signal=>{
         const slot = readers.find(row=>!row.busy);if(!slot)throw busy();slot.busy=true;
         try {
           const q=queryInput.query;

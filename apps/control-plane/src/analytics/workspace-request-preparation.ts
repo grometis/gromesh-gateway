@@ -20,7 +20,7 @@ export class WorkspaceRequestPreparationController{
  @RequiredPermission("workspace.read","workspace")
  async list(@Param("workspaceId",uuidParam())workspaceId:string,@Query()input:Record<string,unknown>,@Req()request:AuthenticatedRequest):Promise<unknown>{
   const now=Date.now(),started=performance.now(),query=parseWorkspaceRequestQuery(input,now);
-  const cancel=new AbortController(),signal=AbortSignal.any([cancel.signal,AbortSignal.timeout(5000)]);
+  const cancel=new AbortController(),signal=AbortSignal.any([cancel.signal,AbortSignal.timeout(4500)]);
   const aborted=()=>cancel.abort(),closed=()=>{if(!request.res?.writableEnded)cancel.abort();};
   request.once("aborted",aborted);request.res?.once("close",closed);
   try{
