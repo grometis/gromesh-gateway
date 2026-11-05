@@ -1,3 +1,4 @@
+import { integrationInputs } from "../../../../scripts/integration-databases.mjs";
 import { encodeRawRequestCopy } from "../../src/analytics/request-copy-store.js";
 import { createClient } from "@clickhouse/client";
 import { IngestionCopyPersistence } from "../../src/analytics/ingestion-copy-persistence.js";
@@ -119,4 +120,33 @@ it("SQL cannot override the admission transaction marker",async()=>{
 it("revocation invalidates an existing producer stream without rewriting prior admissions",async()=>{
  const s=await admissions.open(producer.token,podUid),a=await copy();await f.db.transaction(tx=>revokeClusterAssociation(tx,{actor:{type:"system",id:"synthetic-revocation"},role:"admin",ip:null},producer.source.clusterId,"revoke"));
  await expect(admissions.prepare(producer.token,s.id,randomUUID(),[a])).rejects.toThrow();
+});
+it("persists conflicts from real readback across batches, restart and raw copy compaction",async()=>{
+ producer=await f.registered();const auth=await f.db.transaction(tx=>authorizeClusterDelivery(tx,producer.ctx,producer.source));await confirmClusterAssociation(f.db,auth);
+ const {readCopyEvidence}=await import("../../src/analytics/copy-evidence.js");
+ const s=await admissions.open(producer.token,podUid),a=await copy(),first=randomUUID();
+ await admissions.persist(producer.token,s.id,first,[a]);
+ const b={...a,copyId:randomUUID(),event:{...a.event,status:500,routeId:f.otherRouteId}},second=randomUUID();
+ await expect(admissions.persist(producer.token,s.id,second,[b])).rejects.toThrow("Ingestion persistence is not confirmed");
+ const negative=await readCopyEvidence(f.db,[a.event.id]);expect(negative.items[0]).toMatchObject({id:a.event.id,kind:"conflicting-copies"});
+ const admin=integrationInputs(process.env).clickhouse;
+ if(!/^gromesh_test_[0-9a-f]{32}$/.test(CLICKHOUSE.database)||admin.url!==CLICKHOUSE.url)throw Error("Unowned maintenance target");
+ const maintenance=createClient({url:admin.url,database:CLICKHOUSE.database,username:admin.user,password:admin.password});
+ try{
+  await maintenance.command({query:"OPTIMIZE TABLE requests_v2_copies FINAL"});
+  // Only this synthetic request in the disposable database is removed, emulating loss of raw evidence.
+  await maintenance.command({query:"ALTER TABLE requests_v2_copies DELETE WHERE id={id:UUID}",query_params:{id:a.event.id},clickhouse_settings:{mutations_sync:"2"}});
+ }finally{await maintenance.close();}
+ const restarted=new IngestionAdmissions(f.db,f.h.app.get(AgentGatewayService),new IngestionCopyPersistence(writer,reader));
+ expect((await readCopyEvidence(f.db,[a.event.id])).items).toEqual(negative.items);
+ // A per-batch retry receipt is historical; it does not erase the global conflict or certify serving.
+ expect((await restarted.prefix()).conflictHistoryComplete).toBe(false);
+ const rows=(await f.h.sql.query("select count(*)::int n from analytics_ingestion_receipts where batch_id=$1",[second])).rows;expect(rows[0]!.n).toBe(0);
+});
+it("unverifiable raw copies create an incomplete-comparison tombstone, never a confirmed conflict",async()=>{
+ const {readCopyEvidence}=await import("../../src/analytics/copy-evidence.js");
+ const s=await admissions.open(producer.token,podUid),a=await copy();const {id,...content}=a.event;
+ await writer.insert({table:"requests_v2_copies",format:"JSONEachRow",values:[encodeRawRequestCopy({id,content})]});
+ await expect(admissions.persist(producer.token,s.id,randomUUID(),[a])).rejects.toThrow();
+ expect((await readCopyEvidence(f.db,[id])).items[0]!.kind).toBe("comparison-unavailable");
 });
