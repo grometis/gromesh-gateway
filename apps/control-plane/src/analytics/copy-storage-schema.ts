@@ -13,11 +13,11 @@ const columns:readonly (readonly [string,string])[]=[
 
 /** Internal, bounded catalog read in the same authenticated resource/session/budget as the copy observation. */
 export async function assertCopyStorageSchema(queries:BoundedCopyQueries){
- const rows=await queries.query(`SELECT name,type,default_kind AS defaultKind,default_expression AS defaultExpression
-  FROM system.columns WHERE database=currentDatabase() AND table='requests_v2_copies' ORDER BY position`,{},columns.length+1,true);
+ // DESCRIBE includes per-column TTL, which system.columns does not expose on the supported server version.
+ const rows=await queries.query("DESCRIBE TABLE requests_v2_copies",{},columns.length+1,true);
  if(rows.length!==columns.length)throw copyReadNotReady();
  for(let index=0;index<columns.length;index++){
   const row=rows[index]!,[name,type]=columns[index]!;
-  if(row.name!==name||row.type!==type||row.defaultKind!==""||row.defaultExpression!=="")throw copyReadNotReady();
+  if(row.name!==name||row.type!==type||row.default_type!==""||row.default_expression!==""||row.ttl_expression!==""||row.codec_expression!=="")throw copyReadNotReady();
  }
 }
