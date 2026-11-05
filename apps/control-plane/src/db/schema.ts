@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   boolean,
+  bigint,
   check,
   date,
   foreignKey,
@@ -1086,3 +1087,65 @@ export const analyticsClusterVisibility = pgTable("analytics_cluster_visibility"
     authorizationId: uuid("authorization_id").primaryKey().references(() => analyticsClusterEvents.id),
     observedAt: timestamp("observed_at", { withTimezone: true, mode: "string" }).notNull().default(sql `clock_timestamp()`),
 });
+
+
+/** Accepted admission positions, not native producer offsets or proof of ClickHouse persistence. */
+export const analyticsIngestionCounter = pgTable("analytics_ingestion_counter", {
+  singleton: boolean("singleton").primaryKey().default(true),
+  position: bigint("position", {mode:"bigint"}).notNull().default(sql`0`),
+}, t => [check("analytics_ingestion_singleton_ck",sql`${t.singleton}=true`),check("analytics_ingestion_position_ck",sql`${t.position}>=0`)]);
+export const analyticsIngestionStreams = pgTable("analytics_ingestion_streams", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  instanceId: uuid("instance_id").notNull().references(()=>instance.id),
+  clusterId: uuid("cluster_id").notNull(), nodeId: text("node_id").notNull(), podUid: uuid("pod_uid").notNull(),
+  authorizationId: uuid("authorization_id").notNull().references(()=>analyticsClusterEvents.id),
+  recordedAt: timestamp("recorded_at",{withTimezone:true,mode:"string"}).notNull().default(sql`clock_timestamp()`),},t=>[index("analytics_ingestion_pod_identity_idx").on(t.instanceId,t.clusterId,t.podUid,t.nodeId)]);
+export const analyticsIngestionBatches = pgTable("analytics_ingestion_batches", {
+  id: uuid("id").primaryKey(), streamId: uuid("stream_id").notNull().references(()=>analyticsIngestionStreams.id),
+  generation: bigint("generation",{mode:"bigint"}).notNull(),
+  writeTransaction: text("write_transaction").notNull().default(sql`pg_current_xact_id()::text`),
+  descriptor: jsonb("descriptor").$type<readonly {copyId:string;id:string;commitment:string;expiresAt:string}[]>().notNull(),
+  recordedAt: timestamp("recorded_at",{withTimezone:true,mode:"string"}).notNull().default(sql`clock_timestamp()`),
+},t=>[uniqueIndex("analytics_ingestion_generation_uq").on(t.generation),check("analytics_ingestion_generation_ck",sql`${t.generation}>0`),check("analytics_ingestion_descriptor_ck",sql`jsonb_typeof(${t.descriptor})='array' and jsonb_array_length(${t.descriptor}) between 1 and 100`)]);
+
+export const analyticsIngestionReceipts = pgTable("analytics_ingestion_receipts", {
+ batchId:uuid("batch_id").primaryKey().references(()=>analyticsIngestionBatches.id),
+ storedCopies:integer("stored_copies").notNull(),expiredCopies:integer("expired_copies").notNull(),
+ confirmedAt:timestamp("confirmed_at",{withTimezone:true,mode:"string"}).notNull().default(sql`clock_timestamp()`),
+},t=>[check("analytics_ingestion_receipt_counts_ck",sql`${t.storedCopies}>=0 and ${t.expiredCopies}>=0 and ${t.storedCopies}+${t.expiredCopies} between 1 and 100`)]);
+
+
+/** Negative copy evidence only: commitments are witnesses of difference, never representatives of traffic. */
+export const analyticsCopyEvidence = pgTable("analytics_copy_evidence", {
+  id:uuid("id").primaryKey().defaultRandom(),
+  requestId:uuid("request_id").notNull(),
+  sourceBatchId:uuid("source_batch_id").notNull().references(()=>analyticsIngestionBatches.id),
+  generation:bigint("generation",{mode:"bigint"}).notNull(),
+  kind:text("kind",{enum:["conflicting-copies","comparison-unavailable"]}).notNull(),
+  leftHash:text("left_hash").notNull(),rightHash:text("right_hash").notNull(),
+  expiresAt:timestamp("expires_at",{withTimezone:true,mode:"string"}).notNull(),
+  observedAt:timestamp("observed_at",{withTimezone:true,mode:"string"}).notNull().default(sql`clock_timestamp()`),
+  formatVersion:integer("format_version").notNull().default(1),
+},t=>[
+  uniqueIndex("analytics_copy_evidence_identity_uq").on(t.sourceBatchId,t.requestId,t.kind,t.leftHash,t.rightHash,t.expiresAt),
+  index("analytics_copy_evidence_request_idx").on(t.requestId,t.expiresAt),
+  index("analytics_copy_evidence_expiry_idx").on(t.expiresAt,t.id),
+  check("analytics_copy_evidence_kind_ck",sql`${t.kind} in ('conflicting-copies','comparison-unavailable')`),
+  check("analytics_copy_evidence_hash_ck",sql`${t.leftHash} ~ '^[0-9a-f]{64}$' and ((${t.kind}='conflicting-copies' and ${t.rightHash} ~ '^[0-9a-f]{64}$' and ${t.leftHash}<${t.rightHash}) or (${t.kind}='comparison-unavailable' and ${t.rightHash}=''))`),
+  check("analytics_copy_evidence_version_ck",sql`${t.formatVersion}=1 and ${t.generation}>0`),
+]);
+/** Constant-size loss marker: pruning never silently restores a claim of complete historical knowledge. */
+export const analyticsCopyCoverage = pgTable("analytics_copy_coverage",{
+ singleton:boolean("singleton").primaryKey().default(true),
+ prunedThrough:bigint("pruned_through",{mode:"bigint"}).notNull().default(sql`0`),
+ prunedAt:timestamp("pruned_at",{withTimezone:true,mode:"string"}),
+ pruneTransaction:text("prune_transaction"),
+},t=>[check("analytics_copy_coverage_ck",sql`${t.singleton}=true and ${t.prunedThrough}>=0 and ((${t.prunedThrough}=0 and ${t.prunedAt} is null and ${t.pruneTransaction} is null) or (${t.prunedThrough}>0 and ${t.prunedAt} is not null and ${t.pruneTransaction} is not null))`)]);
+
+/** Internal per-batch worker fencing, independent of the wire admission position. */
+export const analyticsIngestionWorkers = pgTable("analytics_ingestion_workers", {
+ batchId:uuid("batch_id").primaryKey().references(()=>analyticsIngestionBatches.id),
+ epoch:bigint("epoch",{mode:"bigint"}).notNull(),token:uuid("token").notNull(),
+ state:text("state",{enum:["persisting","verified","failed"]}).notNull(),
+ leaseUntil:timestamp("lease_until",{withTimezone:true,mode:"string"}).notNull(),
+},t=>[check("analytics_ingestion_worker_ck",sql`${t.epoch}>0 and ${t.state} in ('persisting','verified','failed')`)]);
