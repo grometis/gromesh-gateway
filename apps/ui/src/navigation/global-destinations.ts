@@ -17,7 +17,8 @@ const OPERATIONS = ["N17", "N16", "N12", "N13", "N15"];
 
 export function globalDestinations(section: GlobalSection, context: NavigationContext | null, role: string | undefined, pathname: string): GlobalDestination[] {
   const releasesId = context?.route.kind === "legacy-v1" ? "N11" : "v2-N11";
-  const ids = section === "operations" ? [releasesId, ...OPERATIONS] : section === "instance" ? INSTANCE_IDS : ["N19"];
+  const operationIds=OPERATIONS.map(id=>id==="N17"&&context?.route.kind==="workspace-v2"?"v2-N17":id);
+  const ids = section === "operations" ? [releasesId, ...operationIds] : section === "instance" ? INSTANCE_IDS : ["N19"];
   const activeId = resolveDestination(pathname)?.activeId;
   return ids.flatMap((id) => {
     const item = destinations.find((destination) => destination.id === id)!;
