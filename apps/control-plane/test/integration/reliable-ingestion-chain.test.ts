@@ -26,7 +26,10 @@ it("real bearer→admission→CH→receipt→reader→history→policy remains u
   for(const copy of copies){
    const row=page.items.find(x=>x.id===copy.event.id)!;expect(row.evidence?.kind).toBe("identical");
    expect(evaluateStorageEvidence(row.evidence,{asOf:history.asOf,...page.proof})).toMatchObject({kind:"not-ready"});
-   const decision=attributeRouteHistoryV2(history,{copiesComplete:page.proof.copiesComplete,copies:[{id:copy.event.id,provenance:"unknown",content:copy.event}],retainedCopyState:null});
+   if(row.evidence?.kind!=="identical")throw Error("Missing stored copy evidence");
+   const stored=row.evidence.content;expect(row.evidence.provenanceComplete).toBe(false);
+   if(typeof stored.environmentId!=="string"||typeof stored.clusterId!=="string"||typeof stored.ts!=="string"||(stored.routeId!==null&&typeof stored.routeId!=="string"))throw Error("Invalid stored attribution columns");
+   const decision=attributeRouteHistoryV2(history,{copiesComplete:page.proof.copiesComplete,copies:[{id:row.id,provenance:row.evidence.provenanceComplete?"workspace-v2":"unknown",content:{...stored,environmentId:stored.environmentId,clusterId:stored.clusterId,routeId:stored.routeId,ts:stored.ts}}],retainedCopyState:null});
    expect(decision).toMatchObject({workspaceId:null,effectiveRevision:null,reason:"attribution-evidence-missing"});
   }
   expect((await service.prefix()).copiesComplete).toBe(false);
