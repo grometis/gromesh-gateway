@@ -4,13 +4,14 @@ import { readFileSync } from "node:fs";
 import { createClient } from "@clickhouse/client";
 import { integrationInputs,provisionClickhouse } from "../../../../scripts/integration-databases.mjs";
 // Shared across nested fixtures in this worker; do not queue a new lock behind an exclusive waiter while retaining our first one.
-let catalog:Promise<pg.Client>|undefined,references=0;
-export async function physicalCatalogLease(){
- references++;
- if(!catalog)catalog=(async()=>{const client=new pg.Client({connectionString:ADMIN_URL});try{await client.connect();await client.query('select pg_advisory_lock_shared(21121,1)');return client;}catch{await client.end();throw Error('Disposable catalog coordination unavailable');}})();
+let catalog:Promise<pg.Client>|undefined,catalogUrl:string|undefined,references=0;
+export async function physicalCatalogLease(url=ADMIN_URL){
+ if(catalog&&catalogUrl!==url)throw Error("Mixed disposable catalog coordination namespace");
+ references++;if(!catalog)catalogUrl=url;
+ if(!catalog)catalog=(async()=>{const client=new pg.Client({connectionString:url});try{await client.connect();await client.query('select pg_advisory_lock_shared(21121,1)');return client;}catch{await client.end();throw Error('Disposable catalog coordination unavailable');}})();
  const current=catalog;
- try{await current;}catch(error){references--;if(catalog===current&&references===0)catalog=undefined;throw error;}
- let released=false;return async()=>{if(released)return;released=true;if(--references===0){if(catalog===current)catalog=undefined;await(await current).end();}};
+ try{await current;}catch(error){references--;if(catalog===current&&references===0){catalog=undefined;catalogUrl=undefined;}throw error;}
+ let released=false;return async()=>{if(released)return;released=true;if(--references===0){if(catalog===current){catalog=undefined;catalogUrl=undefined;}await(await current).end();}};
 }
 /** Each physical observation suite owns its table: unrelated integration writers must not mutate its cut. */
 export async function physicalFenceFixture(options:{sync?:boolean}={}){
