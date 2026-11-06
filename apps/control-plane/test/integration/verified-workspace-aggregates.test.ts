@@ -54,14 +54,14 @@ it('serves three contracted aggregations through HTTP using persisted attributed
   const viewer=await f.h.as('viewer'),login=await f.h.login(viewer.email,viewer.password);await f.h.api('PUT',`/users/${viewer.id}/environment-roles`,{items:[{environmentId:f.workspaceId,role:'none'}]});expect((await get('summary',f.workspaceId,params,login.cookie!)).status).toBe(404);
   const duplicate=[{...original,copyId:randomUUID()}],pendingBatch=randomUUID();
   await producer.prepare(token,streamId,pendingBatch,duplicate);
-  for(const operation of ['requests','summary','timeseries','top-routes']){const r=await get(operation);expect(r.status).toBe(502);expect(r.body).not.toHaveProperty('totals');expect(r.body).not.toHaveProperty('series');expect(r.body).not.toHaveProperty('items');}
+  for(const operation of ['requests','summary','timeseries','top-routes']){const r=await get(operation);expect(r.status).toBe(502);expect(r.body.code).toBe('analytics-not-ready');expect(r.body).not.toHaveProperty('totals');expect(r.body).not.toHaveProperty('series');expect(r.body).not.toHaveProperty('items');}
   // Completing and replaying the previously missing batch restores a proven read without double counting.
   await producer.persist(token,streamId,pendingBatch,duplicate);await producer.persist(token,streamId,pendingBatch,duplicate);
   for(const operation of ['requests','summary','timeseries','top-routes']){const recovered=await get(operation);expect(recovered.status,operation).toBe(200);if(operation==='summary')expect(recovered.body.totals).toMatchObject({requests:3,errors4xx:1,errors5xx:1});if(operation==='requests')expect(recovered.body.items).toHaveLength(3);}
   // A later incompatible copy must invalidate every operation, including queries for the other workspace.
   const conflict={...original,copyId:randomUUID(),event:{...original.event,routeId:f.otherRouteId,serviceId:f.otherServiceId,status:500}};
   await expect(producer.persist(token,streamId,randomUUID(),[conflict])).rejects.toThrow();
-  for(const operation of ['requests','summary','timeseries','top-routes']){const r=await get(operation,f.otherWorkspaceId);expect(r.status).toBe(502);expect(r.body).not.toHaveProperty('totals');expect(r.body).not.toHaveProperty('series');expect(r.body).not.toHaveProperty('items');}
+  for(const operation of ['requests','summary','timeseries','top-routes']){const r=await get(operation,f.otherWorkspaceId);expect(r.status).toBe(502);expect(r.body.code).toBe('analytics-not-ready');expect(r.body).not.toHaveProperty('totals');expect(r.body).not.toHaveProperty('series');expect(r.body).not.toHaveProperty('items');}
  }finally{await app?.close();await serving.close();}
 }));
 
@@ -87,6 +87,6 @@ it('refuses all four HTTP operations after GC loses admission coverage even whil
   });
   expect(await pruneAdmissionHistory(f.db,ctx,1)).toEqual({removed:1});expect(await pruneAdmissionHistory(f.db,ctx,1)).toEqual({removed:0});
   const count=await admin.query({query:`SELECT toString(count()) n FROM ${settings.databaseName}.requests_v2_copies`,format:'JSONEachRow'});expect((await count.json<{n:string}>())[0]!.n).toBe('2');
-  for(const path of paths){const response=await get(path);expect(response.status,path).toBe(502);for(const field of ['items','totals','series'])expect(response.body).not.toHaveProperty(field);}
+  for(const path of paths){const response=await get(path);expect(response.status,path).toBe(502);expect(response.body.code).toBe('analytics-not-ready');for(const field of ['items','totals','series'])expect(response.body).not.toHaveProperty(field);}
  }finally{await app?.close();await serving.close();}
 }));
