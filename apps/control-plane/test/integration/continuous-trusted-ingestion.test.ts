@@ -72,6 +72,10 @@ it('continues authenticated persistence through three GCs without promoting lost
   const left=await producer.issueIdentity(token,streamId,leftCopies),right=await replica.issueIdentity(token,streamId,rightCopies);
   const outcomes=await Promise.allSettled([producer.persist(token,streamId,left.batchId,leftCopies,{identityTicket:left.token}),replica.persist(token,streamId,right.batchId,rightCopies,{identityTicket:right.token})]);
   expect(outcomes.filter(r=>r.status==='fulfilled')).toHaveLength(1);expect(outcomes.filter(r=>r.status==='rejected')).toHaveLength(1);
+  const loser=outcomes.findIndex(r=>r.status==='rejected');expect((outcomes[loser] as PromiseRejectedResult).reason).toMatchObject({status:409});
+  const rejectedId=[left.batchId,right.batchId][loser]!;
+  expect((await f.h.sql.query('select 1 from analytics_ingestion_batches where id=$1',[rejectedId])).rowCount).toBe(0);
+  expect((await f.h.sql.query('select 1 from analytics_ingestion_receipts where batch_id=$1',[rejectedId])).rowCount).toBe(0);
   const count=await admin.query({query:`SELECT toString(count()) n FROM ${settings.databaseName}.requests_v2_copies`,format:'JSONEachRow'});expect((await count.json<{n:string}>())[0]!.n).toBe('9');
   const conflict={...lastCopies[0]!,copyId:randomUUID(),event:{...lastCopies[0]!.event,status:503,routeId:f.otherRouteId,serviceId:f.otherServiceId}},bad=await producer.issueIdentity(token,streamId,[conflict]);
   await expect(producer.persist(token,streamId,bad.batchId,[conflict],{identityTicket:bad.token})).rejects.toThrow();
