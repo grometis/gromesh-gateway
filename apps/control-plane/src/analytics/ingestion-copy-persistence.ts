@@ -13,8 +13,9 @@ const failed=()=>new Error("Ingestion persistence is not confirmed");
 /** Only constructed with the dedicated writer/reader. Observation is actual read-back, never a supplied boolean. */
 export class IngestionCopyPersistence {
  constructor(private readonly writer:ClickHouseClient,private readonly reader:ClickHouseClient) {}
- async persist(input:{streamId:string;batchId:string;generation:string;copies:readonly IngestionCopy[];asOf:string}) {
-  const signal=AbortSignal.timeout(8000);
+ async persist(input:{streamId:string;batchId:string;generation:string;copies:readonly IngestionCopy[];asOf:string},caller?:AbortSignal) {
+  const signal=AbortSignal.any([AbortSignal.timeout(8000),...(caller?[caller]:[])]);
+  signal.throwIfAborted();
   try{
    const now=Date.parse(input.asOf);if(!Number.isFinite(now))throw failed();
    const expected=new Map(input.copies.map(copy=>{

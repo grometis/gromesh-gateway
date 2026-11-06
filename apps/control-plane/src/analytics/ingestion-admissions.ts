@@ -60,7 +60,8 @@ export class IngestionAdmissions {
       return stream!;
     });
   }
-  async prepare(token:string,streamId:string,batchId:string,copies:readonly IngestionCopy[]) {
+  async prepare(token:string,streamId:string,batchId:string,copies:readonly IngestionCopy[],expectedGeneration?:string) {
+    if(expectedGeneration!==undefined&&(!/^[1-9][0-9]{0,18}$/.test(expectedGeneration)||BigInt(expectedGeneration)>9223372036854775807n))return invalid();
     if(!uuid.test(streamId)||!uuid.test(batchId)||!Array.isArray(copies)||copies.length<1||copies.length>100||Buffer.byteLength(JSON.stringify(copies))>2*1024*1024)return invalid();
     return this.db.transaction(async tx=>{
       await lock(tx);const a=await this.authorized(tx,token);
@@ -82,6 +83,8 @@ export class IngestionAdmissions {
         return {copyId:copy.copyId,id,commitment:hash(copyStateOf(id,copy.event).minContent),expiresAt:new Date(eventTime+(content.retentionDays as number)*86400000).toISOString()};
       });
       const [prior]=await tx.select().from(batches).where(eq(batches.id,batchId));
+      // A reconciliation may only revisit the exact existing position; GC/missing history must never readmit it.
+      if(expectedGeneration!==undefined&&(!prior||prior.generation.toString()!==expectedGeneration))throw new ProblemException(409,"Ingestion admission is no longer available at the expected position");
       if(prior){if(prior.streamId!==streamId||JSON.stringify(prior.descriptor.map(d=>[d.copyId,d.id,d.commitment,d.expiresAt]))!==JSON.stringify(descriptor.map(d=>[d.copyId,d.id,d.commitment,d.expiresAt])))throw new ProblemException(409,"Ingestion batch conflicts with its admission");return {id:prior.id,generation:prior.generation.toString(),state:"prepared" as const};}
       await tx.insert(counter).values({singleton:true,position:0n}).onConflictDoNothing();
       const [position]=await tx.update(counter).set({position:sql`${counter.position}+1`}).where(eq(counter.singleton,true)).returning();
@@ -91,23 +94,25 @@ export class IngestionAdmissions {
       return {id:batchId,generation:position!.position.toString(),state:"prepared" as const};
     });
   }
-  async persist(token:string,streamId:string,batchId:string,copies:readonly IngestionCopy[]) {
+  async persist(token:string,streamId:string,batchId:string,copies:readonly IngestionCopy[],options:{expectedGeneration?:string;signal?:AbortSignal}={}) {
+    const signal=options.signal;signal?.throwIfAborted();
     if(!this.persistence)throw new Error("Ingestion persistence is not configured");
-    const prepared=await this.prepare(token,streamId,batchId,copies);
+    const prepared=await this.prepare(token,streamId,batchId,copies,options.expectedGeneration);
+    signal?.throwIfAborted();
     const prior=await this.db.select().from(receipts).where(eq(receipts.batchId,batchId));
     const receipt=(counts:{storedCopies:number;expiredCopies:number})=>({schemaVersion:1 as const,streamId,batchId,generation:prepared.generation,status:"persisted" as const,storedCopies:counts.storedCopies,expiredCopies:counts.expiredCopies});
-    if(prior[0])return receipt(prior[0]);
+    signal?.throwIfAborted();if(prior[0])return receipt(prior[0]);
     const work=await this.db.transaction(async tx=>{
       await lock(tx);const a=await this.authorized(tx,token);
       const [stream]=await tx.select().from(streams).where(eq(streams.id,streamId));
       if(!stream||stream.nodeId!==a.current.node.nodeId||stream.authorizationId!==a.last.id)return denied();
-      return claimIngestionWork(tx,a.ctx,batchId);
+      signal?.throwIfAborted();return claimIngestionWork(tx,a.ctx,batchId);
     });
     // No network call is performed while holding a PostgreSQL transaction or cluster/admission lock.
     let observed:Awaited<ReturnType<IngestionCopyPersistence["persist"]>>;
     try {
       const asOf=(await this.db.execute<{now:string}>(sql`select to_char(clock_timestamp() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as now`)).rows[0]!.now;
-      observed=await this.persistence.persist({streamId,batchId,generation:prepared.generation,copies,asOf}); }
+      signal?.throwIfAborted();observed=await this.persistence.persist({streamId,batchId,generation:prepared.generation,copies,asOf},signal);signal?.throwIfAborted(); }
     catch(error) {
       try{if(error instanceof CopyEvidenceError) await recordCopyEvidence(this.db,{actor:{type:"system",id:"analytics-copy-observer"},role:"viewer",ip:null},batchId,error.observations);}
       finally{await this.db.transaction(async tx=>{await lock(tx);await finishIngestionWork(tx,{actor:{type:"system",id:"analytics-persistence-worker"},role:"viewer",ip:null},work,"failed");});}
@@ -115,7 +120,7 @@ export class IngestionAdmissions {
     }
     try{const confirmed=await this.db.transaction(async tx=>{
       await lock(tx);const a=await this.authorized(tx,token);
-      await assertIngestionWork(tx,work);
+      signal?.throwIfAborted();await assertIngestionWork(tx,work);
       const [stream]=await tx.select().from(streams).where(eq(streams.id,streamId));
       if(!stream||stream.instanceId!==a.self.id||stream.clusterId!==a.current.cluster.id||stream.nodeId!==a.current.node.nodeId||stream.authorizationId!==a.last.id)return denied();
       const [existing]=await tx.select().from(receipts).where(eq(receipts.batchId,batchId));
@@ -123,10 +128,10 @@ export class IngestionAdmissions {
       const comparison=await reconcileAdmittedComparisons(tx,a.ctx,batchId,observed.observedCopies);
       if(comparison.blocked){await finishIngestionWork(tx,a.ctx,work,"failed");return null;}
       const counts={storedCopies:observed.storedCopies,expiredCopies:observed.expiredCopies};
-      await tx.insert(receipts).values({batchId,...counts});
+      signal?.throwIfAborted();await tx.insert(receipts).values({batchId,...counts});
       await audit(tx,a.ctx,{action:"analytics.ingestion.persist",entityType:"ingestion-batch",entityId:batchId,after:{streamId,generation:prepared.generation,...counts,evidence:"exact-clickhouse-read-back"}});
       await finishIngestionWork(tx,a.ctx,work,"verified");
-      return receipt(observed);
+      signal?.throwIfAborted();return receipt(observed);
     });if(!confirmed)throw new Error("Ingestion persistence is not confirmed");return confirmed;}catch(error){
       await this.db.transaction(async tx=>{await lock(tx);await finishIngestionWork(tx,{actor:{type:"system",id:"analytics-persistence-worker"},role:"viewer",ip:null},work,"failed");});
       throw error;
