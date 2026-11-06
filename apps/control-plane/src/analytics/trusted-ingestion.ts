@@ -4,6 +4,7 @@ import type { Db, Tx } from "../db/db.js";
 import type { AgentGatewayService } from "../agent-gateway/agent-gateway.js";
 import { analyticsIngestionBatches as batches, analyticsIngestionStreams as streams, analyticsIngestionReceipts as receipts } from "../db/schema.js";
 import { IngestionAdmissions, authorizeIngestionProducer } from "./ingestion-admissions.js";
+import type {BatchIdentityPolicy} from './batch-identity.js';
 import { assertIngestionWork } from "./ingestion-workers.js";
 import { BoundedCopyQueries, copyReadNotReady } from "./bounded-copy-queries.js";
 import { IngestionCopyPersistence, type IngestionPersistenceInput, type CopyPersistenceObservation } from "./ingestion-copy-persistence.js";
@@ -42,7 +43,7 @@ async function assertAdmittedWrite(tx: Tx, gateway: AgentGatewayService, registr
 /** Explicit composition only, never bootstrap. Clients and bearer/work proofs do not escape this closure.
  * A trusted administrator or stolen writer secret can bypass application admission; both remain outside
  * this boundary. An in-flight insert after revocation can be orphaned, but cannot obtain a receipt. */
-export async function openTrustedIngestion(input: { db: Db; gateway: AgentGatewayService; settings: TrustedCopyStorageSettings; signal?: AbortSignal }) {
+export async function openTrustedIngestion(input: { db: Db; gateway: AgentGatewayService; settings: TrustedCopyStorageSettings; signal?: AbortSignal;experimentalIdentityPolicy?:BatchIdentityPolicy }) {
   validateTrustedCopyStorageSettings(input.settings);
   const registration = await readRuntimeCopyStorage(input.db);
   if (registration.databaseName !== input.settings.databaseName) throw copyReadNotReady();
@@ -81,10 +82,13 @@ export async function openTrustedIngestion(input: { db: Db; gateway: AgentGatewa
           tableId: registration.tableId, serverVersion, insertQueryId: observed.insertQueryId } };
       },
     };
-    const admissions = new IngestionAdmissions(input.db, input.gateway, persistence);
+    const admissions = new IngestionAdmissions(input.db, input.gateway, persistence,input.experimentalIdentityPolicy);
     const current = () => { if (closed) throw copyReadNotReady(); };
     return Object.freeze({
       open: (...args: Parameters<IngestionAdmissions["open"]>) => { current(); return admissions.open(...args); },
+      // Isolated R25 proposal consumer only. No bootstrap or environment flag installs this policy.
+      issueIdentity: (...args:Parameters<IngestionAdmissions['issueIdentity']>)=>{current();if(!input.experimentalIdentityPolicy)throw copyReadNotReady();return admissions.issueIdentity(args[0],args[1],structuredClone(args[2]));},
+      prepareWithIdentity: (...args:Parameters<IngestionAdmissions['prepareWithIdentity']>)=>{current();if(!input.experimentalIdentityPolicy)throw copyReadNotReady();return admissions.prepareWithIdentity(args[0],args[1],{...args[2]},structuredClone(args[3]));},
       // Snapshot before the first await: caller-owned objects cannot change the admitted payload in flight.
       prepare: (...args: Parameters<IngestionAdmissions["prepare"]>) => { current(); return admissions.prepare(args[0], args[1], args[2], structuredClone(args[3]), args[4]); },
       persist: (...args: Parameters<IngestionAdmissions["persist"]>) => { current(); return admissions.persist(args[0], args[1], args[2], structuredClone(args[3]), args[4]); },
