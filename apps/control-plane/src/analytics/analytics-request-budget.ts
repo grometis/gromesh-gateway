@@ -33,6 +33,13 @@ export class AnalyticsRequestBudget{
   return(rows?:readonly unknown[])=>{if(done)return;done=true;clearTimeout(timer);this.stageTimers.delete(timer);this.inFlight=false;if(rows){this.usage.postgresResultRows+=rows.length;if(this.usage.postgresResultRows>this.limits.maxPostgresResultRows)this.fail();this.materialize(rows);}this.finish(performance.now()-started);};
  }
  beginClickHouse(){this.reserve();const started=performance.now();let done=false;return(elapsedNs?:number)=>{if(done)return;done=true;this.finish(elapsedNs===undefined?performance.now()-started:elapsedNs/1e6);};}
+ /** Transaction-local executor controls, not a proof of table/index/TOAST reads or total backend memory. */
+ async configurePostgresTransaction(client:pg.PoolClient){
+  const timeout=String(Math.max(1,Math.floor(Math.min(5000,this.remainingDatabaseMs))));
+  // A role lacking SET permission for temp_file_limit must fail closed, never silently skip the cap.
+  await client.query("select pg_catalog.set_config('statement_timeout',$1,true),pg_catalog.set_config('work_mem','1MB',true),pg_catalog.set_config('hash_mem_multiplier','1',true),pg_catalog.set_config('temp_file_limit','0',true),pg_catalog.set_config('max_parallel_workers_per_gather','0',true),pg_catalog.set_config('jit','off',true)",[timeout]);
+  this.check();
+ }
  /** Install only while a session belongs exclusively to this operation; restored before pooling. */
  instrument(client:pg.PoolClient){
   const original=client.query,connection:unknown=Reflect.get(client,'connection');
