@@ -111,3 +111,40 @@ it('continues authenticated persistence through three GCs without promoting lost
   expect(observations.every(value=>value.completion==='finished'&&!value.deadlineExceeded)).toBe(true);
  }finally{await worker?.close();await app?.close();await serving.close();await producer.close();}
 }));
+
+
+it('proves half-open query windows before GC and refuses recent or apparently empty windows after comparison coverage is pruned',()=>verifiedChain(async(f,_reader,_legacy,copies,streamId,token,admin,settings,pool)=>{
+ const key=f.h.app.get<Encryptor>(ENCRYPTOR),producer=await openTrustedIngestion({db:drizzle(pool,{schema}),gateway:f.h.app.get(AgentGatewayService),settings,experimentalIdentityPolicy:new BatchIdentityPolicy(value=>key.fingerprint(value))});
+ const serving=await createVerifiedWorkspaceRequests({pool,settings,capacity:1,budgetProfile:'operational-v1-proposed'});
+ @Module({imports:[AppModule.forRoot(f.h.app.get<AppConfig>(APP_CONFIG)),WorkspaceRequestPreparationModule.withServing(serving),WorkspaceAnalyticsPreparationModule.withServing(serving)]})class TestRoot{}
+ const app=await NestFactory.create(TestRoot,{logger:false});
+ const paths=['requests','analytics/summary','analytics/timeseries','analytics/top-routes'];
+ const ts=Date.parse(copies[0]!.event.ts),recent=new URLSearchParams({from:new Date(ts).toISOString(),to:new Date(ts+1).toISOString()}),empty=new URLSearchParams({from:new Date(ts-1).toISOString(),to:new Date(ts).toISOString()});
+ try{
+  app.use(observeAnalyticsHttp());app.getHttpAdapter().getInstance().set('query parser','simple');app.setGlobalPrefix('api/v1',{exclude:[{path:'api/v2/{*splat}',method:RequestMethod.ALL}]});await app.init();await app.listen(0,'127.0.0.1');
+  const cookie=(await f.h.login(f.h.admin.email,f.h.admin.password)).cookie!;
+  const get=async(path:string,workspace:string,window:URLSearchParams)=>{const response=await fetch(`${await app.getUrl()}/api/v2/workspaces/${workspace}/${path}?${window}`,{headers:{cookie}});return {status:response.status,body:await response.json() as Record<string,unknown>};};
+  for(const workspace of [f.workspaceId,f.otherWorkspaceId])for(const [window,expected]of [[recent,1],[empty,0]] as const)for(const path of paths){
+   const response=await get(path,workspace,window);expect(response.status,`${path} ${window}`).toBe(200);
+   const count=path==='requests'?(response.body.items as unknown[]).length:path==='analytics/summary'?(response.body.totals as {requests:number}).requests:((path==='analytics/timeseries'?response.body.series:response.body.items) as {requests:number}[]).reduce((n,row)=>n+row.requests,0);
+   expect(count,`${path} ${window}`).toBe(expected);
+   if(path==='requests')for(const item of response.body.items as Record<string,unknown>[])expect(item).toMatchObject({workspaceId:workspace,routeId:workspace===f.workspaceId?f.routeId:f.otherRouteId,effectiveRevision:null});
+  }
+  // Advance the true GC with an explicitly synthetic expired descriptor, never a fabricated completeness flag.
+  const ctx={actor:{type:'system' as const,id:'synthetic-window-gc'},role:'admin' as const,ip:null};
+  await f.db.transaction(async tx=>{
+   await tx.execute(sql`select pg_advisory_xact_lock(1818,1801)`);
+   const position=(await tx.execute<{position:string}>(sql`update analytics_ingestion_counter set position=position+1 returning position::text`)).rows[0]!.position;
+   const id=randomUUID();await tx.execute(sql`insert into analytics_ingestion_batches(id,stream_id,generation,descriptor,recorded_at) values(${id},${streamId},${position}::bigint,${JSON.stringify([{copyId:randomUUID(),id:randomUUID(),commitment:'b'.repeat(64),expiresAt:'2000-01-01T00:00:00.000Z'}])}::jsonb,clock_timestamp()-interval '8 days')`);
+   await audit(tx,ctx,{action:'synthetic.expired-window-marker',entityType:'ingestion-batch',entityId:id});
+  });
+  expect(await pruneAdmissionHistory(f.db,ctx,1)).toEqual({removed:1});
+  const refuse=async()=>{for(const workspace of [f.workspaceId,f.otherWorkspaceId])for(const window of [recent,empty])for(const path of paths){const response=await get(path,workspace,window);expect(response.status).toBe(502);expect(response.body.code).toBe('analytics-not-ready');for(const field of ['items','totals','series'])expect(response.body).not.toHaveProperty(field);}};
+  await refuse();
+  const fresh=copies.map(copy=>makeVerifiedCopy(f.instanceId,copy.event.clusterId,copy.podUid,copy.event.ts,copy.event.routeId,copy.event.serviceId)),identity=await producer.issueIdentity(token,streamId,fresh);
+  expect(await producer.persist(token,streamId,identity.batchId,fresh,{identityTicket:identity.token})).toMatchObject({status:'persisted',storedCopies:2,generation:'3'});
+  // A new admitted prefix and physical survivors do not reconstruct comparison history for RequestIDs.
+  await admin.command({query:`OPTIMIZE TABLE ${settings.databaseName}.requests_v2_copies FINAL`});
+  await refuse();
+ }finally{await app.close();await serving.close();await producer.close();}
+}));
