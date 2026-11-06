@@ -15,6 +15,10 @@ it('serves three contracted aggregations through HTTP using persisted attributed
  const original=copies[0]!,extra=[makeVerifiedCopy(f.instanceId,original.event.clusterId,original.podUid,original.event.ts,f.routeId,f.serviceId),makeVerifiedCopy(f.instanceId,original.event.clusterId,original.podUid,original.event.ts,f.routeId,f.serviceId)];
  extra[0]!.event.status=404;extra[0]!.event.latencyTotalMs=10;extra[1]!.event.status=503;extra[1]!.event.latencyTotalMs=30;
  await producer.persist(token,streamId,randomUUID(),extra);
+ // The positive fixture requires a stable real physical cut. Negative part-mutation tests live in the reader suite.
+ // Stop only merges on this freshly owned table; no completeness flag or operational resource is supplied.
+ await admin.command({query:`OPTIMIZE TABLE ${settings.databaseName}.requests_v2_copies FINAL`});
+ await admin.command({query:`SYSTEM STOP MERGES ${settings.databaseName}.requests_v2_copies`});
  const serving=await createVerifiedWorkspaceRequests({pool,settings,capacity:1});let app:INestApplication|undefined;
  try{
   @Module({imports:[AppModule.forRoot(f.h.app.get<AppConfig>(APP_CONFIG)),WorkspaceAnalyticsPreparationModule.withServing(serving)]})class TestApp{}
@@ -29,10 +33,10 @@ it('serves three contracted aggregations through HTTP using persisted attributed
   for(const [operation,schema]of[['summary','WorkspaceAnalyticsSummary'],['timeseries','WorkspaceAnalyticsTimeseries'],['top-routes','WorkspaceTopRoutes']]as const){
    expect((await fetch(`${f.base}/api/v2/workspaces/${f.workspaceId}/analytics/${operation}?${params}`,{headers:{cookie}})).status).toBe(404);
    expect((await get(operation,f.workspaceId,params,null)).status).toBe(401);
-   const response=await get(operation);expect(response.status).toBe(200);
+   const response=await get(operation);expect(response.status,JSON.stringify({operation,code:response.body.code})).toBe(200);
    const valid=ajv.compile({...contract,$ref:`#/components/schemas/${schema}`});expect(valid(response.body),JSON.stringify(valid.errors)).toBe(true);
    expect(response.body.workspaceId).toBe(f.workspaceId);
-   const other=await get(operation,f.otherWorkspaceId);expect(other.status).toBe(200);expect(other.body.workspaceId).toBe(f.otherWorkspaceId);
+   const other=await get(operation,f.otherWorkspaceId);expect(other.status,JSON.stringify({operation,code:other.body.code})).toBe(200);expect(other.body.workspaceId).toBe(f.otherWorkspaceId);
    const foreign=new URLSearchParams(params);foreign.set('routeId',f.otherRouteId);expect((await get(operation,f.workspaceId,foreign)).status).toBe(404);
    const invalid=new URLSearchParams(params);invalid.set('sql','unsafe');expect((await get(operation,f.workspaceId,invalid)).status).toBe(422);
   }
