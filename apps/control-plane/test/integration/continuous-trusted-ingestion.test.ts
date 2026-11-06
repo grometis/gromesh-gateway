@@ -38,13 +38,14 @@ it('continues authenticated persistence through three GCs without promoting lost
   for(let cycle=0;cycle<3;cycle++){
    const batch=[fresh(),fresh(f.otherRouteId,f.otherServiceId)],identity=await producer.issueIdentity(token,streamId,batch);
    const receipt=await producer.persist(token,streamId,identity.batchId,batch,{identityTicket:identity.token});
-   expect(receipt).toMatchObject({batchId:identity.batchId,status:'persisted',storedCopies:2,expiredCopies:0});
+   expect(receipt).toMatchObject({batchId:identity.batchId,generation:String(cycle*2+2),status:'persisted',storedCopies:2,expiredCopies:0});
+   expect((await f.h.sql.query('select r.stored_copies stored,r.expired_copies expired,w.state from analytics_ingestion_receipts r join analytics_ingestion_workers w on w.batch_id=r.batch_id where r.batch_id=$1',[identity.batchId])).rows).toEqual([{stored:2,expired:0,state:'verified'}]);
    expect(await producer.persist(token,streamId,identity.batchId,batch,{identityTicket:identity.token})).toEqual(receipt);
    await expect(producer.persist(token,streamId,identity.batchId,[{...batch[0]!,event:{...batch[0]!.event,status:500}},batch[1]!],{identityTicket:identity.token})).rejects.toMatchObject({status:409});
    if(cycle===0){
     await admin.command({query:`OPTIMIZE TABLE ${settings.databaseName}.requests_v2_copies FINAL`});
     await admin.command({query:`SYSTEM STOP MERGES ${settings.databaseName}.requests_v2_copies`});
-    for(const workspace of [f.workspaceId,f.otherWorkspaceId])for(const path of paths){const response=await get(path,workspace);expect(response.status,path).toBe(200);expect(response.body.workspaceId).toBe(workspace);if(path==='analytics/summary')expect(response.body.totals).toMatchObject({requests:2});}
+    for(const workspace of [f.workspaceId,f.otherWorkspaceId])for(const path of paths){const response=await get(path,workspace);expect(response.status,path).toBe(200);expect(response.body.workspaceId).toBe(workspace);if(path==='analytics/summary')expect(response.body.totals).toMatchObject({requests:2});if(path==='requests'){const items=response.body.items as Record<string,unknown>[];expect(items).toHaveLength(2);for(const item of items)expect(item).toMatchObject({workspaceId:workspace,routeId:workspace===f.workspaceId?f.routeId:f.otherRouteId,effectiveRevision:null});}}
     const query=new URLSearchParams(bounds);query.set('limit','1');const page=await get('requests',f.workspaceId,query);expect(page.body.nextCursor).toEqual(expect.any(String));query.set('cursor',page.body.nextCursor as string);const next=await get('requests',f.workspaceId,query);expect(next.status).toBe(200);expect(next.body.nextCursor).toBeNull();
    }
    const retiredCopies=[fresh()],retired=await producer.issueIdentity(token,streamId,retiredCopies);
