@@ -3,6 +3,7 @@ import { defineConfig } from "vitest/config";
 
 // These filesystem/contract/fake-HTTP tests must never start the database setup.
 const pureIntegrationTests = [
+  "test/integration/analytics-process-loader.test.ts",
   "test/integration/environment-roles-contract.test.ts",
   "test/integration/environment-scope-contract.test.ts",
   "test/integration/export-import-contract.test.ts",
