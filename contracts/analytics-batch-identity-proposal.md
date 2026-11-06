@@ -49,7 +49,7 @@ R25 also authorizes isolated consumers and tests of this direction. It does not 
 | Legacy non-v8 batch | Keep original protocol, including post-prune refusal | No automatic conversion or retry-lifetime extension |
 | Existing arbitrary v8 handle | Refuse under the proposed namespace; inventory and explicitly retire/migrate its producer | Never reinterpret it as a signed envelope |
 | Proposed producer, valid ticket | Reauthenticate stream/node/history; return exact live retry or admit next position transactionally | Ticket possession alone is not authorization |
-| Expired ticket or consumed/pruned position | Reject409; a newly allowed attempt requires a fresh CP identity | No renewal, recycled UUID or counter regression |
+| Expired ticket, stale competing mint, or consumed position without the exact live binding (including pruning) | Reject409; a newly allowed attempt requires a fresh CP identity; a valid exact live retry keeps its existing generation | No renewal, recycled UUID or counter regression |
 | Partial restore inconsistent with surviving coverage/live admissions | Refuse mint and exact retry409 | The existing frontier checks are implemented and tested |
 | Coherent full restore with no external continuity evidence | Do not resume the proposed producer path as continuous | No automatic local rollback detector is implemented; recovery needs a reviewed external checkpoint or new instance/authorization identity without claiming the old frontier |
 
