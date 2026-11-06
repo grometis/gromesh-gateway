@@ -48,11 +48,13 @@ export async function openVerifiedHistoricalReader(input: { pool: pg.Pool; setti
           const resource = await observeCopyStorageResource(data, registered);
           if (resource.principal !== before.authority.reader) throw copyReadNotReady();
           const physical = await new PhysicalCopyFence(reader).observe(plan.ids, budget, signal, data, true);
+          budget.operation?.materialize(physical.rows);
           const after = await observeCopyStorageAuthority(queries, registered, true);
           if (JSON.stringify(before) !== JSON.stringify(after) || physical.tableId !== registered.tableId) throw copyReadNotReady();
           return { physical, queries, data, authority: before };
         }, async (snapshot, prepared, observed) => {
           const checked = await validatePersistedPrefix(snapshot, prepared, observed.physical);
+          budget.operation?.materialize(checked.copies);
           const receipts = prepared.rows.length ? await snapshot.select({ batchId: schema.auditEvents.entityId, after: schema.auditEvents.after })
             .from(schema.auditEvents).where(and(eq(schema.auditEvents.action, "analytics.ingestion.persist"), inArray(schema.auditEvents.entityId, prepared.rows.map(row => row.batchId)))).limit(101) : [];
           if (receipts.length !== prepared.rows.length) throw copyReadNotReady();
@@ -68,6 +70,7 @@ export async function openVerifiedHistoricalReader(input: { pool: pg.Pool; setti
           const logical = checked.copies.map(row => ({ id: String(row.copy.event.id), content: row.copy.event, provenance: "workspace-v2" as const }));
           const strings = (field: string) => [...new Set(logical.flatMap(row => typeof row.content[field] === "string" ? [String(row.content[field])] : []))];
           const history = await routeHistoryEvidenceSnapshot(snapshot, registered.instanceId, { from: window.from, to: window.to, routeIds: strings("routeId"), clusterIds: strings("clusterId") });
+          budget.operation?.materialize(history);
           // All positions, exact copies, negative history, resource identity and stable parts have just passed.
           // No flag is sourced from configuration, the producer or a fixture.
           const proof = { copiesComplete: true, conflictHistoryComplete: true, coherentSnapshot: true, deliveryFromKongComplete: false } as const;
@@ -89,6 +92,7 @@ export async function openVerifiedHistoricalReader(input: { pool: pg.Pool; setti
           const after = window.after;
           const selected = items.filter(row => !after || row.ts < after.ts || (row.ts === after.ts && row.id < after.id));
           const page = selected.slice(0, window.pageSize), last = page.at(-1);
+          budget.operation?.materialize(items);
           return { scope: "admitted-prefix" as const, observedThrough: checked.current.through, asOf: history.asOf, items: page,
             next: selected.length > page.length && last ? { ts: last.ts, id: last.id } : null, usage: observed.physical.usage, proof };
         }, caller, async (_plan, observed) => {
