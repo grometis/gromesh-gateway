@@ -1,0 +1,300 @@
+{
+  "requests": {
+    "cors": {
+      "summary": "Workspace CORS fallback; explicit same-name Route/Service config replaces it",
+      "value": {
+        "name": "cors",
+        "config": {
+          "origins": [
+            "https://app.example.com"
+          ]
+        },
+        "protocols": [
+          "http",
+          "https"
+        ],
+        "tags": [
+          "edge"
+        ]
+      }
+    },
+    "authenticatedAcl": {
+      "summary": "Requires one effective authenticator on every affected route",
+      "value": {
+        "name": "acl",
+        "config": {
+          "allow": [
+            "partners"
+          ]
+        }
+      }
+    }
+  },
+  "responses": {
+    "created": {
+      "summary": "Logical record only; creation changes the draft",
+      "value": {
+        "id": "00000000-0000-4000-8000-000000000901",
+        "name": "cors",
+        "enabled": true,
+        "config": {
+          "origins": [
+            "https://app.example.com"
+          ]
+        },
+        "protocols": [
+          "http",
+          "https"
+        ],
+        "tags": [
+          "edge"
+        ],
+        "createdAt": "2026-10-31T12:00:00Z",
+        "updatedAt": "2026-10-31T12:00:00Z"
+      }
+    },
+    "page": {
+      "summary": "Name/id cursor order, including disabled records",
+      "value": {
+        "items": [
+          {
+            "id": "00000000-0000-4000-8000-000000000901",
+            "name": "cors",
+            "enabled": true,
+            "config": {
+              "origins": [
+                "https://app.example.com"
+              ]
+            },
+            "protocols": [
+              "http",
+              "https"
+            ],
+            "tags": [
+              "edge"
+            ],
+            "createdAt": "2026-10-31T12:00:00Z",
+            "updatedAt": "2026-10-31T12:00:00Z"
+          }
+        ],
+        "nextCursor": null
+      }
+    }
+  },
+  "conflicts": {
+    "duplicate": {
+      "summary": "A plugin with this name already exists in this Workspace",
+      "value": {
+        "type": "https://gromesh.dev/problems/plugin-scope-conflict",
+        "title": "Conflict",
+        "status": 409,
+        "code": "plugin-scope-conflict",
+        "errors": [
+          {
+            "path": "name",
+            "message": "A plugin with this name already exists in this Workspace"
+          }
+        ]
+      }
+    },
+    "autoPublish": {
+      "summary": "Switch to manual publishing before writing through v2",
+      "value": {
+        "type": "https://gromesh.dev/problems/auto-publish",
+        "title": "Conflict",
+        "status": 409,
+        "code": "auto-publish",
+        "errors": [
+          {
+            "path": "publishMode",
+            "message": "Switch to manual publishing before writing through v2"
+          }
+        ]
+      }
+    },
+    "concurrentUpdate": {
+      "summary": "A concurrent change exceeded the Workspace transaction timeout; retry",
+      "value": {
+        "type": "https://gromesh.dev/problems/concurrent-update",
+        "title": "Conflict",
+        "status": 409,
+        "code": "concurrent-update",
+        "errors": [
+          {
+            "path": "workspaceId",
+            "message": "A concurrent change exceeded the Workspace transaction timeout; retry"
+          }
+        ]
+      }
+    },
+    "archived": {
+      "summary": "The Workspace is archived",
+      "value": {
+        "type": "https://gromesh.dev/problems/workspace-archived",
+        "title": "Conflict",
+        "status": 409,
+        "code": "workspace-archived",
+        "errors": [
+          {
+            "path": "workspaceId",
+            "message": "The Workspace is archived"
+          }
+        ]
+      }
+    }
+  },
+  "validation": {
+    "sharedCounter": {
+      "summary": "rate-limiting cannot preserve a shared Workspace quota by route materialization",
+      "value": {
+        "type": "https://gromesh.dev/problems/plugin-not-workspace-global",
+        "title": "Unprocessable Content",
+        "status": 422,
+        "code": "plugin-not-workspace-global",
+        "errors": [
+          {
+            "path": "name",
+            "message": "rate-limiting cannot preserve a shared Workspace quota by route materialization"
+          }
+        ]
+      }
+    },
+    "reserved": {
+      "summary": "This name is reserved by a mandatory platform plugin",
+      "value": {
+        "type": "https://gromesh.dev/problems/reserved-plugin",
+        "title": "Unprocessable Content",
+        "status": 422,
+        "code": "reserved-plugin",
+        "errors": [
+          {
+            "path": "name",
+            "message": "This name is reserved by a mandatory platform plugin"
+          }
+        ]
+      }
+    },
+    "unsafeAuth": {
+      "summary": "An affected route would have more than one effective authentication mechanism",
+      "value": {
+        "type": "https://gromesh.dev/problems/unsafe-auth-composition",
+        "title": "Unprocessable Content",
+        "status": 422,
+        "code": "unsafe-auth-composition",
+        "errors": [
+          {
+            "path": "name",
+            "message": "An affected route would have more than one effective authentication mechanism"
+          }
+        ]
+      }
+    },
+    "consumerRequired": {
+      "summary": "ACL requires an effective authenticator on every affected route",
+      "value": {
+        "type": "https://gromesh.dev/problems/consumer-required",
+        "title": "Unprocessable Content",
+        "status": 422,
+        "code": "consumer-required",
+        "errors": [
+          {
+            "path": "name",
+            "message": "ACL requires an effective authenticator on every affected route"
+          }
+        ]
+      }
+    },
+    "foreignConsumer": {
+      "summary": "Unknown consumer in this Workspace",
+      "value": {
+        "type": "https://gromesh.dev/problems/foreign-consumer",
+        "title": "Unprocessable Content",
+        "status": 422,
+        "code": "foreign-consumer",
+        "errors": [
+          {
+            "path": "config.anonymous",
+            "message": "Unknown consumer in this Workspace"
+          }
+        ]
+      }
+    },
+    "invalidConfig": {
+      "summary": "Must match the pinned plugin config schema",
+      "value": {
+        "type": "https://gromesh.dev/problems/invalid-plugin",
+        "title": "Unprocessable Content",
+        "status": 422,
+        "code": "invalid-plugin",
+        "errors": [
+          {
+            "path": "config.origins",
+            "message": "Must match the pinned plugin config schema"
+          }
+        ]
+      }
+    }
+  },
+  "invalidWrites": [
+    {
+      "name": "rate-limiting",
+      "config": {}
+    },
+    {
+      "name": "response-ratelimiting",
+      "config": {}
+    },
+    {
+      "name": "proxy-cache",
+      "config": {}
+    },
+    {
+      "name": "hmac-auth",
+      "config": {}
+    },
+    {
+      "name": "ldap-auth",
+      "config": {}
+    },
+    {
+      "name": "session",
+      "config": {}
+    },
+    {
+      "name": "oauth2",
+      "config": {}
+    },
+    {
+      "name": "acme",
+      "config": {}
+    },
+    {
+      "name": "pre-function",
+      "config": {}
+    },
+    {
+      "name": "post-function",
+      "config": {}
+    },
+    {
+      "name": "file-log",
+      "config": {}
+    },
+    {
+      "name": "aws-lambda",
+      "config": {}
+    },
+    {
+      "name": "azure-functions",
+      "config": {}
+    },
+    {
+      "name": "gromesh-workspace",
+      "config": {}
+    },
+    {
+      "name": "unknown-plugin",
+      "config": {}
+    }
+  ]
+}
