@@ -70,7 +70,8 @@ describe("variable draft-only writes (WS-R4 B1)", () => {
       const deadline = Date.now() + 4000;
       while (Date.now() < deadline) {
         const { rows } = await h.sql.query<{ pid: number; query: string }>(`select pid, query from pg_stat_activity
-          where datname = current_database() and wait_event_type = 'Lock' and $1 = any(pg_blocking_pids(pid))`, [backend!.pid]);
+          where datname = current_database() and wait_event_type = 'Lock' and $1 = any(pg_blocking_pids(pid))
+          and query like $2`, [backend!.pid, '%pg_advisory_xact_lock(hashtextextended%']);
         if (rows.length) {
           expect(rows[0]!.query).toContain("pg_advisory_xact_lock(hashtextextended");
           writer = rows[0]!.pid;
