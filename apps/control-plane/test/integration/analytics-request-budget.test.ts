@@ -4,8 +4,11 @@ import {afterAll,beforeAll,expect,it} from 'vitest';
 import {createIntegrationDatabase,dropIntegrationDatabase,integrationDatabaseName} from './databases.js';
 import {AnalyticsRequestBudget} from '../../src/analytics/analytics-request-budget.js';
 import {withIngestionReadSnapshot} from '../../src/analytics/ingestion-read-snapshot.js';
+import {runMigrations} from '../../src/db/migrate.js';
+import {readCopyEvidenceSnapshot} from '../../src/analytics/copy-evidence.js';
+import {routeHistoryEvidenceSnapshot} from '../../src/analytics/route-history-evidence.js';
 let name:string,url:string,pool:pg.Pool;
-beforeAll(async()=>{name=integrationDatabaseName('r22budget');url=await createIntegrationDatabase(name);pool=new pg.Pool({connectionString:url,max:1});});
+beforeAll(async()=>{name=integrationDatabaseName('r22budget');url=await createIntegrationDatabase(name);await runMigrations(url);pool=new pg.Pool({connectionString:url,max:1});});
 afterAll(async()=>{await pool?.end();if(name)await dropIntegrationDatabase(name);});
 it('shares actual PG wire/rows/query accounting across preflight and subsequent history snapshots',async()=>{
  const budget=new AnalyticsRequestBudget();
@@ -76,4 +79,21 @@ it('does not mistake transaction tuple counters or one aggregate row for a Postg
   expect(budget.usage.postgresResultRows).toBeLessThan(100);
   expect(budget.postgresPhysicalReadsProven).toBe(false);
  }finally{budget.close();await pool.query('drop table budget_index_probe');}
+});
+
+it('does not let history helpers renew a smaller PostgreSQL statement allowance',async()=>{
+ const budget=new AnalyticsRequestBudget(undefined,{},'operational-v1-proposed');
+ try{await withIngestionReadSnapshot(pool,async db=>{
+  await db.execute(sql`set local statement_timeout='500ms'`);
+  await readCopyEvidenceSnapshot(db,[]);
+  expect((await db.execute<{value:string}>(sql`select current_setting('statement_timeout') value`)).rows[0]!.value).toBe('500ms');
+  await routeHistoryEvidenceSnapshot(db,'00000000-0000-4000-8000-000000000001',{from:'2026-01-01T00:00:00.000Z',to:'2026-01-02T00:00:00.000Z',routeIds:[]});
+  expect((await db.execute<{value:string}>(sql`select current_setting('statement_timeout') value`)).rows[0]!.value).toBe('500ms');
+ },budget.signal,budget);}finally{budget.close();}
+});
+
+it('keeps a smaller reader-session statement ceiling instead of raising it to the request allowance',async()=>{
+ await pool.query("set statement_timeout='500ms'");const budget=new AnalyticsRequestBudget(undefined,{maxDatabaseMs:2000},'operational-v1-proposed');
+ try{expect(await withIngestionReadSnapshot(pool,async db=>(await db.execute<{value:string}>(sql`select current_setting('statement_timeout') value`)).rows[0]!.value,budget.signal,budget)).toBe('500ms');}
+ finally{budget.close();await pool.query('reset statement_timeout');}
 });

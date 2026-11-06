@@ -1,4 +1,5 @@
 import {expect,it,vi} from 'vitest';
+import {readFileSync} from 'node:fs';
 import {AnalyticsRequestBudget} from './analytics-request-budget.js';
 it('refuses the next stage before I/O when PostgreSQL preflight consumed the query allowance',()=>{
  const b=new AnalyticsRequestBudget(undefined,{maxPostgresQueries:1});
@@ -28,4 +29,10 @@ it('shares a query count across PostgreSQL and ClickHouse before the next I/O',(
 it('refuses a late synchronous result even before the deadline timer can run',()=>{
  const clock=vi.spyOn(performance,'now').mockReturnValue(0),b=new AnalyticsRequestBudget(undefined,{},'operational-v1-proposed');
  try{clock.mockReturnValue(4500);expect(()=>b.check()).toThrow('budget');expect(b.signal.aborted).toBe(true);}finally{clock.mockRestore();b.close();}
+});
+it('implements the exact proposed operational ceilings without widening the integrated profile',()=>{
+ const proposal=JSON.parse(readFileSync(new URL('../../../../contracts/analytics-operational-budget-proposal.json',import.meta.url),'utf8')) as {profile:'operational-v1-proposed';request:{databaseQueries:number;databaseMs:number;postgresResultRows:number;postgresWireBytes:number;materializedJsonBytes:number;responseBytes:number}};
+ const values={maxDatabaseQueries:proposal.request.databaseQueries,maxDatabaseMs:proposal.request.databaseMs,maxPostgresResultRows:proposal.request.postgresResultRows,maxPostgresWireBytes:proposal.request.postgresWireBytes,maxMaterializedBytes:proposal.request.materializedJsonBytes,maxResponseBytes:proposal.request.responseBytes};
+ const accepted=new AnalyticsRequestBudget(undefined,values,proposal.profile);try{expect(()=>accepted.assertServingContract()).not.toThrow();}finally{accepted.close();}
+ for(const [key,value] of Object.entries(values))expect(()=>new AnalyticsRequestBudget(undefined,{...values,[key]:value+1},proposal.profile)).toThrow('budget');
 });
