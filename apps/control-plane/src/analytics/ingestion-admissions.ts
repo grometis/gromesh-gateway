@@ -119,15 +119,17 @@ export class IngestionAdmissions {
       if(batchId[14]==='8'&&identityTicket===undefined)throw new ProblemException(409,"Authenticated batch identity required");
       const identity=identityTicket!==undefined?this.identityPolicy?.verify(identityTicket,{instanceId:a.self.id,streamId,authorizationId:a.last.id,batchId,descriptorDigest:digestAdmissionDescriptor(descriptor)},Date.parse(a.now)):undefined;
       if(identityTicket!==undefined&&!identity)throw new ProblemException(409,"Batch identity policy is not enabled");
+      const [lostHistory]=await tx.select({through:coverage.prunedThrough}).from(coverage).where(eq(coverage.singleton,true));
+      let identityFrontier=0n;
+      if(identity){const[current]=await tx.select().from(counter).where(eq(counter.singleton,true));identityFrontier=current?.position??0n;await assertIdentityFrontier(tx,identityFrontier,lostHistory?.through??0n);}
       const [prior]=await tx.select().from(batches).where(eq(batches.id,batchId));
       // A reconciliation may only revisit the exact existing position; GC/missing history must never readmit it.
       if(expectedGeneration!==undefined&&(!prior||prior.generation.toString()!==expectedGeneration))throw new ProblemException(409,"Ingestion admission is no longer available at the expected position");
       if(prior){if(identity&&prior.generation.toString()!==identity.position)throw new ProblemException(409,"Batch identity position conflicts");if(prior.streamId!==streamId||JSON.stringify(prior.descriptor.map(d=>[d.copyId,d.id,d.commitment,d.expiresAt]))!==JSON.stringify(descriptor.map(d=>[d.copyId,d.id,d.commitment,d.expiresAt])))throw new ProblemException(409,"Ingestion batch conflicts with its admission");return {id:prior.id,generation:prior.generation.toString(),state:"prepared" as const};}
       // Pruning erased the only global UUID binding. Without a new identity-lifetime contract,
       // unknown IDs cannot be distinguished from consumed IDs; stop rather than resurrect either.
-      const [lostHistory]=await tx.select({through:coverage.prunedThrough}).from(coverage).where(eq(coverage.singleton,true));
       if(lostHistory&&!identity)throw new ProblemException(409,"Ingestion identity cannot be verified after history pruning");
-      if(identity){const[current]=await tx.select().from(counter).where(eq(counter.singleton,true));await assertIdentityFrontier(tx,current?.position??0n,lostHistory?.through??0n);if(BigInt(identity.position)!==(current?.position??0n)+1n)throw new ProblemException(409,"Batch identity position is already consumed or stale");}
+      if(identity&&BigInt(identity.position)!==identityFrontier+1n)throw new ProblemException(409,"Batch identity position is already consumed or stale");
       await tx.insert(counter).values({singleton:true,position:0n}).onConflictDoNothing();
       const [position]=await tx.update(counter).set({position:sql`${counter.position}+1`}).where(eq(counter.singleton,true)).returning();
       await tx.insert(batches).values({id:batchId,streamId,generation:position!.position,descriptor});
