@@ -19,10 +19,21 @@ it("delivers proven persisted requests through real HTTP with scope, cursor and 
   const proxy = await copyStorageProxy(settings.url,async query=>{
     if(blocked&&query.includes("currentUser() AS principal")&&observers<2){if(++observers===2)observed.release();await release.promise;}
   });
-  const serving = await createVerifiedWorkspaceRequests({ pool, settings:{...settings,url:proxy.url}, capacity: 3 });
+  const serving = await createVerifiedWorkspaceRequests({ pool, settings:{...settings,url:proxy.url}, capacity: 3,budgetProfile:'operational-v1-proposed' });
   let app: INestApplication | undefined;
   try {
     const original = copies[0]!;
+    const launch=async(provider:Parameters<typeof WorkspaceRequestPreparationModule.withServing>[0])=>{
+      @Module({imports:[AppModule.forRoot(f.h.app.get<AppConfig>(APP_CONFIG)),WorkspaceRequestPreparationModule.withServing(provider)]})class TestRoot{}
+      const root=await NestFactory.create(TestRoot,{logger:false});root.getHttpAdapter().getInstance().set('query parser','simple');root.setGlobalPrefix('api/v1',{exclude:[{path:'api/v2/{*splat}',method:RequestMethod.ALL}]});await root.init();await root.listen(0,'127.0.0.1');return root;
+    };
+    const physical=await createVerifiedWorkspaceRequests({pool,settings,capacity:1});let oldApp:INestApplication|undefined;
+    try{
+      oldApp=await launch(physical);const cookie=(await f.h.login(f.h.admin.email,f.h.admin.password)).cookie!;
+      const bounds=new URLSearchParams({from:new Date(Date.parse(original.event.ts)-1000).toISOString(),to:new Date().toISOString()});
+      const response=await fetch(`${await oldApp.getUrl()}/api/v2/workspaces/${f.workspaceId}/requests?${bounds}`,{headers:{cookie}});
+      expect(response.status).toBe(502);expect(await response.json()).toMatchObject({code:'analytics-not-ready'});
+    }finally{await oldApp?.close();await physical.close();}
     await producer.persist(token, streamId, randomUUID(), [makeVerifiedCopy(f.instanceId, original.event.clusterId, original.podUid, original.event.ts, f.routeId, f.serviceId)]);
     @Module({ imports: [AppModule.forRoot(f.h.app.get<AppConfig>(APP_CONFIG)), WorkspaceRequestPreparationModule.withServing(serving)] }) class VerifiedTestApp {}
     app = await NestFactory.create(VerifiedTestApp, { logger: false });
@@ -53,6 +64,7 @@ it("delivers proven persisted requests through real HTTP with scope, cursor and 
     expect((await get(f.otherWorkspaceId, next)).status).toBe(422);
     const tampered = new URLSearchParams(next); tampered.set("cursor", first.body.nextCursor!+"0"); expect((await get(f.workspaceId, tampered)).status).toBe(422);
     const foreign = new URLSearchParams(fixed); foreign.set("routeId", f.otherRouteId); expect((await get(f.workspaceId, foreign)).status).toBe(404);
+    const profile=new URLSearchParams(fixed);profile.set('budgetProfile','operational-v1-proposed');expect((await get(f.workspaceId,profile)).status).toBe(422);
     const none = new URLSearchParams(fixed); none.set("status", "599"); const empty = await get(f.workspaceId, none); expect(empty.status).toBe(200); expect(empty.body.items).toEqual([]);
     const viewer = await f.h.as("viewer"), login = await f.h.login(viewer.email, viewer.password);
     expect((await get(f.workspaceId, next, login.cookie!)).status).toBe(422);

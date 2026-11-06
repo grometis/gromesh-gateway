@@ -31,7 +31,7 @@ export class BoundedCopyQueries {
  private settings(maxRows:number,sessionExists:boolean):Settings{
   const {usage,limits,signal}=this;if(signal.aborted)throw copyReadNotReady();
   if(usage.readRows>=limits.rows||usage.readBytes>=limits.bytes||usage.decodedBytes>=limits.decoded||usage.dbElapsedNs>=5_000_000_000)throw exceeded();
-  const seconds=Math.min(this.operation?this.operation.remainingDatabaseMs/1000:Infinity,(5_000_000_000-usage.dbElapsedNs)/1e9,(8000-(performance.now()-this.started))/1000);if(seconds<=0)throw copyReadNotReady();
+  const seconds=Math.min(this.operation?Math.min(this.operation.remainingDatabaseMs,this.operation.remainingActiveMs)/1000:Infinity,(5_000_000_000-usage.dbElapsedNs)/1e9,(8000-(performance.now()-this.started))/1000);if(seconds<=0)throw copyReadNotReady();
   return {...(this.sessionId?{session_timeout:"10",session_check:sessionExists?1:0}:{}),max_threads:2,max_block_size:"100",max_execution_time:seconds,timeout_overflow_mode:"throw",max_memory_usage:String(256*1024*1024),
    max_rows_to_read:String(limits.rows-usage.readRows),max_bytes_to_read:String(limits.bytes-usage.readBytes),read_overflow_mode:"throw",
    max_result_rows:String(maxRows),max_result_bytes:String(limits.decoded-usage.decodedBytes),result_overflow_mode:"throw",max_rows_to_group_by:"10000",group_by_overflow_mode:"throw",
