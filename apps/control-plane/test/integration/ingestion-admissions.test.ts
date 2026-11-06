@@ -224,3 +224,18 @@ it("measures bounded persistence and engine reads for 100 synthetic unique copie
  const result=await new BoundedCopyReader(reader).read({instanceId:f.instanceId,from,to,pageSize:200});expect(result.items).toHaveLength(100);expect(result.proof.copiesComplete).toBe(false);
  process.stdout.write("R19_SYNTHETIC_MEASUREMENT "+JSON.stringify({copies:100,persistenceMs,readWallMs:performance.now()-readStarted,engineUsage:result.usage,servingProof:false})+"\n");
 });
+
+it("distinguishes a refused real readback from an INSERT ACK and issues no receipt",async()=>{
+ const deniedReader=createClient({url:CLICKHOUSE.url,database:CLICKHOUSE.database,username:CLICKHOUSE.user,password:randomUUID()});
+ const s=await admissions.open(producer.token,podUid),a=await copy(),id=randomUUID();
+ try{
+  const isolated=new IngestionAdmissions(f.db,f.h.app.get(AgentGatewayService),new IngestionCopyPersistence(writer,deniedReader));
+  const error:unknown=await isolated.persist(producer.token,s.id,id,[a]).catch((error:unknown)=>error);
+  expect(error).toMatchObject({stage:'select-request',code:'analytics-not-ready'});
+  expect(String(error)+JSON.stringify(error)).not.toMatch(/password|Authorization|2001:db8|requestSize/);
+  expect((await f.h.sql.query("select count(*)::int n from analytics_ingestion_receipts where batch_id=$1",[id])).rows[0]!.n).toBe(0);
+  const stored=await(await reader.query({query:"SELECT toString(count()) AS n FROM requests_v2_copies WHERE ingress_batch_id={id:UUID}",query_params:{id},format:"JSONEachRow"})).json<{n:string}>();
+  expect(stored[0]!.n).toBe('1');
+  expect((await admissions.persist(producer.token,s.id,id,[a])).storedCopies).toBe(1);
+ }finally{await deniedReader.close();}
+});
