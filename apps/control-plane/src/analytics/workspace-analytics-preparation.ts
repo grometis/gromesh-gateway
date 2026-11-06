@@ -7,11 +7,13 @@ import {uuidParam} from '../environments/environments.js';
 import {WorkspaceRequestPreparationController} from './workspace-request-preparation.js';
 import {WORKSPACE_REQUEST_SERVING,type WorkspaceRequestServing} from './workspace-request-serving.js';
 import {parseWorkspaceAggregateQuery,type AggregateOperation} from './workspace-aggregates.js';
+import {analyticsHttpContext} from './analytics-http-observation.js';
 /** Prepared controllers only. No operational module/bootstrap imports this module. */
 @Controller('api/v2/workspaces/:workspaceId/analytics')
 export class WorkspaceAnalyticsPreparationController{
  constructor(@Inject(DB)private readonly db:Db,@Inject(ENCRYPTOR)private readonly encryptor:Encryptor,@Inject(PG_POOL)private readonly connection:{pool:pg.Pool},@Optional()@Inject(WORKSPACE_REQUEST_SERVING)private readonly serving?:WorkspaceRequestServing){}
  private run(operation:AggregateOperation,workspaceId:string,raw:Record<string,unknown>,request:AuthenticatedRequest){
+  analyticsHttpContext(request)?.check();
   const now=Date.now(),query=parseWorkspaceAggregateQuery(operation,raw,now);
   const serving=this.serving;
   const controller=new WorkspaceRequestPreparationController(this.db,this.encryptor,this.connection,serving?{budgetProfile:serving.budgetProfile,query:input=>serving.query({...input,aggregation:query})}:undefined);
