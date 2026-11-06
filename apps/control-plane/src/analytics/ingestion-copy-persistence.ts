@@ -1,7 +1,7 @@
 import type { Tx } from "../db/db.js";
 import type { IngestionWork } from "./ingestion-workers.js";
 import {StorageConsistencyError} from "./storage-consistency.js";
-import { BoundedCopyQueries } from "./bounded-copy-queries.js";
+import { BoundedCopyQueries, CopyQueryFailure } from "./bounded-copy-queries.js";
 import { createHash } from "node:crypto";
 import type { CopyObservation,ObservedCopyIdentity } from "./copy-evidence.js";
 import type { ClickHouseClient } from "@clickhouse/client";
@@ -18,6 +18,11 @@ export interface CopyPersistenceObservation {storedCopies:number;expiredCopies:n
 /** Only negative technical facts escape the reader; no request content is attached to errors. */
 export class CopyEvidenceError extends Error {
  constructor(readonly observations: readonly CopyObservation[]) { super("Ingestion persistence is not confirmed"); }
+}
+/** Preserve the persistence error contract while exposing only the fixed query-stage diagnostic. */
+export class CopyPersistenceFailure extends Error {
+ readonly stage:CopyQueryFailure['stage'];readonly code:CopyQueryFailure['code'];
+ constructor(error:CopyQueryFailure){super("Ingestion persistence is not confirmed");this.name='CopyPersistenceFailure';this.stage=error.stage;this.code=error.code;}
 }
 const digest=(value:string)=>createHash("sha256").update(value).digest("hex");
 const failed=()=>new Error("Ingestion persistence is not confirmed");
@@ -82,6 +87,6 @@ export class IngestionCopyPersistence {
    if(observations.length)throw new CopyEvidenceError(observations);
    if(signal.aborted)throw failed();
    return {storedCopies:live.length,expiredCopies:expected.size-live.length,observedCopies,...(inserted?.executed?{insertQueryId:inserted.query_id}:{})};
-  }catch(error){if(error instanceof CopyEvidenceError)throw error;throw new Error(`Ingestion persistence is not confirmed at ${phase}${error instanceof StorageConsistencyError?`: ${error.code}`:""}`);}
+  }catch(error){if(error instanceof CopyEvidenceError)throw error;if(error instanceof CopyQueryFailure)throw new CopyPersistenceFailure(error);throw new Error(`Ingestion persistence is not confirmed at ${phase}${error instanceof StorageConsistencyError?`: ${error.code}`:""}`);}
  }
 }

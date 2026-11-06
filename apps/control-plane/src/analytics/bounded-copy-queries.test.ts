@@ -25,3 +25,16 @@ it('shares the PostgreSQL preflight execution allowance with a later ClickHouse 
   expect(Number(query.mock.calls[0]![0].clickhouse_settings!.max_execution_time)).toBeLessThanOrEqual(.1);
  }finally{now.mockRestore();operation.close();}
 });
+
+for(const stage of ['insert-request','insert-accounting','select-request','select-stream','select-accounting'] as const)it(`exposes only a safe ${stage} diagnostic while refusing persistence evidence`,async()=>{
+ const unsafe=new Error('synthetic credential=DO_NOT_COPY payload=DO_NOT_COPY');
+ const client={
+  insert:async()=>{if(stage==='insert-request')throw unsafe;return {executed:true,query_id:'synthetic',response_headers:stage==='insert-accounting'?{}:summary('1')};},
+  query:async()=>{if(stage==='select-request')throw unsafe;return {response_headers:stage==='select-accounting'?{}:summary('1'),stream:async function*(){if(stage==='select-stream')throw unsafe;},close:()=>{}};}
+ } as unknown as ClickHouseClient;
+ const queries=new BoundedCopyQueries(client);
+ const operation=stage.startsWith('insert-')?queries.insert({table:'requests_v2_copies',format:'JSONEachRow',values:[]}):queries.query('SELECT 1',{},1);
+ const error=await operation.catch((error:unknown)=>error);
+ expect(error).toMatchObject({stage,code:'analytics-not-ready'});
+ expect(String(error)+JSON.stringify(error)).not.toMatch(/DO_NOT_COPY|credential|payload/);
+});

@@ -14,6 +14,11 @@ function failure(error:unknown):Error{
  if(error instanceof StorageConsistencyError)return error;const code=error&&typeof error==="object"&&"code" in error?String(error.code):"";
  return ["158","159","241","307","396"].includes(code)?exceeded():copyReadNotReady();
 }
+type CopyQueryStage='limits'|'insert-request'|'insert-accounting'|'select-request'|'select-stream'|'select-accounting';
+/** Safe stage only: never retain the server response, payload, URL, credentials or original cause. */
+export class CopyQueryFailure extends StorageConsistencyError {
+ constructor(readonly stage:CopyQueryStage,error:unknown){const safe=failure(error),code=safe instanceof StorageConsistencyError?safe.code:'analytics-not-ready';super(code,code==='analytics-budget-exceeded'?'Copy read budget exceeded':'Copy storage evidence is not ready');this.name='CopyQueryFailure';}
+}
 /** One aggregate budget across metadata, INSERT, candidate, copy and final-fence queries. */
 export class BoundedCopyQueries {
  readonly usage={readRows:0,readBytes:0,decodedBytes:0,dbElapsedNs:0};
@@ -46,21 +51,21 @@ export class BoundedCopyQueries {
   if(this.signal.aborted)throw copyReadNotReady();
  }
  async insert(params:Parameters<ClickHouseClient['insert']>[0]){
-  let finish:((elapsedNs?:number)=>void)|undefined;const before=this.usage.dbElapsedNs;
+  let finish:((elapsedNs?:number)=>void)|undefined;const before=this.usage.dbElapsedNs;let stage:CopyQueryStage="limits";
   try{
    const settings=this.settings(1,true);finish=this.operation?.beginClickHouse();
-   const result=await this.client.insert({...params,abort_signal:this.signal,...(this.sessionId?{session_id:this.sessionId}:{}),
+   stage="insert-request";const result=await this.client.insert({...params,abort_signal:this.signal,...(this.sessionId?{session_id:this.sessionId}:{}),
     clickhouse_settings:{...params.clickhouse_settings,...settings,async_insert:0,insert_deduplicate:0}});
-   if(result.executed)this.account(result.response_headers);return result;
-  }catch(error){throw failure(error);}finally{finish?.(this.usage.dbElapsedNs>before?this.usage.dbElapsedNs-before:undefined);}
+   stage="insert-accounting";if(result.executed)this.account(result.response_headers);return result;
+  }catch(error){throw new CopyQueryFailure(stage,error);}finally{finish?.(this.usage.dbElapsedNs>before?this.usage.dbElapsedNs-before:undefined);}
  }
  async query(text:string,params:Record<string,unknown>,maxRows:number,sessionExists=false){
-  const {usage,limits,signal}=this;let finish:((elapsedNs?:number)=>void)|undefined;const before=usage.dbElapsedNs;
+  const {usage,limits,signal}=this;let finish:((elapsedNs?:number)=>void)|undefined;const before=usage.dbElapsedNs;let stage:CopyQueryStage="limits";
   try{
    const settings=this.settings(maxRows,sessionExists);finish=this.operation?.beginClickHouse();
-   const result=await this.client.query({query:text,query_params:params,format:"JSONEachRowWithProgress",abort_signal:signal,...(this.sessionId?{session_id:this.sessionId}:{}),clickhouse_settings:settings});
+   stage="select-request";const result=await this.client.query({query:text,query_params:params,format:"JSONEachRowWithProgress",abort_signal:signal,...(this.sessionId?{session_id:this.sessionId}:{}),clickhouse_settings:settings});
    const rows:Record<string,unknown>[]=[];let progressRows=0,progressBytes=0;
-   try{for await(const chunk of result.stream<unknown>())for(const line of chunk){
+   stage="select-stream";try{for await(const chunk of result.stream<unknown>())for(const line of chunk){
     usage.decodedBytes+=Buffer.byteLength(line.text,"utf8");if(usage.decodedBytes>limits.decoded)throw exceeded();const item=object(line.json());
     if(Object.hasOwn(item,"progress")){const p=object(item.progress);progressRows=Math.max(progressRows,natural(p.read_rows));progressBytes=Math.max(progressBytes,natural(p.read_bytes));if(usage.readRows+progressRows>limits.rows||usage.readBytes+progressBytes>limits.bytes)throw exceeded();}
     else if(Object.hasOwn(item,"row")){rows.push(object(item.row));if(rows.length>maxRows)throw exceeded();}
@@ -68,7 +73,7 @@ export class BoundedCopyQueries {
     else if(Object.hasOwn(item,"rows_before_limit_at_least")||Object.hasOwn(item,"rows_before_aggregation")){if(Object.keys(item).length!==1)throw copyReadNotReady();const n=Object.values(item)[0];if(typeof n!=="number"&&typeof n!=="string")throw copyReadNotReady();natural(String(n));}
     else throw copyReadNotReady();
    }}finally{result.close();}
-   this.account(result.response_headers,progressRows,progressBytes);return rows;
-  }catch(error){throw failure(error);}finally{finish?.(usage.dbElapsedNs>before?usage.dbElapsedNs-before:undefined);}
+   stage="select-accounting";this.account(result.response_headers,progressRows,progressBytes);return rows;
+  }catch(error){throw new CopyQueryFailure(stage,error);}finally{finish?.(usage.dbElapsedNs>before?usage.dbElapsedNs-before:undefined);}
  }
 }
