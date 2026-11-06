@@ -21,7 +21,8 @@ async function withIngestionReadSession<T>(pool:pg.Pool,read:(snapshot:SnapshotR
  // Socket loss alone does not interrupt pg_sleep or server work. Terminate ONLY our nonce-bound backend.
  const cancel=()=>{if(!released){released=true;client.release(true);
   cancelling=(async()=>{const control=new pg.Client(ingestionCancellationConfig(pool));
-   try{await control.connect();await control.query("select pg_terminate_backend(pid) from pg_stat_activity where pid=$1 and application_name=$2 and usename=current_user and datname=current_database()",[pid,name]);}finally{await control.end();}
+   // A signal acknowledgement is not termination; use the bounded wait already exercised by the dependent reader.
+   try{await control.connect();await control.query("select pg_terminate_backend(pid,250) from pg_stat_activity where pid=$1 and application_name=$2 and usename=current_user and datname=current_database()",[pid,name]);}finally{await control.end();}
   })().catch(()=>undefined);
  }};
  signal.addEventListener("abort",cancel,{once:true});
