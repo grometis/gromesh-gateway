@@ -1,3 +1,4 @@
+import {StorageConsistencyError} from "./storage-consistency.js";
 import { BoundedCopyQueries, copyReadNotReady } from "./bounded-copy-queries.js";
 import { evaluateCopyStorageAuthority, type CopyStorageAuthorityPolicy } from "./copy-storage-authority.js";
 
@@ -30,13 +31,15 @@ export async function observeCopyStorageResource(queries: BoundedCopyQueries, re
 
 /** Every catalog query shares the caller's aggregate budget and authenticated HTTP session. */
 export async function readCopyStorageCatalog(queries: BoundedCopyQueries, sessionExists = false) {
+  let stage="identity";try{
   const identity = (await queries.query("SELECT currentUser() AS observer,toString(serverUUID()) AS serverId,version() AS version", {}, 1, sessionExists))[0];
   if (!identity || typeof identity.observer !== "string" || typeof identity.serverId !== "string" || identity.version !== "25.8.33.6") throw copyReadNotReady();
-  const users = await queries.query("SELECT name,toString(id) AS id,arrayMap(x -> toString(x),auth_type) AS auth_type FROM system.users ORDER BY name LIMIT 1001", {}, 1000, true);
-  const grants = await queries.query("SELECT user_name,role_name,toString(access_type) AS access_type,database,table,column,is_partial_revoke,grant_option FROM system.grants ORDER BY user_name,role_name,access_type,database,table,column LIMIT 1001", {}, 1000, true);
-  const roleGrants = await queries.query("SELECT user_name,role_name,granted_role_name,with_admin_option FROM system.role_grants ORDER BY user_name,role_name,granted_role_name LIMIT 1001", {}, 1000, true);
-  const tables = await queries.query("SELECT database,name,engine FROM system.tables WHERE database NOT IN ('system','information_schema','INFORMATION_SCHEMA') ORDER BY database,name LIMIT 1001", {}, 1000, true);
+  stage="users";const users = await queries.query("SELECT name,toString(id) AS id,arrayMap(x -> toString(x),auth_type) AS auth_type FROM system.users ORDER BY name LIMIT 1001", {}, 1000, true);
+  stage="grants";const grants = await queries.query("SELECT user_name,role_name,toString(access_type) AS access_type,database,table,column,is_partial_revoke,grant_option FROM system.grants ORDER BY user_name,role_name,access_type,database,table,column LIMIT 1001", {}, 1000, true);
+  stage="role-grants";const roleGrants = await queries.query("SELECT user_name,role_name,granted_role_name,with_admin_option FROM system.role_grants ORDER BY user_name,role_name,granted_role_name LIMIT 1001", {}, 1000, true);
+  stage="tables";const tables = await queries.query("SELECT database,name,engine FROM system.tables WHERE database NOT IN ('system','information_schema','INFORMATION_SCHEMA') ORDER BY database,name LIMIT 1001", {}, 1000, true);
   return { serverId: identity.serverId, catalog: { observer: identity.observer, users, grants, roleGrants, tables } };
+  }catch(error){throw new StorageConsistencyError(error instanceof StorageConsistencyError?error.code:"analytics-not-ready",`Copy authority catalog unavailable at ${stage}`);}
 }
 export async function observeCopyStorageAuthority(queries: BoundedCopyQueries, registered: RegisteredCopyStorage, sessionExists = false) {
   const resource = await observeCopyStorageResource(queries, registered, sessionExists);
