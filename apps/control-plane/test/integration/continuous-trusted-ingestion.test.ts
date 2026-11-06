@@ -1,6 +1,8 @@
 import 'reflect-metadata';
 import {randomUUID} from 'node:crypto';
 import {sql} from 'drizzle-orm';
+import {drizzle} from 'drizzle-orm/node-postgres';
+import * as schema from '../../src/db/schema.js';
 import {Module,RequestMethod,type INestApplication} from '@nestjs/common';
 import {NestFactory} from '@nestjs/core';
 import {expect,it} from 'vitest';
@@ -19,7 +21,8 @@ import {verifiedChain,makeVerifiedCopy} from './verified-ingestion-fixtures.js';
 
 it('continues authenticated persistence through three GCs without promoting lost comparison history to HTTP completeness',()=>verifiedChain(async(f,_reader,legacy,copies,streamId,token,admin,settings,pool)=>{
  const key=f.h.app.get<Encryptor>(ENCRYPTOR),gateway=f.h.app.get(AgentGatewayService);
- const reopen=()=>openTrustedIngestion({db:f.db,gateway,settings,experimentalIdentityPolicy:new BatchIdentityPolicy(value=>key.fingerprint(value))});
+ const runtimeDb=drizzle(pool,{schema});
+ const reopen=()=>openTrustedIngestion({db:runtimeDb,gateway,settings,experimentalIdentityPolicy:new BatchIdentityPolicy(value=>key.fingerprint(value))});
  let producer=await reopen(),replica:Awaited<ReturnType<typeof reopen>>|undefined;
  let serving=await createVerifiedWorkspaceRequests({pool,settings,capacity:1,budgetProfile:'operational-v1-proposed'}),app:INestApplication|undefined;
  const original=copies[0]!,ctx={actor:{type:'system' as const,id:'synthetic-continuity-gc'},role:'admin' as const,ip:null};
@@ -29,7 +32,8 @@ it('continues authenticated persistence through three GCs without promoting lost
   const root=await NestFactory.create(TestRoot,{logger:false});root.getHttpAdapter().getInstance().set('query parser','simple');root.setGlobalPrefix('api/v1',{exclude:[{path:'api/v2/{*splat}',method:RequestMethod.ALL}]});await root.init();await root.listen(0,'127.0.0.1');return root;
  };
  try{
-  await expect(Promise.resolve().then(()=>legacy.issueIdentity(token,streamId,[fresh()]))).rejects.toMatchObject({code:'analytics-not-ready'});
+  expect(Reflect.has(legacy,'issueIdentity')).toBe(false);expect(Reflect.has(legacy,'prepareWithIdentity')).toBe(false);
+  await expect(openTrustedIngestion({db:f.db,gateway,settings,experimentalIdentityPolicy:new BatchIdentityPolicy(value=>key.fingerprint(value))})).rejects.toMatchObject({code:'analytics-not-ready'});
   app=await launch();const cookie=(await f.h.login(f.h.admin.email,f.h.admin.password)).cookie!;
   const bounds=new URLSearchParams({from:new Date(Date.parse(original.event.ts)-1000).toISOString(),to:new Date().toISOString()});
   const get=async(path:string,workspace=f.workspaceId,query=bounds)=>{const r=await fetch(`${await app!.getUrl()}/api/v2/workspaces/${workspace}/${path}?${query}`,{headers:{cookie}});return {status:r.status,body:await r.json() as Record<string,unknown>};};
