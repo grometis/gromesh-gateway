@@ -21,7 +21,7 @@ export function integrationInputs(env?: Record<string, string | undefined>): {
   clickhouse: Omit<ClickhouseConfig, "database">;
   validatorUrl: string;
 };
-export function provisionClickhouse(admin: Omit<ClickhouseConfig, "database">, requestsDdl: string, options?: { copyFenceMetadata?: boolean }): Promise<{
+export function provisionClickhouse(admin: Omit<ClickhouseConfig, "database">, requestsDdl: string, options?: { copyFenceMetadata?: boolean; syncCopyWitnessMetadata?: boolean }): Promise<{
   reader: ClickhouseConfig;
   writer: ClickhouseConfig;
   close(): Promise<void>;
