@@ -1,3 +1,4 @@
+import {WorkspaceAnalyticsPanels,WORKSPACE_ANALYTICS_ENABLED} from "./WorkspaceAnalyticsPanels";
 import { useState } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { Link } from "react-router";
@@ -84,11 +85,12 @@ function WorkspaceOverview({ workspace }: { workspace: Workspace }) {
         })}
       </div>
     </section>
+    {WORKSPACE_ANALYTICS_ENABLED&&user&&<WorkspaceAnalyticsPanels workspaceId={workspaceId} principalId={user.id} authorizationKey={role??"none"} enabled={state==="authorized"||state==="archived"}/>}
     <div className="workspace-overview-columns">
       <section className="workspace-overview-panel stack" aria-label="Release selecionada">
         <h2>Release selecionada</h2><p className="workspace-overview-release">{releaseText}</p>
         <p className="muted">Seleção para uma futura implantação. Não comprova implantação ou versão aplicada.</p>
-        {releasesHref && <Link to={releasesHref}>Ver Releases</Link>}
+        {releasesHref && <Link className="button" to={releasesHref}>Ver Releases</Link>}
       </section>
       <section className="workspace-overview-panel stack" aria-label="Releases recentes">
         <h2>Releases recentes</h2>
