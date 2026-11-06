@@ -10,6 +10,11 @@ test('proposes a distinct operational profile without claiming physical reads',(
  assert.equal(profile.operation.databaseMs,5000);assert.equal(profile.postgres.temporaryFileBytes,0);
  assert.equal(profile.clickhouse.readRows,5000000);assert.equal(profile.clickhouse.readBytes,268435456);
  assert.equal(profile.operation.responseBytes,2097152);assert.equal(profile.recovery.attemptMs,500);
+ assert.equal(profile.httpObservation.deadlineMs,8000);
+ assert.equal(profile.httpObservation.starts,'first-opt-in-application-middleware-before-guards-and-query-parsing');
+ assert.equal(profile.httpObservation.ends,'local-response-finish-or-close');
+ assert.equal(profile.httpObservation.hardHttpDeadlineProven,false);
+ assert.equal(profile.httpObservation.cancelsPriorAuthorizationSql,false);
 });
 test('does not silently replace the integrated physical contract',()=>{
  const design=readFileSync(new URL('../analytics-v2-design.md',import.meta.url),'utf8');
