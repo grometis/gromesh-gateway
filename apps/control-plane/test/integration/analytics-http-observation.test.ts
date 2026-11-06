@@ -31,7 +31,7 @@ it('observes invalid parsing and rejected authorization with no operation alloca
 it('counts blocked real authorization SQL in HTTP time and refuses late operation entry after release',async()=>{
  const lock=await f.h.sql.connect();await lock.query('begin');await lock.query('lock table users in access exclusive mode');
  const start=new Promise<AbortSignal>(resolve=>{entered=resolve;});
- const pending=fetch(url(),{headers:{cookie}});let blocked=false;
+ const pending=fetch(url().replace('/requests?','/REQUESTS?'),{headers:{cookie}});let blocked=false;
  try{
   const signal=await start;entered=undefined;
   const until=performance.now()+2000;

@@ -41,3 +41,16 @@ Raw/admission payload and negative conflict evidence retain the existing 1–7 d
 Approval required: derived UUID namespace, 15-minute retry lifetime, stale-mint conflict behavior and the new proof-bearing internal admission method. Experimental implementation/tests may depend on this proposal only in isolated branches explicitly authorized by R22. No merge or operational activation is approved.
 
 R25 also authorizes isolated consumers and tests of this direction. It does not grant normative approval, merge, automatic migration, or installation in an operational factory. Batch identity is not a lifetime contract for the normative Request ID; pruning request comparison history must still fail closed when a later copy cannot be safely compared.
+
+## Adoption checklist for approval (R26)
+
+| Producer/recovery state | Proposed behavior | Compatibility boundary |
+| --- | --- | --- |
+| Legacy non-v8 batch | Keep original protocol, including post-prune refusal | No automatic conversion or retry-lifetime extension |
+| Existing arbitrary v8 handle | Refuse under the proposed namespace; inventory and explicitly retire/migrate its producer | Never reinterpret it as a signed envelope |
+| Proposed producer, valid ticket | Reauthenticate stream/node/history; return exact live retry or admit next position transactionally | Ticket possession alone is not authorization |
+| Expired ticket, stale competing mint, or consumed position without the exact live binding (including pruning) | Reject409; a newly allowed attempt requires a fresh CP identity; a valid exact live retry keeps its existing generation | No renewal, recycled UUID or counter regression |
+| Partial restore inconsistent with surviving coverage/live admissions | Refuse mint and exact retry409 | The existing frontier checks are implemented and tested |
+| Coherent full restore with no external continuity evidence | Do not resume the proposed producer path as continuous | No automatic local rollback detector is implemented; recovery needs a reviewed external checkpoint or new instance/authorization identity without claiming the old frontier |
+
+The owner decision approves these internal identity/retry semantics and their explicit migration costs, not a public ingestion HTTP protocol or an operational recovery service. Before activation, the operator must qualify the restore procedure and producer cutover; the prototype does not silently detect or authorize a coherent full restore. No consumer default, environment switch or factory activation is changed by this proposal.
