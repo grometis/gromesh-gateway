@@ -43,10 +43,13 @@ it('admits new signed identities after real GC without resurrecting consumed pos
   const descriptor=(await f.h.sql.query('select descriptor from analytics_ingestion_batches where id=$1',[fresh.batchId])).rows[0]!.descriptor as {copyId:string;id:string;commitment:string;expiresAt:string}[];
   const clock=(await f.h.sql.query('select floor(extract(epoch from clock_timestamp())*1000)::text ms')).rows[0]!.ms as string;
   // A correctly signed but expired envelope must fail at the actual PostgreSQL admission boundary.
-  const expired=policy.issue({instanceId:f.instanceId,streamId:stream.id,authorizationId:stream.authorizationId,position:'3',descriptorDigest:digestAdmissionDescriptor(descriptor)},Number(clock)-900000);
+  const identityContext={instanceId:f.instanceId,streamId:stream.id,authorizationId:stream.authorizationId,position:'4',descriptorDigest:digestAdmissionDescriptor(descriptor)};
+  const expired=policy.issue(identityContext,Number(clock)-900000);
   await expect(service.prepareWithIdentity(producer.token,stream.id,expired,freshCopies)).rejects.toMatchObject({status:409});
   expect((await f.h.sql.query('select position::text p from analytics_ingestion_counter')).rows[0]!.p).toBe('3');
   expect((await f.h.sql.query('select 1 from analytics_ingestion_batches where id=$1',[expired.batchId])).rowCount).toBe(0);
+  const valid=policy.issue(identityContext,Number(clock));
+  expect(await service.prepareWithIdentity(producer.token,stream.id,valid,freshCopies)).toMatchObject({generation:'4'});
   await expect(legacy.prepare(producer.token,stream.id,randomUUID(),freshCopies)).rejects.toMatchObject({status:409});
   await expect(service.prepareWithIdentity(producer.token,stream.id,fresh,[{...freshCopies[0]!,event:{...freshCopies[0]!.event,status:500}}])).rejects.toMatchObject({status:409});
   const other=await service.open(producer.token,randomUUID());await expect(service.prepareWithIdentity(producer.token,other.id,fresh,[await copy(other.podUid)])).rejects.toMatchObject({status:409});
@@ -55,7 +58,7 @@ it('admits new signed identities after real GC without resurrecting consumed pos
   const leftCopies=[await copy()],rightCopies=[await copy()],left=await service.issueIdentity(producer.token,stream.id,leftCopies),right=await afterRestart.issueIdentity(producer.token,stream.id,rightCopies);
   const result=await Promise.allSettled([service.prepareWithIdentity(producer.token,stream.id,left,leftCopies),afterRestart.prepareWithIdentity(producer.token,stream.id,right,rightCopies)]);
   expect(result.filter(r=>r.status==='fulfilled')).toHaveLength(1);expect(result.filter(r=>r.status==='rejected')).toHaveLength(1);
-  expect((await f.h.sql.query('select position::text p from analytics_ingestion_counter')).rows[0]!.p).toBe('4');
+  expect((await f.h.sql.query('select position::text p from analytics_ingestion_counter')).rows[0]!.p).toBe('5');
   // Persistence is replaced ONLY to inspect the boundary and deliberately fail, never to fabricate a receipt.
   const capture=new IngestionCopyPersistence({} as ClickHouseClient,{} as ClickHouseClient);let observedStatus:unknown;
   capture.persist=async input=>{observedStatus=input.copies[0]!.event.status;throw Error('synthetic boundary stop');};
