@@ -14,6 +14,8 @@ import {
   scrubKong,
 } from "./lab.mjs";
 
+import { f3Unadopted, negativeReplay } from "../external/scenario-checks.mjs";
+
 const out = process.env.LAB_OUT ?? mkdtempSync(join(tmpdir(), "gromesh-n2-comp-"));
 const IMAGES = {
   cp: process.env.CP_IMAGE ?? "gromesh-n2c-cp:41db8aa",
@@ -62,7 +64,7 @@ const expect = (it, ok, message) => { if (!ok) it.failures.push(message); return
 const negative = (it, what, expected, observed, ok) => { it.negative.push({ what, expected, observed, ok }); if (!ok) it.failures.push(`negative control "${what}": expected ${expected}, observed ${observed}`); };
 /** Only at an item's normal end: an exception leaves it pending, and main records it as failed. */
 function done(it) {
-  it.result = it.failures.length ? "fail" : "pass";
+  it.result = it.failures.length ? "fail" : it.measures.verdict?.result === "INVALID" ? "incomplete" : "pass";
   save();
   log(`item ${it.id}: ${it.result.toUpperCase()} ${JSON.stringify(it.measures)}`);
   for (const f of it.failures) log(`  ${f}`);
@@ -1166,7 +1168,7 @@ const openAdmissions = async () => (await admissions(ctx.clusterId)).filter((a) 
 const openPendencies = async () => (await pendencies(ctx.clusterId)).filter((p) => ["communication-failure", "confirmed-violation", "unconfirmed-isolation"].includes(p.lifecycle));
 
 async function deletePod(pod, extra = []) {
-  await kubectl(["-n", NS.dp, "delete", "pod", pod.name, "--wait=false", ...extra], { allowFail: true });
+  return kubectl(["-n", NS.dp, "delete", "pod", pod.name, "--wait=false", ...extra], { allowFail: true });
 }
 async function goneOf(pod, timeoutMs = 90_000) {
   return waitFor(`pod ${pod.name} gone`, async () => {
@@ -1197,12 +1199,17 @@ async function deleteRightAfterGrant() {
     closing: "admission closed (kong-stop-confirmed) with a chain of exactly one final report, audit neverServed true", replacement: `replacement request → grant ≤ ${s(BUDGET.heldGrant)}`, pendencies: "none" });
   const base = (await live())[0];
   const r = await replace(base);
-  const granted = await grantedFast(r);
-  const t0 = Date.now();
-  await deletePod(r);
-  mark("deleted right after grant", { pod: r.name, grantToDeleteMs: t0 - granted.decided });
   const follow = new Follower(r.name, "isolation-probe");
   followers.push(follow);
+  const granted = await grantedFast(r);
+  const t0 = Date.now();
+  const deletion = await deletePod(r);
+  if (deletion.code !== 0) {
+    it.measures.verdict = { result: "INVALID", reason: "delete was not acknowledged; F3-1 not exercised" };
+    done(it);
+    return;
+  }
+  mark("deleted right after grant", { pod: r.name, grantToDeleteMs: t0 - granted.decided });
   await goneOf(r);
   const r2 = await waitFor("next replacement", async () => (await live()).find((p) => p.uid !== base.uid && p.uid !== r.uid && p.created >= t0 - 2000), { timeoutMs: 90_000 });
   const closed = await waitFor("admission of the deleted pod closed", async () => { const a = await admissionRow(granted.admission_id); return a.state !== "open" ? a : null; }, { timeoutMs: 60_000 }).catch(() => null);
@@ -1213,9 +1220,11 @@ async function deleteRightAfterGrant() {
   Object.assign(it.measures, { grantToDeleteMs: t0 - granted.decided, adoptedBeforeDeletion: Boolean(adoptLog && adoptLog.at <= t0), probeCloseLog: closeLog?.text ?? null,
     fate: f, deleteToClosedMs: closed ? closed.closed - t0 : null, replacementRequestToGrantMs: g2 ? g2.decided - g2.requested : null, pendencies: await openPendencies() });
   expect(it, closed?.state === "closed" && closed.close_reason === "kong-stop-confirmed", `admission ${JSON.stringify(f)}`);
-  if (!adoptLog || adoptLog.at > t0) {
-    expect(it, f.chain.length === 1 && f.chain[0].seq === 1 && f.chain[0].final && f.closeAudit?.neverServed === true, `not closed by a final seq 1: ${JSON.stringify(f)}`);
-  } else it.notes.push("the probe adopted the admission before the deletion: closed on its own chain (test 3 shape)");
+  const evidence = { attempted: true, fate: f, grant: granted.decided, deleted: t0, replacement: g2, pendencies: it.measures.pendencies };
+  it.measures.verdict = f3Unadopted(evidence);
+  it.negative.push(negativeReplay(f3Unadopted, evidence, (e) => { if (e.fate.chain[0]) e.fate.chain[0].seq = 2; }));
+  if (it.measures.verdict.result === "FAIL") it.failures.push(it.measures.verdict.reason);
+  if (it.measures.verdict.result === "INVALID") it.notes.push(it.measures.verdict.reason);
   expect(it, g2 && g2.decided - g2.requested <= BUDGET.heldGrant, `replacement not granted in budget: ${JSON.stringify(it.measures.replacementRequestToGrantMs)}`);
   expect(it, it.measures.pendencies.length === 0, `pendencies open: ${JSON.stringify(it.measures.pendencies)}`);
   ctx.f3closed = { admissionId: granted.admission_id, podUid: r.uid };
@@ -1461,6 +1470,7 @@ async function main() {
   }
   const failed = report.items.filter((i) => i.result === "fail" || i.result === "pending");
   if (failed.length || report.aborted || report.secretScan.leaks.length || report.cleanupFailed) process.exit(1);
+  if (report.items.some((i) => i.result === "incomplete")) process.exit(2);
 }
 
 await main();
