@@ -82,7 +82,7 @@ export class IngestionAdmissions {
   }
   async prepare(token:string,streamId:string,batchId:string,copies:readonly IngestionCopy[],expectedGeneration?:string){return this.prepareInternal(token,streamId,batchId,copies,expectedGeneration);}
   /** Isolated proposal consumer. No runtime factory supplies identityPolicy. */
-  async prepareWithIdentity(token:string,streamId:string,identity:{batchId:string;token:string},copies:readonly IngestionCopy[]){return this.prepareInternal(token,streamId,identity.batchId,copies,undefined,identity.token);}
+  async prepareWithIdentity(token:string,streamId:string,identity:{batchId:string;token:string},copies:readonly IngestionCopy[]){if(!this.identityPolicy||!identity||typeof identity.token!=="string"||!identity.token||identity.token.length>2048)throw new ProblemException(409,"Authenticated batch identity required");return this.prepareInternal(token,streamId,identity.batchId,copies,undefined,identity.token);}
   async issueIdentity(token:string,streamId:string,copies:readonly IngestionCopy[]){
     if(!this.identityPolicy||!uuid.test(streamId)||!Array.isArray(copies)||copies.length<1||copies.length>100||Buffer.byteLength(JSON.stringify(copies))>2*1024*1024)return invalid();
     copies=structuredClone(copies);
@@ -106,9 +106,9 @@ export class IngestionAdmissions {
       const [stream]=await tx.select().from(streams).where(eq(streams.id,streamId));
       if(!stream||stream.instanceId!==a.self.id||stream.clusterId!==a.current.cluster.id||stream.nodeId!==a.current.node.nodeId||stream.authorizationId!==a.last.id)return denied();
       const descriptor=describe(stream,copies,a.now,a.visible.observedAt);
-      if(batchId[14]==='8'&&!identityTicket)throw new ProblemException(409,"Authenticated batch identity required");
-      const identity=identityTicket?this.identityPolicy?.verify(identityTicket,{instanceId:a.self.id,streamId,authorizationId:a.last.id,batchId,descriptorDigest:digestAdmissionDescriptor(descriptor)},Date.parse(a.now)):undefined;
-      if(identityTicket&&!identity)throw new ProblemException(409,"Batch identity policy is not enabled");
+      if(batchId[14]==='8'&&identityTicket===undefined)throw new ProblemException(409,"Authenticated batch identity required");
+      const identity=identityTicket!==undefined?this.identityPolicy?.verify(identityTicket,{instanceId:a.self.id,streamId,authorizationId:a.last.id,batchId,descriptorDigest:digestAdmissionDescriptor(descriptor)},Date.parse(a.now)):undefined;
+      if(identityTicket!==undefined&&!identity)throw new ProblemException(409,"Batch identity policy is not enabled");
       const [prior]=await tx.select().from(batches).where(eq(batches.id,batchId));
       // A reconciliation may only revisit the exact existing position; GC/missing history must never readmit it.
       if(expectedGeneration!==undefined&&(!prior||prior.generation.toString()!==expectedGeneration))throw new ProblemException(409,"Ingestion admission is no longer available at the expected position");
@@ -127,7 +127,7 @@ export class IngestionAdmissions {
     });
   }
   async persist(token:string,streamId:string,batchId:string,copies:readonly IngestionCopy[],options:{expectedGeneration?:string;signal?:AbortSignal;identityTicket?:string}={}) {
-    const signal=options.signal;signal?.throwIfAborted();
+    const signal=options.signal;signal?.throwIfAborted();copies=structuredClone(copies);
     if(!this.persistence)throw new Error("Ingestion persistence is not configured");
     const prepared=await this.prepareInternal(token,streamId,batchId,copies,options.expectedGeneration,options.identityTicket);
     signal?.throwIfAborted();

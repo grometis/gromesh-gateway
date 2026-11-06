@@ -3,6 +3,8 @@ import {expect,it} from 'vitest';
 import {sql} from 'drizzle-orm';
 import {clusterHistoryFixture} from './cluster-history-fixtures.js';
 import {authorizeClusterDelivery,confirmClusterAssociation} from '../../src/analytics/cluster-history.js';
+import {IngestionCopyPersistence} from '../../src/analytics/ingestion-copy-persistence.js';
+import type {ClickHouseClient} from '@clickhouse/client';
 import {IngestionAdmissions} from '../../src/analytics/ingestion-admissions.js';
 import {BatchIdentityPolicy} from '../../src/analytics/batch-identity.js';
 import {AgentGatewayService} from '../../src/agent-gateway/agent-gateway.js';
@@ -20,6 +22,7 @@ it('admits new signed identities after real GC without resurrecting consumed pos
    const id=`${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`,ts=(await f.h.sql.query("select to_char(clock_timestamp() at time zone 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') ts")).rows[0]!.ts as string;
    return{schemaVersion:1 as const,copyId:randomUUID(),podUid,requestId,event:{id,ts,environmentId:f.instanceId,clusterId:producer.source.clusterId,routeId:f.routeId,serviceId:f.serviceId,consumerId:null,method:'GET',path:'/same',status:200,latencyKongMs:1,latencyUpstreamMs:null,latencyTotalMs:2,clientIp:'192.0.2.1',requestSize:'1',responseSize:'1',retentionDays:1}};
   };
+  await expect(service.prepareWithIdentity(producer.token,stream.id,{batchId:randomUUID(),token:''},[await copy()])).rejects.toMatchObject({status:409});
   const firstCopies=[await copy()],first=await service.issueIdentity(producer.token,stream.id,firstCopies),admitted=await service.prepareWithIdentity(producer.token,stream.id,first,firstCopies);
   expect(admitted.generation).toBe('1');expect(await service.prepareWithIdentity(producer.token,stream.id,first,firstCopies)).toEqual(admitted);
   const oldId=randomUUID();
@@ -41,6 +44,14 @@ it('admits new signed identities after real GC without resurrecting consumed pos
   const result=await Promise.allSettled([service.prepareWithIdentity(producer.token,stream.id,left,leftCopies),afterRestart.prepareWithIdentity(producer.token,stream.id,right,rightCopies)]);
   expect(result.filter(r=>r.status==='fulfilled')).toHaveLength(1);expect(result.filter(r=>r.status==='rejected')).toHaveLength(1);
   expect((await f.h.sql.query('select position::text p from analytics_ingestion_counter')).rows[0]!.p).toBe('4');
+  // Persistence is replaced ONLY to inspect the boundary and deliberately fail, never to fabricate a receipt.
+  const capture=new IngestionCopyPersistence({} as ClickHouseClient,{} as ClickHouseClient);let observedStatus:unknown;
+  capture.persist=async input=>{observedStatus=input.copies[0]!.event.status;throw Error('synthetic boundary stop');};
+  const signedPersist=new IngestionAdmissions(f.db,gateway,capture,policy),payload=[await copy()],identity=await signedPersist.issueIdentity(producer.token,stream.id,payload);
+  const gate=await f.h.sql.connect();await gate.query('select pg_advisory_lock(1818,1801)');
+  const pending=signedPersist.persist(producer.token,stream.id,identity.batchId,payload,{identityTicket:identity.token}).then(()=>null,error=>error as unknown);
+  try{payload[0]!.event.status=500;}finally{await gate.query('select pg_advisory_unlock(1818,1801)');gate.release();}
+  expect(await pending).toMatchObject({message:'synthetic boundary stop'});expect(observedStatus).toBe(200);
   const audits=await f.h.sql.query("select after::text value from audit_events where action='analytics.ingestion.identity'");expect(audits.rows.length).toBeGreaterThan(0);expect(JSON.stringify(audits.rows)).not.toContain(fresh.token);expect(JSON.stringify(audits.rows)).not.toContain('192.0.2.1');
  }finally{await f.close();}
 });
