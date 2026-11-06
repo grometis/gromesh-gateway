@@ -38,6 +38,7 @@ it('admits new signed identities after real GC without resurrecting consumed pos
   expect((await f.h.sql.query('select 1 from analytics_ingestion_batches where id=$1',[oldId])).rowCount).toBe(0);
   await expect(service.prepareWithIdentity(producer.token,stream.id,oldIdentity,oldCopies)).rejects.toMatchObject({status:409});
   const freshCopies=[await copy()],fresh=await service.issueIdentity(producer.token,stream.id,freshCopies);
+  const spareCopies=[await copy()],spare=await service.issueIdentity(producer.token,stream.id,spareCopies);
   expect((await service.prepareWithIdentity(producer.token,stream.id,fresh,freshCopies)).generation).toBe('3');
   await expect(legacy.prepare(producer.token,stream.id,randomUUID(),freshCopies)).rejects.toMatchObject({status:409});
   await expect(service.prepareWithIdentity(producer.token,stream.id,fresh,[{...freshCopies[0]!,event:{...freshCopies[0]!.event,status:500}}])).rejects.toMatchObject({status:409});
@@ -60,6 +61,8 @@ it('admits new signed identities after real GC without resurrecting consumed pos
   // A surviving live batch also proves a counter-only restore is stale, even exactly at prune coverage.
   const frontier=(await f.h.sql.query('select pruned_through::text p from analytics_ingestion_prune_coverage')).rows[0]!.p;
   await f.h.sql.query('update analytics_ingestion_counter set position=$1',[frontier]);
+  expect(await service.prepareWithIdentity(producer.token,stream.id,spare,spareCopies).then(()=>null,error=>({status:(error as {status:number}).status}))).toEqual({status:409});
+  expect((await f.h.sql.query('select position::text p from analytics_ingestion_counter')).rows[0]!.p).toBe(frontier);
   expect(await service.issueIdentity(producer.token,stream.id,oldCopies).then(()=>null,error=>({status:(error as {status:number}).status}))).toEqual({status:409});
   // Simulate a partial restore losing the counter while irreversible prune coverage survived.
   await f.h.sql.query('update analytics_ingestion_counter set position=1');
