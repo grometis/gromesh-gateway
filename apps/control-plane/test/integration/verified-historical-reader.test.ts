@@ -90,6 +90,6 @@ it("refuses surviving persisted requests after real GC removes required admissio
  expect(await pruneAdmissionHistory(f.db,ctx,1)).toEqual({removed:1});expect(await pruneAdmissionHistory(f.db,ctx,1)).toEqual({removed:0});
  expect((await f.h.sql.query('select 1 from analytics_ingestion_batches where id=$1',[id])).rowCount).toBe(0);
  expect(await withIngestionReadSnapshot(pool,readAdmissionPrefix)).toMatchObject({admissionHistoryPruned:true,gapDetected:true,receiptPrefixComplete:false,copiesComplete:false});
- const count=await admin.query({query:`SELECT count() n FROM ${settings.databaseName}.requests_v2_copies`,format:'JSONEachRow'});expect((await count.json<{n:string}>())[0]!.n).toBe('2');
+ const count=await admin.query({query:`SELECT toString(count()) n FROM ${settings.databaseName}.requests_v2_copies`,format:'JSONEachRow'});expect((await count.json<{n:string}>())[0]!.n).toBe('2');
  await expect(reader.read(w)).rejects.toMatchObject({code:'analytics-not-ready'});
 }));
