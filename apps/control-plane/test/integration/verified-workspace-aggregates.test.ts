@@ -52,7 +52,7 @@ it('serves three contracted aggregations through HTTP using persisted attributed
   for(const operation of ['summary','timeseries','top-routes']){const r=await get(operation);expect(r.status).toBe(502);expect(r.body).not.toHaveProperty('totals');expect(r.body).not.toHaveProperty('series');expect(r.body).not.toHaveProperty('items');}
   // Completing and replaying the previously missing batch restores a proven read without double counting.
   await producer.persist(token,streamId,pendingBatch,duplicate);await producer.persist(token,streamId,pendingBatch,duplicate);
-  const recovered=await get('summary');expect(recovered.status).toBe(200);expect(recovered.body.totals).toMatchObject({requests:3,errors4xx:1,errors5xx:1});
+  for(const operation of ['summary','timeseries','top-routes']){const recovered=await get(operation);expect(recovered.status,operation).toBe(200);if(operation==='summary')expect(recovered.body.totals).toMatchObject({requests:3,errors4xx:1,errors5xx:1});}
   // A later incompatible copy must invalidate every operation, including queries for the other workspace.
   const conflict={...original,copyId:randomUUID(),event:{...original.event,routeId:f.otherRouteId,serviceId:f.otherServiceId,status:500}};
   await expect(producer.persist(token,streamId,randomUUID(),[conflict])).rejects.toThrow();

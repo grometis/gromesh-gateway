@@ -4,6 +4,7 @@ import pg from "pg";
 import {sql} from "drizzle-orm";
 import {pruneAdmissionHistory} from "../../src/analytics/admission-retention.js";
 import {audit} from "../../src/audit/audit.js";
+import {readAdmissionPrefix,withIngestionReadSnapshot} from "../../src/analytics/ingestion-read-snapshot.js";
 import { copyStorageProxy } from "./copy-storage-proxy.js";
 import { openVerifiedHistoricalReader } from "../../src/analytics/verified-historical-reader.js";
 import { verifiedChain as chain } from "./verified-ingestion-fixtures.js";
@@ -76,7 +77,7 @@ it("uses authoritative public history even if a pooled session contains a diverg
   } finally { await scoped.end(); }
 }));
 
-it("refuses surviving persisted requests after real GC removes required admission coverage",()=>chain(async(f,reader,_producer,copies,stream,_token,admin,settings)=>{
+it("refuses surviving persisted requests after real GC removes required admission coverage",()=>chain(async(f,reader,_producer,copies,stream,_token,admin,settings,pool)=>{
  const w=window(f.instanceId,copies[0]!.event.ts);expect((await reader.read(w)).items).toHaveLength(2);
  const id=randomUUID(),ctx={actor:{type:'system' as const,id:'synthetic-expired-admission'},role:'admin' as const,ip:null};
  // Technical expired descriptor exercises real pruning, not past node authorization or historical persistence.
@@ -88,6 +89,7 @@ it("refuses surviving persisted requests after real GC removes required admissio
  });
  expect(await pruneAdmissionHistory(f.db,ctx,1)).toEqual({removed:1});expect(await pruneAdmissionHistory(f.db,ctx,1)).toEqual({removed:0});
  expect((await f.h.sql.query('select 1 from analytics_ingestion_batches where id=$1',[id])).rowCount).toBe(0);
+ expect(await withIngestionReadSnapshot(pool,readAdmissionPrefix)).toMatchObject({admissionHistoryPruned:true,gapDetected:true,receiptPrefixComplete:false,copiesComplete:false});
  const count=await admin.query({query:`SELECT count() n FROM ${settings.databaseName}.requests_v2_copies`,format:'JSONEachRow'});expect((await count.json<{n:string}>())[0]!.n).toBe('2');
  await expect(reader.read(w)).rejects.toMatchObject({code:'analytics-not-ready'});
 }));
