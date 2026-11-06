@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ClickHouseClient } from "@clickhouse/client";
 import { BoundedCopyQueries,copyReadNotReady,type CopyReadBudget } from "./bounded-copy-queries.js";
+import { assertCopyStorageSchema } from "./copy-storage-schema.js";
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const metadata=`SELECT toString(t.uuid) AS tableId,t.engine,t.create_table_query AS definition,
  (SELECT arraySort(groupArray(tuple(name,toString(uuid),toString(rows),toString(bytes_on_disk),toString(data_version)))) FROM system.parts WHERE database=currentDatabase() AND table='requests_v2_copies' AND active) AS parts
@@ -21,12 +22,14 @@ export class PhysicalCopyFence {
   try{
    const queries=new BoundedCopyQueries(this.client,budget,signal,`gromesh-copy-fence-${randomUUID()}`);
    const before=decodeMetadata(await queries.query(metadata,{},1));
+   await assertCopyStorageSchema(queries);
    // A new part cannot silently enter the read cut, even if a later merge or TTL removes it.
    const rows=ids.length?await queries.query(`SELECT id,toString(ts) AS ts,environment_id,cluster_id,service_id,route_id,consumer_id,method,path,status,
     latency_kong_ms,latency_upstream_ms,latency_total_ms,toString(client_ip) AS client_ip,toString(request_size) AS request_size,toString(response_size) AS response_size,retention_days,
     ingress_stream_id,ingress_batch_id,ingress_copy_id,toString(ingress_generation) AS ingress_generation,ingress_wire
     FROM requests_v2_copies WHERE id IN {ids:Array(UUID)} AND _part IN {parts:Array(String)} LIMIT 10001`,{ids:[...new Set(ids)],parts:before.parts.map(p=>p[0]!)},10000,true):[];
    const after=decodeMetadata(await queries.query(metadata,{},1,true));
+   await assertCopyStorageSchema(queries);
    // Exact tuples and schema, not a digest or only max(block_number). Any change refuses this observation.
    if(JSON.stringify(before)!==JSON.stringify(after))throw copyReadNotReady();
    return {rows,tableId:before.tableId,parts:before.parts,usage:queries.usage,
