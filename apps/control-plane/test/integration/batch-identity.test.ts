@@ -25,7 +25,9 @@ it('admits new signed identities after real GC without resurrecting consumed pos
   await expect(service.prepareWithIdentity(producer.token,stream.id,{batchId:randomUUID(),token:''},[await copy()])).rejects.toMatchObject({status:409});
   const firstCopies=[await copy()],first=await service.issueIdentity(producer.token,stream.id,firstCopies),admitted=await service.prepareWithIdentity(producer.token,stream.id,first,firstCopies);
   expect(admitted.generation).toBe('1');expect(await service.prepareWithIdentity(producer.token,stream.id,first,firstCopies)).toEqual(admitted);
-  const oldId=randomUUID();
+  const oldCopies=[await copy()],oldIdentity=await service.issueIdentity(producer.token,stream.id,oldCopies),oldId=oldIdentity.batchId;
+  // Artificially aged technical descriptor exercises loss of a signed UUID binding, not past producer authorization.
+  // The signed envelope itself is current/valid; replay must fail because its position was consumed, not because UUID history survives.
   await f.db.transaction(async tx=>{
    await tx.execute(sql`select pg_advisory_xact_lock(1818,1801)`);
    await tx.execute(sql`update analytics_ingestion_counter set position=position+1`);
@@ -33,6 +35,8 @@ it('admits new signed identities after real GC without resurrecting consumed pos
    await audit(tx,producer.ctx,{action:'synthetic.expired-admission',entityType:'ingestion-batch',entityId:oldId});
   });
   expect(await pruneAdmissionHistory(f.db,producer.ctx,1)).toMatchObject({removed:1});
+  expect((await f.h.sql.query('select 1 from analytics_ingestion_batches where id=$1',[oldId])).rowCount).toBe(0);
+  await expect(service.prepareWithIdentity(producer.token,stream.id,oldIdentity,oldCopies)).rejects.toMatchObject({status:409});
   const freshCopies=[await copy()],fresh=await service.issueIdentity(producer.token,stream.id,freshCopies);
   expect((await service.prepareWithIdentity(producer.token,stream.id,fresh,freshCopies)).generation).toBe('3');
   await expect(legacy.prepare(producer.token,stream.id,randomUUID(),freshCopies)).rejects.toMatchObject({status:409});
