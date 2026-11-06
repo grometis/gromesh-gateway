@@ -114,16 +114,18 @@ it('continues authenticated persistence through three GCs without promoting lost
 
 
 it('proves half-open query windows before GC and refuses recent or apparently empty windows after comparison coverage is pruned',()=>verifiedChain(async(f,_reader,_legacy,copies,streamId,token,admin,settings,pool)=>{
- const key=f.h.app.get<Encryptor>(ENCRYPTOR),producer=await openTrustedIngestion({db:drizzle(pool,{schema}),gateway:f.h.app.get(AgentGatewayService),settings,experimentalIdentityPolicy:new BatchIdentityPolicy(value=>key.fingerprint(value))});
- const serving=await createVerifiedWorkspaceRequests({pool,settings,capacity:1,budgetProfile:'operational-v1-proposed'});
- @Module({imports:[AppModule.forRoot(f.h.app.get<AppConfig>(APP_CONFIG)),WorkspaceRequestPreparationModule.withServing(serving),WorkspaceAnalyticsPreparationModule.withServing(serving)]})class TestRoot{}
- const app=await NestFactory.create(TestRoot,{logger:false});
+ const key=f.h.app.get<Encryptor>(ENCRYPTOR);
+ let producer:Awaited<ReturnType<typeof openTrustedIngestion>>|undefined,serving:Awaited<ReturnType<typeof createVerifiedWorkspaceRequests>>|undefined,app:INestApplication|undefined;
  const paths=['requests','analytics/summary','analytics/timeseries','analytics/top-routes'];
  const ts=Date.parse(copies[0]!.event.ts),recent=new URLSearchParams({from:new Date(ts).toISOString(),to:new Date(ts+1).toISOString()}),empty=new URLSearchParams({from:new Date(ts-1).toISOString(),to:new Date(ts).toISOString()});
  try{
+  producer=await openTrustedIngestion({db:drizzle(pool,{schema}),gateway:f.h.app.get(AgentGatewayService),settings,experimentalIdentityPolicy:new BatchIdentityPolicy(value=>key.fingerprint(value))});
+  serving=await createVerifiedWorkspaceRequests({pool,settings,capacity:1,budgetProfile:'operational-v1-proposed'});
+  @Module({imports:[AppModule.forRoot(f.h.app.get<AppConfig>(APP_CONFIG)),WorkspaceRequestPreparationModule.withServing(serving),WorkspaceAnalyticsPreparationModule.withServing(serving)]})class TestRoot{}
+  app=await NestFactory.create(TestRoot,{logger:false});
   app.use(observeAnalyticsHttp());app.getHttpAdapter().getInstance().set('query parser','simple');app.setGlobalPrefix('api/v1',{exclude:[{path:'api/v2/{*splat}',method:RequestMethod.ALL}]});await app.init();await app.listen(0,'127.0.0.1');
   const cookie=(await f.h.login(f.h.admin.email,f.h.admin.password)).cookie!;
-  const get=async(path:string,workspace:string,window:URLSearchParams)=>{const response=await fetch(`${await app.getUrl()}/api/v2/workspaces/${workspace}/${path}?${window}`,{headers:{cookie}});return {status:response.status,body:await response.json() as Record<string,unknown>};};
+  const get=async(path:string,workspace:string,window:URLSearchParams)=>{const response=await fetch(`${await app!.getUrl()}/api/v2/workspaces/${workspace}/${path}?${window}`,{headers:{cookie}});return {status:response.status,body:await response.json() as Record<string,unknown>};};
   for(const workspace of [f.workspaceId,f.otherWorkspaceId])for(const [window,expected]of [[recent,1],[empty,0]] as const)for(const path of paths){
    const response=await get(path,workspace,window);expect(response.status,`${path} ${window}`).toBe(200);
    const count=path==='requests'?(response.body.items as unknown[]).length:path==='analytics/summary'?(response.body.totals as {requests:number}).requests:((path==='analytics/timeseries'?response.body.series:response.body.items) as {requests:number}[]).reduce((n,row)=>n+row.requests,0);
@@ -146,5 +148,5 @@ it('proves half-open query windows before GC and refuses recent or apparently em
   // A new admitted prefix and physical survivors do not reconstruct comparison history for RequestIDs.
   await admin.command({query:`OPTIMIZE TABLE ${settings.databaseName}.requests_v2_copies FINAL`});
   await refuse();
- }finally{await app.close();await serving.close();await producer.close();}
+ }finally{await app?.close();await serving?.close();await producer?.close();}
 }));
