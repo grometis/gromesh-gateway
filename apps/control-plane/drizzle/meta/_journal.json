@@ -253,6 +253,13 @@
       "when": 1793882974523,
       "tag": "0035_admission_history_retention",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1793913635337,
+      "tag": "0036_trusted_ingestion_storage",
+      "breakpoints": true
     }
   ]
 }
