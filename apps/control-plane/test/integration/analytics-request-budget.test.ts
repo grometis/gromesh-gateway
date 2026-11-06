@@ -56,3 +56,24 @@ it('uses an administrator-imposed zero spill ceiling without granting SET privil
  try{expect(await withIngestionReadSnapshot(pool,async db=>(await db.execute<{answer:number}>(sql`select 42 answer`)).rows[0]!.answer,budget.signal,budget)).toBe(42);}
  finally{budget.close();const next=await pool.connect();try{await next.query('reset role');await next.query('reset temp_file_limit');await next.query(`drop role "${role}"`);}finally{next.release();}}
 });
+
+it('does not mistake transaction tuple counters or one aggregate row for a PostgreSQL physical-read proof',async()=>{
+ await pool.query('create table budget_index_probe (id integer primary key)');
+ await pool.query('insert into budget_index_probe select generate_series(1,30000)');
+ await pool.query('vacuum analyze budget_index_probe');
+ const budget=new AnalyticsRequestBudget();
+ try{
+  const observed=await withIngestionReadSnapshot(pool,async db=>{
+   await db.execute(sql`set local enable_seqscan=off`);
+   const before=(await db.execute<{seq:string;heap:string}>(sql`select seq_tup_read::text seq,idx_tup_fetch::text heap from pg_stat_xact_user_tables where relname='budget_index_probe'`)).rows[0]!;
+   const result=(await db.execute<{matched:string}>(sql`select count(*)::text matched from budget_index_probe where id>=1`)).rows;
+   const after=(await db.execute<{seq:string;heap:string}>(sql`select seq_tup_read::text seq,idx_tup_fetch::text heap from pg_stat_xact_user_tables where relname='budget_index_probe'`)).rows[0]!;
+   return {before,after,result};
+  },budget.signal,budget);
+  expect(observed.result).toEqual([{matched:'30000'}]);
+  // VACUUM makes this an index-only read: no heap fetches does not mean no index work.
+  expect(observed.after).toEqual(observed.before);
+  expect(budget.usage.postgresResultRows).toBeLessThan(100);
+  expect(budget.postgresPhysicalReadsProven).toBe(false);
+ }finally{budget.close();await pool.query('drop table budget_index_probe');}
+});
