@@ -1,4 +1,4 @@
-import { assertAnalyticsReadSnapshot } from "./ingestion-read-snapshot.js";
+import { assertAnalyticsReadSnapshot,capAnalyticsStatementTimeout } from "./ingestion-read-snapshot.js";
 import { and, asc, desc, eq, gte, inArray, lt, lte, sql, or } from "drizzle-orm";
 import type { Db, Executor } from "../db/db.js";
 import type { RequestContext } from "../auth/auth.js";
@@ -42,7 +42,7 @@ export async function routeHistoryEvidenceSnapshot(tx:Executor,instanceId:string
     await assertAnalyticsReadSnapshot(tx);
     const from=Date.parse(window.from),to=Date.parse(window.to);
     if(!Number.isFinite(from)||!Number.isFinite(to)||from>=to||to-from>7*86400000||window.routeIds.length>200||(window.clusterIds?.length??0)>200)throw Error("Invalid route history window");
-        await tx.execute(sql `set local statement_timeout='5s'`);
+        await capAnalyticsStatementTimeout(tx);
         const clock = (await tx.execute<{
             asOf: string;
         }>(sql `select to_char(transaction_timestamp() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "asOf"`)).rows[0]!;

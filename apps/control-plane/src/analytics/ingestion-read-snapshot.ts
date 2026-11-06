@@ -40,8 +40,9 @@ async function withIngestionReadSession<T>(pool:pg.Pool,read:(snapshot:SnapshotR
    await client.query("begin isolation level repeatable read read only");begun=true;
    // A pooled TEMP relation must never replace authoritative ledger/history tables.
    await client.query("set local search_path=pg_catalog,public,pg_temp");
-   if(budget)await budget.configurePostgresTransaction(client);else await client.query("set local statement_timeout='5s'");
-   const result=await read(drizzle(client,{schema}));signal.throwIfAborted();
+   const db=drizzle(client,{schema});
+   if(budget)await budget.configurePostgresTransaction(client);else await capAnalyticsStatementTimeout(db);
+   const result=await read(db);signal.throwIfAborted();
    const committed=await client.query("commit");begun=false;if(committed.command!=="COMMIT")throw Error("Ingestion read transaction aborted");return result;
   };
   const result=await read(snapshot,signal);signal.throwIfAborted();return result;
@@ -56,6 +57,12 @@ async function withIngestionReadSession<T>(pool:pg.Pool,read:(snapshot:SnapshotR
   signal.throwIfAborted();if(destroy)throw Error("Ingestion snapshot cleanup failed");
   }finally{restore?.();signal.removeEventListener("abort",cancel);if(!destroy&&!signal.aborted){client.removeListener("error",connectionError);client.removeListener("end",ended);}}
  }
+}
+
+/** Nested readers may tighten the transaction ceiling, never renew or increase it. */
+export async function capAnalyticsStatementTimeout(db:Executor){
+ const result=await db.execute(sql`select pg_catalog.set_config('statement_timeout',least(case when setting::bigint=0 then 5000 else setting::bigint end,5000)::text,true) from pg_catalog.pg_settings where name='statement_timeout' and unit='ms'`);
+ if(result.rows.length!==1)throw Error('Analytics statement timeout is unavailable');
 }
 
 /** Existing readers retain one coherent transaction; the shared session lock always precedes its snapshot. */
