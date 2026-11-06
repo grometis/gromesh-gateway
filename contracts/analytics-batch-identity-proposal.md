@@ -16,6 +16,8 @@ Use the existing server fingerprint/HMAC primitive, with distinct domains for th
 
 The token has at most 2048 characters. It contains technical identities and a digest, no payload, path, IP, bearer, signing key or credentials. Never log the token or HMAC key. Key distribution/rotation uses the existing encryption/fingerprint mechanism; a removed key causes safe rejection, not automatic reissuance of the old identity.
 
+The cipher keyring and the fingerprint key are distinct. AES write/read-key rotation with the same fingerprint key preserves tickets. Replacing the fingerprint key immediately invalidates existing tickets, including those younger than15minutes; there is no HMAC keyring or grace period in this proposal. Fifteen minutes is a maximum validity, not a promise to override revocation or key replacement. This operational implication requires owner acceptance before adoption.
+
 ## Admission and retries
 
 1. Minting validates the current producer and stream under the existing admission lock, reads counter+1 and signs that position. It does not reserve the position or prove persistence. Audit records only streamId, position, batchId and counts, not the token.
@@ -28,8 +30,14 @@ The token has at most 2048 characters. It contains technical identities and a di
 
 The proposed namespace reserves version-8 batch UUIDs for authenticated envelopes. A consumer without the policy refuses version-8 handles rather than admitting or retrying them through the arbitrary-UUID path. This is an explicit compatibility decision requiring approval; any pre-existing arbitrary version-8 handles need a separately reviewed refusal/migration policy before adoption. Other old-protocol UUIDs remain supported under their existing conservative rules. This alternative is isolated until approved. No silent reinterpretation of UUID lifetime, retry semantics or error codes is permitted. Mapping new error details to an eventual public ingestion API requires its own approved wire contract.
 
+Before migration, inventory producer capabilities and any live arbitrary version-8 bindings. Do not reinterpret an old UUID as a signed identity or renew an expired envelope implicitly. Producers selecting the proposed profile must obtain a CP-issued identity for a new allowed attempt; retrying the original identity after expiry or pruning never reserves another position. Legacy producers remain on the original protocol, including its fail-closed behavior after global UUID history is lost. Mixed deployment is not transparent compatibility with arbitrary legacy version-8 handles.
+
+Restore must preserve the monotonic counter and its surviving evidence. A counter below prune coverage or any surviving admission is inconsistent and must be refused. A coherent rollback of the entire database to an earlier state cannot be detected by that database alone. Such recovery requires external continuity evidence or a new authorization/identity that cannot claim the old frontier; absent that procedure, keep the proposed producer path unavailable. Recreating a service object is not evidence of physical restart or backup recovery.
+
 ## Retention and evidence
 
 Raw/admission payload and negative conflict evidence retain the existing 1–7 day policies. Tokens expire after 15 minutes and need not be retained by the server; one monotonic counter survives batch pruning. The stream/authorization history follows its existing lifecycle and is not deleted or extended by this proposal. It does not solve bounded stream-history retention or sustained serving after pruned physical prefixes; those remain separate constraints.
 
 Approval required: derived UUID namespace, 15-minute retry lifetime, stale-mint conflict behavior and the new proof-bearing internal admission method. Experimental implementation/tests may depend on this proposal only in isolated branches explicitly authorized by R22. No merge or operational activation is approved.
+
+R25 also authorizes isolated consumers and tests of this direction. It does not grant normative approval, merge, automatic migration, or installation in an operational factory. Batch identity is not a lifetime contract for the normative Request ID; pruning request comparison history must still fail closed when a later copy cannot be safely compared.
