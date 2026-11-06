@@ -114,12 +114,12 @@ it('continues authenticated persistence through three GCs without promoting lost
 
 
 it('proves half-open query windows before GC and refuses recent or apparently empty windows after comparison coverage is pruned',()=>verifiedChain(async(f,_reader,_legacy,copies,streamId,token,admin,settings,pool)=>{
- const key=f.h.app.get<Encryptor>(ENCRYPTOR);
- let producer:Awaited<ReturnType<typeof openTrustedIngestion>>|undefined,serving:Awaited<ReturnType<typeof createVerifiedWorkspaceRequests>>|undefined,app:INestApplication|undefined;
+ const key=f.h.app.get<Encryptor>(ENCRYPTOR),openProducer=()=>openTrustedIngestion({db:drizzle(pool,{schema}),gateway:f.h.app.get(AgentGatewayService),settings,experimentalIdentityPolicy:new BatchIdentityPolicy(value=>key.fingerprint(value))});
+ let producer:Awaited<ReturnType<typeof openProducer>>|undefined,serving:Awaited<ReturnType<typeof createVerifiedWorkspaceRequests>>|undefined,app:INestApplication|undefined;
  const paths=['requests','analytics/summary','analytics/timeseries','analytics/top-routes'];
  const ts=Date.parse(copies[0]!.event.ts),recent=new URLSearchParams({from:new Date(ts).toISOString(),to:new Date(ts+1).toISOString()}),empty=new URLSearchParams({from:new Date(ts-1).toISOString(),to:new Date(ts).toISOString()});
  try{
-  producer=await openTrustedIngestion({db:drizzle(pool,{schema}),gateway:f.h.app.get(AgentGatewayService),settings,experimentalIdentityPolicy:new BatchIdentityPolicy(value=>key.fingerprint(value))});
+  producer=await openProducer();
   serving=await createVerifiedWorkspaceRequests({pool,settings,capacity:1,budgetProfile:'operational-v1-proposed'});
   @Module({imports:[AppModule.forRoot(f.h.app.get<AppConfig>(APP_CONFIG)),WorkspaceRequestPreparationModule.withServing(serving),WorkspaceAnalyticsPreparationModule.withServing(serving)]})class TestRoot{}
   app=await NestFactory.create(TestRoot,{logger:false});
