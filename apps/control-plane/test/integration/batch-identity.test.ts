@@ -6,7 +6,7 @@ import {authorizeClusterDelivery,confirmClusterAssociation,revokeClusterAssociat
 import {IngestionCopyPersistence} from '../../src/analytics/ingestion-copy-persistence.js';
 import type {ClickHouseClient} from '@clickhouse/client';
 import {IngestionAdmissions} from '../../src/analytics/ingestion-admissions.js';
-import {BatchIdentityPolicy} from '../../src/analytics/batch-identity.js';
+import {BatchIdentityPolicy,digestAdmissionDescriptor} from '../../src/analytics/batch-identity.js';
 import {AgentGatewayService} from '../../src/agent-gateway/agent-gateway.js';
 import {ENCRYPTOR,Encryptor} from '../../src/crypto/crypto.js';
 import {pruneAdmissionHistory} from '../../src/analytics/admission-retention.js';
@@ -40,6 +40,13 @@ it('admits new signed identities after real GC without resurrecting consumed pos
   const freshCopies=[await copy()],fresh=await service.issueIdentity(producer.token,stream.id,freshCopies);
   const spareCopies=[await copy()],spare=await service.issueIdentity(producer.token,stream.id,spareCopies);
   expect((await service.prepareWithIdentity(producer.token,stream.id,fresh,freshCopies)).generation).toBe('3');
+  const descriptor=(await f.h.sql.query('select descriptor from analytics_ingestion_batches where id=$1',[fresh.batchId])).rows[0]!.descriptor as {copyId:string;id:string;commitment:string;expiresAt:string}[];
+  const clock=(await f.h.sql.query('select floor(extract(epoch from clock_timestamp())*1000)::text ms')).rows[0]!.ms as string;
+  // A correctly signed but expired envelope must fail at the actual PostgreSQL admission boundary.
+  const expired=policy.issue({instanceId:f.instanceId,streamId:stream.id,authorizationId:stream.authorizationId,position:'3',descriptorDigest:digestAdmissionDescriptor(descriptor)},Number(clock)-900000);
+  await expect(service.prepareWithIdentity(producer.token,stream.id,expired,freshCopies)).rejects.toMatchObject({status:409});
+  expect((await f.h.sql.query('select position::text p from analytics_ingestion_counter')).rows[0]!.p).toBe('3');
+  expect((await f.h.sql.query('select 1 from analytics_ingestion_batches where id=$1',[expired.batchId])).rowCount).toBe(0);
   await expect(legacy.prepare(producer.token,stream.id,randomUUID(),freshCopies)).rejects.toMatchObject({status:409});
   await expect(service.prepareWithIdentity(producer.token,stream.id,fresh,[{...freshCopies[0]!,event:{...freshCopies[0]!.event,status:500}}])).rejects.toMatchObject({status:409});
   const other=await service.open(producer.token,randomUUID());await expect(service.prepareWithIdentity(producer.token,other.id,fresh,[await copy(other.podUid)])).rejects.toMatchObject({status:409});
