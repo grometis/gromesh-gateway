@@ -1,3 +1,7 @@
+import {and,eq,inArray} from "drizzle-orm";
+import {routes} from "../db/schema.js";
+import {withIngestionReadSnapshot} from "./ingestion-read-snapshot.js";
+import {aggregateVerifiedRequestPage,type WorkspaceAggregateQuery} from "./workspace-aggregates.js";
 import {AnalyticsRequestBudget} from "./analytics-request-budget.js";
 import { terminateIngestionBackend } from "./ingestion-cancellation.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -13,7 +17,7 @@ import { StorageConsistencyError } from "./storage-consistency.js";
 export const WORKSPACE_REQUEST_SERVING = Symbol("WORKSPACE_REQUEST_SERVING");
 export interface VerifiedWorkspaceRequestInput {
   instanceId: string; workspaceId: string; principalId: string; role: Role; query: WorkspaceRequestQuery;
-  after?: { ts: string; id: string }; issueCursor: (last: { ts: string; id: string }) => string; signal: AbortSignal; budget?:AnalyticsRequestBudget;
+  after?: { ts: string; id: string }; issueCursor: (last: { ts: string; id: string }) => string; signal: AbortSignal; budget?:AnalyticsRequestBudget; aggregation?:WorkspaceAggregateQuery;
 }
 export interface WorkspaceRequestServing { query(input: VerifiedWorkspaceRequestInput): Promise<unknown> }
 const unavailable = () => new StorageConsistencyError("analytics-not-ready", "Workspace request evidence is incomplete");
@@ -87,6 +91,7 @@ export async function createVerifiedWorkspaceRequests(input: { pool: pg.Pool; se
         const slot = readers.find(row=>!row.busy);if(!slot)throw busy();slot.busy=true;
         try {
           const q=queryInput.query;
+          if(queryInput.aggregation&&(q.limit!==200||q.cursor||queryInput.after))throw unavailable();
           const page=await slot.reader.read({instanceId:queryInput.instanceId,from:q.from,to:q.to,pageSize:200,...(queryInput.after?{after:queryInput.after}:{})},{operation:queryInput.budget},signal);
           if(page.next||page.items.some(item=>item.storage.kind!=="ready"||item.attribution.workspaceId===null))throw unavailable();
           const selected=page.items.filter(item=>{
@@ -104,7 +109,16 @@ export async function createVerifiedWorkspaceRequests(input: { pool: pg.Pool; se
               clientIp:maskClientIp(c.clientIp,queryInput.role),requestSize:c.requestSize,responseSize:c.responseSize,effectiveRevision:null,candidateRevisions:item.candidateRevisions};
           });
           const last=items.at(-1),nextCursor=selected.length>items.length&&last?queryInput.issueCursor({ts:last.ts,id:last.id}):null;
-          const result={scope:"workspace",instanceId:queryInput.instanceId,workspaceId:queryInput.workspaceId,from:q.from,to:q.to,generatedAt:page.asOf,attributionVersion:"route-history-v2",retention:"per-route-1-to-7-days",delivery:"best-effort",items,nextCursor};
+          let result:unknown={scope:"workspace",instanceId:queryInput.instanceId,workspaceId:queryInput.workspaceId,from:q.from,to:q.to,generatedAt:page.asOf,attributionVersion:"route-history-v2",retention:"per-route-1-to-7-days",delivery:"best-effort",items,nextCursor};
+          if(queryInput.aggregation){
+            const names=new Map<string,string>();
+            if(queryInput.aggregation.operation==='top-routes'&&items.length){
+              const ids=[...new Set(items.map(row=>String(row.routeId)))];
+              const owned=await withIngestionReadSnapshot(input.pool,db=>db.select({id:routes.id,name:routes.name}).from(routes).where(and(eq(routes.environmentId,queryInput.workspaceId),inArray(routes.id,ids))).limit(201),signal,queryInput.budget);
+              for(const row of owned)names.set(row.id,row.name);
+            }
+            result=aggregateVerifiedRequestPage(result,queryInput.aggregation,names);
+          }
           if(Buffer.byteLength(JSON.stringify(result))>2*1024*1024||performance.now()-started>=5000)throw budget();
           queryInput.budget?.serialize(result);signal.throwIfAborted();return result;
         } finally {slot.busy=false;}
