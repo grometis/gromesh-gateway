@@ -2,7 +2,7 @@ import { claimIngestionWork,assertIngestionWork,finishIngestionWork } from "./in
 import { createHash } from "node:crypto";
 import { and, asc, desc, eq, ne, sql } from "drizzle-orm";
 import type { Db, Tx } from "../db/db.js";
-import { analyticsClusterEvents, analyticsClusterVisibility, analyticsIngestionBatches as batches, analyticsIngestionReceipts as receipts, analyticsIngestionCounter as counter, analyticsIngestionStreams as streams, clusters, instance } from "../db/schema.js";
+import { analyticsClusterEvents, analyticsClusterVisibility, analyticsIngestionBatches as batches, analyticsIngestionReceipts as receipts, analyticsIngestionCounter as counter, analyticsIngestionStreams as streams, analyticsIngestionPruneCoverage as coverage, clusters, instance } from "../db/schema.js";
 import { AgentGatewayService } from "../agent-gateway/agent-gateway.js";
 import { audit } from "../audit/audit.js";
 import type { RequestContext } from "../auth/auth.js";
@@ -86,6 +86,10 @@ export class IngestionAdmissions {
       // A reconciliation may only revisit the exact existing position; GC/missing history must never readmit it.
       if(expectedGeneration!==undefined&&(!prior||prior.generation.toString()!==expectedGeneration))throw new ProblemException(409,"Ingestion admission is no longer available at the expected position");
       if(prior){if(prior.streamId!==streamId||JSON.stringify(prior.descriptor.map(d=>[d.copyId,d.id,d.commitment,d.expiresAt]))!==JSON.stringify(descriptor.map(d=>[d.copyId,d.id,d.commitment,d.expiresAt])))throw new ProblemException(409,"Ingestion batch conflicts with its admission");return {id:prior.id,generation:prior.generation.toString(),state:"prepared" as const};}
+      // Pruning erased the only global UUID binding. Without a new identity-lifetime contract,
+      // unknown IDs cannot be distinguished from consumed IDs; stop rather than resurrect either.
+      const [lostHistory]=await tx.select({through:coverage.prunedThrough}).from(coverage).where(eq(coverage.singleton,true));
+      if(lostHistory)throw new ProblemException(409,"Ingestion identity cannot be verified after history pruning");
       await tx.insert(counter).values({singleton:true,position:0n}).onConflictDoNothing();
       const [position]=await tx.update(counter).set({position:sql`${counter.position}+1`}).where(eq(counter.singleton,true)).returning();
       await tx.insert(batches).values({id:batchId,streamId,generation:position!.position,descriptor});

@@ -246,6 +246,13 @@
       "when": 1793854258927,
       "tag": "0034_ingestion_worker_leases",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1793882974523,
+      "tag": "0035_admission_history_retention",
+      "breakpoints": true
     }
   ]
 }
