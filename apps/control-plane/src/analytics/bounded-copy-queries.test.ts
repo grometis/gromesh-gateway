@@ -16,10 +16,10 @@ it('does not accept a write without final engine accounting',async()=>{
 });
 it('shares the PostgreSQL preflight execution allowance with a later ClickHouse query',async()=>{
  const {AnalyticsRequestBudget}=await import('./analytics-request-budget.js');
- const operation=new AnalyticsRequestBudget();const now=vi.spyOn(performance,'now');
+ const now=vi.spyOn(performance,'now').mockReturnValue(0),operation=new AnalyticsRequestBudget(undefined,{},'operational-v1-proposed');
  try{
-  now.mockReturnValue(100);const finish=operation.beginPostgres();now.mockReturnValue(5000);finish([]);now.mockRestore();
-  const query=vi.fn(async(_params:Parameters<ClickHouseClient['query']>[0])=>({response_headers:summary('200000000'),stream:async function*(){},close:vi.fn()}));
+  const finish=operation.beginPostgres();now.mockReturnValue(4400);finish([]);
+  const query=vi.fn(async(_params:Parameters<ClickHouseClient['query']>[0])=>({response_headers:summary('700000000'),stream:async function*(){},close:vi.fn()}));
   const reads=new BoundedCopyQueries({query} as unknown as ClickHouseClient,{operation});
   await expect(reads.query('SELECT 1',{},1)).rejects.toMatchObject({code:'analytics-budget-exceeded'});
   expect(Number(query.mock.calls[0]![0].clickhouse_settings!.max_execution_time)).toBeLessThanOrEqual(.1);

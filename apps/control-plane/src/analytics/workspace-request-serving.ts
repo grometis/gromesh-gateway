@@ -2,7 +2,7 @@ import {and,eq,inArray} from "drizzle-orm";
 import {routes} from "../db/schema.js";
 import {withIngestionReadSnapshot} from "./ingestion-read-snapshot.js";
 import {aggregateVerifiedRequestPage,type WorkspaceAggregateQuery} from "./workspace-aggregates.js";
-import {AnalyticsRequestBudget} from "./analytics-request-budget.js";
+import {AnalyticsRequestBudget,type AnalyticsBudgetProfile} from "./analytics-request-budget.js";
 import { terminateIngestionBackend } from "./ingestion-cancellation.js";
 import { createHash, randomUUID } from "node:crypto";
 import { HttpException } from "@nestjs/common";
@@ -19,7 +19,7 @@ export interface VerifiedWorkspaceRequestInput {
   instanceId: string; workspaceId: string; principalId: string; role: Role; query: WorkspaceRequestQuery;
   after?: { ts: string; id: string }; issueCursor: (last: { ts: string; id: string }) => string; signal: AbortSignal; budget?:AnalyticsRequestBudget; aggregation?:WorkspaceAggregateQuery;
 }
-export interface WorkspaceRequestServing { query(input: VerifiedWorkspaceRequestInput): Promise<unknown> }
+export interface WorkspaceRequestServing { readonly budgetProfile?:AnalyticsBudgetProfile;query(input: VerifiedWorkspaceRequestInput): Promise<unknown> }
 const unavailable = () => new StorageConsistencyError("analytics-not-ready", "Workspace request evidence is incomplete");
 const budget = () => new StorageConsistencyError("analytics-budget-exceeded", "Workspace request budget exceeded");
 const busy = () => new HttpException({ type: "about:blank", title: "Too Many Requests", status: 429, detail: "Analytics admission exhausted" },429);
@@ -74,7 +74,8 @@ export async function withWorkspaceQuerySlots<T>(pool: pg.Pool, input: VerifiedW
 }
 
 /** Inactive prepared composition. The caller owns the pool; only test roots currently install this provider. */
-export async function createVerifiedWorkspaceRequests(input: { pool: pg.Pool; settings: Pick<TrustedCopyStorageSettings,"url"|"databaseName"|"reader"|"auditor">;capacity?:number }) {
+export async function createVerifiedWorkspaceRequests(input: { pool: pg.Pool; settings: Pick<TrustedCopyStorageSettings,"url"|"databaseName"|"reader"|"auditor">;capacity?:number;budgetProfile?:AnalyticsBudgetProfile }) {
+  const budgetProfile=input.budgetProfile??'original-physical';
   const capacity = input.capacity ?? 8, settings = structuredClone(input.settings);
   if(!Number.isInteger(capacity)||capacity<1||capacity>8)throw unavailable();
   const readers: { reader: Awaited<ReturnType<typeof openVerifiedHistoricalReader>>;busy:boolean }[] = [];
@@ -84,6 +85,7 @@ export async function createVerifiedWorkspaceRequests(input: { pool: pg.Pool; se
     // Startup resource authentication is not repeated as an unaccounted query inside each request.
     for(let index=0;index<capacity;index++)readers.push({reader:await openVerifiedHistoricalReader({pool:input.pool,settings}),busy:false});
     const query = async (raw: VerifiedWorkspaceRequestInput) => {
+      if(!raw.budget||raw.budget.profile!==budgetProfile)throw unavailable();raw.budget.assertServingContract();
       const queryInput = { ...raw, query: structuredClone(raw.query), after: raw.after ? { ...raw.after } : undefined };
       const started = performance.now();
       if(closed)throw unavailable();
@@ -124,6 +126,6 @@ export async function createVerifiedWorkspaceRequests(input: { pool: pg.Pool; se
         } finally {slot.busy=false;}
       });
     };
-    return Object.freeze({query,close});
+    return Object.freeze({query,close,budgetProfile});
   } catch { await close();throw unavailable(); }
 }

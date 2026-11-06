@@ -26,7 +26,7 @@ export class WorkspaceRequestPreparationController{
  async execute(workspaceId:string,input:Record<string,unknown>,request:AuthenticatedRequest,now:number):Promise<unknown>{
   const started=performance.now(),query=parseWorkspaceRequestQuery(input,now);
   const cancel=new AbortController(),signal=AbortSignal.any([cancel.signal,AbortSignal.timeout(4500)]);
-  const budget=new AnalyticsRequestBudget(signal);
+  const budget=new AnalyticsRequestBudget(signal,{},this.serving?.budgetProfile);
   const aborted=()=>cancel.abort(),closed=()=>{if(!request.res?.writableEnded)cancel.abort();};
   request.once("aborted",aborted);request.res?.once("close",closed);
   try{
@@ -48,6 +48,7 @@ export class WorkspaceRequestPreparationController{
     return {instanceId:self.id,context,after};
    },budget.signal,budget);
    if(!this.serving)throw notReady();
+   budget.assertServingContract();
    const result=await this.serving.query({instanceId:scope.instanceId,workspaceId,principalId:request.user!.id,role:request.auth!.role,query,after:scope.after,signal:budget.signal,budget,issueCursor:last=>cursor.issue(scope.context,last,now)});
    budget.check();
    if(performance.now()-started>=5000||Buffer.byteLength(JSON.stringify(result))>2*1024*1024)throw new StorageConsistencyError("analytics-budget-exceeded","Workspace request budget exceeded");
