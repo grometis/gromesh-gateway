@@ -1,3 +1,4 @@
+import {BatchIdentityPolicy,digestAdmissionDescriptor} from "./batch-identity.js";
 import { claimIngestionWork,assertIngestionWork,finishIngestionWork } from "./ingestion-workers.js";
 import { createHash } from "node:crypto";
 import { and, asc, desc, eq, ne, sql } from "drizzle-orm";
@@ -34,6 +35,29 @@ async function lock(tx:Tx) {
   await tx.execute(sql`set local statement_timeout='5s'`);
   await tx.execute(sql`select pg_advisory_xact_lock(1818,1801)`);
 }
+/** Surviving rows and prune coverage are independent evidence against a partially restored counter. */
+async function assertIdentityFrontier(tx:Tx,position:bigint,prunedThrough:bigint){
+ const [live]=await tx.select({position:batches.generation}).from(batches).orderBy(desc(batches.generation)).limit(1);
+ if(position<prunedThrough||position<(live?.position??0n))throw new ProblemException(409,"Batch identity frontier history is incomplete");
+}
+function describe(stream:typeof streams.$inferSelect,copies:readonly IngestionCopy[],nowText:string,visibleAt:string){
+      const ids=new Set<string>();
+      return copies.map(copy=>{
+        if(!copy||Object.keys(copy).sort().join(",")!=="copyId,event,podUid,requestId,schemaVersion"||copy.schemaVersion!==1||!uuid.test(copy.copyId)||ids.has(copy.copyId)||copy.podUid!==stream.podUid||!/^[0-9a-f]{32}$/.test(copy.requestId))return invalid();
+        ids.add(copy.copyId);
+        const hex=hash(stream.clusterId+"|"+stream.podUid+"|"+copy.requestId).slice(0,32);
+        const id=`${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
+        if(!copy.event||typeof copy.event!=="object"||Array.isArray(copy.event))return invalid();
+        const {id:declared,...content}=copy.event;
+        if(declared!==id||content.environmentId!==stream.instanceId||content.clusterId!==stream.clusterId)return invalid();
+        try{encodeRawRequestCopy({id,content});}catch{return invalid();}
+        const eventTime=Date.parse(content.ts as string),now=Date.parse(nowText);
+        // Earlier authorizations are not inferred from the stream's current binding.
+        if(eventTime>now||eventTime<now-7*86400000||BigInt(eventTime)*1000n<micros(visibleAt))return invalid();
+        return {copyId:copy.copyId,id,commitment:hash(copyStateOf(id,copy.event).minContent),expiresAt:new Date(eventTime+(content.retentionDays as number)*86400000).toISOString()};
+      });
+}
+
 export async function authorizeIngestionProducer(tx:Tx,gateway:AgentGatewayService,token:string) {
     await tx.execute(sql`set local search_path=pg_catalog,public,pg_temp`);
     // Identify first, then lock the cluster before revalidating the bearer, matching its lifecycle lock order.
@@ -51,7 +75,7 @@ export async function authorizeIngestionProducer(tx:Tx,gateway:AgentGatewayServi
 
 /** Internal admission only: there is deliberately no HTTP handler or persistence-confirmation shortcut. */
 export class IngestionAdmissions {
-  constructor(private readonly db:Db,private readonly gateway:AgentGatewayService,private readonly persistence?:IngestionPersistence) {}
+  constructor(private readonly db:Db,private readonly gateway:AgentGatewayService,private readonly persistence?:IngestionPersistence,private readonly identityPolicy?:BatchIdentityPolicy) {}
   private authorized(tx:Tx,token:string) {return authorizeIngestionProducer(tx,this.gateway,token);}
   async open(token:string,podUid:string) {
     if(!uuid.test(podUid))return invalid();
@@ -64,36 +88,46 @@ export class IngestionAdmissions {
       return stream!;
     });
   }
-  async prepare(token:string,streamId:string,batchId:string,copies:readonly IngestionCopy[],expectedGeneration?:string) {
-    if(expectedGeneration!==undefined&&(!/^[1-9][0-9]{0,18}$/.test(expectedGeneration)||BigInt(expectedGeneration)>9223372036854775807n))return invalid();
-    if(!uuid.test(streamId)||!uuid.test(batchId)||!Array.isArray(copies)||copies.length<1||copies.length>100||Buffer.byteLength(JSON.stringify(copies))>2*1024*1024)return invalid();
+  async prepare(token:string,streamId:string,batchId:string,copies:readonly IngestionCopy[],expectedGeneration?:string){return this.prepareInternal(token,streamId,batchId,copies,expectedGeneration);}
+  /** Isolated proposal consumer. No runtime factory supplies identityPolicy. */
+  async prepareWithIdentity(token:string,streamId:string,identity:{batchId:string;token:string},copies:readonly IngestionCopy[]){if(!this.identityPolicy||!identity||typeof identity.token!=="string"||!identity.token||identity.token.length>2048)throw new ProblemException(409,"Authenticated batch identity required");return this.prepareInternal(token,streamId,identity.batchId,copies,undefined,identity.token);}
+  async issueIdentity(token:string,streamId:string,copies:readonly IngestionCopy[]){
+    if(!this.identityPolicy||!uuid.test(streamId)||!Array.isArray(copies)||copies.length<1||copies.length>100||Buffer.byteLength(JSON.stringify(copies))>2*1024*1024)return invalid();
+    copies=structuredClone(copies);
     return this.db.transaction(async tx=>{
       await lock(tx);const a=await this.authorized(tx,token);
       const [stream]=await tx.select().from(streams).where(eq(streams.id,streamId));
       if(!stream||stream.instanceId!==a.self.id||stream.clusterId!==a.current.cluster.id||stream.nodeId!==a.current.node.nodeId||stream.authorizationId!==a.last.id)return denied();
-      const ids=new Set<string>();
-      const descriptor=copies.map(copy=>{
-        if(!copy||Object.keys(copy).sort().join(",")!=="copyId,event,podUid,requestId,schemaVersion"||copy.schemaVersion!==1||!uuid.test(copy.copyId)||ids.has(copy.copyId)||copy.podUid!==stream.podUid||!/^[0-9a-f]{32}$/.test(copy.requestId))return invalid();
-        ids.add(copy.copyId);
-        const hex=hash(stream.clusterId+"|"+stream.podUid+"|"+copy.requestId).slice(0,32);
-        const id=`${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
-        if(!copy.event||typeof copy.event!=="object"||Array.isArray(copy.event))return invalid();
-        const {id:declared,...content}=copy.event;
-        if(declared!==id||content.environmentId!==stream.instanceId||content.clusterId!==stream.clusterId)return invalid();
-        try{encodeRawRequestCopy({id,content});}catch{return invalid();}
-        const eventTime=Date.parse(content.ts as string),now=Date.parse(a.now);
-        // Earlier authorizations are not inferred from the stream's current binding.
-        if(eventTime>now||eventTime<now-7*86400000||BigInt(eventTime)*1000n<micros(a.visible.observedAt))return invalid();
-        return {copyId:copy.copyId,id,commitment:hash(copyStateOf(id,copy.event).minContent),expiresAt:new Date(eventTime+(content.retentionDays as number)*86400000).toISOString()};
-      });
+      const descriptor=describe(stream,copies,a.now,a.visible.observedAt),[current]=await tx.select().from(counter).where(eq(counter.singleton,true));
+      const [pruned]=await tx.select({through:coverage.prunedThrough}).from(coverage).where(eq(coverage.singleton,true));
+      await assertIdentityFrontier(tx,current?.position??0n,pruned?.through??0n);
+      const position=((current?.position??0n)+1n).toString();
+      const issued=this.identityPolicy!.issue({instanceId:a.self.id,streamId,authorizationId:a.last.id,position,descriptorDigest:digestAdmissionDescriptor(descriptor)},Date.parse(a.now));
+      await audit(tx,a.ctx,{action:"analytics.ingestion.identity",entityType:"ingestion-batch",entityId:issued.batchId,after:{streamId,position,copyCount:descriptor.length}});
+      return issued;
+    });
+  }
+  private async prepareInternal(token:string,streamId:string,batchId:string,copies:readonly IngestionCopy[],expectedGeneration?:string,identityTicket?:string) {
+    if(expectedGeneration!==undefined&&(!/^[1-9][0-9]{0,18}$/.test(expectedGeneration)||BigInt(expectedGeneration)>9223372036854775807n))return invalid();
+    if(!uuid.test(streamId)||!uuid.test(batchId)||!Array.isArray(copies)||copies.length<1||copies.length>100||Buffer.byteLength(JSON.stringify(copies))>2*1024*1024)return invalid();
+    copies=structuredClone(copies);
+    return this.db.transaction(async tx=>{
+      await lock(tx);const a=await this.authorized(tx,token);
+      const [stream]=await tx.select().from(streams).where(eq(streams.id,streamId));
+      if(!stream||stream.instanceId!==a.self.id||stream.clusterId!==a.current.cluster.id||stream.nodeId!==a.current.node.nodeId||stream.authorizationId!==a.last.id)return denied();
+      const descriptor=describe(stream,copies,a.now,a.visible.observedAt);
+      if(batchId[14]==='8'&&identityTicket===undefined)throw new ProblemException(409,"Authenticated batch identity required");
+      const identity=identityTicket!==undefined?this.identityPolicy?.verify(identityTicket,{instanceId:a.self.id,streamId,authorizationId:a.last.id,batchId,descriptorDigest:digestAdmissionDescriptor(descriptor)},Date.parse(a.now)):undefined;
+      if(identityTicket!==undefined&&!identity)throw new ProblemException(409,"Batch identity policy is not enabled");
       const [prior]=await tx.select().from(batches).where(eq(batches.id,batchId));
       // A reconciliation may only revisit the exact existing position; GC/missing history must never readmit it.
       if(expectedGeneration!==undefined&&(!prior||prior.generation.toString()!==expectedGeneration))throw new ProblemException(409,"Ingestion admission is no longer available at the expected position");
-      if(prior){if(prior.streamId!==streamId||JSON.stringify(prior.descriptor.map(d=>[d.copyId,d.id,d.commitment,d.expiresAt]))!==JSON.stringify(descriptor.map(d=>[d.copyId,d.id,d.commitment,d.expiresAt])))throw new ProblemException(409,"Ingestion batch conflicts with its admission");return {id:prior.id,generation:prior.generation.toString(),state:"prepared" as const};}
+      if(prior){if(identity&&prior.generation.toString()!==identity.position)throw new ProblemException(409,"Batch identity position conflicts");if(prior.streamId!==streamId||JSON.stringify(prior.descriptor.map(d=>[d.copyId,d.id,d.commitment,d.expiresAt]))!==JSON.stringify(descriptor.map(d=>[d.copyId,d.id,d.commitment,d.expiresAt])))throw new ProblemException(409,"Ingestion batch conflicts with its admission");return {id:prior.id,generation:prior.generation.toString(),state:"prepared" as const};}
       // Pruning erased the only global UUID binding. Without a new identity-lifetime contract,
       // unknown IDs cannot be distinguished from consumed IDs; stop rather than resurrect either.
       const [lostHistory]=await tx.select({through:coverage.prunedThrough}).from(coverage).where(eq(coverage.singleton,true));
-      if(lostHistory)throw new ProblemException(409,"Ingestion identity cannot be verified after history pruning");
+      if(lostHistory&&!identity)throw new ProblemException(409,"Ingestion identity cannot be verified after history pruning");
+      if(identity){const[current]=await tx.select().from(counter).where(eq(counter.singleton,true));await assertIdentityFrontier(tx,current?.position??0n,lostHistory?.through??0n);if(BigInt(identity.position)!==(current?.position??0n)+1n)throw new ProblemException(409,"Batch identity position is already consumed or stale");}
       await tx.insert(counter).values({singleton:true,position:0n}).onConflictDoNothing();
       const [position]=await tx.update(counter).set({position:sql`${counter.position}+1`}).where(eq(counter.singleton,true)).returning();
       await tx.insert(batches).values({id:batchId,streamId,generation:position!.position,descriptor});
@@ -102,10 +136,10 @@ export class IngestionAdmissions {
       return {id:batchId,generation:position!.position.toString(),state:"prepared" as const};
     });
   }
-  async persist(token:string,streamId:string,batchId:string,copies:readonly IngestionCopy[],options:{expectedGeneration?:string;signal?:AbortSignal}={}) {
-    const signal=options.signal;signal?.throwIfAborted();
+  async persist(token:string,streamId:string,batchId:string,copies:readonly IngestionCopy[],options:{expectedGeneration?:string;signal?:AbortSignal;identityTicket?:string}={}) {
+    const signal=options.signal;signal?.throwIfAborted();copies=structuredClone(copies);
     if(!this.persistence)throw new Error("Ingestion persistence is not configured");
-    const prepared=await this.prepare(token,streamId,batchId,copies,options.expectedGeneration);
+    const prepared=await this.prepareInternal(token,streamId,batchId,copies,options.expectedGeneration,options.identityTicket);
     signal?.throwIfAborted();
     const prior=await this.db.select().from(receipts).where(eq(receipts.batchId,batchId));
     const receipt=(counts:{storedCopies:number;expiredCopies:number})=>({schemaVersion:1 as const,streamId,batchId,generation:prepared.generation,status:"persisted" as const,storedCopies:counts.storedCopies,expiredCopies:counts.expiredCopies});
