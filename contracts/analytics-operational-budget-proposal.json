@@ -46,5 +46,14 @@
     "postgresWireBytes": 2097152,
     "materializedJsonBytes": 16777216,
     "responseBytes": 2097152
+  },
+  "httpObservation": {
+    "deadlineMs": 8000,
+    "starts": "first-opt-in-application-middleware-before-guards-and-query-parsing",
+    "ends": "local-response-finish-or-close",
+    "hardHttpDeadlineProven": false,
+    "cancelsPriorAuthorizationSql": false,
+    "onExpiry": "abort-analytics-signal-and-refuse-late-operation",
+    "activation": "isolated-composition-only"
   }
 }

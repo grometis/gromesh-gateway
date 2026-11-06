@@ -1,4 +1,5 @@
 import {AnalyticsRequestBudget} from "./analytics-request-budget.js";
+import {analyticsHttpContext} from "./analytics-http-observation.js";
 import { Controller,Get,HttpException,Inject,Module,Optional,Param,Query,Req,type DynamicModule } from "@nestjs/common";
 import { and,eq } from "drizzle-orm";
 import { RequiredPermission,type AuthenticatedRequest } from "../auth/auth.js";
@@ -24,12 +25,16 @@ export class WorkspaceRequestPreparationController{
  }
  /** Internal operation runner: the public aggregate controllers reuse scope, cursor policy, errors and budget. */
  async execute(workspaceId:string,input:Record<string,unknown>,request:AuthenticatedRequest,now:number):Promise<unknown>{
+  const http=analyticsHttpContext(request);http?.check();
   const started=performance.now(),query=parseWorkspaceRequestQuery(input,now);
-  const cancel=new AbortController(),signal=AbortSignal.any([cancel.signal,AbortSignal.timeout(4500)]);
+  const cancel=new AbortController(),signal=AbortSignal.any([cancel.signal,AbortSignal.timeout(4500),...(http?[http.signal]:[])]);
+
   const budget=new AnalyticsRequestBudget(signal,{},this.serving?.budgetProfile);
+  let operationDone:(()=>void)|undefined;
   const aborted=()=>cancel.abort(),closed=()=>{if(!request.res?.writableEnded)cancel.abort();};
   request.once("aborted",aborted);request.res?.once("close",closed);
   try{
+   operationDone=http?.beginOperation();
    const cursor=new WorkspaceRequestCursor(value=>this.encryptor.fingerprint(value));
    const scope=await withIngestionReadSnapshot(this.connection.pool,async db=>{
     const [self]=await db.select({id:instance.id}).from(instance);if(!self)throw notReady();
@@ -59,7 +64,7 @@ export class WorkspaceRequestPreparationController{
    if(budgetError instanceof StorageConsistencyError)error=budgetError;
    const code=signal.aborted?"analytics-timeout":error instanceof StorageConsistencyError?error.code:"analytics-unavailable";
    throw new HttpException({type:`https://gromesh.dev/problems/${code}`,title:"Bad Gateway",status:502,code,detail:"Workspace analytics query could not be verified"},502);
-  }finally{budget.close();request.removeListener("aborted",aborted);request.res?.removeListener("close",closed);}
+  }finally{budget.close();operationDone?.();request.removeListener("aborted",aborted);request.res?.removeListener("close",closed);}
 
  }
 }
