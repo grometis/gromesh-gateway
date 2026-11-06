@@ -48,3 +48,11 @@ it('refuses the read before its callback if PostgreSQL cannot enforce the tempor
  try{await expect(withIngestionReadSnapshot(pool,async()=>{ran=true;return 'unsafe';},budget.signal,budget)).rejects.toThrow();expect(ran).toBe(false);}
  finally{budget.close();const next=await pool.connect();try{await next.query('reset role');await next.query(`drop role "${role}"`);}finally{next.release();}}
 });
+
+it('uses an administrator-imposed zero spill ceiling without granting SET privileges to the reader',async()=>{
+ const role=integrationDatabaseName('r23fixed');await pool.query(`create role "${role}"`);
+ const client=await pool.connect();await client.query("set temp_file_limit='0'");await client.query(`set role "${role}"`);client.release();
+ const budget=new AnalyticsRequestBudget();
+ try{expect(await withIngestionReadSnapshot(pool,async db=>(await db.execute<{answer:number}>(sql`select 42 answer`)).rows[0]!.answer,budget.signal,budget)).toBe(42);}
+ finally{budget.close();const next=await pool.connect();try{await next.query('reset role');await next.query('reset temp_file_limit');await next.query(`drop role "${role}"`);}finally{next.release();}}
+});
