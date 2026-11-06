@@ -23,7 +23,7 @@ it('serves three contracted aggregations through HTTP using persisted attributed
  // Stop only merges on this freshly owned table; no completeness flag or operational resource is supplied.
  await admin.command({query:`OPTIMIZE TABLE ${settings.databaseName}.requests_v2_copies FINAL`});
  await admin.command({query:`SYSTEM STOP MERGES ${settings.databaseName}.requests_v2_copies`});
- const serving=await createVerifiedWorkspaceRequests({pool,settings,capacity:1});let app:INestApplication|undefined;
+ const serving=await createVerifiedWorkspaceRequests({pool,settings,capacity:1,budgetProfile:'operational-v1-proposed'});let app:INestApplication|undefined;
  try{
   @Module({imports:[AppModule.forRoot(f.h.app.get<AppConfig>(APP_CONFIG)),WorkspaceAnalyticsPreparationModule.withServing(serving),WorkspaceRequestPreparationModule.withServing(serving)]})class TestApp{}
   app=await NestFactory.create(TestApp,{logger:false});app.getHttpAdapter().getInstance().set('query parser','simple');app.setGlobalPrefix('api/v1',{exclude:[{path:'api/v2/{*splat}',method:RequestMethod.ALL}]});await app.init();await app.listen(0,'127.0.0.1');
@@ -68,7 +68,7 @@ it('serves three contracted aggregations through HTTP using persisted attributed
 it('refuses all four HTTP operations after GC loses admission coverage even while raw ClickHouse copies survive',()=>verifiedChain(async(f,_reader,_producer,copies,streamId,_token,admin,settings,pool)=>{
  await admin.command({query:`OPTIMIZE TABLE ${settings.databaseName}.requests_v2_copies FINAL`});
  await admin.command({query:`SYSTEM STOP MERGES ${settings.databaseName}.requests_v2_copies`});
- const serving=await createVerifiedWorkspaceRequests({pool,settings,capacity:1});let app:INestApplication|undefined;
+ const serving=await createVerifiedWorkspaceRequests({pool,settings,capacity:1,budgetProfile:'operational-v1-proposed'});let app:INestApplication|undefined;
  try{
   @Module({imports:[AppModule.forRoot(f.h.app.get<AppConfig>(APP_CONFIG)),WorkspaceAnalyticsPreparationModule.withServing(serving),WorkspaceRequestPreparationModule.withServing(serving)]})class TestApp{}
   app=await NestFactory.create(TestApp,{logger:false});app.getHttpAdapter().getInstance().set('query parser','simple');app.setGlobalPrefix('api/v1',{exclude:[{path:'api/v2/{*splat}',method:RequestMethod.ALL}]});await app.init();await app.listen(0,'127.0.0.1');

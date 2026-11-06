@@ -14,7 +14,7 @@ export class WorkspaceAnalyticsPreparationController{
  private run(operation:AggregateOperation,workspaceId:string,raw:Record<string,unknown>,request:AuthenticatedRequest){
   const now=Date.now(),query=parseWorkspaceAggregateQuery(operation,raw,now);
   const serving=this.serving;
-  const controller=new WorkspaceRequestPreparationController(this.db,this.encryptor,this.connection,serving?{query:input=>serving.query({...input,aggregation:query})}:undefined);
+  const controller=new WorkspaceRequestPreparationController(this.db,this.encryptor,this.connection,serving?{budgetProfile:serving.budgetProfile,query:input=>serving.query({...input,aggregation:query})}:undefined);
   return controller.execute(workspaceId,{from:query.from,to:query.to,limit:'200',...(query.routeId?{routeId:query.routeId}:{}),...(query.serviceId?{serviceId:query.serviceId}:{})},request,now);
  }
  @Get('summary') @RequiredPermission('workspace.read','workspace')
