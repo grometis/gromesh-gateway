@@ -26,7 +26,7 @@ The token has at most 2048 characters. It contains technical identities and a di
 6. The counter never decreases, including after GC/restart. Rollback does not consume a position. Signed-Int64 exhaustion rejects admission. A new instance identity must not claim continuity with a lost counter.
 7. Old producer authorization, another stream/instance, altered body and arbitrary UUID are rejected. The token proves identity binding only; no persistence, fence, copy completeness or delivery-from-Kong flag is enabled by it.
 
-The old protocol remains supported only under its existing conservative rules. This alternative is isolated until approved. No silent reinterpretation of UUID lifetime, retry semantics or error codes is permitted. Mapping new error details to an eventual public ingestion API requires its own approved wire contract.
+The proposed namespace reserves version-8 batch UUIDs for authenticated envelopes. A consumer without the policy refuses version-8 handles rather than admitting or retrying them through the arbitrary-UUID path. This is an explicit compatibility decision requiring approval; any pre-existing arbitrary version-8 handles need a separately reviewed refusal/migration policy before adoption. Other old-protocol UUIDs remain supported under their existing conservative rules. This alternative is isolated until approved. No silent reinterpretation of UUID lifetime, retry semantics or error codes is permitted. Mapping new error details to an eventual public ingestion API requires its own approved wire contract.
 
 ## Retention and evidence
 
