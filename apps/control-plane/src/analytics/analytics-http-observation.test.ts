@@ -36,6 +36,9 @@ it('retains the aborted weak context for a guard that resumes after the client d
 it('does not instrument unrelated routes or accept an unbounded deadline',()=>{
  const f=fixture(8000,'/api/v1/sessions');expect(f.next).toHaveBeenCalledOnce();expect(analyticsHttpContext(f.request)).toBeUndefined();expect(vi.getTimerCount()).toBe(0);for(const deadlineMs of [0,-1,8001,Infinity])expect(()=>observeAnalyticsHttp({deadlineMs})).toThrow();
 });
+it('matches mixed-case routes accepted by the Express router',()=>{
+ const f=fixture(50,'/API/v2/WoRkSpAcEs/example/REQUESTS/');expect(analyticsHttpContext(f.request)).toBeDefined();vi.advanceTimersByTime(50);expect(()=>analyticsHttpContext(f.request)!.check()).toThrow();f.response.emit('finish');expect(f.observed[0]!.deadlineExceeded).toBe(true);
+});
 it('isolates concurrent requests and records response failure without leaking timers',()=>{
  const a=fixture(50),b=fixture(100);vi.advanceTimersByTime(50);expect(analyticsHttpContext(a.request)!.signal.aborted).toBe(true);expect(analyticsHttpContext(b.request)!.signal.aborted).toBe(false);a.response.emit('error',Error('synthetic'));b.response.emit('finish');expect(a.observed[0]!.completion).toBe('error');expect(b.observed[0]!.deadlineExceeded).toBe(false);expect(vi.getTimerCount()).toBe(0);
 });

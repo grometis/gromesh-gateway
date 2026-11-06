@@ -6,7 +6,7 @@ export interface AnalyticsHttpObservation{
 interface Context{signal:AbortSignal;check:()=>void;beginOperation:()=>()=>void}
 const contexts=new WeakMap<Request,Context>();
 export const analyticsHttpContext=(request:Request)=>contexts.get(request);
-const path=/^\/api\/v2\/workspaces\/[^/]+\/(?:requests|analytics\/(?:summary|timeseries|top-routes))\/?$/;
+const path=/^\/api\/v2\/workspaces\/[^/]+\/(?:requests|analytics\/(?:summary|timeseries|top-routes))\/?$/i;
 /** Opt-in composition hook. Observation includes guards; it cannot preempt their uninstrumented SQL or HTTP transport. */
 export function observeAnalyticsHttp(options:{deadlineMs?:number;onObserved?:(value:AnalyticsHttpObservation)=>void}={}):RequestHandler{
  const deadlineMs=options.deadlineMs??8000;
