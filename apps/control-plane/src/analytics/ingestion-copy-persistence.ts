@@ -18,6 +18,11 @@ export interface CopyPersistenceObservation {storedCopies:number;expiredCopies:n
 export class CopyEvidenceError extends Error {
  constructor(readonly observations: readonly CopyObservation[]) { super("Ingestion persistence is not confirmed"); }
 }
+/** Preserve the persistence error contract while exposing only the fixed query-stage diagnostic. */
+export class CopyPersistenceFailure extends Error {
+ readonly stage:CopyQueryFailure['stage'];readonly code:CopyQueryFailure['code'];
+ constructor(error:CopyQueryFailure){super("Ingestion persistence is not confirmed");this.name='CopyPersistenceFailure';this.stage=error.stage;this.code=error.code;}
+}
 const digest=(value:string)=>createHash("sha256").update(value).digest("hex");
 const failed=()=>new Error("Ingestion persistence is not confirmed");
 /** Only constructed with the dedicated writer/reader. Observation is actual read-back, never a supplied boolean. */
@@ -81,6 +86,6 @@ export class IngestionCopyPersistence {
    if(observations.length)throw new CopyEvidenceError(observations);
    if(signal.aborted)throw failed();
    return {storedCopies:live.length,expiredCopies:expected.size-live.length,observedCopies,...(inserted?.executed?{insertQueryId:inserted.query_id}:{})};
-  }catch(error){if(error instanceof CopyEvidenceError||error instanceof CopyQueryFailure)throw error;throw failed();}
+  }catch(error){if(error instanceof CopyEvidenceError)throw error;if(error instanceof CopyQueryFailure)throw new CopyPersistenceFailure(error);throw failed();}
  }
 }
