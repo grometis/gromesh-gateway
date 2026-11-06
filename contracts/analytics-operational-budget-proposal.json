@@ -1,10 +1,50 @@
 {
   "status": "proposed-not-approved",
   "profile": "operational-v1-proposed",
-  "request": {"activeMs": 4500, "wallMs": 8000, "databaseMs": 5000, "databaseQueries": 200, "postgresResultRows": 20000, "postgresWireBytes": 2097152, "materializedJsonBytes": 16777216, "responseBytes": 2097152},
-  "postgres": {"workMemKiBPerOperator": 1024, "hashMemMultiplier": 1, "temporaryFileBytes": 0, "parallelWorkersPerGather": 0, "jit": false},
-  "clickhouse": {"readRows": 5000000, "readBytes": 268435456, "decodedBytes": 2097152, "memoryBytesPerQuery": 268435456, "threads": 2, "groups": 10000},
-  "concurrency": {"instance": 8, "principalWorkspace": 2},
-  "recovery": {"attemptMs": 500, "purpose": "terminate-owned-nonce-bound-backend"},
-  "excludes": ["postgres-physical-read-accounting", "process-rss-ceiling", "device-io-ceiling", "hard-real-time-under-event-loop-stall", "delivery-complete-from-kong"]
+  "postgres": {
+    "workMemKiBPerOperator": 1024,
+    "hashMemMultiplier": 1,
+    "temporaryFileBytes": 0,
+    "parallelWorkersPerGather": 0,
+    "jit": false
+  },
+  "clickhouse": {
+    "readRows": 5000000,
+    "readBytes": 268435456,
+    "decodedBytes": 2097152,
+    "memoryBytesPerQuery": 268435456,
+    "threads": 2,
+    "groups": 10000
+  },
+  "concurrency": {
+    "instance": 8,
+    "principalWorkspace": 2
+  },
+  "recovery": {
+    "attemptMs": 500,
+    "purpose": "terminate-owned-nonce-bound-backend"
+  },
+  "excludes": [
+    "postgres-physical-read-accounting",
+    "process-rss-ceiling",
+    "device-io-ceiling",
+    "hard-real-time-under-event-loop-stall",
+    "delivery-complete-from-kong",
+    "authentication-rbac-session-token-sql-before-operation",
+    "framework-serialization-and-http-transport-after-operation"
+  ],
+  "scope": {
+    "starts": "authorized-controller-budget-creation-after-guards-and-query-parsing",
+    "ends": "operation-cleanup-before-framework-transport"
+  },
+  "operation": {
+    "activeMs": 4500,
+    "wallMs": 8000,
+    "databaseMs": 5000,
+    "databaseQueries": 200,
+    "postgresResultRows": 20000,
+    "postgresWireBytes": 2097152,
+    "materializedJsonBytes": 16777216,
+    "responseBytes": 2097152
+  }
 }
