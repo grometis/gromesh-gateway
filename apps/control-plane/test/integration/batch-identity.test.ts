@@ -57,5 +57,9 @@ it('admits new signed identities after real GC without resurrecting consumed pos
   try{payload[0]!.event.status=500;}finally{await gate.query('select pg_advisory_unlock(1818,1801)');gate.release();}
   expect(await pending).toMatchObject({message:'synthetic boundary stop'});expect(observedStatus).toBe(200);
   const audits=await f.h.sql.query("select after::text value from audit_events where action='analytics.ingestion.identity'");expect(audits.rows.length).toBeGreaterThan(0);expect(JSON.stringify(audits.rows)).not.toContain(fresh.token);expect(JSON.stringify(audits.rows)).not.toContain('192.0.2.1');
+  // Simulate a partial restore losing the counter while irreversible prune coverage survived.
+  await f.h.sql.query('update analytics_ingestion_counter set position=1');
+  await expect(service.issueIdentity(producer.token,stream.id,oldCopies)).rejects.toMatchObject({status:409});
+  await expect(service.prepareWithIdentity(producer.token,stream.id,oldIdentity,oldCopies)).rejects.toMatchObject({status:409});
  }finally{await f.close();}
 });

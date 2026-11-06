@@ -91,6 +91,8 @@ export class IngestionAdmissions {
       const [stream]=await tx.select().from(streams).where(eq(streams.id,streamId));
       if(!stream||stream.instanceId!==a.self.id||stream.clusterId!==a.current.cluster.id||stream.nodeId!==a.current.node.nodeId||stream.authorizationId!==a.last.id)return denied();
       const descriptor=describe(stream,copies,a.now,a.visible.observedAt),[current]=await tx.select().from(counter).where(eq(counter.singleton,true));
+      const [pruned]=await tx.select({through:coverage.prunedThrough}).from(coverage).where(eq(coverage.singleton,true));
+      if((current?.position??0n)<(pruned?.through??0n))throw new ProblemException(409,"Batch identity frontier history is incomplete");
       const position=((current?.position??0n)+1n).toString();
       const issued=this.identityPolicy!.issue({instanceId:a.self.id,streamId,authorizationId:a.last.id,position,descriptorDigest:digestAdmissionDescriptor(descriptor)},Date.parse(a.now));
       await audit(tx,a.ctx,{action:"analytics.ingestion.identity",entityType:"ingestion-batch",entityId:issued.batchId,after:{streamId,position,copyCount:descriptor.length}});
@@ -117,7 +119,7 @@ export class IngestionAdmissions {
       // unknown IDs cannot be distinguished from consumed IDs; stop rather than resurrect either.
       const [lostHistory]=await tx.select({through:coverage.prunedThrough}).from(coverage).where(eq(coverage.singleton,true));
       if(lostHistory&&!identity)throw new ProblemException(409,"Ingestion identity cannot be verified after history pruning");
-      if(identity){const[current]=await tx.select().from(counter).where(eq(counter.singleton,true));if(BigInt(identity.position)!==(current?.position??0n)+1n)throw new ProblemException(409,"Batch identity position is already consumed or stale");}
+      if(identity){const[current]=await tx.select().from(counter).where(eq(counter.singleton,true));if((current?.position??0n)<(lostHistory?.through??0n)||BigInt(identity.position)!==(current?.position??0n)+1n)throw new ProblemException(409,"Batch identity position is already consumed or stale");}
       await tx.insert(counter).values({singleton:true,position:0n}).onConflictDoNothing();
       const [position]=await tx.update(counter).set({position:sql`${counter.position}+1`}).where(eq(counter.singleton,true)).returning();
       await tx.insert(batches).values({id:batchId,streamId,generation:position!.position,descriptor});
