@@ -37,7 +37,7 @@ export class AnalyticsRequestBudget{
  async configurePostgresTransaction(client:pg.PoolClient){
   const timeout=String(Math.max(1,Math.floor(Math.min(5000,this.remainingDatabaseMs))));
   // A role lacking SET permission for temp_file_limit must fail closed, never silently skip the cap.
-  await client.query("select pg_catalog.set_config('statement_timeout',$1,true),pg_catalog.set_config('work_mem','1MB',true),pg_catalog.set_config('hash_mem_multiplier','1',true),pg_catalog.set_config('temp_file_limit','0',true),pg_catalog.set_config('max_parallel_workers_per_gather','0',true),pg_catalog.set_config('jit','off',true)",[timeout]);
+  await client.query("select pg_catalog.set_config('statement_timeout',$1,true),pg_catalog.set_config('work_mem','1MB',true),pg_catalog.set_config('hash_mem_multiplier','1',true),case when pg_catalog.current_setting('temp_file_limit')='0' then '0' else pg_catalog.set_config('temp_file_limit','0',true) end,pg_catalog.set_config('max_parallel_workers_per_gather','0',true),pg_catalog.set_config('jit','off',true)",[timeout]);
   this.check();
  }
  /** Install only while a session belongs exclusively to this operation; restored before pooling. */
