@@ -120,6 +120,6 @@ export async function provisionTrustedCopyStorage(input: {
     phase="authority";await observeCopyStorageAuthority(queries, registration, true);
     signal.throwIfAborted();
     phase="binding";return await registerCopyStorage(db, ctx, registration,signal);
-  } catch { throw new StorageConsistencyError("analytics-not-ready",`Trusted storage genesis unavailable at ${phase}`); }
+  } catch(error) { throw new StorageConsistencyError("analytics-not-ready",`Trusted storage genesis unavailable at ${phase}${error instanceof StorageConsistencyError?`: ${error.code} ${error.message}`:""}`); }
   finally { await Promise.all(clients.map(client => client.close())); }
 }
