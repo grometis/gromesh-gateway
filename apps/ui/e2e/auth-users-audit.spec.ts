@@ -1,4 +1,5 @@
 import { navigateGlobal, openGlobalMenu } from "./global-navigation";
+import { routeAction } from "./route-actions";
 import type { Page } from "@playwright/test";
 import { expect, mockSession, test } from "./fixtures";
 import type { User } from "../src/api/client";
@@ -138,7 +139,7 @@ test("viewer conserva restrições v1; gateway v2 usa permissões do servidor e 
   await menu.getByRole("link", { name: "Rotas", exact: true }).click();
   const routes = page.getByRole("table", { name: "Rotas", exact: true });
   await expect(routes.getByRole("row")).not.toHaveCount(0);
-  await expect(routes.getByRole("button", { name: "Editar", exact: true }).first()).toBeVisible();
+  await expect(routes.getByRole("button", { name: /^Mais ações para / }).first()).toBeEnabled();
   const routesBefore = await routes.getByRole("row").allTextContents();
   await page.route("**/api/v2/workspaces/*/routes**", (route) => {
     if (route.request().method() === "GET") return route.fallback();
@@ -152,7 +153,7 @@ test("viewer conserva restrições v1; gateway v2 usa permissões do servidor e 
   await newRoute.getByRole("button", { name: "Salvar" }).click();
   await expect(newRoute.getByRole("alert")).toHaveText("Você não tem permissão para alterar o gateway deste Workspace.");
   await newRoute.getByRole("button", { name: "Cancelar" }).click();
-  await routes.getByRole("button", { name: "Editar", exact: true }).first().click();
+  await routeAction(page, routes, "Editar");
   const editRoute = page.getByRole("dialog", { name: /^Editar / });
   await editRoute.getByLabel("Métodos").fill("GET");
   await editRoute.getByRole("button", { name: "Salvar" }).click();

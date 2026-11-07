@@ -98,6 +98,7 @@ for (const width of [390,768,1440]) {
   await expect(page.getByRole('note',{name:'Estado do Workspace',exact:true})).toBeHidden();
   const row=page.getByRole('table',{name:'Rotas',exact:true}).getByRole('row').last();
   await expect(row.getByRole('button',{name:'Copiar cURL de orders-payments',exact:true})).toBeVisible();
+  const routeName=await row.getByRole('button',{name:'Ver detalhes de orders-payments',exact:true}).boundingBox(),nameCell=await row.locator('.row-main').boundingBox();expect(routeName!.x+routeName!.width).toBeLessThanOrEqual(nameCell!.x+nameCell!.width-8);
   if(width===390){
    const search=await page.getByRole('searchbox',{name:'Buscar rotas'}).boundingBox(),filter=page.getByRole('button',{name:'Filtros',exact:true});const f=await filter.boundingBox();expect(Math.abs(search!.y-f!.y)).toBeLessThan(3);
    await filter.click();await page.getByLabel('Filtrar por estado',{exact:true}).selectOption('unverified');await page.keyboard.press('Escape');await expect(filter).toBeFocused();
