@@ -1,4 +1,4 @@
-import { assertAnalyticsReadSnapshot } from "./ingestion-read-snapshot.js";
+import { assertAnalyticsReadSnapshot,capAnalyticsStatementTimeout } from "./ingestion-read-snapshot.js";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { Db, Tx, Executor } from "../db/db.js";
 import type { RequestContext } from "../auth/auth.js";
@@ -77,7 +77,7 @@ export async function readCopyEvidence(db: Db, ids: readonly string[]): Promise<
 export async function readCopyEvidenceSnapshot(tx:Executor,ids:readonly string[]):Promise<{items:CopyObservation[];historyPruned:boolean}>{
   await assertAnalyticsReadSnapshot(tx);
   if(ids.length>200||ids.some(id=>!uuid.test(id)))return invalid();
-    await tx.execute(sql`set local statement_timeout='5s'`);
+    await capAnalyticsStatementTimeout(tx);
     const [lost] = await tx.select().from(coverage);
     const [admissionLoss]=await tx.execute<{lost:boolean}>(sql`select exists(select 1 from analytics_ingestion_prune_coverage where pruned_through>0) as lost`).then(r=>r.rows);
     const rows = ids.length ? await tx.select().from(facts).where(inArray(facts.requestId,[...new Set(ids)])).orderBy(asc(facts.requestId),asc(facts.id)).limit(10001) : [];

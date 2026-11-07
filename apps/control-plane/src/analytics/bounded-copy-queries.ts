@@ -1,6 +1,7 @@
 import type { ClickHouseClient } from "@clickhouse/client";
 import { StorageConsistencyError } from "./storage-consistency.js";
-export interface CopyReadBudget { readonly maxReadRows?:number;readonly maxReadBytes?:number;readonly maxDecodedBytes?:number }
+import type {AnalyticsRequestBudget} from "./analytics-request-budget.js";
+export interface CopyReadBudget {readonly operation?:AnalyticsRequestBudget; readonly maxReadRows?:number;readonly maxReadBytes?:number;readonly maxDecodedBytes?:number }
 export const copyReadNotReady=()=>new StorageConsistencyError("analytics-not-ready","Copy storage evidence is not ready");
 const exceeded=()=>new StorageConsistencyError("analytics-budget-exceeded","Copy read budget exceeded");
 type Settings=NonNullable<Parameters<ClickHouseClient['query']>[0]['clickhouse_settings']>;
@@ -23,10 +24,11 @@ export class BoundedCopyQueries {
  readonly usage={readRows:0,readBytes:0,decodedBytes:0,dbElapsedNs:0};
  private readonly limits:{rows:number;bytes:number;decoded:number};private readonly started=performance.now();
  readonly signal:AbortSignal;
- constructor(private readonly client:ClickHouseClient,budget:CopyReadBudget={},signal?:AbortSignal,private readonly sessionId?:string,parent?:BoundedCopyQueries){
-  if(parent){this.limits=parent.limits;this.usage=parent.usage;this.started=parent.started;this.signal=parent.signal;return;}
+ constructor(private readonly client:ClickHouseClient,budget:CopyReadBudget={},signal?:AbortSignal,private readonly sessionId?:string,parent?:BoundedCopyQueries,private readonly operation=budget.operation){
+  if(parent){this.limits=parent.limits;this.usage=parent.usage;this.started=parent.started;this.signal=parent.signal;this.operation=parent.operation;return;}
+  if(this.operation)this.usage=this.operation.clickhouse;
   this.limits={rows:bounded(budget.maxReadRows,5_000_000),bytes:bounded(budget.maxReadBytes,256*1024*1024),decoded:bounded(budget.maxDecodedBytes,2*1024*1024)};
-  this.signal=AbortSignal.any([AbortSignal.timeout(8000),...(signal?[signal]:[])]);
+  this.signal=AbortSignal.any([AbortSignal.timeout(8000),...(signal?[signal]:[]),...(this.operation?[this.operation.signal]:[])]);
  }
  /** Two authenticated HTTP identities share a budget without pretending they share a server session. */
  withSession(client:ClickHouseClient,sessionId?:string){return new BoundedCopyQueries(client,{},undefined,sessionId,this);}
@@ -34,7 +36,7 @@ export class BoundedCopyQueries {
  private settings(maxRows:number,sessionExists:boolean):Settings{
   const {usage,limits,signal}=this;if(signal.aborted)throw copyReadNotReady();
   if(usage.readRows>=limits.rows||usage.readBytes>=limits.bytes||usage.decodedBytes>=limits.decoded||usage.dbElapsedNs>=5_000_000_000)throw exceeded();
-  const seconds=Math.min((5_000_000_000-usage.dbElapsedNs)/1e9,(8000-(performance.now()-this.started))/1000);if(seconds<=0)throw copyReadNotReady();
+  const seconds=Math.min(this.operation?Math.min(this.operation.remainingDatabaseMs,this.operation.remainingActiveMs)/1000:Infinity,(5_000_000_000-usage.dbElapsedNs)/1e9,(8000-(performance.now()-this.started))/1000);if(seconds<=0)throw copyReadNotReady();
   return {...(this.sessionId?{session_timeout:"10",session_check:sessionExists?1:0}:{}),max_threads:2,max_block_size:"100",max_execution_time:seconds,timeout_overflow_mode:"throw",max_memory_usage:String(256*1024*1024),
    max_rows_to_read:String(limits.rows-usage.readRows),max_bytes_to_read:String(limits.bytes-usage.readBytes),read_overflow_mode:"throw",
    max_result_rows:String(maxRows),max_result_bytes:String(limits.decoded-usage.decodedBytes),result_overflow_mode:"throw",max_rows_to_group_by:"10000",group_by_overflow_mode:"throw",
@@ -49,18 +51,19 @@ export class BoundedCopyQueries {
   if(this.signal.aborted)throw copyReadNotReady();
  }
  async insert(params:Parameters<ClickHouseClient['insert']>[0]){
-  let stage:CopyQueryStage='limits';
+  let finish:((elapsedNs?:number)=>void)|undefined;const before=this.usage.dbElapsedNs;let stage:CopyQueryStage="limits";
   try{
-   const settings=this.settings(1,true);
+   const settings=this.settings(1,true);finish=this.operation?.beginClickHouse();
    stage="insert-request";const result=await this.client.insert({...params,abort_signal:this.signal,...(this.sessionId?{session_id:this.sessionId}:{}),
     clickhouse_settings:{...params.clickhouse_settings,...settings,async_insert:0,insert_deduplicate:0}});
    stage="insert-accounting";if(result.executed)this.account(result.response_headers);return result;
-  }catch(error){throw new CopyQueryFailure(stage,error);}
+  }catch(error){throw new CopyQueryFailure(stage,error);}finally{finish?.(this.usage.dbElapsedNs>before?this.usage.dbElapsedNs-before:undefined);}
  }
  async query(text:string,params:Record<string,unknown>,maxRows:number,sessionExists=false){
-  const {usage,limits,signal}=this;let stage:CopyQueryStage="limits";
+  const {usage,limits,signal}=this;let finish:((elapsedNs?:number)=>void)|undefined;const before=usage.dbElapsedNs;let stage:CopyQueryStage="limits";
   try{
-   const settings=this.settings(maxRows,sessionExists);stage="select-request";const result=await this.client.query({query:text,query_params:params,format:"JSONEachRowWithProgress",abort_signal:signal,...(this.sessionId?{session_id:this.sessionId}:{}),clickhouse_settings:settings});
+   const settings=this.settings(maxRows,sessionExists);finish=this.operation?.beginClickHouse();
+   stage="select-request";const result=await this.client.query({query:text,query_params:params,format:"JSONEachRowWithProgress",abort_signal:signal,...(this.sessionId?{session_id:this.sessionId}:{}),clickhouse_settings:settings});
    const rows:Record<string,unknown>[]=[];let progressRows=0,progressBytes=0;
    stage="select-stream";try{for await(const chunk of result.stream<unknown>())for(const line of chunk){
     usage.decodedBytes+=Buffer.byteLength(line.text,"utf8");if(usage.decodedBytes>limits.decoded)throw exceeded();const item=object(line.json());
@@ -71,6 +74,6 @@ export class BoundedCopyQueries {
     else throw copyReadNotReady();
    }}finally{result.close();}
    stage="select-accounting";this.account(result.response_headers,progressRows,progressBytes);return rows;
-  }catch(error){throw new CopyQueryFailure(stage,error);}
+  }catch(error){throw new CopyQueryFailure(stage,error);}finally{finish?.(usage.dbElapsedNs>before?usage.dbElapsedNs-before:undefined);}
  }
 }

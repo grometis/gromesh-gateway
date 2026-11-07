@@ -43,6 +43,8 @@ export async function trustedRuntime(f: Awaited<ReturnType<typeof clusterHistory
   await f.h.sql.query(`CREATE ROLE ${role} LOGIN PASSWORD '${password}'`);
   let pool: pg.Pool | undefined;
   try {
+    // Administrator fixes the actual executor ceiling; the runtime role receives no SET privilege.
+    await f.h.sql.query(`ALTER ROLE ${role} SET temp_file_limit='0'`);
     await f.h.sql.query(`GRANT USAGE ON SCHEMA public TO ${role}; GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA public TO ${role}; REVOKE INSERT,UPDATE,DELETE ON public.analytics_ingestion_storage FROM ${role}; GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA public TO ${role}`);
     const url = new URL(f.url); url.username = role; url.password = password;
     pool = new pg.Pool({ connectionString: url.toString() });

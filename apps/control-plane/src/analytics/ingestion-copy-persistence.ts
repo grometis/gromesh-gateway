@@ -1,5 +1,6 @@
 import type { Tx } from "../db/db.js";
 import type { IngestionWork } from "./ingestion-workers.js";
+import {StorageConsistencyError} from "./storage-consistency.js";
 import { BoundedCopyQueries, CopyQueryFailure } from "./bounded-copy-queries.js";
 import { createHash } from "node:crypto";
 import type { CopyObservation,ObservedCopyIdentity } from "./copy-evidence.js";
@@ -31,7 +32,7 @@ export class IngestionCopyPersistence {
  async persist(input:IngestionPersistenceInput,caller?:AbortSignal):Promise<CopyPersistenceObservation> {
   const signal=AbortSignal.any([AbortSignal.timeout(8000),...(caller?[caller]:[])]);
   signal.throwIfAborted();
-  try{
+  let phase="encode";try{
    const now=Date.parse(input.asOf);if(!Number.isFinite(now))throw failed();
    const expected=new Map(input.copies.map(copy=>{
     const {id,...content}=copy.event;if(typeof id!=="string")throw failed();
@@ -42,14 +43,14 @@ export class IngestionCopyPersistence {
    const live=[...expected.values()].filter(x=>!x.expired);
    const queries=this.context?.queries??new BoundedCopyQueries(this.reader,{},signal);
    const writes=this.context?.writes??queries.withSession(this.writer);
-   const inserted=live.length?await writes.insert({table:"requests_v2_copies",format:"JSONEachRow",abort_signal:signal,
+   phase="insert";const inserted=live.length?await writes.insert({table:"requests_v2_copies",format:"JSONEachRow",abort_signal:signal,
     values:live.map(x=>({...x.encoded,ingress_stream_id:input.streamId,ingress_batch_id:input.batchId,ingress_copy_id:x.copy.copyId,ingress_generation:input.generation,ingress_wire:x.wire})),
     clickhouse_settings:{async_insert:0,insert_deduplicate:0}}):undefined;
-   const rows=await queries.query(`SELECT id,toString(ts) AS ts,environment_id,cluster_id,service_id,route_id,consumer_id,method,path,status,
+   phase="readback";const rows=await queries.query(`SELECT id,toString(ts) AS ts,environment_id,cluster_id,service_id,route_id,consumer_id,method,path,status,
     latency_kong_ms,latency_upstream_ms,latency_total_ms,toString(client_ip) AS client_ip,toString(request_size) AS request_size,toString(response_size) AS response_size,retention_days,
     ingress_stream_id,ingress_batch_id,ingress_copy_id,toString(ingress_generation) AS ingress_generation,ingress_wire
     FROM requests_v2_copies WHERE id IN {ids:Array(UUID)} LIMIT 10001`,{ids:[...new Set(input.copies.map(c=>String(c.event.id)))]},10000,true);
-   const seen=new Set<string>(),observedCopies:ObservedCopyIdentity[]=[];
+   phase="comparison";const seen=new Set<string>(),observedCopies:ObservedCopyIdentity[]=[];
    const witnesses=new Map<string,{values:Set<string>;expires:number;unavailable:boolean}>();
    for(const x of expected.values()){
     const id=String(x.copy.event.id),prior=witnesses.get(id)??{values:new Set<string>(),expires:0,unavailable:false};
@@ -86,6 +87,6 @@ export class IngestionCopyPersistence {
    if(observations.length)throw new CopyEvidenceError(observations);
    if(signal.aborted)throw failed();
    return {storedCopies:live.length,expiredCopies:expected.size-live.length,observedCopies,...(inserted?.executed?{insertQueryId:inserted.query_id}:{})};
-  }catch(error){if(error instanceof CopyEvidenceError)throw error;if(error instanceof CopyQueryFailure)throw new CopyPersistenceFailure(error);throw failed();}
+  }catch(error){if(error instanceof CopyEvidenceError)throw error;if(error instanceof CopyQueryFailure)throw new CopyPersistenceFailure(error);throw new Error(`Ingestion persistence is not confirmed at ${phase}${error instanceof StorageConsistencyError?`: ${error.code}`:""}`);}
  }
 }

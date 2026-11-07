@@ -72,3 +72,50 @@ it.each(['hostless','socket','path'] as const)('cancels actual PostgreSQL work t
   rmSync(directory,{recursive:true});
  }
 });
+
+it('cancels during blocked session cleanup without releasing the wire barrier or returning a late result',async()=>{
+ const {pgQueryBarrier}=await import('./pg-query-barrier.js');
+ const proxy=await pgQueryBarrier(url,text=>text==='reset lock_timeout'),pool=new pg.Pool({connectionString:proxy.url,max:1}),abort=new AbortController();
+ let pid=0,watchdog:ReturnType<typeof setTimeout>|undefined;
+ const outcome=withIngestionReadSnapshot(pool,async db=>{pid=(await db.execute<{pid:number}>(sql`select pg_backend_pid() pid`)).rows[0]!.pid;return 'must-not-escape';},abort.signal).then(value=>({kind:'success',value}),()=>({kind:'rejected'}));
+ try{
+  await proxy.seen; abort.abort();
+  const result=await Promise.race([outcome,new Promise(resolve=>{watchdog=setTimeout(()=>resolve({kind:'deadline-exceeded'}),1500);})]);
+  expect(result).toEqual({kind:'rejected'});
+  expect((await admin.query('select 1 from pg_stat_activity where pid=$1',[pid])).rowCount).toBe(0);
+  const locked=(await admin.query<{locked:boolean}>('select pg_try_advisory_lock(1818,1801) locked')).rows[0]!.locked;
+  try{expect(locked).toBe(true);}finally{if(locked)await admin.query('select pg_advisory_unlock(1818,1801)');}
+ }finally{clearTimeout(watchdog);proxy.release();abort.abort();await outcome;await pool.end();await proxy.close();}
+});
+
+
+it('bounds cancellation recovery when the independent control connection is unavailable',async()=>{
+ const {pgQueryBarrier}=await import('./pg-query-barrier.js');
+ const proxy=await pgQueryBarrier(url,text=>text==='reset lock_timeout'),pool=new pg.Pool({connectionString:proxy.url,max:1}),abort=new AbortController();
+ let pid=0;
+ const outcome=withIngestionReadSnapshot(pool,async db=>{pid=(await db.execute<{pid:number}>(sql`select pg_backend_pid() pid`)).rows[0]!.pid;return 'late';},abort.signal).then(()=>true,()=>false);
+ try{
+  await proxy.seen;const started=performance.now();proxy.disconnect();abort.abort();
+  expect(await outcome).toBe(false);expect(performance.now()-started).toBeLessThan(1250);
+  // Loss of the inactive session transport releases its server lock even without the control path.
+  await vi.waitFor(async()=>expect((await admin.query('select 1 from pg_stat_activity where pid=$1',[pid])).rowCount).toBe(0));
+  expect(pool.totalCount).toBe(0);
+ }finally{proxy.release();abort.abort();await outcome;await pool.end();await proxy.close();}
+});
+it('rejects a cleanup failure and recovers with the next pooled request',async()=>{
+ const {pgQueryBarrier}=await import('./pg-query-barrier.js');
+ const proxy=await pgQueryBarrier(url,text=>text==='reset lock_timeout'),pool=new pg.Pool({connectionString:proxy.url,max:1});
+ const outcome=withIngestionReadSnapshot(pool,async()=>true).then(()=>true,()=>false);
+ try{await proxy.seen;proxy.disconnect();expect(await outcome).toBe(false);expect(pool.totalCount).toBe(0);}
+ finally{proxy.release();await outcome;await pool.end();await proxy.close();}
+ const healthy=new pg.Pool({connectionString:url,max:1});
+ try{expect(await withIngestionReadSnapshot(healthy,async db=>(await db.execute<{value:number}>(sql`select 42 value`)).rows[0]!.value)).toBe(42);}finally{await healthy.end();}
+});
+it('does not retain snapshot lifecycle listeners on a healthy reused connection',async()=>{
+ const pool=new pg.Pool({connectionString:url,max:1});
+ try{
+  const probe=await pool.connect(),baseline={end:probe.listenerCount('end'),error:probe.listenerCount('error')};probe.release();
+  for(let n=0;n<12;n++)expect(await withIngestionReadSnapshot(pool,async()=>42)).toBe(42);
+  const reused=await pool.connect();try{expect(reused.listenerCount('end')).toBe(baseline.end);expect(reused.listenerCount('error')).toBe(baseline.error);}finally{reused.release();}
+ }finally{await pool.end();}
+});

@@ -31,3 +31,11 @@ it.each([
 it('sanitizes invalid DSNs instead of exposing credential-bearing native URL errors',async()=>{
  const pool=new pg.Pool({connectionString:'postgres://synthetic:private-sentinel@[invalid'});try{let error:unknown;try{ingestionCancellationConfig(pool);}catch(e){error=e;}expect(error).toBeInstanceOf(Error);expect(String(error)).not.toContain('private-sentinel');expect(error).not.toHaveProperty('input');expect(error).not.toHaveProperty('cause');}finally{await pool.end();}
 });
+
+it('resolves DSNs without allocating a transport and refuses an already allocated transport',async()=>{
+ let allocations=0;const {PassThrough}=await import('node:stream');
+ const pool=new pg.Pool({stream:()=>{allocations++;return new PassThrough();}});
+ try{const options=ingestionCancellationConfig(pool);expect(allocations).toBe(0);expect(options.stream).toBe(pool.options.stream);}finally{await pool.end();}
+ const other=new pg.Pool();Reflect.set(other.options,'stream',new PassThrough());
+ try{expect(()=>ingestionCancellationConfig(other)).toThrow('Unsupported ingestion cancellation connection options');}finally{await other.end();}
+});
