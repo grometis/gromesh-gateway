@@ -239,7 +239,8 @@ test("UI publication, key-auth traffic, viewer limits, audit and rollback on the
       expect((await routeRefused).status()).toBe(403);
       await expect(viewerRoute.getByRole("alert")).toHaveText(refused);
       await viewerRoute.getByRole("button", { name: "Cancelar" }).click();
-      await viewerPage.getByRole("table", { name: "Rotas", exact: true }).getByRole("row").filter({ hasText: name }).getByRole("button", { name: "Editar", exact: true }).click();
+      await viewerPage.getByRole("table", { name: "Rotas", exact: true }).getByRole("row").filter({ hasText: name }).getByRole("button", { name: `Mais ações para ${name}`, exact: true }).click();
+      await viewerPage.getByRole("menuitem", { name: "Editar", exact: true }).click();
       const viewerRouteEdit = viewerPage.getByRole("dialog", { name: `Editar ${name}` });
       await viewerRouteEdit.getByLabel("Métodos").fill("GET");
       const routeEditRefused = viewerPage.waitForResponse((r) => r.request().method() === "PUT" && r.url().includes(`/api/v2/workspaces/${env.id}/routes/`));
