@@ -128,6 +128,12 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
               <tr key={r.id}>
                 <td className="row-main" data-label="Nome">
                   <strong>{r.name}</strong>
+                  {readOnly && <details className="route-publication-note">
+                    <summary>Configuração e publicação</summary>
+                    <RoutePaths route={r} slug={slug} servicePath={servicePath(r.serviceId)} publication={publication} />
+                    <p>Hosts: <span className="mono">{r.hosts?.join(", ") || "—"}</span></p>
+                    {r.pathCompatibility === "legacy-preserved" && <p className="warn">{isPathlessLegacy(r) ? PATHLESS_LEGACY : LEGACY}</p>}
+                  </details>}
                   {r.pathCompatibility === "legacy-preserved" && <Badge tone="warning">Legada</Badge>}
                 </td>
                 <td data-label="Métodos" className="route-methods">{r.methods?.length ? r.methods.map(m=><span className={`method method-${m.toLowerCase()}`} key={m}>{m}</span>) : <span className="muted">Todos</span>}</td>

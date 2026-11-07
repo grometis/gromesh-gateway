@@ -94,7 +94,7 @@ export function WorkspacesPage() {
       />
       {policy.data && <Availability policy={policy.data} />}
       {policy.isError && <p className="error" role="alert">Não foi possível ler a política de criação: {statusMessage(policy.error)}</p>}
-      {notice && <p className="note" role="status">{notice} {createdId && items.some(w=>w.id===createdId) && <Link to={`/workspaces/${encodeURIComponent(createdId)}/overview`}>Entrar no novo Workspace</Link>}</p>}
+      {notice && <p className="note" role="status">{notice} {createdId && <Link to={`/workspaces/${encodeURIComponent(createdId)}/overview`}>Entrar no novo Workspace</Link>}</p>}
       <div className="gateway-filters"><input type="search" aria-label="Buscar Workspaces" ref={searchRef} placeholder="Buscar por nome ou slug" value={search} onChange={e=>setSearch(e.target.value)}/></div>
       {workspaces.hasNextPage && search && <p className="muted">A busca considera os Workspaces carregados. Carregue mais para ampliar o resultado.</p>}
       {items.length>0 && visibleItems.length===0 && <EmptyState title="Nenhum Workspace carregado corresponde à busca."/>}

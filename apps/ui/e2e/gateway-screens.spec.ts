@@ -61,6 +61,12 @@ test("service detail keeps properties and actions, with scoped routes and plugin
   const routes = page.getByRole("table", { name: "Rotas do serviço", exact: true });
   await expect(routes).toHaveClass("cards");
   await expect(routes.getByRole("row").last()).toContainText("orders-api");
+  const readonlyEvidence = routes.locator("details");
+  await readonlyEvidence.getByText("Configuração e publicação", { exact: true }).click();
+  await expect(readonlyEvidence).toContainText("api.example.test");
+  await expect(readonlyEvidence).toContainText("Path configurado: /orders");
+  await expect(readonlyEvidence).toContainText("Implantação de Releases do Workspace indisponível nesta interface");
+  await expect(routes.getByRole("button")).toHaveCount(0);
   await expect(page.getByRole("table", { name: "Plugins", exact: true })).toHaveClass("cards");
   await expect(page.getByRole("heading", { name: "Plugins do serviço" })).toBeVisible();
   await page.getByRole("button", { name: "Mais ações para orders", exact: true }).click();

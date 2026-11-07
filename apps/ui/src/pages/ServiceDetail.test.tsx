@@ -96,6 +96,9 @@ describe("service detail route and plugin access", () => {
     const html = await loaded(<ScopedRoutes envId={W} service={service} readOnly />);
     expect(html).toContain(route.name);
     expect(html).toContain(service.name);
+    expect(html).toContain("Configuração e publicação por fluxo");
+    expect(html).toContain("Implantação de Releases do Workspace indisponível nesta interface");
+    if (stored.hosts?.length) expect(html).toContain(stored.hosts[0]);
     expect(html).not.toMatch(/<button|aria-label="Ações"|class="actions"|<form|role="dialog"/);
     const queries = sent.filter((r) => new URL(r.url).pathname.endsWith("/routes"));
     expect(queries.length).toBeGreaterThan(0);
