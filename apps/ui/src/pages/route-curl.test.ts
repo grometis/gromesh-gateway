@@ -1,5 +1,5 @@
 import {describe,expect,it} from 'vitest';
-import {buildRouteCurl,knownRouteCurlEntry} from './route-curl';
+import {buildRouteCurl,knownRouteCurlEntry,matchesPublishedRoute} from './route-curl';
 const route={protocols:['https'],methods:['GET'],hosts:['api.example.test'],headers:{Authorization:['never-copy-this-secret']}};
 describe('public route cURL',()=>{
  it('uses the explicit public entry, method and placeholder headers without credentials',()=>{
@@ -36,4 +36,15 @@ describe('known Gateway entry',()=>{
   for(const paths of [undefined,[],['/one','/two'],['~/orders/[0-9]+'],['//elsewhere.test/orders'],['/\\elsewhere.test/orders'],['/a/../admin'],['/%2e%2e/admin']])expect(knownRouteCurlEntry(route,'https://api.example.test',paths)).toBeNull();
   expect(knownRouteCurlEntry(route,'https://internal.example.test',['/orders'])).toBeNull();
  });
+});
+
+
+it('never mixes published paths with changed or unknown matching criteria',()=>{
+ const current={...route,paths:['/orders']};
+ expect(matchesPublishedRoute(current,current)).toBe(true);
+ expect(matchesPublishedRoute({...current,methods:['POST']},current)).toBe(false);
+ expect(matchesPublishedRoute({...current,hosts:['other.example.test']},current)).toBe(false);
+ expect(matchesPublishedRoute({...current,paths:['/draft-orders']},current)).toBe(false);
+ expect(matchesPublishedRoute(current,undefined)).toBe(false);
+ expect(matchesPublishedRoute(current,{paths:['/orders']})).toBe(false);
 });

@@ -121,3 +121,15 @@ test('direct Workspaces link restores keyboard focus when the mobile header hide
  await page.setViewportSize({width:1440,height:900});await setup(page);await page.goto('/workspaces');await page.getByLabel('E-mail',{exact:true}).fill('ana@example.test');await page.getByLabel('Senha',{exact:true}).fill('synthetic-password');await page.getByRole('button',{name:'Entrar',exact:true}).click();
  const link=page.locator('.global-header').getByRole('link',{name:'Abrir Workspaces',exact:true});await link.focus();await expect(link).toBeFocused();await page.setViewportSize({width:390,height:900});await expect(page.getByRole('button',{name:'Menus globais',exact:true})).toBeFocused();
 });
+
+
+test('Escape closes the route action menu before its detail dialog',async({page})=>{
+ await setup(page);await page.goto(`/workspaces/${W}/routes`);await page.getByLabel('E-mail',{exact:true}).fill('ana@example.test');await page.getByLabel('Senha',{exact:true}).fill('synthetic-password');await page.getByRole('button',{name:'Entrar',exact:true}).click();
+ await page.getByRole('button',{name:'Ver detalhes de orders-payments',exact:true}).click();const dialog=page.getByRole('dialog',{name:'Detalhes de orders-payments',exact:true}),menu=dialog.getByRole('button',{name:'Mais ações para orders-payments',exact:true});await menu.click();await expect(dialog.getByRole('menuitem',{name:'Plugins do Workspace',exact:true})).toBeFocused();await page.keyboard.press('Escape');await expect(dialog).toBeVisible();await expect(menu).toBeFocused();await expect(dialog.getByRole('menu')).toHaveCount(0);await page.keyboard.press('Escape');await expect(dialog).toHaveCount(0);
+});
+
+test('responsive Brand and route filters restore keyboard focus to visible controls',async({page})=>{
+ await page.setViewportSize({width:1440,height:900});await setup(page);await page.goto(`/workspaces/${W}/routes`);await page.getByLabel('E-mail',{exact:true}).fill('ana@example.test');await page.getByLabel('Senha',{exact:true}).fill('synthetic-password');await page.getByRole('button',{name:'Entrar',exact:true}).click();
+ await expect(page.getByRole('heading',{name:'Rotas',exact:true})).toBeVisible();await page.locator('.global-header').getByRole('link',{name:'gromesh, início',exact:true}).focus();await page.setViewportSize({width:390,height:900});await expect(page.getByRole('button',{name:'Menus globais',exact:true})).toBeFocused();
+ await page.setViewportSize({width:1440,height:900});await page.getByLabel('Filtrar por estado',{exact:true}).focus();await page.setViewportSize({width:390,height:900});const filters=page.getByRole('button',{name:'Filtros',exact:true});await expect(filters).toBeFocused();await page.setViewportSize({width:1440,height:900});await expect(page.getByLabel('Filtrar por serviço',{exact:true})).toBeFocused();
+});

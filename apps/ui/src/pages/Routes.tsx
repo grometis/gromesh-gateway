@@ -1,6 +1,6 @@
 import { useSearchShortcut } from "../components/useSearchShortcut";
 import { useIsWorkspaceRoute, useWorkspaceId } from "../navigation/context";
-import { useDeferredValue, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useDeferredValue, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useInfiniteQuery, useMutation } from "@tanstack/react-query";
 import { useSearchParams } from "react-router";
 import { apiV2, type WorkspaceRoute, type WorkspaceRouteWrite } from "../api/client-v2";
@@ -56,6 +56,25 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
   const [filtersOpen, setFiltersOpen] = useState(false);
   const filtersId = useId();
   const filterToggle = useRef<HTMLButtonElement>(null);
+  const filtersPanel = useRef<HTMLDivElement>(null);
+  const lastFilterFocus = useRef<"panel" | "toggle" | null>(null);
+  useEffect(() => {
+    if (!window.matchMedia) return;
+    const media = window.matchMedia("(max-width: 600px)");
+    const focus = (event: FocusEvent) => {
+      const target = event.target as Node;
+      // CSS can blur a hidden select before matchMedia.change; retain its last real focus.
+      if (target === document.body || target === document.documentElement) return;
+      lastFilterFocus.current = target === filterToggle.current ? "toggle" : filtersPanel.current?.contains(target) ? "panel" : null;
+    };
+    const change = () => {
+      if (media.matches && lastFilterFocus.current === "panel" && !filtersOpen) filterToggle.current?.focus();
+      else if (!media.matches && lastFilterFocus.current === "toggle") filtersPanel.current?.querySelector("select")?.focus();
+    };
+    document.addEventListener("focusin", focus);
+    media.addEventListener("change", change);
+    return () => {document.removeEventListener("focusin", focus);media.removeEventListener("change", change);};
+  }, [filtersOpen]);
   const v2 = useIsWorkspaceRoute();
   const draft = useEntityDraft(workspaceId, "routes");
   const publication = useRoutePublication(workspaceId);
@@ -119,7 +138,7 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
       <div className="gateway-filters route-toolbar" onKeyDown={event => {if(event.key === "Escape"){event.preventDefault();setFiltersOpen(false);filterToggle.current?.focus();}}}>
         <input type="search" className="search" placeholder="Buscar por nome, path ou host" aria-label="Buscar rotas" ref={searchRef} value={search} onChange={(e) => setSearch(e.target.value)} />
         {!readOnly && <button type="button" className="route-filter-toggle" ref={filterToggle} aria-expanded={filtersOpen} aria-controls={filtersId} onClick={() => setFiltersOpen(!filtersOpen)}>Filtros</button>}
-        <div id={filtersId} className={`route-filter-panel${filtersOpen || readOnly ? " is-open" : ""}`}>
+        <div ref={filtersPanel} id={filtersId} className={`route-filter-panel${filtersOpen || readOnly ? " is-open" : ""}`}>
           {onServiceChange && <label>Serviço <select aria-label="Filtrar por serviço" value={serviceId} onChange={(e) => onServiceChange(e.target.value)}>
             <option value="">Todos os serviços</option>
             {serviceList.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
@@ -162,7 +181,7 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
                 </td>
                 {!readOnly && <td className="actions">
                   <div className="route-actions">
-                    <RouteCurl route={r} publicPaths={publication.legacy ? publication.snapshot?.config.routes.find(row => row.id === r.id)?.paths : undefined} />
+                    <RouteCurl route={r} publishedRoute={publication.legacy && publication.draftKnown && !draft.get(r.id) ? publication.snapshot?.config.routes.find(row => row.id === r.id) : undefined} />
                     <RowMenu label={`Mais ações para ${r.name}`} items={secondaryItems(r)} />
                   </div>
                 </td>}

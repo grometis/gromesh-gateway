@@ -61,7 +61,7 @@ export function RowMenu({ label, items }: { label: string; items: RowMenuItem[] 
           {items.map((item, i) => {
             const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
               if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); move(i, e.key === "ArrowDown" ? 1 : -1); }
-              else if (e.key === "Escape") { e.preventDefault(); close(); }
+              else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); }
               else if (e.key === "Tab") setOpen(false);
             };
             const onClick = () => { setOpen(false); item.onSelect(); };

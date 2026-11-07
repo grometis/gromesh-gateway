@@ -1,4 +1,4 @@
-interface CurlRoute {protocols:readonly string[];methods?:readonly string[];hosts?:readonly string[];headers?:Record<string,readonly string[]>}
+export interface CurlRoute {paths?:readonly string[];protocols:readonly string[];methods?:readonly string[];hosts?:readonly string[];headers?:Record<string,readonly string[]>}
 const quote=(value:string)=>`'${value.replaceAll("'", "'\\''")}'`;
 /** The public entry is explicitly confirmed by the user; never inferred from a service or the UI origin. */
 export function buildRouteCurl(route:CurlRoute,entry:string,method:string):string {
@@ -29,4 +29,12 @@ export function knownRouteCurlEntry(route: CurlRoute, origin: string | undefined
   buildRouteCurl(route, entry.href, route.methods?.[0] ?? 'GET');
   return entry.href;
  } catch { return null; }
+}
+
+
+/** A URL prefill must not combine a published path with draft matching criteria. */
+export function matchesPublishedRoute(current: CurlRoute, published: Partial<CurlRoute> | undefined): boolean {
+ if (!published || !published.protocols) return false;
+ return (['paths','protocols','methods','hosts','headers'] as const).every(key =>
+  JSON.stringify(current[key] ?? (key === 'headers' ? {} : [])) === JSON.stringify(published[key] ?? (key === 'headers' ? {} : [])));
 }
