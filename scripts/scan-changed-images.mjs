@@ -5,6 +5,7 @@
 // that exact reference is pulled. SCAN_PLATFORM (os/arch, default linux/amd64) selects the architecture: CI runs one
 // native leg per published platform. Usage: SCAN_PLATFORM=linux/arm64 node scripts/scan-changed-images.mjs <base-ref>
 import { execFileSync, spawnSync } from "node:child_process";
+import { scannerDockerArguments } from './image-scan-arguments.mjs';
 
 const TRIVY = "aquasec/trivy:0.58.1@sha256:ab70a02200597efa04748f210f793936eb647cbcdb0ea69cc30b226d6f5a22c7";
 const base = process.argv[2];
@@ -66,7 +67,7 @@ const scanned = [];
 const scan = (image) => {
   scanned.push(image);
   console.log(`\n== Trivy (CRITICAL fails, ${platform}): ${image}`);
-  const ok = run("docker", ["run", "--rm", "-v", "/var/run/docker.sock:/var/run/docker.sock:ro", "-v", "trivy-cache:/root/.cache/trivy",
+  const ok = run("docker", [...scannerDockerArguments(process.env.DOCKER_HOST,process.getuid?.()),
     TRIVY, "image", "--image-src", "docker", "--platform", platform, "--scanners", "vuln", "--severity", "CRITICAL", "--exit-code", "1",
     "--ignorefile", "/dev/null", "--no-progress", "--timeout", "15m", image]);
   if (!ok) failures.push(image);
