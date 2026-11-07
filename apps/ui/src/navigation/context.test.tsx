@@ -149,17 +149,19 @@ describe("authorized route context with real transport", () => {
     await view.settle();
     expect(view.container.textContent).not.toContain("Verificando contexto…");
     expect(view.sent.some((p) => p.startsWith("/api/v1/environments"))).toBe(false);
-    expect(view.container.textContent).not.toContain("Publicação");
+    expect(view.container.findAll(n=>n.getAttribute("role")==="region" && n.getAttribute("aria-label")==="Publicação")).toHaveLength(0);
     expect(view.container.textContent).not.toContain("fluxo v1 (rascunho)");
   });
   it("keeps route details and plugin navigation in v2, including after opening a detail", async () => {
     const route = { id: "route-a", name: "Route A", serviceId: `service-${A}`, paths: ["/orders"], stripPath: true, protocols: ["http"], pathCompatibility: "workspace-default", createdAt: stamp, updatedAt: stamp };
     const view = await mount(`/workspaces/${A}/routes`, { full: true, answers: { [`/api/v2/workspaces/${A}/routes`]: () => Response.json({ items: [route], nextCursor: null }) } });
     await view.waitText("Route A");
-    const detail = view.container.findAll((n) => n.tagName === "BUTTON" && n.textContent === "Ver detalhes")[0]!;
+    const detail = view.container.findAll((n) => n.tagName === "BUTTON" && n.getAttribute("aria-label") === "Ver detalhes de Route A")[0]!;
     await act(async () => { detail.dispatchEvent(new Event("click", { bubbles: true })); await tick(); });
     await view.waitText("Path previsto do Workspace");
     expect(view.container.textContent).not.toContain("Path no fluxo v1");
+    const actions = view.container.findAll(n=>n.tagName==="BUTTON"&&n.getAttribute("aria-label")==="Mais ações para Route A").at(-1)!;
+    await act(async()=>{actions.dispatchEvent(new Event("click",{bubbles:true}));await tick();});
     expect(view.container.findAll((n) => n.tagName === "A" && n.textContent === "Plugins do Workspace")[0]?.getAttribute("href")).toBe(`/workspaces/${A}/plugins`);
     expect(view.sent.some((p) => p.startsWith("/api/v1/environments"))).toBe(false);
   });
@@ -376,9 +378,9 @@ describe("breadcrumbs through the authorized context and real queries", () => {
       expect(trail(view).findAll((n) => n.tagName === "A").map((n) => n.getAttribute("href"))).toEqual(["/"]);
     }
     const menu = view.container.findAll((n) => n.tagName === "NAV" && n.getAttribute("aria-label") === "Menu principal")[0]!;
-    expect(menu.findAll((n) => n.tagName === "A")).toHaveLength(8);
+    expect(menu.findAll((n) => n.tagName === "A")).toHaveLength(9);
     expect(menu.findAll((n) => n.getAttribute("aria-current") === "page").map((n) => n.getAttribute("aria-label")))
-      .toEqual(section === "releases" ? [] : [label]);
+      .toEqual(section === "releases" ? ["Releases e implantação"] : [label]);
     expect(view.sent.some((p) => p.startsWith("/api/v1/environments"))).toBe(false);
   });
   it("names a v2 Consumer from its page query without reading the same-id legacy cache", async () => {

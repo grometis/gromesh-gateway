@@ -1,4 +1,5 @@
 import { navigateGlobal, openGlobalMenu } from "./global-navigation";
+import { routeAction } from "./route-actions";
 import type { Page } from "@playwright/test";
 import { expect, mockSession, test } from "./fixtures";
 import type { User } from "../src/api/client";
@@ -94,7 +95,7 @@ test("403 no logout aparece sem abandonar a sessão", async ({ page }) => {
 test("viewer conserva restrições v1; gateway v2 usa permissões do servidor e recusa 403", async ({ page }) => {
   await login(page, viewer);
   const menu = page.getByRole("navigation", { name: "Menu principal" });
-  await openGlobalMenu(page, "Instância");
+  await openGlobalMenu(page, "Administração");
   await expect(page.getByRole("navigation", { name: "Navegação global" }).getByRole("link", { name: /Usuários|Auditoria/ })).toHaveCount(0);
   // Services, Routes and Plugins go through v2, where no operation tells the caller's permissions: the actions are offered
   // and the server's 403 decides (Services/Routes below; Plugins in workspace-plugins.spec.ts). The v1 screens hide v1 edits.
@@ -138,7 +139,7 @@ test("viewer conserva restrições v1; gateway v2 usa permissões do servidor e 
   await menu.getByRole("link", { name: "Rotas", exact: true }).click();
   const routes = page.getByRole("table", { name: "Rotas", exact: true });
   await expect(routes.getByRole("row")).not.toHaveCount(0);
-  await expect(routes.getByRole("button", { name: "Editar", exact: true }).first()).toBeVisible();
+  await expect(routes.getByRole("button", { name: /^Mais ações para / }).first()).toBeEnabled();
   const routesBefore = await routes.getByRole("row").allTextContents();
   await page.route("**/api/v2/workspaces/*/routes**", (route) => {
     if (route.request().method() === "GET") return route.fallback();
@@ -152,7 +153,7 @@ test("viewer conserva restrições v1; gateway v2 usa permissões do servidor e 
   await newRoute.getByRole("button", { name: "Salvar" }).click();
   await expect(newRoute.getByRole("alert")).toHaveText("Você não tem permissão para alterar o gateway deste Workspace.");
   await newRoute.getByRole("button", { name: "Cancelar" }).click();
-  await routes.getByRole("button", { name: "Editar", exact: true }).first().click();
+  await routeAction(page, routes, "Editar");
   const editRoute = page.getByRole("dialog", { name: /^Editar / });
   await editRoute.getByLabel("Métodos").fill("GET");
   await editRoute.getByRole("button", { name: "Salvar" }).click();

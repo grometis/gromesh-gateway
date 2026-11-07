@@ -1,7 +1,8 @@
+import { useSearchShortcut } from "../components/useSearchShortcut";
 import { useIsWorkspaceRoute, useWorkspaceId } from "../navigation/context";
-import { useDeferredValue, useState, type FormEvent } from "react";
+import { useDeferredValue, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useInfiniteQuery, useMutation } from "@tanstack/react-query";
-import { Link, useSearchParams } from "react-router";
+import { useSearchParams } from "react-router";
 import { apiV2, type WorkspaceRoute, type WorkspaceRouteWrite } from "../api/client-v2";
 import { unwrap } from "../api/client";
 import { statusMessage, type FormErrors } from "../api/errors";
@@ -16,6 +17,7 @@ import { Table } from "../components/Table";
 import { Badge, DraftBadge } from "../components/Badge";
 import { Button } from "../components/Button";
 import { RowMenu } from "../components/RowMenu";
+import { RouteCurl } from "./RouteCurl";
 import { RoutePaths, useRoutePublication } from "./route-publication";
 import { gatewayErrorMessage, gatewayFormErrors } from "./gateway-errors";
 import { fieldText, useAllWorkspaceServices, useInvalidateWorkspaceGateway, useWorkspace, useWorkspaceGatewayAccess, WorkspaceGatewayNote } from "./workspace-gateway";
@@ -49,6 +51,30 @@ export function ScopedRoutes({ envId, service, readOnly = false }: { envId: stri
 }
 
 function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly = false }: { workspaceId: string; serviceId: string; service?: { id: string; name: string }; onServiceChange?: (id: string) => void; readOnly?: boolean }) {
+  const searchRef = useSearchShortcut();
+  const [stateFilter, setStateFilter] = useState("all");
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const filtersId = useId();
+  const filterToggle = useRef<HTMLButtonElement>(null);
+  const filtersPanel = useRef<HTMLDivElement>(null);
+  const lastFilterFocus = useRef<"panel" | "toggle" | null>(null);
+  useEffect(() => {
+    if (!window.matchMedia) return;
+    const media = window.matchMedia("(max-width: 600px)");
+    const focus = (event: FocusEvent) => {
+      const target = event.target as Node;
+      // CSS can blur a hidden select before matchMedia.change; retain its last real focus.
+      if (target === document.body || target === document.documentElement) return;
+      lastFilterFocus.current = target === filterToggle.current ? "toggle" : filtersPanel.current?.contains(target) ? "panel" : null;
+    };
+    const change = () => {
+      if (media.matches && lastFilterFocus.current === "panel" && !filtersOpen) filterToggle.current?.focus();
+      else if (!media.matches && lastFilterFocus.current === "toggle") filtersPanel.current?.querySelector("select")?.focus();
+    };
+    document.addEventListener("focusin", focus);
+    media.addEventListener("change", change);
+    return () => {document.removeEventListener("focusin", focus);media.removeEventListener("change", change);};
+  }, [filtersOpen]);
   const v2 = useIsWorkspaceRoute();
   const draft = useEntityDraft(workspaceId, "routes");
   const publication = useRoutePublication(workspaceId);
@@ -81,6 +107,18 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
   const [deleting, setDeleting] = useState<WorkspaceRoute | null>(null);
   const [plugins, setPlugins] = useState<WorkspaceRoute | null>(null);
   const items = routes.data?.pages.flatMap((p) => p.items) ?? [];
+  const stateFor = (r: WorkspaceRoute) => draft.get(r.id) ?? (publication.legacy && publication.draftKnown && publication.snapshot?.config.routes.some(row => row.id === r.id) ? "published" : publication.noSnapshot ? "draft" : "unverified");
+  const visibleItems = items.filter(r => stateFilter === "all" || stateFor(r) === stateFilter);
+  const secondaryItems = (r: WorkspaceRoute) => [
+    {label: "Ver detalhes", onSelect: () => setDetails(r)},
+    ...(!isPathlessLegacy(r) ? [
+      {label: v2 ? "Plugins do Workspace" : "Plugins", ...(v2 ? {href: `/workspaces/${workspaceId}/plugins`} : {}), onSelect: () => {setDetails(null); if(!v2) setPlugins(r);}},
+      ...(canWrite ? [
+        {label: "Editar", onSelect: () => {setDetails(null); setEditing(r);}},
+        {label: "Excluir", danger: true, onSelect: () => {setDetails(null); setDeleting(r);}},
+      ] : []),
+    ] : []),
+  ];
   // No contract operation tells the caller's v2 permissions (a binding may grant gateway.write): every signed-in user
   // is offered actions when this workspace allows writes and the server decides (its 403 is shown in Portuguese).
   const createAction = canWrite && (
@@ -90,70 +128,61 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
   );
 
   return (
-    <div className="gateway-list">
+    <div className="gateway-list route-list">
       {service ? <div className="page-head"><h2>Rotas do serviço</h2>{createAction}</div> : (
         <>
-          <PageHeader title="Rotas" description={v2 ? "Paths configurados e previsão para a configuração v2." : "Paths configurados, publicação no fluxo v1 e previsão para a configuração v2."} actions={createAction} />
-          <WorkspaceGatewayNote workspaceId={workspaceId} />
+          <PageHeader title={<>Rotas {routes.isSuccess && <span className="route-count" aria-hidden="true">{visibleItems.length}{routes.hasNextPage ? "+" : ""}</span>}</>} actions={createAction} />
         </>
       )}
-      {service && !readOnly && access.reason && <p role="status">{access.reason}</p>}
-      <div className="gateway-filters">
-        <input type="search" className="search" placeholder="Buscar por nome, path ou host" aria-label="Buscar rotas" value={search} onChange={(e) => setSearch(e.target.value)} />
-        {onServiceChange && <select aria-label="Filtrar por serviço" value={serviceId} onChange={(e) => onServiceChange(e.target.value)}>
-          <option value="">Todos os serviços</option>
-          {serviceList.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.name}
-            </option>
-          ))}
-        </select>}
+      {!readOnly && access.reason && <p role="status">{access.reason}</p>}
+      <div className="gateway-filters route-toolbar" onKeyDown={event => {if(event.key === "Escape"){event.preventDefault();setFiltersOpen(false);filterToggle.current?.focus();}}}>
+        <input type="search" className="search" placeholder="Buscar por nome, path ou host" aria-label="Buscar rotas" ref={searchRef} value={search} onChange={(e) => setSearch(e.target.value)} />
+        {!readOnly && <button type="button" className="route-filter-toggle" ref={filterToggle} aria-expanded={filtersOpen} aria-controls={filtersId} onClick={() => setFiltersOpen(!filtersOpen)}>Filtros</button>}
+        <div ref={filtersPanel} id={filtersId} className={`route-filter-panel${filtersOpen || readOnly ? " is-open" : ""}`}>
+          {onServiceChange && <label>Serviço <select aria-label="Filtrar por serviço" value={serviceId} onChange={(e) => onServiceChange(e.target.value)}>
+            <option value="">Todos os serviços</option>
+            {serviceList.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select></label>}
+          <label>Estado <select aria-label="Filtrar por estado" value={stateFilter} onChange={e => setStateFilter(e.target.value)}>
+            <option value="all">Todos os estados</option><option value="added">Novo</option><option value="modified">Alterado</option><option value="published">Publicada (v1)</option><option value="draft">Rascunho</option><option value="unverified">Não verificada</option>
+          </select></label>
+        </div>
       </div>
+      {routes.hasNextPage && stateFilter !== "all" && <p className="muted" role="status">O filtro de estado considera apenas as rotas carregadas. Carregue mais para ampliar o resultado.</p>}
       {routes.isPending && <p className="muted">Carregando…</p>}
       {routes.isError && <p className="error">{statusMessage(routes.error)}</p>}
-      {routes.isSuccess && items.length === 0 && <EmptyState title="Nenhuma rota encontrada." />}
-      {items.length > 0 && (
+      {routes.isSuccess && visibleItems.length === 0 && <EmptyState title={routes.hasNextPage && stateFilter !== "all" ? "Nenhuma rota carregada corresponde ao estado selecionado." : "Nenhuma rota encontrada."} />}
+      {visibleItems.length > 0 && (
         <Table label={service ? "Rotas do serviço" : "Rotas"} cards>
           <thead>
             <tr>
-              <th>Rota → configuração e publicação / serviço</th>
-              {!readOnly && <th className="actions" aria-label="Ações" />}
+              <th>Nome</th><th>Métodos</th><th>Caminho</th><th>Serviço</th><th>Estado</th>
+              {!readOnly && <th className="actions" aria-label="Ações">Ações</th>}
             </tr>
           </thead>
           <tbody>
-            {items.map((r) => (
+            {visibleItems.map((r) => (
               <tr key={r.id}>
-                <td className="row-main">
-                  <div className="service-route">
-                    <span className="service-name">{r.name}</span>
-                    <DraftBadge change={draft.get(r.id)} />
-                    {r.pathCompatibility === "legacy-preserved" && <Badge tone="warning">Legada</Badge>}
-                    <span className="arrow" aria-hidden="true">→</span>
-                    <span className="muted">Serviço <span className="mono">{serviceName(r.serviceId)}</span></span>
-                  </div>
-                  <RoutePaths route={r} slug={slug} servicePath={servicePath(r.serviceId)} publication={publication} />
-                  <div className="route-matches">
-                    <span className="muted">Métodos</span>
-                    {r.methods === undefined ? <span className="match-chip mono">todos</span> : r.methods.map((m) => <span className="match-chip mono" key={m}>{m}</span>)}
-                    <span className="muted">Hosts</span>
-                    {r.hosts?.length ? r.hosts.map((h) => <span className="match-chip mono" key={h}>{h}</span>) : <span className="mono">—</span>}
-                  </div>
-                  {r.pathCompatibility === "legacy-preserved" && <p className="muted"><small>{isPathlessLegacy(r) ? PATHLESS_LEGACY : LEGACY}</small></p>}
+                <td className="row-main" data-label="Nome">
+                  {readOnly ? <strong>{r.name}</strong> : <button type="button" className="route-name" aria-label={`Ver detalhes de ${r.name}`} onClick={() => setDetails(r)}>{r.name}</button>}
+                  {readOnly && <details className="route-publication-note">
+                    <summary>Configuração e publicação</summary>
+                    <RoutePaths route={r} slug={slug} servicePath={servicePath(r.serviceId)} publication={publication} />
+                    <p>Hosts: <span className="mono">{r.hosts?.join(", ") || "—"}</span></p>
+                    {r.pathCompatibility === "legacy-preserved" && <p className="warn">{isPathlessLegacy(r) ? PATHLESS_LEGACY : LEGACY}</p>}
+                  </details>}
+                  {r.pathCompatibility === "legacy-preserved" && <Badge tone="warning">Legada</Badge>}
+                </td>
+                <td data-label="Métodos" className="route-methods">{r.methods?.length ? r.methods.map(m=><span className={`method method-${m.toLowerCase()}`} key={m}>{m}</span>) : <span className="muted">Todos</span>}</td>
+                <td data-label="Caminho" className="route-path">{r.paths?.length?r.paths.map(path=><code key={path}>{path}</code>):<span className="muted">Sem paths</span>}</td>
+                <td data-label="Serviço">{serviceName(r.serviceId)}{services.isSuccess && services.fetchStatus === "idle" && !serviceList.some(item=>item.id===r.serviceId) && <span className="error route-service-error">Serviço indisponível</span>}</td>
+                <td data-label="Estado">
+                  {draft.get(r.id)?<DraftBadge change={draft.get(r.id)}/>:<Badge tone="off">{publication.legacy&&publication.draftKnown&&publication.snapshot?.config.routes.some(row=>row.id===r.id)?`Publicada v${publication.snapshot.version}`:publication.noSnapshot?"Rascunho":"Não verificada"}</Badge>}
                 </td>
                 {!readOnly && <td className="actions">
                   <div className="route-actions">
-                    {isPathlessLegacy(r) ? (
-                      <Button variant="quiet" onClick={() => setDetails(r)}>Ver detalhes</Button>
-                    ) : (
-                      <>
-                        <Button variant="quiet" onClick={() => setDetails(r)}>Ver detalhes</Button>
-                        {v2 ? <Link className="strip-link" to={`/workspaces/${workspaceId}/plugins`}>Plugins do Workspace</Link> : <Button variant="quiet" onClick={() => setPlugins(r)}>Plugins</Button>}
-                        {canWrite && <>
-                          <Button variant="quiet" onClick={() => setEditing(r)}>Editar</Button>
-                          <RowMenu label={`Mais ações para ${r.name}`} items={[{ label: "Excluir", danger: true, onSelect: () => setDeleting(r) }]} />
-                        </>}
-                      </>
-                    )}
+                    <RouteCurl route={r} publishedRoute={publication.legacy && publication.draftKnown && !draft.get(r.id) ? publication.snapshot?.config.routes.find(row => row.id === r.id) : undefined} />
+                    <RowMenu label={`Mais ações para ${r.name}`} items={secondaryItems(r)} />
                   </div>
                 </td>}
               </tr>
@@ -161,6 +190,8 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
           </tbody>
         </Table>
       )}
+      {routes.isSuccess && <p className="route-total muted">{visibleItems.length} {visibleItems.length === 1 ? "rota" : "rotas"}{routes.hasNextPage ? " carregadas" : ""}</p>}
+      {!service && <details className="route-context-info"><summary>Contexto e publicação</summary><WorkspaceGatewayNote workspaceId={workspaceId} showAccessReason={false} /></details>}
       {routes.hasNextPage && (
         <button type="button" onClick={() => void routes.fetchNextPage()} disabled={routes.isFetchingNextPage}>
           Carregar mais
@@ -177,7 +208,7 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
           onClose={() => setEditing(null)}
         />
       )}
-      {!readOnly && details && <RouteDetails route={details} slug={slug} publication={publication} servicePath={servicePath(details.serviceId)} serviceName={serviceName(details.serviceId)} onClose={() => setDetails(null)} />}
+      {!readOnly && details && <RouteDetails route={details} slug={slug} publication={publication} servicePath={servicePath(details.serviceId)} serviceName={serviceName(details.serviceId)} actions={secondaryItems(details).length > 1 ? <RowMenu label={`Mais ações para ${details.name}`} items={secondaryItems(details).filter(item => item.label !== "Ver detalhes")} /> : undefined} onClose={() => setDetails(null)} />}
       {keepDialogs && deleting && <DeleteRoute workspaceId={workspaceId} route={deleting} onClose={() => setDeleting(null)} />}
       {!readOnly && plugins && (
         <Modal title={`Plugins de ${plugins.name}`} onClose={() => setPlugins(null)} wide>
@@ -192,7 +223,7 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
 const isPathlessLegacy = (route: WorkspaceRoute | null): boolean =>
   route?.pathCompatibility === "legacy-preserved" && (route.paths?.length ?? 0) === 0;
 
-function RouteDetails({ route, serviceName, onClose, ...paths }: { route: WorkspaceRoute; serviceName: string; onClose: () => void; slug?: string; servicePath?: string | null; publication: ReturnType<typeof useRoutePublication> }) {
+function RouteDetails({ route, serviceName, onClose, actions, ...paths }: { route: WorkspaceRoute; serviceName: string; onClose: () => void; actions?: ReactNode; slug?: string; servicePath?: string | null; publication: ReturnType<typeof useRoutePublication> }) {
   const fields = [
     ["Nome", route.name],
     ["Serviço", serviceName],
@@ -207,7 +238,7 @@ function RouteDetails({ route, serviceName, onClose, ...paths }: { route: Worksp
     ["Tags", route.tags?.join(", ") || "—"],
   ];
   return (
-    <Modal title={`Detalhes de ${route.name}`} onClose={onClose} footer={<Button onClick={onClose}>Fechar</Button>}>
+    <Modal title={`Detalhes de ${route.name}`} onClose={onClose} footer={<div className="form-actions">{actions}<Button onClick={onClose}>Fechar</Button></div>}>
       {route.pathCompatibility === "legacy-preserved" && <p className="warn"><Badge tone="warning">Legada</Badge> {isPathlessLegacy(route) ? PATHLESS_LEGACY : LEGACY}</p>}
       <RoutePaths route={route} {...paths} />
       <dl>

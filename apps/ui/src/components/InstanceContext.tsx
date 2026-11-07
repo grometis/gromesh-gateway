@@ -9,15 +9,15 @@ export function InstanceOrigin() {
   return <span className="instance-origin">{typeof window === "undefined" ? "Origem indisponível" : window.location.origin}</span>;
 }
 
-export function InstanceContext({ label: regionLabel = "Identidade da instância" }: { label?: string }) {
+export function InstanceContext({ label: regionLabel = "Identidade da instância", compact = false }: { label?: string; compact?: boolean }) {
   const { user } = useAuth();
   const policy = useQuery({ ...creationPolicyQuery, enabled: !!user, retry: false });
   // A cached response must not keep claiming a stage during a failed or pending revalidation.
   const stage = user && policy.isSuccess && policy.fetchStatus === "idle" ? policy.data.stage : null;
   const label = stage === "dev" || stage === "hml" || stage === "prd" ? `Instância ${STAGES[stage]}` : "Instância não identificada";
   return (
-    <div className="instance-context" role="region" aria-label={regionLabel}>
-      <strong>{label}</strong>
+    <div className={`instance-context${compact ? " is-compact" : ""}`} title={compact ? label : undefined} role="region" aria-label={regionLabel}>
+      <strong>{compact ? <><span className="visually-hidden">Instância </span>{label.slice("Instância ".length)}</> : label}</strong>
       <InstanceOrigin />
     </div>
   );

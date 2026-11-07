@@ -167,7 +167,7 @@ test("an authorized caller creates a workspace: suggested slug, success only aft
   await expect(page.getByRole("status")).toHaveCount(0);
   release();
   await expect(dialog).toHaveCount(0);
-  await expect(page.getByRole("status")).toHaveText("Workspace “Gestão de Cobrança” criado com o slug gestao-de-cobranca.");
+  await expect(page.getByRole("status")).toContainText("Workspace “Gestão de Cobrança” criado com o slug gestao-de-cobranca.");
   expect(fake.requests.filter((r) => r.method === "POST")).toEqual([
     { method: "POST", path: "/workspaces", body: { name: "Gestão de Cobrança", slug: "gestao-de-cobranca", description: "Boletos e PIX" } },
   ]);
@@ -394,3 +394,22 @@ for (const width of [390, 1440]) {
     await audit("menu");
   });
 }
+
+
+test("the created Workspace can be entered even when it sorts beyond the loaded page", async ({ page }) => {
+  const fake = await fakeApi(page, { workspaces: [ws(1, "Alpha", "alpha"), ws(2, "Beta", "beta")], pageSize: 1 });
+  await openWorkspaces(page, admin);
+  await page.getByRole("button", { name: "Criar Workspace", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Criar Workspace", exact: true });
+  await dialog.getByLabel("Nome", { exact: true }).fill("Zeta");
+  await dialog.getByRole("button", { name: "Criar", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  const created = fake.workspaces.find(w => w.slug === "zeta")!;
+  await expect(page.getByRole("table", { name: "Workspaces", exact: true })).not.toContainText("Zeta");
+  const entry = page.getByRole("link", { name: "Entrar no novo Workspace", exact: true });
+  await expect(entry).toHaveAttribute("href", `/workspaces/${created.id}/overview`);
+  await entry.click();
+  await expect(page).toHaveURL(`/workspaces/${created.id}/overview`);
+  await expect(page.getByLabel("Identidade do Workspace", { exact: true })).toContainText("Zeta");
+  expect(fake.requests.some(r => r.method === "GET" && r.path === `/workspaces/${created.id}`)).toBe(true);
+});

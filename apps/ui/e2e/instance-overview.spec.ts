@@ -172,7 +172,7 @@ test("401 on the next page clears previous data and existing login returns to ro
 
 for (const width of [390, 768, 1440]) {
   for (const archived of [false, true]) {
-    test(`explicit open establishes v2 context at ${width}px; archived=${archived}; brand returns to global`, async ({ page }) => {
+    test(`explicit open establishes v2 context at ${width}px; archived=${archived}; available navigation returns to global`, async ({ page }) => {
       await page.setViewportSize({ width, height: 900 });
       const target = archived ? B : A;
       const sent = await setup(page, { items: [target] });
@@ -211,7 +211,10 @@ for (const width of [390, 768, 1440]) {
       expect(sent.some((u) => u.pathname === `/api/v2/workspaces/${target.id}`)).toBe(true);
       expect(sent.some((u) => u.pathname.startsWith("/api/v1/environments/"))).toBe(false);
       const beforeReturn = sent.length;
-      await page.getByRole("link", { name: "gromesh, início", exact: true }).click();
+      if (width <= 600) {
+        await trigger.click();
+        await context.getByRole("link", { name: "Voltar à visão geral da instância", exact: true }).click();
+      } else await page.getByRole("link", { name: "gromesh, início", exact: true }).click();
       await expect(overview(page)).toBeVisible();
       await expect(page).toHaveURL("/");
       await expect(page.getByRole("heading", { name: "Visão geral do Workspace", exact: true })).toHaveCount(0);

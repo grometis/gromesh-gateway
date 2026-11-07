@@ -28,7 +28,7 @@ async function setup(page: Page, options: { stage?: string | null; policyStatus?
 }
 
 async function audit(page: Page) {
-  await checkLayout(page, { focusWithin: await page.getByLabel("Ambiente (legado)", { exact: true }).isVisible() ? ".menu" : ".global-header" });
+  await checkLayout(page, { focusWithin: await page.locator(".gateway-drawer").isVisible() ? ".gateway-drawer" : ".global-header" });
   const result = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
   expect(result.violations.filter((v) => v.impact === "serious" || v.impact === "critical").map((v) => `${v.id}: ${v.nodes.map((n) => n.target).join(", ")}`)).toEqual([]);
 }
@@ -55,8 +55,7 @@ for (const width of [390, 1440]) {
       await page.goto(`/e/${A}/releases`);
       const identity = page.getByRole("region", { name: "Identidade da instância" });
       await expect(identity).toContainText(new URL(test.info().project.use.baseURL!).origin);
-      await openGateway(page);
-      await expect(state.text.startsWith("Instância") ? page.locator(".instance-context") : page.locator(".menu")).toContainText(state.text);
+      await expect(page.locator(".global-header")).toContainText(state.text);
       await expect(page.getByLabel("Ambiente (legado)", { exact: true })).toBeVisible();
       await expect(page.getByLabel("Workspace v2", { exact: true })).toBeVisible();
       await expect(page.getByLabel("Workspace v2", { exact: true })).toHaveValue("");

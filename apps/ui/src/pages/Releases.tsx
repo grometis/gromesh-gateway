@@ -122,7 +122,7 @@ export function ReleasesList({ workspaceId, activeVersion }: { workspaceId: stri
   if (releases.isPending) return <p className="muted" role="status">Carregando releases…</p>;
   if (releases.isError) return <p className="error" role="alert">Não foi possível carregar as releases. {releases.error instanceof ApiError && releases.error.status === 403 ? "Você não tem permissão para consultar este Workspace." : "Tente atualizar a página."}</p>;
   if (!releases.data.length) return <p>Nenhuma release publicada neste Workspace.</p>;
-  return <Table label="Releases publicadas">
+  return <Table label="Releases publicadas" focusable scrollLabel="Rolagem das Releases publicadas">
     <thead><tr><th>Versão</th><th>Autor</th><th>Data</th><th>Resumo e digest</th></tr></thead>
     <tbody>{releases.data.map((r) => <tr key={r.version}>
       <td className="mono">v{r.version}{r.version === activeVersion && " · ativa"}</td>

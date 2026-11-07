@@ -1,6 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation } from "react-router";
 import type { NavigationContext } from "../navigation/context";
+import { globalDestinations } from "../navigation/global-destinations";
 import { gatewayDestinations, type GatewayDestination } from "../navigation/gateway-destinations";
 
 export function GatewaySidebar({ context, selectors, focusContent }: {
@@ -18,6 +19,7 @@ export function GatewaySidebar({ context, selectors, focusContent }: {
   const [collapsed, setCollapsed] = useState(false);
   const [open, setOpen] = useState(false);
   const items = gatewayDestinations(context, location.pathname);
+  const delivery = globalDestinations("operations", context, undefined, location.pathname).find(item=>item.id === "v2-N11" || item.id === "N11");
   const workspace = context.workspace;
   const name = workspace?.name ?? context.environment?.name ?? "";
   const description = workspace ? `Workspace ${name}` : `Ambiente legado ${name}`;
@@ -99,6 +101,7 @@ export function GatewaySidebar({ context, selectors, focusContent }: {
     </div>
     <nav id={`${prefix}-links`} aria-label="Menu principal">
       <ul>{items.map((item) => <GatewayItem key={item.id} item={item} collapsed={compact} prefix={prefix} onNavigate={() => { dialog.current?.close(); setOpen(false); focusContent(); }} />)}</ul>
+      {delivery?.href && <section className="gateway-delivery" aria-label="Entrega"><h2>Entrega</h2><ul><li className="gateway-item"><Link to={delivery.href} aria-label="Releases e implantação" aria-current={delivery.active ? "page" : undefined} onClick={()=>{dialog.current?.close();setOpen(false);focusContent();}}>{compact ? "Releases" : "Releases e implantação"}</Link></li></ul></section>}
     </nav>
     <footer className="gateway-footer">
       <Link to="/" aria-label="Voltar à visão geral da instância" onClick={() => { dialog.current?.close(); setOpen(false); }}>{compact ? "Instância" : "Voltar à visão geral da instância"}</Link>

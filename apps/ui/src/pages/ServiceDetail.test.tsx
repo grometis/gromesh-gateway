@@ -96,6 +96,9 @@ describe("service detail route and plugin access", () => {
     const html = await loaded(<ScopedRoutes envId={W} service={service} readOnly />);
     expect(html).toContain(route.name);
     expect(html).toContain(service.name);
+    expect(html).toContain("Configuração e publicação por fluxo");
+    expect(html).toContain("Implantação de Releases do Workspace indisponível nesta interface");
+    if (stored.hosts?.length) expect(html).toContain(stored.hosts[0]);
     expect(html).not.toMatch(/<button|aria-label="Ações"|class="actions"|<form|role="dialog"/);
     const queries = sent.filter((r) => new URL(r.url).pathname.endsWith("/routes"));
     expect(queries.length).toBeGreaterThan(0);
@@ -120,7 +123,7 @@ describe("service detail route and plugin access", () => {
     for (const element of [<RoutesPage />, <ScopedRoutes envId={W} service={service} />]) {
       const html = await loaded(element);
       expect(html).toContain("Nova rota");
-      expect(html).toContain(">Editar</button>");
+      expect(html).toContain(`aria-label="Copiar cURL de ${route.name}"`);
       expect(html).toContain(`Mais ações para ${route.name}`);
     }
     for (const [element, createLabel] of [

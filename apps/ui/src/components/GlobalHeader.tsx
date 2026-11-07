@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { Link, useLocation, useParams } from "react-router";
 import { statusMessage } from "../api/errors";
@@ -8,11 +8,11 @@ import { globalDestinations, type GlobalDestination, type GlobalSection } from "
 import { Brand } from "./Brand";
 import { InstanceContext } from "./InstanceContext";
 
-const SECTIONS = { operations: "Operações", instance: "Instância", account: "Minha conta" } as const;
+const SECTIONS = { operations: "Operações", instance: "Administração", account: "Minha conta" } as const;
 const ROLE_LABELS = { viewer: "Leitor", editor: "Editor", admin: "Administrador", none: "Sem acesso" } as const;
 type FocusContext = GlobalSection | "toggle" | null;
 
-export function GlobalHeader() {
+export function GlobalHeader({ selectors }: { selectors?: ReactNode }) {
   const context = useOptionalNavigationContext();
   const { user, logout } = useAuth();
   const { envId } = useParams();
@@ -22,6 +22,9 @@ export function GlobalHeader() {
   const prefix = useId();
   const header = useRef<HTMLElement>(null);
   const toggle = useRef<HTMLButtonElement>(null);
+  const shortcuts = useRef<HTMLElement>(null);
+  const workspacesLink = useRef<HTMLAnchorElement>(null);
+  const brandLink = useRef<HTMLAnchorElement>(null);
   const groups = useRef<Partial<Record<GlobalSection, HTMLDivElement | null>>>({});
   const triggers = useRef<Partial<Record<GlobalSection, HTMLButtonElement | null>>>({});
   const lastFocus = useRef<FocusContext>(null);
@@ -83,7 +86,7 @@ export function GlobalHeader() {
       }
       const section = (Object.keys(SECTIONS) as GlobalSection[]).find((key) => groups.current[key]?.contains(target));
       if (section) lastGroup.current = section;
-      lastFocus.current = section ?? (target === toggle.current ? "toggle" : null);
+      lastFocus.current = section ?? (target === toggle.current || shortcuts.current?.contains(target) || workspacesLink.current?.contains(target) || brandLink.current?.contains(target) ? "toggle" : null);
       // Compact groups are in document flow: defer a pointer-driven collapse until its click lands.
       if (pointerActive.current) return;
       if (open && !groups.current[open]?.contains(target)) setOpen(null);
@@ -113,7 +116,7 @@ export function GlobalHeader() {
     };
   }, [open]);
 
-  return <header className="global-header" ref={header} onKeyDown={(event) => {
+  return <header className={`global-header${context?.route.kind === "workspace-v2" || context?.route.kind === "legacy-v1" ? " is-contextual" : ""}`} ref={header} onKeyDown={(event) => {
     if (event.key !== "Escape") return;
     if (open) {
       event.preventDefault();
@@ -125,9 +128,18 @@ export function GlobalHeader() {
       toggle.current?.focus();
     }
   }}>
-    <Brand />
+    <Brand inverse linkRef={brandLink} />
+    <InstanceContext compact />
+    <Link ref={workspacesLink} className="global-workspaces" to="/workspaces" aria-label="Abrir Workspaces" aria-current={location.pathname === "/workspaces" ? "page" : undefined}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="m15 5-7 7 7 7"/></svg><span>Workspaces</span></Link>
+    {selectors && <div className="global-selector">{selectors}</div>}
+        <nav className="global-quick-links" aria-label="Acessos diretos" ref={shortcuts} hidden={compact && !mobileOpen}>
+          {globalDestinations("operations", context, user?.role, location.pathname).filter(item => ["N16", "N17", "v2-N17"].includes(item.id)).map(item => item.href
+            ? <Link key={item.id} to={item.href} aria-label={`Abrir ${item.label}`} aria-current={item.active ? "page" : undefined}>{item.label}</Link>
+            : <span key={item.id} role="link" aria-disabled="true" title={item.requirement} aria-label={`${item.label}: ${item.requirement}`}>{item.label}</span>)}
+    </nav>
     <nav className="global-navigation" aria-label="Navegação global">
       <div id={`${prefix}-groups`} className={`global-groups${mobileOpen ? " is-open" : ""}`} hidden={compact && !mobileOpen}>
+
         {(Object.keys(SECTIONS) as GlobalSection[]).map((section) => {
           const items = globalDestinations(section, context, user?.role, location.pathname);
           const active = items.some((item) => item.active);
@@ -158,10 +170,9 @@ export function GlobalHeader() {
           </div>;
         })}
       </div>
-      <InstanceContext />
     </nav>
     <button type="button" className="global-toggle" ref={toggle} aria-expanded={mobileOpen} aria-controls={`${prefix}-groups`}
-      onClick={() => { setMobileOpen(!mobileOpen); setOpen(null); }}>Menus globais</button>
+      onClick={() => { setMobileOpen(!mobileOpen); setOpen(null); }}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg><span className="visually-hidden">Menus globais</span></button>
     {signOut.isError && <p className="global-logout-error" role="alert">{statusMessage(signOut.error)}</p>}
   </header>;
 }

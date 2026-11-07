@@ -105,10 +105,9 @@ export function Shell() {
   return (
     <div className="app">
       <a className="skip-link" href="#main-content" onClick={(event) => { event.preventDefault(); focusContent(); }}>Pular para o conteúdo</a>
-      <GlobalHeader />
-      {hasGateway && context && <GatewaySidebar key={`${context.route.kind}/${"id" in context.route ? context.route.id : ""}`} context={context} selectors={selectors} focusContent={focusContent} />}
+      <GlobalHeader selectors={hasWorkspaceSelector ? selectors : undefined} />
+      {hasGateway && context && <GatewaySidebar key={`${context.route.kind}/${"id" in context.route ? context.route.id : ""}`} context={context} selectors={null} focusContent={focusContent} />}
       <main className="content" id="main-content" tabIndex={-1} ref={main}>
-        {!hasGateway && (workspaceId || routeEnvId || isWorkspacesRoute) && <div className="context-selection">{selectors}</div>}
         {!workspaceId && !routeEnvId && <p className="global-context">{isAccountRoute ? "Escopo: minha conta nesta instância" : "Escopo: esta instância"}</p>}
         {context ? <NavigationContextBoundary fallbackNavigation={<Breadcrumbs />}>
           {/* Keep the environment-wide strip in place; the trail belongs to the page below it. */}

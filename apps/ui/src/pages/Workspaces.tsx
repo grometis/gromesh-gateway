@@ -1,3 +1,4 @@
+import { useSearchShortcut } from "../components/useSearchShortcut";
 import { Link } from "react-router";
 import { useEffect, useId, useState, type FormEvent } from "react";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
@@ -59,6 +60,7 @@ export function archiveWorkspaceMutation(queryClient: QueryClient, workspace: Wo
 }
 
 export function WorkspacesPage() {
+  const searchRef = useSearchShortcut();
   const queryClient = useQueryClient();
   const workspaces = useInfiniteQuery(workspacesQuery);
   useEffect(() => {
@@ -68,12 +70,15 @@ export function WorkspacesPage() {
     }
   }, [queryClient, workspaces.error]);
   const policy = useQuery(creationPolicyQuery);
+  const [search, setSearch] = useState("");
+  const [createdId, setCreatedId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [viewing, setViewing] = useState<Workspace | null>(null);
   const [editing, setEditing] = useState<Workspace | null>(null);
   const [archiving, setArchiving] = useState<Workspace | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const items = workspaces.isError ? [] : workspaces.data?.pages.flatMap((page) => page.items) ?? [];
+  const visibleItems = items.filter(w => `${w.name} ${w.slug} ${w.description ?? ""}`.toLocaleLowerCase("pt-BR").includes(search.trim().toLocaleLowerCase("pt-BR")));
   // No contract operation tells the caller's v2 permissions (a workspace-admin binding, platform.admin): every active
   // workspace offers both actions and the server's 403 says who may (workspace.admin edits, platform.admin archives).
   const active = (w: Workspace) => w.status === "active";
@@ -84,16 +89,19 @@ export function WorkspacesPage() {
         title="Workspaces"
         description="Cada Workspace isola serviços, rotas, consumidores e plugins de um time nesta instância."
         actions={<div className="identity-actions"><Link to="/" className="back-link">Abrir Visão geral da instância</Link>{policy.data?.caller.canCreate && (
-          <Button variant="primary" onClick={() => { setNotice(null); setCreating(true); }}>Criar Workspace</Button>
+          <Button variant="primary" onClick={() => { setNotice(null); setCreatedId(null); setCreating(true); }}>Criar Workspace</Button>
         )}</div>}
       />
       {policy.data && <Availability policy={policy.data} />}
       {policy.isError && <p className="error" role="alert">Não foi possível ler a política de criação: {statusMessage(policy.error)}</p>}
-      {notice && <p className="note" role="status">{notice}</p>}
+      {notice && <p className="note" role="status">{notice} {createdId && <Link to={`/workspaces/${encodeURIComponent(createdId)}/overview`}>Entrar no novo Workspace</Link>}</p>}
+      <div className="gateway-filters"><input type="search" aria-label="Buscar Workspaces" ref={searchRef} placeholder="Buscar por nome ou slug" value={search} onChange={e=>setSearch(e.target.value)}/></div>
+      {workspaces.hasNextPage && search && <p className="muted">A busca considera os Workspaces carregados. Carregue mais para ampliar o resultado.</p>}
+      {items.length>0 && visibleItems.length===0 && <EmptyState title="Nenhum Workspace carregado corresponde à busca."/>}
       {workspaces.isPending && <p className="muted">Carregando…</p>}
       {workspaces.isError && <p className="error" role="alert">{statusMessage(workspaces.error)}</p>}
       {workspaces.isSuccess && items.length === 0 && <EmptyState title="Nenhum Workspace visível." text="Você só vê os Workspaces em que tem acesso de leitura." />}
-      {items.length > 0 && (
+      {visibleItems.length > 0 && (
         <Table label="Workspaces" cards>
           <thead>
             <tr>
@@ -104,11 +112,11 @@ export function WorkspacesPage() {
             </tr>
           </thead>
           <tbody>
-            {items.map((w) => (
+            {visibleItems.map((w) => (
               <tr key={w.id} className={w.status === "archived" ? "row-off" : undefined}>
                 <td className="row-main">
                   <div className="service-route">
-                    <strong>{w.name}</strong>
+                    <Link to={`/workspaces/${encodeURIComponent(w.id)}/overview`} className="workspace-name"><strong>{w.name}</strong></Link>
                     <span className="arrow" aria-hidden="true">→</span>
                     <span className="target mono">{w.slug}</span>
                   </div>
@@ -118,9 +126,9 @@ export function WorkspacesPage() {
                 <td className="actions">
                   <div className="identity-actions">
                     <Button variant="quiet" aria-label={`Detalhes de ${w.name}`} onClick={() => setViewing(w)}>Detalhes</Button>
-                    {active(w) && <Button variant="quiet" aria-label={`Editar ${w.name}`} onClick={() => { setNotice(null); setEditing(w); }}>Editar</Button>}
+                    {active(w) && <Button variant="quiet" aria-label={`Editar ${w.name}`} onClick={() => { setNotice(null); setCreatedId(null); setEditing(w); }}>Editar</Button>}
                     {active(w) && (
-                      <RowMenu label={`Mais ações para ${w.name}`} items={[{ label: "Arquivar", danger: true, onSelect: () => { setNotice(null); setArchiving(w); } }]} />
+                      <RowMenu label={`Mais ações para ${w.name}`} items={[{ label: "Arquivar", danger: true, onSelect: () => { setNotice(null); setCreatedId(null); setArchiving(w); } }]} />
                     )}
                   </div>
                 </td>
@@ -134,7 +142,7 @@ export function WorkspacesPage() {
           Carregar mais
         </Button>
       )}
-      {creating && <CreateWorkspace onClose={() => setCreating(false)} onCreated={(w) => { setCreating(false); setNotice(`Workspace “${w.name}” criado com o slug ${w.slug}.`); }} />}
+      {creating && <CreateWorkspace onClose={() => setCreating(false)} onCreated={(w) => { setCreating(false); setCreatedId(w.id); setNotice(`Workspace “${w.name}” criado com o slug ${w.slug}.`); }} />}
       {viewing && <WorkspaceDetail workspace={viewing} onClose={() => setViewing(null)} />}
       {editing && <EditWorkspace workspace={editing} onClose={() => setEditing(null)} onSaved={(w) => { setEditing(null); setNotice(`Workspace “${w.name}” atualizado.`); }} />}
       {archiving && <ArchiveWorkspace workspace={archiving} onClose={() => setArchiving(null)} onArchived={() => { setArchiving(null); setNotice(`Workspace “${archiving.name}” arquivado.`); }} />}

@@ -37,7 +37,7 @@ describe("Gateway sidebar interactions", () => {
       if (collapsed) await view.click(view.button("Recolher menu Gateway"));
       const links = view.all((node) => node.getAttribute("aria-label") !== null
         && (node.tagName === "A" || node.getAttribute("role") === "link"));
-      expect(links).toHaveLength(9);
+      expect(links).toHaveLength(10);
       for (const link of links) {
         expect(link.getAttribute("aria-label")!.toLocaleLowerCase("pt-BR"))
           .toContain(link.textContent.toLocaleLowerCase("pt-BR"));
@@ -89,14 +89,14 @@ describe("Gateway sidebar interactions", () => {
       }
     }
   });
-  it.each(["authorized", "archived"] as const)("links all eight v2 destinations and selects each list or detail parent in %s Workspaces, expanded and collapsed", async (state) => {
+  it.each(["authorized", "archived"] as const)("links all Gateway and delivery v2 destinations and selects each list or detail parent in %s Workspaces, expanded and collapsed", async (state) => {
     const view = await screen(false, state);
     const lists = [["Visão geral", "overview"], ["Serviços", "services"], ["Rotas", "routes"],
       ["Consumidores", "consumers"], ["Plugins", "plugins"], ["Upstreams", "upstreams"],
       ["Certificados", "certificates"], ["Variáveis", "variables"]] as const;
     for (const collapsed of [false, true]) {
       if (collapsed) await view.click(view.button("Recolher menu Gateway"));
-      expect(view.all(n => n.tagName === "A" && n.getAttribute("href")?.startsWith("/workspaces/W/") === true)).toHaveLength(8);
+      expect(view.all(n => n.tagName === "A" && n.getAttribute("href")?.startsWith("/workspaces/W/") === true)).toHaveLength(9);
       expect(view.all(n => n.getAttribute("aria-disabled") === "true")).toEqual([]);
       for (const [label, section] of [...lists, ["Serviços", "services/S"] as const, ["Consumidores", "consumers/C"] as const]) {
         await act(async () => { await view.router.navigate(`/workspaces/W/${section}?keep=1#detail`); });

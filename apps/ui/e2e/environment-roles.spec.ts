@@ -42,7 +42,7 @@ test("a global viewer who is editor in one environment edits only there, and doe
   await expect(page).toHaveURL(new RegExp(`/e/${staging.id}/consumers$`));
   await expect(page.getByRole("heading", { name: "Consumidores", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Novo consumidor" })).toHaveCount(0);
-  await openGlobalMenu(page, "Instância");
+  await openGlobalMenu(page, "Administração");
   await expect(page.getByRole("navigation", { name: "Navegação global" }).getByRole("link", { name: "Usuários" })).toHaveCount(0);
 });
 
