@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-// Trivy gate for a change: every image it touches must have no CRITICAL vulnerability, the same rule as the images
-// workflow. An image is touched when its Dockerfile (or images/kong/**) changes, then it is built here, or when a
-// pinned reference (compose, chart values, kind manifests, e2e runners, ci.yml services) is added or changed, then
-// that exact reference is pulled. SCAN_PLATFORM (os/arch, default linux/amd64) selects the architecture: CI runs one
-// native leg per published platform. Usage: SCAN_PLATFORM=linux/arm64 node scripts/scan-changed-images.mjs <base-ref>
+// Application build inputs rebuild native images for Trivy (CRITICAL fails) and the publication's Syft content gate.
+// Changed pinned references (compose, charts, kind, e2e and CI services) are pulled for Trivy. Kong builds stay on Trivy.
+// SCAN_PLATFORM selects the native platform. SBOM identity uses GITHUB_SHA, TARGET_ARCH, RUNNER_ARCH and the local image ID.
+// Usage: SCAN_PLATFORM=linux/arm64 TARGET_ARCH=arm64 node scripts/scan-changed-images.mjs <base-ref>
 import { execFileSync, spawnSync } from "node:child_process";
+import { rejectionLine } from "./ci-evidence.mjs";
+import { applicationBuilds, validatePrImageSbom } from "./ci-pr-sbom.mjs";
 
 const TRIVY = "aquasec/trivy:0.58.1@sha256:ab70a02200597efa04748f210f793936eb647cbcdb0ea69cc30b226d6f5a22c7";
 const base = process.argv[2];
@@ -20,8 +21,8 @@ const show = (rev, file) => {
 const changed = git("diff", "--name-only", `${base}...HEAD`).split("\n").filter(Boolean);
 
 const builds = [];
-for (const app of ["agent", "control-plane", "ui"]) {
-  if (changed.includes(`apps/${app}/Dockerfile`)) builds.push({ name: app, file: `apps/${app}/Dockerfile`, context: "." });
+for (const app of applicationBuilds(changed)) {
+  builds.push({ name: app, file: `apps/${app}/Dockerfile`, context: "." });
 }
 if (changed.some((f) => f.startsWith("images/kong/"))) builds.push({ name: "kong", file: "images/kong/Dockerfile", context: "images/kong" });
 
@@ -61,6 +62,7 @@ if (builds.length === 0 && pulls.size === 0) {
 }
 const run = (cmd, args) => spawnSync(cmd, args, { stdio: "inherit" }).status === 0;
 const failures = [];
+let sbomRejected = false;
 const skipped = [];
 const scanned = [];
 const scan = (image) => {
@@ -75,6 +77,14 @@ for (const b of builds) {
   const tag = `gromesh-scan/${b.name}:pr`;
   console.log(`\n== Build ${b.file} (${platform})`);
   if (!run("docker", ["build", "--platform", platform, "-t", tag, "-f", b.file, b.context])) { failures.push(`${tag} (build failed)`); continue; }
+  if (b.name !== "kong") {
+    try {
+      validatePrImageSbom(tag, b.name);
+    } catch (error) {
+      console.error(rejectionLine(error, { artifact: "sbom", image: b.name, mode: "pr" }));
+      sbomRejected = true;
+    }
+  }
   scan(tag);
 }
 /** Platforms (os/arch) a reference is published for: the index entries, or the single image's own platform. */
@@ -99,7 +109,8 @@ for (const ref of pulls) {
 }
 console.log(`\nScanned for ${platform}: ${scanned.join(", ") || "nothing"}`);
 if (skipped.length > 0) console.log(`Not published for ${platform} (third-party, skipped): ${skipped.join(", ")}`);
+if (sbomRejected) process.exitCode = 1;
 if (failures.length > 0) {
-  console.error(`CRITICAL vulnerabilities or failures in: ${failures.join(", ")}`);
+  console.error(`CRITICAL vulnerabilities, SBOM rejections or failures in: ${failures.join(", ")}`);
   process.exit(1);
 }

@@ -15,6 +15,10 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # Build records are ZIP archives containing free-form build logs and inputs.
+  DOCKER_BUILD_RECORD_UPLOAD: "false"
+
 jobs:
   # What a PR touches decides which jobs run. Pushes to main run everything; the digest bot's branches run only
   # the jobs that use the images it pins (compose e2e and the Helm install in kind, which also renders the charts).
@@ -102,10 +106,23 @@ jobs:
               - apps/control-plane/drizzle/**
               - apps/control-plane/src/agent-gateway/**
               - contracts/agent-protocol.openapi.yaml
-            # Dockerfiles, the Kong build and every pinned image reference: the image-scan job builds or pulls what
-            # changed and runs Trivy with the images workflow's rule.
+            # Application inputs rebuild native images for Trivy and the same Syft content gate as publication.
+            # Pinned third-party references keep the Trivy check.
             images:
-              - apps/*/Dockerfile
+              - apps/**
+              - packages/compiler/**
+              - contracts/**
+              - package.json
+              - pnpm-lock.yaml
+              - pnpm-workspace.yaml
+              - tsconfig.base.json
+              - .nvmrc
+              - .dockerignore
+              - scripts/ci-pr-sbom.mjs
+              - scripts/ci-supply-chain.mjs
+              - scripts/ci-image-identity.mjs
+              - scripts/ci-evidence.mjs
+              - .github/workflows/images.yml
               - images/**
               - deploy/compose/docker-compose.yml
               - deploy/helm/*/values.yaml
@@ -196,6 +213,9 @@ jobs:
       - name: "N2 lab: budget readings, evidence redaction and the privileged destination's log"
         if: env.RUN_CODE == 'true'
         run: node --test e2e/kind/n2/components/budgets.test.mjs e2e/kind/n2/components/scrub.test.mjs e2e/kind/n2/components/privileged.test.mjs
+      - name: Structured CI evidence policy tests
+        if: env.RUN_CODE == 'true'
+        run: node --test scripts/ci-evidence.test.mjs scripts/ci-pr-sbom.test.mjs scripts/ci-image-identity.test.mjs scripts/ci-run-evidence.test.mjs
       # Plugin configs are validated by a real Kong (control-plane integration tests). A step, not a service: the
       # image is read from the compose default so image-digests never has to edit this workflow.
       - name: Start the Kong validator (compose default image)
@@ -234,21 +254,28 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @gromesh/ui exec playwright install --with-deps chromium
       - name: UI acceptance against Prism
-        run: pnpm --filter @gromesh/ui test:e2e
-      - uses: actions/upload-artifact@v7
-        if: failure()
-        with:
-          name: ui-acceptance-failure
-          path: apps/ui/test-results/
-          retention-days: 7
-      # Services and the publish strip at 1440 and 390 (e2e/visual.spec.ts), for design review.
-      - uses: actions/upload-artifact@v7
+        id: ui
+        env:
+          PLAYWRIGHT_JSON_OUTPUT_FILE: ${{ runner.temp }}/ui-results.json
+        run: pnpm --filter @gromesh/ui test:e2e --reporter=list,json
+      # Reports stay local; the allowlisted artifact contains measured numeric statistics only.
+      - name: Generate structured UI acceptance evidence
+        id: generate-ui
         if: always()
+        env:
+          EVIDENCE_OUTCOME: ${{ steps.ui.outcome }}
+        run: node scripts/ci-evidence.mjs generate ui-acceptance --report "$RUNNER_TEMP/ui-results.json"
+      - name: Validate UI acceptance artifact allowlist
+        id: validate-ui
+        if: always() && steps.generate-ui.outcome == 'success'
+        run: node scripts/ci-evidence.mjs validate ui-acceptance
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.validate-ui.outcome == 'success'
         with:
-          name: ui-screenshots
-          path: apps/ui/test-results/screenshots/
+          name: ui-acceptance
+          path: evidence/ui-acceptance.json
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 7
 
   agent:
     needs: changes
@@ -395,19 +422,32 @@ jobs:
       - name: Walking skeleton (API → compiler → Kong → upstream)
         run: pnpm --filter @gromesh/control-plane test:e2e
       - name: Product acceptance (UI → agent → proxy → rollback)
-        run: pnpm test:e2e
-      - name: Capture compose logs
+        id: product
+        env:
+          PLAYWRIGHT_JSON_OUTPUT_FILE: ${{ runner.temp }}/product-results.json
+        run: pnpm --filter @gromesh/e2e test:e2e --reporter=list,json
+      - name: Compose diagnostics in the masked job log
         if: failure()
-        run: |
-          mkdir -p e2e/test-results
-          docker compose --profile observability logs --no-color > e2e/test-results/compose.log 2>&1
+        run: docker compose --profile observability logs --no-color
+      # Only numeric reporter statistics enter evidence; reports, logs and attachments stay off artifacts.
+      - name: Generate structured product evidence
+        id: generate-product
+        if: failure()
+        env:
+          EVIDENCE_OUTCOME: ${{ steps.product.outcome }}
+        run: >-
+          node scripts/ci-evidence.mjs generate product-e2e
+          --report "$RUNNER_TEMP/product-results.json"
+      - name: Validate product artifact allowlist
+        id: validate-product
+        if: failure() && steps.generate-product.outcome == 'success'
+        run: node scripts/ci-evidence.mjs validate product-e2e
       - uses: actions/upload-artifact@v7
-        if: failure()
+        if: failure() && steps.validate-product.outcome == 'success'
         with:
           name: product-e2e-failure
-          path: |
-            e2e/test-results/
-            e2e/playwright-report/
+          path: evidence/product-e2e.json
+          if-no-files-found: error
           retention-days: 7
       - name: Stop acceptance stack
         if: always()
@@ -530,27 +570,58 @@ jobs:
           fi
           kubectl wait --for=condition=Ready nodes --all --timeout=60s
       - name: MVP acceptance (Helm install → UI → publish → converge → dashboard → rollback → audit)
-        run: bash e2e/kind/run.sh
-      - uses: actions/upload-artifact@v7
-        if: failure()
-        with:
-          name: mvp-e2e-failure
-          path: |
-            e2e/test-results-kind/
-            e2e/playwright-report-kind/
-          retention-days: 7
-      - name: Dump Kubernetes diagnostics
+        id: mvp
+        run: node scripts/ci-run-evidence.mjs "$RUNNER_TEMP/mvp-results.json" bash e2e/kind/run.sh
+      - name: Kubernetes diagnostics in the masked job log
+        id: kind-diagnostics
         if: failure()
         run: |
-          bash deploy/helm/control-plane/ci/diagnostics.sh gromesh-mvp "$RUNNER_TEMP/kind-diagnostics"
-          kind export logs --name "$KIND_CLUSTER_NAME" "$RUNNER_TEMP/kind-diagnostics/kind-logs" || true
-      - name: Upload Kubernetes diagnostics
+          node scripts/ci-run-evidence.mjs "$RUNNER_TEMP/diagnostics-results.json" bash -e -o pipefail <<'DIAGNOSTICS'
+          kubectl get nodes -o wide
+          kubectl get pods -A -o wide
+          kubectl get events -A --sort-by=.lastTimestamp
+          kubectl -n gromesh-mvp get pods,deployments,jobs,services,endpointslices -o wide
+          kubectl -n gromesh-mvp describe pods
+          kubectl -n gromesh-mvp describe jobs
+          kubectl get pods -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"\t"}{.metadata.name}{"\t"}{range .status.initContainerStatuses[?(@.restartCount>0)]}{.name}{" "}{end}{range .status.containerStatuses[?(@.restartCount>0)]}{.name}{" "}{end}{range .status.ephemeralContainerStatuses[?(@.restartCount>0)]}{.name}{" "}{end}{"\n"}{end}' |
+          while IFS=$'\t' read -r namespace pod restarted; do
+            kubectl -n "$namespace" logs "$pod" --all-containers --prefix || true
+            for container in $restarted; do
+              kubectl -n "$namespace" logs "$pod" -c "$container" --prefix --previous || true
+            done
+          done
+          DIAGNOSTICS
+      # Shell suites count executed commands, not individual assertions inside run.sh.
+      - name: Generate structured MVP evidence
+        id: generate-mvp
         if: failure()
+        env:
+          EVIDENCE_OUTCOME: ${{ steps.mvp.outcome }}
+        run: node scripts/ci-evidence.mjs generate mvp-e2e --report "$RUNNER_TEMP/mvp-results.json"
+      - name: Generate structured diagnostics outcome
+        id: generate-diagnostics
+        if: failure()
+        env:
+          EVIDENCE_OUTCOME: ${{ steps.kind-diagnostics.outcome }}
+        run: node scripts/ci-evidence.mjs generate kind-diagnostics --report "$RUNNER_TEMP/diagnostics-results.json"
+      - name: Validate kind artifact allowlist
+        id: validate-kind
+        if: failure() && steps.generate-mvp.outcome == 'success' && steps.generate-diagnostics.outcome == 'success'
+        run: node scripts/ci-evidence.mjs validate mvp-e2e kind-diagnostics
+      - uses: actions/upload-artifact@v7
+        if: failure() && steps.validate-kind.outcome == 'success'
+        with:
+          name: mvp-e2e-failure
+          path: evidence/mvp-e2e.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Upload Kubernetes diagnostics
+        if: failure() && steps.validate-kind.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mvp-e2e-kind-diagnostics
-          path: ${{ runner.temp }}/kind-diagnostics/
-          if-no-files-found: warn
+          path: evidence/kind-diagnostics.json
+          if-no-files-found: error
           retention-days: 7
       - name: Delete throwaway cluster
         if: always()
@@ -558,8 +629,8 @@ jobs:
 
   # One check that is green when every job that had to run passed (skipped jobs are fine): what a ruleset should
   # require, since the per-job checks are skipped on docs-only PRs.
-  # The images workflow only scans after the merge: a base image with a CRITICAL vulnerability must fail the PR instead.
-  # Runs on pull requests that touch an image (Dependabot's included) and on the digest bot's branches.
+  # Native image builds must pass both Trivy and SBOM content validation before merge.
+  # Runs on application/build/dependency/validator changes (Dependabot included) and digest bot branches.
   image-scan:
     needs: changes
     if: needs.changes.outputs.images == 'true' || needs.changes.outputs.bot == 'true'
@@ -587,10 +658,11 @@ jobs:
           node-version-file: .nvmrc
       # Pinned gromesh-* references are private on GHCR.
       - run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-      - name: Build or pull the images this change touches and fail on CRITICAL (Trivy, as in the images workflow)
+      - name: Build or pull changed images; gate CRITICAL and validate local Syft SBOMs (no upload)
         env:
           BASE: ${{ github.event.pull_request.base.sha || 'origin/main' }}
           SCAN_PLATFORM: linux/${{ matrix.arch }}
+          TARGET_ARCH: ${{ matrix.arch }}
         run: node scripts/scan-changed-images.mjs "$BASE"
 
   # The N1 migration against what the previous version wrote: every earlier schema, the database the pre-N1 code
