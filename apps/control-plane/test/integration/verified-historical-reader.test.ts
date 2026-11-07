@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
 import pg from "pg";
+import {sql} from "drizzle-orm";
+import {pruneAdmissionHistory} from "../../src/analytics/admission-retention.js";
+import {audit} from "../../src/audit/audit.js";
+import {readAdmissionPrefix,withIngestionReadSnapshot} from "../../src/analytics/ingestion-read-snapshot.js";
 import { copyStorageProxy } from "./copy-storage-proxy.js";
 import { openVerifiedHistoricalReader } from "../../src/analytics/verified-historical-reader.js";
 import { verifiedChain as chain } from "./verified-ingestion-fixtures.js";
@@ -71,4 +75,21 @@ it("uses authoritative public history even if a pooled session contains a diverg
       expect(result.items.find(item=>item.id===copies[0]!.event.id)!.attribution).toMatchObject({workspaceId:f.workspaceId,reason:null,effectiveRevision:null});
     } finally { await reader.close(); }
   } finally { await scoped.end(); }
+}));
+
+it("refuses surviving persisted requests after real GC removes required admission coverage",()=>chain(async(f,reader,_producer,copies,stream,_token,admin,settings,pool)=>{
+ const w=window(f.instanceId,copies[0]!.event.ts);expect((await reader.read(w)).items).toHaveLength(2);
+ const id=randomUUID(),ctx={actor:{type:'system' as const,id:'synthetic-expired-admission'},role:'admin' as const,ip:null};
+ // Technical expired descriptor exercises real pruning, not past node authorization or historical persistence.
+ await f.db.transaction(async tx=>{
+  await tx.execute(sql`select pg_advisory_xact_lock(1818,1801)`);
+  const counter=(await tx.execute<{position:string}>(sql`update analytics_ingestion_counter set position=position+1 returning position::text`)).rows[0]!;
+  await tx.execute(sql`insert into analytics_ingestion_batches(id,stream_id,generation,descriptor,recorded_at) values(${id},${stream},${counter.position}::bigint,${JSON.stringify([{copyId:randomUUID(),id:randomUUID(),commitment:'a'.repeat(64),expiresAt:'2000-01-01T00:00:00.000Z'}])}::jsonb,clock_timestamp()-interval '8 days')`);
+  await audit(tx,ctx,{action:'synthetic.expired-admission',entityType:'ingestion-batch',entityId:id});
+ });
+ expect(await pruneAdmissionHistory(f.db,ctx,1)).toEqual({removed:1});expect(await pruneAdmissionHistory(f.db,ctx,1)).toEqual({removed:0});
+ expect((await f.h.sql.query('select 1 from analytics_ingestion_batches where id=$1',[id])).rowCount).toBe(0);
+ expect(await withIngestionReadSnapshot(pool,readAdmissionPrefix)).toMatchObject({admissionHistoryPruned:true,gapDetected:true,receiptPrefixComplete:false,copiesComplete:false});
+ const count=await admin.query({query:`SELECT toString(count()) n FROM ${settings.databaseName}.requests_v2_copies`,format:'JSONEachRow'});expect((await count.json<{n:string}>())[0]!.n).toBe('2');
+ await expect(reader.read(w)).rejects.toMatchObject({code:'analytics-not-ready'});
 }));

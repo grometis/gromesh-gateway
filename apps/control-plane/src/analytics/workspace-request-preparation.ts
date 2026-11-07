@@ -21,9 +21,14 @@ export class WorkspaceRequestPreparationController{
  @Get()
  @RequiredPermission("workspace.read","workspace")
  async list(@Param("workspaceId",uuidParam())workspaceId:string,@Query()input:Record<string,unknown>,@Req()request:AuthenticatedRequest):Promise<unknown>{
+  return this.execute(workspaceId,input,request,Date.now());
+ }
+ /** Internal operation runner: the public aggregate controllers reuse scope, cursor policy, errors and budget. */
+ async execute(workspaceId:string,input:Record<string,unknown>,request:AuthenticatedRequest,now:number):Promise<unknown>{
   const http=analyticsHttpContext(request);http?.check();
-  const now=Date.now(),started=performance.now(),query=parseWorkspaceRequestQuery(input,now);
+  const started=performance.now(),query=parseWorkspaceRequestQuery(input,now);
   const cancel=new AbortController(),signal=AbortSignal.any([cancel.signal,AbortSignal.timeout(4500),...(http?[http.signal]:[])]);
+
   const budget=new AnalyticsRequestBudget(signal,{},this.serving?.budgetProfile);
   let operationDone:(()=>void)|undefined;
   const aborted=()=>cancel.abort(),closed=()=>{if(!request.res?.writableEnded)cancel.abort();};
