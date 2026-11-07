@@ -24,13 +24,18 @@ function identifier(value: string): string {
   if (!/^[a-z][a-z0-9_]{0,62}$/.test(value)) throw copyReadNotReady();
   return `\`${value}\``;
 }
-export function validateTrustedCopyStorageSettings(settings: TrustedCopyStorageSettings) {
+function validateEndpoint(settings: Pick<TrustedCopyStorageSettings,"url"|"databaseName">) {
   try {
     const url = new URL(settings.url);
     if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash || !["", "/"].includes(url.pathname)) throw copyReadNotReady();
     if (url.protocol === "http:" && !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)) throw copyReadNotReady();
     identifier(settings.databaseName);
     if (["gromesh", "default", "system", "information_schema"].includes(settings.databaseName)) throw copyReadNotReady();
+  } catch { throw copyReadNotReady(); }
+}
+export function validateTrustedCopyStorageSettings(settings: TrustedCopyStorageSettings) {
+  validateEndpoint(settings);
+  try {
     const names = new Set<string>(), secrets = new Set<string>();
     for (const login of [settings.writer, settings.reader, settings.auditor]) {
       identifier(login.user);
@@ -40,7 +45,8 @@ export function validateTrustedCopyStorageSettings(settings: TrustedCopyStorageS
     }
   } catch { throw copyReadNotReady(); }
 }
-export function privateCopyStorageClient(settings: TrustedCopyStorageSettings, login: TrustedCopyStorageLogin, database = settings.databaseName) {
+export function privateCopyStorageClient(settings: Pick<TrustedCopyStorageSettings,"url"|"databaseName">, login: TrustedCopyStorageLogin, database = settings.databaseName) {
+  validateEndpoint(settings);
   return createClient({ url: settings.url, database, username: login.user, password: login.password, request_timeout: 5000,
     max_open_connections: 1, log: { level: ClickHouseLogLevel.OFF }, clickhouse_settings: { log_queries: 0 } });
 }

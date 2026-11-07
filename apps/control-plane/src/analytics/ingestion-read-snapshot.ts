@@ -21,21 +21,23 @@ async function withIngestionReadSession<T>(pool:pg.Pool,read:(snapshot:SnapshotR
  // Socket loss alone does not interrupt pg_sleep or server work. Terminate ONLY our nonce-bound backend.
  const cancel=()=>{if(!released){released=true;client.release(true);
   cancelling=(async()=>{const control=new pg.Client(ingestionCancellationConfig(pool));
-   // A signal acknowledgement is not termination; use the bounded wait already exercised by the dependent reader.
-   try{await control.connect();await control.query("select pg_terminate_backend(pid,250) from pg_stat_activity where pid=$1 and application_name=$2 and usename=current_user and datname=current_database()",[pid,name]);}finally{await control.end();}
+   // A signal acknowledgement is not termination; preserve the single bounded wait from the backport.
+   try{await control.connect();await control.query("select pg_catalog.pg_terminate_backend(pid,250) from pg_catalog.pg_stat_activity where pid=$1 and application_name=$2 and usename=current_user and datname=pg_catalog.current_database()",[pid,name]);}finally{await control.end();}
   })().catch(()=>undefined);
  }};
  signal.addEventListener("abort",cancel,{once:true});
  try{
   signal.throwIfAborted();
-  const backend=(await client.query<{pid:number;name:string}>("select pg_backend_pid() pid,current_setting('application_name') name")).rows[0]!;pid=backend.pid;previousName=backend.name;
-  await client.query("select set_config('application_name',$1,false)",[name]);
+  const backend=(await client.query<{pid:number;name:string}>("select pg_catalog.pg_backend_pid() pid,pg_catalog.current_setting('application_name') name")).rows[0]!;pid=backend.pid;previousName=backend.name;
+  await client.query("select pg_catalog.set_config('application_name',$1,false)",[name]);
   await client.query("set lock_timeout='1s'");
-  await client.query("select pg_advisory_lock_shared(1818,1801)");locked=true;
+  await client.query("select pg_catalog.pg_advisory_lock_shared(1818,1801)");locked=true;
   signal.throwIfAborted();
   const snapshot:SnapshotRead=async read=>{
    signal.throwIfAborted();if(begun)throw Error("Nested ingestion snapshot");
    await client.query("begin isolation level repeatable read read only");begun=true;
+   // A pooled TEMP relation must never replace authoritative ledger/history tables.
+   await client.query("set local search_path=pg_catalog,public,pg_temp");
    await client.query("set local statement_timeout='5s'");
    const result=await read(drizzle(client,{schema}));signal.throwIfAborted();
    const committed=await client.query("commit");begun=false;if(committed.command!=="COMMIT")throw Error("Ingestion read transaction aborted");return result;
@@ -45,7 +47,7 @@ async function withIngestionReadSession<T>(pool:pg.Pool,read:(snapshot:SnapshotR
   signal.removeEventListener("abort",cancel);
   if(cancelling)await cancelling;
   if(!released){
-   try{if(begun)await client.query("rollback");if(locked)await client.query("select pg_advisory_unlock_shared(1818,1801)");await client.query("reset lock_timeout");await client.query("select set_config('application_name',$1,false)",[previousName]);}
+   try{if(begun)await client.query("rollback");if(locked)await client.query("select pg_catalog.pg_advisory_unlock_shared(1818,1801)");await client.query("reset lock_timeout");await client.query("select pg_catalog.set_config('application_name',$1,false)",[previousName]);}
    catch{destroy=true;}
    released=true;client.release(destroy);
   }
@@ -57,8 +59,11 @@ export function withIngestionReadSnapshot<T>(pool:pg.Pool,read:(db:Db,signal:Abo
  return withIngestionReadSession(pool,(snapshot,signal)=>snapshot(db=>read(db,signal)),caller);
 }
 /** Planning and final validation share the ingestion lock, but ClickHouse I/O runs with NO open PG transaction. */
-export function withIngestionReadFence<P,O,T>(pool:pg.Pool,prepare:(db:Db)=>Promise<P>,observe:(plan:P,signal:AbortSignal)=>Promise<O>,confirm:(db:Db,plan:P,observed:O)=>Promise<T>,caller?:AbortSignal):Promise<T>{
- return withIngestionReadSession(pool,async(snapshot,signal)=>{const plan=await snapshot(prepare);const observed=await observe(plan,signal);return snapshot(db=>confirm(db,plan,observed));},caller);
+export function withIngestionReadFence<P,O,T>(pool:pg.Pool,prepare:(db:Db)=>Promise<P>,observe:(plan:P,signal:AbortSignal)=>Promise<O>,confirm:(db:Db,plan:P,observed:O)=>Promise<T>,caller?:AbortSignal,verify?:(plan:P,observed:O,result:T,signal:AbortSignal)=>Promise<void>):Promise<T>{
+ return withIngestionReadSession(pool,async(snapshot,signal)=>{const plan=await snapshot(prepare);const observed=await observe(plan,signal);const result=await snapshot(db=>confirm(db,plan,observed));
+  // Final physical verification happens after COMMIT, still under the same shared session lock.
+  if(verify)await verify(plan,observed,result,signal);return result;
+ },caller);
 }
 
 /** This observes a receipt prefix only; it does NOT prove current CH survival or delivery since Kong. */
