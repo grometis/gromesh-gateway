@@ -36,7 +36,7 @@ async function setup(page: Page, options: { role?: "viewer" | "admin"; stage?: s
   await page.context().addCookies([{ name: "gromesh_session", value: "global-navigation", url: test.info().project.use.baseURL! }]);
   return sent;
 }
-const nav = (page: Page) => page.getByRole("navigation", { name: "Navegação global", exact: true });
+const nav = (page: Page) => page.getByRole("navigation", { name: "Navegação global", exact: true, includeHidden: true });
 async function fits(page: Page) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()!.width);
 }
@@ -96,7 +96,7 @@ for (const width of [390, 768, 1440]) {
         await page.goto(path);
         await expect(page.locator("main h1")).toBeVisible();
         await expect(page.getByRole("region", { name: "Identidade da instância" })).toContainText(stage ? "Instância DEV" : "Instância não identificada");
-        await expect(page.getByRole("link", { name: "gromesh, início", exact: true })).toHaveAttribute("href", "/");
+        await expect(page.getByRole("link", { name: "gromesh, início", exact: true, includeHidden: true })).toHaveAttribute("href", "/");
         await page.reload();
         await expect(page.locator("main h1")).toBeVisible();
         await expect(page).toHaveURL(path);

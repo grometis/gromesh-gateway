@@ -1,3 +1,4 @@
+import { openGlobalMenu } from './global-navigation';
 import AxeBuilder from '@axe-core/playwright';
 import type {Page} from '@playwright/test';
 import {expect,mockSession,test} from './fixtures';
@@ -85,4 +86,38 @@ test('late clipboard completion cannot announce success in a reopened dialog',as
  await page.keyboard.press('Escape');await expect(modal).toHaveCount(0);await button.click();await modal.getByLabel('URL pública da rota').fill('https://api.example.test/payments/another-path');
  await page.evaluate(async()=>{(Reflect.get(window,'finishDesignClipboard') as ()=>void)();await new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve())));});
  await expect(modal.getByRole('status')).toBeEmpty();await expect(modal.getByRole('button',{name:'Copiar comando'})).toBeEnabled();
+});
+
+for (const width of [390,768,1440]) {
+ test(`closeout compact routes and contextual header at ${width}px`,async({page})=>{
+  await page.setViewportSize({width,height:900});await setup(page);await page.goto(`/workspaces/${W}/routes`);
+  await page.getByLabel('E-mail',{exact:true}).fill('ana@example.test');await page.getByLabel('Senha',{exact:true}).fill('synthetic-password');await page.getByRole('button',{name:'Entrar',exact:true}).click();
+  const heading=page.getByRole('heading',{name:'Rotas',exact:true}),create=page.getByRole('button',{name:'Nova rota',exact:true});
+  const h=await heading.boundingBox(),c=await create.boundingBox();expect(Math.abs(h!.y+h!.height/2-c!.y-c!.height/2)).toBeLessThan(12);
+  await expect(page.getByText('Configurações de rotas, serviços de destino e publicação.',{exact:true})).toHaveCount(0);
+  await expect(page.getByRole('note',{name:'Estado do Workspace',exact:true})).toBeHidden();
+  const row=page.getByRole('table',{name:'Rotas',exact:true}).getByRole('row').last();
+  await expect(row.getByRole('button',{name:'Copiar cURL de orders-payments',exact:true})).toBeVisible();
+  if(width===390){
+   const search=await page.getByRole('searchbox',{name:'Buscar rotas'}).boundingBox(),filter=page.getByRole('button',{name:'Filtros',exact:true});const f=await filter.boundingBox();expect(Math.abs(search!.y-f!.y)).toBeLessThan(3);
+   await filter.click();await page.getByLabel('Filtrar por estado',{exact:true}).selectOption('unverified');await page.keyboard.press('Escape');await expect(filter).toBeFocused();
+   await expect(row.getByRole('button',{name:'Mais ações para orders-payments',exact:true})).toBeHidden();
+   await row.getByRole('button',{name:'Ver detalhes de orders-payments',exact:true}).click();
+  }else{
+   const header=page.locator('.global-header');const w=await header.getByRole('link',{name:'Abrir Workspaces',exact:true}).boundingBox(),selector=await header.getByLabel('Workspace v2',{exact:true}).boundingBox();expect(w!.x).toBeLessThan(selector!.x);
+   await row.getByRole('button',{name:'Mais ações para orders-payments',exact:true}).click();await page.getByRole('menuitem',{name:'Ver detalhes',exact:true}).click();
+  }
+  const details=page.getByRole('dialog',{name:'Detalhes de orders-payments',exact:true});await expect(details).toContainText('Path configurado: /orders');
+  await details.getByRole('button',{name:'Mais ações para orders-payments',exact:true}).click();await details.getByRole('menuitem',{name:'Editar',exact:true}).click();
+  const edit=page.getByRole('dialog',{name:'Editar orders-payments',exact:true});await expect(edit.getByLabel('Paths',{exact:true})).toHaveValue('/orders');await page.keyboard.press('Escape');await expect(edit).toHaveCount(0);
+  await expect(page.getByLabel('Identidade da instância',{exact:true})).toContainText('Instância DEV');
+  expect((await new AxeBuilder({page}).withTags(['wcag2a','wcag2aa','wcag21aa']).analyze()).violations).toEqual([]);
+  await shot(page,`closeout-routes-${width}`);
+  await openGlobalMenu(page,"Administração");await shot(page,`closeout-menu-${width}`);
+ });
+}
+
+test('direct Workspaces link restores keyboard focus when the mobile header hides it',async({page})=>{
+ await page.setViewportSize({width:1440,height:900});await setup(page);await page.goto('/workspaces');await page.getByLabel('E-mail',{exact:true}).fill('ana@example.test');await page.getByLabel('Senha',{exact:true}).fill('synthetic-password');await page.getByRole('button',{name:'Entrar',exact:true}).click();
+ const link=page.locator('.global-header').getByRole('link',{name:'Abrir Workspaces',exact:true});await link.focus();await expect(link).toBeFocused();await page.setViewportSize({width:390,height:900});await expect(page.getByRole('button',{name:'Menus globais',exact:true})).toBeFocused();
 });

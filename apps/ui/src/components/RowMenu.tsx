@@ -1,7 +1,10 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
+
+import { Link } from "react-router";
 
 export interface RowMenuItem {
   label: string;
+  href?: string;
   onSelect: () => void;
   danger?: boolean;
 }
@@ -14,7 +17,7 @@ export function RowMenu({ label, items }: { label: string; items: RowMenuItem[] 
   const [open, setOpen] = useState(false);
   const menuId = useId();
   const buttonRef = useRef<HTMLButtonElement>(null);
-  const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const itemRefs = useRef<(HTMLButtonElement | HTMLAnchorElement | null)[]>([]);
   const wrapRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -55,38 +58,15 @@ export function RowMenu({ label, items }: { label: string; items: RowMenuItem[] 
       </button>
       {open && (
         <div role="menu" id={menuId} aria-label={label} className="menu-popover">
-          {items.map((item, i) => (
-            <button
-              key={item.label}
-              ref={(el) => {
-                itemRefs.current[i] = el;
-              }}
-              type="button"
-              role="menuitem"
-              tabIndex={-1}
-              className={item.danger ? "danger-item" : undefined}
-              onClick={() => {
-                setOpen(false);
-                item.onSelect();
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "ArrowDown") {
-                  e.preventDefault();
-                  move(i, 1);
-                } else if (e.key === "ArrowUp") {
-                  e.preventDefault();
-                  move(i, -1);
-                } else if (e.key === "Escape") {
-                  e.preventDefault();
-                  close();
-                } else if (e.key === "Tab") {
-                  setOpen(false);
-                }
-              }}
-            >
-              {item.label}
-            </button>
-          ))}
+          {items.map((item, i) => {
+            const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
+              if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); move(i, e.key === "ArrowDown" ? 1 : -1); }
+              else if (e.key === "Escape") { e.preventDefault(); close(); }
+              else if (e.key === "Tab") setOpen(false);
+            };
+            const onClick = () => { setOpen(false); item.onSelect(); };
+            return item.href ? <Link key={item.label} to={item.href} role="menuitem" tabIndex={-1} ref={el => {itemRefs.current[i]=el;}} onClick={onClick} onKeyDown={onKeyDown}>{item.label}</Link> : <button key={item.label} ref={el => {itemRefs.current[i]=el;}} type="button" role="menuitem" tabIndex={-1} className={item.danger ? "danger-item" : undefined} onClick={onClick} onKeyDown={onKeyDown}>{item.label}</button>;
+          })}
         </div>
       )}
     </div>

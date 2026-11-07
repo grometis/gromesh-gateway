@@ -1,3 +1,4 @@
+import { routeAction } from "./route-actions";
 import type { Page } from "@playwright/test";
 import { expect, mockSession, test } from "./fixtures";
 
@@ -87,7 +88,7 @@ test("route cards retain matches, filters and actions, with draft badges and a c
   const row = table.getByRole("row").last();
   for (const value of ["orders-api", "/orders", "orders", "GET", "POST", "Novo"]) await expect(row).toContainText(value);
   await expect(row.locator(".method")).toHaveText(["GET", "POST"]);
-  await row.getByRole("button", { name: "Ver detalhes", exact: true }).click();
+  await routeAction(page, row, "Ver detalhes");
   const details = page.getByRole("dialog", { name: "Detalhes de orders-api" });
   await expect(details).toContainText("api.example.test");
   await details.getByRole("button", { name: "Fechar", exact: true }).last().click();
@@ -98,19 +99,21 @@ test("route cards retain matches, filters and actions, with draft badges and a c
   const searched = page.waitForRequest((r) => new URL(r.url()).pathname.endsWith("/routes") && new URL(r.url()).searchParams.get("q") === "/orders");
   await page.getByLabel("Buscar rotas").fill("/orders");
   await searched;
-  await row.getByRole("button", { name: "Plugins", exact: true }).click();
+  await routeAction(page, row, "Plugins");
   const plugins = page.getByRole("dialog", { name: "Plugins de orders-api" });
   await expect(plugins.getByRole("table", { name: "Plugins" })).toHaveClass("cards");
   await expect(plugins).toContainText("Plugins por Workspace ainda não são editáveis aqui.");
   await expect(plugins.getByRole("button", { name: /Adicionar plugin|Novo plugin|Editar|Mais ações/ })).toHaveCount(0);
   await expect(plugins.getByRole("checkbox")).toHaveCount(0);
   await page.getByRole("dialog", { name: "Plugins de orders-api" }).getByRole("button", { name: "Fechar", exact: true }).click();
-  await row.getByRole("button", { name: "Editar", exact: true }).click();
+  await routeAction(page, row, "Editar");
   await expect(page.getByRole("dialog", { name: "Editar orders-api" }).getByLabel("Paths", { exact: true })).toHaveValue("/orders");
   await page.getByRole("dialog", { name: "Editar orders-api" }).getByRole("button", { name: "Cancelar" }).click();
   const more = row.getByRole("button", { name: "Mais ações para orders-api" });
   await more.focus();
   await page.keyboard.press("ArrowDown");
+  await expect(page.getByRole("menuitem", { name: "Ver detalhes", exact: true })).toBeFocused();
+  await page.keyboard.press("ArrowDown");await page.keyboard.press("ArrowDown");await page.keyboard.press("ArrowDown");
   await expect(page.getByRole("menuitem", { name: "Excluir" })).toBeFocused();
   await page.keyboard.press("Enter");
   const confirm = page.getByRole("dialog", { name: "Excluir rota" });

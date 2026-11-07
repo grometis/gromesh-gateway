@@ -123,7 +123,7 @@ describe("service detail route and plugin access", () => {
     for (const element of [<RoutesPage />, <ScopedRoutes envId={W} service={service} />]) {
       const html = await loaded(element);
       expect(html).toContain("Nova rota");
-      expect(html).toMatch(/(?:>Editar<\/button>|title="Editar")/);
+      expect(html).toContain(`aria-label="Copiar cURL de ${route.name}"`);
       expect(html).toContain(`Mais ações para ${route.name}`);
     }
     for (const [element, createLabel] of [

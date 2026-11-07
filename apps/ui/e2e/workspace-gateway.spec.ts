@@ -1,3 +1,4 @@
+import { routeAction, routeContext } from "./route-actions";
 import { navigateGlobal } from "./global-navigation";
 import { openGateway } from "./gateway-sidebar";
 import AxeBuilder from "@axe-core/playwright";
@@ -208,9 +209,9 @@ async function expectPathlessReadOnly(page: Page) {
   await expect(row).toContainText("Sem paths");
   await expect(row).not.toContainText("/legado/");
   await expect(row).not.toContainText("Path público");
-  await expect(row.getByRole("button")).toHaveCount(2);
+  await expect(row.getByRole("button")).toHaveCount(3);
   await expect(row.getByRole("button", { name: "Copiar cURL de boletos-host", exact: true })).toBeVisible();
-  await expect(row.getByRole("button", { name: "Ver detalhes", exact: true })).toBeVisible();
+  await expect(row.getByRole("button", { name: "Ver detalhes de boletos-host", exact: true })).toBeVisible();
   const dialog = page.getByRole("dialog", { name: "Detalhes de boletos-host" });
   await expect(dialog).toBeVisible();
   await expect(dialog).toContainText(explanation);
@@ -275,7 +276,7 @@ test("two workspaces keep their services and routes apart; nothing crosses, noth
   const [a, b] = [fake.workspaces[1]!, fake.workspaces[2]!];
 
   await openSection(page, "Cobrança", "Serviços");
-  await expect(page.getByRole("note", { name: "Estado do Workspace" })).toContainText("Prefixo previsto do Workspace /cobranca · nenhuma Release v2 ativa");
+  await expect((await routeContext(page))).toContainText("Prefixo previsto do Workspace /cobranca · nenhuma Release v2 ativa");
   await createService(page, "service-a", "cobranca.internal");
   await openSection(page, "Recargas", "Serviços");
   await createService(page, "service-b", "recargas.internal");
@@ -294,7 +295,7 @@ test("two workspaces keep their services and routes apart; nothing crosses, noth
   await expect(routes).toContainText("route-a");
   await expect(routes.getByRole("cell").filter({ hasText: "/boletos" })).toContainText("/boletos");
   await expect(routes).not.toContainText("route-b");
-  await routes.getByRole("button", { name: "Editar", exact: true }).click();
+  await routeAction(page, routes, "Editar");
   let dialog = page.getByRole("dialog", { name: "Editar route-a" });
   await expect(dialog.getByLabel("Serviço", { exact: true }).locator("option")).toHaveText(["service-a"]);
 
@@ -329,9 +330,9 @@ test("two workspaces keep their services and routes apart; nothing crosses, noth
   await expect(dialog).toHaveCount(0);
   await expect(services).toContainText("https://cobranca.internal:8443");
   // Entered from the global selector: v2 has no legacy draft indicator or publication strip.
-  await expect(page.getByRole("note", { name: "Estado do Workspace" })).toContainText("nenhuma Release v2 ativa");
+  await expect((await routeContext(page))).toContainText("nenhuma Release v2 ativa");
   await expect(page.getByRole("region", { name: "Publicação", exact: true })).toHaveCount(0);
-  await expect(page.getByRole("note", { name: "Estado do Workspace" })).toContainText("Implantação de Releases do Workspace indisponível nesta interface");
+  await expect((await routeContext(page))).toContainText("Implantação de Releases do Workspace indisponível nesta interface");
 
   // Nothing was published, released or deployed: only draft writes reached the server.
   const writes = fake.requests.filter((r) => r.method !== "GET");
@@ -371,13 +372,13 @@ for (const stripPath of [true, false]) {
     await menu(page).getByRole("link", { name: "Rotas", exact: true }).click();
     const routes = page.getByRole("table", { name: "Rotas", exact: true });
     await expect(routes).toContainText("Legada");
-    await routes.getByRole("button", { name: "Ver detalhes", exact: true }).click();
+    await routeAction(page, routes, "Ver detalhes");
     const evidence = page.getByRole("dialog");
     await expect(evidence).toContainText("mantém o stripPath que tinha");
     await expect(evidence).toContainText("/legado/boletos");
     await evidence.getByRole("button", { name: "Fechar", exact: true }).last().click();
-    await expect(page.getByRole("note", { name: "Estado do Workspace" })).toContainText("Release v2 ativa v7");
-    await routes.getByRole("button", { name: "Editar", exact: true }).click();
+    await expect((await routeContext(page))).toContainText("Release v2 ativa v7");
+    await routeAction(page, routes, "Editar");
     const dialog = page.getByRole("dialog", { name: "Editar boletos-api" });
     await expect(dialog.getByLabel(/stripPath/)).toHaveCount(0);
     await expect(dialog).toContainText(`stripPath atual: ${stripPath ? "sim" : "não"}`);
@@ -446,7 +447,7 @@ test("a migrated route without paths has read-only details and never writes thro
   await signIn(page, fake);
   await menu(page).getByRole("link", { name: "Rotas", exact: true }).click();
   const row = page.getByRole("table", { name: "Rotas", exact: true }).getByRole("row").filter({ hasText: "boletos-host" });
-  await row.getByRole("button", { name: "Ver detalhes", exact: true }).click();
+  await routeAction(page, row, "Ver detalhes");
   const dialog = await expectPathlessReadOnly(page);
   await dialog.getByRole("button", { name: "Fechar", exact: true }).last().click();
   await expect(dialog).toHaveCount(0);
@@ -466,7 +467,7 @@ test("a pathless legacy route stays read-only with auto publishing and keyboard 
   await signIn(page, fake);
   await menu(page).getByRole("link", { name: "Rotas", exact: true }).click();
   const routes = page.getByRole("table", { name: "Rotas", exact: true });
-  await routes.getByRole("row").filter({ hasText: "boletos-host" }).getByRole("button", { name: "Ver detalhes", exact: true }).press("Enter");
+  await routes.getByRole("row").filter({ hasText: "boletos-host" }).getByRole("button", { name: "Ver detalhes de boletos-host", exact: true }).press("Enter");
   const dialog = await expectPathlessReadOnly(page);
   await dialog.getByRole("heading").click();
   await page.keyboard.press("Enter");
@@ -481,7 +482,7 @@ test("a pathless legacy route stays read-only with auto publishing and keyboard 
   // Auto publication makes routes with paths read-only too, including legacy routes.
   await expect(routes.getByRole("button", { name: "Editar", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Nova rota" })).toHaveCount(0);
-  await expect(page.getByRole("note", { name: "Estado do Workspace" })).toContainText("publicação automática");
+  await expect(page.getByRole("status").filter({hasText:"publicação automática"})).toBeVisible();
   expect(writes).toEqual([]);
   expect(fake.requests.filter((r) => r.method !== "GET")).toEqual([]);
   expect(fake.routes.find((r) => r.id === hostOnly.id)).toEqual(original);
@@ -496,7 +497,7 @@ test("pathless legacy details stay read-only when publishing changes from manual
   fake.routeOwner.set(hostOnly.id, legacyWs.id);
   await signIn(page, fake);
   await menu(page).getByRole("link", { name: "Rotas", exact: true }).click();
-  const details = page.getByRole("table", { name: "Rotas", exact: true }).getByRole("row").filter({ hasText: "boletos-host" }).getByRole("button", { name: "Ver detalhes", exact: true });
+  const details = page.getByRole("table", { name: "Rotas", exact: true }).getByRole("row").filter({ hasText: "boletos-host" }).getByRole("button", { name: "Ver detalhes de boletos-host", exact: true });
   await details.click();
   const dialog = await expectPathlessReadOnly(page);
   // Someone switches the environment to auto after this screen read it.
@@ -537,10 +538,10 @@ for (const options of [
     await signIn(page, fake);
     await menu(page).getByRole("link", { name: "Rotas", exact: true }).click();
     await expect(page.getByRole("table", { name: "Rotas", exact: true })).toContainText("boletos-api");
-    await expect(page.getByRole("note", { name: "Estado do Workspace" })).toContainText(options.reason);
-    await expect(page.getByRole("button", { name: /Nova rota|^Editar$|Mais ações para/ })).toHaveCount(0);
+    await expect(page.getByRole("status").filter({hasText:options.reason})).toBeVisible();
+    await expect(page.getByRole("button", { name: /Nova rota|^Editar$/ })).toHaveCount(0);
     await expect(page.getByRole("region", { name: "Publicação", exact: true })).toBeVisible();
-    await page.getByRole("button", { name: "Plugins", exact: true }).click();
+    await routeAction(page, page.getByRole("table", { name: "Rotas", exact: true }), "Plugins");
     const plugins = page.getByRole("dialog", { name: "Plugins de boletos-api" });
     await expect(plugins).toContainText("rate-limiting");
     await expect(plugins).toContainText("Plugins por Workspace ainda não são editáveis aqui.");
@@ -561,7 +562,7 @@ for (const kind of ["workspace", "environment"] as const) {
       await page.goto(`/e/${legacyWs.id}/routes`);
       await expect(page.getByRole("table", { name: "Rotas", exact: true })).toContainText("boletos-api");
       await expect(page.getByText(/Somente leitura enquanto/)).toBeVisible();
-      await expect(page.getByRole("button", { name: /Nova rota|^Editar$|Mais ações para/ })).toHaveCount(0);
+      await expect(page.getByRole("button", { name: /Nova rota|^Editar$/ })).toHaveCount(0);
       expect(fake.requests.filter((r) => r.method !== "GET")).toEqual([]);
     } finally { release(); }
     await expect(page.getByRole("button", { name: "Nova rota" })).toBeEnabled();
@@ -575,7 +576,7 @@ for (const kind of ["workspace", "environment"] as const) {
     await page.goto(`/e/${legacyWs.id}/routes`);
     await expect(page.getByRole("table", { name: "Rotas", exact: true })).toContainText("boletos-api");
     await expect(page.getByText(/não foi possível verificar/)).toBeVisible();
-    await expect(page.getByRole("button", { name: /Nova rota|^Editar$|Mais ações para/ })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /Nova rota|^Editar$/ })).toHaveCount(0);
     expect(fake.requests.filter((r) => r.method !== "GET")).toEqual([]);
   });
 }
@@ -588,7 +589,7 @@ for (const operation of ["create", "edit"] as const) {
     await signIn(page, fake);
     await menu(page).getByRole("link", { name: "Rotas", exact: true }).click();
     await expect(page.getByRole("region", { name: "Publicação", exact: true })).toBeVisible();
-    await page.getByRole("button", { name: operation === "create" ? "Nova rota" : "Editar", exact: true }).click();
+    if(operation === "create")await page.getByRole("button",{name:"Nova rota",exact:true}).click();else await routeAction(page,page.getByRole("table",{name:"Rotas",exact:true}),"Editar");
     const dialog = page.getByRole("dialog", { name: operation === "create" ? "Nova rota" : "Editar boletos-api" });
     await dialog.getByLabel("Nome", { exact: true }).fill("comma-paths");
     if (operation === "create") await dialog.getByLabel("Paths", { exact: true }).fill(paths.join("\n"));
@@ -607,7 +608,7 @@ test("preserveHost validation is visible beside the checkbox and describes it ac
   fake.routeErrors = [{ path: "preserveHost", message: "must be boolean" }];
   await signIn(page, fake);
   await menu(page).getByRole("link", { name: "Rotas", exact: true }).click();
-  await page.getByRole("button", { name: "Editar", exact: true }).click();
+  await routeAction(page, page.getByRole("table", { name: "Rotas", exact: true }), "Editar");
   const dialog = page.getByRole("dialog", { name: "Editar boletos-api" });
   await dialog.getByRole("button", { name: "Salvar" }).click();
   const checkbox = dialog.getByRole("checkbox", { name: "Preservar o host original" });
@@ -639,7 +640,7 @@ test("manual routes expose v1 plugins only for reading", async ({ page }) => {
   const fake = newFake();
   await signIn(page, fake);
   await menu(page).getByRole("link", { name: "Rotas", exact: true }).click();
-  await page.getByRole("button", { name: "Plugins", exact: true }).click();
+  await routeAction(page, page.getByRole("table", { name: "Rotas", exact: true }), "Plugins");
   const dialog = page.getByRole("dialog", { name: "Plugins de boletos-api" });
   await expect(dialog).toContainText("rate-limiting");
   await expect(dialog).toContainText("Plugins por Workspace ainda não são editáveis aqui.");
@@ -689,11 +690,11 @@ for (const stripPath of [true, false]) {
       await expect(scope).not.toContainText("Path público");
     };
     await expect(row).not.toContainText("Path configurado:");
-    await row.getByRole("button", { name: "Ver detalhes", exact: true }).click();
+    await routeAction(page, row, "Ver detalhes");
     let dialog = page.getByRole("dialog");
     await check(dialog);
     await dialog.getByRole("button", { name: "Fechar", exact: true }).last().click();
-    await row.getByRole("button", { name: "Editar", exact: true }).click();
+    await routeAction(page, row, "Editar");
     dialog = page.getByRole("dialog");
     await check(dialog);
     await dialog.getByLabel("Paths", { exact: true }).fill("/draft-orders");
@@ -712,7 +713,7 @@ test("D1: an unpublished new route and a Release without Deployment never expose
   await openSection(page, "Legado", "Rotas", "v1");
   await createRoute(page, "new-orders", legacyService.name, "/orders", legacyWs.slug);
   const row = page.getByRole("table", { name: "Rotas", exact: true }).getByRole("row").filter({ hasText: "new-orders" });
-  await row.getByRole("button", { name: "Ver detalhes", exact: true }).click();
+  await routeAction(page, row, "Ver detalhes");
   const evidence = page.getByRole("dialog");
   await expect(evidence).toContainText("Path no fluxo v1: /orders — não publicado; ainda não implantado");
   await expect(evidence).toContainText("Path previsto do Workspace: /legado/orders — previsão; ainda não implantado");
@@ -735,7 +736,7 @@ test("D1: a modified legacy regex keeps its published v1 expression and both str
   const row = page.getByRole("table", { name: "Rotas", exact: true }).getByRole("row").filter({ hasText: published.name });
   await expect(row).toContainText("Legada");
   await expect(row).toContainText("Alterado");
-  await row.getByRole("button", { name: "Ver detalhes", exact: true }).click();
+  await routeAction(page, row, "Ver detalhes");
   const evidence = page.getByRole("dialog");
   await expect(evidence).toContainText("Path no fluxo v1: ~/orders/[0-9]+ — publicado na versão v4");
   await expect(evidence).toContainText("Path no fluxo v1 (rascunho): ~/draft-orders/[0-9]+ — alterado no rascunho, não publicado");
@@ -743,7 +744,7 @@ test("D1: a modified legacy regex keeps its published v1 expression and both str
   await expect(evidence).toContainText("sem acrescentar o prefixo do Workspace");
   await expect(evidence).toContainText("com o prefixo do Workspace");
   await evidence.getByRole("button", { name: "Fechar", exact: true }).last().click();
-  await row.getByRole("button", { name: "Editar", exact: true }).click();
+  await routeAction(page, row, "Editar");
   await expect(page.getByRole("dialog").getByLabel(/stripPath/)).toHaveCount(0);
   expect(fake.requests.every((r) => r.method === "GET")).toBe(true);
 });
@@ -763,16 +764,16 @@ test("D1: switching legacy environment discards publication evidence, including 
   await openSection(page, "Orders", "Rotas", "v1");
   await openSection(page, "Legado", "Rotas", "v1");
   const table = page.getByRole("table", { name: "Rotas", exact: true });
-  await table.getByRole("button", { name: "Ver detalhes", exact: true }).click();
+  await routeAction(page, table, "Ver detalhes");
   let evidence = page.getByRole("dialog");
   await expect(evidence).toContainText("publicado na versão v5");
   await expect(evidence).toContainText("Release v2 do Workspace publicada v7");
   await evidence.getByRole("button", { name: "Fechar", exact: true }).last().click();
-  await table.getByRole("button", { name: "Editar", exact: true }).click();
+  await routeAction(page, table, "Editar");
   await page.getByLabel("Ambiente (legado)", { exact: true }).selectOption({ label: "Orders" });
   await expect(page).toHaveURL(`/e/${other.id}/routes`);
   await expect(page.getByRole("dialog")).toHaveCount(0);
-  await table.getByRole("button", { name: "Ver detalhes", exact: true }).click();
+  await routeAction(page, table, "Ver detalhes");
   evidence = page.getByRole("dialog");
   await expect(evidence).toContainText("Path no fluxo v1: /orders — não publicado; ainda não implantado");
   await expect(evidence).toContainText("Path previsto do Workspace: /orders-ws/orders — previsão");
@@ -793,7 +794,7 @@ test("D1: unavailable snapshot evidence never manufactures a published address",
   await openSection(page, "Legado", "Rotas", "v1");
   await unavailable;
   const row = page.getByRole("table", { name: "Rotas", exact: true }).getByRole("row").filter({ hasText: legacyRoute.name });
-  await row.getByRole("button", { name: "Ver detalhes", exact: true }).click();
+  await routeAction(page, row, "Ver detalhes");
   const evidence = page.getByRole("dialog");
   await expect(evidence).toContainText("Path no fluxo v1: /orders — publicação não comprovada; ainda não implantado");
   await expect(evidence).toContainText("Path previsto do Workspace: /legado/orders — previsão");

@@ -191,3 +191,75 @@ table.cards tr:hover td { background: #f5f9f9; }
  .global-group { flex: 1; }
  .global-panel, .global-account .global-panel { position: static; width: 100%; min-width: 0; max-width: 100%; box-shadow: none; }
 }
+
+/* v51 closeout: compact routes and contextual top navigation. */
+.global-header { gap: 16px; }
+.global-workspaces { display: inline-flex; align-items: center; min-height: 40px; padding: 0 6px; color: var(--ink-text); text-decoration: none; }
+.global-workspaces[aria-current], .global-workspaces:hover { color: #fff; box-shadow: inset 0 -2px #41b5ac; }
+.global-workspaces svg { display: none; }
+.global-header .instance-context.is-compact { flex: 0 0 auto; width: auto; max-width: 120px; margin: 0; padding: 0; border: 0; }
+.instance-context.is-compact strong { display: block; padding: 2px 5px; border: 1px solid #8a671b; border-radius: 3px; color: #f3c264; font-size: 11px; letter-spacing: .04em; }
+.instance-context.is-compact .instance-origin { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); }
+.global-selector { flex-basis: 180px; max-width: 200px; }
+.global-navigation { min-width: 0; }
+.route-list > .page-head { display: flex; flex-wrap: nowrap; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 16px; }
+.route-list > .page-head h1 { min-width: 0; margin: 0; font-size: 22px; }
+.route-count { color: var(--text-3); font-size: 15px; font-weight: 400; padding-left: 4px; }
+.route-toolbar { display: flex; align-items: center; gap: 12px; }
+.route-toolbar > .search { flex: 1 1 320px; max-width: 460px; min-width: 140px; }
+.route-filter-toggle { display: none; }
+.route-filter-panel { display: flex; flex-wrap: wrap; gap: 12px; }
+.route-filter-panel label { display: inline-flex; align-items: center; gap: 8px; color: var(--text-2); font-size: 13px; }
+.route-filter-panel select { width: auto; max-width: 220px; }
+.route-name { display: inline-flex; align-items: center; text-align: left; min-height: 40px; padding: 0; border: 0; background: transparent; font-weight: 600; overflow-wrap: anywhere; }
+.route-name:hover:not(:disabled) { background: transparent; color: var(--accent); text-decoration: underline; }
+.route-context-info { margin: 12px 0; font-size: 13px; }
+.route-context-info > summary { display: inline-flex; align-items: center; min-height: 40px; cursor: pointer; color: var(--accent); }
+.route-context-info > summary::before { content: '›'; margin-right: 8px; }
+.route-context-info[open] > summary::before { content: '⌄'; }
+.route-total { font-size: 13px; margin: 12px 0 0; }
+.route-list .route-actions { gap: 4px; }
+@media (min-width: 601px) and (max-width: 1200px) {
+ .global-header { gap: 8px 12px; }
+ .global-header > .global-quick-links { margin-left: auto; }
+ .global-selector { flex: 1 1 160px; max-width: 220px; }
+ .global-navigation { flex-basis: 100%; }
+ .route-filter-panel { flex: 1 1 300px; }
+}
+@media (max-width: 600px) {
+ .global-header { grid-template-columns: auto minmax(0,1fr) auto 44px; gap: 8px; padding: 10px 16px; }
+ .global-header .brand { grid-column: 1; grid-row: 1; }
+ .global-header .global-selector { grid-column: 2; grid-row: 1; }
+ .global-header .instance-context.is-compact { grid-column: 3; grid-row: 1; max-width: 88px; }
+ .global-header .global-toggle { grid-column: 4; grid-row: 1; }
+ .global-header .global-workspaces { display: none; }
+ .global-header.is-contextual { grid-template-columns: 40px minmax(0,1fr) auto 44px; }
+ .global-header.is-contextual .brand { display: none; }
+ .global-header.is-contextual .global-workspaces { display: inline-flex; grid-column: 1; grid-row: 1; justify-content: center; padding: 0; min-height: 44px; }
+ .global-header.is-contextual .global-workspaces svg { display: block; }
+ .global-header.is-contextual .global-workspaces span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+ .global-header > .global-quick-links { grid-column: 1 / -1; grid-row: 2; }
+ .global-header .global-groups.is-open { grid-column: 1 / -1; grid-row: 3; }
+ .route-list > .page-head h1 { font-size: 22px; }
+ .route-toolbar { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 8px; }
+ .route-toolbar > .search { min-width: 0; width: 100%; }
+ .route-filter-toggle { display: inline-flex; align-items: center; justify-content: center; }
+ .route-filter-panel { grid-column: 1 / -1; display: none; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius); background: #fff; }
+ .route-filter-panel.is-open { display: flex; }
+ .route-filter-panel label { flex: 1 1 100%; justify-content: space-between; }
+ .route-filter-panel select { min-width: 0; max-width: 70%; }
+ .route-list table.cards tr { grid-template-columns: auto minmax(0,1fr) auto; padding: 12px; gap: 4px 6px; }
+ .route-list td[data-label="Nome"] { grid-column: 1 / 3; grid-row: 1; }
+ .route-list td[data-label="Estado"] { grid-column: 3; grid-row: 1; align-self: center; }
+ .route-list td[data-label="Métodos"] { grid-column: 1; grid-row: 2; align-self: center; }
+ .route-list td[data-label="Caminho"] { grid-column: 2; grid-row: 2; align-self: center; }
+ .route-list td[data-label="Serviço"] { grid-column: 1 / 3; grid-row: 3; font-size: 13px; }
+ .route-list table.cards td.actions { grid-column: 3; grid-row: 2 / 4; align-self: center; justify-self: end; }
+ .route-list table.cards td.actions .row-menu { display: none; }
+ .route-list .route-path { max-width: none; }
+ .route-list .route-path code { min-width: 0; font-size: 12px; }
+ .route-name { min-height: 40px; max-width: 100%; font-size: 14px; }
+ .route-list .badge { font-size: 11px; }
+}
+.menu-popover a[role="menuitem"] { display: flex; align-items: center; min-height: 40px; padding: 0 12px; border-radius: var(--radius-sm); color: var(--text); text-decoration: none; }
+.menu-popover a[role="menuitem"]:hover { background: var(--line); }

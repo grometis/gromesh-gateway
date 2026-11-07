@@ -4,7 +4,7 @@ export type GlobalMenu = "Operações" | "Administração" | "Minha conta";
 export async function openGlobalMenu(page: Page, name: GlobalMenu) {
   const nav = page.getByRole("navigation", { name: "Navegação global", exact: true });
   // /me and CSRF must finish before the authenticated header exists.
-  await expect(nav).toBeAttached();
+  await expect(page.locator(".global-header")).toBeVisible();
   const toggle = page.getByRole("button", { name: "Menus globais", exact: true });
   if (await toggle.isVisible() && await toggle.getAttribute("aria-expanded") !== "true") await toggle.click();
   const trigger = nav.getByRole("button", { name, exact: true });

@@ -1,5 +1,5 @@
 import {describe,expect,it} from 'vitest';
-import {buildRouteCurl} from './route-curl';
+import {buildRouteCurl,knownRouteCurlEntry} from './route-curl';
 const route={protocols:['https'],methods:['GET'],hosts:['api.example.test'],headers:{Authorization:['never-copy-this-secret']}};
 describe('public route cURL',()=>{
  it('uses the explicit public entry, method and placeholder headers without credentials',()=>{
@@ -22,5 +22,18 @@ describe('public route cURL',()=>{
   expect(()=>buildRouteCurl(route,'https://api.example.test/a','POST')).toThrow();
   expect(()=>buildRouteCurl({...route,protocols:['grpcs']},'https://api.example.test/a','GET')).toThrow();
   expect(()=>buildRouteCurl({...route,headers:{'Bad\nHeader':['secret']}},'https://api.example.test/a','GET')).toThrow();
+ });
+});
+
+describe('known Gateway entry',()=>{
+ it('uses only an explicit Gateway origin and a single known published literal path',()=>{
+  expect(knownRouteCurlEntry(route,'https://api.example.test',['/orders'])).toBe('https://api.example.test/orders');
+ });
+ it.each([undefined,'https://user:secret@api.example.test','https://api.example.test/admin','https://api.example.test/?key=secret'])('does not guess an unknown or unsafe origin %s',origin=>{
+  expect(knownRouteCurlEntry(route,origin,['/orders'])).toBeNull();
+ });
+ it('requires path evidence, refusing ambiguous and regex paths or a different matching host',()=>{
+  for(const paths of [undefined,[],['/one','/two'],['~/orders/[0-9]+'],['//elsewhere.test/orders'],['/\\elsewhere.test/orders'],['/a/../admin'],['/%2e%2e/admin']])expect(knownRouteCurlEntry(route,'https://api.example.test',paths)).toBeNull();
+  expect(knownRouteCurlEntry(route,'https://internal.example.test',['/orders'])).toBeNull();
  });
 });

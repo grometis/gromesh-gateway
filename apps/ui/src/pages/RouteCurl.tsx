@@ -3,12 +3,14 @@ import type {WorkspaceRoute} from '../api/client-v2';
 import {Modal} from '../components/Modal';
 import {Field} from '../components/Field';
 import {Button} from '../components/Button';
-import {buildRouteCurl} from './route-curl';
+import {buildRouteCurl,knownRouteCurlEntry} from './route-curl';
 
-export function RouteCurl({route}:{route:WorkspaceRoute}){
+export function RouteCurl({route,publicPaths}:{route:WorkspaceRoute;publicPaths?:readonly string[]}){
  const [open,setOpen]=useState(false),[entry,setEntry]=useState(''),[method,setMethod]=useState(route.methods?.[0]??'GET');
  const [state,setState]=useState<'idle'|'copying'|'copied'>('idle'),[error,setError]=useState<string|null>(null);
  const attempt=useRef(0);
+ const origin=typeof import.meta.env.VITE_GATEWAY_PUBLIC_ORIGIN==='string'?import.meta.env.VITE_GATEWAY_PUBLIC_ORIGIN:undefined;
+ const knownEntry=knownRouteCurlEntry(route,origin,publicPaths);
  const close=()=>{attempt.current++;setOpen(false);setState('idle');};
  const supported=route.protocols.some(p=>p==='http'||p==='https');
  const copy=async(event:FormEvent)=>{
@@ -19,12 +21,13 @@ export function RouteCurl({route}:{route:WorkspaceRoute}){
   catch{if(attempt.current===current){setState('idle');setError('Não foi possível copiar. Verifique a permissão da área de transferência e tente novamente.');}}
  };
  return <>
-  <button type="button" className="copy-route" aria-label={`Copiar cURL de ${route.name}`} title="Copiar cURL" onClick={()=>{attempt.current++;setError(null);setState('idle');setOpen(true);}}>
+  <button type="button" className="copy-route" aria-label={`Copiar cURL de ${route.name}`} title="Copiar cURL" onClick={()=>{attempt.current++;setError(null);setState('idle');setEntry(previous=>previous||knownEntry||'');setOpen(true);}}>
    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V4H4v12h4"/></svg>
   </button>
   {open&&<Modal title={`Copiar cURL de ${route.name}`} onClose={close}>
    {!supported?<p role="status">Esta rota exige gRPC. O comando cURL HTTP não está disponível.</p>:<form className="form" onSubmit={event=>void copy(event)}>
     <p>Informe a entrada pública completa da rota, com o prefixo do Workspace quando existir. Não use a URL administrativa nem o endereço interno do serviço.</p>
+    <p className="muted">Paths configurados: {route.paths?.join(", ") || "outros critérios de correspondência"}. {!knownEntry && "A entrada pública e seu fluxo de publicação precisam ser confirmados; não usamos o endereço interno do serviço."}</p>
     <Field label="URL pública da rota">{id=><input id={id} type="url" required placeholder="https://api.exemplo.com/workspace/caminho" value={entry} disabled={state==='copying'} onChange={e=>{setEntry(e.target.value);setState('idle');setError(null);}}/>}</Field>
     <Field label="Método">{id=><select id={id} value={method} disabled={state==='copying'} onChange={e=>{setMethod(e.target.value);setState('idle');}}>{(route.methods?.length?route.methods:['GET','POST','PUT','PATCH','DELETE','HEAD','OPTIONS']).map(m=><option key={m}>{m}</option>)}</select>}</Field>
     <p className="muted">Valores de cabeçalhos são substituídos por &lt;VALOR&gt;. Copiar não executa a requisição.</p>

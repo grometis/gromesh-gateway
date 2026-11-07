@@ -1,8 +1,8 @@
 import { useSearchShortcut } from "../components/useSearchShortcut";
 import { useIsWorkspaceRoute, useWorkspaceId } from "../navigation/context";
-import { useDeferredValue, useState, type FormEvent } from "react";
+import { useDeferredValue, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useInfiniteQuery, useMutation } from "@tanstack/react-query";
-import { Link, useSearchParams } from "react-router";
+import { useSearchParams } from "react-router";
 import { apiV2, type WorkspaceRoute, type WorkspaceRouteWrite } from "../api/client-v2";
 import { unwrap } from "../api/client";
 import { statusMessage, type FormErrors } from "../api/errors";
@@ -52,6 +52,10 @@ export function ScopedRoutes({ envId, service, readOnly = false }: { envId: stri
 
 function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly = false }: { workspaceId: string; serviceId: string; service?: { id: string; name: string }; onServiceChange?: (id: string) => void; readOnly?: boolean }) {
   const searchRef = useSearchShortcut();
+  const [stateFilter, setStateFilter] = useState("all");
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const filtersId = useId();
+  const filterToggle = useRef<HTMLButtonElement>(null);
   const v2 = useIsWorkspaceRoute();
   const draft = useEntityDraft(workspaceId, "routes");
   const publication = useRoutePublication(workspaceId);
@@ -84,6 +88,18 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
   const [deleting, setDeleting] = useState<WorkspaceRoute | null>(null);
   const [plugins, setPlugins] = useState<WorkspaceRoute | null>(null);
   const items = routes.data?.pages.flatMap((p) => p.items) ?? [];
+  const stateFor = (r: WorkspaceRoute) => draft.get(r.id) ?? (publication.legacy && publication.draftKnown && publication.snapshot?.config.routes.some(row => row.id === r.id) ? "published" : publication.noSnapshot ? "draft" : "unverified");
+  const visibleItems = items.filter(r => stateFilter === "all" || stateFor(r) === stateFilter);
+  const secondaryItems = (r: WorkspaceRoute) => [
+    {label: "Ver detalhes", onSelect: () => setDetails(r)},
+    ...(!isPathlessLegacy(r) ? [
+      {label: v2 ? "Plugins do Workspace" : "Plugins", ...(v2 ? {href: `/workspaces/${workspaceId}/plugins`} : {}), onSelect: () => {setDetails(null); if(!v2) setPlugins(r);}},
+      ...(canWrite ? [
+        {label: "Editar", onSelect: () => {setDetails(null); setEditing(r);}},
+        {label: "Excluir", danger: true, onSelect: () => {setDetails(null); setDeleting(r);}},
+      ] : []),
+    ] : []),
+  ];
   // No contract operation tells the caller's v2 permissions (a binding may grant gateway.write): every signed-in user
   // is offered actions when this workspace allows writes and the server decides (its 403 is shown in Portuguese).
   const createAction = canWrite && (
@@ -96,38 +112,40 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
     <div className="gateway-list route-list">
       {service ? <div className="page-head"><h2>Rotas do serviço</h2>{createAction}</div> : (
         <>
-          <PageHeader title="Rotas" description="Configurações de rotas, serviços de destino e publicação." actions={createAction} />
-          <WorkspaceGatewayNote workspaceId={workspaceId} compact />
+          <PageHeader title={<>Rotas {routes.isSuccess && <span className="route-count" aria-hidden="true">{visibleItems.length}{routes.hasNextPage ? "+" : ""}</span>}</>} actions={createAction} />
         </>
       )}
-      {service && !readOnly && access.reason && <p role="status">{access.reason}</p>}
-      <div className="gateway-filters">
+      {!readOnly && access.reason && <p role="status">{access.reason}</p>}
+      <div className="gateway-filters route-toolbar" onKeyDown={event => {if(event.key === "Escape"){event.preventDefault();setFiltersOpen(false);filterToggle.current?.focus();}}}>
         <input type="search" className="search" placeholder="Buscar por nome, path ou host" aria-label="Buscar rotas" ref={searchRef} value={search} onChange={(e) => setSearch(e.target.value)} />
-        {onServiceChange && <select aria-label="Filtrar por serviço" value={serviceId} onChange={(e) => onServiceChange(e.target.value)}>
-          <option value="">Todos os serviços</option>
-          {serviceList.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.name}
-            </option>
-          ))}
-        </select>}
+        {!readOnly && <button type="button" className="route-filter-toggle" ref={filterToggle} aria-expanded={filtersOpen} aria-controls={filtersId} onClick={() => setFiltersOpen(!filtersOpen)}>Filtros</button>}
+        <div id={filtersId} className={`route-filter-panel${filtersOpen || readOnly ? " is-open" : ""}`}>
+          {onServiceChange && <label>Serviço <select aria-label="Filtrar por serviço" value={serviceId} onChange={(e) => onServiceChange(e.target.value)}>
+            <option value="">Todos os serviços</option>
+            {serviceList.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select></label>}
+          <label>Estado <select aria-label="Filtrar por estado" value={stateFilter} onChange={e => setStateFilter(e.target.value)}>
+            <option value="all">Todos os estados</option><option value="added">Novo</option><option value="modified">Alterado</option><option value="published">Publicada (v1)</option><option value="draft">Rascunho</option><option value="unverified">Não verificada</option>
+          </select></label>
+        </div>
       </div>
+      {routes.hasNextPage && stateFilter !== "all" && <p className="muted" role="status">O filtro de estado considera apenas as rotas carregadas. Carregue mais para ampliar o resultado.</p>}
       {routes.isPending && <p className="muted">Carregando…</p>}
       {routes.isError && <p className="error">{statusMessage(routes.error)}</p>}
-      {routes.isSuccess && items.length === 0 && <EmptyState title="Nenhuma rota encontrada." />}
-      {items.length > 0 && (
+      {routes.isSuccess && visibleItems.length === 0 && <EmptyState title={routes.hasNextPage && stateFilter !== "all" ? "Nenhuma rota carregada corresponde ao estado selecionado." : "Nenhuma rota encontrada."} />}
+      {visibleItems.length > 0 && (
         <Table label={service ? "Rotas do serviço" : "Rotas"} cards>
           <thead>
             <tr>
               <th>Nome</th><th>Métodos</th><th>Caminho</th><th>Serviço</th><th>Estado</th>
-              {!readOnly && <th className="actions" aria-label="Ações" />}
+              {!readOnly && <th className="actions" aria-label="Ações">Ações</th>}
             </tr>
           </thead>
           <tbody>
-            {items.map((r) => (
+            {visibleItems.map((r) => (
               <tr key={r.id}>
                 <td className="row-main" data-label="Nome">
-                  <strong>{r.name}</strong>
+                  {readOnly ? <strong>{r.name}</strong> : <button type="button" className="route-name" aria-label={`Ver detalhes de ${r.name}`} onClick={() => setDetails(r)}>{r.name}</button>}
                   {readOnly && <details className="route-publication-note">
                     <summary>Configuração e publicação</summary>
                     <RoutePaths route={r} slug={slug} servicePath={servicePath(r.serviceId)} publication={publication} />
@@ -144,19 +162,8 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
                 </td>
                 {!readOnly && <td className="actions">
                   <div className="route-actions">
-                    <RouteCurl route={r} />
-                    {isPathlessLegacy(r) ? (
-                      <Button variant="quiet" className="route-icon" title="Ver detalhes" onClick={() => setDetails(r)}><RouteActionIcon kind="details"/><span className="visually-hidden">Ver detalhes</span></Button>
-                    ) : (
-                      <>
-                        <Button variant="quiet" className="route-icon" title="Ver detalhes" onClick={() => setDetails(r)}><RouteActionIcon kind="details"/><span className="visually-hidden">Ver detalhes</span></Button>
-                        {v2 ? <Link className="strip-link route-icon" title="Plugins do Workspace" to={`/workspaces/${workspaceId}/plugins`}><RouteActionIcon kind="plugins"/><span className="visually-hidden">Plugins do Workspace</span></Link> : <Button variant="quiet" className="route-icon" title="Plugins" onClick={() => setPlugins(r)}><RouteActionIcon kind="plugins"/><span className="visually-hidden">Plugins</span></Button>}
-                        {canWrite && <>
-                          <Button variant="quiet" className="route-icon" title="Editar" onClick={() => setEditing(r)}><RouteActionIcon kind="edit"/><span className="visually-hidden">Editar</span></Button>
-                          <RowMenu label={`Mais ações para ${r.name}`} items={[{ label: "Excluir", danger: true, onSelect: () => setDeleting(r) }]} />
-                        </>}
-                      </>
-                    )}
+                    <RouteCurl route={r} publicPaths={publication.legacy ? publication.snapshot?.config.routes.find(row => row.id === r.id)?.paths : undefined} />
+                    <RowMenu label={`Mais ações para ${r.name}`} items={secondaryItems(r)} />
                   </div>
                 </td>}
               </tr>
@@ -164,6 +171,8 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
           </tbody>
         </Table>
       )}
+      {routes.isSuccess && <p className="route-total muted">{visibleItems.length} {visibleItems.length === 1 ? "rota" : "rotas"}{routes.hasNextPage ? " carregadas" : ""}</p>}
+      {!service && <details className="route-context-info"><summary>Contexto e publicação</summary><WorkspaceGatewayNote workspaceId={workspaceId} showAccessReason={false} /></details>}
       {routes.hasNextPage && (
         <button type="button" onClick={() => void routes.fetchNextPage()} disabled={routes.isFetchingNextPage}>
           Carregar mais
@@ -180,7 +189,7 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
           onClose={() => setEditing(null)}
         />
       )}
-      {!readOnly && details && <RouteDetails route={details} slug={slug} publication={publication} servicePath={servicePath(details.serviceId)} serviceName={serviceName(details.serviceId)} onClose={() => setDetails(null)} />}
+      {!readOnly && details && <RouteDetails route={details} slug={slug} publication={publication} servicePath={servicePath(details.serviceId)} serviceName={serviceName(details.serviceId)} actions={secondaryItems(details).length > 1 ? <RowMenu label={`Mais ações para ${details.name}`} items={secondaryItems(details).filter(item => item.label !== "Ver detalhes")} /> : undefined} onClose={() => setDetails(null)} />}
       {keepDialogs && deleting && <DeleteRoute workspaceId={workspaceId} route={deleting} onClose={() => setDeleting(null)} />}
       {!readOnly && plugins && (
         <Modal title={`Plugins de ${plugins.name}`} onClose={() => setPlugins(null)} wide>
@@ -192,14 +201,10 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
   );
 }
 
-function RouteActionIcon({kind}:{kind:'details'|'edit'|'plugins'}){
- return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">{kind==='details'?<><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v1"/></>:kind==='edit'?<><path d="m15 4 5 5M4 20l5-1L20 8l-5-5L4 14z"/></>:<><path d="M9 3v5m6-5v5m-9 0h12v3a6 6 0 0 1-12 0zm6 9v4"/></>}</svg>;
-}
-
 const isPathlessLegacy = (route: WorkspaceRoute | null): boolean =>
   route?.pathCompatibility === "legacy-preserved" && (route.paths?.length ?? 0) === 0;
 
-function RouteDetails({ route, serviceName, onClose, ...paths }: { route: WorkspaceRoute; serviceName: string; onClose: () => void; slug?: string; servicePath?: string | null; publication: ReturnType<typeof useRoutePublication> }) {
+function RouteDetails({ route, serviceName, onClose, actions, ...paths }: { route: WorkspaceRoute; serviceName: string; onClose: () => void; actions?: ReactNode; slug?: string; servicePath?: string | null; publication: ReturnType<typeof useRoutePublication> }) {
   const fields = [
     ["Nome", route.name],
     ["Serviço", serviceName],
@@ -214,7 +219,7 @@ function RouteDetails({ route, serviceName, onClose, ...paths }: { route: Worksp
     ["Tags", route.tags?.join(", ") || "—"],
   ];
   return (
-    <Modal title={`Detalhes de ${route.name}`} onClose={onClose} footer={<Button onClick={onClose}>Fechar</Button>}>
+    <Modal title={`Detalhes de ${route.name}`} onClose={onClose} footer={<div className="form-actions">{actions}<Button onClick={onClose}>Fechar</Button></div>}>
       {route.pathCompatibility === "legacy-preserved" && <p className="warn"><Badge tone="warning">Legada</Badge> {isPathlessLegacy(route) ? PATHLESS_LEGACY : LEGACY}</p>}
       <RoutePaths route={route} {...paths} />
       <dl>

@@ -17,3 +17,16 @@ export function buildRouteCurl(route:CurlRoute,entry:string,method:string):strin
  });
  return [`curl --globoff --request ${quote(method)} --url ${quote(url.href)}`,...headers].join(' \\\n');
 }
+
+/** Only explicit public origin plus known publication paths can prefill a runnable URL. */
+export function knownRouteCurlEntry(route: CurlRoute, origin: string | undefined, paths: readonly string[] | undefined): string | null {
+ if (!origin || paths?.length !== 1 || !paths[0]?.startsWith('/') || paths[0].startsWith('//')) return null;
+ try {
+  const base = new URL(origin);
+  if (base.pathname !== '/' || base.search || base.hash || base.username || base.password) return null;
+  const entry = new URL(paths[0], base);
+  if (entry.origin !== base.origin || entry.pathname !== paths[0]) return null;
+  buildRouteCurl(route, entry.href, route.methods?.[0] ?? 'GET');
+  return entry.href;
+ } catch { return null; }
+}

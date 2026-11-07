@@ -210,7 +210,13 @@ async function screen(stored: WorkspaceRoute[] = [], options: {
   await act(async () => { await tick(); });
   await act(async () => { await tick(); });
   const buttons = (name: string, scope = container) => scope.findAll((node) => node.tagName === "BUTTON" && node.textContent === name);
+  const openActions = async (index=0) => {
+    const menu=container.findAll(n=>n.tagName==="BUTTON"&&n.getAttribute("aria-haspopup")==="menu")[index];
+    expect(menu,"route actions entry").toBeDefined();
+    if(menu!.getAttribute("aria-expanded")!=="true") await act(async()=>{menu!.dispatchEvent(new Event("click",{bubbles:true}));await tick();});
+  };
   const click = async (name: string, index = 0) => {
+    if(!buttons(name)[index] && ["Editar","Ver detalhes","Plugins"].includes(name)) await openActions(index);
     const button = buttons(name)[index];
     expect(button, `button ${name}`).toBeDefined();
     await act(async () => { button!.dispatchEvent(new Event("click", { bubbles: true })); await tick(); });
@@ -233,7 +239,7 @@ async function screen(stored: WorkspaceRoute[] = [], options: {
     await act(async () => { form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); await tick(); });
     await act(async () => { await tick(); });
   };
-  return { container, router, buttons, click, dialog, field, input, submit };
+  return { container, router, buttons, click, openActions, dialog, field, input, submit };
 }
 
 const pathless = () => route({ pathCompatibility: "legacy-preserved", paths: [], hosts: ["boletos.example"], methods: ["GET"], tags: ["legado"] });
@@ -314,7 +320,9 @@ describe("routes screen", () => {
     expect(view.container.textContent).toContain("Somente leitura");
     expect(view.container.textContent).toContain(reason);
     for (const label of ["Nova rota", "Editar", "Excluir"]) expect(view.buttons(label)).toHaveLength(0);
-    expect(view.container.findAll((n) => n.getAttribute("aria-haspopup") === "menu")).toHaveLength(0);
+    await view.openActions();
+    expect(view.buttons("Editar")).toHaveLength(0);
+    expect(view.buttons("Excluir")).toHaveLength(0);
     await view.click("Ver detalhes", 1);
     expect(view.dialog()!.textContent).toContain("sem paths é somente leitura");
     expect(sent.every((r) => r.method === "GET")).toBe(true);
@@ -336,6 +344,7 @@ describe("routes screen", () => {
 
   it.each(["workspace", "environment"] as const)("rejects stale permission data after a failed %s read", async (query) => {
     const view = await screen([route()]);
+    await view.openActions();
     expect(view.buttons("Editar")).toHaveLength(1);
     await act(async () => {
       client!.getQueryCache().find({ queryKey: [query, W] })!.setState({ status: "error", error: new Error("offline") });
@@ -395,7 +404,10 @@ describe("routes screen", () => {
     expect(view.container.textContent).toContain("Legada");
     expect(view.buttons("Editar")).toHaveLength(0);
     expect(view.buttons("Plugins")).toHaveLength(0);
-    expect(view.container.findAll((node) => node.getAttribute("aria-haspopup") === "menu")).toHaveLength(0);
+    await view.openActions();
+    expect(view.buttons("Editar")).toHaveLength(0);
+    expect(view.buttons("Plugins")).toHaveLength(0);
+    expect(view.buttons("Excluir")).toHaveLength(0);
     await view.click("Ver detalhes");
     const details = view.dialog()!;
     expect(details).toBeDefined();
