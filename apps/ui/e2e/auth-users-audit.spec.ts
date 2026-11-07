@@ -94,7 +94,7 @@ test("403 no logout aparece sem abandonar a sessão", async ({ page }) => {
 test("viewer conserva restrições v1; gateway v2 usa permissões do servidor e recusa 403", async ({ page }) => {
   await login(page, viewer);
   const menu = page.getByRole("navigation", { name: "Menu principal" });
-  await openGlobalMenu(page, "Instância");
+  await openGlobalMenu(page, "Administração");
   await expect(page.getByRole("navigation", { name: "Navegação global" }).getByRole("link", { name: /Usuários|Auditoria/ })).toHaveCount(0);
   // Services, Routes and Plugins go through v2, where no operation tells the caller's permissions: the actions are offered
   // and the server's 403 decides (Services/Routes below; Plugins in workspace-plugins.spec.ts). The v1 screens hide v1 edits.

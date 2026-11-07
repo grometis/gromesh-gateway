@@ -149,7 +149,7 @@ describe("authorized route context with real transport", () => {
     await view.settle();
     expect(view.container.textContent).not.toContain("Verificando contexto…");
     expect(view.sent.some((p) => p.startsWith("/api/v1/environments"))).toBe(false);
-    expect(view.container.textContent).not.toContain("Publicação");
+    expect(view.container.findAll(n=>n.getAttribute("role")==="region" && n.getAttribute("aria-label")==="Publicação")).toHaveLength(0);
     expect(view.container.textContent).not.toContain("fluxo v1 (rascunho)");
   });
   it("keeps route details and plugin navigation in v2, including after opening a detail", async () => {
@@ -376,9 +376,9 @@ describe("breadcrumbs through the authorized context and real queries", () => {
       expect(trail(view).findAll((n) => n.tagName === "A").map((n) => n.getAttribute("href"))).toEqual(["/"]);
     }
     const menu = view.container.findAll((n) => n.tagName === "NAV" && n.getAttribute("aria-label") === "Menu principal")[0]!;
-    expect(menu.findAll((n) => n.tagName === "A")).toHaveLength(8);
+    expect(menu.findAll((n) => n.tagName === "A")).toHaveLength(9);
     expect(menu.findAll((n) => n.getAttribute("aria-current") === "page").map((n) => n.getAttribute("aria-label")))
-      .toEqual(section === "releases" ? [] : [label]);
+      .toEqual(section === "releases" ? ["Releases e implantação"] : [label]);
     expect(view.sent.some((p) => p.startsWith("/api/v1/environments"))).toBe(false);
   });
   it("names a v2 Consumer from its page query without reading the same-id legacy cache", async () => {

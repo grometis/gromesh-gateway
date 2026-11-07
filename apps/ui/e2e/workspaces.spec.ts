@@ -167,7 +167,7 @@ test("an authorized caller creates a workspace: suggested slug, success only aft
   await expect(page.getByRole("status")).toHaveCount(0);
   release();
   await expect(dialog).toHaveCount(0);
-  await expect(page.getByRole("status")).toHaveText("Workspace “Gestão de Cobrança” criado com o slug gestao-de-cobranca.");
+  await expect(page.getByRole("status")).toContainText("Workspace “Gestão de Cobrança” criado com o slug gestao-de-cobranca.");
   expect(fake.requests.filter((r) => r.method === "POST")).toEqual([
     { method: "POST", path: "/workspaces", body: { name: "Gestão de Cobrança", slug: "gestao-de-cobranca", description: "Boletos e PIX" } },
   ]);

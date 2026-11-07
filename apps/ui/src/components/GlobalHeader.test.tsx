@@ -99,7 +99,7 @@ describe("global navigation", () => {
     }
     const sidebars = view.all((n) => n.getAttribute("aria-label") === "Menu principal");
     expect(sidebars).toHaveLength(path === "/tokens" ? 0 : 1);
-    expect(sidebars.flatMap((sidebar) => sidebar.findAll((n) => n.tagName === "A")).every((n) => !/releases|requests|metrics|publish|publications|clusters|tokens|users|audit/.test(n.getAttribute("href") ?? ""))).toBe(true);
+    expect(sidebars.flatMap((sidebar) => sidebar.findAll((n) => n.tagName === "A")).every((n) => !/requests|metrics|publish|publications|clusters|tokens|users|audit/.test(n.getAttribute("href") ?? ""))).toBe(true);
     if (path.startsWith("/workspaces/")) expect(view.sent.some((p) => p.startsWith("/api/v1/environments"))).toBe(false);
   });
   it.each([
@@ -197,8 +197,8 @@ describe("global navigation", () => {
   });
   it.each(["viewer", "admin"] as const)("matches RequireAdmin for %s, even with a local admin override", async (role) => {
     const view = await screen({ role, path: `/e/${E}/services` });
-    await view.click(view.button("Instância"));
-    expect(view.panel("Instância").findAll((n) => n.tagName === "A").map((n) => n.textContent)).toEqual(role === "admin" ? ["Workspaces", "Usuários", "Auditoria"] : ["Workspaces"]);
+    await view.click(view.button("Administração"));
+    expect(view.panel("Administração").findAll((n) => n.tagName === "A").map((n) => n.textContent)).toEqual(role === "admin" ? ["Workspaces", "Usuários", "Auditoria"] : ["Workspaces"]);
     await view.click(view.button("Minha conta"));
     expect(view.panel("Minha conta").textContent).toContain("Ana");
     expect(view.panel("Minha conta").textContent).toContain("ana@example.test");
@@ -209,13 +209,13 @@ describe("global navigation", () => {
     const ops = view.button("Operações");
     await view.click(ops);
     expect(ops.getAttribute("aria-expanded")).toBe("true");
-    await view.click(view.button("Instância"));
+    await view.click(view.button("Administração"));
     expect(ops.getAttribute("aria-expanded")).toBe("false");
-    const link = view.panel("Instância").findAll((n) => n.tagName === "A")[0]!;
+    const link = view.panel("Administração").findAll((n) => n.tagName === "A")[0]!;
     await view.focus(link);
     await act(async () => { const event = new Event("keydown", { bubbles: true, cancelable: true }); Object.defineProperty(event, "key", { value: "Escape" }); link.dispatchEvent(event); });
-    expect(view.button("Instância").getAttribute("aria-expanded")).toBe("false");
-    expect(document.activeElement).toBe(view.button("Instância"));
+    expect(view.button("Administração").getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(view.button("Administração"));
     await view.click(ops);
     const main = view.all((n) => n.tagName === "MAIN")[0]!;
     await act(() => { main.dispatchEvent(new Event("pointerdown", { bubbles: true })); main.dispatchEvent(new Event("click", { bubbles: true })); });
@@ -229,7 +229,7 @@ describe("global navigation", () => {
     const view = await screen({ compact });
     if (compact) await view.click(view.button("Menus globais"));
     const identity = view.all((n) => n.getAttribute("aria-label") === "Identidade da instância")[0]!;
-    for (const section of ["Operações", "Instância", "Minha conta"]) {
+    for (const section of ["Operações", "Administração", "Minha conta"]) {
       await view.click(view.button(section));
       await view.click(view.panel(section));
       expect(view.button(section).getAttribute("aria-expanded")).toBe("true");
@@ -259,13 +259,13 @@ describe("global navigation", () => {
   });
   it("restores focus across breakpoints using focusin history even after CSS has moved focus to body", async () => {
     const view = await screen();
-    await view.click(view.button("Instância"));
-    await view.focus(view.panel("Instância").findAll((n) => n.tagName === "A")[0]!);
+    await view.click(view.button("Administração"));
+    await view.focus(view.panel("Administração").findAll((n) => n.tagName === "A")[0]!);
     // Browsers may blur a newly hidden link before dispatching matchMedia.change.
     document.body.focus();
     await view.resize(true);
     expect(document.activeElement).toBe(view.button("Menus globais"));
-    expect(visible(view.button("Instância"))).toBe(false);
+    expect(visible(view.button("Administração"))).toBe(false);
     await view.click(view.button("Menus globais"));
     await view.click(view.button("Minha conta"));
     await view.focus(view.panel("Minha conta").findAll((n) => n.tagName === "A")[0]!);
@@ -301,15 +301,15 @@ describe("global navigation", () => {
   });
   it("closes when focus leaves the document without losing the breakpoint focus context", async () => {
     const view = await screen();
-    await view.click(view.button("Instância"));
-    const link = view.panel("Instância").findAll((n) => n.tagName === "A")[0]!;
+    await view.click(view.button("Administração"));
+    const link = view.panel("Administração").findAll((n) => n.tagName === "A")[0]!;
     await view.focus(link);
     await act(() => {
       const event = new Event("focusout", { bubbles: true });
       Object.defineProperty(event, "relatedTarget", { value: null });
       link.dispatchEvent(event);
     });
-    expect(view.button("Instância").getAttribute("aria-expanded")).toBe("false");
+    expect(view.button("Administração").getAttribute("aria-expanded")).toBe("false");
     await view.resize(true);
     expect(document.activeElement).toBe(view.button("Menus globais"));
   });

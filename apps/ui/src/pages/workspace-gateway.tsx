@@ -167,7 +167,7 @@ export function useInvalidateWorkspaceGateway(workspaceId: string) {
 }
 
 /** The workspace's prefix, its active release, the unpublished draft and why nothing here deploys (N2 gates). */
-export function WorkspaceGatewayNote({ workspaceId }: { workspaceId: string }) {
+export function WorkspaceGatewayNote({ workspaceId, compact = false }: { workspaceId: string; compact?: boolean }) {
   const workspace = useWorkspace(workspaceId);
   const env = useLegacyEnvironment(workspaceId);
   const access = useWorkspaceGatewayAccess(workspaceId);
@@ -175,12 +175,12 @@ export function WorkspaceGatewayNote({ workspaceId }: { workspaceId: string }) {
   if (!workspace.data) return <p className="muted" role="status">{access.reason}</p>;
   const w = workspace.data;
   return (
-    <div className="note" role="note" aria-label="Estado do Workspace">
+    <div className={`note${compact ? " compact-workspace-note" : ""}`} role="note" aria-label="Estado do Workspace">
       <p>
         Prefixo previsto do Workspace <span className="mono">/{w.slug}</span> · {w.activeRelease === null ? "nenhuma Release v2 ativa" : typeof w.activeRelease === "number" ? `Release v2 ativa v${w.activeRelease}` : "estado da Release v2 não comprovado"}
         {env.data && (env.data.hasUnpublishedChanges ? " · há alterações no rascunho ainda não publicadas" : " · rascunho sem alterações pendentes")}.
       </p>
-      {access.reason ? <p role="status">{access.reason}</p> : <p>Implantação de Releases do Workspace indisponível nesta interface. Criar ou editar altera o rascunho; uma Release v2 publicada também não comprova implantação.</p>}
+      {access.reason ? <p role="status">{access.reason}</p> : compact ? <details className="route-publication-note"><summary>Publicação e aplicação</summary><p>Implantação de Releases do Workspace indisponível nesta interface. Criar ou editar altera o rascunho; uma Release v2 publicada também não comprova implantação.</p></details> : <p>Implantação de Releases do Workspace indisponível nesta interface. Criar ou editar altera o rascunho; uma Release v2 publicada também não comprova implantação.</p>}
     </div>
   );
 }

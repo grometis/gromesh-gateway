@@ -66,7 +66,7 @@ test("the selected change shows field by field what differs from the live versio
   await expect(diff.locator("tr.changed").first()).toContainText("port");
   await expect(diff.locator("tr.changed").first().locator("td.before del")).toHaveText("8080");
   await expect(diff.locator("tr.changed").first().locator("td.after ins")).toHaveText("8443");
-  await expect(diff.locator("tr.changed").first().locator("td.before")).toHaveCSS("background-color", "rgb(255, 241, 236)");
+  await expect(diff.locator("tr.changed").first().locator("td.before")).toHaveCSS("background-color", "rgb(255, 244, 223)");
   await expect(diff.locator("tr.changed").first().locator("td.after")).toHaveCSS("background-color", "rgb(227, 242, 239)");
   await expect(diff.locator("tr.same").filter({ hasText: "host" })).toContainText('"orders.internal"');
 

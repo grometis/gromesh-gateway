@@ -79,8 +79,12 @@ test("route cards retain matches, filters and actions, with draft badges and a c
   const table = page.getByRole("table", { name: "Rotas", exact: true });
   await expect(table).toHaveClass("cards");
   const row = table.getByRole("row").last();
-  for (const value of ["orders-api", "/orders", "orders", "GET", "POST", "api.example.test", "Novo"]) await expect(row).toContainText(value);
-  await expect(row.locator(".match-chip")).toHaveText(["GET", "POST", "api.example.test"]);
+  for (const value of ["orders-api", "/orders", "orders", "GET", "POST", "Novo"]) await expect(row).toContainText(value);
+  await expect(row.locator(".method")).toHaveText(["GET", "POST"]);
+  await row.getByRole("button", { name: "Ver detalhes", exact: true }).click();
+  const details = page.getByRole("dialog", { name: "Detalhes de orders-api" });
+  await expect(details).toContainText("api.example.test");
+  await details.getByRole("button", { name: "Fechar", exact: true }).last().click();
   const filtered = page.waitForRequest((r) => new URL(r.url()).pathname.endsWith("/routes") && new URL(r.url()).searchParams.get("serviceId") === service.id);
   await page.getByLabel("Filtrar por serviço").selectOption(service.id);
   await filtered;

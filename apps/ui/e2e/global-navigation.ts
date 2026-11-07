@@ -1,6 +1,6 @@
 import { expect, type Page } from "@playwright/test";
 
-export type GlobalMenu = "Operações" | "Instância" | "Minha conta";
+export type GlobalMenu = "Operações" | "Administração" | "Minha conta";
 export async function openGlobalMenu(page: Page, name: GlobalMenu) {
   const nav = page.getByRole("navigation", { name: "Navegação global", exact: true });
   // /me and CSRF must finish before the authenticated header exists.
@@ -13,7 +13,7 @@ export async function openGlobalMenu(page: Page, name: GlobalMenu) {
 }
 
 export async function navigateGlobal(page: Page, label: string) {
-  const section = ["Workspaces", "Usuários", "Auditoria"].includes(label) ? "Instância"
+  const section = ["Workspaces", "Usuários", "Auditoria"].includes(label) ? "Administração"
     : label === "Tokens de API" ? "Minha conta" : "Operações";
   const nav = await openGlobalMenu(page, section);
   await nav.getByRole("link", { name: label, exact: true }).click();

@@ -70,8 +70,8 @@ for (const width of [390, 768, 1440]) {
         ? ["Visão geral da instância", workspace(A).name] : ["Visão geral da instância", workspace(A).name, label!]);
       await expect(trail(page).locator('[aria-current="page"]')).toHaveText(section === "overview" ? workspace(A).name : label!);
       const menu = await openGateway(page);
-      await expect(menu.getByRole("link")).toHaveCount(8);
-      if (section === "releases") await expect(menu.locator('[aria-current="page"]')).toHaveCount(0);
+      await expect(menu.getByRole("link")).toHaveCount(9);
+      if (section === "releases") await expect(menu.getByRole("link", { name: "Releases e implantação", exact: true })).toHaveAttribute("aria-current", "page");
       else await expect(menu.getByRole("link", { name: label, exact: true })).toHaveAttribute("aria-current", "page");
       const close = page.getByRole("button", { name: "Fechar menu Gateway", exact: true });
       if (await close.isVisible()) await close.click();
@@ -146,7 +146,7 @@ for (const width of [390, 768, 1440]) {
     await audit(page);
   });
 
-  test(`instance has exactly one orange action with AA contrast at ${width}px`, async ({ page }) => {
+  test(`instance has exactly one petroleum action with AA contrast at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
     await setup(page);
     await page.goto("/");
@@ -162,10 +162,10 @@ for (const width of [390, 768, 1440]) {
     }).map((el) => el.textContent?.trim()));
     expect(accented).toEqual(["Gerenciar Workspaces"]);
     await expect(primary).toHaveCSS("color", "rgb(255, 255, 255)");
-    await expect(primary).toHaveCSS("background-color", "rgb(201, 58, 30)");
+    await expect(primary).toHaveCSS("background-color", "rgb(10, 108, 102)");
     await audit(page); // Includes axe color-contrast on the actual primary link.
     await primary.hover();
-    await expect(primary).toHaveCSS("background-color", "rgb(168, 48, 26)");
+    await expect(primary).toHaveCSS("background-color", "rgb(8, 86, 80)");
     await audit(page);
     await primary.click();
     await expect(page).toHaveURL("/workspaces");

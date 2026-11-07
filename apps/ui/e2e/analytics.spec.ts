@@ -217,7 +217,7 @@ test("Métricas is the former Dashboard: the old /analytics address redirects to
   await expect(page).toHaveURL(new RegExp(`/e/${envId}/metrics$`));
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Métricas");
   await openGlobalMenu(page, "Operações");
-  await expect(menu(page).getByRole("link", { name: "Métricas" })).toHaveAttribute("aria-current", "page");
+  await expect(menu(page).getByRole("link", { name: "Métricas", exact: true })).toHaveAttribute("aria-current", "page");
   await expect(menu(page).getByRole("link", { name: "Dashboard" })).toHaveCount(0);
 });
 

@@ -52,7 +52,7 @@ for (const width of [390, 600]) {
     await setup(page, { role: "admin" });
     await page.goto(paths.v1);
     await expect(page.locator("main h1")).toBeVisible();
-    const names = ["Operações", "Instância", "Minha conta"] as const;
+    const names = ["Operações", "Administração", "Minha conta"] as const;
     for (const name of names) {
       await openGlobalMenu(page, name);
       const buttons = await Promise.all(names.map((label) => nav(page).getByRole("button", { name: label, exact: true }).boundingBox()));
@@ -133,7 +133,7 @@ for (const width of [390, 768, 1440]) {
           await expect.poll(() => operations.evaluate((node) => node.scrollTop)).toBeGreaterThan(0);
         }
         await audit(page);
-        await openGlobalMenu(page, "Instância");
+        await openGlobalMenu(page, "Administração");
         await expect(nav(page).getByRole("button", { name: "Operações", exact: true, includeHidden: true })).toHaveAttribute("aria-expanded", "false");
         await expect(nav(page).getByRole("link", { name: "Workspaces", exact: true })).toHaveAttribute("href", "/workspaces");
         await expect(nav(page).getByRole("link", { name: /Usuários|Auditoria|Visão geral da instância|Configurações|Grupos|Aprovações/ })).toHaveCount(0);
@@ -157,18 +157,18 @@ for (const width of [390, 768, 1440]) {
     await page.setViewportSize({ width, height: 900 });
     await setup(page, { role: "admin" });
     await page.goto("/workspaces");
-    await openGlobalMenu(page, "Instância");
+    await openGlobalMenu(page, "Administração");
     for (const [label, path] of [["Usuários", "/users"], ["Auditoria", "/audit"]]) {
       await navigateGlobal(page, label!);
       await expect(page).toHaveURL(path!);
       await expect(page.locator("main")).toBeFocused();
-      await expect(nav(page).getByRole("button", { name: "Instância", exact: true, includeHidden: true })).toHaveAttribute("aria-expanded", "false");
+      await expect(nav(page).getByRole("button", { name: "Administração", exact: true, includeHidden: true })).toHaveAttribute("aria-expanded", "false");
     }
     await setup(page, { role: "viewer" });
     for (const path of ["/users", "/audit"]) {
       await page.goto(path);
       await expect(page.getByRole("alert")).toContainText("Você não tem permissão");
-      await openGlobalMenu(page, "Instância");
+      await openGlobalMenu(page, "Administração");
       await expect(nav(page).getByRole("link", { name: /Usuários|Auditoria/ })).toHaveCount(0);
     }
   });
@@ -179,7 +179,7 @@ for (const width of [390, 768, 1440]) {
     await page.goto(paths.v2);
     await expect(page.locator("main h1")).toBeVisible();
     if (width <= 600) await page.getByRole("button", { name: "Menus globais", exact: true }).click();
-    const instance = nav(page).getByRole("button", { name: "Instância", exact: true, includeHidden: true });
+    const instance = nav(page).getByRole("button", { name: "Administração", exact: true, includeHidden: true });
     await instance.focus();
     await page.keyboard.press("Enter");
     await expect(instance).toBeFocused();
@@ -207,7 +207,7 @@ for (const width of [390, 768, 1440]) {
     // The open panel covers the heading at tablet width; click exposed content.
     await main.click({ position: { x: mainBox!.width - 8, y: 8 } });
     await expect(nav(page).getByRole("button", { name: "Operações", exact: true, includeHidden: true })).toHaveAttribute("aria-expanded", "false");
-    await openGlobalMenu(page, "Instância");
+    await openGlobalMenu(page, "Administração");
     await page.locator("main").focus();
     await expect(instance).toHaveAttribute("aria-expanded", "false");
     await openGlobalMenu(page, "Operações");
@@ -242,11 +242,11 @@ test("breakpoint transitions restore focus from a link hidden before matchMedia.
   await page.setViewportSize({ width: 1440, height: 900 });
   await setup(page);
   await page.goto("/tokens");
-  await openGlobalMenu(page, "Instância");
+  await openGlobalMenu(page, "Administração");
   await nav(page).getByRole("link", { name: "Workspaces", exact: true }).focus();
   await page.setViewportSize({ width: 390, height: 900 });
   await expect(page.getByRole("button", { name: "Menus globais", exact: true })).toBeFocused();
-  await expect(nav(page).getByRole("button", { name: "Instância", exact: true, includeHidden: true })).toBeHidden();
+  await expect(nav(page).getByRole("button", { name: "Administração", exact: true, includeHidden: true })).toBeHidden();
   await openGlobalMenu(page, "Minha conta");
   await nav(page).getByRole("link", { name: "Tokens de API", exact: true }).focus();
   await page.setViewportSize({ width: 768, height: 900 });
@@ -257,7 +257,7 @@ test("breakpoint transitions restore focus from a link hidden before matchMedia.
   await expect(page.getByRole("button", { name: "Menus globais", exact: true })).toBeFocused();
   await page.setViewportSize({ width: 768, height: 900 });
   await expect(nav(page).getByRole("button", { name: "Minha conta", exact: true })).toBeFocused();
-  await openGlobalMenu(page, "Instância");
+  await openGlobalMenu(page, "Administração");
   await nav(page).getByRole("link", { name: "Workspaces", exact: true }).focus();
   await page.setViewportSize({ width: 1440, height: 900 });
   await expect(nav(page).getByRole("link", { name: "Workspaces", exact: true })).toBeFocused();
@@ -299,7 +299,7 @@ for (const scope of ["global", "v2", "v1"] as const) {
     await page.setViewportSize({ width: 390, height: 900 });
     await setup(page);
     await page.goto(paths[scope]);
-    for (const name of ["Operações", "Instância", "Minha conta"] as const) {
+    for (const name of ["Operações", "Administração", "Minha conta"] as const) {
       await openGlobalMenu(page, name);
       const panel = nav(page).getByRole("region", { name, exact: true });
       await expect(panel).toBeVisible();

@@ -1,7 +1,7 @@
 import type { Page } from "@playwright/test";
 import { expect, mockSession, test } from "./fixtures";
 
-// P4-C1: the "Contraste" identity on Services and on the publish strip, at desktop and phone widths. The data is
+// The Grafite & Petróleo identity on Services and on the publish strip, at desktop and phone widths. The data is
 // pinned (Prism's examples would vary by field), and the screenshots are uploaded as the job's artifact for review.
 const envId = "3f6b8c1e-2a4d-4e5f-8a9b-0c1d2e3f4a5b";
 const id = (n: number) => `9a1b2c3d-4e5f-4a6b-8c7d-${String(n).padStart(12, "0")}`;
@@ -55,9 +55,9 @@ for (const viewport of [{ name: "desktop-1440", width: 1440, height: 900 }, { na
     await expect(rows.filter({ hasText: "orders" })).toContainText("Alterado");
     await expect(page.getByRole("button", { name: "Com alterações 2" })).toBeVisible();
     await expect(rows.filter({ hasText: "legacy-reports" })).toContainText("Desativado");
-    // The accent is only for publishing: the screen's main action is the ink outline.
-    await expect(page.getByRole("button", { name: "Novo serviço" })).toHaveCSS("background-color", "rgb(255, 255, 255)");
-    await expect(strip.getByRole("button", { name: "Publicar v4" })).toHaveCSS("background-color", "rgb(201, 58, 30)");
+    // Primary and publish actions use the approved petroleum accent.
+    await expect(page.getByRole("button", { name: "Novo serviço" })).toHaveCSS("background-color", "rgb(10, 108, 102)");
+    await expect(strip.getByRole("button", { name: "Publicar v4" })).toHaveCSS("background-color", "rgb(10, 108, 102)");
 
     // No horizontal page scroll: only wide tables scroll, inside their own container.
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(viewport.width);
@@ -114,8 +114,8 @@ test("a serviço row opens its detail; Editar is quiet and Excluir lives in the 
 for (const { label, nodes, status, color, words } of [
   { label: "every node on the live version", nodes: [node(1, 3), node(2, 3)], status: "converged", color: "rgb(22, 163, 106)", words: null },
   { label: "a rollout under way", nodes: [node(1, 3), node(2, 2)], status: "converging", color: "rgb(183, 121, 31)", words: "convergindo" },
-  { label: "a failed node", nodes: [node(1, 3), { ...node(2, 2), state: "failed", error: "invalid configuration" }], status: "degraded", color: "rgb(201, 58, 30)", words: "degradado" },
-  { label: "no node", nodes: [], status: "no-nodes", color: "rgb(134, 170, 165)", words: "nenhum nó online" },
+  { label: "a failed node", nodes: [node(1, 3), { ...node(2, 2), state: "failed", error: "invalid configuration" }], status: "degraded", color: "rgb(180, 35, 24)", words: "degradado" },
+  { label: "no node", nodes: [], status: "no-nodes", color: "rgb(168, 177, 188)", words: "nenhum nó online" },
 ]) {
   test(`the strip's dot and words for ${label}`, async ({ page }) => {
     await openServices(page, [{ ...converging[0]!, status, nodes }]);

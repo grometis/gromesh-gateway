@@ -169,7 +169,7 @@ for (const width of [390, 1440]) {
           await page.keyboard.press("Tab");
           await expect(body).toBeFocused();
           await expect(body).toHaveCSS("outline-style", "solid");
-          await expect(body).toHaveCSS("outline-color", "rgb(11, 42, 42)");
+          await expect(body).toHaveCSS("outline-color", "rgb(10, 108, 102)");
           if (width === 390) {
             const before = await body.evaluate((element) => element.scrollTop);
             await page.keyboard.press("ArrowDown");
@@ -238,7 +238,7 @@ for (const width of [390, 1440]) {
     await page.setViewportSize({ width, height: 900 });
     await page.goto("/login");
     await expect(page.getByRole("heading", { name: "Entrar", exact: true })).toBeVisible();
-    await expect(page.getByRole("link", { name: "gromesh, início" })).toHaveText("gromesh");
+    await expect(page.getByRole("link", { name: "gromesh, início" }).getByRole("img", { name: "Gromesh" })).toHaveAttribute("src", "/brand/gromesh-logo-claro.svg");
     await expect(page.getByLabel("E-mail")).toHaveAttribute("autocomplete", "username");
     await expect(page.getByLabel("Senha")).toHaveAttribute("type", "password");
     await page.evaluate(() => document.fonts.ready);
@@ -246,7 +246,7 @@ for (const width of [390, 1440]) {
     await checkLayout(page, { focusWithin: ".login-card" });
     await expect(page.getByLabel("E-mail")).toBeFocused();
     await expect(page.getByLabel("E-mail")).toHaveCSS("outline-style", "solid");
-    await expect(page.getByLabel("E-mail")).toHaveCSS("outline-color", "rgb(11, 42, 42)");
+    await expect(page.getByLabel("E-mail")).toHaveCSS("outline-color", "rgb(10, 108, 102)");
     const axe = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
     expect(axe.violations.filter((v) => v.impact === "serious" || v.impact === "critical").map((v) => `${v.id}: ${v.nodes.map((n) => n.target).join(", ")}`)).toEqual([]);
 
@@ -258,7 +258,7 @@ for (const width of [390, 1440]) {
     await checkLayout(page, { focusWithin: ".login-card" });
     await expect(page.getByLabel("E-mail")).toBeFocused();
     await expect(page.getByLabel("E-mail")).toHaveCSS("outline-style", "solid");
-    await expect(page.getByLabel("E-mail")).toHaveCSS("outline-color", "rgb(11, 42, 42)");
+    await expect(page.getByLabel("E-mail")).toHaveCSS("outline-color", "rgb(10, 108, 102)");
     const errorAxe = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
     expect(errorAxe.violations.filter((v) => v.impact === "serious" || v.impact === "critical").map((v) => `${v.id}: ${v.nodes.map((n) => n.target).join(", ")}`)).toEqual([]);
   });

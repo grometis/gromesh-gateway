@@ -1,0 +1,26 @@
+import {describe,expect,it} from 'vitest';
+import {buildRouteCurl} from './route-curl';
+const route={protocols:['https'],methods:['GET'],hosts:['api.example.test'],headers:{Authorization:['never-copy-this-secret']}};
+describe('public route cURL',()=>{
+ it('uses the explicit public entry, method and placeholder headers without credentials',()=>{
+  const command=buildRouteCurl(route,'https://api.example.test/payments/orders','GET');
+  expect(command).toContain("--url 'https://api.example.test/payments/orders'");
+  expect(command).toContain("--request 'GET'");expect(command).toContain('Authorization: <VALOR>');expect(command).not.toContain('never-copy-this-secret');
+ });
+ it.each(['','http://api.example.test/orders','https://admin.example.test/orders','https://user:secret@api.example.test/orders','https://api.example.test/orders?token=secret','https://api.example.test/orders#secret','https://api.example.test/\norders'])('refuses ambiguous or unsafe public entry %s',url=>{
+  expect(()=>buildRouteCurl(route,url,'GET')).toThrow();
+ });
+ it('allows the matching public wildcard and IPv6 with explicit port',()=>{
+  expect(buildRouteCurl({...route,hosts:['*.example.test']},'https://edge.example.test/a','GET')).toContain('edge.example.test');
+  expect(buildRouteCurl({...route,hosts:['[2001:db8::1]']},'https://[2001:db8::1]:8443/a','GET')).toContain('[2001:db8::1]:8443');
+ });
+ it('quotes shell metacharacters in a user-confirmed path without executing',()=>{
+  const value=buildRouteCurl(route,"https://api.example.test/a'$(id)",'GET');
+  expect(value).toContain("a'\\''$(id)");
+ });
+ it('refuses unsupported methods, protocols and injected header names',()=>{
+  expect(()=>buildRouteCurl(route,'https://api.example.test/a','POST')).toThrow();
+  expect(()=>buildRouteCurl({...route,protocols:['grpcs']},'https://api.example.test/a','GET')).toThrow();
+  expect(()=>buildRouteCurl({...route,headers:{'Bad\nHeader':['secret']}},'https://api.example.test/a','GET')).toThrow();
+ });
+});

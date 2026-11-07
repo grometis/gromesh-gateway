@@ -1,3 +1,4 @@
+import { useSearchShortcut } from "../components/useSearchShortcut";
 import { useIsWorkspaceRoute, useWorkspaceId } from "../navigation/context";
 import { useDeferredValue, useState, type FormEvent } from "react";
 import { useInfiniteQuery, useMutation } from "@tanstack/react-query";
@@ -16,6 +17,7 @@ import { Table } from "../components/Table";
 import { Badge, DraftBadge } from "../components/Badge";
 import { Button } from "../components/Button";
 import { RowMenu } from "../components/RowMenu";
+import { RouteCurl } from "./RouteCurl";
 import { RoutePaths, useRoutePublication } from "./route-publication";
 import { gatewayErrorMessage, gatewayFormErrors } from "./gateway-errors";
 import { fieldText, useAllWorkspaceServices, useInvalidateWorkspaceGateway, useWorkspace, useWorkspaceGatewayAccess, WorkspaceGatewayNote } from "./workspace-gateway";
@@ -49,6 +51,7 @@ export function ScopedRoutes({ envId, service, readOnly = false }: { envId: stri
 }
 
 function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly = false }: { workspaceId: string; serviceId: string; service?: { id: string; name: string }; onServiceChange?: (id: string) => void; readOnly?: boolean }) {
+  const searchRef = useSearchShortcut();
   const v2 = useIsWorkspaceRoute();
   const draft = useEntityDraft(workspaceId, "routes");
   const publication = useRoutePublication(workspaceId);
@@ -90,16 +93,16 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
   );
 
   return (
-    <div className="gateway-list">
+    <div className="gateway-list route-list">
       {service ? <div className="page-head"><h2>Rotas do serviço</h2>{createAction}</div> : (
         <>
-          <PageHeader title="Rotas" description={v2 ? "Paths configurados e previsão para a configuração v2." : "Paths configurados, publicação no fluxo v1 e previsão para a configuração v2."} actions={createAction} />
-          <WorkspaceGatewayNote workspaceId={workspaceId} />
+          <PageHeader title="Rotas" description="Configurações de rotas, serviços de destino e publicação." actions={createAction} />
+          <WorkspaceGatewayNote workspaceId={workspaceId} compact />
         </>
       )}
       {service && !readOnly && access.reason && <p role="status">{access.reason}</p>}
       <div className="gateway-filters">
-        <input type="search" className="search" placeholder="Buscar por nome, path ou host" aria-label="Buscar rotas" value={search} onChange={(e) => setSearch(e.target.value)} />
+        <input type="search" className="search" placeholder="Buscar por nome, path ou host" aria-label="Buscar rotas" ref={searchRef} value={search} onChange={(e) => setSearch(e.target.value)} />
         {onServiceChange && <select aria-label="Filtrar por serviço" value={serviceId} onChange={(e) => onServiceChange(e.target.value)}>
           <option value="">Todos os serviços</option>
           {serviceList.map((s) => (
@@ -116,40 +119,34 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
         <Table label={service ? "Rotas do serviço" : "Rotas"} cards>
           <thead>
             <tr>
-              <th>Rota → configuração e publicação / serviço</th>
+              <th>Nome</th><th>Métodos</th><th>Caminho</th><th>Serviço</th><th>Estado</th>
               {!readOnly && <th className="actions" aria-label="Ações" />}
             </tr>
           </thead>
           <tbody>
             {items.map((r) => (
               <tr key={r.id}>
-                <td className="row-main">
-                  <div className="service-route">
-                    <span className="service-name">{r.name}</span>
-                    <DraftBadge change={draft.get(r.id)} />
-                    {r.pathCompatibility === "legacy-preserved" && <Badge tone="warning">Legada</Badge>}
-                    <span className="arrow" aria-hidden="true">→</span>
-                    <span className="muted">Serviço <span className="mono">{serviceName(r.serviceId)}</span></span>
-                  </div>
-                  <RoutePaths route={r} slug={slug} servicePath={servicePath(r.serviceId)} publication={publication} />
-                  <div className="route-matches">
-                    <span className="muted">Métodos</span>
-                    {r.methods === undefined ? <span className="match-chip mono">todos</span> : r.methods.map((m) => <span className="match-chip mono" key={m}>{m}</span>)}
-                    <span className="muted">Hosts</span>
-                    {r.hosts?.length ? r.hosts.map((h) => <span className="match-chip mono" key={h}>{h}</span>) : <span className="mono">—</span>}
-                  </div>
-                  {r.pathCompatibility === "legacy-preserved" && <p className="muted"><small>{isPathlessLegacy(r) ? PATHLESS_LEGACY : LEGACY}</small></p>}
+                <td className="row-main" data-label="Nome">
+                  <strong>{r.name}</strong>
+                  {r.pathCompatibility === "legacy-preserved" && <Badge tone="warning">Legada</Badge>}
+                </td>
+                <td data-label="Métodos" className="route-methods">{r.methods?.length ? r.methods.map(m=><span className={`method method-${m.toLowerCase()}`} key={m}>{m}</span>) : <span className="muted">Todos</span>}</td>
+                <td data-label="Caminho" className="route-path">{r.paths?.length?r.paths.map(path=><code key={path}>{path}</code>):<span className="muted">Sem paths</span>}</td>
+                <td data-label="Serviço">{serviceName(r.serviceId)}{services.isSuccess && services.fetchStatus === "idle" && !serviceList.some(item=>item.id===r.serviceId) && <span className="error route-service-error">Serviço indisponível</span>}</td>
+                <td data-label="Estado">
+                  {draft.get(r.id)?<DraftBadge change={draft.get(r.id)}/>:<Badge tone="off">{publication.legacy&&publication.draftKnown&&publication.snapshot?.config.routes.some(row=>row.id===r.id)?`Publicada v${publication.snapshot.version}`:publication.noSnapshot?"Rascunho":"Não verificada"}</Badge>}
                 </td>
                 {!readOnly && <td className="actions">
                   <div className="route-actions">
+                    <RouteCurl route={r} />
                     {isPathlessLegacy(r) ? (
-                      <Button variant="quiet" onClick={() => setDetails(r)}>Ver detalhes</Button>
+                      <Button variant="quiet" className="route-icon" title="Ver detalhes" onClick={() => setDetails(r)}><RouteActionIcon kind="details"/><span className="visually-hidden">Ver detalhes</span></Button>
                     ) : (
                       <>
-                        <Button variant="quiet" onClick={() => setDetails(r)}>Ver detalhes</Button>
-                        {v2 ? <Link className="strip-link" to={`/workspaces/${workspaceId}/plugins`}>Plugins do Workspace</Link> : <Button variant="quiet" onClick={() => setPlugins(r)}>Plugins</Button>}
+                        <Button variant="quiet" className="route-icon" title="Ver detalhes" onClick={() => setDetails(r)}><RouteActionIcon kind="details"/><span className="visually-hidden">Ver detalhes</span></Button>
+                        {v2 ? <Link className="strip-link route-icon" title="Plugins do Workspace" to={`/workspaces/${workspaceId}/plugins`}><RouteActionIcon kind="plugins"/><span className="visually-hidden">Plugins do Workspace</span></Link> : <Button variant="quiet" className="route-icon" title="Plugins" onClick={() => setPlugins(r)}><RouteActionIcon kind="plugins"/><span className="visually-hidden">Plugins</span></Button>}
                         {canWrite && <>
-                          <Button variant="quiet" onClick={() => setEditing(r)}>Editar</Button>
+                          <Button variant="quiet" className="route-icon" title="Editar" onClick={() => setEditing(r)}><RouteActionIcon kind="edit"/><span className="visually-hidden">Editar</span></Button>
                           <RowMenu label={`Mais ações para ${r.name}`} items={[{ label: "Excluir", danger: true, onSelect: () => setDeleting(r) }]} />
                         </>}
                       </>
@@ -187,6 +184,10 @@ function RouteList({ workspaceId, serviceId, service, onServiceChange, readOnly 
       )}
     </div>
   );
+}
+
+function RouteActionIcon({kind}:{kind:'details'|'edit'|'plugins'}){
+ return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">{kind==='details'?<><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v1"/></>:kind==='edit'?<><path d="m15 4 5 5M4 20l5-1L20 8l-5-5L4 14z"/></>:<><path d="M9 3v5m6-5v5m-9 0h12v3a6 6 0 0 1-12 0zm6 9v4"/></>}</svg>;
 }
 
 const isPathlessLegacy = (route: WorkspaceRoute | null): boolean =>
